@@ -1,4 +1,4 @@
-# Core agent contract
+# Core Code agent contract
 
 This repository is public. Never add credentials, private sessions, machine state,
 company/client material, proprietary source, or unredistributable research

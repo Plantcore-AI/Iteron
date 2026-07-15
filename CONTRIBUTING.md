@@ -1,84 +1,80 @@
-# Contributing to Core
+# Contributing to Core Code
 
-Thank you for helping build Core. The project welcomes focused contributions from
-humans using any responsible development tools, including coding agents.
+Thank you for helping build Core Code. Focused bug fixes, tests, documentation,
+provider adapters, evaluation fixtures, and carefully scoped features are
+welcome. Please read the [Code of Conduct](CODE_OF_CONDUCT.md) before
+participating.
 
-Unless a contributor explicitly states otherwise, an intentionally submitted
-contribution is licensed under the repository's Apache-2.0 license as described in
-Section 5 of [`LICENSE`](LICENSE). No CLA is required.
+Unless you explicitly state otherwise, an intentionally submitted contribution
+is licensed under Apache-2.0 as described in Section 5 of [LICENSE](LICENSE). No
+CLA is required.
 
-## Current bootstrap state
+## Find the right starting point
 
-Contributions are welcome while the ownership registry is in `bootstrap` mode,
-but remote responsibility and human-review enforcement are not active yet. During
-bootstrap, the human Owner sponsors or assigns scope, selects the required human
-reviewers, and makes the merge decision manually. Contributors do not need to claim
-maintainership to submit a patch.
+| Contribution | Start here |
+| --- | --- |
+| Reproducible bug | Search issues, then use the bug report form |
+| Documentation correction | Open a focused issue or a small pull request |
+| New behavior or public contract | Open a feature issue before implementation |
+| Cross-module or security-sensitive change | Open an issue and agree scope with the affected humans |
+| Vulnerability | Use the private route in [SECURITY.md](SECURITY.md), never a public issue |
+| Ongoing module responsibility | Use the ownership-claim form; this is not required for ordinary contributions |
 
-Boundary and review jobs inspect bootstrap pull requests and succeed with an
-explicit non-enforcing result; they do not claim that registered-human review is
-active.
-Enforcement becomes active only after public identities, generated CODEOWNERS,
-the protected Ruleset, and a non-bypass remote canary have all been verified.
+Issues labeled `good first issue` should be independently reproducible, bounded to
+one responsibility area, and include acceptance evidence. `help wanted` may need
+more design work. Ask setup and usage questions in
+[GitHub Discussions](https://github.com/Plantcore-AI/core/discussions).
 
-## Before starting
+## Local setup
 
-- Search existing issues and pull requests.
-- Find the primary responsibility unit for the paths you expect to change:
+Supported development hosts are macOS and Linux. You need:
 
-  ```sh
-  cargo run --locked -p core-xtask -- boundaries explain path/to/file
-  ```
+- Git;
+- Rust 1.90 or newer, installed with `rustup`;
+- a C toolchain supported by Rust;
+- on Linux, `bubblewrap` for the live sandbox boundary test.
 
-- For a new subsystem, public protocol, security boundary, cross-boundary change,
-  or behavior change, open an issue first and agree scope with the responsible
-  human maintainer. If the boundary is open, the Owner may sponsor or assign the
-  contribution without making the contributor a maintainer. Use an ownership-claim
-  issue only when a human is volunteering for ongoing responsibility.
-- Keep unrelated cleanup out of the same change.
-- Never include credentials, private session data, proprietary source, or copied
-  third-party implementation in an issue or pull request.
+Fork the repository in GitHub, then clone your fork:
 
-## Responsibility boundaries
+```sh
+git clone https://github.com/YOUR-ACCOUNT/core.git
+cd core
+git remote add upstream https://github.com/Plantcore-AI/core.git
+cargo build --locked -p core-cli
+cargo test --workspace --all-targets --locked
+```
 
-[`governance/boundaries.json`](governance/boundaries.json) is the source of truth
-for path ownership, human assignments, invariant-review overlays, and the exact
-internal workspace dependency baseline. [`OWNERSHIP.md`](OWNERSHIP.md) and
-`.github/CODEOWNERS` are generated views; do not edit them directly.
+The default test suite does not require a provider credential or network access.
+Real-provider and real-network tests must remain opt-in. Never place API keys in a
+repository file, issue, test fixture, shell transcript, or pull request.
 
-Responsibility units are not team seats. Any coherent unit may be claimed, one
-person may own several, and a unit may be split or merged through a reviewed
-registry change. Every public path must have exactly one primary boundary.
-Cross-cutting overlays add review responsibility without creating a second path
-owner.
+See [development setup](docs/development/setup.md) for platform details and
+troubleshooting.
 
-To change assignments or boundaries:
+## Before changing code
 
-1. Open an ownership-claim issue and name the human primary, reviewer or backup,
-   affected contracts, adjacent owners, and handoff evidence.
-2. Obtain Owner confirmation and, for cross-boundary work, agreement from the
-   affected human maintainers.
-3. Edit the registry, then regenerate and validate its views:
+1. Search open issues and pull requests.
+2. Keep the work to one user-visible outcome.
+3. Find the primary responsibility boundary for each path:
 
    ```sh
-   cargo run --locked -p core-xtask -- boundaries generate
-   cargo run --locked -p core-xtask -- boundaries check
+   cargo run --locked -p core-xtask -- boundaries explain path/to/file
    ```
 
-The full human/agent pairing and handoff workflow is in
-[`docs/maintainer-onboarding.md`](docs/maintainer-onboarding.md).
+4. For a new subsystem, public protocol, security boundary, cross-boundary
+   change, or externally observable behavior, agree scope in an issue first.
+5. Keep unrelated cleanup and formatting churn out of the change.
 
-Active enforcement requires explicit public GitHub identities. Critical active
-boundaries require an independent human reviewer; switching the global mode to
-`active` also requires every critical boundary and independent overlay to be
-assigned. Coding agents cannot be owners, reviewers, approvers, or substitutes
-for a human identity.
+If a boundary is unassigned, the Owner can sponsor the contribution without
+appointing the contributor as a maintainer.
 
-Maintainers activating the public repository must also follow the
-[repository-enforcement runbook](docs/repository-enforcement.md); generated
-CODEOWNERS alone is not a branch protection policy.
+## Development workflow
 
-## Development checks
+Create a descriptive branch from current `main`, make the smallest correct
+change, add evidence that fails before the fix when feasible, and review your own
+diff before pushing.
+
+Run focused checks while iterating. Before requesting review, run the full gate:
 
 ```sh
 cargo fmt --all -- --check
@@ -88,53 +84,97 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked
 ```
 
-Tests that require a real provider account or network access must be opt-in and
-must not be required for the default local test suite.
+The [testing guide](docs/development/testing.md) explains focused crate tests,
+all-target tests, PTY evidence, sandbox tests, network opt-ins, and CI parity.
+
+### Evidence by change type
+
+| Area | Minimum evidence |
+| --- | --- |
+| Runtime or protocol | Unit coverage plus integration, replay, or compatibility evidence |
+| Durable records | Round-trip, recovery, corruption, and version behavior |
+| Permissions, tools, or sandbox | Denial path, bounded failure, and a live boundary test where available |
+| Provider adapter | Synthetic transport fixtures, redaction, discovery bounds, and missing-credential behavior |
+| TUI | Semantic state tests; PTY/resize/terminal evidence for input or rendering changes |
+| Documentation | Strict site build and link validation |
+| Release engineering | Clean-runner build, package inspection, checksum, SBOM, provenance, and install canary |
+
+Additional area guides cover [provider adapters](docs/development/provider-adapters.md)
+and [TUI testing](docs/development/tui-testing.md).
 
 ## Change shape
 
-- Target production Rust modules below 500 lines where practical.
-- If a file is already around 800 lines, put new functionality behind a smaller
-  module rather than extending the giant file.
-- Keep complex pull requests below roughly 500 changed lines and mechanical ones
-  below roughly 800. Split larger work into contract, implementation, and
-  integration steps.
-- Agent/runtime behavior changes need an integration or replay-level regression
-  test, not only a unit test.
-- TUI behavior changes need semantic state tests and, when rendering changes,
-  terminal/snapshot evidence.
+- Prefer small modules and explicit interfaces. Do not extend an already large
+  file merely because it exists.
+- Keep complex pull requests near 500 changed lines when practical. Split larger
+  work into contract, implementation, and integration stages.
+- Preserve boundedness: queues, retries, output, memory, deadlines, and
+  concurrency need explicit ceilings.
+- Never weaken a test or policy only to make CI green. Explain platform-specific
+  capability detection and fail closed.
+- Do not introduce framework or supply-chain dependencies without documenting the
+  trust and maintenance cost.
+- Generated ownership files must be regenerated from their source; do not edit
+  them directly.
 
-Existing large files are architecture debt, not precedent for adding more.
+Existing large files are architecture debt, not precedent.
 
-## Pull request checklist
+## Pull requests
 
-- Explain the user-visible outcome and the failure mode being addressed.
-- Fill the structured boundary fields in the pull request template. To preview
-  the machine-computed impact against a committed local base revision, run:
+Use the pull request template and explain the outcome, failure mode, evidence,
+compatibility impact, security impact, rollout, and rollback. To compute the exact
+boundary contract for a committed branch:
 
-  ```sh
-  cargo run --locked -p core-xtask -- boundaries affected --base origin/main
-  ```
+```sh
+cargo run --locked -p core-xtask -- boundaries affected --base origin/main
+```
 
-- Before requesting responsibility review, update the branch so its head contains
-  the current base commit. A base update or retarget requires a new head and fresh
-  current-commit approvals.
+- Declare every affected primary boundary and invariant overlay exactly as CI
+  reports it.
+- Link an issue for multi-boundary agreement and public contract changes.
+- `Responsible-Maintainers` names registered humans or the bootstrap Owner
+  fallback, never an agent.
+- Update the branch onto current `main` before review; a new head invalidates stale
+  review evidence.
+- Report exact commands and relevant remote canaries. “Tests pass” is not enough.
+- Use clear commits without generated-by or AI co-author trailers.
 
-- Identify affected invariant overlays, contracts, and public interfaces.
-- Multi-boundary pull requests must link the agreement of the responsible humans;
-  CI rejects declared boundary or overlay IDs that differ from the actual diff.
-- `Responsible-Maintainers` names the effective registered maintainers (or the
-  Owner fallback), not the community author or an agent. Issue fields use `#123`
-  or the exact value `not-applicable`; multi-boundary agreement always needs an
-  issue reference.
-- The `review / required-humans` check reads current GitHub reviews and requires
-  one eligible approval for every affected registered responsibility group. A new
-  push or dismissed/changed review invalidates stale evidence.
-- Include tests that fail before the change when feasible.
-- Report the exact verification commands run.
-- State compatibility, security, rollout, and rollback considerations.
-- Keep generated output and formatting churn out of the diff.
+The complete human review and protected-branch path is in
+[review process](docs/development/review-process.md).
 
-AI-assisted contributions are welcome. The human author must understand the patch,
-be able to explain it, and remain accountable for it. Do not add AI co-author or
-generated-by trailers to commits.
+## Responsibility boundaries
+
+[`governance/boundaries.json`](governance/boundaries.json) is the source of truth
+for path ownership, human assignments, invariant overlays, and the internal Cargo
+dependency baseline. [OWNERSHIP.md](OWNERSHIP.md) and `.github/CODEOWNERS` are
+generated views.
+
+Responsibility units are not fixed team seats. A human may own several coherent
+units, and a unit may be split or merged through review. Coding agents cannot be
+owners, reviewers, approvers, merge authorities, or substitutes for a human
+identity. See [maintainer onboarding](docs/maintainer-onboarding.md) and the
+[repository enforcement runbook](docs/repository-enforcement.md).
+
+## Bootstrap state
+
+The registry remains in `bootstrap` until explicit module maintainers and
+independent reviewers are appointed. During bootstrap, CODEOWNERS falls back to
+the human Owner and the custom registered-human review job reports a successful
+but explicitly non-enforcing result. The protected GitHub ruleset remains the
+merge authority.
+
+No contributor needs to claim maintainership to submit a patch.
+
+## AI-assisted contributions
+
+AI-assisted contributions are welcome. The human author must understand the
+change, be able to reproduce and explain its evidence, check its provenance, and
+remain accountable after merge. Do not submit copied proprietary implementation,
+private session data, credentials, or output whose license you cannot establish.
+
+## Changelog and releases
+
+User-visible changes should update [CHANGELOG.md](CHANGELOG.md) under
+`Unreleased`. Maintainers follow the evidence-gated
+[release process](docs/development/releasing.md); contributors must not create
+release tags or upload binaries manually.

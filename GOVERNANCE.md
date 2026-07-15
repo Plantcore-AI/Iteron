@@ -1,11 +1,15 @@
-# Core governance
+# Core Code governance
 
-Core has one human **Owner/Project Lead** and an open-ended group of human
+Core Code has one human **Owner/Project Lead** and an open-ended group of human
 **maintainer/engineers**. The number of maintainers is determined by the work and
 the people who can own it; it is not a fixed set of seats. Project authority
 belongs to humans, not to automation or coding agents.
 
 ## Owner / Project Lead
+
+Core Code was created and is led by
+[Jamal Cao (`@fr0m-scratch`)](https://github.com/fr0m-scratch), the project's
+human Owner and Project Lead.
 
 The Owner holds final authority over every project decision, including roadmap,
 architecture, maintainer appointment or removal, merge, release, security policy,

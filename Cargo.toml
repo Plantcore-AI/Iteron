@@ -1,4 +1,4 @@
-# core — a coding agent, and the controller architecture underneath it.
+# Core Code — a coding agent, and the controller architecture underneath it.
 # One crate per module (ADR-010). The core speaks an id-correlated submission/event
 # protocol in-process; the CLI is the first thin frontend adapter.
 [workspace]
@@ -27,8 +27,9 @@ version = "0.0.1"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
-authors = ["Plantcore-AI and Core contributors"]
+authors = ["Jamal Cao and Core Code contributors"]
 repository = "https://github.com/Plantcore-AI/core"
+homepage = "https://plantcore-ai.github.io/core/"
 rust-version = "1.90"
 
 # Dependencies are admitted only at the standard-protocol layer (JSON, HTTP to the

@@ -204,8 +204,7 @@ mod tests {
 
     #[test]
     fn registry_is_nonempty_and_help_is_first() {
-        assert!(!COMMANDS.is_empty());
-        assert_eq!(COMMANDS[0].name, "help");
+        assert_eq!(COMMANDS.first().map(|command| command.name), Some("help"));
     }
 
     #[test]

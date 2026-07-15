@@ -2,10 +2,10 @@
 
 ## Current support level
 
-Core is pre-alpha. Only the current `main` branch receives security fixes. There
+Core Code is pre-alpha. Only the current `main` branch receives security fixes. There
 are no supported stable releases yet.
 
-Do not run Core unattended on sensitive repositories or treat its sandbox as a
+Do not run Core Code unattended on sensitive repositories or treat its sandbox as a
 confidentiality boundary. Code execution is disabled by default; enabling it does
 not make hostile code safe.
 

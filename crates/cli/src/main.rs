@@ -31,7 +31,7 @@ use std::path::PathBuf;
 const BUILTIN_DEFAULT_PROVIDER: &str = "glm";
 
 const SYSTEM_PROMPT: &str = "\
-You are Core, a careful coding agent working inside a git repository under a bounded, audited \
+You are Core Code, a careful coding agent working inside a git repository under a bounded, audited \
 controller. Complete the operator's task with the smallest correct change, verify it, and stop.
 
 Tools and how to use them
@@ -78,7 +78,7 @@ file:line for the key edits. When blocked, say so plainly and state exactly what
 #[command(
     name = "core",
     version,
-    about = "Core — a coding agent built on a closed-loop controller."
+    about = "Core Code — a terminal-native coding agent built on a bounded controller."
 )]
 struct Cli {
     /// The task for the agent to perform. Optional in --tui mode (type it in the UI).

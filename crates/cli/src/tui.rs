@@ -721,7 +721,7 @@ impl App {
         let welcome = block::Block::new(
             0,
             block::BlockKind::Welcome {
-                tagline: "Build, explain, and verify".into(),
+                tagline: "Core Code · Build, explain, and verify".into(),
             },
         );
         App {
@@ -4532,7 +4532,7 @@ async fn handle_command(
                     return;
                 }
             };
-            let mut body = String::from("# Core transcript\n\n");
+            let mut body = String::from("# Core Code transcript\n\n");
             for b in &app.transcript {
                 body.push_str(&b.to_text());
                 body.push('\n');

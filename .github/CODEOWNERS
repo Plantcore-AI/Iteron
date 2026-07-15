@@ -6,6 +6,8 @@
 /xtask/** @fr0m-scratch
 /.gitignore @fr0m-scratch
 /AGENTS.md @fr0m-scratch
+/CHANGELOG.md @fr0m-scratch
+/CODE_OF_CONDUCT.md @fr0m-scratch
 /CONTRIBUTING.md @fr0m-scratch
 /Cargo.lock @fr0m-scratch
 /Cargo.toml @fr0m-scratch
@@ -14,6 +16,7 @@
 /OWNERSHIP.md @fr0m-scratch
 /README.md @fr0m-scratch
 /SECURITY.md @fr0m-scratch
+/SUPPORT.md @fr0m-scratch
 /.github/ISSUE_TEMPLATE/** @fr0m-scratch
 /.github/workflows/** @fr0m-scratch
 /crates/agents/** @fr0m-scratch

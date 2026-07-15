@@ -9,7 +9,7 @@
       "id": "core-owner",
       "kind": "human",
       "role": "owner",
-      "display": "Core Owner / Project Lead",
+      "display": "Jamal Cao",
       "github": "@fr0m-scratch"
     }
   ],
@@ -44,8 +44,10 @@
       "paths": [
         { "kind": "tree", "path": ".github/ISSUE_TEMPLATE" },
         { "kind": "file", "path": ".github/PULL_REQUEST_TEMPLATE.md" },
+        { "kind": "file", "path": "CODE_OF_CONDUCT.md" },
         { "kind": "file", "path": "CONTRIBUTING.md" },
-        { "kind": "file", "path": "README.md" }
+        { "kind": "file", "path": "README.md" },
+        { "kind": "file", "path": "SUPPORT.md" }
       ],
       "contracts": ["issue-to-boundary-to-pr", "human-accountability"],
       "checks": ["core-xtask boundaries check"]
@@ -90,6 +92,7 @@
         { "kind": "file", "path": ".github/dependabot.yml" },
         { "kind": "tree", "path": ".github/workflows" },
         { "kind": "file", "path": ".gitignore" },
+        { "kind": "file", "path": "CHANGELOG.md" },
         { "kind": "file", "path": "Cargo.lock" },
         { "kind": "file", "path": "Cargo.toml" },
         { "kind": "tree", "path": "xtask" }
@@ -750,6 +753,7 @@
       "paths": [
         { "kind": "file", "path": "Cargo.toml" },
         { "kind": "file", "path": "Cargo.lock" },
+        { "kind": "file", "path": "CHANGELOG.md" },
         { "kind": "file", "path": "LICENSE" },
         { "kind": "file", "path": ".github/dependabot.yml" },
         { "kind": "tree", "path": ".github/workflows" },
@@ -779,10 +783,14 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
+        { "kind": "file", "path": "CHANGELOG.md" },
+        { "kind": "file", "path": "CODE_OF_CONDUCT.md" },
+        { "kind": "file", "path": "CONTRIBUTING.md" },
         { "kind": "file", "path": "README.md" },
         { "kind": "file", "path": "GOVERNANCE.md" },
         { "kind": "file", "path": "LICENSE" },
         { "kind": "file", "path": "SECURITY.md" },
+        { "kind": "file", "path": "SUPPORT.md" },
         { "kind": "tree", "path": "docs" }
       ]
     }
