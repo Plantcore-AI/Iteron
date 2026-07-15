@@ -85,9 +85,10 @@ core_code_unpack_archive() {
         gzip -dc "$core_code_compressed" > "$core_code_unpacked"
     ) || core_code_die 'release archive exceeds the safe unpacked size limit or is corrupt'
     core_code_unpacked_size=$(core_code_file_size "$core_code_unpacked")
-    [ "$core_code_unpacked_size" -gt 0 ] \
-        && [ "$core_code_unpacked_size" -le "$CORE_CODE_MAX_UNPACKED_BYTES" ] \
-        || core_code_die 'release archive is empty or exceeds the safe unpacked size limit'
+    if [ "$core_code_unpacked_size" -le 0 ] \
+        || [ "$core_code_unpacked_size" -gt "$CORE_CODE_MAX_UNPACKED_BYTES" ]; then
+        core_code_die 'release archive is empty or exceeds the safe unpacked size limit'
+    fi
 }
 
 core_code_validate_archive() {
@@ -244,9 +245,10 @@ core_code_main() {
         "$CORE_CODE_MAX_MANIFEST_BYTES" \
         || core_code_die 'could not download SHA256SUMS'
     core_code_manifest_size=$(core_code_file_size "$core_code_checksums")
-    [ "$core_code_manifest_size" -gt 0 ] \
-        && [ "$core_code_manifest_size" -le "$CORE_CODE_MAX_MANIFEST_BYTES" ] \
-        || core_code_die 'SHA256SUMS is empty or unexpectedly large'
+    if [ "$core_code_manifest_size" -le 0 ] \
+        || [ "$core_code_manifest_size" -gt "$CORE_CODE_MAX_MANIFEST_BYTES" ]; then
+        core_code_die 'SHA256SUMS is empty or unexpectedly large'
+    fi
 
     core_code_download \
         "$core_code_base_url/$core_code_archive_name" \
@@ -254,9 +256,10 @@ core_code_main() {
         "$CORE_CODE_MAX_ARCHIVE_BYTES" \
         || core_code_die "could not download $core_code_archive_name"
     core_code_archive_size=$(core_code_file_size "$core_code_archive")
-    [ "$core_code_archive_size" -gt 0 ] \
-        && [ "$core_code_archive_size" -le "$CORE_CODE_MAX_ARCHIVE_BYTES" ] \
-        || core_code_die 'release archive is empty or unexpectedly large'
+    if [ "$core_code_archive_size" -le 0 ] \
+        || [ "$core_code_archive_size" -gt "$CORE_CODE_MAX_ARCHIVE_BYTES" ]; then
+        core_code_die 'release archive is empty or unexpectedly large'
+    fi
 
     core_code_checksum_rows=$(awk -v name="$core_code_archive_name" '
         $2 == name || $2 == "*" name { print $1 }
@@ -287,8 +290,9 @@ core_code_main() {
     tar -xf "$core_code_unpacked" -C "$core_code_work_dir/extract" \
         || core_code_die 'release archive extraction failed'
     core_code_binary="$core_code_work_dir/extract/$core_code_archive_root/core"
-    [ -f "$core_code_binary" ] && [ ! -L "$core_code_binary" ] \
-        || core_code_die 'archive core entry is not a regular file'
+    if [ ! -f "$core_code_binary" ] || [ -L "$core_code_binary" ]; then
+        core_code_die 'archive core entry is not a regular file'
+    fi
     chmod 0755 "$core_code_binary"
 
     core_code_reported_version=$("$core_code_binary" --version 2>&1) \
@@ -306,16 +310,18 @@ core_code_main() {
         || core_code_die 'could not create an atomic installation staging file'
     install -m 0755 "$core_code_binary" "$core_code_install_tmp" \
         || core_code_die 'could not stage the installed binary'
-    [ -f "$core_code_install_tmp" ] && [ ! -L "$core_code_install_tmp" ] \
-        || core_code_die 'staged installation is not a regular file'
+    if [ ! -f "$core_code_install_tmp" ] || [ -L "$core_code_install_tmp" ]; then
+        core_code_die 'staged installation is not a regular file'
+    fi
     core_code_staged_version=$("$core_code_install_tmp" --version 2>&1) \
         || core_code_die 'staged binary failed its version smoke test'
     [ "$core_code_staged_version" = "core $core_code_version_number" ] \
         || core_code_die 'staged binary reported an unexpected version'
     mv -f -- "$core_code_install_tmp" "$core_code_bin_dir/core" \
         || core_code_die 'could not atomically install core'
-    [ -f "$core_code_bin_dir/core" ] && [ ! -L "$core_code_bin_dir/core" ] \
-        || core_code_die 'atomic install did not produce a regular destination file'
+    if [ ! -f "$core_code_bin_dir/core" ] || [ -L "$core_code_bin_dir/core" ]; then
+        core_code_die 'atomic install did not produce a regular destination file'
+    fi
     core_code_installed_version=$("$core_code_bin_dir/core" --version 2>&1) \
         || core_code_die 'installed binary failed its final version smoke test'
     [ "$core_code_installed_version" = "core $core_code_version_number" ] \
