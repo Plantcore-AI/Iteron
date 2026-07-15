@@ -2,6 +2,13 @@
 
 ## Target boundary
 
+![Core Code target architecture: a fixed microkernel inside a modular harness boundary, with an offline evolution control plane outside](assets/architecture/core-code-self-evolving-harness.png)
+
+The diagram is a target contract, not a shipped-conformance claim. Core Code
+aims to evolve versioned harness and world-module candidates while keeping
+authority, hard budgets, effect mediation, durable evidence, and promotion
+control outside the learnable surface.
+
 Core Code is intended to have three planes.
 
 ### Fixed runtime TCB

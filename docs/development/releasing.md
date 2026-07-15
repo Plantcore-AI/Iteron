@@ -10,8 +10,17 @@ supply-chain event, not a local `cargo build` plus an uploaded binary.
 - Workspace version and annotated SemVer tag match exactly.
 - The release environment receives Owner approval.
 - Immutable releases, tag protection, and full-SHA Action pins are enabled.
+- The repository-level `RELEASE_IMMUTABLE_CONFIRMED=true` variable records the
+  Owner's current immutable-release audit; it does not replace the GitHub
+  repository setting.
 - Third-party license policy, SBOM generation, provenance, and installer tests are
   green on clean hosted runners.
+
+Before creating an immutable tag, dispatch `release.yml` against the exact
+candidate commit. This preflight runs the same validation, legal-evidence, native
+four-target test, package, SBOM, and attestation graph, but the publish and curl
+canary jobs are structurally restricted to `refs/tags/v*`. All preflight jobs must
+be green before the Owner creates the tag.
 
 ## Required artifacts
 
@@ -37,6 +46,19 @@ runner builds, tests, packages, and installs it successfully.
 
 A failed draft is deleted or corrected before publication. An immutable published
 release is never edited; publish a new patch version.
+
+## Repository controls
+
+Before creating a version tag, the Owner verifies the repository-level immutable
+release setting through GitHub's administration API. The `release` environment
+requires Owner approval and accepts only tags matching `v*`. Separate active tag
+rulesets allow only the Owner to create version tags and prohibit every actor,
+including the Owner, from moving or deleting an existing version tag.
+
+The workflow fails closed if any release already exists for the tag. If the
+workflow-created release does not become immutable after publication, it removes
+only that newly created mutable release and fails; it never deletes the tag or an
+unrelated draft.
 
 ## Verification
 

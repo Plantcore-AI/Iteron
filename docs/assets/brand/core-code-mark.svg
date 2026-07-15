@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title description">
+  <title id="title">Core Code mark</title>
+  <desc id="description">Code brackets surrounding a small core inside a bounded square.</desc>
+  <rect width="256" height="256" rx="52" fill="#0b1020"/>
+  <rect x="24" y="24" width="208" height="208" rx="44" fill="none" stroke="#27324a" stroke-width="4"/>
+  <path d="M105 78 64 128l41 50" fill="none" stroke="#5b8cff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="m151 78 41 50-41 50" fill="none" stroke="#9b7bff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="116" y="116" width="24" height="24" rx="7" fill="#f8fafc"/>
+</svg>

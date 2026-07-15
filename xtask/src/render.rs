@@ -25,7 +25,7 @@ pub fn check_generated(root: &Path, registry: &Registry) -> Result<()> {
 pub fn write_generated(root: &Path, registry: &Registry) -> Result<()> {
     write_atomic(
         &root.join(&registry.generated.ownership),
-        &ownership_markdown(registry),
+        &ownership_markdown_core_code(registry),
     )?;
     write_atomic(
         &root.join(&registry.generated.codeowners),

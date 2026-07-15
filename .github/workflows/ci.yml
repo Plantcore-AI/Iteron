@@ -18,6 +18,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  supply:
+    name: supply / validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: validate installer, release helpers, and workflows
+        run: release-tools/validate.sh
+
   boundary:
     name: boundary / validate
     runs-on: ubuntu-24.04
@@ -121,5 +132,5 @@ jobs:
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: build release
         run: cargo build --release -p core-cli --locked
-      # Do not distribute a naked binary. Public artifacts remain disabled until
-      # packaging includes LICENSE, audited third-party notices, SBOM, and signing.
+      # This main-branch smoke build never distributes a naked binary. Only the
+      # protected tag workflow packages licenses, notices, SBOMs, and provenance.

@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "tools": {
+    "actionlint": {
+      "version": "1.7.12",
+      "hosts": {
+        "darwin-arm64": {
+          "archive": "tar.gz",
+          "binary": "actionlint",
+          "sha256": "aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f",
+          "url": "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_darwin_arm64.tar.gz"
+        },
+        "darwin-x86_64": {
+          "archive": "tar.gz",
+          "binary": "actionlint",
+          "sha256": "5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644",
+          "url": "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_darwin_amd64.tar.gz"
+        },
+        "linux-arm64": {
+          "archive": "tar.gz",
+          "binary": "actionlint",
+          "sha256": "325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6",
+          "url": "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_arm64.tar.gz"
+        },
+        "linux-x86_64": {
+          "archive": "tar.gz",
+          "binary": "actionlint",
+          "sha256": "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8",
+          "url": "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz"
+        }
+      }
+    },
+    "cargo-about": {
+      "version": "0.9.1",
+      "hosts": {
+        "darwin-arm64": {
+          "archive": "tar.gz",
+          "binary": "cargo-about",
+          "sha256": "6a38fe166d17a674269d4373256c0b6bd93acc2553e12de0517cb9ecc73c9c02",
+          "url": "https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.1/cargo-about-0.9.1-aarch64-apple-darwin.tar.gz"
+        },
+        "linux-x86_64": {
+          "archive": "tar.gz",
+          "binary": "cargo-about",
+          "sha256": "c0e7dc6f5d74b0beec5c0053d39ab24514c717d19acd91886907a22457ea9e98",
+          "url": "https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.1/cargo-about-0.9.1-x86_64-unknown-linux-musl.tar.gz"
+        }
+      }
+    },
+    "cargo-auditable": {
+      "version": "0.7.5",
+      "hosts": {
+        "darwin-arm64": {
+          "archive": "tar.xz",
+          "binary": "cargo-auditable",
+          "sha256": "92720fff2be27492ca7b216510a27e88a835b526e9e94e46bc36b502ba17d8f0",
+          "url": "https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.5/cargo-auditable-aarch64-apple-darwin.tar.xz"
+        },
+        "darwin-x86_64": {
+          "archive": "tar.xz",
+          "binary": "cargo-auditable",
+          "sha256": "24e98dfcf1f52e05e7ac4dca4b874bf5ac0e66be3000b3929b467983792f32b2",
+          "url": "https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.5/cargo-auditable-x86_64-apple-darwin.tar.xz"
+        },
+        "linux-arm64": {
+          "archive": "tar.xz",
+          "binary": "cargo-auditable",
+          "sha256": "35d90cee9648037eaa4c1a2649fdca9d1b9a9997b972d37be7f8629139ba1294",
+          "url": "https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.5/cargo-auditable-aarch64-unknown-linux-musl.tar.xz"
+        },
+        "linux-x86_64": {
+          "archive": "tar.xz",
+          "binary": "cargo-auditable",
+          "sha256": "3374daaf153e6f82028add5e4bf7cc2deab46537dee24f20be80df831193aeb4",
+          "url": "https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.5/cargo-auditable-x86_64-unknown-linux-musl.tar.xz"
+        }
+      }
+    },
+    "syft": {
+      "version": "1.46.0",
+      "hosts": {
+        "darwin-arm64": {
+          "archive": "tar.gz",
+          "binary": "syft",
+          "sha256": "cd4e2c40e075684a5746d8959f76b6572bb2d2dda8cf6877dbfff1cc0baeea01",
+          "url": "https://github.com/anchore/syft/releases/download/v1.46.0/syft_1.46.0_darwin_arm64.tar.gz"
+        },
+        "darwin-x86_64": {
+          "archive": "tar.gz",
+          "binary": "syft",
+          "sha256": "5c983db13533de02e5331aae88091116f25365840741f86234084a30166672a7",
+          "url": "https://github.com/anchore/syft/releases/download/v1.46.0/syft_1.46.0_darwin_amd64.tar.gz"
+        },
+        "linux-arm64": {
+          "archive": "tar.gz",
+          "binary": "syft",
+          "sha256": "9fafef4db4f032ce81008d3a1529985d41ceb6ccdf2b388c9ce2f1ed7d32082e",
+          "url": "https://github.com/anchore/syft/releases/download/v1.46.0/syft_1.46.0_linux_arm64.tar.gz"
+        },
+        "linux-x86_64": {
+          "archive": "tar.gz",
+          "binary": "syft",
+          "sha256": "d654f678b709eb53c393d38519d5ed7d2e57205529404018614cfefa0fb2b5ca",
+          "url": "https://github.com/anchore/syft/releases/download/v1.46.0/syft_1.46.0_linux_amd64.tar.gz"
+        }
+      }
+    }
+  }
+}

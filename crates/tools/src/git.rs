@@ -856,7 +856,11 @@ mod tests {
             &executable,
             "i=0; while [ \"$i\" -lt 5000 ]; do printf 0123456789; printf abcdefghij >&2; i=$((i + 1)); done",
         );
-        let mut command = tokio::process::Command::new(&executable);
+        // Invoke the freshly written fixture through the stable system shell. Linux may
+        // transiently report ETXTBSY when a just-created script is executed directly on a busy
+        // CI filesystem; this test exercises bounded pipe draining, not executable resolution.
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.arg(&executable);
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -899,7 +903,11 @@ mod tests {
             &executable,
             "(/bin/sleep 1; printf escaped > \"$1\") & wait",
         );
-        let mut command = tokio::process::Command::new(&executable);
+        // Keep the fixture launch independent of Linux's transient ETXTBSY handling for a
+        // just-created script. The process-group timeout contract remains unchanged because the
+        // shell becomes the new process-group leader before it starts the descendant.
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.arg(&executable);
         command
             .arg(&marker)
             .stdin(Stdio::null())
