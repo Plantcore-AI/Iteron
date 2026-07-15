@@ -17,10 +17,10 @@ Core Code has one human Owner/Project Lead and a non-fixed number of human maint
 | Boundary | Status | Risk | Primary | Reviewers | Paths |
 | --- | --- | --- | --- | --- | --- |
 | `project-governance` — Project governance | open | critical | Open | Open | `.github/CODEOWNERS`<br>`AGENTS.md`<br>`GOVERNANCE.md`<br>`LICENSE`<br>`OWNERSHIP.md`<br>`governance/**` |
-| `community-entry` — Community entry | open | standard | Open | Open | `.github/ISSUE_TEMPLATE/**`<br>`.github/PULL_REQUEST_TEMPLATE.md`<br>`CONTRIBUTING.md`<br>`README.md` |
+| `community-entry` — Community entry | open | standard | Open | Open | `.github/ISSUE_TEMPLATE/**`<br>`.github/PULL_REQUEST_TEMPLATE.md`<br>`CODE_OF_CONDUCT.md`<br>`CONTRIBUTING.md`<br>`README.md`<br>`SUPPORT.md` |
 | `security-policy` — Security policy | open | critical | Open | Open | `SECURITY.md` |
 | `architecture-roadmap` — Architecture and roadmap | open | elevated | Open | Open | `docs/**` |
-| `build-release` — Build and release | open | critical | Open | Open | `.github/dependabot.yml`<br>`.github/workflows/**`<br>`.gitignore`<br>`Cargo.lock`<br>`Cargo.toml`<br>`xtask/**` |
+| `build-release` — Build and release | open | critical | Open | Open | `.github/dependabot.yml`<br>`.github/workflows/**`<br>`.gitignore`<br>`CHANGELOG.md`<br>`Cargo.lock`<br>`Cargo.toml`<br>`xtask/**` |
 | `protocol-compat` — Protocol compatibility | open | critical | Open | Open | `crates/protocol/**` |
 | `kernel-runtime` — Kernel runtime | open | critical | Open | Open | `crates/kernel/Cargo.toml`<br>`crates/kernel/src/lib.rs` |
 | `kernel-effects` — Kernel effects | open | critical | Open | Open | `crates/kernel/src/effects.rs` |
@@ -284,8 +284,8 @@ An overlay adds review responsibility without becoming a second primary path own
 | `cost-accounting` — Cost and budget accounting | open | required | Open | `crates/protocol/**`<br>`crates/provider/**`<br>`crates/sched/**`<br>`crates/kernel/src/lib.rs`<br>`crates/obs/**`<br>`crates/record/**`<br>`crates/ctx/src/compact.rs`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/output.rs`<br>`crates/cli/src/tui.rs` |
 | `eval-ground-truth` — Evaluation ground truth | open | required | Open | `crates/eval/**`<br>`crates/verify/**`<br>`crates/obs/**`<br>`.github/workflows/ci.yml` |
 | `evolution-promotion` — Evolution promotion | open | required | Open | `crates/evolve/**`<br>`crates/eval/**`<br>`crates/verify/**`<br>`crates/protocol/src/event.rs`<br>`crates/kernel/src/lib.rs` |
-| `release-supply` — Release and supply chain | open | required | Open | `Cargo.toml`<br>`Cargo.lock`<br>`LICENSE`<br>`.github/dependabot.yml`<br>`.github/workflows/**`<br>`crates/agents/Cargo.toml`<br>`crates/cli/Cargo.toml`<br>`crates/ctx/Cargo.toml`<br>`crates/eval/Cargo.toml`<br>`crates/evolve/Cargo.toml`<br>`crates/kernel/Cargo.toml`<br>`crates/mcp/Cargo.toml`<br>`crates/obs/Cargo.toml`<br>`crates/protocol/Cargo.toml`<br>`crates/provider/Cargo.toml`<br>`crates/record/Cargo.toml`<br>`crates/sandbox/Cargo.toml`<br>`crates/sched/Cargo.toml`<br>`crates/tools/Cargo.toml`<br>`crates/verify/Cargo.toml`<br>`xtask/Cargo.toml` |
-| `public-truth` — Public product truth | open | required | Open | `README.md`<br>`GOVERNANCE.md`<br>`LICENSE`<br>`SECURITY.md`<br>`docs/**` |
+| `release-supply` — Release and supply chain | open | required | Open | `Cargo.toml`<br>`Cargo.lock`<br>`CHANGELOG.md`<br>`LICENSE`<br>`.github/dependabot.yml`<br>`.github/workflows/**`<br>`crates/agents/Cargo.toml`<br>`crates/cli/Cargo.toml`<br>`crates/ctx/Cargo.toml`<br>`crates/eval/Cargo.toml`<br>`crates/evolve/Cargo.toml`<br>`crates/kernel/Cargo.toml`<br>`crates/mcp/Cargo.toml`<br>`crates/obs/Cargo.toml`<br>`crates/protocol/Cargo.toml`<br>`crates/provider/Cargo.toml`<br>`crates/record/Cargo.toml`<br>`crates/sandbox/Cargo.toml`<br>`crates/sched/Cargo.toml`<br>`crates/tools/Cargo.toml`<br>`crates/verify/Cargo.toml`<br>`xtask/Cargo.toml` |
+| `public-truth` — Public product truth | open | required | Open | `CHANGELOG.md`<br>`CODE_OF_CONDUCT.md`<br>`CONTRIBUTING.md`<br>`README.md`<br>`GOVERNANCE.md`<br>`LICENSE`<br>`SECURITY.md`<br>`SUPPORT.md`<br>`docs/**` |
 
 ## Claiming or changing ownership
 

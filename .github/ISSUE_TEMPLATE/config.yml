@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Ask a question
+    url: https://github.com/Plantcore-AI/core/discussions
+    about: Use Discussions for setup help, usage questions, and open-ended design conversation.
+  - name: Read the support policy
+    url: https://github.com/Plantcore-AI/core/blob/main/SUPPORT.md
+    about: Choose the right public or private channel before sharing diagnostic information.
   - name: Report a security vulnerability
     url: https://github.com/Plantcore-AI/core/security/advisories/new
     about: Use a private security advisory; never publish credentials or exploit details in an issue.
