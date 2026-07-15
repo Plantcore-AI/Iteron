@@ -9,6 +9,9 @@ permissions:
   contents: read
   pull-requests: read
 
+env:
+  RUSTUP_TOOLCHAIN: 1.90.0
+
 concurrency:
   group: review-policy-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -17,7 +20,7 @@ jobs:
   required-humans:
     name: review / required-humans
     if: github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -25,10 +28,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: install pinned Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: materialize trusted base policy
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
