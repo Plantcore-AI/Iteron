@@ -55,7 +55,37 @@ struct PtyHarness {
     reader_closed: bool,
     parser: vt100::Parser,
     capture: Vec<u8>,
-    baseline_termios: String,
+    baseline_termios: RawModeTermiosState,
+}
+
+/// The subset of terminal state that Core changes when it enters raw mode.
+///
+/// `libc::termios` contains platform-private padding and unused control-character slots. Linux
+/// musl leaves some of those bytes unspecified when reading a PTY, so comparing its debug
+/// representation would make this lifecycle test nondeterministic. These are the public termios
+/// settings that raw mode changes and therefore the settings that must be restored by Core.
+#[derive(Debug, Eq, PartialEq)]
+struct RawModeTermiosState {
+    input_flags: libc::tcflag_t,
+    output_flags: libc::tcflag_t,
+    control_flags: libc::tcflag_t,
+    local_flags: libc::tcflag_t,
+    minimum_read_bytes: libc::cc_t,
+    read_timeout: libc::cc_t,
+}
+
+fn raw_mode_termios_state(master: &(dyn MasterPty + Send)) -> RawModeTermiosState {
+    let termios = master
+        .get_termios()
+        .expect("PTY must expose its termios state");
+    RawModeTermiosState {
+        input_flags: termios.input_flags.bits(),
+        output_flags: termios.output_flags.bits(),
+        control_flags: termios.control_flags.bits(),
+        local_flags: termios.local_flags.bits(),
+        minimum_read_bytes: termios.control_chars[libc::VMIN],
+        read_timeout: termios.control_chars[libc::VTIME],
+    }
 }
 
 impl PtyHarness {
@@ -68,12 +98,7 @@ impl PtyHarness {
                 pixel_height: 0,
             })
             .expect("open deterministic PTY");
-        let baseline_termios = format!(
-            "{:?}",
-            pair.master
-                .get_termios()
-                .expect("PTY must expose its initial termios")
-        );
+        let baseline_termios = raw_mode_termios_state(pair.master.as_ref());
 
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_core"));
         // This is deliberately a direct binary launch. No credential-loading launcher ever
@@ -222,15 +247,8 @@ impl PtyHarness {
         assert!(cursor_col < cols, "cursor column escaped {cols}x{rows}");
     }
 
-    fn current_termios(&self) -> String {
-        format!(
-            "{:?}",
-            self.master
-                .as_ref()
-                .expect("PTY master is open")
-                .get_termios()
-                .expect("read PTY termios")
-        )
+    fn current_termios(&self) -> RawModeTermiosState {
+        raw_mode_termios_state(self.master.as_deref().expect("PTY master is open"))
     }
 
     fn process_id(&self) -> u32 {
@@ -341,7 +359,7 @@ fn assert_termios_restored(pty: &PtyHarness) {
     assert_eq!(
         pty.current_termios(),
         pty.baseline_termios,
-        "the PTY termios did not return to its exact pre-Core state"
+        "Core did not restore the raw-mode terminal settings it changed"
     );
 }
 
