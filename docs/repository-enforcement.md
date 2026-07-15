@@ -9,9 +9,11 @@ identities and the protected `main` ruleset have both been verified.
 Protect these stable check names:
 
 - `boundary / validate`
+- `docs / strict-build`
 - `review / required-humans`
-- `rust / ubuntu-latest`
-- `rust / macos-latest`
+- `rust / ubuntu-24.04`
+- `rust / macos-15`
+- `supply / validate`
 
 For pull requests, the boundary job builds the validator from the exact base
 commit and uses that trusted binary to inspect the candidate tree as data. It
@@ -25,8 +27,9 @@ enforced.
 An active base cannot be downgraded to bootstrap by a pull request. Delete and
 rename impact is the union of base and candidate ownership. Cross-platform release
 build jobs run after merge and are not merge requirements. Binary artifact upload
-remains disabled until a release package includes the project license, audited
-third-party notices, an SBOM, and signing evidence.
+never occurs from the main-branch smoke build. Only an Owner-created version tag
+can invoke the protected release workflow that packages the project license,
+audited third-party notices, SBOMs, provenance, and installer canaries.
 
 The review-policy workflow reads GitHub's current review records with a read-only
 token. For every affected primary boundary, base and candidate boundary-reviewer
@@ -68,7 +71,7 @@ Configure a repository ruleset targeting the default branch with:
 - stale approvals dismissed after a new commit;
 - approval of the most recent reviewable push required;
 - all review conversations resolved;
-- the four status checks above required and up to date with the target branch;
+- the six status checks above required and up to date with the target branch;
 - force pushes and branch deletion blocked.
 
 In bootstrap, every CODEOWNERS pattern falls back to the public Owner. This permits
@@ -115,7 +118,7 @@ not weaken the base-policy check to make a one-pull-request migration pass.
 Merge queue is not currently supported: `review / required-humans` is evaluated on
 pull-request and review events, not on `merge_group` commits. Do not enable a merge
 queue or require this check for merge-group SHAs until the review-policy workflow
-has an explicit merge-group design and a queue canary proves all four required
+has an explicit merge-group design and a queue canary proves all required
 checks report on the queued commit.
 
 ## Activation sequence

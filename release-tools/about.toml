@@ -1,0 +1,26 @@
+# Deterministic license policy for release artifacts. Release jobs run
+# cargo-about in frozen/offline mode; changes to Cargo.lock must therefore make
+# any new license or missing license text visible in review.
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSL-1.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-musl",
+]
+
+private = { ignore = true }
+workarounds = ["ring", "rustix", "rustls"]

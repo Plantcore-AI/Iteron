@@ -1,0 +1,140 @@
+site_name: Core Code
+site_description: >-
+  Documentation for Core Code, a pre-alpha terminal coding agent and modular
+  Rust substrate for bounded, recoverable agent runtimes.
+site_url: https://plantcore-ai.github.io/core/
+repo_url: https://github.com/Plantcore-AI/core
+repo_name: Plantcore-AI/core
+edit_uri: edit/main/docs/
+docs_dir: docs
+site_dir: site
+strict: true
+exclude_docs: |
+  _mkdocs_hooks.py
+hooks:
+  - docs/_mkdocs_hooks.py
+
+theme:
+  name: material
+  language: en
+  logo: assets/brand/core-code-mark.svg
+  favicon: assets/brand/core-code-mark.svg
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: deep purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: deep purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - content.action.edit
+    - content.code.copy
+    - navigation.instant
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - toc.follow
+
+plugins:
+  - search:
+      lang: en
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Overview: getting-started/overview.md
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+      - Configure a provider: getting-started/providers.md
+      - First session: getting-started/first-session.md
+  - Using Core Code:
+      - Terminal UI: using/tui.md
+      - One-shot and automation: using/one-shot.md
+      - Models and providers: using/models-and-providers.md
+      - Effort levels: using/effort.md
+      - Permissions and sandbox: using/permissions-and-sandbox.md
+      - Sessions, resume, and fork: using/sessions.md
+      - Verification gates: using/verification.md
+      - Skills, hooks, and MCP: using/extensions.md
+      - Ultracode: using/ultracode.md
+  - Concepts:
+      - Architecture: architecture.md
+      - Runtime lifecycle: concepts/runtime-lifecycle.md
+      - Records and replay: concepts/records-and-replay.md
+      - Effects and authority: concepts/effects-and-authority.md
+      - Context, usage, and cost: concepts/context-usage-cost.md
+      - Evolution boundary: concepts/evolution-boundary.md
+  - Reference:
+      - CLI: reference/cli.md
+      - Slash commands: reference/slash-commands.md
+      - Configuration: reference/configuration.md
+      - Environment variables: reference/environment.md
+      - Provider matrix: reference/providers.md
+      - Output formats: reference/output-formats.md
+      - Files and directories: reference/files-and-directories.md
+      - Supported platforms: reference/platforms.md
+      - Troubleshooting: reference/troubleshooting.md
+  - Project:
+      - Project status: project/status.md
+      - Roadmap: roadmap.md
+      - Releases and changelog: project/releases.md
+      - Security: project/security.md
+      - Support: project/support.md
+      - Contributing: project/contributing.md
+      - Governance: project/governance.md
+      - Maintainer onboarding: maintainer-onboarding.md
+      - Repository enforcement: repository-enforcement.md
+      - Development:
+          - Setup: development/setup.md
+          - Testing: development/testing.md
+          - Review process: development/review-process.md
+          - Provider adapters: development/provider-adapters.md
+          - TUI testing: development/tui-testing.md
+          - Releasing: development/releasing.md
+      - License: project/license.md
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+
+copyright: Core Code contributors · Apache-2.0
+
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Plantcore-AI/core
+      name: Core Code on GitHub

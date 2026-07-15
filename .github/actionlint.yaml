@@ -1,0 +1,7 @@
+paths:
+  .github/workflows/release.yml:
+    ignore:
+      # GitHub Actions supports concurrency.queue, but actionlint 1.7.12
+      # predates that syntax. Keep the suppression path-scoped and exact until
+      # upstream actionlint adds queue support.
+      - '^unexpected key "queue" for "concurrency" section\.'

@@ -75,30 +75,79 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "tree", "path": "docs" }
+        { "kind": "file", "path": "docs/architecture.md" },
+        { "kind": "tree", "path": "docs/concepts" },
+        { "kind": "file", "path": "docs/roadmap.md" }
       ],
       "contracts": ["current-implementation-truth", "microkernel-roadmap"],
       "checks": ["core-xtask boundaries check"]
     },
     {
+      "id": "documentation-site",
+      "title": "Documentation site",
+      "summary": "End-user, operator, contributor, and reference documentation; MkDocs presentation, assets, navigation, and reproducible documentation dependencies.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "docs/_mkdocs_hooks.py" },
+        { "kind": "tree", "path": "docs/assets" },
+        { "kind": "tree", "path": "docs/development" },
+        { "kind": "tree", "path": "docs/getting-started" },
+        { "kind": "file", "path": "docs/index.md" },
+        { "kind": "file", "path": "docs/maintainer-onboarding.md" },
+        { "kind": "tree", "path": "docs/project" },
+        { "kind": "tree", "path": "docs/reference" },
+        { "kind": "file", "path": "docs/repository-enforcement.md" },
+        { "kind": "tree", "path": "docs/using" },
+        { "kind": "file", "path": "mkdocs.yml" },
+        { "kind": "file", "path": "requirements-docs.in" },
+        { "kind": "file", "path": "requirements-docs.lock" }
+      ],
+      "contracts": [
+        "documentation-build-reproducibility",
+        "public-navigation-integrity",
+        "operator-reference-accuracy"
+      ],
+      "checks": [
+        "python -m pip install --require-hashes -r requirements-docs.lock",
+        "mkdocs build --strict --clean",
+        "core-xtask boundaries check"
+      ]
+    },
+    {
       "id": "build-release",
       "title": "Build and release",
-      "summary": "Workspace membership, dependency lock, repository checks, CI, artifacts, and release gates.",
+      "summary": "Workspace membership, dependency locks, trusted automation, installer, packaging, artifacts, and release gates.",
       "status": "open",
       "risk": "critical",
       "primary": null,
       "reviewers": [],
       "paths": [
+        { "kind": "file", "path": ".github/actionlint.yaml" },
         { "kind": "file", "path": ".github/dependabot.yml" },
         { "kind": "tree", "path": ".github/workflows" },
         { "kind": "file", "path": ".gitignore" },
         { "kind": "file", "path": "CHANGELOG.md" },
         { "kind": "file", "path": "Cargo.lock" },
         { "kind": "file", "path": "Cargo.toml" },
+        { "kind": "file", "path": "install.sh" },
+        { "kind": "tree", "path": "release-tools" },
         { "kind": "tree", "path": "xtask" }
       ],
-      "contracts": ["workspace-dependency-baseline", "required-rust-gates", "generated-boundary-drift"],
-      "checks": ["cargo fmt --all -- --check", "core-xtask boundaries check"]
+      "contracts": [
+        "workspace-dependency-baseline",
+        "required-rust-gates",
+        "generated-boundary-drift",
+        "verified-release-supply-chain",
+        "atomic-no-sudo-install"
+      ],
+      "checks": [
+        "cargo fmt --all -- --check",
+        "core-xtask boundaries check",
+        "release-tools/validate.sh"
+      ]
     },
     {
       "id": "protocol-compat",
@@ -513,10 +562,14 @@
       "paths": [
         { "kind": "tree", "path": "governance" },
         { "kind": "tree", "path": "xtask" },
+        { "kind": "file", "path": ".github/actionlint.yaml" },
         { "kind": "file", "path": ".github/CODEOWNERS" },
         { "kind": "file", "path": ".github/PULL_REQUEST_TEMPLATE.md" },
         { "kind": "file", "path": ".github/ISSUE_TEMPLATE/ownership_claim.yml" },
         { "kind": "tree", "path": ".github/workflows" },
+        { "kind": "file", "path": "docs/development/review-process.md" },
+        { "kind": "file", "path": "docs/maintainer-onboarding.md" },
+        { "kind": "file", "path": "docs/project/governance.md" },
         { "kind": "file", "path": "docs/repository-enforcement.md" },
         { "kind": "file", "path": "AGENTS.md" },
         { "kind": "file", "path": "GOVERNANCE.md" },
@@ -746,7 +799,7 @@
     {
       "id": "release-supply",
       "title": "Release and supply chain",
-      "summary": "Workspace dependencies, lockfile, CI, release artifacts, and toolchain changes receive release review.",
+      "summary": "Workspace dependencies, lockfiles, trusted automation, installers, documentation dependencies, release artifacts, and toolchain changes receive release review.",
       "status": "open",
       "reviewers": [],
       "requires_independent_review": true,
@@ -755,8 +808,11 @@
         { "kind": "file", "path": "Cargo.lock" },
         { "kind": "file", "path": "CHANGELOG.md" },
         { "kind": "file", "path": "LICENSE" },
+        { "kind": "file", "path": ".github/actionlint.yaml" },
         { "kind": "file", "path": ".github/dependabot.yml" },
         { "kind": "tree", "path": ".github/workflows" },
+        { "kind": "file", "path": ".gitignore" },
+        { "kind": "file", "path": "README.md" },
         { "kind": "file", "path": "crates/agents/Cargo.toml" },
         { "kind": "file", "path": "crates/cli/Cargo.toml" },
         { "kind": "file", "path": "crates/ctx/Cargo.toml" },
@@ -772,6 +828,16 @@
         { "kind": "file", "path": "crates/sched/Cargo.toml" },
         { "kind": "file", "path": "crates/tools/Cargo.toml" },
         { "kind": "file", "path": "crates/verify/Cargo.toml" },
+        { "kind": "file", "path": "docs/_mkdocs_hooks.py" },
+        { "kind": "file", "path": "docs/development/releasing.md" },
+        { "kind": "file", "path": "docs/getting-started/installation.md" },
+        { "kind": "file", "path": "docs/project/releases.md" },
+        { "kind": "file", "path": "docs/reference/platforms.md" },
+        { "kind": "file", "path": "install.sh" },
+        { "kind": "file", "path": "mkdocs.yml" },
+        { "kind": "tree", "path": "release-tools" },
+        { "kind": "file", "path": "requirements-docs.in" },
+        { "kind": "file", "path": "requirements-docs.lock" },
         { "kind": "file", "path": "xtask/Cargo.toml" }
       ]
     },
@@ -789,6 +855,7 @@
         { "kind": "file", "path": "README.md" },
         { "kind": "file", "path": "GOVERNANCE.md" },
         { "kind": "file", "path": "LICENSE" },
+        { "kind": "file", "path": "mkdocs.yml" },
         { "kind": "file", "path": "SECURITY.md" },
         { "kind": "file", "path": "SUPPORT.md" },
         { "kind": "tree", "path": "docs" }

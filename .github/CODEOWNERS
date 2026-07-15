@@ -3,6 +3,7 @@
 
 /docs/** @fr0m-scratch
 /governance/** @fr0m-scratch
+/release-tools/** @fr0m-scratch
 /xtask/** @fr0m-scratch
 /.gitignore @fr0m-scratch
 /AGENTS.md @fr0m-scratch
@@ -17,6 +18,10 @@
 /README.md @fr0m-scratch
 /SECURITY.md @fr0m-scratch
 /SUPPORT.md @fr0m-scratch
+/install.sh @fr0m-scratch
+/mkdocs.yml @fr0m-scratch
+/requirements-docs.in @fr0m-scratch
+/requirements-docs.lock @fr0m-scratch
 /.github/ISSUE_TEMPLATE/** @fr0m-scratch
 /.github/workflows/** @fr0m-scratch
 /crates/agents/** @fr0m-scratch
@@ -33,10 +38,23 @@
 /crates/sched/** @fr0m-scratch
 /crates/tools/** @fr0m-scratch
 /crates/verify/** @fr0m-scratch
+/docs/assets/** @fr0m-scratch
+/docs/concepts/** @fr0m-scratch
+/docs/development/** @fr0m-scratch
+/docs/getting-started/** @fr0m-scratch
+/docs/project/** @fr0m-scratch
+/docs/reference/** @fr0m-scratch
+/docs/using/** @fr0m-scratch
 /.github/CODEOWNERS @fr0m-scratch
 /.github/PULL_REQUEST_TEMPLATE.md @fr0m-scratch
+/.github/actionlint.yaml @fr0m-scratch
 /.github/dependabot.yml @fr0m-scratch
+/docs/_mkdocs_hooks.py @fr0m-scratch
+/docs/architecture.md @fr0m-scratch
+/docs/index.md @fr0m-scratch
+/docs/maintainer-onboarding.md @fr0m-scratch
 /docs/repository-enforcement.md @fr0m-scratch
+/docs/roadmap.md @fr0m-scratch
 /xtask/Cargo.toml @fr0m-scratch
 /crates/cli/tests/** @fr0m-scratch
 /.github/ISSUE_TEMPLATE/ownership_claim.yml @fr0m-scratch
@@ -56,6 +74,12 @@
 /crates/sched/Cargo.toml @fr0m-scratch
 /crates/tools/Cargo.toml @fr0m-scratch
 /crates/verify/Cargo.toml @fr0m-scratch
+/docs/development/releasing.md @fr0m-scratch
+/docs/development/review-process.md @fr0m-scratch
+/docs/getting-started/installation.md @fr0m-scratch
+/docs/project/governance.md @fr0m-scratch
+/docs/project/releases.md @fr0m-scratch
+/docs/reference/platforms.md @fr0m-scratch
 /crates/agents/src/catalog.rs @fr0m-scratch
 /crates/agents/src/decompose.rs @fr0m-scratch
 /crates/agents/src/def.rs @fr0m-scratch

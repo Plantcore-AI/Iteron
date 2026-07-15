@@ -1715,12 +1715,15 @@ Rollback: revert the commit\n\
     fn rename_impact_unions_old_and_new_registry_ownership() {
         let registry: Registry =
             serde_json::from_str(include_str!("../../governance/boundaries.json")).unwrap();
-        let impact =
-            impact_from_name_status(&registry, &registry, b"R100\0README.md\0docs/renamed.md\0")
-                .unwrap();
+        let impact = impact_from_name_status(
+            &registry,
+            &registry,
+            b"R100\0README.md\0docs/getting-started/renamed.md\0",
+        )
+        .unwrap();
         assert_eq!(
             impact.boundaries.keys().cloned().collect::<Vec<_>>(),
-            vec!["architecture-roadmap", "community-entry"]
+            vec!["community-entry", "documentation-site"]
         );
         assert!(impact.overlays.contains("public-truth"));
     }
@@ -1737,8 +1740,8 @@ Rollback: revert the commit\n\
         fixture.git(&["add", "--", "README.md", "governance/boundaries.json"]);
         fixture.git(&["commit", "--no-gpg-sign", "-m", "base"]);
         let base = fixture.git(&["rev-parse", "HEAD"]);
-        std::fs::create_dir_all(fixture.root.join("docs")).unwrap();
-        fixture.git(&["mv", "README.md", "docs/renamed.md"]);
+        std::fs::create_dir_all(fixture.root.join("docs/getting-started")).unwrap();
+        fixture.git(&["mv", "README.md", "docs/getting-started/renamed.md"]);
         fixture.git(&["commit", "--no-gpg-sign", "-m", "rename"]);
 
         let registry: Registry =
@@ -1746,7 +1749,7 @@ Rollback: revert the commit\n\
         let impact = calculate_impact(&fixture.root, &registry, &base).unwrap();
         assert_eq!(
             impact.boundaries.keys().cloned().collect::<Vec<_>>(),
-            vec!["architecture-roadmap", "community-entry"]
+            vec!["community-entry", "documentation-site"]
         );
     }
 
