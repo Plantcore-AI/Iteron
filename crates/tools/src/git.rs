@@ -703,6 +703,17 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn fixture_path(workspace: &Path) -> Option<OsString> {
+        let workspace = workspace.canonicalize().ok()?;
+        let path = std::env::var_os("PATH")?;
+        let directories = std::env::split_paths(&path)
+            .filter(|directory| directory.is_absolute())
+            .filter_map(|directory| directory.canonicalize().ok())
+            .filter(|directory| !directory.starts_with(&workspace));
+        std::env::join_paths(directories).ok()
+    }
+
+    #[cfg(unix)]
     async fn setup_git(git: &ResolvedGit, workspace: &Path, args: &[&OsStr]) {
         let args: Vec<OsString> = args.iter().map(|arg| (*arg).to_owned()).collect();
         // Fixtures need to run `git init` before a RepositoryLayout exists and deliberately need
@@ -711,7 +722,11 @@ mod tests {
         // `hardened_git_command` with an already-validated layout.
         let mut command = tokio::process::Command::new(&git.executable);
         command.env_clear();
-        if let Some(path) = &git.safe_path {
+        // Git porcelain such as `submodule` is a shell script on macOS and needs platform tools
+        // including `basename`, `sed`, and `uname`. The production command intentionally keeps
+        // its narrower PATH; this test-only builder runs against fixtures created by this test and
+        // admits every absolute ambient PATH directory except the fixture workspace itself.
+        if let Some(path) = fixture_path(workspace) {
             command.env("PATH", path);
         }
         command

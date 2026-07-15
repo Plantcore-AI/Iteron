@@ -17,8 +17,34 @@
 use crate::{Confinement, RunOutput, Sandbox, SandboxError};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::OnceLock;
 
 const BWRAP_CANDIDATES: &[&str] = &["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap"];
+static USABLE_BWRAP: OnceLock<PathBuf> = OnceLock::new();
+
+// `bwrap --version` only proves that the executable can start. In particular, Ubuntu 24.04 can
+// install a perfectly valid bwrap while AppArmor still refuses the unprivileged user namespace
+// needed to create a sandbox. Probe the namespace and mount operations that carry our security
+// contract before advertising this backend as usable. The fixed `/bin/true` cannot observe or
+// mutate caller-controlled state; the host root is mounted read-only solely so its loader exists.
+const BWRAP_PROBE_ARGS: &[&str] = &[
+    "--ro-bind",
+    "/",
+    "/",
+    "--dev",
+    "/dev",
+    "--proc",
+    "/proc",
+    "--tmpfs",
+    "/tmp",
+    "--die-with-parent",
+    "--new-session",
+    "--unshare-pid",
+    "--unshare-ipc",
+    "--unshare-uts",
+    "--unshare-net",
+    "/bin/true",
+];
 
 fn trusted_bwrap() -> Option<PathBuf> {
     BWRAP_CANDIDATES.iter().find_map(|candidate| {
@@ -40,25 +66,40 @@ fn trusted_bwrap() -> Option<PathBuf> {
     })
 }
 
+fn usable_bwrap() -> Option<PathBuf> {
+    let binary = trusted_bwrap()?;
+    if USABLE_BWRAP.get().is_some_and(|probed| probed == &binary) {
+        // Keep revalidating ownership and mode through `trusted_bwrap`; cache only the expensive
+        // successful namespace process, never the executable's trust decision.
+        return Some(binary);
+    }
+    let status = std::process::Command::new(&binary)
+        .args(BWRAP_PROBE_ARGS)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()?;
+    if !status.success() {
+        // Do not cache a negative result: an operator may install an AppArmor profile or enable
+        // user namespaces while a long-lived harness process is still running.
+        return None;
+    }
+    let _ = USABLE_BWRAP.set(binary.clone());
+    Some(binary)
+}
+
 pub struct Bubblewrap;
 
 impl Bubblewrap {
     pub fn new() -> Self {
         Bubblewrap
     }
-    /// Is a fixed, root-owned system `bwrap` available? PATH is intentionally ignored: a cloned
-    /// repository must not substitute the executable that is supposed to create its sandbox.
+    /// Can a fixed, root-owned system `bwrap` create the namespaces and mounts required by this
+    /// backend? PATH is intentionally ignored: a cloned repository must not substitute the
+    /// executable that is supposed to create its sandbox.
     pub fn available() -> bool {
-        trusted_bwrap()
-            .and_then(|binary| {
-                std::process::Command::new(binary)
-                    .arg("--version")
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .ok()
-            })
-            .is_some_and(|status| status.success())
+        usable_bwrap().is_some()
     }
 }
 
@@ -115,8 +156,10 @@ pub fn bwrap_args(conf: &Confinement, command: &str) -> Vec<String> {
 #[async_trait::async_trait]
 impl Sandbox for Bubblewrap {
     async fn run(&self, command: &str, conf: &Confinement) -> Result<RunOutput, SandboxError> {
-        let Some(binary) = trusted_bwrap() else {
-            // Deny-by-default: no bwrap means we refuse, never run unconfined.
+        let Some(binary) = usable_bwrap() else {
+            // Deny-by-default: missing *or unusable* bwrap means we refuse, never run unconfined.
+            // This covers hosts where an LSM/kernel policy permits `--version` but rejects the
+            // user namespace that actually provides confinement.
             return Err(SandboxError::Unsupported);
         };
         let args = bwrap_args(conf, command);
@@ -183,6 +226,16 @@ mod tests {
                 .iter()
                 .all(|candidate| Path::new(candidate).is_absolute())
         );
+        assert!(
+            BWRAP_PROBE_ARGS
+                .windows(3)
+                .any(|args| args == ["--ro-bind", "/", "/"]),
+            "the capability probe must not grant host writes"
+        );
+        assert!(
+            BWRAP_PROBE_ARGS.contains(&"--unshare-net"),
+            "the capability probe must exercise the load-bearing network namespace"
+        );
     }
 
     #[test]
@@ -201,25 +254,39 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn code_runs_but_network_is_blocked_when_bwrap_present() {
-        if !Bubblewrap::available() {
+        if trusted_bwrap().is_none() {
             eprintln!("skipping: bwrap not installed");
             return;
         }
+        assert!(
+            Bubblewrap::available(),
+            "trusted bwrap is installed but cannot create the required namespace/mount boundary"
+        );
         let dir = std::env::temp_dir();
         let sb = Bubblewrap::new();
         let conf = Confinement::egress_off(&dir);
         let ok = sb.run("echo confined", &conf).await.unwrap();
+        assert_eq!(
+            ok.exit_code, 0,
+            "the functional probe passed but the real sandbox failed: {}",
+            ok.stderr
+        );
         assert!(ok.stdout.contains("confined"));
         // With --unshare-net there are no interfaces; a connect must fail.
         let net = sb
             .run(
-                "bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' 2>&1; echo done",
+                "if bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' 2>/dev/null; then echo network-open; exit 97; else echo network-blocked; fi",
                 &conf,
             )
             .await
             .unwrap();
+        assert_eq!(
+            net.exit_code, 0,
+            "network unexpectedly reachable: {}",
+            net.stderr
+        );
         assert!(
-            net.stdout.contains("done"),
+            net.stdout.contains("network-blocked"),
             "the connect inside was refused by the empty net namespace"
         );
 
