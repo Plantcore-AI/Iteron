@@ -1,0 +1,51 @@
+name: Feature request
+description: Propose a focused capability or behavior change
+title: "proposal: "
+labels: ["proposal", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What concrete user or engineering problem needs to be solved?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+    validations:
+      required: true
+  - type: input
+    id: boundary_ids
+    attributes:
+      label: Candidate boundary IDs
+      description: Use exact IDs from governance/boundaries.json, or say unknown.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Invariants and boundaries
+      description: Which protocol, security, durability, budget, or compatibility boundaries are affected?
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: What should this proposal deliberately not change?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance evidence
+      description: What observable tests or evaluation evidence would prove the outcome?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence or prior art
+      description: Link primary sources where relevant; do not paste proprietary implementation.

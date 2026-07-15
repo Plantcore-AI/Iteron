@@ -1,0 +1,18 @@
+[package]
+name = "core-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-protocol = { path = "../protocol" }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }

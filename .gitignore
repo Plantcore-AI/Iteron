@@ -1,0 +1,22 @@
+# build / runtime
+target/
+dist/
+build/
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# local state
+.env
+.env.*
+*.log
+.data/
+runs/
+.core/
+
+# os
+.DS_Store
+
+/target

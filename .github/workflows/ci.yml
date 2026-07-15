@@ -1,0 +1,115 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boundary:
+    name: boundary / validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: validate ownership and dependency contract on main
+        if: github.event_name != 'pull_request'
+        run: cargo run --locked -p core-xtask -- boundaries check
+      - name: materialize trusted base policy
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          POLICY_ROOT: ${{ runner.temp }}/core-policy-base
+        run: git worktree add --detach "$POLICY_ROOT" "$BASE_SHA"
+      - name: build trusted base validator
+        if: github.event_name == 'pull_request'
+        working-directory: ${{ runner.temp }}/core-policy-base
+        run: cargo build --locked -p core-xtask
+      - name: validate candidate with trusted base policy
+        if: github.event_name == 'pull_request'
+        env:
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
+        run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries check'
+      - name: summarize pull request boundary impact
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
+        run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries affected --base "$BASE_SHA" >> "$GITHUB_STEP_SUMMARY"'
+      - name: validate pull request responsibility contract
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries check-pr --base "$BASE_SHA"'
+
+  test:
+    name: rust / ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # The Linux sandbox backend uses bubblewrap; install it so its live confinement
+      # test actually runs (it is skipped where bwrap is absent).
+      - name: install bubblewrap (linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: format
+        run: cargo fmt --all -- --check
+      - name: check
+        run: cargo check --workspace --all-targets --locked
+      - name: clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --workspace --all-targets --locked
+
+  release-build:
+    name: release build / ${{ matrix.os }}
+    if: github.event_name == 'push'
+    needs: [boundary, test]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: build release
+        run: cargo build --release -p core-cli --locked
+      # Do not distribute a naked binary. Public artifacts remain disabled until
+      # packaging includes LICENSE, audited third-party notices, SBOM, and signing.

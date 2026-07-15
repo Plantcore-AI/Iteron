@@ -1,0 +1,56 @@
+# core — a coding agent, and the controller architecture underneath it.
+# One crate per module (ADR-010). The core speaks an id-correlated submission/event
+# protocol in-process; the CLI is the first thin frontend adapter.
+[workspace]
+resolver = "3"
+members = [
+    "xtask",
+    "crates/protocol",
+    "crates/record",
+    "crates/obs",
+    "crates/provider",
+    "crates/tools",
+    "crates/sandbox",
+    "crates/ctx",
+    "crates/verify",
+    "crates/mcp",
+    "crates/sched",
+    "crates/agents",
+    "crates/kernel",
+    "crates/cli",
+    "crates/eval",
+    "crates/evolve",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+authors = ["Plantcore-AI and Core contributors"]
+repository = "https://github.com/Plantcore-AI/core"
+rust-version = "1.90"
+
+# Dependencies are admitted only at the standard-protocol layer (JSON, HTTP to the
+# model provider, hashing) or as the async runtime the flagship mandates (ADR-004/010).
+# No agent framework. The runtime owns its control and safety boundaries directly.
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "sync", "time", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+futures-util = "0.3"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+walkdir = "2"
+# Terminal UI: the de-facto standard Rust stack (same as Codex), admitted at the standard-UI layer.
+ratatui = "0.29"
+crossterm = "0.28"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

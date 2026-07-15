@@ -1,0 +1,815 @@
+{
+  "schema_version": 1,
+  "enforcement": {
+    "mode": "bootstrap",
+    "project_owner": "core-owner"
+  },
+  "people": [
+    {
+      "id": "core-owner",
+      "kind": "human",
+      "role": "owner",
+      "display": "Core Owner / Project Lead",
+      "github": "@fr0m-scratch"
+    }
+  ],
+  "boundaries": [
+    {
+      "id": "project-governance",
+      "title": "Project governance",
+      "summary": "Human authority, maintainership, generated ownership views, and the machine boundary registry.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": ".github/CODEOWNERS" },
+        { "kind": "file", "path": "AGENTS.md" },
+        { "kind": "file", "path": "GOVERNANCE.md" },
+        { "kind": "file", "path": "LICENSE" },
+        { "kind": "file", "path": "OWNERSHIP.md" },
+        { "kind": "tree", "path": "governance" }
+      ],
+      "contracts": ["owner-override", "one-human-one-agent", "dynamic-boundary-registry", "open-source-license"],
+      "checks": ["core-xtask boundaries check"]
+    },
+    {
+      "id": "community-entry",
+      "title": "Community entry",
+      "summary": "Public project introduction, contribution workflow, pull request shape, and issue intake.",
+      "status": "open",
+      "risk": "standard",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "tree", "path": ".github/ISSUE_TEMPLATE" },
+        { "kind": "file", "path": ".github/PULL_REQUEST_TEMPLATE.md" },
+        { "kind": "file", "path": "CONTRIBUTING.md" },
+        { "kind": "file", "path": "README.md" }
+      ],
+      "contracts": ["issue-to-boundary-to-pr", "human-accountability"],
+      "checks": ["core-xtask boundaries check"]
+    },
+    {
+      "id": "security-policy",
+      "title": "Security policy",
+      "summary": "Public support, vulnerability reporting, disclosure, and security response policy.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "SECURITY.md" }
+      ],
+      "contracts": ["responsible-disclosure", "security-support-boundary"],
+      "checks": ["core-xtask boundaries check"]
+    },
+    {
+      "id": "architecture-roadmap",
+      "title": "Architecture and roadmap",
+      "summary": "Publicly truthful current architecture, target boundaries, milestones, and limitations.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "tree", "path": "docs" }
+      ],
+      "contracts": ["current-implementation-truth", "microkernel-roadmap"],
+      "checks": ["core-xtask boundaries check"]
+    },
+    {
+      "id": "build-release",
+      "title": "Build and release",
+      "summary": "Workspace membership, dependency lock, repository checks, CI, artifacts, and release gates.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": ".github/dependabot.yml" },
+        { "kind": "tree", "path": ".github/workflows" },
+        { "kind": "file", "path": ".gitignore" },
+        { "kind": "file", "path": "Cargo.lock" },
+        { "kind": "file", "path": "Cargo.toml" },
+        { "kind": "tree", "path": "xtask" }
+      ],
+      "contracts": ["workspace-dependency-baseline", "required-rust-gates", "generated-boundary-drift"],
+      "checks": ["cargo fmt --all -- --check", "core-xtask boundaries check"]
+    },
+    {
+      "id": "protocol-compat",
+      "title": "Protocol compatibility",
+      "summary": "Versioned submissions, events, identity, trust, permission, message, and tool contracts.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "tree", "path": "crates/protocol" }
+      ],
+      "contracts": ["runtime-protocol", "durable-event-schema", "permission-schema"],
+      "checks": ["cargo test -p core-protocol --locked"]
+    },
+    {
+      "id": "kernel-runtime",
+      "title": "Kernel runtime",
+      "summary": "Turn state machine, admission, budgets, orchestration execution, and frontend event seam.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/kernel/Cargo.toml" },
+        { "kind": "file", "path": "crates/kernel/src/lib.rs" }
+      ],
+      "contracts": ["turn-state-machine", "bounded-run", "single-writer"],
+      "checks": ["cargo test -p core-kernel --locked"]
+    },
+    {
+      "id": "kernel-effects",
+      "title": "Kernel effects",
+      "summary": "Effect admission, durable intent ordering, terminal or unknown outcome, and reconciliation.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/kernel/src/effects.rs" }
+      ],
+      "contracts": ["intent-execute-terminal", "unknown-effect-block"],
+      "checks": ["cargo test -p core-kernel effects --locked"]
+    },
+    {
+      "id": "kernel-hooks",
+      "title": "Kernel hooks",
+      "summary": "Lifecycle hook admission, bounded child processes, environment policy, and hook evidence.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/kernel/src/hooks.rs" }
+      ],
+      "contracts": ["trusted-hook-origin", "bounded-hook-process"],
+      "checks": ["cargo test -p core-kernel hooks --locked"]
+    },
+    {
+      "id": "record-core",
+      "title": "Record core",
+      "summary": "Append-only journal, hash chain, replay, checkpoint, recovery, and redaction.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/record/Cargo.toml" },
+        { "kind": "file", "path": "crates/record/src/checkpoint.rs" },
+        { "kind": "file", "path": "crates/record/src/lib.rs" },
+        { "kind": "file", "path": "crates/record/src/redact.rs" }
+      ],
+      "contracts": ["append-only-record", "hash-chain", "torn-tail-recovery", "secret-redaction"],
+      "checks": ["cargo test -p core-record --locked"]
+    },
+    {
+      "id": "record-sessions",
+      "title": "Record sessions",
+      "summary": "Session metadata, listing, fork lineage, resume projection, and tenant scoping.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/record/src/session.rs" }
+      ],
+      "contracts": ["fork-aware-replay", "tenant-scoped-session"],
+      "checks": ["cargo test -p core-record session --locked"]
+    },
+    {
+      "id": "observability",
+      "title": "Observability",
+      "summary": "Usage ledger, cost truth, runtime metrics, and mergeable child-run accounting.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "tree", "path": "crates/obs" }
+      ],
+      "contracts": ["cost-state", "usage-ledger", "no-invented-price"],
+      "checks": ["cargo test -p core-obs --locked"]
+    },
+    {
+      "id": "scheduler",
+      "title": "Scheduler",
+      "summary": "Retry, backoff, concurrency governor, and memo policy.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "tree", "path": "crates/sched" }
+      ],
+      "contracts": ["bounded-retry", "bounded-concurrency", "pre-stream-retry-only"],
+      "checks": ["cargo test -p core-sched --locked"]
+    },
+    {
+      "id": "provider-core",
+      "title": "Provider core",
+      "summary": "Provider trait, route identity, errors, catalog, health, capabilities, and shared stream parsing.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/provider/Cargo.toml" },
+        { "kind": "file", "path": "crates/provider/src/catalog.rs" },
+        { "kind": "file", "path": "crates/provider/src/lib.rs" },
+        { "kind": "file", "path": "crates/provider/src/sse.rs" }
+      ],
+      "contracts": ["provider-port", "catalog-truth", "typed-provider-error"],
+      "checks": ["cargo test -p core-provider --locked"]
+    },
+    {
+      "id": "provider-adapters",
+      "title": "Provider adapters",
+      "summary": "Anthropic Messages, OpenAI-compatible Chat, and OpenAI Responses wire adapters.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/provider/src/anthropic.rs" },
+        { "kind": "file", "path": "crates/provider/src/openai.rs" },
+        { "kind": "file", "path": "crates/provider/src/responses.rs" }
+      ],
+      "contracts": ["stream-to-turn-result", "native-state-scope", "effort-application"],
+      "checks": ["cargo test -p core-provider --locked"]
+    },
+    {
+      "id": "mcp-interop",
+      "title": "MCP interoperability",
+      "summary": "MCP process lifecycle, framing, tools, deadlines, and definite or unknown outcomes.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "tree", "path": "crates/mcp" }
+      ],
+      "contracts": ["mcp-framing", "bounded-mcp-lifecycle", "unknown-external-effect"],
+      "checks": ["cargo test -p core-mcp --locked"]
+    },
+    {
+      "id": "context-core",
+      "title": "Context core",
+      "summary": "Compaction, instruction trust, source access, outline, and stable context estimation.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/ctx/Cargo.toml" },
+        { "kind": "file", "path": "crates/ctx/src/compact.rs" },
+        { "kind": "file", "path": "crates/ctx/src/instructions.rs" },
+        { "kind": "file", "path": "crates/ctx/src/lib.rs" },
+        { "kind": "file", "path": "crates/ctx/src/outline.rs" },
+        { "kind": "file", "path": "crates/ctx/src/source.rs" }
+      ],
+      "contracts": ["untrusted-instruction-framing", "bounded-context", "compaction-policy"],
+      "checks": ["cargo test -p core-ctx --locked"]
+    },
+    {
+      "id": "context-knowledge",
+      "title": "Context knowledge",
+      "summary": "Memory and skill discovery, trust, storage, bounded recall, and progressive disclosure.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/ctx/src/memory.rs" },
+        { "kind": "file", "path": "crates/ctx/src/skills.rs" }
+      ],
+      "contracts": ["memory-provenance", "bounded-recall", "skill-progressive-disclosure"],
+      "checks": ["cargo test -p core-ctx --locked"]
+    },
+    {
+      "id": "agent-catalog",
+      "title": "Agent catalog",
+      "summary": "Agent definitions, discovery, trust, read-only tool filtering, and catalog diagnostics.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/agents/Cargo.toml" },
+        { "kind": "file", "path": "crates/agents/src/catalog.rs" },
+        { "kind": "file", "path": "crates/agents/src/def.rs" },
+        { "kind": "file", "path": "crates/agents/src/lib.rs" }
+      ],
+      "contracts": ["read-only-agent-authority", "agent-definition-trust"],
+      "checks": ["cargo test -p core-agents --locked"]
+    },
+    {
+      "id": "agent-orchestration",
+      "title": "Agent orchestration",
+      "summary": "Task classification, decomposition, deterministic Fan and Reduce policy, and workflow data.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/agents/src/decompose.rs" },
+        { "kind": "file", "path": "crates/agents/src/reduce.rs" },
+        { "kind": "file", "path": "crates/agents/src/stage.rs" }
+      ],
+      "contracts": ["single-writer-fan-reduce", "declaration-order-reduction"],
+      "checks": ["cargo test -p core-agents --locked"]
+    },
+    {
+      "id": "evolution-control",
+      "title": "Evolution control",
+      "summary": "Offline policy, trajectory, evidence, and promotion contracts without runtime authority.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "tree", "path": "crates/evolve" }
+      ],
+      "contracts": ["no-runtime-activation", "immutable-policy-reference", "governed-promotion"],
+      "checks": ["cargo test -p core-evolve --locked"]
+    },
+    {
+      "id": "sandbox",
+      "title": "Sandbox",
+      "summary": "Platform confinement, child environment, process groups, output bounds, and egress policy.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "tree", "path": "crates/sandbox" }
+      ],
+      "contracts": ["workspace-confinement", "egress-off-default", "bounded-child-process"],
+      "checks": ["cargo test -p core-sandbox --locked"]
+    },
+    {
+      "id": "tools-core",
+      "title": "Tools core",
+      "summary": "Tool registry, capability and purity coupling, filesystem, edit, and Git tools.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/tools/Cargo.toml" },
+        { "kind": "file", "path": "crates/tools/src/edit.rs" },
+        { "kind": "file", "path": "crates/tools/src/fs_tools.rs" },
+        { "kind": "file", "path": "crates/tools/src/git.rs" },
+        { "kind": "file", "path": "crates/tools/src/lib.rs" }
+      ],
+      "contracts": ["tool-abi", "workspace-path-boundary", "purity-capability-coupling"],
+      "checks": ["cargo test -p core-tools --locked"]
+    },
+    {
+      "id": "tools-execution",
+      "title": "Tools execution",
+      "summary": "Code execution, external web egress, deadlines, output bounds, and external effects.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/tools/src/shell.rs" },
+        { "kind": "file", "path": "crates/tools/src/web.rs" }
+      ],
+      "contracts": ["sandboxed-code-execution", "ssrf-boundary", "external-effect-classification"],
+      "checks": ["cargo test -p core-tools --locked"]
+    },
+    {
+      "id": "tools-context",
+      "title": "Tools context",
+      "summary": "Memory and skill tool adapters that preserve source trust and progressive disclosure.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/tools/src/mem.rs" },
+        { "kind": "file", "path": "crates/tools/src/skill.rs" }
+      ],
+      "contracts": ["memory-tool-trust", "skill-tool-read-only"],
+      "checks": ["cargo test -p core-tools --locked"]
+    },
+    {
+      "id": "verification",
+      "title": "Verification",
+      "summary": "Oracle strength, sandboxed test oracle, deterministic candidate ranking, and veto rules.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "tree", "path": "crates/verify" }
+      ],
+      "contracts": ["oracle-strength", "strong-veto", "deterministic-selection"],
+      "checks": ["cargo test -p core-verify --locked"]
+    },
+    {
+      "id": "evaluation",
+      "title": "Evaluation",
+      "summary": "Benchmark tasks, fixed-model component toggles, scoring, and reliability evidence.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "tree", "path": "crates/eval" }
+      ],
+      "contracts": ["fixed-model-comparison", "ground-truth-check", "honest-quality-claim"],
+      "checks": ["cargo check -p core-eval --all-targets --locked"]
+    },
+    {
+      "id": "cli-host",
+      "title": "CLI host",
+      "summary": "Composition root, trusted configuration, provider routing, commands, MCP wiring, and run lifecycle.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/cli/Cargo.toml" },
+        { "kind": "file", "path": "crates/cli/src/commands.rs" },
+        { "kind": "file", "path": "crates/cli/src/config.rs" },
+        { "kind": "file", "path": "crates/cli/src/main.rs" },
+        { "kind": "file", "path": "crates/cli/src/providers.rs" }
+      ],
+      "contracts": ["trusted-config-precedence", "runtime-composition", "provider-selection"],
+      "checks": ["cargo test -p core-cli --locked"]
+    },
+    {
+      "id": "cli-tui",
+      "title": "CLI TUI",
+      "summary": "Interactive state, input routing, composer, permission UX, sessions, terminal lifecycle, and PTY behavior.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/cli/src/editor.rs" },
+        { "kind": "file", "path": "crates/cli/src/surface.rs" },
+        { "kind": "file", "path": "crates/cli/src/tui.rs" },
+        { "kind": "tree", "path": "crates/cli/tests" }
+      ],
+      "contracts": ["single-enter-input", "terminal-restoration", "permission-decision-surface"],
+      "checks": ["cargo test -p core-cli tui --locked", "cargo test -p core-cli --test tui_pty --locked"]
+    },
+    {
+      "id": "cli-render",
+      "title": "CLI rendering",
+      "summary": "Semantic blocks, markdown, syntax highlighting, layout, theme, and cell-width correctness.",
+      "status": "open",
+      "risk": "standard",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/cli/src/block.rs" },
+        { "kind": "file", "path": "crates/cli/src/highlight.rs" },
+        { "kind": "file", "path": "crates/cli/src/markdown.rs" },
+        { "kind": "file", "path": "crates/cli/src/render.rs" },
+        { "kind": "file", "path": "crates/cli/src/theme.rs" }
+      ],
+      "contracts": ["terminal-cell-bounds", "semantic-transcript", "accessible-theme"],
+      "checks": ["cargo test -p core-cli --locked"]
+    },
+    {
+      "id": "cli-output",
+      "title": "CLI machine output",
+      "summary": "Text, JSON, stream-JSON, event scrubbing, exit codes, and machine-readable result contracts.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/cli/src/output.rs" }
+      ],
+      "contracts": ["machine-output-schema", "stable-exit-code", "streaming-redaction"],
+      "checks": ["cargo test -p core-cli output --locked"]
+    }
+  ],
+  "overlays": [
+    {
+      "id": "governance-enforcement",
+      "title": "Governance enforcement",
+      "summary": "Ownership policy, its trusted validator, generated views, PR intake, and CI enforcement require independent governance review.",
+      "status": "open",
+      "reviewers": [],
+      "requires_independent_review": true,
+      "paths": [
+        { "kind": "tree", "path": "governance" },
+        { "kind": "tree", "path": "xtask" },
+        { "kind": "file", "path": ".github/CODEOWNERS" },
+        { "kind": "file", "path": ".github/PULL_REQUEST_TEMPLATE.md" },
+        { "kind": "file", "path": ".github/ISSUE_TEMPLATE/ownership_claim.yml" },
+        { "kind": "tree", "path": ".github/workflows" },
+        { "kind": "file", "path": "docs/repository-enforcement.md" },
+        { "kind": "file", "path": "AGENTS.md" },
+        { "kind": "file", "path": "GOVERNANCE.md" },
+        { "kind": "file", "path": "LICENSE" },
+        { "kind": "file", "path": "OWNERSHIP.md" }
+      ]
+    },
+    {
+      "id": "public-compatibility",
+      "title": "Public compatibility",
+      "summary": "Public DTO, trait, schema, and facade changes require consumer-aware review.",
+      "status": "open",
+      "reviewers": [],
+      "requires_independent_review": true,
+      "paths": [
+        { "kind": "tree", "path": "crates/agents" },
+        { "kind": "tree", "path": "crates/ctx" },
+        { "kind": "tree", "path": "crates/evolve" },
+        { "kind": "tree", "path": "crates/kernel" },
+        { "kind": "tree", "path": "crates/mcp" },
+        { "kind": "tree", "path": "crates/obs" },
+        { "kind": "tree", "path": "crates/protocol" },
+        { "kind": "tree", "path": "crates/provider" },
+        { "kind": "tree", "path": "crates/record" },
+        { "kind": "tree", "path": "crates/sandbox" },
+        { "kind": "tree", "path": "crates/sched" },
+        { "kind": "tree", "path": "crates/tools" },
+        { "kind": "tree", "path": "crates/verify" },
+        { "kind": "file", "path": "crates/cli/src/commands.rs" },
+        { "kind": "file", "path": "crates/cli/src/config.rs" },
+        { "kind": "file", "path": "crates/cli/src/output.rs" }
+      ]
+    },
+    {
+      "id": "tcb-authority",
+      "title": "Trusted computing base and authority",
+      "summary": "Permission, trust, effects, sandbox, external processes, and durable authority require security review.",
+      "status": "open",
+      "reviewers": [],
+      "requires_independent_review": true,
+      "paths": [
+        { "kind": "file", "path": "crates/protocol/src/permission.rs" },
+        { "kind": "file", "path": "crates/protocol/src/tool.rs" },
+        { "kind": "file", "path": "crates/protocol/src/trust.rs" },
+        { "kind": "tree", "path": "crates/kernel" },
+        { "kind": "tree", "path": "crates/record" },
+        { "kind": "tree", "path": "crates/sandbox" },
+        { "kind": "tree", "path": "crates/tools" },
+        { "kind": "tree", "path": "crates/mcp" },
+        { "kind": "file", "path": "crates/cli/src/config.rs" },
+        { "kind": "file", "path": "crates/cli/src/main.rs" },
+        { "kind": "file", "path": "crates/cli/src/tui.rs" }
+      ]
+    },
+    {
+      "id": "durability-replay",
+      "title": "Durability and replay",
+      "summary": "Identity, event, record, effect, resume, fork, and checkpoint changes preserve deterministic recovery.",
+      "status": "open",
+      "reviewers": [],
+      "requires_independent_review": true,
+      "paths": [
+        { "kind": "file", "path": "crates/protocol/src/event.rs" },
+        { "kind": "file", "path": "crates/protocol/src/ids.rs" },
+        { "kind": "file", "path": "crates/kernel/src/effects.rs" },
+        { "kind": "file", "path": "crates/kernel/src/lib.rs" },
+        { "kind": "tree", "path": "crates/record" },
+        { "kind": "tree", "path": "crates/obs" },
+        { "kind": "file", "path": "crates/cli/src/main.rs" },
+        { "kind": "file", "path": "crates/cli/src/output.rs" }
+      ]
+    },
+    {
+      "id": "secrets-redaction",
+      "title": "Secrets and redaction",
+      "summary": "Credentials, environment, provider errors, logs, records, UI, and child processes preserve the secret boundary.",
+      "status": "open",
+      "reviewers": [],
+      "requires_independent_review": true,
+      "paths": [
+        { "kind": "tree", "path": "crates/protocol" },
+        { "kind": "tree", "path": "crates/provider" },
+        { "kind": "tree", "path": "crates/tools" },
+        { "kind": "tree", "path": "crates/ctx" },
+        { "kind": "tree", "path": "crates/agents" },
+        { "kind": "file", "path": "crates/cli/src/config.rs" },
+        { "kind": "file", "path": "crates/cli/src/main.rs" },
+        { "kind": "file", "path": "crates/cli/src/output.rs" },
+        { "kind": "file", "path": "crates/cli/src/providers.rs" },
+        { "kind": "file", "path": "crates/cli/src/tui.rs" },
+        { "kind": "file", "path": "crates/record/src/lib.rs" },
+        { "kind": "file", "path": "crates/record/src/redact.rs" },
+        { "kind": "file", "path": "crates/record/src/session.rs" },
+        { "kind": "tree", "path": "crates/sandbox" },
+        { "kind": "tree", "path": "crates/mcp" },
+        { "kind": "file", "path": "crates/kernel/src/hooks.rs" }
+      ]
+    },
+    {
+      "id": "boundedness",
+      "title": "Bounded execution",
+      "summary": "Loops, retries, queues, output, time, cost, concurrency, and pagination retain explicit ceilings.",
+      "status": "open",
+      "reviewers": [],
+      "requires_independent_review": true,
+      "paths": [
+        { "kind": "tree", "path": "crates/kernel" },
+        { "kind": "tree", "path": "crates/sched" },
+        { "kind": "tree", "path": "crates/provider" },
+        { "kind": "tree", "path": "crates/tools" },
+        { "kind": "tree", "path": "crates/mcp" },
+        { "kind": "tree", "path": "crates/sandbox" },
+        { "kind": "tree", "path": "crates/record" },
+        { "kind": "tree", "path": "crates/ctx" },
+        { "kind": "tree", "path": "crates/agents" },
+        { "kind": "tree", "path": "crates/evolve" },
+        { "kind": "file", "path": "crates/cli/src/block.rs" },
+        { "kind": "file", "path": "crates/cli/src/commands.rs" },
+        { "kind": "file", "path": "crates/cli/src/editor.rs" },
+        { "kind": "file", "path": "crates/cli/src/highlight.rs" },
+        { "kind": "file", "path": "crates/cli/src/markdown.rs" },
+        { "kind": "file", "path": "crates/cli/src/output.rs" },
+        { "kind": "file", "path": "crates/cli/src/render.rs" },
+        { "kind": "file", "path": "crates/cli/src/surface.rs" },
+        { "kind": "file", "path": "crates/cli/src/theme.rs" },
+        { "kind": "file", "path": "crates/cli/src/tui.rs" }
+      ]
+    },
+    {
+      "id": "provider-routing",
+      "title": "Provider routing and economics",
+      "summary": "Catalog, adapter, retry, model switch, effort, capability, context, and cost evidence remain route-consistent.",
+      "status": "open",
+      "reviewers": [],
+      "requires_independent_review": true,
+      "paths": [
+        { "kind": "tree", "path": "crates/protocol" },
+        { "kind": "tree", "path": "crates/provider" },
+        { "kind": "tree", "path": "crates/sched" },
+        { "kind": "tree", "path": "crates/obs" },
+        { "kind": "tree", "path": "crates/ctx" },
+        { "kind": "tree", "path": "crates/record" },
+        { "kind": "file", "path": "crates/cli/src/main.rs" },
+        { "kind": "file", "path": "crates/cli/src/providers.rs" },
+        { "kind": "file", "path": "crates/cli/src/output.rs" },
+        { "kind": "file", "path": "crates/cli/src/tui.rs" },
+        { "kind": "file", "path": "crates/kernel/src/lib.rs" }
+      ]
+    },
+    {
+      "id": "frontend-contract",
+      "title": "Frontend runtime contract",
+      "summary": "Submission, approval, event, model change, TUI projection, and machine output remain coherent.",
+      "status": "open",
+      "reviewers": [],
+      "requires_independent_review": true,
+      "paths": [
+        { "kind": "tree", "path": "crates/protocol" },
+        { "kind": "file", "path": "crates/kernel/src/lib.rs" },
+        { "kind": "tree", "path": "crates/provider" },
+        { "kind": "tree", "path": "crates/obs" },
+        { "kind": "file", "path": "crates/ctx/src/compact.rs" },
+        { "kind": "file", "path": "crates/ctx/src/lib.rs" },
+        { "kind": "file", "path": "crates/cli/src/block.rs" },
+        { "kind": "file", "path": "crates/cli/src/commands.rs" },
+        { "kind": "file", "path": "crates/cli/src/main.rs" },
+        { "kind": "file", "path": "crates/cli/src/editor.rs" },
+        { "kind": "file", "path": "crates/cli/src/highlight.rs" },
+        { "kind": "file", "path": "crates/cli/src/markdown.rs" },
+        { "kind": "file", "path": "crates/cli/src/providers.rs" },
+        { "kind": "file", "path": "crates/cli/src/output.rs" },
+        { "kind": "file", "path": "crates/cli/src/render.rs" },
+        { "kind": "file", "path": "crates/cli/src/surface.rs" },
+        { "kind": "file", "path": "crates/cli/src/theme.rs" },
+        { "kind": "file", "path": "crates/cli/src/tui.rs" }
+      ]
+    },
+    {
+      "id": "cost-accounting",
+      "title": "Cost and budget accounting",
+      "summary": "Token usage, cache evidence, effort, monetary budgets, child-run aggregation, persistence, and UI output retain one route-consistent truth.",
+      "status": "open",
+      "reviewers": [],
+      "requires_independent_review": true,
+      "paths": [
+        { "kind": "tree", "path": "crates/protocol" },
+        { "kind": "tree", "path": "crates/provider" },
+        { "kind": "tree", "path": "crates/sched" },
+        { "kind": "file", "path": "crates/kernel/src/lib.rs" },
+        { "kind": "tree", "path": "crates/obs" },
+        { "kind": "tree", "path": "crates/record" },
+        { "kind": "file", "path": "crates/ctx/src/compact.rs" },
+        { "kind": "file", "path": "crates/cli/src/main.rs" },
+        { "kind": "file", "path": "crates/cli/src/output.rs" },
+        { "kind": "file", "path": "crates/cli/src/tui.rs" }
+      ]
+    },
+    {
+      "id": "eval-ground-truth",
+      "title": "Evaluation ground truth",
+      "summary": "Benchmark fixtures, oracle policy, scoring, aggregate evidence, and quality claims receive independent review.",
+      "status": "open",
+      "reviewers": [],
+      "requires_independent_review": true,
+      "paths": [
+        { "kind": "tree", "path": "crates/eval" },
+        { "kind": "tree", "path": "crates/verify" },
+        { "kind": "tree", "path": "crates/obs" },
+        { "kind": "file", "path": ".github/workflows/ci.yml" }
+      ]
+    },
+    {
+      "id": "evolution-promotion",
+      "title": "Evolution promotion",
+      "summary": "Training eligibility, rewards, policy bundles, promotion evidence, and future activation remain human governed.",
+      "status": "open",
+      "reviewers": [],
+      "requires_independent_review": true,
+      "paths": [
+        { "kind": "tree", "path": "crates/evolve" },
+        { "kind": "tree", "path": "crates/eval" },
+        { "kind": "tree", "path": "crates/verify" },
+        { "kind": "file", "path": "crates/protocol/src/event.rs" },
+        { "kind": "file", "path": "crates/kernel/src/lib.rs" }
+      ]
+    },
+    {
+      "id": "release-supply",
+      "title": "Release and supply chain",
+      "summary": "Workspace dependencies, lockfile, CI, release artifacts, and toolchain changes receive release review.",
+      "status": "open",
+      "reviewers": [],
+      "requires_independent_review": true,
+      "paths": [
+        { "kind": "file", "path": "Cargo.toml" },
+        { "kind": "file", "path": "Cargo.lock" },
+        { "kind": "file", "path": "LICENSE" },
+        { "kind": "file", "path": ".github/dependabot.yml" },
+        { "kind": "tree", "path": ".github/workflows" },
+        { "kind": "file", "path": "crates/agents/Cargo.toml" },
+        { "kind": "file", "path": "crates/cli/Cargo.toml" },
+        { "kind": "file", "path": "crates/ctx/Cargo.toml" },
+        { "kind": "file", "path": "crates/eval/Cargo.toml" },
+        { "kind": "file", "path": "crates/evolve/Cargo.toml" },
+        { "kind": "file", "path": "crates/kernel/Cargo.toml" },
+        { "kind": "file", "path": "crates/mcp/Cargo.toml" },
+        { "kind": "file", "path": "crates/obs/Cargo.toml" },
+        { "kind": "file", "path": "crates/protocol/Cargo.toml" },
+        { "kind": "file", "path": "crates/provider/Cargo.toml" },
+        { "kind": "file", "path": "crates/record/Cargo.toml" },
+        { "kind": "file", "path": "crates/sandbox/Cargo.toml" },
+        { "kind": "file", "path": "crates/sched/Cargo.toml" },
+        { "kind": "file", "path": "crates/tools/Cargo.toml" },
+        { "kind": "file", "path": "crates/verify/Cargo.toml" },
+        { "kind": "file", "path": "xtask/Cargo.toml" }
+      ]
+    },
+    {
+      "id": "public-truth",
+      "title": "Public product truth",
+      "summary": "Public architecture, roadmap, security, production, and quality claims stay evidence-backed.",
+      "status": "open",
+      "reviewers": [],
+      "requires_independent_review": true,
+      "paths": [
+        { "kind": "file", "path": "README.md" },
+        { "kind": "file", "path": "GOVERNANCE.md" },
+        { "kind": "file", "path": "LICENSE" },
+        { "kind": "file", "path": "SECURITY.md" },
+        { "kind": "tree", "path": "docs" }
+      ]
+    }
+  ],
+  "cargo_policy": {
+    "mode": "exact",
+    "packages": {
+      "core-agents": { "normal": ["core-ctx", "core-protocol"], "dev": [], "build": [] },
+      "core-cli": { "normal": ["core-agents", "core-ctx", "core-kernel", "core-mcp", "core-obs", "core-protocol", "core-provider", "core-record", "core-sched", "core-tools"], "dev": [], "build": [] },
+      "core-ctx": { "normal": ["core-protocol"], "dev": [], "build": [] },
+      "core-eval": { "normal": [], "dev": [], "build": [] },
+      "core-evolve": { "normal": ["core-protocol"], "dev": [], "build": [] },
+      "core-kernel": { "normal": ["core-agents", "core-ctx", "core-obs", "core-protocol", "core-provider", "core-record", "core-sandbox", "core-sched", "core-tools", "core-verify"], "dev": [], "build": [] },
+      "core-mcp": { "normal": ["core-protocol", "core-sandbox"], "dev": [], "build": [] },
+      "core-obs": { "normal": ["core-protocol"], "dev": [], "build": [] },
+      "core-protocol": { "normal": [], "dev": [], "build": [] },
+      "core-provider": { "normal": ["core-protocol"], "dev": [], "build": [] },
+      "core-record": { "normal": ["core-obs", "core-protocol"], "dev": [], "build": [] },
+      "core-sandbox": { "normal": ["core-protocol"], "dev": [], "build": [] },
+      "core-sched": { "normal": ["core-protocol", "core-provider"], "dev": [], "build": [] },
+      "core-tools": { "normal": ["core-ctx", "core-protocol", "core-sandbox"], "dev": [], "build": [] },
+      "core-verify": { "normal": ["core-protocol", "core-sandbox"], "dev": [], "build": [] },
+      "core-xtask": { "normal": [], "dev": [], "build": [] }
+    }
+  },
+  "generated": {
+    "ownership": "OWNERSHIP.md",
+    "codeowners": ".github/CODEOWNERS"
+  }
+}

@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Plantcore-AI/core/security/advisories/new
+    about: Use a private security advisory; never publish credentials or exploit details in an issue.

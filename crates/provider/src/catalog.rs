@@ -1,0 +1,3631 @@
+//! Dynamic provider/model discovery and account health.
+//!
+//! A catalog is evidence about what an account can see now, not a permanent hard-coded model
+//! list. Discovery is deliberately bounded and model compatibility is represented separately
+//! from visibility: unknown model IDs remain visible without being silently treated as valid
+//! coding-turn models.
+
+use crate::{AvailabilityTransition, ProviderError, api_error_from_response};
+use futures_util::StreamExt;
+use reqwest::Url;
+use serde::Deserialize;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+const CATALOG_PAGE_SIZE: usize = 100;
+const MAX_CATALOG_PAGES: usize = 32;
+const MAX_CATALOG_MODELS: usize = 10_000;
+const MAX_PAGE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+const PER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const TOTAL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_MODEL_ID_BYTES: usize = 512;
+const MAX_DISPLAY_NAME_BYTES: usize = 512;
+const MAX_INSTANCE_ID_BYTES: usize = 128;
+const MAX_HEALTH_ENTRIES: usize = 256;
+const MAX_MODEL_HEALTH_ENTRIES: usize = 4096;
+const MAX_ACCOUNT_PROBE_PAGE_BYTES: usize = 64 * 1024;
+const MAX_ACCOUNT_PROBE_TOTAL_BYTES: usize = 2 * 1024 * 1024;
+const MAX_ACCOUNT_PAGES: usize = 32;
+const MAX_ACCOUNTS: usize = 10_000;
+const MAX_PAGE_TOKEN_BYTES: usize = 4096;
+const FIREWORKS_PAGE_SIZE: usize = 200;
+const MAX_FIREWORKS_CATALOG_ACCOUNTS: usize = 64;
+const MAX_FIREWORKS_CATALOG_PAGES: usize = 128;
+const MAX_FIREWORKS_DEPLOYED_MODELS: usize = 10_000;
+const FIREWORKS_INFERENCE_ROOT: &str = "https://api.fireworks.ai/inference/v1";
+const FIREWORKS_CONTROL_PLANE_ROOT: &str = "https://api.fireworks.ai/v1";
+const FIREWORKS_SERVERLESS_MODELS_PATH: &str = "accounts/fireworks/models";
+const FIREWORKS_SERVERLESS_FILTER: &str = "supports_serverless=true";
+const GLM_STANDARD_ROOT: &str = "https://open.bigmodel.cn/api/paas/v4";
+const GLM_CODING_ROOT: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
+const GLM_ANTHROPIC_ROOT: &str = "https://open.bigmodel.cn/api/anthropic";
+const GLM_UNSUPPORTED_CATALOG_REASON: &str = "GLM documents no model-list endpoint for this API root; use Core's standard-root official schema manifest, an operator manifest, or an explicit manual model id; account entitlement remains unknown";
+const ANTHROPIC_ROOT: &str = "https://api.anthropic.com/v1";
+const OPENAI_ROOT: &str = "https://api.openai.com/v1";
+const DEEPSEEK_ROOT: &str = "https://api.deepseek.com";
+const DEEPSEEK_V1_ROOT: &str = "https://api.deepseek.com/v1";
+const MINIMAX_ROOT: &str = "https://api.minimax.io/v1";
+const MINIMAX_LEGACY_ROOT: &str = "https://api.minimaxi.com/v1";
+
+/// Transport/protocol adapter selected for one provider instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AdapterKind {
+    AnthropicMessages,
+    OpenAiCompatibleChat,
+    OpenAiResponses,
+}
+
+/// Provider-specific error vocabulary. Wire compatibility is not error-semantic compatibility:
+/// for example, business code `1002` means rate limiting at MiniMax but authentication failure at
+/// GLM. Unknown gateways therefore use `CustomConservative` and never inherit numeric meanings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ErrorProfile {
+    Anthropic,
+    OpenAi,
+    DeepSeek,
+    Glm,
+    MiniMax,
+    Fireworks,
+    CustomConservative,
+}
+
+impl ErrorProfile {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::OpenAi => "openai",
+            Self::DeepSeek => "deepseek",
+            Self::Glm => "glm",
+            Self::MiniMax => "minimax",
+            Self::Fireworks => "fireworks",
+            Self::CustomConservative => "custom-provider",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinProvider {
+    Anthropic,
+    OpenAi,
+}
+
+/// The source of truth for one provider instance's catalog.
+///
+/// This is deliberately separate from the turn adapter: sharing Chat Completions wire syntax does
+/// not imply sharing a `/models` control-plane endpoint. In particular, Fireworks publishes its
+/// serverless inventory under a separate control-plane root, while GLM documents no list-models
+/// operation at its inference roots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatalogStrategy {
+    AnthropicModels,
+    OpenAiModels,
+    FireworksControlPlane { api_root: ApiRoot },
+    Unsupported { reason: String },
+}
+
+/// Provenance for a bounded built-in model manifest derived from an official request schema.
+/// Such a manifest proves only that an identifier is documented for an endpoint. It never proves
+/// that the configured credential is entitled or funded, so account health must remain Unknown
+/// until independent provider evidence exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StaticCatalogManifest {
+    pub provider: &'static str,
+    pub version: &'static str,
+    pub api_root: &'static str,
+    pub source: &'static str,
+    pub default_model: Option<&'static str>,
+    pub models: &'static [&'static str],
+}
+
+/// Exact text-model enum published by GLM's synchronous Chat Completions request schema, captured
+/// on 2026-07-14. Coding Plan and Anthropic-compatible roots are intentionally not conflated with
+/// this standard-root schema.
+pub const GLM_STANDARD_CHAT_MODELS: &[&str] = &[
+    "glm-5.2",
+    "glm-5.1",
+    "glm-5-turbo",
+    "glm-5",
+    "glm-4.7",
+    "glm-4.7-flash",
+    "glm-4.7-flashx",
+    "glm-4.6",
+    "glm-4.5-air",
+    "glm-4.5-airx",
+    "glm-4.5-flash",
+    "glm-4-flash-250414",
+    "glm-4-flashx-250414",
+];
+
+pub const GLM_STANDARD_CHAT_MANIFEST: StaticCatalogManifest = StaticCatalogManifest {
+    provider: "GLM",
+    version: "glm-chat-completions-schema@2026-07-14",
+    api_root: GLM_STANDARD_ROOT,
+    source: "https://docs.bigmodel.cn/api-reference/模型-api/对话补全",
+    // The same official request schema labels glm-5.2 as its default.
+    default_model: Some("glm-5.2"),
+    models: GLM_STANDARD_CHAT_MODELS,
+};
+
+/// A parsed API root whose path is authoritative. `https://host/v1` and
+/// `https://host/inference/v1` remain exactly those roots; endpoint construction never guesses,
+/// inserts, or strips a version segment.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ApiRoot(String);
+
+impl ApiRoot {
+    pub fn parse(value: &str) -> Result<Self, ProviderError> {
+        let mut url = Url::parse(value).map_err(|_| {
+            ProviderError::Configuration("API root must be an absolute HTTP(S) URL".into())
+        })?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(ProviderError::Configuration(
+                "API root scheme must be http or https".into(),
+            ));
+        }
+        if url.host_str().is_none() {
+            return Err(ProviderError::Configuration(
+                "API root must include a host".into(),
+            ));
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(ProviderError::Configuration(
+                "API root must not contain user information".into(),
+            ));
+        }
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err(ProviderError::Configuration(
+                "API root must not contain a query or fragment".into(),
+            ));
+        }
+
+        // Url canonicalizes origin/path syntax. Store one representation with no trailing slash
+        // so endpoint appends are mechanical and do not invoke URL-join replacement semantics.
+        let normalized_path = url.path().trim_end_matches('/').to_string();
+        url.set_path(if normalized_path.is_empty() {
+            "/"
+        } else {
+            &normalized_path
+        });
+        let normalized = url.as_str().trim_end_matches('/').to_string();
+        Ok(Self(normalized))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Append a relative endpoint path to the complete configured root.
+    pub fn endpoint(&self, path: &str) -> Result<Url, ProviderError> {
+        let path = path.trim_matches('/');
+        if path.is_empty()
+            || path.split('/').any(|segment| {
+                segment.is_empty()
+                    || matches!(segment, "." | "..")
+                    || segment.contains(['?', '#', '\\'])
+            })
+        {
+            return Err(ProviderError::Configuration(
+                "provider endpoint path is invalid".into(),
+            ));
+        }
+        Url::parse(&format!("{}/{path}", self.0)).map_err(|_| {
+            ProviderError::Configuration("provider endpoint could not be constructed".into())
+        })
+    }
+
+    /// Build an endpoint at the provider origin, intentionally ignoring the configured API path.
+    /// This exists only for documented out-of-tree account endpoints such as DeepSeek's
+    /// `/user/balance`; model/turn endpoints must always use `endpoint`.
+    fn origin_endpoint(&self, path: &str) -> Result<Url, ProviderError> {
+        let mut origin = Url::parse(&self.0).map_err(|_| {
+            ProviderError::Configuration("provider origin could not be parsed".into())
+        })?;
+        origin.set_path("/");
+        let origin = ApiRoot::parse(origin.as_str())?;
+        origin.endpoint(path)
+    }
+}
+
+impl std::str::FromStr for ApiRoot {
+    type Err = ProviderError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+/// One configured account/gateway. A credential is intentionally omitted from Debug output.
+#[derive(Clone)]
+pub struct ProviderInstance {
+    id: String,
+    display_name: String,
+    adapter: AdapterKind,
+    error_profile: ErrorProfile,
+    api_root: ApiRoot,
+    catalog_strategy: CatalogStrategy,
+    credential: Option<String>,
+}
+
+impl fmt::Debug for ProviderInstance {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderInstance")
+            .field("id", &self.id)
+            .field("display_name", &self.display_name)
+            .field("adapter", &self.adapter)
+            .field("error_profile", &self.error_profile)
+            .field("api_root", &self.api_root)
+            .field("catalog_strategy", &self.catalog_strategy)
+            .field(
+                "credential",
+                &self.credential.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+
+impl ProviderInstance {
+    pub fn builtin(
+        builtin: BuiltinProvider,
+        credential: Option<String>,
+    ) -> Result<Self, ProviderError> {
+        match builtin {
+            BuiltinProvider::Anthropic => Self::new(
+                "anthropic",
+                "Anthropic",
+                AdapterKind::AnthropicMessages,
+                ApiRoot::parse(ANTHROPIC_ROOT)?,
+                credential,
+            ),
+            BuiltinProvider::OpenAi => Self::new(
+                "openai",
+                "OpenAI",
+                AdapterKind::OpenAiResponses,
+                ApiRoot::parse(OPENAI_ROOT)?,
+                credential,
+            ),
+        }
+    }
+
+    pub fn custom(
+        id: impl Into<String>,
+        display_name: impl Into<String>,
+        adapter: AdapterKind,
+        api_root: ApiRoot,
+        credential: Option<String>,
+    ) -> Result<Self, ProviderError> {
+        Self::new(id, display_name, adapter, api_root, credential)
+    }
+
+    pub fn new(
+        id: impl Into<String>,
+        display_name: impl Into<String>,
+        adapter: AdapterKind,
+        api_root: ApiRoot,
+        credential: Option<String>,
+    ) -> Result<Self, ProviderError> {
+        let id = id.into();
+        let display_name = display_name.into();
+        if id.is_empty()
+            || id.len() > MAX_INSTANCE_ID_BYTES
+            || !id.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+            })
+        {
+            return Err(ProviderError::Configuration(
+                "provider instance id is invalid".into(),
+            ));
+        }
+        if display_name.is_empty() || display_name.len() > MAX_DISPLAY_NAME_BYTES {
+            return Err(ProviderError::Configuration(
+                "provider display name is invalid".into(),
+            ));
+        }
+        let catalog_strategy = default_catalog_strategy(adapter, &api_root)?;
+        let error_profile = default_error_profile(adapter, &api_root);
+        let credential = credential.filter(|value| !value.trim().is_empty());
+        Ok(Self {
+            id,
+            display_name,
+            adapter,
+            error_profile,
+            api_root,
+            catalog_strategy,
+            credential,
+        })
+    }
+
+    /// Override catalog routing with an explicit, already-parsed strategy. This is the controlled
+    /// seam used by local conformance tests and by future operator catalog plugins; it never
+    /// derives an endpoint from a turn URL.
+    pub fn with_catalog_strategy(
+        mut self,
+        catalog_strategy: CatalogStrategy,
+    ) -> Result<Self, ProviderError> {
+        validate_catalog_strategy(self.adapter, &catalog_strategy)?;
+        self.catalog_strategy = catalog_strategy;
+        Ok(self)
+    }
+
+    pub fn anthropic(credential: Option<String>) -> Result<Self, ProviderError> {
+        Self::builtin(BuiltinProvider::Anthropic, credential)
+    }
+
+    pub fn openai(credential: Option<String>) -> Result<Self, ProviderError> {
+        Self::builtin(BuiltinProvider::OpenAi, credential)
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    pub fn adapter(&self) -> AdapterKind {
+        self.adapter
+    }
+
+    pub fn error_profile(&self) -> ErrorProfile {
+        self.error_profile
+    }
+
+    /// Explicitly select an error vocabulary for a trusted gateway. The default for an unknown
+    /// root is conservative and intentionally ignores provider-specific numeric business codes.
+    pub fn with_error_profile(mut self, error_profile: ErrorProfile) -> Self {
+        self.error_profile = error_profile;
+        self
+    }
+
+    pub fn api_root(&self) -> &ApiRoot {
+        &self.api_root
+    }
+
+    pub fn catalog_strategy(&self) -> &CatalogStrategy {
+        &self.catalog_strategy
+    }
+
+    pub fn has_credential(&self) -> bool {
+        self.credential.is_some()
+    }
+
+    /// Derive an opaque, installation-local scope for credential-visible catalog evidence.
+    ///
+    /// The credential never crosses the provider boundary. The caller supplies a random local
+    /// key and persists only this HMAC alongside the catalog, so neither a raw API key nor an
+    /// offline-testable naked credential hash is written to disk. Route metadata is included in
+    /// the MAC input to avoid revealing that two provider instances reuse the same credential.
+    pub fn catalog_cache_credential_scope(&self, local_key: &[u8; 32]) -> Option<[u8; 32]> {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+
+        let credential = self.credential.as_deref()?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(local_key)
+            .expect("HMAC-SHA256 accepts every key length");
+        update_mac_part(&mut mac, b"core/catalog-cache-credential-scope/v1");
+        update_mac_part(&mut mac, self.id.as_bytes());
+        update_mac_part(&mut mac, self.api_root.as_str().as_bytes());
+        update_mac_part(&mut mac, adapter_scope_name(self.adapter).as_bytes());
+        update_mac_part(&mut mac, credential.as_bytes());
+        Some(mac.finalize().into_bytes().into())
+    }
+
+    /// Construct the turn transport without exposing the credential to frontend crates.
+    pub fn build_turn_provider(&self) -> Result<Box<dyn crate::Provider>, ProviderError> {
+        let credential =
+            self.credential
+                .clone()
+                .ok_or_else(|| ProviderError::MissingCredential {
+                    provider: self.id.clone(),
+                })?;
+        match self.adapter {
+            AdapterKind::AnthropicMessages => Ok(Box::new(
+                crate::Anthropic::with_root(credential, self.api_root.clone())?
+                    .with_error_profile(self.error_profile)
+                    .with_route_scope(self.id.clone())?,
+            )),
+            AdapterKind::OpenAiCompatibleChat => Ok(Box::new(
+                crate::OpenAiCompat::with_root(credential, self.api_root.clone())?
+                    .with_error_profile(self.error_profile)
+                    .with_route_scope(self.id.clone())?,
+            )),
+            AdapterKind::OpenAiResponses => Ok(Box::new(
+                crate::OpenAiResponses::with_root(credential, self.api_root.clone())?
+                    .with_error_profile(self.error_profile)
+                    .with_route_scope(self.id.clone())?,
+            )),
+        }
+    }
+
+    pub(crate) fn credential(&self) -> Option<&str> {
+        self.credential.as_deref()
+    }
+}
+
+fn update_mac_part(mac: &mut hmac::Hmac<sha2::Sha256>, value: &[u8]) {
+    use hmac::Mac;
+
+    mac.update(&(value.len() as u64).to_be_bytes());
+    mac.update(value);
+}
+
+fn adapter_scope_name(adapter: AdapterKind) -> &'static str {
+    match adapter {
+        AdapterKind::AnthropicMessages => "anthropic_messages",
+        AdapterKind::OpenAiCompatibleChat => "openai_chat",
+        AdapterKind::OpenAiResponses => "openai_responses",
+    }
+}
+
+fn default_error_profile(adapter: AdapterKind, api_root: &ApiRoot) -> ErrorProfile {
+    match api_root.as_str() {
+        ANTHROPIC_ROOT if adapter == AdapterKind::AnthropicMessages => ErrorProfile::Anthropic,
+        OPENAI_ROOT if adapter == AdapterKind::OpenAiResponses => ErrorProfile::OpenAi,
+        DEEPSEEK_ROOT | DEEPSEEK_V1_ROOT => ErrorProfile::DeepSeek,
+        GLM_STANDARD_ROOT | GLM_CODING_ROOT | GLM_ANTHROPIC_ROOT => ErrorProfile::Glm,
+        MINIMAX_ROOT | MINIMAX_LEGACY_ROOT => ErrorProfile::MiniMax,
+        FIREWORKS_INFERENCE_ROOT => ErrorProfile::Fireworks,
+        _ => ErrorProfile::CustomConservative,
+    }
+}
+
+fn default_catalog_strategy(
+    adapter: AdapterKind,
+    api_root: &ApiRoot,
+) -> Result<CatalogStrategy, ProviderError> {
+    let strategy = match api_root.as_str() {
+        FIREWORKS_INFERENCE_ROOT => CatalogStrategy::FireworksControlPlane {
+            api_root: ApiRoot::parse(FIREWORKS_CONTROL_PLANE_ROOT)?,
+        },
+        GLM_STANDARD_ROOT | GLM_CODING_ROOT | GLM_ANTHROPIC_ROOT => CatalogStrategy::Unsupported {
+            reason: GLM_UNSUPPORTED_CATALOG_REASON.into(),
+        },
+        _ => match adapter {
+            AdapterKind::AnthropicMessages => CatalogStrategy::AnthropicModels,
+            AdapterKind::OpenAiCompatibleChat | AdapterKind::OpenAiResponses => {
+                CatalogStrategy::OpenAiModels
+            }
+        },
+    };
+    validate_catalog_strategy(adapter, &strategy)?;
+    Ok(strategy)
+}
+
+fn validate_catalog_strategy(
+    adapter: AdapterKind,
+    strategy: &CatalogStrategy,
+) -> Result<(), ProviderError> {
+    let valid = match strategy {
+        CatalogStrategy::AnthropicModels => adapter == AdapterKind::AnthropicMessages,
+        CatalogStrategy::OpenAiModels => adapter != AdapterKind::AnthropicMessages,
+        CatalogStrategy::FireworksControlPlane { .. } => {
+            adapter == AdapterKind::OpenAiCompatibleChat
+        }
+        CatalogStrategy::Unsupported { .. } => true,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(ProviderError::Configuration(
+            "catalog strategy is incompatible with the turn adapter".into(),
+        ))
+    }
+}
+
+/// Known account usability. `Unknown` is not equivalent to funded: most providers expose no
+/// safe balance API for normal API keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountAvailability {
+    Unknown,
+    Discovering,
+    Ready,
+    MissingCredential,
+    AuthenticationBlocked,
+    BillingBlocked,
+    PermissionBlocked,
+    RateLimited,
+    Degraded,
+    ConfigurationError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BalanceAvailability {
+    Unknown,
+    Sufficient,
+    Depleted,
+}
+
+/// Optional account probes admitted only where a provider documents a normal-key balance API.
+/// Most providers intentionally have no variant and remain `BalanceAvailability::Unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountProbe {
+    DeepSeekBalance,
+    /// Read Fireworks' documented account control-plane `suspendState`; this does not make an
+    /// inference request and does not guess remaining credit from ordinary usage metadata.
+    FireworksSuspendState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccountProbeResult {
+    pub availability: AccountAvailability,
+    pub balance: BalanceAvailability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RawModel {
+    pub id: String,
+    pub display_name: Option<String>,
+    pub created_at: Option<String>,
+    pub owned_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Compatibility {
+    Compatible,
+    Unknown,
+    Incompatible,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Selectability {
+    Selectable,
+    Disabled { reason: &'static str },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModelDescriptor {
+    pub raw: RawModel,
+    pub family_id: String,
+    pub compatibility: Compatibility,
+    pub selectability: Selectability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelFamily {
+    pub id: String,
+    pub display_name: String,
+    pub models: Vec<ModelDescriptor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogSnapshot {
+    pub provider_instance_id: String,
+    pub adapter: AdapterKind,
+    pub models: Vec<ModelDescriptor>,
+    pub families: Vec<ModelFamily>,
+}
+
+impl CatalogSnapshot {
+    fn from_raw(instance: &ProviderInstance, raw_models: Vec<RawModel>) -> Self {
+        let models = raw_models
+            .into_iter()
+            .map(|raw| describe_model(instance.adapter, raw))
+            .collect();
+        Self::from_descriptors(instance, models)
+    }
+
+    fn from_descriptors(instance: &ProviderInstance, models: Vec<ModelDescriptor>) -> Self {
+        let mut deduped = BTreeMap::<String, ModelDescriptor>::new();
+        for model in models {
+            // Choose a canonical lexicographic record for duplicate ids so output is independent
+            // of provider page/response order, even if duplicate metadata is inconsistent.
+            deduped
+                .entry(model.raw.id.clone())
+                .and_modify(|current| {
+                    if model < *current {
+                        *current = model.clone();
+                    }
+                })
+                .or_insert(model);
+        }
+        let models: Vec<ModelDescriptor> = deduped.into_values().collect();
+        let mut grouped = BTreeMap::<String, Vec<ModelDescriptor>>::new();
+        for model in &models {
+            grouped
+                .entry(model.family_id.clone())
+                .or_default()
+                .push(model.clone());
+        }
+        let families = grouped
+            .into_iter()
+            .map(|(id, mut models)| {
+                models.sort_by(|left, right| left.raw.id.cmp(&right.raw.id));
+                ModelFamily {
+                    display_name: family_display_name(&id),
+                    id,
+                    models,
+                }
+            })
+            .collect();
+        Self {
+            provider_instance_id: instance.id.clone(),
+            adapter: instance.adapter,
+            models,
+            families,
+        }
+    }
+}
+
+/// Construct the documented GLM standard Chat Completions catalog without network access.
+///
+/// The returned leaves are endpoint-compatible schema entries, not credential-visible inventory.
+/// This function therefore does not inspect credentials or mutate `ProviderHealthStore`; callers
+/// must retain `AccountAvailability::Unknown` unless a separate request supplies stronger evidence.
+pub fn glm_standard_schema_catalog(
+    instance: &ProviderInstance,
+) -> Result<CatalogSnapshot, ProviderError> {
+    if instance.api_root.as_str() != GLM_STANDARD_CHAT_MANIFEST.api_root
+        || instance.adapter != AdapterKind::OpenAiCompatibleChat
+    {
+        return Err(ProviderError::Configuration(
+            "GLM standard schema manifest requires the exact standard Chat Completions root and adapter"
+                .into(),
+        ));
+    }
+    let models = GLM_STANDARD_CHAT_MANIFEST
+        .models
+        .iter()
+        .map(|model_id| RawModel {
+            id: (*model_id).to_string(),
+            display_name: Some((*model_id).to_string()),
+            created_at: None,
+            owned_by: None,
+        })
+        .map(|raw| describe_model(instance.adapter, raw))
+        .collect();
+    Ok(CatalogSnapshot::from_descriptors(instance, models))
+}
+
+/// Discover all models visible to the configured credential within strict request, page, byte,
+/// model, and wall-clock bounds. Missing credentials return before a client/request is created.
+pub async fn discover_catalog(
+    instance: &ProviderInstance,
+) -> Result<CatalogSnapshot, ProviderError> {
+    if let CatalogStrategy::Unsupported { reason } = &instance.catalog_strategy {
+        return Err(ProviderError::UnsupportedCatalog {
+            provider: instance.id.clone(),
+            reason: reason.clone(),
+        });
+    }
+    let credential = instance
+        .credential()
+        .ok_or_else(|| ProviderError::MissingCredential {
+            provider: instance.id.clone(),
+        })?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(PER_REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| ProviderError::Configuration("HTTP client could not be built".into()))?;
+    let deadline = Instant::now() + TOTAL_DISCOVERY_TIMEOUT;
+    match &instance.catalog_strategy {
+        CatalogStrategy::AnthropicModels => {
+            let raw = discover_anthropic(&client, instance, credential, deadline).await?;
+            Ok(CatalogSnapshot::from_raw(instance, raw))
+        }
+        CatalogStrategy::OpenAiModels => {
+            let raw = discover_openai(&client, instance, credential, deadline).await?;
+            Ok(CatalogSnapshot::from_raw(instance, raw))
+        }
+        CatalogStrategy::FireworksControlPlane { api_root } => {
+            let models =
+                discover_fireworks(&client, instance, credential, api_root, deadline).await?;
+            Ok(CatalogSnapshot::from_descriptors(instance, models))
+        }
+        CatalogStrategy::Unsupported { .. } => unreachable!("handled before credential lookup"),
+    }
+}
+
+/// Run a documented, bounded account probe. DeepSeek's balance endpoint is rooted at the
+/// provider origin (`/user/balance`), not below the model API root (`/v1`). Fireworks account
+/// state comes from the separately documented control plane selected by `CatalogStrategy`.
+pub async fn probe_account(
+    instance: &ProviderInstance,
+    probe: AccountProbe,
+) -> Result<AccountProbeResult, ProviderError> {
+    let credential = instance
+        .credential()
+        .ok_or_else(|| ProviderError::MissingCredential {
+            provider: instance.id.clone(),
+        })?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(PER_REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| ProviderError::Configuration("HTTP client could not be built".into()))?;
+    match probe {
+        AccountProbe::DeepSeekBalance => {
+            let endpoint = instance.api_root.origin_endpoint("user/balance")?;
+            tokio::time::timeout(PER_REQUEST_TIMEOUT, async {
+                let response = client
+                    .get(endpoint)
+                    .bearer_auth(credential)
+                    .send()
+                    .await
+                    .map_err(|error| ProviderError::Http(error.to_string()))?;
+                if !response.status().is_success() {
+                    return Err(api_error_from_response(
+                        response,
+                        instance.adapter,
+                        instance.error_profile,
+                    )
+                    .await);
+                }
+                let bytes =
+                    read_bounded_response(response, MAX_ACCOUNT_PROBE_PAGE_BYTES, "account probe")
+                        .await?;
+                let payload: DeepSeekBalance = serde_json::from_slice(&bytes).map_err(|error| {
+                    ProviderError::Decode(format!("malformed DeepSeek balance response: {error}"))
+                })?;
+                Ok(deepseek_probe_result(payload.is_available))
+            })
+            .await
+            .map_err(|_| ProviderError::Http("account probe timed out".into()))?
+        }
+        AccountProbe::FireworksSuspendState => {
+            let CatalogStrategy::FireworksControlPlane { api_root } = &instance.catalog_strategy
+            else {
+                return Err(ProviderError::Configuration(
+                    "Fireworks account probe requires an explicit Fireworks control-plane strategy"
+                        .into(),
+                ));
+            };
+            probe_fireworks_accounts(&client, instance, credential, api_root).await
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct DeepSeekBalance {
+    is_available: bool,
+}
+
+fn deepseek_probe_result(is_available: bool) -> AccountProbeResult {
+    if is_available {
+        AccountProbeResult {
+            availability: AccountAvailability::Ready,
+            balance: BalanceAvailability::Sufficient,
+        }
+    } else {
+        AccountProbeResult {
+            availability: AccountAvailability::BillingBlocked,
+            balance: BalanceAvailability::Depleted,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FireworksRpcStatus {
+    code: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FireworksAccount {
+    name: String,
+    state: Option<String>,
+    status: Option<FireworksRpcStatus>,
+    suspend_state: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FireworksAccountsPage {
+    accounts: Vec<FireworksAccount>,
+    next_page_token: Option<String>,
+}
+
+async fn probe_fireworks_accounts(
+    client: &reqwest::Client,
+    instance: &ProviderInstance,
+    credential: &str,
+    control_plane_root: &ApiRoot,
+) -> Result<AccountProbeResult, ProviderError> {
+    let endpoint = control_plane_root.endpoint("accounts")?;
+    let deadline = Instant::now() + TOTAL_DISCOVERY_TIMEOUT;
+    let mut accounts = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = BTreeSet::new();
+
+    for page_number in 0..MAX_ACCOUNT_PAGES {
+        let mut request = client
+            .get(endpoint.clone())
+            .bearer_auth(credential)
+            .query(&[("pageSize", FIREWORKS_PAGE_SIZE.to_string())])
+            .query(&[("readMask", "name,state,status,suspendState")]);
+        if let Some(page_token) = &cursor {
+            request = request.query(&[("pageToken", page_token)]);
+        }
+        let bytes = execute_account_request(
+            request,
+            instance.adapter,
+            instance.error_profile,
+            deadline,
+            total_bytes,
+        )
+        .await?;
+        total_bytes = total_bytes
+            .checked_add(bytes.len())
+            .ok_or_else(|| ProviderError::Decode("account probe byte counter overflow".into()))?;
+        let page: FireworksAccountsPage = serde_json::from_slice(&bytes).map_err(|error| {
+            ProviderError::Decode(format!("malformed Fireworks accounts response: {error}"))
+        })?;
+        for account in page.accounts {
+            validate_model_text(&account.name, MAX_MODEL_ID_BYTES, "account name")?;
+            accounts.push(account);
+            if accounts.len() > MAX_ACCOUNTS {
+                return Err(ProviderError::Decode(
+                    "Fireworks account probe exceeded account bound".into(),
+                ));
+            }
+        }
+        let Some(next) = advance_page_token(
+            "Fireworks accounts",
+            cursor.as_deref(),
+            &mut seen_cursors,
+            page.next_page_token,
+        )?
+        else {
+            return Ok(aggregate_fireworks_accounts(accounts));
+        };
+        cursor = Some(next);
+        if page_number + 1 == MAX_ACCOUNT_PAGES {
+            return Err(ProviderError::Decode(
+                "Fireworks account probe exceeded page bound".into(),
+            ));
+        }
+    }
+    Err(ProviderError::Decode(
+        "Fireworks account probe exceeded page bound".into(),
+    ))
+}
+
+async fn execute_account_request(
+    request: reqwest::RequestBuilder,
+    adapter: AdapterKind,
+    error_profile: ErrorProfile,
+    deadline: Instant,
+    total_bytes_before: usize,
+) -> Result<Vec<u8>, ProviderError> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(ProviderError::Http("account probe timed out".into()));
+    }
+    let timeout = remaining.min(PER_REQUEST_TIMEOUT);
+    let bytes = tokio::time::timeout(timeout, async move {
+        let response = request
+            .send()
+            .await
+            .map_err(|error| ProviderError::Http(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(api_error_from_response(response, adapter, error_profile).await);
+        }
+        read_bounded_response(response, MAX_ACCOUNT_PROBE_PAGE_BYTES, "account probe page").await
+    })
+    .await
+    .map_err(|_| ProviderError::Http("account probe request timed out".into()))??;
+    let total = total_bytes_before
+        .checked_add(bytes.len())
+        .ok_or_else(|| ProviderError::Decode("account probe total size overflow".into()))?;
+    if total > MAX_ACCOUNT_PROBE_TOTAL_BYTES {
+        return Err(ProviderError::Decode(
+            "account probe exceeded total byte bound".into(),
+        ));
+    }
+    Ok(bytes)
+}
+
+fn aggregate_fireworks_accounts(accounts: Vec<FireworksAccount>) -> AccountProbeResult {
+    let mut by_account = BTreeMap::<String, AccountProbeResult>::new();
+    for account in accounts {
+        let result = fireworks_account_result(
+            account.state.as_deref(),
+            account
+                .status
+                .as_ref()
+                .and_then(|status| status.code.as_deref()),
+            account.suspend_state.as_deref(),
+        );
+        by_account
+            .entry(account.name)
+            .and_modify(|current| {
+                if *current != result {
+                    // Repeated resource names with inconsistent snapshots are not authoritative.
+                    *current = unknown_account_probe_result();
+                }
+            })
+            .or_insert(result);
+    }
+    let mut results = by_account.into_values();
+    let Some(first) = results.next() else {
+        return unknown_account_probe_result();
+    };
+    if results.all(|result| result == first) {
+        first
+    } else {
+        // A key may expose more than one account. Conflicting account states do not identify which
+        // one funds inference, so collapsing them to either funded or depleted would be a guess.
+        unknown_account_probe_result()
+    }
+}
+
+fn fireworks_account_result(
+    state: Option<&str>,
+    status_code: Option<&str>,
+    suspend_state: Option<&str>,
+) -> AccountProbeResult {
+    match suspend_state {
+        Some("FAILED_PAYMENTS" | "CREDIT_DEPLETED" | "MONTHLY_SPEND_LIMIT_EXCEEDED") => {
+            AccountProbeResult {
+                availability: AccountAvailability::BillingBlocked,
+                balance: BalanceAvailability::Depleted,
+            }
+        }
+        Some("BLOCKED_BY_ABUSE_RULE") => AccountProbeResult {
+            availability: AccountAvailability::PermissionBlocked,
+            balance: BalanceAvailability::Unknown,
+        },
+        Some("UNSUSPENDED") if state == Some("READY") && status_code == Some("OK") => {
+            AccountProbeResult {
+                availability: AccountAvailability::Ready,
+                // Not suspended is not proof of an exact positive remaining balance.
+                balance: BalanceAvailability::Unknown,
+            }
+        }
+        _ => unknown_account_probe_result(),
+    }
+}
+
+fn unknown_account_probe_result() -> AccountProbeResult {
+    AccountProbeResult {
+        availability: AccountAvailability::Unknown,
+        balance: BalanceAvailability::Unknown,
+    }
+}
+
+async fn read_bounded_response(
+    response: reqwest::Response,
+    max_bytes: usize,
+    label: &'static str,
+) -> Result<Vec<u8>, ProviderError> {
+    let mut body = Vec::with_capacity(4096.min(max_bytes));
+    let mut stream = response.bytes_stream();
+    while let Some(next) = stream.next().await {
+        let chunk = next.map_err(|error| ProviderError::Http(error.to_string()))?;
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(ProviderError::Decode(format!(
+                "{label} response exceeded byte bound"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn discover_anthropic(
+    client: &reqwest::Client,
+    instance: &ProviderInstance,
+    credential: &str,
+    deadline: Instant,
+) -> Result<Vec<RawModel>, ProviderError> {
+    let endpoint = instance.api_root.endpoint("models")?;
+    let mut models = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = BTreeSet::new();
+
+    for page_number in 0..MAX_CATALOG_PAGES {
+        let mut request = client
+            .get(endpoint.clone())
+            .header("x-api-key", credential)
+            .header("anthropic-version", "2023-06-01")
+            .query(&[("limit", CATALOG_PAGE_SIZE.to_string())]);
+        if let Some(after_id) = &cursor {
+            request = request.query(&[("after_id", after_id)]);
+        }
+        let bytes = execute_catalog_request(
+            request,
+            instance.adapter,
+            instance.error_profile,
+            deadline,
+            total_bytes,
+        )
+        .await?;
+        total_bytes = total_bytes
+            .checked_add(bytes.len())
+            .ok_or_else(|| ProviderError::Decode("catalog byte counter overflow".into()))?;
+        let page: AnthropicModelsPage = decode_page(&bytes, total_bytes)?;
+        for model in page.data {
+            models.push(raw_anthropic_model(model)?);
+            enforce_model_bound(models.len())?;
+        }
+        let Some(next) = advance_anthropic_cursor(
+            cursor.as_deref(),
+            &mut seen_cursors,
+            page.has_more,
+            page.last_id,
+        )?
+        else {
+            return Ok(models);
+        };
+        cursor = Some(next);
+        if page_number + 1 == MAX_CATALOG_PAGES {
+            return Err(ProviderError::Decode(
+                "Anthropic catalog exceeded page bound".into(),
+            ));
+        }
+    }
+    Err(ProviderError::Decode(
+        "Anthropic catalog exceeded page bound".into(),
+    ))
+}
+
+fn advance_anthropic_cursor(
+    current: Option<&str>,
+    seen: &mut BTreeSet<String>,
+    has_more: bool,
+    last_id: Option<String>,
+) -> Result<Option<String>, ProviderError> {
+    if !has_more {
+        return Ok(None);
+    }
+    let next = last_id.filter(|value| !value.is_empty()).ok_or_else(|| {
+        ProviderError::Decode("Anthropic catalog has_more without last_id".into())
+    })?;
+    if current == Some(next.as_str()) || !seen.insert(next.clone()) {
+        return Err(ProviderError::Decode(
+            "Anthropic catalog cursor did not advance".into(),
+        ));
+    }
+    Ok(Some(next))
+}
+
+async fn discover_openai(
+    client: &reqwest::Client,
+    instance: &ProviderInstance,
+    credential: &str,
+    deadline: Instant,
+) -> Result<Vec<RawModel>, ProviderError> {
+    let request = client
+        .get(instance.api_root.endpoint("models")?)
+        .bearer_auth(credential);
+    let bytes = execute_catalog_request(
+        request,
+        instance.adapter,
+        instance.error_profile,
+        deadline,
+        0,
+    )
+    .await?;
+    let page: OpenAiModelsPage = decode_page(&bytes, bytes.len())?;
+    enforce_model_bound(page.data.len())?;
+    page.data.into_iter().map(raw_openai_model).collect()
+}
+
+async fn discover_fireworks(
+    client: &reqwest::Client,
+    instance: &ProviderInstance,
+    credential: &str,
+    control_plane_root: &ApiRoot,
+    deadline: Instant,
+) -> Result<Vec<ModelDescriptor>, ProviderError> {
+    // Fireworks documents public serverless inventory under `accounts/fireworks/models`. It also
+    // documents List Accounts and account-scoped List Models. Enumerating those private model
+    // resources is safe. Dedicated deployment selectability is admitted only when List Deployed
+    // Models returns a healthy default deployment, because only that documented state permits the
+    // full model resource to be queried without inventing a `#deployment` routing suffix.
+    let mut budget = FireworksCatalogBudget::default();
+    let mut models = BTreeMap::new();
+    discover_fireworks_models_at(
+        client,
+        instance,
+        credential,
+        control_plane_root,
+        FIREWORKS_SERVERLESS_MODELS_PATH,
+        Some(FIREWORKS_SERVERLESS_FILTER),
+        FireworksModelScope::PublicServerless,
+        "accounts/fireworks",
+        None,
+        None,
+        deadline,
+        &mut budget,
+        &mut models,
+    )
+    .await?;
+
+    let accounts = discover_fireworks_catalog_accounts(
+        client,
+        instance,
+        credential,
+        control_plane_root,
+        deadline,
+        &mut budget,
+    )
+    .await?;
+    for (account, account_state) in accounts {
+        if account == "accounts/fireworks" {
+            continue;
+        }
+        let default_deployed_models = discover_fireworks_default_deployments(
+            client,
+            instance,
+            credential,
+            control_plane_root,
+            &account,
+            deadline,
+            &mut budget,
+        )
+        .await?;
+        discover_fireworks_models_at(
+            client,
+            instance,
+            credential,
+            control_plane_root,
+            &format!("{account}/models"),
+            None,
+            FireworksModelScope::AccountPrivate,
+            &account,
+            Some(account_state),
+            Some(&default_deployed_models),
+            deadline,
+            &mut budget,
+            &mut models,
+        )
+        .await?;
+    }
+    Ok(models.into_values().collect())
+}
+
+#[derive(Default)]
+struct FireworksCatalogBudget {
+    pages: usize,
+    total_bytes: usize,
+    models: usize,
+    deployed_models: usize,
+}
+
+impl FireworksCatalogBudget {
+    fn record_page(&mut self, bytes: usize) -> Result<(), ProviderError> {
+        self.pages = self
+            .pages
+            .checked_add(1)
+            .ok_or_else(|| ProviderError::Decode("catalog page counter overflow".into()))?;
+        if self.pages > MAX_FIREWORKS_CATALOG_PAGES {
+            return Err(ProviderError::Decode(
+                "Fireworks catalog exceeded aggregate page bound".into(),
+            ));
+        }
+        self.total_bytes = self
+            .total_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| ProviderError::Decode("catalog byte counter overflow".into()))?;
+        if self.total_bytes > MAX_TOTAL_BYTES {
+            return Err(ProviderError::Decode(
+                "Fireworks catalog exceeded aggregate byte bound".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn record_model(&mut self) -> Result<(), ProviderError> {
+        self.models = self
+            .models
+            .checked_add(1)
+            .ok_or_else(|| ProviderError::Decode("catalog model counter overflow".into()))?;
+        enforce_model_bound(self.models)
+    }
+
+    fn record_deployed_model(&mut self) -> Result<(), ProviderError> {
+        self.deployed_models = self.deployed_models.checked_add(1).ok_or_else(|| {
+            ProviderError::Decode("Fireworks deployed-model counter overflow".into())
+        })?;
+        if self.deployed_models > MAX_FIREWORKS_DEPLOYED_MODELS {
+            return Err(ProviderError::Decode(
+                "Fireworks catalog exceeded deployed-model bound".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FireworksModelScope {
+    PublicServerless,
+    AccountPrivate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FireworksCatalogAccountState {
+    result: AccountProbeResult,
+    conflicting: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn discover_fireworks_models_at(
+    client: &reqwest::Client,
+    instance: &ProviderInstance,
+    credential: &str,
+    control_plane_root: &ApiRoot,
+    resource_path: &str,
+    filter: Option<&str>,
+    scope: FireworksModelScope,
+    expected_account: &str,
+    account_state: Option<FireworksCatalogAccountState>,
+    default_deployed_models: Option<&BTreeSet<String>>,
+    deadline: Instant,
+    budget: &mut FireworksCatalogBudget,
+    models: &mut BTreeMap<String, ModelDescriptor>,
+) -> Result<(), ProviderError> {
+    let expected_owner = fireworks_account_id(expected_account)?;
+    let endpoint = control_plane_root.endpoint(resource_path)?;
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = BTreeSet::new();
+
+    loop {
+        if budget.pages >= MAX_FIREWORKS_CATALOG_PAGES {
+            return Err(ProviderError::Decode(
+                "Fireworks catalog exceeded aggregate page bound".into(),
+            ));
+        }
+        let mut request = client
+            .get(endpoint.clone())
+            .bearer_auth(credential)
+            .query(&[("pageSize", FIREWORKS_PAGE_SIZE.to_string())]);
+        if let Some(filter) = filter {
+            request = request.query(&[("filter", filter)]);
+        }
+        if let Some(page_token) = &cursor {
+            request = request.query(&[("pageToken", page_token)]);
+        }
+        let bytes = execute_catalog_request(
+            request,
+            instance.adapter,
+            instance.error_profile,
+            deadline,
+            budget.total_bytes,
+        )
+        .await?;
+        budget.record_page(bytes.len())?;
+        let page: FireworksModelsPage = decode_page(&bytes, budget.total_bytes)?;
+        for model in page.models {
+            budget.record_model()?;
+            validate_fireworks_model_parent(&model.name, expected_owner, "model")?;
+            let has_default_deployment =
+                default_deployed_models.is_some_and(|deployed| deployed.contains(&model.name));
+            merge_fireworks_descriptor(
+                models,
+                describe_fireworks_model(model, scope, account_state, has_default_deployment)?,
+            );
+        }
+        let Some(next) = advance_page_token(
+            "Fireworks models",
+            cursor.as_deref(),
+            &mut seen_cursors,
+            page.next_page_token,
+        )?
+        else {
+            return Ok(());
+        };
+        cursor = Some(next);
+    }
+}
+
+async fn discover_fireworks_default_deployments(
+    client: &reqwest::Client,
+    instance: &ProviderInstance,
+    credential: &str,
+    control_plane_root: &ApiRoot,
+    account: &str,
+    deadline: Instant,
+    budget: &mut FireworksCatalogBudget,
+) -> Result<BTreeSet<String>, ProviderError> {
+    validate_fireworks_account_name(account)?;
+    let endpoint = control_plane_root.endpoint(&format!("{account}/deployedModels"))?;
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = BTreeSet::new();
+    // A model may have many named deployments, but Fireworks documents at most one effective
+    // default route. Multiple default records are inconsistent control-plane evidence and fail
+    // closed for that model leaf.
+    let mut default_evidence = BTreeMap::<String, bool>::new();
+
+    loop {
+        if budget.pages >= MAX_FIREWORKS_CATALOG_PAGES {
+            return Err(ProviderError::Decode(
+                "Fireworks catalog exceeded aggregate page bound".into(),
+            ));
+        }
+        let mut request = client
+            .get(endpoint.clone())
+            .bearer_auth(credential)
+            .query(&[("pageSize", FIREWORKS_PAGE_SIZE.to_string())])
+            .query(&[("readMask", "name,model,deployment,default,state,status")]);
+        if let Some(page_token) = &cursor {
+            request = request.query(&[("pageToken", page_token)]);
+        }
+        let bytes = execute_catalog_request(
+            request,
+            instance.adapter,
+            instance.error_profile,
+            deadline,
+            budget.total_bytes,
+        )
+        .await?;
+        budget.record_page(bytes.len())?;
+        let page: FireworksDeployedModelsPage = decode_page(&bytes, budget.total_bytes)?;
+        for deployed in page.deployed_models {
+            budget.record_deployed_model()?;
+            validate_fireworks_scoped_resource_name(
+                &deployed.name,
+                account,
+                "deployedModels",
+                "deployed model",
+            )?;
+            validate_fireworks_scoped_resource_name(
+                &deployed.deployment,
+                account,
+                "deployments",
+                "deployment",
+            )?;
+            validate_fireworks_model_parent(
+                &deployed.model,
+                fireworks_account_id(account)?,
+                "deployed model",
+            )?;
+            if deployed.is_default {
+                let healthy = deployed.state.as_deref() == Some("DEPLOYED")
+                    && deployed
+                        .status
+                        .as_ref()
+                        .and_then(|status| status.code.as_deref())
+                        == Some("OK");
+                use std::collections::btree_map::Entry;
+                match default_evidence.entry(deployed.model) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(healthy);
+                    }
+                    Entry::Occupied(mut entry) => {
+                        // Duplicate defaults are ambiguous even if both currently look healthy.
+                        entry.insert(false);
+                    }
+                }
+            }
+        }
+        let Some(next) = advance_page_token(
+            "Fireworks deployed models",
+            cursor.as_deref(),
+            &mut seen_cursors,
+            page.next_page_token,
+        )?
+        else {
+            return Ok(default_evidence
+                .into_iter()
+                .filter_map(|(model, healthy)| healthy.then_some(model))
+                .collect());
+        };
+        cursor = Some(next);
+    }
+}
+
+async fn discover_fireworks_catalog_accounts(
+    client: &reqwest::Client,
+    instance: &ProviderInstance,
+    credential: &str,
+    control_plane_root: &ApiRoot,
+    deadline: Instant,
+    budget: &mut FireworksCatalogBudget,
+) -> Result<BTreeMap<String, FireworksCatalogAccountState>, ProviderError> {
+    let endpoint = control_plane_root.endpoint("accounts")?;
+    let mut accounts = BTreeMap::<String, FireworksCatalogAccountState>::new();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = BTreeSet::new();
+    loop {
+        if budget.pages >= MAX_FIREWORKS_CATALOG_PAGES {
+            return Err(ProviderError::Decode(
+                "Fireworks catalog exceeded aggregate page bound".into(),
+            ));
+        }
+        let mut request = client
+            .get(endpoint.clone())
+            .bearer_auth(credential)
+            .query(&[("pageSize", FIREWORKS_PAGE_SIZE.to_string())])
+            .query(&[("readMask", "name,state,status,suspendState")]);
+        if let Some(page_token) = &cursor {
+            request = request.query(&[("pageToken", page_token)]);
+        }
+        let bytes = execute_catalog_request(
+            request,
+            instance.adapter,
+            instance.error_profile,
+            deadline,
+            budget.total_bytes,
+        )
+        .await?;
+        budget.record_page(bytes.len())?;
+        let page: FireworksAccountsPage = decode_page(&bytes, budget.total_bytes)?;
+        for account in page.accounts {
+            validate_fireworks_account_name(&account.name)?;
+            let result = fireworks_account_result(
+                account.state.as_deref(),
+                account
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.code.as_deref()),
+                account.suspend_state.as_deref(),
+            );
+            accounts
+                .entry(account.name)
+                .and_modify(|current| {
+                    if current.result != result {
+                        current.result = unknown_account_probe_result();
+                        current.conflicting = true;
+                    }
+                })
+                .or_insert(FireworksCatalogAccountState {
+                    result,
+                    conflicting: false,
+                });
+            if accounts.len() > MAX_FIREWORKS_CATALOG_ACCOUNTS {
+                return Err(ProviderError::Decode(
+                    "Fireworks catalog exceeded account bound".into(),
+                ));
+            }
+        }
+        let Some(next) = advance_page_token(
+            "Fireworks catalog accounts",
+            cursor.as_deref(),
+            &mut seen_cursors,
+            page.next_page_token,
+        )?
+        else {
+            return Ok(accounts);
+        };
+        cursor = Some(next);
+    }
+}
+
+fn merge_fireworks_descriptor(
+    models: &mut BTreeMap<String, ModelDescriptor>,
+    descriptor: ModelDescriptor,
+) {
+    use std::collections::btree_map::Entry;
+    match models.entry(descriptor.raw.id.clone()) {
+        Entry::Vacant(entry) => {
+            entry.insert(descriptor);
+        }
+        Entry::Occupied(mut entry) if entry.get() != &descriptor => {
+            let raw = std::cmp::min(entry.get().raw.clone(), descriptor.raw);
+            entry.insert(ModelDescriptor {
+                family_id: model_family(&raw.id),
+                raw,
+                compatibility: Compatibility::Unknown,
+                selectability: Selectability::Disabled {
+                    reason: "Fireworks returned conflicting metadata for this model",
+                },
+            });
+        }
+        Entry::Occupied(_) => {}
+    }
+}
+
+fn advance_page_token(
+    label: &'static str,
+    current: Option<&str>,
+    seen: &mut BTreeSet<String>,
+    next: Option<String>,
+) -> Result<Option<String>, ProviderError> {
+    let Some(next) = next.filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if next.len() > MAX_PAGE_TOKEN_BYTES || next.chars().any(char::is_control) {
+        return Err(ProviderError::Decode(format!(
+            "{label} page token is invalid"
+        )));
+    }
+    if current == Some(next.as_str()) || !seen.insert(next.clone()) {
+        return Err(ProviderError::Decode(format!(
+            "{label} page token did not advance"
+        )));
+    }
+    Ok(Some(next))
+}
+
+async fn execute_catalog_request(
+    request: reqwest::RequestBuilder,
+    adapter: AdapterKind,
+    error_profile: ErrorProfile,
+    deadline: Instant,
+    total_bytes_before: usize,
+) -> Result<Vec<u8>, ProviderError> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(ProviderError::Http("catalog discovery timed out".into()));
+    }
+    let timeout = remaining.min(PER_REQUEST_TIMEOUT);
+    tokio::time::timeout(timeout, async move {
+        let response = request
+            .send()
+            .await
+            .map_err(|error| ProviderError::Http(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(api_error_from_response(response, adapter, error_profile).await);
+        }
+        read_catalog_body(response, total_bytes_before).await
+    })
+    .await
+    .map_err(|_| ProviderError::Http("catalog request timed out".into()))?
+}
+
+async fn read_catalog_body(
+    response: reqwest::Response,
+    total_bytes_before: usize,
+) -> Result<Vec<u8>, ProviderError> {
+    let mut body = Vec::with_capacity(16 * 1024);
+    let mut stream = response.bytes_stream();
+    while let Some(next) = stream.next().await {
+        let chunk = next.map_err(|error| ProviderError::Http(error.to_string()))?;
+        let page_size = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| ProviderError::Decode("catalog page size overflow".into()))?;
+        let total_size = total_bytes_before
+            .checked_add(page_size)
+            .ok_or_else(|| ProviderError::Decode("catalog total size overflow".into()))?;
+        if page_size > MAX_PAGE_BYTES {
+            return Err(ProviderError::Decode(
+                "provider catalog page exceeded 2 MiB".into(),
+            ));
+        }
+        if total_size > MAX_TOTAL_BYTES {
+            return Err(ProviderError::Decode(
+                "provider catalog exceeded 8 MiB".into(),
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn decode_page<T: for<'de> Deserialize<'de>>(
+    bytes: &[u8],
+    total_bytes: usize,
+) -> Result<T, ProviderError> {
+    if bytes.len() > MAX_PAGE_BYTES || total_bytes > MAX_TOTAL_BYTES {
+        return Err(ProviderError::Decode(
+            "provider catalog response exceeded byte bounds".into(),
+        ));
+    }
+    serde_json::from_slice(bytes)
+        .map_err(|error| ProviderError::Decode(format!("malformed provider catalog: {error}")))
+}
+
+fn enforce_model_bound(count: usize) -> Result<(), ProviderError> {
+    if count > MAX_CATALOG_MODELS {
+        Err(ProviderError::Decode(
+            "provider catalog exceeded model bound".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct AnthropicModelsPage {
+    data: Vec<AnthropicModel>,
+    has_more: bool,
+    last_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AnthropicModel {
+    id: String,
+    display_name: Option<String>,
+    created_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiModelsPage {
+    data: Vec<OpenAiModel>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiModel {
+    id: String,
+    created: Option<u64>,
+    owned_by: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FireworksModelsPage {
+    models: Vec<FireworksModel>,
+    next_page_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FireworksDeployedModelsPage {
+    deployed_models: Vec<FireworksDeployedModel>,
+    next_page_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FireworksDeployedModel {
+    name: String,
+    model: String,
+    deployment: String,
+    #[serde(rename = "default", default)]
+    is_default: bool,
+    state: Option<String>,
+    status: Option<FireworksRpcStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FireworksBaseModelDetails {
+    model_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FireworksModel {
+    name: String,
+    display_name: Option<String>,
+    create_time: Option<String>,
+    state: Option<String>,
+    status: Option<FireworksRpcStatus>,
+    kind: Option<String>,
+    base_model_details: Option<FireworksBaseModelDetails>,
+    public: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_conversation_config")]
+    conversation_config: bool,
+    supports_tools: Option<bool>,
+    supports_serverless: Option<bool>,
+}
+
+fn deserialize_conversation_config<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None => Ok(false),
+        Some(serde_json::Value::Object(_)) => Ok(true),
+        Some(_) => Err(serde::de::Error::custom(
+            "Fireworks conversationConfig must be an object or null",
+        )),
+    }
+}
+
+fn raw_anthropic_model(model: AnthropicModel) -> Result<RawModel, ProviderError> {
+    validate_model_text(&model.id, MAX_MODEL_ID_BYTES, "model id")?;
+    if let Some(display_name) = &model.display_name {
+        validate_model_text(display_name, MAX_DISPLAY_NAME_BYTES, "model display name")?;
+    }
+    Ok(RawModel {
+        id: model.id,
+        display_name: model.display_name,
+        created_at: model.created_at,
+        owned_by: Some("anthropic".into()),
+    })
+}
+
+fn raw_openai_model(model: OpenAiModel) -> Result<RawModel, ProviderError> {
+    validate_model_text(&model.id, MAX_MODEL_ID_BYTES, "model id")?;
+    if let Some(owner) = &model.owned_by {
+        validate_model_text(owner, MAX_DISPLAY_NAME_BYTES, "model owner")?;
+    }
+    Ok(RawModel {
+        display_name: Some(model.id.clone()),
+        id: model.id,
+        created_at: model.created.map(|value| value.to_string()),
+        owned_by: model.owned_by,
+    })
+}
+
+fn describe_fireworks_model(
+    model: FireworksModel,
+    scope: FireworksModelScope,
+    account_state: Option<FireworksCatalogAccountState>,
+    has_default_deployment: bool,
+) -> Result<ModelDescriptor, ProviderError> {
+    validate_model_text(&model.name, MAX_MODEL_ID_BYTES, "model id")?;
+    if let Some(display_name) = &model.display_name {
+        validate_model_text(display_name, MAX_DISPLAY_NAME_BYTES, "model display name")?;
+    }
+    let (owner, _) = parse_fireworks_model_name(&model.name)?;
+    let owned_by = Some(owner.to_string());
+
+    let incompatible_kind = model.kind.as_deref() == Some("EMBEDDING_MODEL");
+    let incompatible_type = model
+        .base_model_details
+        .as_ref()
+        .and_then(|details| details.model_type.as_deref())
+        .is_some_and(non_agent_model_type);
+    let compatibility = if incompatible_kind
+        || incompatible_type
+        || !model.conversation_config
+        || model.supports_tools != Some(true)
+    {
+        Compatibility::Incompatible
+    } else {
+        Compatibility::Compatible
+    };
+
+    let selectability = if account_state.is_some_and(|state| state.conflicting) {
+        Selectability::Disabled {
+            reason: "Fireworks account metadata is conflicting",
+        }
+    } else if account_state.is_some_and(|state| {
+        state.result.balance == BalanceAvailability::Depleted
+            || state.result.availability == AccountAvailability::BillingBlocked
+    }) {
+        Selectability::Disabled {
+            reason: "Fireworks account billing is blocked",
+        }
+    } else if account_state
+        .is_some_and(|state| state.result.availability == AccountAvailability::PermissionBlocked)
+    {
+        Selectability::Disabled {
+            reason: "Fireworks account permission is blocked",
+        }
+    } else if model.state.as_deref() != Some("READY") {
+        Selectability::Disabled {
+            reason: "Fireworks model is not ready",
+        }
+    } else if model
+        .status
+        .as_ref()
+        .and_then(|status| status.code.as_deref())
+        != Some("OK")
+    {
+        Selectability::Disabled {
+            reason: "Fireworks model status is not OK",
+        }
+    } else if model.supports_serverless != Some(true)
+        && !(scope == FireworksModelScope::AccountPrivate && has_default_deployment)
+    {
+        Selectability::Disabled {
+            reason: match scope {
+                FireworksModelScope::PublicServerless => {
+                    "Fireworks model has no serverless deployment"
+                }
+                FireworksModelScope::AccountPrivate => {
+                    "private model has no healthy default deployment; Core does not infer #deployment routing"
+                }
+            },
+        }
+    } else if scope == FireworksModelScope::PublicServerless && model.public != Some(true) {
+        Selectability::Disabled {
+            reason: "Fireworks public catalog model is not marked public",
+        }
+    } else if !model.conversation_config {
+        Selectability::Disabled {
+            reason: "Fireworks Chat Completions is not enabled for this model",
+        }
+    } else if incompatible_kind || incompatible_type {
+        Selectability::Disabled {
+            reason: "model is not a coding-turn model",
+        }
+    } else if model.supports_tools != Some(true) {
+        Selectability::Disabled {
+            reason: "Fireworks model does not advertise tool calling",
+        }
+    } else {
+        Selectability::Selectable
+    };
+
+    let raw = RawModel {
+        id: model.name,
+        display_name: model.display_name,
+        created_at: model.create_time,
+        owned_by,
+    };
+    Ok(ModelDescriptor {
+        family_id: model_family(&raw.id),
+        raw,
+        compatibility,
+        selectability,
+    })
+}
+
+fn validate_fireworks_account_name(account_name: &str) -> Result<(), ProviderError> {
+    fireworks_account_id(account_name).map(|_| ())
+}
+
+fn fireworks_account_id(account_name: &str) -> Result<&str, ProviderError> {
+    let mut segments = account_name.split('/');
+    let (Some("accounts"), Some(account), None) =
+        (segments.next(), segments.next(), segments.next())
+    else {
+        return Err(ProviderError::Decode(
+            "Fireworks returned an invalid account resource name".into(),
+        ));
+    };
+    if !valid_fireworks_resource_id(account) {
+        return Err(ProviderError::Decode(
+            "Fireworks returned an invalid account resource name".into(),
+        ));
+    }
+    Ok(account)
+}
+
+fn validate_fireworks_scoped_resource_name(
+    resource_name: &str,
+    account_name: &str,
+    collection: &str,
+    label: &str,
+) -> Result<(), ProviderError> {
+    let mut account_segments = account_name.split('/');
+    let (Some("accounts"), Some(expected_account), None) = (
+        account_segments.next(),
+        account_segments.next(),
+        account_segments.next(),
+    ) else {
+        return Err(ProviderError::Decode(
+            "Fireworks returned an invalid account resource name".into(),
+        ));
+    };
+    let mut segments = resource_name.split('/');
+    let valid = matches!(segments.next(), Some("accounts"))
+        && segments.next() == Some(expected_account)
+        && segments.next() == Some(collection)
+        && segments.next().is_some_and(valid_fireworks_resource_id)
+        && segments.next().is_none();
+    if valid {
+        Ok(())
+    } else {
+        Err(ProviderError::Decode(format!(
+            "Fireworks returned an invalid {label} resource name"
+        )))
+    }
+}
+
+fn parse_fireworks_model_name(model_name: &str) -> Result<(&str, &str), ProviderError> {
+    let mut segments = model_name.split('/');
+    let (Some("accounts"), Some(account), Some("models"), Some(model_id), None) = (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ) else {
+        return Err(ProviderError::Decode(
+            "Fireworks returned an invalid full model resource name".into(),
+        ));
+    };
+    if !valid_fireworks_resource_id(account) || !valid_fireworks_resource_id(model_id) {
+        return Err(ProviderError::Decode(
+            "Fireworks returned an invalid full model resource name".into(),
+        ));
+    }
+    Ok((account, model_id))
+}
+
+fn validate_fireworks_model_parent(
+    model_name: &str,
+    expected_account: &str,
+    label: &str,
+) -> Result<(), ProviderError> {
+    let (actual_account, _) = parse_fireworks_model_name(model_name)?;
+    if actual_account != expected_account {
+        return Err(ProviderError::Decode(format!(
+            "Fireworks {label} resource escaped its requested account parent"
+        )));
+    }
+    Ok(())
+}
+
+fn valid_fireworks_resource_id(value: &str) -> bool {
+    (1..=63).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && value
+            .as_bytes()
+            .last()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+}
+
+fn non_agent_model_type(model_type: &str) -> bool {
+    let model_type = model_type.to_ascii_lowercase();
+    [
+        "embedding",
+        "rerank",
+        "image",
+        "audio",
+        "video",
+        "speech",
+        "moderation",
+    ]
+    .iter()
+    .any(|marker| model_type.contains(marker))
+}
+
+fn validate_model_text(value: &str, max_bytes: usize, field: &str) -> Result<(), ProviderError> {
+    if value.is_empty() || value.len() > max_bytes || value.chars().any(char::is_control) {
+        return Err(ProviderError::Decode(format!(
+            "provider catalog {field} is invalid"
+        )));
+    }
+    Ok(())
+}
+
+fn describe_model(adapter: AdapterKind, raw: RawModel) -> ModelDescriptor {
+    let family_id = model_family(&raw.id);
+    let compatibility = compatibility(adapter, &raw.id);
+    let selectability = match compatibility {
+        Compatibility::Compatible => Selectability::Selectable,
+        Compatibility::Unknown => Selectability::Disabled {
+            reason: "coding-turn compatibility is unknown",
+        },
+        Compatibility::Incompatible => Selectability::Disabled {
+            reason: "model is not a coding-turn model",
+        },
+    };
+    ModelDescriptor {
+        raw,
+        family_id,
+        compatibility,
+        selectability,
+    }
+}
+
+fn compatibility(adapter: AdapterKind, model_id: &str) -> Compatibility {
+    if adapter == AdapterKind::AnthropicMessages {
+        // Anthropic documents this endpoint as the models available to the Messages API.
+        return Compatibility::Compatible;
+    }
+    let id = model_leaf_id(model_id).to_ascii_lowercase();
+    let incompatible_markers = [
+        "embedding",
+        "whisper",
+        "tts",
+        "dall-e",
+        "image",
+        "moderation",
+        "audio",
+        "transcribe",
+        "realtime",
+    ];
+    if incompatible_markers
+        .iter()
+        .any(|marker| id.contains(marker))
+    {
+        return Compatibility::Incompatible;
+    }
+    let known_text_prefixes = [
+        "gpt-",
+        "chatgpt-",
+        "o1",
+        "o3",
+        "o4",
+        "codex",
+        "deepseek-",
+        "glm-",
+        "qwen",
+        "llama",
+        "mistral",
+        "mixtral",
+        "gemini-",
+    ];
+    if known_text_prefixes
+        .iter()
+        .any(|prefix| id.starts_with(prefix))
+    {
+        Compatibility::Compatible
+    } else {
+        Compatibility::Unknown
+    }
+}
+
+fn model_family(model_id: &str) -> String {
+    let id = model_leaf_id(model_id).to_ascii_lowercase();
+    if id.starts_with("claude-") {
+        for family in ["opus", "sonnet", "haiku"] {
+            if id.contains(family) {
+                return format!("claude-{family}");
+            }
+        }
+    }
+    let known = [
+        ("gpt-5", "gpt-5"),
+        ("gpt-4.1", "gpt-4.1"),
+        ("gpt-4o", "gpt-4o"),
+        ("gpt-4", "gpt-4"),
+        ("deepseek", "deepseek"),
+        ("glm", "glm"),
+        ("qwen", "qwen"),
+        ("llama", "llama"),
+        ("mistral", "mistral"),
+        ("gemini", "gemini"),
+    ];
+    for (prefix, family) in known {
+        if id.starts_with(prefix) {
+            return family.into();
+        }
+    }
+    if id.starts_with("o1") {
+        return "o1".into();
+    }
+    if id.starts_with("o3") {
+        return "o3".into();
+    }
+    if id.starts_with("o4") {
+        return "o4".into();
+    }
+    "other".into()
+}
+
+fn model_leaf_id(model_id: &str) -> &str {
+    model_id.rsplit('/').next().unwrap_or(model_id)
+}
+
+fn family_display_name(id: &str) -> String {
+    match id {
+        "claude-opus" => "Claude Opus".into(),
+        "claude-sonnet" => "Claude Sonnet".into(),
+        "claude-haiku" => "Claude Haiku".into(),
+        "other" => "Other / unclassified".into(),
+        value => value.to_string(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderHealth {
+    pub availability: AccountAvailability,
+    pub balance: BalanceAvailability,
+    pub last_error_code: Option<String>,
+    pub last_request_id: Option<String>,
+}
+
+/// Evidence that one model leaf, rather than the provider account, is unavailable. Entries exist
+/// only for known-unavailable models and are removed after a successful turn for the same pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelHealth {
+    pub last_error_code: Option<String>,
+    pub last_request_id: Option<String>,
+}
+
+impl Default for ProviderHealth {
+    fn default() -> Self {
+        Self {
+            availability: AccountAvailability::Unknown,
+            balance: BalanceAvailability::Unknown,
+            last_error_code: None,
+            last_request_id: None,
+        }
+    }
+}
+
+/// Shared, bounded in-memory health state. It contains no credentials and deliberately starts
+/// with an unknown balance. Oldest entries are evicted deterministically at the configured cap.
+#[derive(Clone)]
+pub struct ProviderHealthStore {
+    inner: Arc<Mutex<HealthState>>,
+    max_entries: usize,
+    max_model_entries: usize,
+}
+
+#[derive(Default)]
+struct HealthState {
+    entries: BTreeMap<String, ProviderHealth>,
+    order: VecDeque<String>,
+    model_entries: BTreeMap<(String, String), ModelHealth>,
+    model_order: VecDeque<(String, String)>,
+}
+
+impl ProviderHealthStore {
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HealthState::default())),
+            max_entries: max_entries.clamp(1, MAX_HEALTH_ENTRIES),
+            max_model_entries: max_entries
+                .saturating_mul(16)
+                .clamp(1, MAX_MODEL_HEALTH_ENTRIES),
+        }
+    }
+
+    pub fn get(&self, provider_instance_id: &str) -> ProviderHealth {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .get(provider_instance_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn model_len(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .model_entries
+            .len()
+    }
+
+    pub fn model_health(&self, provider_instance_id: &str, model_id: &str) -> Option<ModelHealth> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .model_entries
+            .get(&(provider_instance_id.to_string(), model_id.to_string()))
+            .cloned()
+    }
+
+    pub fn is_model_unavailable(&self, provider_instance_id: &str, model_id: &str) -> bool {
+        self.model_health(provider_instance_id, model_id).is_some()
+    }
+
+    /// Clear one learned model-leaf block after an explicit operator retry request.
+    ///
+    /// Account-wide authentication, billing, permission, credential, and configuration gates are
+    /// deliberately untouched. A subsequent typed failure recreates the leaf immediately. This
+    /// is the only recovery path that does not require a successful turn, avoiding the dead state
+    /// where preflight rejection prevented the very request that could prove recovery.
+    pub fn clear_model_unavailable_for_retry(
+        &self,
+        provider_instance_id: &str,
+        model_id: &str,
+    ) -> bool {
+        if !valid_health_key(provider_instance_id, MAX_INSTANCE_ID_BYTES)
+            || !valid_health_key(model_id, MAX_MODEL_ID_BYTES)
+        {
+            return false;
+        }
+        let key = (provider_instance_id.to_string(), model_id.to_string());
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let removed = state.model_entries.remove(&key).is_some();
+        if removed {
+            state.model_order.retain(|candidate| candidate != &key);
+        }
+        removed
+    }
+
+    /// Return only durable account blocks. Unknown, temporary rate limits, and degradation must
+    /// reach the transport so they can recover naturally.
+    pub fn blocked_account(&self, provider_instance_id: &str) -> Option<AccountAvailability> {
+        let health = self.get(provider_instance_id);
+        if health.balance == BalanceAvailability::Depleted {
+            return Some(AccountAvailability::BillingBlocked);
+        }
+        matches!(
+            health.availability,
+            AccountAvailability::MissingCredential
+                | AccountAvailability::AuthenticationBlocked
+                | AccountAvailability::BillingBlocked
+                | AccountAvailability::PermissionBlocked
+                | AccountAvailability::ConfigurationError
+        )
+        .then_some(health.availability)
+    }
+
+    pub fn mark_ready(&self, provider_instance_id: &str) {
+        self.update(provider_instance_id, |health| {
+            // Catalog visibility is not proof that any durable inference/account failure has
+            // recovered. It may clear only temporary/unknown states.
+            if !provider_health_has_durable_block(health) {
+                health.availability = AccountAvailability::Ready;
+                // Catalog visibility proves credentials work, but not remaining balance.
+                health.balance = BalanceAvailability::Unknown;
+                health.last_error_code = None;
+                health.last_request_id = None;
+            }
+        });
+    }
+
+    /// A paid turn is stronger evidence than catalog discovery: it proves this account/model pair
+    /// works now and clears only that model leaf's prior unavailable marker.
+    pub fn mark_turn_ready(&self, provider_instance_id: &str, model_id: &str) {
+        self.update(provider_instance_id, |health| {
+            // Concurrent requests can complete out of order. A generic success must not erase a
+            // durable block observed by another request; authoritative control-plane recovery is
+            // handled by `update_from_probe` with a typed probe kind.
+            if !provider_health_has_durable_block(health) {
+                health.availability = AccountAvailability::Ready;
+                health.balance = BalanceAvailability::Unknown;
+                health.last_error_code = None;
+                health.last_request_id = None;
+            }
+        });
+        self.remove_model(provider_instance_id, model_id);
+    }
+
+    pub fn mark_missing_credential(&self, provider_instance_id: &str) {
+        self.update(provider_instance_id, |health| {
+            health.availability = AccountAvailability::MissingCredential;
+        });
+    }
+
+    pub fn update_from_error(&self, provider_instance_id: &str, error: &ProviderError) {
+        self.update_error(provider_instance_id, None, error);
+    }
+
+    pub fn update_from_turn_error(
+        &self,
+        provider_instance_id: &str,
+        model_id: &str,
+        error: &ProviderError,
+    ) {
+        self.update_from_turn_error_with_scope(provider_instance_id, model_id, error, false);
+    }
+
+    pub fn update_from_turn_error_with_scope(
+        &self,
+        provider_instance_id: &str,
+        model_id: &str,
+        error: &ProviderError,
+        account_failure_is_model_scoped: bool,
+    ) {
+        if account_failure_is_model_scoped
+            && let Some(normalized) = error.normalized()
+            && matches!(
+                normalized.availability,
+                AvailabilityTransition::Account(
+                    AccountAvailability::BillingBlocked | AccountAvailability::PermissionBlocked
+                )
+            )
+        {
+            self.mark_model_unavailable(provider_instance_id, model_id, normalized);
+            return;
+        }
+        self.update_error(provider_instance_id, Some(model_id), error);
+    }
+
+    fn update_error(
+        &self,
+        provider_instance_id: &str,
+        model_id: Option<&str>,
+        error: &ProviderError,
+    ) {
+        if let Some(normalized) = error.normalized()
+            && normalized.availability == AvailabilityTransition::ModelUnavailable
+        {
+            if let Some(model_id) = model_id {
+                self.mark_model_unavailable(provider_instance_id, model_id, normalized);
+            }
+            return;
+        }
+        self.update(provider_instance_id, |health| match error {
+            ProviderError::MissingCredential { .. } | ProviderError::NoKey => {
+                health.availability = merge_account_availability(
+                    health.availability,
+                    AccountAvailability::MissingCredential,
+                );
+            }
+            ProviderError::Configuration(_) => {
+                health.availability = merge_account_availability(
+                    health.availability,
+                    AccountAvailability::ConfigurationError,
+                );
+            }
+            _ => {
+                if let Some(normalized) = error.normalized() {
+                    if let AvailabilityTransition::Account(availability) = normalized.availability {
+                        health.availability =
+                            merge_account_availability(health.availability, availability);
+                        if availability == AccountAvailability::BillingBlocked {
+                            health.balance = BalanceAvailability::Depleted;
+                        }
+                    }
+                    health.last_error_code = normalized.code.clone();
+                    health.last_request_id = normalized.request_id.clone();
+                }
+            }
+        });
+    }
+
+    pub fn update_from_probe(
+        &self,
+        provider_instance_id: &str,
+        probe: AccountProbe,
+        result: AccountProbeResult,
+    ) {
+        self.update(provider_instance_id, |health| {
+            // Catalog discovery and account probes run concurrently in the CLI. A successful or
+            // inconclusive probe is not evidence that a catalog-auth/billing/permission failure
+            // recovered, so completion order must not change the durable gate. A blocking probe,
+            // however, is authoritative for its documented scope and may replace Ready.
+            if provider_health_has_durable_block(health)
+                && !account_result_has_durable_block(result)
+            {
+                let authoritative_recovery = match probe {
+                    // DeepSeek documents `is_available:true` as positive balance evidence. It
+                    // may clear only a prior billing/depleted state, never auth/config/permission.
+                    AccountProbe::DeepSeekBalance => {
+                        result.availability == AccountAvailability::Ready
+                            && result.balance == BalanceAvailability::Sufficient
+                            && matches!(
+                                health.availability,
+                                AccountAvailability::BillingBlocked
+                                    | AccountAvailability::Unknown
+                                    | AccountAvailability::Ready
+                            )
+                    }
+                    // UNSUSPENDED proves only suspension state, not remaining credit. Do not let
+                    // it erase a billing/auth/configuration failure from another operation.
+                    AccountProbe::FireworksSuspendState => {
+                        result.availability == AccountAvailability::Ready
+                            && health.availability == AccountAvailability::PermissionBlocked
+                            && health.balance != BalanceAvailability::Depleted
+                    }
+                };
+                if !authoritative_recovery {
+                    return;
+                }
+            }
+            if provider_health_has_durable_block(health) && account_result_has_durable_block(result)
+            {
+                health.availability =
+                    merge_account_availability(health.availability, result.availability);
+                if result.balance == BalanceAvailability::Depleted {
+                    health.balance = BalanceAvailability::Depleted;
+                }
+                return;
+            }
+            health.availability = result.availability;
+            health.balance = result.balance;
+            health.last_error_code = None;
+            health.last_request_id = None;
+        });
+    }
+
+    fn update(&self, provider_instance_id: &str, apply: impl FnOnce(&mut ProviderHealth)) {
+        if provider_instance_id.is_empty() || provider_instance_id.len() > MAX_INSTANCE_ID_BYTES {
+            return;
+        }
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.entries.contains_key(provider_instance_id) {
+            while state.entries.len() >= self.max_entries {
+                if let Some(oldest) = state.order.pop_front() {
+                    state.entries.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+            state.order.push_back(provider_instance_id.to_string());
+        }
+        let health = state
+            .entries
+            .entry(provider_instance_id.to_string())
+            .or_default();
+        apply(health);
+    }
+
+    fn mark_model_unavailable(
+        &self,
+        provider_instance_id: &str,
+        model_id: &str,
+        normalized: &crate::NormalizedFailure,
+    ) {
+        if !valid_health_key(provider_instance_id, MAX_INSTANCE_ID_BYTES)
+            || !valid_health_key(model_id, MAX_MODEL_ID_BYTES)
+        {
+            return;
+        }
+        let key = (provider_instance_id.to_string(), model_id.to_string());
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.model_entries.contains_key(&key) {
+            while state.model_entries.len() >= self.max_model_entries {
+                if let Some(oldest) = state.model_order.pop_front() {
+                    state.model_entries.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+            state.model_order.push_back(key.clone());
+        }
+        state.model_entries.insert(
+            key,
+            ModelHealth {
+                last_error_code: normalized.code.clone(),
+                last_request_id: normalized.request_id.clone(),
+            },
+        );
+    }
+
+    fn remove_model(&self, provider_instance_id: &str, model_id: &str) {
+        self.clear_model_unavailable_for_retry(provider_instance_id, model_id);
+    }
+}
+
+fn account_availability_is_durable_block(availability: AccountAvailability) -> bool {
+    matches!(
+        availability,
+        AccountAvailability::MissingCredential
+            | AccountAvailability::AuthenticationBlocked
+            | AccountAvailability::BillingBlocked
+            | AccountAvailability::PermissionBlocked
+            | AccountAvailability::ConfigurationError
+    )
+}
+
+fn durable_availability_priority(availability: AccountAvailability) -> u8 {
+    match availability {
+        AccountAvailability::ConfigurationError => 5,
+        AccountAvailability::MissingCredential => 4,
+        AccountAvailability::AuthenticationBlocked => 3,
+        AccountAvailability::BillingBlocked => 2,
+        AccountAvailability::PermissionBlocked => 1,
+        AccountAvailability::Unknown
+        | AccountAvailability::Discovering
+        | AccountAvailability::Ready
+        | AccountAvailability::RateLimited
+        | AccountAvailability::Degraded => 0,
+    }
+}
+
+fn merge_account_availability(
+    current: AccountAvailability,
+    observed: AccountAvailability,
+) -> AccountAvailability {
+    if account_availability_is_durable_block(current)
+        && account_availability_is_durable_block(observed)
+    {
+        if durable_availability_priority(observed) > durable_availability_priority(current) {
+            observed
+        } else {
+            current
+        }
+    } else {
+        observed
+    }
+}
+
+fn provider_health_has_durable_block(health: &ProviderHealth) -> bool {
+    health.balance == BalanceAvailability::Depleted
+        || account_availability_is_durable_block(health.availability)
+}
+
+fn account_result_has_durable_block(result: AccountProbeResult) -> bool {
+    result.balance == BalanceAvailability::Depleted
+        || account_availability_is_durable_block(result.availability)
+}
+
+fn valid_health_key(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty() && value.len() <= max_bytes && !value.chars().any(char::is_control)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ApiResponseError, ErrorScope, NormalizedFailure, RetryDisposition};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+
+    fn instance(adapter: AdapterKind) -> ProviderInstance {
+        ProviderInstance::new(
+            "test",
+            "Test",
+            adapter,
+            ApiRoot::parse("https://example.test/v1").unwrap(),
+            Some("secret".into()),
+        )
+        .unwrap()
+    }
+
+    fn spawn_json_server(
+        bodies: Vec<String>,
+    ) -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            for body in bodies {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 2048];
+                loop {
+                    let read = stream.read(&mut chunk).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                    assert!(
+                        request.len() < 16 * 1024,
+                        "test request headers are unbounded"
+                    );
+                }
+                sender.send(String::from_utf8(request).unwrap()).unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body,
+                )
+                .unwrap();
+                stream.flush().unwrap();
+            }
+        });
+        (format!("http://{address}"), receiver, handle)
+    }
+
+    #[test]
+    fn api_root_preserves_exact_prefixes() {
+        let cases = [
+            (
+                "https://api.openai.com/v1",
+                "https://api.openai.com/v1/models",
+            ),
+            (
+                "https://gateway.test/team/a",
+                "https://gateway.test/team/a/models",
+            ),
+            (
+                "https://open.bigmodel.cn/api/paas/v4/",
+                "https://open.bigmodel.cn/api/paas/v4/models",
+            ),
+            (
+                "https://api.fireworks.ai/inference/v1",
+                "https://api.fireworks.ai/inference/v1/models",
+            ),
+        ];
+        for (root, expected) in cases {
+            let root = ApiRoot::parse(root).unwrap();
+            assert_eq!(root.endpoint("models").unwrap().as_str(), expected);
+        }
+        assert_eq!(
+            ApiRoot::parse("https://api.deepseek.com")
+                .unwrap()
+                .endpoint("chat/completions")
+                .unwrap()
+                .as_str(),
+            "https://api.deepseek.com/chat/completions"
+        );
+        assert_eq!(
+            ApiRoot::parse("https://api.deepseek.com/v1")
+                .unwrap()
+                .origin_endpoint("user/balance")
+                .unwrap()
+                .as_str(),
+            "https://api.deepseek.com/user/balance"
+        );
+    }
+
+    #[test]
+    fn catalog_cache_scope_is_keyed_and_credential_bound() {
+        let local_key = [7_u8; 32];
+        let same = instance(AdapterKind::OpenAiCompatibleChat);
+        let same_scope = same.catalog_cache_credential_scope(&local_key).unwrap();
+        assert_eq!(
+            same_scope,
+            same.catalog_cache_credential_scope(&local_key).unwrap()
+        );
+
+        let different_credential = ProviderInstance::new(
+            "test",
+            "Test",
+            AdapterKind::OpenAiCompatibleChat,
+            ApiRoot::parse("https://example.test/v1").unwrap(),
+            Some("different-secret".into()),
+        )
+        .unwrap();
+        assert_ne!(
+            same_scope,
+            different_credential
+                .catalog_cache_credential_scope(&local_key)
+                .unwrap()
+        );
+        assert_ne!(
+            same_scope,
+            same.catalog_cache_credential_scope(&[8_u8; 32]).unwrap()
+        );
+
+        let missing = ProviderInstance::new(
+            "test",
+            "Test",
+            AdapterKind::OpenAiCompatibleChat,
+            ApiRoot::parse("https://example.test/v1").unwrap(),
+            None,
+        )
+        .unwrap();
+        assert!(missing.catalog_cache_credential_scope(&local_key).is_none());
+    }
+
+    #[test]
+    fn api_root_rejects_ambiguous_or_secret_bearing_components() {
+        for invalid in [
+            "ftp://example.test/v1",
+            "https://user:secret\
+@example.test/v1",
+            "https://example.test/v1?token=secret",
+            "https://example.test/v1#models",
+            "not a URL",
+        ] {
+            assert!(ApiRoot::parse(invalid).is_err(), "accepted {invalid}");
+        }
+    }
+
+    #[test]
+    fn anthropic_pages_require_advancing_cursor_and_valid_shape() {
+        let bytes = br#"{"data":[{"id":"claude-sonnet-4","display_name":"Sonnet","created_at":"2025-01-01T00:00:00Z"}],"has_more":true,"last_id":"claude-sonnet-4"}"#;
+        let page: AnthropicModelsPage = decode_page(bytes, bytes.len()).unwrap();
+        assert!(page.has_more);
+        assert_eq!(page.last_id.as_deref(), Some("claude-sonnet-4"));
+
+        let missing = br#"{"data":[],"has_more":true}"#;
+        let page: AnthropicModelsPage = decode_page(missing, missing.len()).unwrap();
+        assert!(page.last_id.is_none());
+
+        let mut seen = BTreeSet::new();
+        let first = advance_anthropic_cursor(None, &mut seen, true, Some("a".into())).unwrap();
+        assert_eq!(first.as_deref(), Some("a"));
+        assert!(
+            advance_anthropic_cursor(Some("a"), &mut seen, true, Some("a".into())).is_err(),
+            "a non-advancing cursor must fail closed"
+        );
+
+        let mut seen = BTreeSet::new();
+        assert_eq!(
+            advance_anthropic_cursor(None, &mut seen, true, Some("a".into())).unwrap(),
+            Some("a".into())
+        );
+        assert_eq!(
+            advance_anthropic_cursor(Some("a"), &mut seen, true, Some("b".into())).unwrap(),
+            Some("b".into())
+        );
+        assert!(
+            advance_anthropic_cursor(Some("b"), &mut seen, true, Some("a".into())).is_err(),
+            "a cursor cycle must fail closed"
+        );
+        assert!(advance_anthropic_cursor(None, &mut BTreeSet::new(), true, None).is_err());
+    }
+
+    #[test]
+    fn openai_list_is_deduped_sorted_grouped_and_keeps_unknown_models() {
+        let page: OpenAiModelsPage = decode_page(
+            br#"{"data":[{"id":"vendor-mystery","owned_by":"v"},{"id":"gpt-5-mini","owned_by":"openai"},{"id":"gpt-5-mini","owned_by":"openai"},{"id":"text-embedding-3-small","owned_by":"openai"}]}"#,
+            200,
+        )
+        .unwrap();
+        let raw: Vec<_> = page
+            .data
+            .into_iter()
+            .map(raw_openai_model)
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let provider = instance(AdapterKind::OpenAiCompatibleChat);
+        let snapshot = CatalogSnapshot::from_raw(&provider, raw.clone());
+        let mut reversed = raw;
+        reversed.reverse();
+        assert_eq!(snapshot, CatalogSnapshot::from_raw(&provider, reversed));
+        let ids: Vec<_> = snapshot
+            .models
+            .iter()
+            .map(|model| model.raw.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            ["gpt-5-mini", "text-embedding-3-small", "vendor-mystery"]
+        );
+        let unknown = snapshot
+            .models
+            .iter()
+            .find(|model| model.raw.id == "vendor-mystery")
+            .unwrap();
+        assert_eq!(unknown.compatibility, Compatibility::Unknown);
+        assert!(matches!(
+            unknown.selectability,
+            Selectability::Disabled { .. }
+        ));
+        assert_eq!(
+            snapshot
+                .families
+                .iter()
+                .map(|family| family.id.as_str())
+                .collect::<Vec<_>>(),
+            ["gpt-5", "other"]
+        );
+    }
+
+    #[test]
+    fn fireworks_parser_keeps_every_model_and_disables_unusable_entries() {
+        let page: FireworksModelsPage = decode_page(
+            br#"{
+              "models": [
+                {"name":"accounts/fireworks/models/qwen-good","displayName":"Qwen good","createTime":"2026-01-01T00:00:00Z","state":"READY","status":{"code":"OK"},"kind":"HF_BASE_MODEL","baseModelDetails":{"modelType":"qwen"},"public":true,"conversationConfig":{},"supportsTools":true,"supportsServerless":true},
+                {"name":"accounts/fireworks/models/no-tools","state":"READY","status":{"code":"OK"},"kind":"HF_BASE_MODEL","public":true,"conversationConfig":{},"supportsTools":false,"supportsServerless":true},
+                {"name":"accounts/fireworks/models/uploading","state":"UPLOADING","status":{"code":"OK"},"kind":"HF_BASE_MODEL","public":true,"conversationConfig":{},"supportsTools":true,"supportsServerless":true},
+                {"name":"accounts/fireworks/models/bad-status","state":"READY","status":{"code":"INTERNAL"},"kind":"HF_BASE_MODEL","public":true,"conversationConfig":{},"supportsTools":true,"supportsServerless":true},
+                {"name":"accounts/fireworks/models/not-serverless","state":"READY","status":{"code":"OK"},"kind":"HF_BASE_MODEL","public":true,"conversationConfig":{},"supportsTools":true,"supportsServerless":false},
+                {"name":"accounts/fireworks/models/no-chat","state":"READY","status":{"code":"OK"},"kind":"HF_BASE_MODEL","public":true,"supportsTools":true,"supportsServerless":true},
+                {"name":"accounts/fireworks/models/embed","state":"READY","status":{"code":"OK"},"kind":"EMBEDDING_MODEL","public":true,"conversationConfig":{},"supportsTools":true,"supportsServerless":true}
+              ],
+              "nextPageToken":"next"
+            }"#,
+            2_000,
+        )
+        .unwrap();
+        assert_eq!(page.next_page_token.as_deref(), Some("next"));
+        let models = page
+            .models
+            .into_iter()
+            .map(|model| {
+                describe_fireworks_model(model, FireworksModelScope::PublicServerless, None, false)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let provider = ProviderInstance::new(
+            "fireworks",
+            "Fireworks",
+            AdapterKind::OpenAiCompatibleChat,
+            ApiRoot::parse(FIREWORKS_INFERENCE_ROOT).unwrap(),
+            Some("secret".into()),
+        )
+        .unwrap();
+        let snapshot = CatalogSnapshot::from_descriptors(&provider, models);
+        assert_eq!(
+            snapshot.models.len(),
+            7,
+            "disabled models must remain visible"
+        );
+        let selectable: Vec<_> = snapshot
+            .models
+            .iter()
+            .filter(|model| model.selectability == Selectability::Selectable)
+            .map(|model| model.raw.id.as_str())
+            .collect();
+        assert_eq!(selectable, ["accounts/fireworks/models/qwen-good"]);
+        let good = snapshot
+            .models
+            .iter()
+            .find(|model| model.raw.id.ends_with("qwen-good"))
+            .unwrap();
+        assert_eq!(good.raw.owned_by.as_deref(), Some("fireworks"));
+        assert_eq!(good.family_id, "qwen");
+        for id in ["no-tools", "no-chat", "embed"] {
+            assert_eq!(
+                snapshot
+                    .models
+                    .iter()
+                    .find(|model| model.raw.id.ends_with(id))
+                    .unwrap()
+                    .compatibility,
+                Compatibility::Incompatible
+            );
+        }
+    }
+
+    #[test]
+    fn fireworks_page_tokens_must_advance_and_are_bounded() {
+        let mut seen = BTreeSet::new();
+        assert_eq!(
+            advance_page_token("models", None, &mut seen, Some("a".into())).unwrap(),
+            Some("a".into())
+        );
+        assert!(advance_page_token("models", Some("a"), &mut seen, Some("a".into())).is_err());
+        assert!(
+            advance_page_token(
+                "models",
+                None,
+                &mut BTreeSet::new(),
+                Some("x".repeat(MAX_PAGE_TOKEN_BYTES + 1)),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            advance_page_token("models", None, &mut BTreeSet::new(), Some(String::new())).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn fireworks_model_resources_cannot_escape_the_requested_account() {
+        assert!(validate_fireworks_model_parent("accounts/a/models/good", "a", "model").is_ok());
+        assert!(
+            validate_fireworks_model_parent("accounts/b/models/cross-scope", "a", "model").is_err()
+        );
+    }
+
+    #[test]
+    fn fireworks_conflicting_private_account_evidence_disables_the_leaf() {
+        let mut page: FireworksModelsPage = decode_page(
+            br#"{"models":[{"name":"accounts/a/models/private","state":"READY","status":{"code":"OK"},"kind":"HF_BASE_MODEL","public":false,"conversationConfig":{},"supportsTools":true,"supportsServerless":true}]}"#,
+            256,
+        )
+        .unwrap();
+        let model = describe_fireworks_model(
+            page.models.remove(0),
+            FireworksModelScope::AccountPrivate,
+            Some(FireworksCatalogAccountState {
+                result: unknown_account_probe_result(),
+                conflicting: true,
+            }),
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            model.selectability,
+            Selectability::Disabled { reason }
+                if reason == "Fireworks account metadata is conflicting"
+        ));
+    }
+
+    #[test]
+    fn fireworks_suspend_states_are_typed_without_guessing_unknowns() {
+        for state in [
+            "FAILED_PAYMENTS",
+            "CREDIT_DEPLETED",
+            "MONTHLY_SPEND_LIMIT_EXCEEDED",
+        ] {
+            assert_eq!(
+                fireworks_account_result(Some("READY"), Some("OK"), Some(state)),
+                AccountProbeResult {
+                    availability: AccountAvailability::BillingBlocked,
+                    balance: BalanceAvailability::Depleted,
+                }
+            );
+        }
+        assert_eq!(
+            fireworks_account_result(Some("READY"), Some("OK"), Some("UNSUSPENDED")),
+            AccountProbeResult {
+                availability: AccountAvailability::Ready,
+                balance: BalanceAvailability::Unknown,
+            }
+        );
+        assert_eq!(
+            fireworks_account_result(Some("READY"), Some("OK"), Some("BLOCKED_BY_ABUSE_RULE"),),
+            AccountProbeResult {
+                availability: AccountAvailability::PermissionBlocked,
+                balance: BalanceAvailability::Unknown,
+            }
+        );
+        for (state, status, suspended) in [
+            (Some("CREATING"), Some("OK"), Some("UNSUSPENDED")),
+            (Some("READY"), Some("INTERNAL"), Some("UNSUSPENDED")),
+            (Some("READY"), Some("OK"), Some("FUTURE_STATE")),
+            (None, None, None),
+        ] {
+            assert_eq!(
+                fireworks_account_result(state, status, suspended),
+                unknown_account_probe_result(),
+            );
+        }
+    }
+
+    #[test]
+    fn fireworks_multi_account_conflicts_remain_unknown() {
+        let page: FireworksAccountsPage = serde_json::from_slice(
+            br#"{"accounts":[{"name":"accounts/ready","state":"READY","status":{"code":"OK"},"suspendState":"UNSUSPENDED"},{"name":"accounts/empty","state":"READY","status":{"code":"OK"},"suspendState":"CREDIT_DEPLETED"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            aggregate_fireworks_accounts(page.accounts),
+            unknown_account_probe_result(),
+            "a key exposing conflicting accounts must not be guessed funded or depleted",
+        );
+
+        let duplicate: FireworksAccountsPage = serde_json::from_slice(
+            br#"{"accounts":[{"name":"accounts/same","state":"READY","status":{"code":"OK"},"suspendState":"UNSUSPENDED"},{"name":"accounts/same","state":"READY","status":{"code":"OK"},"suspendState":"FAILED_PAYMENTS"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            aggregate_fireworks_accounts(duplicate.accounts),
+            unknown_account_probe_result(),
+            "inconsistent duplicate resources must fail closed",
+        );
+    }
+
+    #[tokio::test]
+    async fn fireworks_fake_control_plane_uses_exact_resources_and_paginates() {
+        let model = |account: &str,
+                     name: &str,
+                     supports_tools: bool,
+                     supports_serverless: bool,
+                     public: bool| {
+            serde_json::json!({
+                "name": format!("accounts/{account}/models/{name}"),
+                "displayName": name,
+                "state": "READY",
+                "status": {"code": "OK"},
+                "kind": "HF_BASE_MODEL",
+                "public": public,
+                "conversationConfig": {},
+                "supportsTools": supports_tools,
+                "supportsServerless": supports_serverless,
+            })
+        };
+        let bodies = vec![
+            serde_json::json!({
+                "models": [model("fireworks", "qwen-live", true, true, true)],
+                "nextPageToken": "models-2",
+            })
+            .to_string(),
+            serde_json::json!({
+                "models": [model("fireworks", "no-tools", false, true, true)]
+            })
+            .to_string(),
+            // Account discovery is intentionally returned out of order; Core must enumerate
+            // deterministic full resource paths rather than deriving a router/deployment id.
+            serde_json::json!({
+                "accounts": [
+                    {
+                        "name":"accounts/b",
+                        "state":"READY",
+                        "status":{"code":"OK"},
+                        "suspendState":"CREDIT_DEPLETED"
+                    },
+                    {
+                        "name":"accounts/a",
+                        "state":"READY",
+                        "status":{"code":"OK"},
+                        "suspendState":"UNSUSPENDED"
+                    }
+                ]
+            })
+            .to_string(),
+            serde_json::json!({
+                "deployedModels": [
+                    {
+                        "name": "accounts/a/deployedModels/default-private-live",
+                        "model": "accounts/a/models/private-live",
+                        "deployment": "accounts/a/deployments/dedicated-a",
+                        "default": true,
+                        "state": "DEPLOYED",
+                        "status": {"code": "OK"}
+                    }
+                ],
+                "nextPageToken": "deployed-a-2"
+            })
+            .to_string(),
+            serde_json::json!({
+                "deployedModels": [
+                    {
+                        "name": "accounts/a/deployedModels/ambiguous-private-a",
+                        "model": "accounts/a/models/private-needs-deployment",
+                        "deployment": "accounts/a/deployments/dedicated-b",
+                        "default": true,
+                        "state": "DEPLOYED",
+                        "status": {"code": "OK"}
+                    },
+                    {
+                        "name": "accounts/a/deployedModels/ambiguous-private-b",
+                        "model": "accounts/a/models/private-needs-deployment",
+                        "deployment": "accounts/a/deployments/dedicated-c",
+                        "default": true,
+                        "state": "DEPLOYED",
+                        "status": {"code": "OK"}
+                    }
+                ]
+            })
+            .to_string(),
+            serde_json::json!({
+                "models": [model("a", "private-live", true, false, false)],
+                "nextPageToken": "private-a-2",
+            })
+            .to_string(),
+            serde_json::json!({
+                "models": [model("a", "private-needs-deployment", true, false, false)]
+            })
+            .to_string(),
+            serde_json::json!({
+                "deployedModels": []
+            })
+            .to_string(),
+            serde_json::json!({
+                "models": [model("b", "private-b-live", true, true, false)]
+            })
+            .to_string(),
+            serde_json::json!({
+                "accounts": [{
+                    "name": "accounts/a",
+                    "state": "READY",
+                    "status": {"code": "OK"},
+                    "suspendState": "CREDIT_DEPLETED",
+                }],
+                "nextPageToken": "accounts-2",
+            })
+            .to_string(),
+            serde_json::json!({
+                "accounts": [{
+                    "name": "accounts/b",
+                    "state": "READY",
+                    "status": {"code": "OK"},
+                    "suspendState": "FAILED_PAYMENTS",
+                }],
+            })
+            .to_string(),
+        ];
+        let (origin, requests, server) = spawn_json_server(bodies);
+        let instance = ProviderInstance::new(
+            "fireworks-test",
+            "Fireworks test",
+            AdapterKind::OpenAiCompatibleChat,
+            ApiRoot::parse(&format!("{origin}/inference/v1")).unwrap(),
+            Some("secret".into()),
+        )
+        .unwrap()
+        .with_catalog_strategy(CatalogStrategy::FireworksControlPlane {
+            api_root: ApiRoot::parse(&format!("{origin}/v1")).unwrap(),
+        })
+        .unwrap();
+
+        let catalog = discover_catalog(&instance).await.unwrap();
+        assert_eq!(catalog.models.len(), 5);
+        assert_eq!(
+            catalog
+                .models
+                .iter()
+                .filter(|model| model.selectability == Selectability::Selectable)
+                .count(),
+            2,
+        );
+        assert!(catalog.models.iter().any(|model| {
+            model.raw.id == "accounts/a/models/private-live"
+                && model.raw.owned_by.as_deref() == Some("a")
+                && model.selectability == Selectability::Selectable
+        }));
+        assert!(catalog.models.iter().any(|model| {
+            model.raw.id == "accounts/b/models/private-b-live"
+                && matches!(
+                    model.selectability,
+                    Selectability::Disabled { reason }
+                        if reason == "Fireworks account billing is blocked"
+                )
+        }));
+        let needs_deployment = catalog
+            .models
+            .iter()
+            .find(|model| model.raw.id == "accounts/a/models/private-needs-deployment")
+            .unwrap();
+        assert!(matches!(
+            needs_deployment.selectability,
+            Selectability::Disabled { reason } if reason.contains("does not infer")
+        ));
+        assert_eq!(
+            probe_account(&instance, AccountProbe::FireworksSuspendState)
+                .await
+                .unwrap(),
+            AccountProbeResult {
+                availability: AccountAvailability::BillingBlocked,
+                balance: BalanceAvailability::Depleted,
+            },
+        );
+        server.join().unwrap();
+
+        let requests: Vec<_> = requests.try_iter().collect();
+        assert_eq!(requests.len(), 11);
+        let targets: Vec<_> = requests
+            .iter()
+            .map(|request| {
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer secret"),
+                    "control-plane request omitted bearer authentication",
+                );
+                request
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .split_ascii_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        for (index, target) in targets.iter().enumerate() {
+            let url = Url::parse(&format!("http://test{target}")).unwrap();
+            let query: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+            if index < 2 {
+                assert_eq!(url.path(), "/v1/accounts/fireworks/models");
+                assert_eq!(
+                    query.get("filter").map(String::as_str),
+                    Some(FIREWORKS_SERVERLESS_FILTER),
+                );
+                assert_eq!(query.get("pageSize").map(String::as_str), Some("200"));
+            } else if index == 2 {
+                assert_eq!(url.path(), "/v1/accounts");
+                assert_eq!(query.get("pageSize").map(String::as_str), Some("200"));
+                assert_eq!(
+                    query.get("readMask").map(String::as_str),
+                    Some("name,state,status,suspendState")
+                );
+            } else if matches!(index, 3 | 4 | 7) {
+                let expected = if index < 5 {
+                    "/v1/accounts/a/deployedModels"
+                } else {
+                    "/v1/accounts/b/deployedModels"
+                };
+                assert_eq!(url.path(), expected);
+                assert_eq!(query.get("pageSize").map(String::as_str), Some("200"));
+                assert_eq!(
+                    query.get("readMask").map(String::as_str),
+                    Some("name,model,deployment,default,state,status"),
+                );
+            } else if index < 9 {
+                let expected = if index < 7 {
+                    "/v1/accounts/a/models"
+                } else {
+                    "/v1/accounts/b/models"
+                };
+                assert_eq!(url.path(), expected);
+                assert_eq!(query.get("pageSize").map(String::as_str), Some("200"));
+                assert!(!query.contains_key("filter"));
+            } else {
+                assert_eq!(url.path(), "/v1/accounts");
+                assert_eq!(query.get("pageSize").map(String::as_str), Some("200"));
+                assert_eq!(
+                    query.get("readMask").map(String::as_str),
+                    Some("name,state,status,suspendState"),
+                );
+            }
+        }
+        let second_models = Url::parse(&format!("http://test{}", targets[1])).unwrap();
+        assert_eq!(
+            second_models
+                .query_pairs()
+                .find(|(key, _)| key == "pageToken")
+                .map(|(_, value)| value.into_owned()),
+            Some("models-2".into()),
+        );
+        let second_deployments = Url::parse(&format!("http://test{}", targets[4])).unwrap();
+        assert_eq!(
+            second_deployments
+                .query_pairs()
+                .find(|(key, _)| key == "pageToken")
+                .map(|(_, value)| value.into_owned()),
+            Some("deployed-a-2".into()),
+        );
+        let second_accounts = Url::parse(&format!("http://test{}", targets[6])).unwrap();
+        assert_eq!(
+            second_accounts
+                .query_pairs()
+                .find(|(key, _)| key == "pageToken")
+                .map(|(_, value)| value.into_owned()),
+            Some("private-a-2".into()),
+        );
+        let second_probe_accounts = Url::parse(&format!("http://test{}", targets[10])).unwrap();
+        assert_eq!(
+            second_probe_accounts
+                .query_pairs()
+                .find(|(key, _)| key == "pageToken")
+                .map(|(_, value)| value.into_owned()),
+            Some("accounts-2".into()),
+        );
+    }
+
+    #[test]
+    fn malformed_and_oversized_pages_fail_closed() {
+        assert!(decode_page::<OpenAiModelsPage>(b"not-json", 8).is_err());
+        let oversized = vec![b' '; MAX_PAGE_BYTES + 1];
+        assert!(decode_page::<OpenAiModelsPage>(&oversized, oversized.len()).is_err());
+    }
+
+    #[tokio::test]
+    async fn missing_credential_returns_before_network() {
+        let unavailable = ProviderInstance::new(
+            "offline",
+            "Offline",
+            AdapterKind::OpenAiCompatibleChat,
+            ApiRoot::parse("http://127.0.0.1:9/v1").unwrap(),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            discover_catalog(&unavailable).await,
+            Err(ProviderError::MissingCredential { .. })
+        ));
+        assert!(matches!(
+            probe_account(&unavailable, AccountProbe::DeepSeekBalance).await,
+            Err(ProviderError::MissingCredential { .. })
+        ));
+        assert!(matches!(
+            unavailable.build_turn_provider(),
+            Err(ProviderError::MissingCredential { .. })
+        ));
+    }
+
+    #[test]
+    fn glm_standard_schema_manifest_is_exact_static_and_entitlement_neutral() {
+        assert_eq!(GLM_STANDARD_CHAT_MANIFEST.provider, "GLM");
+        assert_eq!(
+            GLM_STANDARD_CHAT_MANIFEST.version,
+            "glm-chat-completions-schema@2026-07-14"
+        );
+        assert_eq!(GLM_STANDARD_CHAT_MANIFEST.default_model, Some("glm-5.2"));
+        assert_eq!(
+            GLM_STANDARD_CHAT_MANIFEST.models,
+            &[
+                "glm-5.2",
+                "glm-5.1",
+                "glm-5-turbo",
+                "glm-5",
+                "glm-4.7",
+                "glm-4.7-flash",
+                "glm-4.7-flashx",
+                "glm-4.6",
+                "glm-4.5-air",
+                "glm-4.5-airx",
+                "glm-4.5-flash",
+                "glm-4-flash-250414",
+                "glm-4-flashx-250414",
+            ]
+        );
+
+        // Schema construction is deliberately credential-free and cannot color account health.
+        let glm = ProviderInstance::new(
+            "glm",
+            "GLM",
+            AdapterKind::OpenAiCompatibleChat,
+            ApiRoot::parse(GLM_STANDARD_ROOT).unwrap(),
+            None,
+        )
+        .unwrap();
+        let health = ProviderHealthStore::new(4);
+        let catalog = glm_standard_schema_catalog(&glm).unwrap();
+        assert_eq!(health.get("glm").availability, AccountAvailability::Unknown);
+        assert_eq!(catalog.models.len(), GLM_STANDARD_CHAT_MODELS.len());
+        assert!(catalog.models.iter().all(|model| {
+            model.compatibility == Compatibility::Compatible
+                && model.selectability == Selectability::Selectable
+        }));
+        let mut expected = GLM_STANDARD_CHAT_MODELS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            catalog
+                .models
+                .iter()
+                .map(|model| model.raw.id.as_str())
+                .collect::<Vec<_>>(),
+            expected,
+        );
+
+        let coding = ProviderInstance::new(
+            "glm-coding",
+            "GLM Coding",
+            AdapterKind::OpenAiCompatibleChat,
+            ApiRoot::parse(GLM_CODING_ROOT).unwrap(),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            glm_standard_schema_catalog(&coding),
+            Err(ProviderError::Configuration(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn glm_official_roots_fail_closed_without_guessing_models_endpoint() {
+        for api_root in [GLM_STANDARD_ROOT, GLM_CODING_ROOT, GLM_ANTHROPIC_ROOT] {
+            let adapter = if api_root == GLM_ANTHROPIC_ROOT {
+                AdapterKind::AnthropicMessages
+            } else {
+                AdapterKind::OpenAiCompatibleChat
+            };
+            let glm = ProviderInstance::new(
+                "glm",
+                "GLM",
+                adapter,
+                ApiRoot::parse(api_root).unwrap(),
+                Some("secret".into()),
+            )
+            .unwrap();
+            assert!(matches!(
+                glm.catalog_strategy(),
+                CatalogStrategy::Unsupported { .. }
+            ));
+            let error = discover_catalog(&glm).await.unwrap_err();
+            let ProviderError::UnsupportedCatalog { provider, reason } = error else {
+                panic!("expected typed unsupported-catalog failure");
+            };
+            assert_eq!(provider, "glm");
+            assert!(reason.contains("operator manifest"));
+            assert!(reason.contains("manual model id"));
+        }
+    }
+
+    #[test]
+    fn builtin_openai_uses_responses_and_custom_keeps_exact_adapter_root() {
+        let openai =
+            ProviderInstance::builtin(BuiltinProvider::OpenAi, Some("key".into())).unwrap();
+        assert_eq!(openai.adapter(), AdapterKind::OpenAiResponses);
+        assert_eq!(openai.api_root().as_str(), "https://api.openai.com/v1");
+        assert!(openai.build_turn_provider().is_ok());
+
+        let custom = ProviderInstance::custom(
+            "fireworks",
+            "Fireworks",
+            AdapterKind::OpenAiCompatibleChat,
+            ApiRoot::parse("https://api.fireworks.ai/inference/v1").unwrap(),
+            Some("key".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            custom
+                .api_root()
+                .endpoint("chat/completions")
+                .unwrap()
+                .as_str(),
+            "https://api.fireworks.ai/inference/v1/chat/completions"
+        );
+        assert_eq!(
+            custom.catalog_strategy(),
+            &CatalogStrategy::FireworksControlPlane {
+                api_root: ApiRoot::parse(FIREWORKS_CONTROL_PLANE_ROOT).unwrap(),
+            }
+        );
+
+        for root in [MINIMAX_ROOT, MINIMAX_LEGACY_ROOT] {
+            let minimax = ProviderInstance::new(
+                "minimax",
+                "MiniMax",
+                AdapterKind::OpenAiCompatibleChat,
+                ApiRoot::parse(root).unwrap(),
+                Some("key".into()),
+            )
+            .unwrap();
+            assert_eq!(minimax.error_profile(), ErrorProfile::MiniMax, "{root}");
+        }
+    }
+
+    #[test]
+    fn health_store_is_bounded_and_balance_defaults_unknown() {
+        let store = ProviderHealthStore::new(2);
+        store.mark_ready("a");
+        store.mark_ready("b");
+        store.mark_ready("c");
+        assert_eq!(store.len(), 2);
+        assert_eq!(store.get("a").availability, AccountAvailability::Unknown);
+        assert_eq!(store.get("c").balance, BalanceAvailability::Unknown);
+    }
+
+    #[test]
+    fn account_probe_merge_is_order_independent_for_durable_blocks() {
+        let failure = |status: u16, code: &str, availability: AccountAvailability| {
+            ProviderError::ApiResponse(ApiResponseError {
+                status,
+                body: String::new(),
+                body_truncated: false,
+                retry_after: None,
+                normalized: Box::new(NormalizedFailure {
+                    adapter: AdapterKind::OpenAiCompatibleChat,
+                    error_profile: ErrorProfile::Fireworks,
+                    code: Some(code.into()),
+                    public_message: "provider account is blocked",
+                    scope: ErrorScope::Account,
+                    availability: AvailabilityTransition::Account(availability),
+                    retry: RetryDisposition::Never,
+                    request_id: Some("request-1".into()),
+                }),
+            })
+        };
+        let billing = failure(
+            429,
+            "insufficient_quota",
+            AccountAvailability::BillingBlocked,
+        );
+        let authentication = failure(
+            401,
+            "unauthenticated",
+            AccountAvailability::AuthenticationBlocked,
+        );
+        let ready = AccountProbeResult {
+            availability: AccountAvailability::Ready,
+            balance: BalanceAvailability::Unknown,
+        };
+        let unknown = AccountProbeResult {
+            availability: AccountAvailability::Unknown,
+            balance: BalanceAvailability::Unknown,
+        };
+
+        let store = ProviderHealthStore::new(8);
+        store.update_from_error("catalog-first", &billing);
+        let durable = store.get("catalog-first");
+        store.update_from_probe("catalog-first", AccountProbe::FireworksSuspendState, ready);
+        assert_eq!(store.get("catalog-first"), durable);
+
+        store.update_from_probe("probe-first", AccountProbe::FireworksSuspendState, ready);
+        store.update_from_error("probe-first", &billing);
+        assert_eq!(
+            store.get("probe-first").availability,
+            AccountAvailability::BillingBlocked
+        );
+        assert_eq!(
+            store.get("probe-first").balance,
+            BalanceAvailability::Depleted
+        );
+
+        store.update_from_error("auth-first", &authentication);
+        let durable = store.get("auth-first");
+        store.update_from_probe("auth-first", AccountProbe::FireworksSuspendState, unknown);
+        assert_eq!(store.get("auth-first"), durable);
+
+        store.mark_ready("blocking-probe");
+        store.update_from_probe(
+            "blocking-probe",
+            AccountProbe::FireworksSuspendState,
+            AccountProbeResult {
+                availability: AccountAvailability::PermissionBlocked,
+                balance: BalanceAvailability::Unknown,
+            },
+        );
+        assert_eq!(
+            store.get("blocking-probe").availability,
+            AccountAvailability::PermissionBlocked
+        );
+
+        // A later, provider-documented positive balance observation is authoritative recovery
+        // for billing only. If the failure is observed later, it still wins.
+        store.update_from_error("deepseek-recovered", &billing);
+        store.update_from_probe(
+            "deepseek-recovered",
+            AccountProbe::DeepSeekBalance,
+            AccountProbeResult {
+                availability: AccountAvailability::Ready,
+                balance: BalanceAvailability::Sufficient,
+            },
+        );
+        assert_eq!(
+            store.get("deepseek-recovered"),
+            ProviderHealth {
+                availability: AccountAvailability::Ready,
+                balance: BalanceAvailability::Sufficient,
+                last_error_code: None,
+                last_request_id: None,
+            }
+        );
+
+        store.update_from_probe(
+            "deepseek-failure-later",
+            AccountProbe::DeepSeekBalance,
+            AccountProbeResult {
+                availability: AccountAvailability::Ready,
+                balance: BalanceAvailability::Sufficient,
+            },
+        );
+        store.update_from_error("deepseek-failure-later", &billing);
+        assert_eq!(
+            store.get("deepseek-failure-later").availability,
+            AccountAvailability::BillingBlocked
+        );
+
+        let permission = AccountProbeResult {
+            availability: AccountAvailability::PermissionBlocked,
+            balance: BalanceAvailability::Unknown,
+        };
+        let depleted = AccountProbeResult {
+            availability: AccountAvailability::BillingBlocked,
+            balance: BalanceAvailability::Depleted,
+        };
+        store.update_from_probe("durable-a", AccountProbe::FireworksSuspendState, depleted);
+        store.update_from_probe("durable-a", AccountProbe::FireworksSuspendState, permission);
+        store.update_from_probe("durable-b", AccountProbe::FireworksSuspendState, permission);
+        store.update_from_probe("durable-b", AccountProbe::FireworksSuspendState, depleted);
+        assert_eq!(store.get("durable-a"), store.get("durable-b"));
+        assert_eq!(
+            store.get("durable-a").balance,
+            BalanceAvailability::Depleted
+        );
+    }
+
+    #[test]
+    fn generic_turn_success_does_not_erase_a_concurrent_durable_block() {
+        let store = ProviderHealthStore::new(4);
+        let billing = ProviderError::ApiResponse(ApiResponseError {
+            status: 429,
+            body: String::new(),
+            body_truncated: false,
+            retry_after: None,
+            normalized: Box::new(NormalizedFailure {
+                adapter: AdapterKind::OpenAiCompatibleChat,
+                error_profile: ErrorProfile::OpenAi,
+                code: Some("insufficient_quota".into()),
+                public_message: "provider billing or quota is unavailable",
+                scope: ErrorScope::Account,
+                availability: AvailabilityTransition::Account(AccountAvailability::BillingBlocked),
+                retry: RetryDisposition::Never,
+                request_id: Some("billing-later".into()),
+            }),
+        });
+        store.update_from_error("same-account", &billing);
+        let blocked = store.get("same-account");
+        store.mark_turn_ready("same-account", "working-model");
+        assert_eq!(store.get("same-account"), blocked);
+    }
+
+    #[test]
+    fn deepseek_balance_probe_maps_documented_availability() {
+        let payload: DeepSeekBalance = serde_json::from_slice(
+            br#"{"is_available":false,"balance_infos":[{"currency":"CNY","total_balance":"0.00"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            deepseek_probe_result(payload.is_available),
+            AccountProbeResult {
+                availability: AccountAvailability::BillingBlocked,
+                balance: BalanceAvailability::Depleted,
+            }
+        );
+        assert_eq!(
+            deepseek_probe_result(true),
+            AccountProbeResult {
+                availability: AccountAvailability::Ready,
+                balance: BalanceAvailability::Sufficient,
+            }
+        );
+    }
+
+    #[test]
+    fn health_store_applies_account_billing_but_not_model_failure() {
+        let store = ProviderHealthStore::new(8);
+        let billing = ProviderError::ApiResponse(ApiResponseError {
+            status: 429,
+            body: String::new(),
+            body_truncated: false,
+            retry_after: None,
+            normalized: Box::new(NormalizedFailure {
+                adapter: AdapterKind::OpenAiCompatibleChat,
+                error_profile: ErrorProfile::OpenAi,
+                code: Some("insufficient_quota".into()),
+                public_message: "provider billing or quota is unavailable",
+                scope: ErrorScope::Account,
+                availability: AvailabilityTransition::Account(AccountAvailability::BillingBlocked),
+                retry: RetryDisposition::Never,
+                request_id: None,
+            }),
+        });
+        store.update_from_error("p", &billing);
+        assert_eq!(
+            store.get("p").availability,
+            AccountAvailability::BillingBlocked
+        );
+        assert_eq!(store.get("p").balance, BalanceAvailability::Depleted);
+
+        let model = ProviderError::ApiResponse(ApiResponseError {
+            status: 404,
+            body: String::new(),
+            body_truncated: false,
+            retry_after: None,
+            normalized: Box::new(NormalizedFailure {
+                adapter: AdapterKind::OpenAiCompatibleChat,
+                error_profile: ErrorProfile::OpenAi,
+                code: Some("model_not_found".into()),
+                public_message: "the selected model is unavailable",
+                scope: ErrorScope::Model,
+                availability: AvailabilityTransition::ModelUnavailable,
+                retry: RetryDisposition::Never,
+                request_id: None,
+            }),
+        });
+        store.mark_ready("q");
+        store.update_from_error("q", &model);
+        assert_eq!(store.get("q").availability, AccountAvailability::Ready);
+    }
+}

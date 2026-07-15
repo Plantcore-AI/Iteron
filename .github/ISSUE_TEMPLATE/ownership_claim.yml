@@ -1,0 +1,76 @@
+name: Ownership claim
+description: Propose human responsibility for an open or changing boundary
+title: "ownership: "
+labels: ["ownership", "needs-owner-review"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Boundary ownership is human accountability, not exclusive authorship. Agents cannot claim, approve, inherit, or exercise a boundary. The Project Owner confirms all appointments.
+  - type: dropdown
+    id: claim_type
+    attributes:
+      label: Claim type
+      options:
+        - Claim an open boundary
+        - Change a primary or reviewer
+        - Split or merge boundaries
+        - Hand off or vacate a boundary
+    validations:
+      required: true
+  - type: input
+    id: boundary
+    attributes:
+      label: Boundary ID
+      description: Use the exact ID from governance/boundaries.json, or propose a new ID for a split.
+    validations:
+      required: true
+  - type: input
+    id: primary
+    attributes:
+      label: Proposed human primary
+      description: Public GitHub handle. Do not name an agent or shared agent account.
+    validations:
+      required: true
+  - type: input
+    id: reviewer
+    attributes:
+      label: Independent reviewer or backup
+      description: Required for a critical active boundary; recommended elsewhere.
+  - type: textarea
+    id: scope
+    attributes:
+      label: Paths, contracts, and invariants
+      description: Name exact paths, stable interfaces, and invariant overlays you will own.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Ownership evidence
+      description: Link relevant contributions, reviews, operational experience, or a bounded onboarding plan.
+    validations:
+      required: true
+  - type: textarea
+    id: adjacent
+    attributes:
+      label: Adjacent-boundary agreement
+      description: Name affected maintainers and link their agreement, or explain why none is needed.
+    validations:
+      required: true
+  - type: textarea
+    id: handoff
+    attributes:
+      label: Handoff and continuity plan
+      description: Explain backup, open risks, documentation, and how responsibility returns to open state if you leave.
+    validations:
+      required: true
+  - type: checkboxes
+    id: accountability
+    attributes:
+      label: Human accountability
+      options:
+        - label: I am the human proposing this responsibility and can explain, review, and support this boundary.
+          required: true
+        - label: I understand that only the Project Owner can activate or remove this assignment.
+          required: true

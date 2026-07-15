@@ -1,0 +1,15 @@
+[package]
+name = "core-agents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Provider-free policy + data for the ultracode orchestration engine (ADR-013, re-scoped to
+# Fan+Reduce per the R5 design review). Pure: no provider, no kernel, no tokio — so the plan and
+# the deterministic reduce() are unit-testable without a network (the reproducibility invariant).
+[dependencies]
+core-ctx = { path = "../ctx" }
+core-protocol = { path = "../protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }

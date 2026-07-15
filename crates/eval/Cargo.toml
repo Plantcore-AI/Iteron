@@ -1,0 +1,13 @@
+[package]
+name = "core-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "core-eval"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }

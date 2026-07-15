@@ -1,0 +1,27 @@
+[package]
+name = "core-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-protocol = { path = "../protocol" }
+core-sandbox = { path = "../sandbox" }
+core-ctx = { path = "../ctx" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+walkdir = { workspace = true }
+thiserror = { workspace = true }
+# The web tools (web_fetch/web_search) egress over HTTP. REUSE the workspace's existing model-API
+# HTTP stack (reqwest + futures-util) — no new HTTP dependency enters the lockfile (ADR-010,
+# zero-dependency-first). These are IrreversibleExternal and never run in the bash egress-off cell.
+reqwest = { workspace = true }
+futures-util = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }

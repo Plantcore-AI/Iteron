@@ -1,0 +1,38 @@
+[package]
+name = "core-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "core"
+path = "src/main.rs"
+
+[dependencies]
+core-protocol = { path = "../protocol" }
+core-record = { path = "../record" }
+core-obs = { path = "../obs" }
+core-provider = { path = "../provider" }
+core-tools = { path = "../tools" }
+core-sched = { path = "../sched" }
+core-kernel = { path = "../kernel" }
+core-ctx = { path = "../ctx" }
+core-agents = { path = "../agents" }
+core-mcp = { path = "../mcp" }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+futures-util = { workspace = true }
+async-trait = "0.1"
+url = "2"
+sha2 = { workspace = true }
+libc = "0.2"
+
+[dev-dependencies]
+portable-pty = "=0.9.0"
+vt100 = "=0.15.2"
