@@ -1,6 +1,6 @@
 # Roadmap
 
-Core is pre-alpha. Milestones are evidence gates rather than marketing dates.
+Core Code is pre-alpha. Milestones are evidence gates rather than marketing dates.
 
 ## M0 — Truth and safety
 

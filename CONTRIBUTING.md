@@ -1,6 +1,6 @@
-# Contributing to Core
+# Contributing to Core Code
 
-Thank you for helping build Core. The project welcomes focused contributions from
+Thank you for helping build Core Code. The project welcomes focused contributions from
 humans using any responsible development tools, including coding agents.
 
 Unless a contributor explicitly states otherwise, an intentionally submitted

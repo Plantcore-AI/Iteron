@@ -2,7 +2,7 @@
 
 ## Target boundary
 
-Core is intended to have three planes.
+Core Code is intended to have three planes.
 
 ### Fixed runtime TCB
 
@@ -38,7 +38,7 @@ The workspace is divided into protocol, record, observability, provider, tools,
 sandbox, context, verification, MCP, scheduling, agents, kernel, CLI, evaluation,
 and evolution-contract crates. This is useful modularity, but the kernel still
 depends on concrete implementations and the CLI/TUI still participates in runtime
-composition. Core therefore does not yet claim microkernel conformance.
+composition. Core Code therefore does not yet claim microkernel conformance.
 
 This current modular monolith is nevertheless divided into machine-checked human
 development boundaries. The boundary registry guarantees unique path

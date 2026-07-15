@@ -1,6 +1,6 @@
 # Maintainer onboarding
 
-Core maintainership is organized around claimable responsibility units, not fixed
+Core Code maintainership is organized around claimable responsibility units, not fixed
 seats. One person may own several coherent boundaries, and a boundary can be split
 when its review or incident load becomes too large. The human Owner/Project Lead
 retains final override authority.

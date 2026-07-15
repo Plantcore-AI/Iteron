@@ -1,6 +1,6 @@
 # Repository enforcement
 
-This runbook turns Core's local collaboration contract into GitHub merge
+This runbook turns Core Code's local collaboration contract into GitHub merge
 enforcement. The repository remains in `bootstrap` mode until the public human
 identities and the protected `main` ruleset have both been verified.
 
