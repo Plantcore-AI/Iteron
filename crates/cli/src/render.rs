@@ -11,6 +11,58 @@ use crate::tui::char_width;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+/// One OSC-8-capable region in an already-wrapped row. Coordinates are display cells, never byte
+/// offsets, so CJK and combining text keep the same geometry as the transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HyperlinkRegion {
+    pub row: usize,
+    pub col: u16,
+    pub width: u16,
+    pub target: String,
+}
+
+/// Wrapped rows plus optional terminal-hyperlink metadata. Escape bytes are deliberately absent
+/// from `lines`; the TUI applies regions to the final Ratatui buffer only after layout and scroll.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RenderedLines {
+    pub lines: Vec<Line<'static>>,
+    pub hyperlinks: Vec<HyperlinkRegion>,
+}
+
+impl RenderedLines {
+    pub fn plain(lines: Vec<Line<'static>>) -> Self {
+        Self {
+            lines,
+            hyperlinks: Vec::new(),
+        }
+    }
+
+    pub fn push_plain(&mut self, line: Line<'static>) {
+        self.lines.push(line);
+    }
+
+    pub fn append(&mut self, mut other: Self) {
+        let row_offset = self.lines.len();
+        for hyperlink in &mut other.hyperlinks {
+            hyperlink.row = hyperlink.row.saturating_add(row_offset);
+        }
+        self.lines.append(&mut other.lines);
+        self.hyperlinks.append(&mut other.hyperlinks);
+    }
+
+    pub fn shift_columns(&mut self, columns: u16) {
+        for hyperlink in &mut self.hyperlinks {
+            hyperlink.col = hyperlink.col.saturating_add(columns);
+        }
+    }
+}
+
+/// A styled span optionally associated with a previously validated terminal target.
+pub(crate) struct AnnotatedSpan {
+    pub span: Span<'static>,
+    pub hyperlink: Option<String>,
+}
+
 /// The display width of a run of styled chars.
 fn run_width(chars: &[(char, Style)]) -> u16 {
     chars
@@ -88,6 +140,144 @@ pub fn wrap_spans(spans: &[Span], width: u16) -> Vec<Line<'static>> {
         rows.push(to_line(&cur));
     }
     rows
+}
+
+/// Wrap styled spans while retaining hyperlink ranges outside the printable content. This mirrors
+/// `wrap_spans` exactly: links therefore cannot change row count, display width, or break points.
+pub(crate) fn wrap_annotated_spans(spans: &[AnnotatedSpan], width: u16) -> RenderedLines {
+    let targets: Vec<&str> = spans
+        .iter()
+        .filter_map(|span| span.hyperlink.as_deref())
+        .collect();
+    let mut next_target = 0usize;
+    let mut chars: Vec<(char, Style, Option<usize>)> = Vec::new();
+    for span in spans {
+        let target = span.hyperlink.as_ref().map(|_| {
+            let id = next_target;
+            next_target = next_target.saturating_add(1);
+            id
+        });
+        for c in span.span.content.chars() {
+            chars.push((c, span.span.style, target));
+        }
+    }
+    if width == 0 || chars.is_empty() {
+        let (line, hyperlinks) = annotated_line(&chars, &targets, 0);
+        return RenderedLines {
+            lines: vec![line],
+            hyperlinks,
+        };
+    }
+
+    let mut rendered = RenderedLines::default();
+    let mut current: Vec<(char, Style, Option<usize>)> = Vec::new();
+    let mut current_width = 0u16;
+    let mut last_space: Option<usize> = None;
+    for entry @ (character, _, _) in chars {
+        let character_width = char_width(character);
+        if current_width.saturating_add(character_width) > width && !current.is_empty() {
+            if let Some(space) = last_space.filter(|&space| space > 0 && space < current.len()) {
+                let tail = current.split_off(space);
+                while current
+                    .last()
+                    .is_some_and(|(character, _, _)| *character == ' ')
+                {
+                    current.pop();
+                }
+                push_annotated_line(&mut rendered, &current, &targets);
+                current = tail;
+            } else {
+                push_annotated_line(&mut rendered, &current, &targets);
+                current = Vec::new();
+            }
+            current_width = current
+                .iter()
+                .map(|(character, _, _)| char_width(*character))
+                .fold(0u16, u16::saturating_add);
+            last_space = None;
+        }
+        current.push(entry);
+        current_width = current_width.saturating_add(character_width);
+        if character == ' ' {
+            last_space = Some(current.len());
+        }
+    }
+    if !current.is_empty() || rendered.lines.is_empty() {
+        push_annotated_line(&mut rendered, &current, &targets);
+    }
+    rendered
+}
+
+fn push_annotated_line(
+    rendered: &mut RenderedLines,
+    chars: &[(char, Style, Option<usize>)],
+    targets: &[&str],
+) {
+    let row = rendered.lines.len();
+    let (line, mut hyperlinks) = annotated_line(chars, targets, row);
+    rendered.lines.push(line);
+    rendered.hyperlinks.append(&mut hyperlinks);
+}
+
+fn annotated_line(
+    chars: &[(char, Style, Option<usize>)],
+    targets: &[&str],
+    row: usize,
+) -> (Line<'static>, Vec<HyperlinkRegion>) {
+    let printable: Vec<(char, Style)> = chars
+        .iter()
+        .map(|(character, style, _)| (*character, *style))
+        .collect();
+    let mut hyperlinks = Vec::new();
+    let mut column = 0u16;
+    let mut current_target: Option<usize> = None;
+    let mut region_start = 0u16;
+    for (character, _, target) in chars {
+        if *target != current_target {
+            finish_region(
+                &mut hyperlinks,
+                current_target,
+                targets,
+                row,
+                region_start,
+                column,
+            );
+            current_target = *target;
+            region_start = column;
+        }
+        column = column.saturating_add(char_width(*character));
+    }
+    finish_region(
+        &mut hyperlinks,
+        current_target,
+        targets,
+        row,
+        region_start,
+        column,
+    );
+    (to_line(&printable), hyperlinks)
+}
+
+fn finish_region(
+    hyperlinks: &mut Vec<HyperlinkRegion>,
+    target: Option<usize>,
+    targets: &[&str],
+    row: usize,
+    start: u16,
+    end: u16,
+) {
+    let Some(target) = target.and_then(|target| targets.get(target)) else {
+        return;
+    };
+    let width = end.saturating_sub(start);
+    if width > 0 {
+        hyperlinks.push(HyperlinkRegion {
+            row,
+            col: start,
+            width,
+            target: (*target).to_string(),
+        });
+    }
 }
 
 /// The display width of a whole `Line` (sum over its spans). Used by tests to assert the wrap
@@ -177,5 +367,61 @@ mod tests {
     #[test]
     fn empty_input_yields_one_empty_row() {
         assert_eq!(wrap_spans(&[], 10).len(), 1);
+    }
+
+    #[test]
+    fn annotated_links_wrap_without_changing_visible_width() {
+        let spans = vec![
+            AnnotatedSpan {
+                span: styled("before ", Color::White),
+                hyperlink: None,
+            },
+            AnnotatedSpan {
+                span: styled("clickable words", Color::Blue),
+                hyperlink: Some("https://example.com/docs".into()),
+            },
+            AnnotatedSpan {
+                span: styled(" after", Color::White),
+                hyperlink: None,
+            },
+        ];
+        let rendered = wrap_annotated_spans(&spans, 10);
+        assert!(rendered.lines.iter().all(|line| line_width(line) <= 10));
+        let expected = wrap_spans(
+            &[
+                styled("before ", Color::White),
+                styled("clickable words", Color::Blue),
+                styled(" after", Color::White),
+            ],
+            10,
+        );
+        assert_eq!(
+            rendered
+                .lines
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(rendered.hyperlinks.len(), 2);
+        assert!(
+            rendered
+                .hyperlinks
+                .iter()
+                .all(|link| link.target == "https://example.com/docs")
+        );
     }
 }

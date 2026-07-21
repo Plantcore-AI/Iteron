@@ -8,18 +8,28 @@
 //! JSON, not TOML, to avoid a dependency (serde_json is already in the tree — zero-dependency
 //! first). Every field is optional; a missing file is not an error (defaults apply).
 
-use serde::Deserialize;
+mod retry;
+mod schema;
+
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
 
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+const MAX_MCP_SERVERS: usize = 32;
+const MAX_MCP_SERVER_ARGS: usize = 128;
+pub(crate) use retry::{RetryConfig, load_retry_environment, resolve_retry_policy};
+pub(crate) use schema::{FILE_CONFIG_SCHEMA_VERSION, FileConfigSchemaError};
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 // `deny_unknown_fields` fails loud on a typo'd key (e.g. `max_turn`) instead of silently ignoring it —
 // a silently-dropped budget/security knob is a production footgun.
 #[serde(default, deny_unknown_fields)]
 pub struct FileConfig {
+    /// On-disk schema. Legacy files without this field are migrated from v0 before decoding.
+    #[serde(default = "schema::current_version")]
+    pub schema_version: u32,
     /// Model default. From a project config, the CLI accepts only a bare id and constrains it to
     /// the independently trusted provider; trusted user config may use provider qualification.
     pub model: Option<String>,
@@ -32,6 +42,12 @@ pub struct FileConfig {
     /// Compaction policy. Accepted from trusted user config only; a project value is ignored
     /// because either direction changes paid provider-call timing rather than a monotone ceiling.
     pub compaction_trigger_tokens: Option<usize>,
+    /// Bounded provider retry policy. It is parsed for both origins so typos fail loudly, but the
+    /// composition root accepts values only from trusted operator layers.
+    pub retry: Option<RetryConfig>,
+    /// Out-of-band terminal bells for completed provider turns and approval requests. This
+    /// presentation preference is consumed only from operator-owned user configuration.
+    pub completion_notifications: Option<bool>,
     /// Session effort. The shared schema accepts it for trusted user config; a repository value is
     /// deliberately ignored because effort changes cost and orchestration authority.
     pub effort: Option<String>,
@@ -44,6 +60,9 @@ pub struct FileConfig {
     /// Additional provider instances. Security-sensitive: the CLI consumes these only from the
     /// operator-owned user config, never from a repository config.
     pub providers: Option<Vec<ProviderConfig>>,
+    /// Immutable signed pricing artifacts. Consumed only from trusted user configuration; a
+    /// repository value is parsed for strictness but ignored by the composition root.
+    pub rate_cards: Option<Vec<crate::pricing::RateCardConfig>>,
     /// MCP servers to connect and expose as tools (each an operator-configured stdio server).
     pub mcp_servers: Option<Vec<McpServerConfig>>,
     /// Lifecycle hooks are consumed by `core_kernel::hooks::Hooks`, but they must also be part
@@ -53,19 +72,55 @@ pub struct FileConfig {
     pub hooks: Option<BTreeMap<String, Vec<String>>>,
 }
 
+impl Default for FileConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: FILE_CONFIG_SCHEMA_VERSION,
+            model: None,
+            max_turns: None,
+            max_usd: None,
+            max_wall_secs: None,
+            allow_code: None,
+            egress_allow: None,
+            compaction_trigger_tokens: None,
+            retry: None,
+            completion_notifications: None,
+            effort: None,
+            provider: None,
+            base_url: None,
+            providers: None,
+            rate_cards: None,
+            mcp_servers: None,
+            hooks: None,
+        }
+    }
+}
+
+/// Current-schema repository starter used by `/init`. Keeping the discriminator beside the
+/// parser prevents a newer binary from scaffolding a legacy document by accident.
+pub(crate) fn starter_project_config() -> String {
+    format!(
+        "{{\n  \"schema_version\": {FILE_CONFIG_SCHEMA_VERSION},\n  \"model\": null,\n  \"max_turns\": 40,\n  \"allow_code\": false\n}}\n"
+    )
+}
+
 /// One MCP server the operator configured. Configuring it is the consent to run its tools;
 /// its tool descriptions are still treated as untrusted (scanned) per ADR-007.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     pub name: String,
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Exact bare-name filter. Empty `allow` means all safe names; `deny` is applied last.
+    #[serde(default, skip_serializing_if = "core_mcp::McpToolFilter::is_empty")]
+    pub tools: core_mcp::McpToolFilter,
 }
 
 /// One operator-defined provider instance. Credentials remain indirect: Core reads the named
 /// environment variable at call time and never persists a plaintext key in configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
     pub id: String,
@@ -94,6 +149,11 @@ fn default_true() -> bool {
 }
 
 impl FileConfig {
+    /// Parse and migrate a bounded config document into the current strict schema.
+    pub(crate) fn parse(text: &str) -> Result<Self, FileConfigSchemaError> {
+        schema::parse(text)
+    }
+
     /// Load `.core/config.json` under `repo`, if present. A malformed file IS an error
     /// (fail loud on a config the operator wrote), but an absent file is fine.
     pub fn load(repo: &Path) -> anyhow::Result<FileConfig> {
@@ -101,16 +161,20 @@ impl FileConfig {
         let Some(text) = read_bounded_config(&path, false)? else {
             return Ok(FileConfig::default());
         };
-        let cfg: FileConfig =
-            serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-        cfg.validate()
-            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-        Ok(cfg)
+        Self::parse(&text).map_err(|error| {
+            anyhow::Error::new(error).context(format!("failed to load {}", path.display()))
+        })
     }
 
     /// Reject nonsensical numeric knobs BEFORE they weaken a budget/bound invariant (a `max_turns:0`
     /// or negative `max_usd` would silently disable the ceiling). Called on every load.
     pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != FILE_CONFIG_SCHEMA_VERSION {
+            return Err(format!(
+                "schema_version must be {FILE_CONFIG_SCHEMA_VERSION}, got {}",
+                self.schema_version
+            ));
+        }
         if self.max_turns == Some(0) {
             return Err("max_turns must be >= 1 (0 would disable the turn budget)".into());
         }
@@ -126,6 +190,9 @@ impl FileConfig {
         }
         if self.compaction_trigger_tokens == Some(0) {
             return Err("compaction_trigger_tokens must be >= 1".into());
+        }
+        if let Some(retry) = &self.retry {
+            retry.validate()?;
         }
         if let Some(effort) = self.effort.as_deref()
             && core_protocol::Effort::parse(effort).is_none()
@@ -231,6 +298,48 @@ impl FileConfig {
                 }
             }
         }
+        if let Some(rate_cards) = &self.rate_cards {
+            crate::pricing::validate_rate_card_configs(rate_cards)?;
+        }
+        if let Some(servers) = &self.mcp_servers {
+            if servers.len() > MAX_MCP_SERVERS {
+                return Err(format!(
+                    "mcp_servers exceeds the {MAX_MCP_SERVERS}-server configuration bound"
+                ));
+            }
+            let mut names = std::collections::BTreeSet::new();
+            for (index, server) in servers.iter().enumerate() {
+                core_mcp::validate_server_name(&server.name)
+                    .map_err(|error| format!("mcp_servers[{index}]: {error}"))?;
+                if !names.insert(server.name.as_str()) {
+                    return Err(format!(
+                        "mcp_servers contains a duplicate server namespace at index {index}"
+                    ));
+                }
+                if server.command.is_empty()
+                    || server.command.len() > 4096
+                    || server.command.contains('\0')
+                {
+                    return Err(format!(
+                        "mcp_servers[{index}].command must be 1..=4096 bytes and contain no NUL"
+                    ));
+                }
+                if server.args.len() > MAX_MCP_SERVER_ARGS
+                    || server
+                        .args
+                        .iter()
+                        .any(|arg| arg.len() > 16 * 1024 || arg.contains('\0'))
+                {
+                    return Err(format!(
+                        "mcp_servers[{index}].args exceeds its 128-entry/16-KiB-per-entry bound or contains NUL"
+                    ));
+                }
+                server
+                    .tools
+                    .validate()
+                    .map_err(|error| format!("mcp_servers[{index}].tools: {error}"))?;
+            }
+        }
         Ok(())
     }
 
@@ -246,11 +355,9 @@ impl FileConfig {
         let Some(text) = read_bounded_config(&path, true)? else {
             return Ok(FileConfig::default());
         };
-        let cfg: FileConfig =
-            serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-        cfg.validate()
-            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-        Ok(cfg)
+        Self::parse(&text).map_err(|error| {
+            anyhow::Error::new(error).context(format!("failed to load {}", path.display()))
+        })
     }
 }
 
@@ -384,6 +491,24 @@ pub fn tighten_optional<T: PartialOrd>(project: Option<T>, trusted: Option<T>) -
 /// mint authority; an explicit project `false` may only remove an existing grant.
 pub fn tighten_grant(project: Option<bool>, trusted: bool) -> bool {
     trusted && project.unwrap_or(true)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CompletionNotificationResolution {
+    pub enabled: bool,
+    pub project_ignored: bool,
+}
+
+/// Resolve a presentation preference exclusively from operator-owned configuration. A cloned
+/// repository cannot turn terminal control output on or off, and absence conservatively means off.
+pub(crate) fn resolve_completion_notifications(
+    trusted_user: Option<bool>,
+    untrusted_project: Option<bool>,
+) -> CompletionNotificationResolution {
+    CompletionNotificationResolution {
+        enabled: trusted_user.unwrap_or(false),
+        project_ignored: untrusted_project.is_some(),
+    }
 }
 
 /// Resolve a repository-safe scalar across every implemented configuration layer. Project config
@@ -528,6 +653,42 @@ mod tests {
         assert!(!tighten_grant(Some(false), true));
         assert!(tighten_grant(Some(true), true));
         assert!(tighten_grant(None, true));
+    }
+
+    #[test]
+    fn completion_notifications_are_user_scoped_and_default_off() {
+        assert_eq!(
+            resolve_completion_notifications(None, None),
+            CompletionNotificationResolution {
+                enabled: false,
+                project_ignored: false,
+            }
+        );
+        assert_eq!(
+            resolve_completion_notifications(Some(true), None),
+            CompletionNotificationResolution {
+                enabled: true,
+                project_ignored: false,
+            }
+        );
+        assert_eq!(
+            resolve_completion_notifications(None, Some(true)),
+            CompletionNotificationResolution {
+                enabled: false,
+                project_ignored: true,
+            }
+        );
+        assert_eq!(
+            resolve_completion_notifications(Some(false), Some(true)),
+            CompletionNotificationResolution {
+                enabled: false,
+                project_ignored: true,
+            }
+        );
+
+        let parsed = FileConfig::parse(r#"{"schema_version":2,"completion_notifications":true}"#)
+            .expect("the current strict schema accepts the user preference");
+        assert_eq!(parsed.completion_notifications, Some(true));
     }
 
     #[test]
@@ -680,6 +841,19 @@ mod tests {
     }
 
     #[test]
+    fn init_starter_is_current_schema_and_round_trips() {
+        let starter = starter_project_config();
+        let config = FileConfig::parse(&starter).expect("starter must use the current schema");
+        assert_eq!(config.schema_version, FILE_CONFIG_SCHEMA_VERSION);
+        assert_eq!(config.max_turns, Some(40));
+        assert_eq!(config.allow_code, Some(false));
+        assert_eq!(
+            serde_json::to_value(config).unwrap()["schema_version"],
+            FILE_CONFIG_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
     fn strict_schema_accepts_the_hooks_block_consumed_by_the_kernel() {
         let cfg = serde_json::from_str::<FileConfig>(
             r#"{"hooks":{"PreToolUse":["./check.sh"],"Stop":["./cleanup.sh"]}}"#,
@@ -688,6 +862,50 @@ mod tests {
         let hooks = cfg.hooks.expect("hooks parsed");
         assert_eq!(hooks.get("PreToolUse").unwrap(), &["./check.sh"]);
         assert_eq!(hooks.get("Stop").unwrap(), &["./cleanup.sh"]);
+    }
+
+    #[test]
+    fn mcp_filters_are_strict_bounded_and_use_safe_unambiguous_namespaces() {
+        let config = FileConfig::parse(
+            r#"{
+                "schema_version": 2,
+                "mcp_servers": [{
+                    "name": "operator-tools",
+                    "command": "/opt/operator/bin/mcp",
+                    "args": ["--stdio"],
+                    "tools": {
+                        "allow": ["shared", "read.file"],
+                        "deny": ["delete_all"]
+                    }
+                }]
+            }"#,
+        )
+        .unwrap();
+        let server = &config.mcp_servers.unwrap()[0];
+        assert_eq!(server.tools.allow, ["shared", "read.file"]);
+        assert_eq!(server.tools.deny, ["delete_all"]);
+
+        for invalid in [
+            r#"{"schema_version":2,"mcp_servers":[{"name":"a__b","command":"mcp"}]}"#,
+            r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","command":"mcp","tools":{"allow":["unsafe/path"]}}]}"#,
+            r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","command":"mcp","tools":{"alllow":["read"]}}]}"#,
+            r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","command":"mcp"},{"name":"alpha","command":"other"}]}"#,
+        ] {
+            assert!(FileConfig::parse(invalid).is_err(), "accepted {invalid}");
+        }
+
+        let entries: Vec<_> = (0..=core_mcp::MAX_MCP_TOOL_FILTER_ENTRIES)
+            .map(|index| format!("tool-{index}"))
+            .collect();
+        let oversized = serde_json::json!({
+            "schema_version": FILE_CONFIG_SCHEMA_VERSION,
+            "mcp_servers": [{
+                "name": "alpha",
+                "command": "mcp",
+                "tools": {"allow": entries}
+            }]
+        });
+        assert!(FileConfig::parse(&oversized.to_string()).is_err());
     }
 
     #[test]

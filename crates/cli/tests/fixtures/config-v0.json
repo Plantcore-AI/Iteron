@@ -1,0 +1,36 @@
+{
+  "provider": "local-vllm",
+  "model": "vendor/operator-model",
+  "max_turns": 17,
+  "max_usd": 3.25,
+  "max_wall_secs": 901,
+  "allow_code": false,
+  "egress_allow": ["artifacts.example"],
+  "compaction_trigger_tokens": 42000,
+  "effort": "xhigh",
+  "base_url": "https://gateway.example/v1",
+  "providers": [
+    {
+      "id": "local-vllm",
+      "display_name": "Operator Gateway",
+      "adapter": "openai_chat",
+      "error_profile": "custom",
+      "api_root": "https://gateway.example/v1",
+      "key_env": "LOCAL_VLLM_API_KEY",
+      "enabled": true,
+      "catalog": false,
+      "models": ["vendor/operator-model"]
+    }
+  ],
+  "mcp_servers": [
+    {
+      "name": "operator-tools",
+      "command": "/opt/operator/bin/mcp",
+      "args": ["--stdio", "--safe"]
+    }
+  ],
+  "hooks": {
+    "PreToolUse": ["./check.sh"],
+    "Stop": ["./cleanup.sh"]
+  }
+}

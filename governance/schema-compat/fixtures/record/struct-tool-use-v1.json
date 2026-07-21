@@ -1,0 +1,5 @@
+{
+  "id": "call-1",
+  "name": "read_file",
+  "input": { "path": "README.md" }
+}

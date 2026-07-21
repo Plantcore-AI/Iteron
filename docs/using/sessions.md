@@ -13,6 +13,21 @@ core --continue -C /path/to/repository
 `--sessions` lists local run metadata. `--continue` selects the most recent valid
 session for that repository and continues from its durable tail.
 
+Core maintains a bounded `.meta.json` sidecar per run and one compact
+`sessions.index`. The record writer refreshes these rebuildable projections at
+turn and terminal boundaries, so covered sessions can be listed or selected
+without replaying their historical rollout. Each projection is bound to the
+current record length, subsecond modification time, and hash-chain tail. Fork
+projections also carry bounded receipts for the exact ancestor prefixes they
+consumed; later parent appends do
+not invalidate a child, while a changed or truncated pinned prefix does.
+
+The cache never becomes session truth. Missing, stale, oversized, or malformed
+cache files are ignored and rebuilt from the bounded, hash-verified record. Run
+`core reindex` to repair all local projections explicitly. Exact `Zero` and
+`Known` cost states are also replayed instead of being trusted from mutable cache
+bytes; only an honest unknown-cost projection may take the no-replay read path.
+
 ## Resume a known run
 
 ```sh
@@ -22,6 +37,8 @@ core --resume RUN_ID -C /path/to/repository \
 
 The follow-up task is optional in the TUI. Runtime routing recorded by the session
 is restored unless an explicit CLI or environment override takes precedence.
+The existing rollout is locked before route and message reconstruction, so a
+second writer cannot append between resume replay and continuation.
 
 ## Fork a session
 

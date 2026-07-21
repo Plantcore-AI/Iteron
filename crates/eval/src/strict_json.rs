@@ -1,0 +1,101 @@
+//! Strict JSON decoding for machine contracts.
+
+use serde::de::{DeserializeSeed, Error as _, MapAccess, SeqAccess, Visitor};
+use serde_json::Value;
+use std::collections::BTreeSet;
+use std::fmt;
+
+pub(crate) fn parse_json_no_duplicates(bytes: &[u8]) -> serde_json::Result<Value> {
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let value = MachineValueSeed.deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(value)
+}
+
+struct MachineValueSeed;
+
+impl<'de> DeserializeSeed<'de> for MachineValueSeed {
+    type Value = Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(MachineValueVisitor)
+    }
+}
+
+struct MachineValueVisitor;
+
+impl<'de> Visitor<'de> for MachineValueVisitor {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a core machine JSON value without duplicate object keys")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(value.into())
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(value.into())
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(value.into())
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .ok_or_else(|| E::custom("JSON number is not finite"))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(value.into())
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(value.into())
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = sequence.next_element_seed(MachineValueSeed)? {
+            values.push(value);
+        }
+        Ok(Value::Array(values))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut keys = BTreeSet::new();
+        let mut values = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if !keys.insert(key.clone()) {
+                return Err(A::Error::custom(format!(
+                    "duplicate JSON object key '{key}'"
+                )));
+            }
+            values.insert(key, map.next_value_seed(MachineValueSeed)?);
+        }
+        Ok(Value::Object(values))
+    }
+}

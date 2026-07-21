@@ -10,7 +10,9 @@
 //!
 //! Zero-dependency: a small hand-rolled scanner, no regex crate.
 
-use core_protocol::{Block, Event, EventKind, WorkflowEvent};
+use core_protocol::{
+    Block, DurableEnvironmentContext, DurableInstructionContext, Event, EventKind, WorkflowEvent,
+};
 
 /// Redact tool-result content in an event before it enters the record (ADR-008 §1). Returns a
 /// scrubbed clone; the caller's live copy is untouched. This is the single chokepoint applied by
@@ -53,13 +55,47 @@ pub fn redact_event(event: &Event) -> Event {
         EventKind::Compaction { messages } => EventKind::Compaction {
             messages: messages.iter().map(redact_message).collect(),
         },
-        // The injected context (memory + instructions) is written verbatim to the durable record
-        // (REC-INJECT). A remembered fact could contain a credential, so scrub it too (code review:
+        EventKind::Text { delta } => EventKind::Text {
+            delta: scrub(delta),
+        },
+        EventKind::Thinking { delta } => EventKind::Thinking {
+            delta: scrub(delta),
+        },
+        EventKind::ToolReady { tool, purity_pure } => {
+            let mut tool = tool.clone();
+            // Keep the provider correlation id byte-stable, but scrub the model-controlled name
+            // and arguments in case this currently-transient event is ever made durable.
+            tool.name = scrub(&tool.name);
+            tool.input = scrub_json(&tool.input);
+            EventKind::ToolReady {
+                tool,
+                purity_pure: *purity_pure,
+            }
+        }
+        // The injected context (environment + instructions + memory/skills) crosses the durable
+        // record (REC-INJECT). A remembered fact could contain a credential, so scrub it too (code review:
         // this event previously fell through unscrubbed, leaking secrets into the audit log).
-        EventKind::ContextInjection { text, trust } => EventKind::ContextInjection {
+        EventKind::ContextInjection {
+            text,
+            trust,
+            instructions,
+        } => EventKind::ContextInjection {
             text: scrub(text),
             trust: *trust,
+            instructions: instructions
+                .as_ref()
+                .map(|instructions| DurableInstructionContext {
+                    text: scrub(&instructions.text),
+                    trust: instructions.trust,
+                    environment: instructions.environment.as_ref().map(|environment| {
+                        DurableEnvironmentContext {
+                            text: scrub(&environment.text),
+                            trust: environment.trust,
+                        }
+                    }),
+                }),
         },
+        EventKind::Notice { text } => EventKind::Notice { text: scrub(text) },
         // Route/provenance events are durable control-plane data. They deliberately contain no
         // credential field, but operator-defined ids are still strings and must not become a
         // backdoor secret store. Preserve content-address/digest-shaped identifiers because they
@@ -69,10 +105,12 @@ pub fn redact_event(event: &Event) -> Event {
             model,
             effort,
             created_at,
+            environment,
             parent_run,
             forked_at,
             parent_hash_at_seq,
             config_digest,
+            max_usd,
         } => EventKind::RunStart {
             // These are structural references, not free-form route metadata. Preserve them exactly
             // or a hash-shaped workspace/run name would become unresumable.
@@ -80,10 +118,17 @@ pub fn redact_event(event: &Event) -> Event {
             model: scrub_route_identifier(model),
             effort: *effort,
             created_at: *created_at,
+            environment: environment
+                .as_ref()
+                .map(|environment| DurableEnvironmentContext {
+                    text: scrub(&environment.text),
+                    trust: environment.trust,
+                }),
             parent_run: parent_run.clone(),
             forked_at: *forked_at,
             parent_hash_at_seq: parent_hash_at_seq.as_deref().map(scrub_route_digest),
             config_digest: scrub_route_digest(config_digest),
+            max_usd: *max_usd,
         },
         EventKind::ModelSelected {
             provider_id,
@@ -96,6 +141,38 @@ pub fn redact_event(event: &Event) -> Event {
             catalog_digest: scrub_route_digest(catalog_digest),
             capability_digest: scrub_route_digest(capability_digest),
         },
+        EventKind::RateCardBound { rate_card } => {
+            let mut rate_card = rate_card.clone();
+            rate_card.rate_card.route.provider_id =
+                scrub_route_identifier(&rate_card.rate_card.route.provider_id);
+            rate_card.rate_card.route.model_id =
+                scrub_route_identifier(&rate_card.rate_card.route.model_id);
+            rate_card.rate_card.route.catalog_digest =
+                scrub_route_digest(&rate_card.rate_card.route.catalog_digest);
+            rate_card.rate_card.route.capability_digest =
+                scrub_route_digest(&rate_card.rate_card.route.capability_digest);
+            rate_card.rate_card.provenance = scrub(&rate_card.rate_card.provenance);
+            rate_card.signer_id = scrub(&rate_card.signer_id);
+            rate_card.rate_card_digest = scrub_route_digest(&rate_card.rate_card_digest);
+            rate_card.signature = scrub_pricing_signature(&rate_card.signature);
+            // Kernel preflight makes valid production artifacts scrub-stable. A caller that bypasses
+            // it with secret-shaped metadata is scrubbed here; invalidating that artifact is the
+            // fail-closed outcome, and replay will leave cost Unknown.
+            EventKind::RateCardBound { rate_card }
+        }
+        EventKind::CostProjected { projection } => {
+            let mut projection = projection.clone();
+            projection.route.provider_id = scrub_route_identifier(&projection.route.provider_id);
+            projection.route.model_id = scrub_route_identifier(&projection.route.model_id);
+            projection.route.catalog_digest = scrub_route_digest(&projection.route.catalog_digest);
+            projection.route.capability_digest =
+                scrub_route_digest(&projection.route.capability_digest);
+            projection.signer_id = scrub(&projection.signer_id);
+            projection.rate_card_digest = scrub_route_digest(&projection.rate_card_digest);
+            projection.projection_digest = scrub_route_digest(&projection.projection_digest);
+            projection.signature = scrub_pricing_signature(&projection.signature);
+            EventKind::CostProjected { projection }
+        }
         EventKind::Approval {
             id,
             tool_use_id,
@@ -122,6 +199,15 @@ pub fn redact_event(event: &Event) -> Event {
             workflow_id: scrub(workflow_id),
             event: redact_workflow_event(event),
         },
+        EventKind::WorkflowV2 {
+            version,
+            workflow_id,
+            event,
+        } => EventKind::WorkflowV2 {
+            version: *version,
+            workflow_id: scrub(workflow_id),
+            event: redact_workflow_event(event),
+        },
         EventKind::SubagentFinished {
             sub_run,
             outcome,
@@ -139,7 +225,45 @@ pub fn redact_event(event: &Event) -> Event {
             summary_digest: summary_digest.clone(),
             evidence_bytes: *evidence_bytes,
         },
-        other => other.clone(),
+        EventKind::SubagentFinishedV2 {
+            version,
+            sub_run,
+            outcome,
+            metrics,
+            error_code,
+            error_detail,
+            summary_digest,
+            evidence_bytes,
+        } => EventKind::SubagentFinishedV2 {
+            version: *version,
+            sub_run: sub_run.clone(),
+            outcome: *outcome,
+            metrics: metrics.clone(),
+            error_code: error_code.as_deref().map(scrub),
+            error_detail: error_detail.as_deref().map(scrub),
+            summary_digest: summary_digest.clone(),
+            evidence_bytes: *evidence_bytes,
+        },
+        EventKind::SubagentSpawned { sub_run, agent } => EventKind::SubagentSpawned {
+            // `sub_run` is a structural parent/child link and must remain byte-stable.
+            sub_run: sub_run.clone(),
+            agent: scrub(agent),
+        },
+        EventKind::Done { outcome } => EventKind::Done {
+            outcome: scrub(outcome),
+        },
+        // Exhaustive on purpose: variants without free-form persisted text are cloned only after
+        // an explicit redaction decision. A new EventKind must fail compilation here until the
+        // durable-record boundary decides how its fields are handled.
+        kind @ (EventKind::Phase { .. }
+        | EventKind::TurnStart
+        | EventKind::TurnEnd { .. }
+        | EventKind::SubmissionRejected { .. }
+        | EventKind::UsdCeilingChanged { .. }
+        | EventKind::EffortChanged { .. }
+        | EventKind::PolicyChanged { .. }
+        | EventKind::Checkpoint { .. }
+        | EventKind::Unknown) => kind.clone(),
     };
     Event {
         seq: event.seq,
@@ -268,6 +392,17 @@ fn scrub_route_digest(value: &str) -> String {
     }
 }
 
+fn scrub_pricing_signature(value: &str) -> String {
+    let valid_hmac = value
+        .strip_prefix("hmac-sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    if valid_hmac {
+        value.to_owned()
+    } else {
+        scrub(value)
+    }
+}
+
 /// Recursively scrub secret shapes out of every string in a JSON value (tool-call arguments):
 /// an `edit`/`bash` call can carry a hardcoded key in its `input`, which must not persist in the
 /// record (code review: `ToolUse.input` fell through unscrubbed).
@@ -344,8 +479,53 @@ pub fn scrub(s: &str) -> String {
 }
 
 fn scrub_tokens_in_line(line: &str) -> String {
-    // Split on whitespace-ish boundaries but preserve the original separators by walking words.
     let mut out = String::with_capacity(line.len());
+    let mut cursor = 0usize;
+    while let Some(offset) = line[cursor..].find("[REDACTED:") {
+        let marker_start = cursor + offset;
+        push_scrubbed_unmarked_tokens(&mut out, &line[cursor..marker_start]);
+        let candidate = &line[marker_start..];
+        if let Some(marker_len) = generated_redaction_marker_len(candidate) {
+            out.push_str(&candidate[..marker_len]);
+            cursor = marker_start + marker_len;
+        } else {
+            // Consume only the opening bracket. A forged or malformed marker is then handled by
+            // the ordinary token scanner, so wrapping a real credential cannot suppress masking.
+            out.push('[');
+            cursor = marker_start + 1;
+        }
+    }
+    push_scrubbed_unmarked_tokens(&mut out, &line[cursor..]);
+    out
+}
+
+/// Recognize only the exact placeholder shape emitted by `mask_scalar_if_secret`: a fixed prefix,
+/// four safe ASCII hint characters, one ellipsis, and a closing bracket. This makes repeated
+/// record-boundary scrubbing byte-idempotent without treating arbitrary `[REDACTED:secret]` text
+/// as trusted or exempt from the credential scanner.
+fn generated_redaction_marker_len(value: &str) -> Option<usize> {
+    const PREFIX: &str = "[REDACTED:";
+    const SUFFIX: &str = "…]";
+    let rest = value.strip_prefix(PREFIX)?;
+    let mut hint_bytes = 0usize;
+    for (index, ch) in rest.char_indices().take(4) {
+        if !is_redaction_hint_char(ch) {
+            return None;
+        }
+        hint_bytes = index + ch.len_utf8();
+    }
+    if rest[..hint_bytes].chars().count() != 4 || !rest[hint_bytes..].starts_with(SUFFIX) {
+        return None;
+    }
+    Some(PREFIX.len() + hint_bytes + SUFFIX.len())
+}
+
+fn is_redaction_hint_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '+' | '/' | '=')
+}
+
+fn push_scrubbed_unmarked_tokens(out: &mut String, line: &str) {
+    // Split on whitespace-ish boundaries but preserve the original separators by walking words.
     let mut word = String::new();
     for ch in line.chars() {
         if ch.is_whitespace() || matches!(ch, '"' | '\'' | '=' | ':' | ',' | '(' | ')' | ';') {
@@ -361,24 +541,58 @@ fn scrub_tokens_in_line(line: &str) -> String {
     if !word.is_empty() {
         out.push_str(&mask_if_secret(&word));
     }
-    out
 }
 
 /// Return a masked placeholder if `w` looks like a credential, else `w` unchanged.
 fn mask_if_secret(w: &str) -> String {
+    // Treat an absolute Unix path or the post-`C:`/UNC portion of an escaped Windows path as
+    // components, not one high-entropy token. Otherwise a normal temporary path containing an
+    // uppercase component plus a pid can make the entire cwd look base64-ish. Component-wise
+    // masking preserves ordinary cwd facts while still redacting a secret-shaped directory or
+    // filename in place. Environment framing doubles Windows backslashes, so preserve every
+    // separator byte while scanning both slash forms.
+    if w.starts_with('/') || w.starts_with('\\') {
+        let mut masked = String::with_capacity(w.len());
+        let mut component = String::new();
+        for ch in w.chars() {
+            if matches!(ch, '/' | '\\') {
+                if !component.is_empty() {
+                    masked.push_str(&mask_scalar_if_secret(&component));
+                    component.clear();
+                }
+                masked.push(ch);
+            } else {
+                component.push(ch);
+            }
+        }
+        masked.push_str(&mask_scalar_if_secret(&component));
+        return masked;
+    }
+    mask_scalar_if_secret(w)
+}
+
+fn mask_scalar_if_secret(w: &str) -> String {
     let looks_secret =
         // provider key prefixes
         w.starts_with("sk-") && w.len() > 20
         || w.starts_with("sk-ant-")
-        || w.starts_with("ghp_") || w.starts_with("gho_") || w.starts_with("ghs_") // GitHub
+        || (w.starts_with("ghp_") || w.starts_with("gho_") || w.starts_with("ghs_"))
+            && w.len() > 20 // GitHub
         || w.starts_with("xoxb-") || w.starts_with("xoxp-")                          // Slack
         || w.starts_with("AKIA") && w.len() >= 20                                    // AWS access key id
         || w.starts_with("AIza") && w.len() > 30                                     // Google API key
         || looks_like_jwt(w)                                                          // JWT
         || (w.len() >= 32 && looks_like_hex_or_b64_token(w));
     if looks_secret {
-        // char-safe prefix (code review: &w[..4] panics on a multibyte char after the prefix).
-        format!("[REDACTED:{}…]", w.chars().take(4).collect::<String>())
+        // Keep the generator and marker recognizer on exactly the same safe ASCII alphabet.
+        // Replacing a non-ASCII/control hint is both char-safe and makes a second record-boundary
+        // scrub byte-idempotent for inputs such as `sk-über...`.
+        let hint = w
+            .chars()
+            .take(4)
+            .map(|ch| if is_redaction_hint_char(ch) { ch } else { '_' })
+            .collect::<String>();
+        format!("[REDACTED:{hint}…]")
     } else {
         w.to_string()
     }
@@ -457,6 +671,71 @@ IOSFODNN7EXAMPLE here"
     }
 
     #[test]
+    fn generated_markers_are_idempotent_but_forged_markers_do_not_hide_secrets() {
+        let secrets = [
+            "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx",
+            "sk-überVeryLongCredential1234567890",
+            "ghp_AbCdEf1234567890AbCdEf1234567890",
+            "xoxb-AbCdEf1234567890AbCdEf",
+            "AKIAIOSFODNN7EXAMPLE",
+            "AIzaAbCdEf1234567890AbCdEf1234567890",
+            "eyJhbGciOiJIUzI1NiJ9.AbCdEf1234567890.AbCdEf1234567890",
+            "A1b2C3d4E5f6A1b2C3d4E5f6A1b2C3d4",
+        ];
+        for secret in secrets {
+            let raw = format!("prefix {secret} suffix");
+            let once = scrub(&raw);
+            assert_ne!(once, raw, "fixture must exercise masking: {secret}");
+            assert!(!once.contains(secret), "secret survived masking: {secret}");
+            assert_eq!(
+                scrub(&once),
+                once,
+                "a generated marker changed on the second scrub: {secret}"
+            );
+        }
+
+        let generated = "[REDACTED:ghp_…]";
+        assert_eq!(scrub(generated), generated);
+
+        let multibyte_path = "/workspace/sk-überVeryLongCredential1234567890/a-very-long-suffix";
+        let once = scrub(multibyte_path);
+        assert_eq!(once, "/workspace/[REDACTED:sk-_…]/a-very-long-suffix");
+        assert_eq!(scrub(&once), once);
+
+        let secret = "ghp_AbCdEf1234567890AbCdEf1234567890";
+        let forged = format!("[REDACTED:{secret}]");
+        let scrubbed = scrub(&forged);
+        assert!(!scrubbed.contains(secret));
+        assert_eq!(scrub(&scrubbed), scrubbed);
+    }
+
+    #[test]
+    fn absolute_paths_are_scrubbed_per_component_without_false_positive_whole_path_masking() {
+        let ordinary = "/private/var/folders/T/core-run-12345/repo";
+        assert_eq!(scrub(ordinary), ordinary);
+
+        let secret_component = "/workspace/sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx/project";
+        let scrubbed = scrub(secret_component);
+        assert!(scrubbed.starts_with("/workspace/[REDACTED:"));
+        assert!(scrubbed.ends_with("/project"));
+        assert!(!scrubbed.contains("QrStUvWx"));
+
+        let windows_ordinary = r"C:\\Users\\Core123\\repo";
+        assert_eq!(scrub(windows_ordinary), windows_ordinary);
+        let windows_secret = r"C:\\workspace\\sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx\\project";
+        let scrubbed = scrub(windows_secret);
+        assert!(scrubbed.starts_with(r"C:\\workspace\\[REDACTED:"));
+        assert!(scrubbed.ends_with(r"\\project"));
+        assert!(!scrubbed.contains("QrStUvWx"));
+
+        let unc_secret = r"\\\\server\\share\\ghp_AbCdEf1234567890AbCdEf1234567890\\repo";
+        let scrubbed = scrub(unc_secret);
+        assert!(scrubbed.starts_with(r"\\\\server\\share\\[REDACTED:"));
+        assert!(scrubbed.ends_with(r"\\repo"));
+        assert!(!scrubbed.contains("AbCdEf1234567890"));
+    }
+
+    #[test]
     fn drops_private_key_body() {
         let pem = "-----BEGIN RSA PRIVATE \
 KEY-----\nMIIEpAIBAAKCAQEA...\nabc\n-----END RSA PRIVATE KEY-----\n";
@@ -495,11 +774,33 @@ C3d4E5f6A1b2C3d4E5f6A1b2";
 ant-api03-AbCdEfGhIjKlMnOpQrStUvWx"
                     .into(),
                 trust: core_protocol::Trust::Workspace,
+                instructions: Some(core_protocol::DurableInstructionContext {
+                    text: "instruction key sk-ant-api03-ZyXwVuTsRqPoNmLkJiHgFeDc".into(),
+                    trust: core_protocol::Trust::Untrusted,
+                    environment: Some(core_protocol::DurableEnvironmentContext {
+                        text: "environment key sk-ant-api03-QrStUvWxYzAbCdEfGhIjKlMn".into(),
+                        trust: core_protocol::Trust::Workspace,
+                    }),
+                }),
             },
         };
         match redact_event(&inj).kind {
-            EventKind::ContextInjection { text, .. } => {
-                assert!(text.contains("[REDACTED") && !text.contains("QrStUvWx"))
+            EventKind::ContextInjection {
+                text,
+                instructions: Some(instructions),
+                ..
+            } => {
+                assert!(text.contains("[REDACTED") && !text.contains("QrStUvWx"));
+                assert!(
+                    instructions.text.contains("[REDACTED")
+                        && !instructions.text.contains("JiHgFeDc")
+                );
+                let environment = instructions.environment.expect("durable environment");
+                assert!(
+                    environment.text.contains("[REDACTED")
+                        && !environment.text.contains("QrStUvWx")
+                );
+                assert_eq!(environment.trust, core_protocol::Trust::Workspace);
             }
             _ => panic!("kind changed"),
         }
@@ -640,6 +941,12 @@ ant-api03-SuperSecretGenesisModel12345"
                     .into(),
                 effort: core_protocol::Effort::Medium,
                 created_at: 7,
+                environment: Some(core_protocol::DurableEnvironmentContext {
+                    text:
+                        r"workspace_cwd: C:\\workspace\\sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx\\repo"
+                            .into(),
+                    trust: core_protocol::Trust::Workspace,
+                }),
                 parent_run: Some(
                     "run-ghp_\
 AbCdEf12\
@@ -649,12 +956,14 @@ AbCdEf12\
                 forked_at: Some(3),
                 parent_hash_at_seq: Some(content_address.into()),
                 config_digest: digest.into(),
+                max_usd: Some(1.0),
             },
         };
         match redact_event(&genesis).kind {
             EventKind::RunStart {
                 cwd,
                 model,
+                environment: Some(environment),
                 parent_run,
                 parent_hash_at_seq,
                 config_digest,
@@ -667,6 +976,9 @@ AbCdEf12\
 34567890AbCdEf1234567890"
                 );
                 assert!(model.contains("[REDACTED"));
+                assert!(environment.text.contains("[REDACTED"));
+                assert!(!environment.text.contains("QrStUvWx"));
+                assert_eq!(environment.trust, core_protocol::Trust::Workspace);
                 assert_eq!(
                     parent_run.as_deref(),
                     Some(
@@ -680,6 +992,48 @@ AbCdEf12\
             }
             _ => panic!("kind changed"),
         }
+
+        let pricing = Event {
+            seq: core_protocol::Seq::ZERO,
+            turn: core_protocol::TurnId(0),
+            kind: EventKind::RateCardBound {
+                rate_card: core_protocol::SignedRateCard {
+                    rate_card: core_protocol::RateCard {
+                        version: core_protocol::PricingVersion::V1,
+                        route: core_protocol::PricingRoute {
+                            provider_id: "provider-a".into(),
+                            model_id: "model-a".into(),
+                            catalog_digest: String::new(),
+                            capability_digest: String::new(),
+                        },
+                        provenance: "ghp_AbCdEf1234567890AbCdEf1234567890".into(),
+                        issued_at_unix_secs: 1,
+                        expires_at_unix_secs: 2,
+                        rates: core_protocol::TokenRateCard {
+                            input_microusd_per_million: 1,
+                            output_microusd_per_million: 2,
+                            cache_creation_microusd_per_million: 3,
+                            cache_read_microusd_per_million: 4,
+                            thinking_microusd_per_million: 5,
+                        },
+                    },
+                    signer_id: "pricing-root-v1".into(),
+                    rate_card_digest: digest.into(),
+                    signature: format!("hmac-sha256:{}", "c".repeat(64)),
+                },
+            },
+        };
+        match redact_event(&pricing).kind {
+            EventKind::RateCardBound { rate_card } => {
+                assert!(rate_card.rate_card.provenance.contains("[REDACTED"));
+                assert_eq!(rate_card.rate_card_digest, digest);
+                assert_eq!(
+                    rate_card.signature,
+                    format!("hmac-sha256:{}", "c".repeat(64))
+                );
+            }
+            _ => panic!("kind changed"),
+        }
     }
 
     #[test]
@@ -689,13 +1043,13 @@ ant-api03-WorkflowSecretToken123456";
         let event = Event {
             seq: core_protocol::Seq::ZERO,
             turn: core_protocol::TurnId(2),
-            kind: EventKind::Workflow {
-                version: core_protocol::WorkflowEventVersion::V1,
+            kind: EventKind::WorkflowV2 {
+                version: core_protocol::WorkflowEventVersion::V2,
                 workflow_id: "workflow-2".into(),
                 event: core_protocol::WorkflowEvent::ChildFinished {
                     task_id: 0,
                     sub_run: Some("fan-0".into()),
-                    outcome: core_protocol::WorkflowChildOutcome::Failed,
+                    outcome: core_protocol::WorkflowChildOutcome::Drained,
                     metrics: core_protocol::WorkflowMetrics::default(),
                     error_code: Some("provider_error".into()),
                     error_detail: Some(format!("provider echoed {secret}")),
@@ -707,5 +1061,26 @@ ant-api03-WorkflowSecretToken123456";
         let encoded = serde_json::to_string(&redact_event(&event)).unwrap();
         assert!(!encoded.contains(secret));
         assert!(encoded.contains("[REDACTED"));
+        assert!(encoded.contains("\"kind\":\"workflow_v2\""));
+        assert!(encoded.contains("\"outcome\":\"drained\""));
+
+        let direct = Event {
+            seq: core_protocol::Seq(1),
+            turn: core_protocol::TurnId(2),
+            kind: EventKind::SubagentFinishedV2 {
+                version: core_protocol::WorkflowEventVersion::V2,
+                sub_run: "direct-0".into(),
+                outcome: core_protocol::WorkflowChildOutcome::Drained,
+                metrics: core_protocol::WorkflowMetrics::default(),
+                error_code: Some("operator_drain".into()),
+                error_detail: Some(format!("provider echoed {secret}")),
+                summary_digest: None,
+                evidence_bytes: 0,
+            },
+        };
+        let encoded = serde_json::to_string(&redact_event(&direct)).unwrap();
+        assert!(!encoded.contains(secret));
+        assert!(encoded.contains("[REDACTED"));
+        assert!(encoded.contains("\"kind\":\"subagent_finished_v2\""));
     }
 }

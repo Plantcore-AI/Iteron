@@ -14,7 +14,6 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_API_ROOT: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
-const EFFORT_BETA_HEADER: &str = "effort-2025-11-24";
 const MAX_STREAM_BYTES: usize = 128 * 1024 * 1024;
 const MAX_SSE_FRAME_BYTES: usize = 32 * 1024 * 1024;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -33,6 +32,7 @@ pub struct Anthropic {
     api_root: ApiRoot,
     route_scope: String,
     error_profile: ErrorProfile,
+    static_metadata: std::sync::Arc<crate::StaticProviderMetadata>,
     client: reqwest::Client,
 }
 
@@ -60,6 +60,7 @@ impl Anthropic {
             } else {
                 ErrorProfile::CustomConservative
             },
+            static_metadata: crate::StaticProviderMetadata::embedded(),
             api_root,
             client,
         })
@@ -67,6 +68,14 @@ impl Anthropic {
 
     pub(crate) fn with_error_profile(mut self, error_profile: ErrorProfile) -> Self {
         self.error_profile = error_profile;
+        self
+    }
+
+    pub(crate) fn with_static_metadata(
+        mut self,
+        static_metadata: std::sync::Arc<crate::StaticProviderMetadata>,
+    ) -> Self {
+        self.static_metadata = static_metadata;
         self
     }
 
@@ -79,17 +88,13 @@ impl Anthropic {
         Ok(self)
     }
 
-    /// Read the key from the Core process environment.
-    pub fn from_env() -> Result<Self, ProviderError> {
-        let key =
-            std::env::var("ANTHROPIC_API_KEY").map_err(|_| ProviderError::MissingCredential {
-                provider: "anthropic".into(),
-            })?;
-        Self::new(key, std::env::var("ANTHROPIC_BASE_URL").ok())
-    }
-
     fn body(&self, req: &TurnRequest) -> Result<serde_json::Value, ProviderError> {
-        let capabilities = anthropic_request_capabilities(self.error_profile, &req.model);
+        let capabilities = anthropic_request_capabilities(
+            self.error_profile,
+            self.api_root.as_str(),
+            &self.static_metadata,
+            &req.model,
+        );
         // Stable prefix first (tools -> system), volatile last (messages) — the cache
         // discipline (ADR-002). cache_control on the system block marks the breakpoint.
         let system = if req.cache_system && capabilities.prompt_cache {
@@ -176,6 +181,8 @@ struct AnthropicRequestCapabilities {
 /// Older and unknown Claude ids remain usable with the baseline request schema.
 fn anthropic_request_capabilities(
     error_profile: ErrorProfile,
+    api_root: &str,
+    static_metadata: &crate::StaticProviderMetadata,
     model_id: &str,
 ) -> AnthropicRequestCapabilities {
     if error_profile != ErrorProfile::Anthropic {
@@ -192,12 +199,10 @@ fn anthropic_request_capabilities(
     let cache_only_35 = ["claude-3-5-sonnet", "claude-3-5-haiku"]
         .into_iter()
         .any(|family| crate::model_matches_family(model_id, family));
-    // Claude Code's direct Messages implementation (effort-2025-11-24) uses an explicit model
-    // allowlist. Keep this narrower than the thinking allowlist: Messages wire compatibility is
-    // not evidence that a model accepts `output_config.effort`.
-    let semantic_effort = ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"]
-        .into_iter()
-        .any(|family| crate::model_matches_family(model_id, family));
+    // The refreshable metadata keeps this narrower than the thinking allowlist: Messages wire
+    // compatibility is not evidence that a model accepts `output_config.effort` or its beta header.
+    let semantic_effort = api_root == static_metadata.anthropic_effort_api_root()
+        && static_metadata.anthropic_effort_header(model_id).is_some();
     AnthropicRequestCapabilities {
         prompt_cache: claude_4 || sonnet_37 || cache_only_35,
         extended_thinking: claude_4 || sonnet_37,
@@ -207,9 +212,12 @@ fn anthropic_request_capabilities(
 
 fn anthropic_effort_application(
     error_profile: ErrorProfile,
+    api_root: &str,
+    static_metadata: &crate::StaticProviderMetadata,
     request: &TurnRequest,
 ) -> EffortApplication {
-    let capabilities = anthropic_request_capabilities(error_profile, &request.model);
+    let capabilities =
+        anthropic_request_capabilities(error_profile, api_root, static_metadata, &request.model);
     if capabilities.semantic_effort {
         EffortApplication::Exact {
             requested: request.reasoning_effort,
@@ -443,7 +451,12 @@ fn frame_boundary(buf: &str) -> Option<(usize, usize)> {
 #[async_trait::async_trait]
 impl Provider for Anthropic {
     fn effort_application(&self, req: &TurnRequest) -> EffortApplication {
-        anthropic_effort_application(self.error_profile, req)
+        anthropic_effort_application(
+            self.error_profile,
+            self.api_root.as_str(),
+            &self.static_metadata,
+            req,
+        )
     }
 
     async fn turn(
@@ -451,11 +464,6 @@ impl Provider for Anthropic {
         req: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
-        // Guard the cache prefix before spending a request (ADR-002 amendment).
-        if let Some(why) = crate::cache_bomb_in_prefix(&req.system) {
-            return Err(ProviderError::Decode(format!("cache-bomb refused: {why}")));
-        }
-
         let deadline = Instant::now() + STREAM_TOTAL_TIMEOUT;
         let mut request = self
             .client
@@ -464,8 +472,15 @@ impl Provider for Anthropic {
             .header("anthropic-version", API_VERSION)
             .header("content-type", "application/json")
             .json(&self.body(req)?);
-        if anthropic_request_capabilities(self.error_profile, &req.model).semantic_effort {
-            request = request.header("anthropic-beta", EFFORT_BETA_HEADER);
+        if let Some(header) = self
+            .static_metadata
+            .anthropic_effort_header(&req.model)
+            .filter(|_| {
+                self.error_profile == ErrorProfile::Anthropic
+                    && self.api_root.as_str() == self.static_metadata.anthropic_effort_api_root()
+            })
+        {
+            request = request.header("anthropic-beta", header);
         }
         let resp = tokio::time::timeout(RESPONSE_HEADER_TIMEOUT, request.send())
             .await
@@ -676,6 +691,7 @@ mod tests {
 
     #[test]
     fn optional_capabilities_are_allowlisted_by_profile_and_family() {
+        let metadata = crate::StaticProviderMetadata::embedded();
         let cases = [
             ("claude-opus-4-7", true, true, true),
             ("claude-opus-4-6", true, true, true),
@@ -691,7 +707,12 @@ mod tests {
         ];
         for (model, prompt_cache, extended_thinking, semantic_effort) in cases {
             assert_eq!(
-                anthropic_request_capabilities(ErrorProfile::Anthropic, model),
+                anthropic_request_capabilities(
+                    ErrorProfile::Anthropic,
+                    DEFAULT_API_ROOT,
+                    &metadata,
+                    model,
+                ),
                 AnthropicRequestCapabilities {
                     prompt_cache,
                     extended_thinking,
@@ -701,11 +722,55 @@ mod tests {
             );
         }
         assert_eq!(
-            anthropic_request_capabilities(ErrorProfile::Glm, "claude-sonnet-4-5"),
+            anthropic_request_capabilities(
+                ErrorProfile::Glm,
+                DEFAULT_API_ROOT,
+                &metadata,
+                "claude-sonnet-4-5",
+            ),
             AnthropicRequestCapabilities {
                 prompt_cache: false,
                 extended_thinking: false,
                 semantic_effort: false,
+            }
+        );
+    }
+
+    #[test]
+    fn refreshed_effort_snapshot_flows_into_anthropic_without_adapter_changes() {
+        let mut document: serde_json::Value =
+            serde_json::from_str(include_str!("../static-provider-metadata-v1.json")).unwrap();
+        document["bundle_revision"] = serde_json::json!("operator-refresh@test-v2");
+        document["anthropic_messages"]["effort"]["version"] =
+            serde_json::json!("anthropic-effort-beta@test-v2");
+        document["anthropic_messages"]["effort"]["beta_header"] =
+            serde_json::json!("effort-test-v2");
+        document["anthropic_messages"]["effort"]["models"] =
+            serde_json::json!(["claude-test-effort"]);
+        crate::StaticProviderMetadata::stamp_content_versions(&mut document).unwrap();
+        let metadata = std::sync::Arc::new(
+            crate::StaticProviderMetadata::from_slice(&serde_json::to_vec(&document).unwrap())
+                .unwrap(),
+        );
+        let provider =
+            Anthropic::with_root("key".into(), ApiRoot::parse(DEFAULT_API_ROOT).unwrap())
+                .unwrap()
+                .with_static_metadata(metadata.clone());
+        assert_eq!(
+            metadata.anthropic_effort_header("claude-test-effort-20260720"),
+            Some("effort-test-v2")
+        );
+        assert_eq!(
+            provider.effort_application(&request("claude-test-effort-20260720")),
+            EffortApplication::Exact {
+                requested: core_protocol::ReasoningEffort::Medium,
+            }
+        );
+        assert_eq!(
+            provider.effort_application(&request("claude-opus-4-7")),
+            EffortApplication::BudgetBased {
+                requested: core_protocol::ReasoningEffort::Medium,
+                budget_tokens: 9_000,
             }
         );
     }

@@ -1,0 +1,41 @@
+{
+  "amount_microusd": 19,
+  "rate_card_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "projections": [
+    {
+      "version": "v1",
+      "identity": {
+        "tenant_id": "default",
+        "run_id": "workflow-child-1",
+        "turn_id": 1,
+        "provider_attempt": 1,
+        "attribution": {
+          "kind": "workflow_child",
+          "parent_run_id": "event-schema",
+          "workflow_id": "workflow-1",
+          "task_id": 1,
+          "sub_run": "workflow-child-1"
+        }
+      },
+      "route": {
+        "provider_id": "provider-a",
+        "model_id": "model-a",
+        "catalog_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "capability_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "usage": {
+        "input": 11,
+        "output": 7,
+        "cache_creation": 2,
+        "cache_read": 5,
+        "thinking": 3
+      },
+      "amount_microusd": 19,
+      "projected_at_unix_secs": 1784592002,
+      "rate_card_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "signer_id": "pricing-strategy",
+      "projection_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "signature": "fixture-workflow-projection-signature"
+    }
+  ]
+}

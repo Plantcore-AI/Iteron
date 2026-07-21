@@ -1,0 +1,58 @@
+[
+  {
+    "task": "golden-task",
+    "config": "verify_OFF",
+    "seed": 0,
+    "run_status": "completed",
+    "resolved": false
+  },
+  {
+    "task": "golden-task",
+    "config": "verify_OFF",
+    "seed": 1,
+    "run_status": "completed",
+    "resolved": false
+  },
+  {
+    "task": "golden-task",
+    "config": "verify_OFF",
+    "seed": 2,
+    "run_status": "errored",
+    "resolved": null
+  },
+  {
+    "task": "golden-task",
+    "config": "verify_OFF",
+    "seed": 3,
+    "run_status": "censored",
+    "resolved": null
+  },
+  {
+    "task": "golden-task",
+    "config": "verify_ON",
+    "seed": 0,
+    "run_status": "completed",
+    "resolved": true
+  },
+  {
+    "task": "golden-task",
+    "config": "verify_ON",
+    "seed": 1,
+    "run_status": "completed",
+    "resolved": false
+  },
+  {
+    "task": "golden-task",
+    "config": "verify_ON",
+    "seed": 2,
+    "run_status": "censored",
+    "resolved": null
+  },
+  {
+    "task": "golden-task",
+    "config": "verify_ON",
+    "seed": 3,
+    "run_status": "timed_out",
+    "resolved": null
+  }
+]

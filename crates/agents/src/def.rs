@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 
 /// The read-only tool set an agent may use — the base every fan-out worker gets, which `ToolFilter`
 /// can only narrow. Mirrors `core_tools::Registry::read_only` (`crates/tools/src/lib.rs`), which
-/// registers the five filesystem discovery tools plus read-only git diff, progressive-disclosure
-/// memory recall, and on-demand skill loading. Hard-coded here because this pure policy crate must
-/// not depend on the executor's `tools` crate; the exact-name test below makes drift visible.
+/// registers the five filesystem discovery tools plus confined Git observations,
+/// progressive-disclosure memory recall, and on-demand skill loading. Hard-coded here because this
+/// pure policy crate must not depend on the executor's `tools` crate; the build-plane conformance
+/// check constructs the real registry and compares its names with this contract.
 pub const READ_ONLY_TOOLS: &[&str] = &[
     "read_file",
     "list_dir",
@@ -22,6 +23,8 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "grep",
     "repo_map",
     "git_diff",
+    "git_status",
+    "git_log",
     "read_memory",
     "use_skill",
 ];
@@ -48,10 +51,10 @@ const WRITE_EXEC_DISPATCH: &[&str] = &[
 /// `READ_ONLY_TOOLS` capability contract; executors should resolve this `AgentDef` instead of
 /// maintaining a second prompt with a smaller, drifting tool inventory.
 pub(crate) const SUBAGENT_SYSTEM: &str = "You are a read-only investigation subagent. Explore the \
-    repository with read_file, list_dir, glob, grep, repo_map, git_diff, read_memory, and \
-    use_skill to answer the question. You cannot edit files or run code. When done, reply with a \
-    concise summary (aim for under ~1500 tokens): the direct answer, with file:line references for \
-    anything you claim.";
+    repository with read_file, list_dir, glob, grep, repo_map, git_diff, git_status, git_log, \
+    read_memory, and use_skill to answer the question. You cannot edit files or run code. When \
+    done, reply with a concise summary (aim for under ~1500 tokens): the direct answer, with \
+    file:line references for anything you claim.";
 
 /// How an agent's `tools` frontmatter narrows the read-only registry. Tools can only **narrow**
 /// (ADR-001): `All` is the whole read-only set, `Allow` intersects it, `Deny` subtracts from it.
@@ -118,9 +121,8 @@ pub struct AgentDef {
     pub trust: Trust,
 }
 
-/// The bounded budget a discovered subagent gets by default — byte-for-byte the kernel's inline
-/// subagent budget (`crates/kernel/src/lib.rs:749`): a subagent is cheap and short by design.
-pub(crate) fn subagent_budget() -> Budget {
+/// The largest budget a discovered subagent may receive. Admission can only narrow this ceiling.
+pub(crate) fn subagent_budget_ceiling() -> Budget {
     Budget {
         max_turns: 15,
         // No verified per-route rate card is inherited by a discovered worker yet. Turn/time
@@ -129,6 +131,29 @@ pub(crate) fn subagent_budget() -> Budget {
         max_wall_secs: 300,
         max_consecutive_tool_errors: 3,
     }
+}
+
+/// Allocate one direct-investigator budget while reserving two thirds of the remaining turns for
+/// the single writer. This is the authoritative policy consumed by the kernel: budget arithmetic
+/// belongs here with the agent definition, so the execution plane cannot grow a second set of
+/// mirrored limits.
+pub fn subagent_budget(remaining_turns: u32, remaining_wall_secs: u64) -> Option<Budget> {
+    let ceiling = subagent_budget_ceiling();
+    let writer_reserve = ((u64::from(remaining_turns) * 2).div_ceil(3) as u32)
+        .max(2)
+        .min(remaining_turns);
+    let child_turns = remaining_turns
+        .saturating_sub(writer_reserve)
+        .min(ceiling.max_turns);
+    if child_turns < 2 || remaining_wall_secs < 3 {
+        return None;
+    }
+    Some(Budget {
+        max_turns: child_turns,
+        max_usd: ceiling.max_usd,
+        max_wall_secs: (remaining_wall_secs / 3).clamp(1, ceiling.max_wall_secs),
+        max_consecutive_tool_errors: ceiling.max_consecutive_tool_errors,
+    })
 }
 
 impl AgentDef {
@@ -140,13 +165,13 @@ impl AgentDef {
             name: "generic".into(),
             description:
                 "Read-only investigation subagent: explores files, globs, repository map, \
-                git diff, memory, and skills; returns a concise summary with file:line references. \
-                Cannot edit files or run code."
+                confined Git observations, memory, and skills; returns a concise summary with \
+                file:line references. Cannot edit files or run code."
                     .into(),
             system: SUBAGENT_SYSTEM.into(),
             tools: ToolFilter::All,
             model: None,
-            budget: subagent_budget(),
+            budget: subagent_budget_ceiling(),
             trust: Trust::Trusted,
         }
     }
@@ -212,7 +237,7 @@ pub(crate) fn parse_def(
         system: body.trim().to_string(),
         tools,
         model,
-        budget: subagent_budget(),
+        budget: subagent_budget_ceiling(),
         trust,
     })
 }
@@ -292,6 +317,23 @@ mod tests {
     }
 
     #[test]
+    fn direct_subagent_budget_is_writer_first_and_bounded() {
+        assert!(subagent_budget(5, 300).is_none());
+        assert!(subagent_budget(60, 2).is_none());
+
+        let minimum = subagent_budget(6, 9).expect("two child turns remain after writer reserve");
+        assert_eq!(minimum.max_turns, 2);
+        assert_eq!(minimum.max_wall_secs, 3);
+
+        let capped = subagent_budget(u32::MAX, u64::MAX)
+            .expect("large inputs remain bounded without overflowing");
+        assert_eq!(capped.max_turns, 15);
+        assert_eq!(capped.max_usd, None);
+        assert_eq!(capped.max_wall_secs, 300);
+        assert_eq!(capped.max_consecutive_tool_errors, 3);
+    }
+
+    #[test]
     fn parses_frontmatter_and_body() {
         let text = "---\nname: mapper\ndescription: Maps the module graph.\nmodel: opus\n\
                     disallowedTools: [edit, bash]\n---\nYou map dependencies. Report edges only.\n";
@@ -362,13 +404,16 @@ mod tests {
                 "grep",
                 "repo_map",
                 "git_diff",
+                "git_status",
+                "git_log",
                 "read_memory",
                 "use_skill",
             ]
         );
         assert_eq!(
-            ToolFilter::Allow(vec!["GLOB".into(), "git_diff".into(), "use_skill".into()]).narrow(),
-            vec!["glob", "git_diff", "use_skill"]
+            ToolFilter::Allow(vec!["GLOB".into(), "git_status".into(), "use_skill".into()])
+                .narrow(),
+            vec!["glob", "git_status", "use_skill"]
         );
         // An Allow of a non-read-only tool cannot widen — it simply matches nothing here.
         assert!(ToolFilter::Allow(vec!["edit".into()]).narrow().is_empty());
@@ -377,25 +422,5 @@ mod tests {
         assert!(!denied.contains(&"read_memory".to_string()));
         assert!(denied.contains(&"read_file".to_string()));
         assert!(denied.contains(&"git_diff".to_string()));
-    }
-
-    #[test]
-    fn read_only_tool_contract_matches_registry_registration_order() {
-        // Keep this byte-for-byte aligned with `Registry::read_only`: fs_tools::register, then
-        // git::register, mem::register, and skill::register. This crate intentionally cannot import
-        // `core-tools`, so an explicit contract test is the dependency-direction-safe drift alarm.
-        assert_eq!(
-            READ_ONLY_TOOLS,
-            [
-                "read_file",
-                "list_dir",
-                "glob",
-                "grep",
-                "repo_map",
-                "git_diff",
-                "read_memory",
-                "use_skill",
-            ]
-        );
     }
 }

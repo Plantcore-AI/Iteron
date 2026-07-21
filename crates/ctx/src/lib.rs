@@ -25,12 +25,16 @@ pub use compact::{
     CompactionPlan, CompactionPolicy, ContextEstimate, TokenEstimateProvenance,
     estimate_request_context,
 };
-pub use instructions::{Instructions, discover, framed};
+pub use instructions::{
+    InstructionBundle, InstructionRejection, InstructionSource, Instructions,
+    MAX_INSTRUCTION_CONTENT_BYTES, MAX_MERGED_INSTRUCTION_BYTES, discover, discover_hierarchy,
+    framed,
+};
 pub use memory::{
     Fact, FactRef, FileMemory, Framed, MemBudget, MemError, MemIndex, MemStore, MemTier,
     MemorySegment, MemoryStore, MemoryStrategy, StoredFact, merged_index,
 };
-pub use outline::repo_outline;
+pub use outline::{repo_outline, repo_outline_for_task};
 
 /// A fast, provider-agnostic token estimate. Real tokenization is the provider's; for policy
 /// decisions this byte heuristic is deterministic and deliberately biased high for ASCII/code.

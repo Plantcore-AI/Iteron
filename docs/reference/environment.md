@@ -14,8 +14,12 @@ repository or documentation.
 | `CORE_EFFORT` | Effort level |
 | `CORE_MAX_TURNS` | Turn ceiling |
 | `CORE_MAX_USD` | Monetary ceiling when cost evidence is available |
+| `CORE_RETRY_BASE_MS` | Trusted retry exponential base (staged; see configuration reference) |
+| `CORE_RETRY_CAP_MS` | Trusted retry-delay cap (staged; see configuration reference) |
+| `CORE_RETRY_MAX_ATTEMPTS` | Trusted total-attempt bound (staged; see configuration reference) |
 
-CLI flags take precedence over these values. Trusted user config follows them.
+CLI flags take precedence where a corresponding flag exists. Trusted user config follows these
+values; retry policy currently has no CLI flag.
 
 ## Built-in credentials
 
@@ -32,6 +36,11 @@ A user-defined provider names its own credential variable through `key_env`.
 Core Code reads that variable at call time and does not persist the plaintext
 value in config.
 
+A signed `rate_cards` entry also names its HMAC variable through `key_env`. Its
+value is exactly 64 hexadecimal characters (32 bytes). Core authenticates the
+configured artifact before opening a run, never persists or logs the key, and
+removes the named variable from sandboxed shell and verification environments.
+
 ## Terminal and home
 
 | Variable | Meaning |
@@ -43,3 +52,37 @@ value in config.
 
 Unset `HOME` means user-level sources are unavailable; repository operation can
 still use explicit CLI settings.
+
+## Environment facts in the model context
+
+For a fresh run, Core Code records and injects a facts-only snapshot capped at
+4 KiB with the canonical workspace cwd, UTC capture time, target OS/architecture,
+and a Git branch plus short status counts. It does not enumerate process environment
+variables, credential names or values, Git filenames, commit text, remotes, or
+raw Git errors. Git failure is represented only as `git: unavailable`.
+Startup Git facts currently require Unix process-group teardown semantics; other
+targets use the same explicit unavailable value rather than risk leaving a
+cancelled descendant process alive.
+
+The snapshot is durable. `--resume` and a resumed fork reuse the original durable
+bytes from `ContextInjection`, or the crash-safe `RunStart` copy until the first
+injection commits. They do not sample the clock or run Git to reconstruct these
+facts. This keeps the system prefix reproducible even when the branch or working
+tree changes between processes. Append, open, replay, and fork revalidate the same
+4 KiB field bound; an oversized durable field is rejected rather than materialized
+or replaced from live state.
+
+### Clickable Markdown links
+
+The TUI emits OSC 8 hyperlinks only when the inherited terminal environment gives
+positive evidence for a supported terminal (for example iTerm2, WezTerm, Kitty,
+Ghostty, VS Code, Windows Terminal, recent VTE, or recent Konsole). Unknown
+terminals, `TERM=dumb`, tmux, and screen use the plain `text (url)` rendering; Core
+does not assume passthrough support through a multiplexer.
+
+Clickable targets are limited to bounded HTTP(S) URLs without embedded
+credentials and existing local paths whose canonical location remains inside the
+active repository. Unsupported schemes, path traversal, symlink escapes, control
+characters, and oversized targets remain plain text and cannot inject terminal
+escape sequences. Link metadata does not participate in wrapping, so clickable
+and fallback rows obey the same display-width bounds.

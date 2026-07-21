@@ -38,8 +38,6 @@
 //! non-deterministic and breaks replay. Determinism is the whole reason for the hand-built engine,
 //! and it is unit-tested here (`reduce::tests`).
 
-#![allow(dead_code)]
-
 mod catalog;
 mod decompose;
 mod def;
@@ -50,9 +48,12 @@ pub use catalog::{AgentCatalog, LoadError};
 pub use decompose::{
     Decomposer, FAN_CAP, LEAF_MAX_CHARS, NormalizedLeaves, RepoSignals, TaskClass,
 };
-pub use def::{AgentDef, READ_ONLY_TOOLS, ToolFilter};
+pub use def::{AgentDef, READ_ONLY_TOOLS, ToolFilter, subagent_budget};
 pub use reduce::{OrderedBundle, Summary, SummaryOutcome, reduce};
-pub use stage::{AgentTask, INVESTIGATOR_DELIVERABLE, INVESTIGATOR_SCOPE, Stage, WorkflowPlan};
+pub use stage::{
+    AgentTask, BudgetedWorkflowPlan, INVESTIGATOR_DELIVERABLE, INVESTIGATOR_SCOPE, Stage,
+    WorkflowPlan,
+};
 
 /// Scan for control / bidi / zero-width characters that make rendered text differ from bytes.
 ///

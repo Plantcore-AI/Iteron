@@ -11,15 +11,13 @@
 use crate::backoff::{BackoffPolicy, Jitter, full_jitter};
 use async_trait::async_trait;
 use core_provider::{
-    EffortApplication, Provider, ProviderError, RetryDisposition, StreamItem, TurnRequest,
-    TurnResult,
+    EffortApplication, Provider, ProviderAttemptSemantics, ProviderError, RetryDisposition,
+    StreamItem, TurnRequest, TurnResult,
 };
-use std::sync::Mutex;
 
 pub struct RetryProvider {
     inner: Box<dyn Provider>,
     policy: BackoffPolicy,
-    jitter: Mutex<Jitter>,
     /// A hook so tests can observe backoff without sleeping; None uses tokio::time::sleep.
     sleep_hook: Option<Box<dyn Fn(std::time::Duration) + Send + Sync>>,
 }
@@ -29,7 +27,6 @@ impl RetryProvider {
         RetryProvider {
             inner,
             policy,
-            jitter: Mutex::new(Jitter::new()),
             sleep_hook: None,
         }
     }
@@ -45,8 +42,28 @@ impl RetryProvider {
 
 #[async_trait]
 impl Provider for RetryProvider {
+    fn provider_instance_id(&self) -> Option<&str> {
+        self.inner.provider_instance_id()
+    }
+
+    fn attempt_semantics(&self) -> ProviderAttemptSemantics {
+        if self.policy.max_attempts > 1 {
+            ProviderAttemptSemantics::OpaqueInternalRetries
+        } else {
+            self.inner.attempt_semantics()
+        }
+    }
+
     fn effort_application(&self, req: &TurnRequest) -> EffortApplication {
         self.inner.effort_application(req)
+    }
+
+    fn run_notice(&self, req: &TurnRequest) -> Option<core_provider::ProviderNotice> {
+        self.inner.run_notice(req)
+    }
+
+    fn preflight_notice(&self, req: &TurnRequest) -> Option<core_provider::ProviderNotice> {
+        self.inner.preflight_notice(req)
     }
 
     async fn turn(
@@ -54,6 +71,9 @@ impl Provider for RetryProvider {
         req: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
+        // Jitter belongs to this turn. Keeping it on the future removes shared lock contention
+        // between concurrent turns and makes mutex poisoning structurally impossible.
+        let mut jitter_source = Jitter::new();
         let mut attempt = 0u32;
         loop {
             // Guard: only forward items to the real callback once we are committed to this
@@ -74,7 +94,7 @@ impl Provider for RetryProvider {
                     if !retryable || emitted || attempt + 1 >= self.policy.max_attempts {
                         return Err(e);
                     }
-                    let r01 = self.jitter.lock().unwrap().next01();
+                    let r01 = jitter_source.next01();
                     let jitter = full_jitter(&self.policy, attempt, r01);
                     // Retry-After is a server lower-bound hint. Respect it up to the configured
                     // cap so an untrusted or accidental multi-hour value cannot make a bounded
@@ -100,10 +120,10 @@ mod tests {
     use core_protocol::StopReason;
     use core_provider::{
         AccountAvailability, AdapterKind, ApiResponseError, AvailabilityTransition, ErrorProfile,
-        ErrorScope, NormalizedFailure, StreamError,
+        ErrorScope, NormalizedFailure, StreamError, UsageReport,
     };
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
 
     /// A provider that fails with 429 for the first `fail_n` calls, then succeeds.
     struct Flaky {
@@ -127,10 +147,228 @@ mod tests {
                 Ok(TurnResult {
                     blocks: vec![],
                     stop_reason: StopReason::EndTurn,
-                    usage: Default::default(),
+                    usage: UsageReport::complete(Default::default()),
                 })
             }
         }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum ClassificationProbe {
+        BareStatus(u16),
+        TypedQuota429,
+    }
+
+    impl ClassificationProbe {
+        fn error(self) -> ProviderError {
+            match self {
+                Self::BareStatus(status) => ProviderError::Api {
+                    status,
+                    body: "probe".into(),
+                },
+                Self::TypedQuota429 => ProviderError::ApiResponse(ApiResponseError {
+                    status: 429,
+                    body: "quota exhausted".into(),
+                    body_truncated: false,
+                    retry_after: None,
+                    normalized: Box::new(NormalizedFailure {
+                        adapter: AdapterKind::OpenAiCompatibleChat,
+                        error_profile: ErrorProfile::OpenAi,
+                        code: Some("insufficient_quota".into()),
+                        public_message: "provider billing or quota is unavailable",
+                        scope: ErrorScope::Account,
+                        availability: AvailabilityTransition::Account(
+                            AccountAvailability::BillingBlocked,
+                        ),
+                        retry: RetryDisposition::Never,
+                        request_id: None,
+                    }),
+                }),
+            }
+        }
+    }
+
+    struct ClassificationProbeProvider {
+        calls: Arc<AtomicU32>,
+        failure: ClassificationProbe,
+    }
+
+    #[async_trait]
+    impl Provider for ClassificationProbeProvider {
+        async fn turn(
+            &self,
+            _req: &TurnRequest,
+            _on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(self.failure.error())
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_provider_has_one_provider_error_classification_authority() {
+        let cases = [
+            (
+                ClassificationProbe::BareStatus(429),
+                RetryDisposition::Transient,
+            ),
+            (
+                ClassificationProbe::BareStatus(529),
+                RetryDisposition::Transient,
+            ),
+            (
+                ClassificationProbe::BareStatus(503),
+                RetryDisposition::Never,
+            ),
+            (ClassificationProbe::TypedQuota429, RetryDisposition::Never),
+        ];
+
+        for (failure, expected) in cases {
+            assert_eq!(
+                failure.error().retry_disposition(),
+                expected,
+                "the provider error owns classification for {failure:?}"
+            );
+            let calls = Arc::new(AtomicU32::new(0));
+            let sleeps = Arc::new(AtomicU32::new(0));
+            let sleeps_by_hook = Arc::clone(&sleeps);
+            let mut provider = RetryProvider::new(
+                Box::new(ClassificationProbeProvider {
+                    calls: Arc::clone(&calls),
+                    failure,
+                }),
+                BackoffPolicy {
+                    base_ms: 1,
+                    cap_ms: 2,
+                    max_attempts: 2,
+                },
+            );
+            provider.sleep_hook = Some(Box::new(move |_| {
+                sleeps_by_hook.fetch_add(1, Ordering::SeqCst);
+            }));
+            let request = TurnRequest {
+                model: "model".into(),
+                system: "system".into(),
+                messages: vec![],
+                tools: vec![],
+                max_tokens: 10,
+                cache_system: false,
+                thinking_budget: 0,
+                reasoning_effort: core_protocol::ReasoningEffort::Low,
+            };
+
+            assert!(provider.turn(&request, &mut |_| {}).await.is_err());
+            let expected_calls = if expected == RetryDisposition::Transient {
+                2
+            } else {
+                1
+            };
+            assert_eq!(calls.load(Ordering::SeqCst), expected_calls, "{failure:?}");
+            assert_eq!(
+                sleeps.load(Ordering::SeqCst),
+                expected_calls - 1,
+                "the scheduler follows retry_disposition for {failure:?}"
+            );
+        }
+    }
+
+    /// Holds every first attempt at one barrier, then rate-limits that whole wave. A shared retry
+    /// decorator must allow all turns to reach the provider concurrently and independently retry.
+    struct ConcurrentFirstWave {
+        calls: Arc<AtomicU32>,
+        turns: u32,
+        first_wave: tokio::sync::Barrier,
+    }
+
+    #[async_trait]
+    impl Provider for ConcurrentFirstWave {
+        async fn turn(
+            &self,
+            _req: &TurnRequest,
+            _on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call < self.turns {
+                self.first_wave.wait().await;
+                return Err(ProviderError::Api {
+                    status: 429,
+                    body: "simultaneous rate limit".into(),
+                });
+            }
+            Ok(TurnResult {
+                blocks: vec![],
+                stop_reason: StopReason::EndTurn,
+                usage: UsageReport::complete(Default::default()),
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn shared_retry_provider_runs_concurrent_turns_without_jitter_locking_or_panic() {
+        const TURNS: u32 = 64;
+
+        let sleeps = Arc::new(AtomicU32::new(0));
+        let sleeps_by_hook = Arc::clone(&sleeps);
+        let calls = Arc::new(AtomicU32::new(0));
+        let inner = ConcurrentFirstWave {
+            calls: Arc::clone(&calls),
+            turns: TURNS,
+            first_wave: tokio::sync::Barrier::new(TURNS as usize),
+        };
+        let mut provider = RetryProvider::new(
+            Box::new(inner),
+            BackoffPolicy {
+                base_ms: 1,
+                cap_ms: 2,
+                max_attempts: 2,
+            },
+        );
+        provider.sleep_hook = Some(Box::new(move |_| {
+            sleeps_by_hook.fetch_add(1, Ordering::SeqCst);
+        }));
+        let provider = Arc::new(provider);
+
+        let mut tasks = Vec::with_capacity(TURNS as usize);
+        for turn in 0..TURNS {
+            let provider = Arc::clone(&provider);
+            tasks.push(tokio::spawn(async move {
+                let request = TurnRequest {
+                    model: format!("model-{turn}"),
+                    system: "system".into(),
+                    messages: vec![],
+                    tools: vec![],
+                    max_tokens: 10,
+                    cache_system: false,
+                    thinking_budget: 0,
+                    reasoning_effort: core_protocol::ReasoningEffort::Low,
+                };
+                provider.turn(&request, &mut |_| {}).await
+            }));
+        }
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            for task in tasks {
+                assert!(
+                    task.await
+                        .expect("concurrent retry task must not panic")
+                        .is_ok(),
+                    "every simultaneous turn succeeds on its second attempt"
+                );
+            }
+        })
+        .await
+        .expect("concurrent retries must not deadlock or serialize pathologically");
+
+        assert_eq!(
+            sleeps.load(Ordering::SeqCst),
+            TURNS,
+            "each turn owns exactly one independent backoff"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            TURNS * 2,
+            "all first attempts and retries reached the inner provider"
+        );
     }
 
     #[tokio::test]
@@ -265,7 +503,7 @@ mod tests {
             Ok(TurnResult {
                 blocks: vec![],
                 stop_reason: StopReason::EndTurn,
-                usage: Default::default(),
+                usage: UsageReport::complete(Default::default()),
             })
         }
     }
@@ -344,7 +582,7 @@ mod tests {
                     Ok(TurnResult {
                         blocks: vec![],
                         stop_reason: StopReason::EndTurn,
-                        usage: Default::default(),
+                        usage: UsageReport::complete(Default::default()),
                     })
                 }
             }
@@ -422,7 +660,7 @@ mod tests {
             Ok(TurnResult {
                 blocks: vec![],
                 stop_reason: StopReason::EndTurn,
-                usage: Default::default(),
+                usage: UsageReport::complete(Default::default()),
             })
         }
     }

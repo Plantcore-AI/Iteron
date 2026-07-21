@@ -15,12 +15,42 @@
 //! still escape. It is the same primitive Codex uses on Linux, and a real blast-radius reduction.
 
 use crate::{Confinement, RunOutput, Sandbox, SandboxError};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 const BWRAP_CANDIDATES: &[&str] = &["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap"];
+const BWRAP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const BWRAP_PROBE_POLL: Duration = Duration::from_millis(10);
+const BWRAP_PROBE_MAX_POLLS: usize = 500;
+const BWRAP_PROBE_REAP_POLLS: usize = 100;
 static USABLE_BWRAP: OnceLock<PathBuf> = OnceLock::new();
+
+/// Credential-free, user-scoped toolchain roots that may be exposed read-only inside the Linux
+/// namespace. Keep these narrower than their parent configuration directories: for example,
+/// binding all of `.cargo` would also expose `credentials.toml`, and binding all of HOME would
+/// defeat the sandbox's default-deny filesystem posture.
+const TOOLCHAIN_HOME_READ_SUBPATHS: &[&str] = &[
+    ".cargo/bin",
+    ".cargo/git",
+    ".cargo/registry",
+    ".rustup",
+    ".pyenv",
+    ".nvm/versions",
+    ".local/bin",
+    ".local/lib",
+    ".npm/_cacache",
+    ".cache/pip",
+    ".cache/uv",
+    ".gradle/caches",
+    ".gradle/wrapper",
+    ".m2/repository",
+    "go",
+];
+
+const MAX_HOME_COMPONENTS: usize = 64;
 
 // `bwrap --version` only proves that the executable can start. In particular, Ubuntu 24.04 can
 // install a perfectly valid bwrap while AppArmor still refuses the unprivileged user namespace
@@ -73,14 +103,38 @@ fn usable_bwrap() -> Option<PathBuf> {
         // successful namespace process, never the executable's trust decision.
         return Some(binary);
     }
-    let status = std::process::Command::new(&binary)
+    let mut child = std::process::Command::new(&binary)
         .args(BWRAP_PROBE_ARGS)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .spawn()
         .ok()?;
-    if !status.success() {
+    let deadline = Instant::now() + BWRAP_PROBE_TIMEOUT;
+    let mut success = false;
+    let mut completed = false;
+    for _ in 0..BWRAP_PROBE_MAX_POLLS {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                success = status.success();
+                completed = true;
+                break;
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(BWRAP_PROBE_POLL),
+            Ok(None) | Err(_) => break,
+        }
+    }
+    if !completed {
+        let _ = child.kill();
+        for _ in 0..BWRAP_PROBE_REAP_POLLS {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => std::thread::sleep(BWRAP_PROBE_POLL),
+                Err(_) => break,
+            }
+        }
+    }
+    if !success {
         // Do not cache a negative result: an operator may install an AppArmor profile or enable
         // user namespaces while a long-lived harness process is still running.
         return None;
@@ -101,70 +155,37 @@ impl Bubblewrap {
     pub fn available() -> bool {
         usable_bwrap().is_some()
     }
-}
 
-impl Default for Bubblewrap {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Build the bwrap argument vector for a confinement. Pure function so the policy is
-/// unit-testable (we assert net is unshared by default and only the workspace is writable).
-pub fn bwrap_args(conf: &Confinement, command: &str) -> Vec<String> {
-    let ws = conf.workspace.display().to_string();
-    let mut a: Vec<String> = Vec::new();
-    // Read-only system so compilers/interpreters work; nothing here is writable.
-    for ro in ["/usr", "/bin", "/lib", "/lib64", "/etc", "/opt"] {
-        if std::path::Path::new(ro).exists() {
-            a.push("--ro-bind".into());
-            a.push(ro.into());
-            a.push(ro.into());
-        }
-    }
-    // Writable: ONLY the workspace and a private tmp. This is the containment that matters.
-    a.push("--bind".into());
-    a.push(ws.clone());
-    a.push(ws.clone());
-    a.push("--tmpfs".into());
-    a.push("/tmp".into());
-    // Minimal /dev and /proc.
-    a.push("--dev".into());
-    a.push("/dev".into());
-    a.push("--proc".into());
-    a.push("/proc".into());
-    // Hardening.
-    a.push("--die-with-parent".into());
-    a.push("--new-session".into());
-    a.push("--unshare-pid".into());
-    a.push("--unshare-ipc".into());
-    a.push("--unshare-uts".into());
-    // Network: the load-bearing denial. Empty net namespace unless egress is escalated.
-    if !conf.allow_egress {
-        a.push("--unshare-net".into());
-    }
-    // Working directory inside the sandbox = the workspace.
-    a.push("--chdir".into());
-    a.push(ws);
-    // The command.
-    a.push("/bin/bash".into());
-    a.push("-c".into());
-    a.push(command.into());
-    a
-}
-
-#[async_trait::async_trait]
-impl Sandbox for Bubblewrap {
-    async fn run(&self, command: &str, conf: &Confinement) -> Result<RunOutput, SandboxError> {
+    async fn run_inner(
+        &self,
+        command: &str,
+        conf: &Confinement,
+        pre_sanitization_env: &[(&str, &str)],
+    ) -> Result<RunOutput, SandboxError> {
         let Some(binary) = usable_bwrap() else {
             // Deny-by-default: missing *or unusable* bwrap means we refuse, never run unconfined.
             // This covers hosts where an LSM/kernel policy permits `--version` but rejects the
             // user namespace that actually provides confinement.
             return Err(SandboxError::Unsupported);
         };
-        let args = bwrap_args(conf, command);
+        let synthetic_home = pre_sanitization_env
+            .iter()
+            .rev()
+            .find_map(|(name, value)| (*name == "HOME").then(|| PathBuf::from(value)));
+        let inherited_home = std::env::var_os("HOME").map(PathBuf::from);
+        let args = bwrap_args_with_home(
+            conf,
+            command,
+            synthetic_home.as_deref().or(inherited_home.as_deref()),
+        );
         let mut cmd = tokio::process::Command::new(binary);
         cmd.args(&args);
+        // Tests inject only synthetic values here so exact-name removal is exercised without
+        // mutating the test runner's process-global environment. Production always passes an
+        // empty slice and therefore grants no additional environment authority.
+        for (name, value) in pre_sanitization_env {
+            cmd.env(name, value);
+        }
         // Inherit the operator's real toolchain env but strip every secret-shaped var
         // (ANTHROPIC_API_KEY, *_TOKEN, AWS_*, …). The egress-off network denial is the real
         // containment; this restores venvs/PATH/HOME so real build/test commands run
@@ -194,112 +215,152 @@ impl Sandbox for Bubblewrap {
             .ok_or_else(|| SandboxError::Spawn("child stderr was not piped".into()))?;
         crate::collect_child_output(child, stdout, stderr, conf).await
     }
+
+    #[cfg(all(test, target_os = "linux"))]
+    async fn run_with_synthetic_parent_env(
+        &self,
+        command: &str,
+        conf: &Confinement,
+        env: &[(&str, &str)],
+    ) -> Result<RunOutput, SandboxError> {
+        self.run_inner(command, conf, env).await
+    }
+}
+
+impl Default for Bubblewrap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Build the bwrap argument vector for a confinement. The only ambient input is the operator's
+/// HOME path, whose existing allowlisted toolchain roots are resolved into read-only mounts.
+pub fn bwrap_args(conf: &Confinement, command: &str) -> Vec<String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    bwrap_args_with_home(conf, command, home.as_deref())
+}
+
+fn bwrap_args_with_home(conf: &Confinement, command: &str, home: Option<&Path>) -> Vec<String> {
+    let ws = conf.workspace.display().to_string();
+    let mut a: Vec<String> = Vec::new();
+    let (home_dirs, home_mounts) = toolchain_home_mount_plan(home);
+    // Read-only system so compilers/interpreters work; nothing here is writable.
+    for ro in ["/usr", "/bin", "/lib", "/lib64", "/etc", "/opt"] {
+        if std::path::Path::new(ro).exists() {
+            a.push("--ro-bind".into());
+            a.push(ro.into());
+            a.push(ro.into());
+        }
+    }
+    // Writable: ONLY the workspace and a private tmp. Mount private tmp first so a workspace
+    // underneath the host's /tmp can be bound back into the namespace instead of being masked.
+    a.push("--tmpfs".into());
+    a.push("/tmp".into());
+    for directory in home_dirs {
+        a.push("--dir".into());
+        a.push(directory.display().to_string());
+    }
+    a.push("--bind".into());
+    a.push(ws.clone());
+    a.push(ws.clone());
+    for (source, destination) in home_mounts {
+        a.push("--ro-bind".into());
+        a.push(source.display().to_string());
+        a.push(destination.display().to_string());
+    }
+    // Minimal /dev and /proc.
+    a.push("--dev".into());
+    a.push("/dev".into());
+    a.push("--proc".into());
+    a.push("/proc".into());
+    // Hardening.
+    a.push("--die-with-parent".into());
+    a.push("--new-session".into());
+    a.push("--unshare-pid".into());
+    a.push("--unshare-ipc".into());
+    a.push("--unshare-uts".into());
+    // Network: the load-bearing denial. Empty net namespace unless egress is escalated.
+    if !conf.allow_egress {
+        a.push("--unshare-net".into());
+    }
+    // Working directory inside the sandbox = the workspace.
+    a.push("--chdir".into());
+    a.push(ws);
+    // The command.
+    a.push("/bin/bash".into());
+    a.push("-c".into());
+    a.push(command.into());
+    a
+}
+
+/// Plan mounts only for existing toolchain/cache roots below a canonical HOME. Symlinks that
+/// resolve outside HOME are ignored rather than turning a seemingly safe allowlist entry into an
+/// arbitrary host read. Namespace parent directories are empty scaffolding; HOME itself is never
+/// host-bound.
+fn toolchain_home_mount_plan(home: Option<&Path>) -> (Vec<PathBuf>, Vec<(PathBuf, PathBuf)>) {
+    let Some(home) = home.filter(|path| path.is_absolute()) else {
+        return (Vec::new(), Vec::new());
+    };
+    let Ok(canonical_home) = std::fs::canonicalize(home) else {
+        return (Vec::new(), Vec::new());
+    };
+
+    let component_count = home.components().count();
+    if component_count == 0 || component_count > MAX_HOME_COMPONENTS {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut namespace_dirs = BTreeSet::new();
+    let mut ancestor = PathBuf::new();
+    for component in home.components() {
+        ancestor.push(component.as_os_str());
+        if ancestor != Path::new("/") {
+            namespace_dirs.insert(ancestor.clone());
+        }
+    }
+
+    let mut mounts = Vec::with_capacity(TOOLCHAIN_HOME_READ_SUBPATHS.len());
+    for relative in TOOLCHAIN_HOME_READ_SUBPATHS {
+        let destination = home.join(relative);
+        let Ok(source) = std::fs::canonicalize(&destination) else {
+            continue;
+        };
+        if !source.starts_with(&canonical_home) {
+            continue;
+        }
+        if !source.is_dir() && !source.is_file() {
+            continue;
+        }
+
+        if let Some(parent) = destination.parent() {
+            let Ok(relative_parent) = parent.strip_prefix(home) else {
+                continue;
+            };
+            let mut namespace_parent = home.to_path_buf();
+            for component in relative_parent.components() {
+                namespace_parent.push(component.as_os_str());
+                namespace_dirs.insert(namespace_parent.clone());
+            }
+        }
+        mounts.push((source, destination));
+    }
+
+    if mounts.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    // Bubblewrap starts with an empty namespace root. These directories merely host the narrow
+    // mounts and expose none of their corresponding host contents.
+    (namespace_dirs.into_iter().collect(), mounts)
+}
+
+#[async_trait::async_trait]
+impl Sandbox for Bubblewrap {
+    async fn run(&self, command: &str, conf: &Confinement) -> Result<RunOutput, SandboxError> {
+        self.run_inner(command, conf, &[]).await
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn args_unshare_net_by_default_and_bind_only_workspace() {
-        let conf = Confinement::egress_off(PathBuf::from("/work/repo"));
-        let a = bwrap_args(&conf, "make test");
-        assert!(
-            a.iter().any(|x| x == "--unshare-net"),
-            "network must be unshared by default"
-        );
-        // the workspace is bound read-write; system dirs are ro-bind
-        let joined = a.join(" ");
-        assert!(
-            joined.contains("--bind /work/repo /work/repo"),
-            "workspace writable"
-        );
-        assert!(joined.contains("--ro-bind /usr /usr"), "system read-only");
-        assert!(
-            a.last().map(|s| s == "make test").unwrap_or(false),
-            "command is last"
-        );
-        assert_eq!(&a[a.len() - 3..], ["/bin/bash", "-c", "make test"]);
-        assert!(
-            BWRAP_CANDIDATES
-                .iter()
-                .all(|candidate| Path::new(candidate).is_absolute())
-        );
-        assert!(
-            BWRAP_PROBE_ARGS
-                .windows(3)
-                .any(|args| args == ["--ro-bind", "/", "/"]),
-            "the capability probe must not grant host writes"
-        );
-        assert!(
-            BWRAP_PROBE_ARGS.contains(&"--unshare-net"),
-            "the capability probe must exercise the load-bearing network namespace"
-        );
-    }
-
-    #[test]
-    fn egress_escalation_shares_the_network() {
-        let mut conf = Confinement::egress_off(PathBuf::from("/work/repo"));
-        conf.allow_egress = true;
-        let a = bwrap_args(&conf, "curl x");
-        assert!(
-            !a.iter().any(|x| x == "--unshare-net"),
-            "escalated egress must not unshare net"
-        );
-    }
-
-    // Live confinement test: only where bwrap actually exists (Linux CI). Asserts the kernel
-    // blocks the network, mirroring the Seatbelt live test.
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn code_runs_but_network_is_blocked_when_bwrap_present() {
-        if trusted_bwrap().is_none() {
-            eprintln!("skipping: bwrap not installed");
-            return;
-        }
-        assert!(
-            Bubblewrap::available(),
-            "trusted bwrap is installed but cannot create the required namespace/mount boundary"
-        );
-        let dir = std::env::temp_dir();
-        let sb = Bubblewrap::new();
-        let conf = Confinement::egress_off(&dir);
-        let ok = sb.run("echo confined", &conf).await.unwrap();
-        assert_eq!(
-            ok.exit_code, 0,
-            "the functional probe passed but the real sandbox failed: {}",
-            ok.stderr
-        );
-        assert!(ok.stdout.contains("confined"));
-        // With --unshare-net there are no interfaces; a connect must fail.
-        let net = sb
-            .run(
-                "if bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' 2>/dev/null; then echo network-open; exit 97; else echo network-blocked; fi",
-                &conf,
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            net.exit_code, 0,
-            "network unexpectedly reachable: {}",
-            net.stderr
-        );
-        assert!(
-            net.stdout.contains("network-blocked"),
-            "the connect inside was refused by the empty net namespace"
-        );
-
-        let mut flood_conf = Confinement::egress_off(&dir);
-        flood_conf.max_output_bytes = 4 * 1024;
-        flood_conf.timeout_secs = 5;
-        let flood = sb
-            .run(
-                "(yes O | head -c 1048576) & (yes E | head -c 1048576 >&2) & wait",
-                &flood_conf,
-            )
-            .await
-            .unwrap();
-        assert!(flood.stdout_truncated && flood.stderr_truncated);
-    }
-}
+#[path = "bubblewrap_tests.rs"]
+mod tests;

@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "cargo_audit_version": "0.22.2",
+  "advisory_database": "rustsec",
+  "ignored_advisories": []
+}

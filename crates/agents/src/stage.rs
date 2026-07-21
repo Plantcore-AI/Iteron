@@ -81,19 +81,18 @@ pub enum Stage {
     Reduce,
 }
 
-/// A concrete workflow: a `Fan` followed by a `Reduce`, plus the aggregate budget and provenance.
+/// A concrete workflow topology: a `Fan` followed by a `Reduce`, plus provenance.
 ///
 /// The R5 design typed this as `{ root: Stage, aggregate: Budget }`, assuming the deferred `Pipe`
 /// variant to compose stages. With `Pipe` cut, a `Vec<Stage>` is the honest composition: this crate
 /// only ever produces `[Fan{..}, Reduce]`, and the vector says exactly that without a variant the
-/// engine cannot walk.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// engine cannot walk. Budget allocation happens after fan normalization determines the admitted
+/// task count, so an unbudgeted topology deliberately has no `aggregate` field. Call
+/// [`WorkflowPlan::with_aggregate`] only after the caller has computed the real shared ceiling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowPlan {
     /// The stages, in execution order (always `[Fan, Reduce]` today).
     pub stages: Vec<Stage>,
-    /// One shared run budget for the whole fan — never per-agent (ADR-013: per-agent budgets would
-    /// multiply the ceiling past the cost gate). The kernel splits it across the fan and reconciles.
-    pub aggregate: Budget,
     /// The task class that selected this topology (recorded for observability/replay).
     pub class: TaskClass,
     /// `Some(n)` if the decomposer truncated `n` leaves to fit `FAN_CAP` — surfaced, never silent
@@ -114,5 +113,101 @@ impl WorkflowPlan {
             Some(Stage::Fan { tasks }) => tasks,
             _ => &[],
         }
+    }
+
+    /// Finalize this topology with the real shared fan ceiling.
+    ///
+    /// The transition consumes the unbudgeted plan, so callers cannot accidentally execute a
+    /// placeholder and overwrite it later. Zero turn/wall ceilings remain valid explicit stop
+    /// conditions; monetary values receive [`Budget::validate`] validation at this boundary.
+    pub fn with_aggregate(self, aggregate: Budget) -> Result<BudgetedWorkflowPlan, &'static str> {
+        aggregate.validate()?;
+        Ok(BudgetedWorkflowPlan {
+            topology: self,
+            aggregate,
+        })
+    }
+}
+
+/// An executable workflow plan whose shared fan ceiling has been finalized.
+///
+/// The aggregate is private and immutable. Executors may inspect it through [`Self::aggregate`]
+/// but cannot replace it with a post-construction value, eliminating the former placeholder state.
+#[derive(Debug, Clone)]
+pub struct BudgetedWorkflowPlan {
+    topology: WorkflowPlan,
+    aggregate: Budget,
+}
+
+impl BudgetedWorkflowPlan {
+    /// The finalized topology and its routing/truncation provenance.
+    pub fn topology(&self) -> &WorkflowPlan {
+        &self.topology
+    }
+
+    /// The one shared run budget for the whole fan — never per-agent (ADR-013: per-agent budgets
+    /// would multiply the ceiling past the cost gate). The executor splits and reconciles it.
+    pub fn aggregate(&self) -> &Budget {
+        &self.aggregate
+    }
+
+    /// The admitted fan tasks in declaration order.
+    pub fn fan_tasks(&self) -> &[AgentTask] {
+        self.topology.fan_tasks()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn topology() -> WorkflowPlan {
+        WorkflowPlan {
+            stages: vec![
+                Stage::Fan {
+                    tasks: vec![AgentTask::investigator(0, "inspect caller".into())],
+                },
+                Stage::Reduce,
+            ],
+            class: TaskClass::MultiFile,
+            truncated: None,
+            duplicates_removed: 0,
+            invalid_removed: 0,
+        }
+    }
+
+    #[test]
+    fn aggregate_is_only_visible_after_finalization_and_is_immutable() {
+        let plan = topology();
+        let json = serde_json::to_value(&plan).unwrap();
+        assert!(
+            json.get("aggregate").is_none(),
+            "topology records must not imply that a final budget already exists"
+        );
+
+        let budget = Budget {
+            max_turns: 12,
+            max_usd: Some(3.5),
+            max_wall_secs: 90,
+            max_consecutive_tool_errors: 2,
+        };
+        let budgeted = plan.with_aggregate(budget).unwrap();
+        assert_eq!(budgeted.aggregate().max_turns, 12);
+        assert_eq!(budgeted.aggregate().max_usd, Some(3.5));
+        assert_eq!(budgeted.aggregate().max_wall_secs, 90);
+        assert_eq!(budgeted.fan_tasks()[0].objective, "inspect caller");
+        assert_eq!(budgeted.topology().class, TaskClass::MultiFile);
+    }
+
+    #[test]
+    fn finalization_rejects_an_invalid_monetary_ceiling() {
+        let invalid = Budget {
+            max_usd: Some(f64::NAN),
+            ..Budget::default()
+        };
+        assert_eq!(
+            topology().with_aggregate(invalid).unwrap_err(),
+            "max_usd must be finite"
+        );
     }
 }

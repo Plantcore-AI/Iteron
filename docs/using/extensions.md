@@ -31,6 +31,7 @@ Hooks are arbitrary operator commands and therefore load **only** from
 
 ```json
 {
+  "schema_version": 2,
   "hooks": {
     "PreToolUse": ["/path/to/operator-owned-policy-check"]
   }
@@ -50,6 +51,7 @@ Core Code spawns their command at startup:
 
 ```json
 {
+  "schema_version": 2,
   "mcp_servers": [
     {
       "name": "example",

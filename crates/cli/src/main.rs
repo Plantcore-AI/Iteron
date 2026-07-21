@@ -8,16 +8,19 @@ mod block;
 mod commands;
 mod config;
 mod editor;
+mod environment;
 mod highlight;
 mod markdown;
+mod mcp;
 mod output;
+mod pricing;
 mod providers;
 mod render;
 mod surface;
 mod theme;
 mod tui;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use config::FileConfig;
 use core_kernel::Agent;
 use core_protocol::{Budget, Outcome, RunId, TenantId};
@@ -29,6 +32,44 @@ use std::path::PathBuf;
 /// Fresh sessions use GLM's built-in provider. The model is deliberately not duplicated here:
 /// `ProviderDirectory::default_selection` resolves GLM's versioned, documented catalog default.
 const BUILTIN_DEFAULT_PROVIDER: &str = "glm";
+
+struct StderrDiagnosticDrain {
+    receiver: std::sync::mpsc::Receiver<core_kernel::diagnostics::KernelDiagnostic>,
+}
+
+impl StderrDiagnosticDrain {
+    fn channel() -> (core_kernel::diagnostics::DiagnosticPort, Self) {
+        let (port, receiver) = core_kernel::diagnostics::bounded_channel();
+        (port, Self { receiver })
+    }
+
+    fn flush(&self) {
+        use std::io::Write as _;
+
+        for diagnostic in self.receiver.try_iter() {
+            let envelope = core_kernel::diagnostics::KernelDiagnosticEnvelope::current(diagnostic);
+            // Serialization is infallible for the closed, string-free vocabulary. Presentation
+            // happens only after the kernel call returns; stderr failure cannot enter its control
+            // flow and never redirects a byte onto machine stdout.
+            if let Ok(mut line) = serde_json::to_vec(&envelope) {
+                line.push(b'\n');
+                let _ = std::io::stderr().lock().write_all(&line);
+            }
+        }
+    }
+}
+
+impl Drop for StderrDiagnosticDrain {
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
+enum LocalCommand {
+    /// Rebuild session metadata and the sessions index from hash-chained rollout truth.
+    Reindex,
+}
 
 const SYSTEM_PROMPT: &str = "\
 You are Core Code, a careful coding agent working inside a git repository under a bounded, audited \
@@ -74,6 +115,33 @@ the task, no self-congratulation.
 - When done, stop calling tools and give a brief plain-text summary of what changed, citing \
 file:line for the key edits. When blocked, say so plainly and state exactly what you need.";
 
+struct SystemPromptAssembly {
+    base_system: String,
+    instruction_bytes: String,
+    instruction_trust: core_protocol::Trust,
+    bundle: core_ctx::InstructionBundle,
+}
+
+fn assemble_system_prompt(
+    home_core: Option<&std::path::Path>,
+    repository_root: &std::path::Path,
+    active_dir: &std::path::Path,
+) -> SystemPromptAssembly {
+    let bundle = core_ctx::discover_hierarchy(home_core, repository_root, active_dir);
+    let instruction_bytes = bundle.render();
+    let instruction_trust = if instruction_bytes.is_empty() {
+        core_protocol::Trust::Trusted
+    } else {
+        core_protocol::Trust::Untrusted
+    };
+    SystemPromptAssembly {
+        base_system: SYSTEM_PROMPT.to_string(),
+        instruction_bytes,
+        instruction_trust,
+        bundle,
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "core",
@@ -81,6 +149,9 @@ file:line for the key edits. When blocked, say so plainly and state exactly what
     about = "Core Code — a terminal-native coding agent built on a bounded controller."
 )]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<LocalCommand>,
+
     /// The task for the agent to perform. Optional in --tui mode (type it in the UI).
     task: Option<String>,
 
@@ -187,9 +258,11 @@ async fn run_cli() -> anyhow::Result<u8> {
 
     // `--sessions` and `--fork` predate the one-shot machine contract and intentionally keep their
     // human output. Reject the combination instead of silently contaminating JSON stdout.
-    if cli.output_format.is_machine() && (cli.sessions || cli.fork.is_some()) {
+    if cli.output_format.is_machine()
+        && (cli.sessions || cli.fork.is_some() || cli.command.is_some())
+    {
         anyhow::bail!(
-            "--output-format json/stream-json is only supported for agent runs, not --sessions or --fork"
+            "--output-format json/stream-json is only supported for agent runs, not local session maintenance"
         );
     }
 
@@ -197,6 +270,17 @@ async fn run_cli() -> anyhow::Result<u8> {
         .repo
         .canonicalize()
         .map_err(|e| anyhow::anyhow!("repo {:?}: {e}", cli.repo))?;
+
+    if matches!(cli.command, Some(LocalCommand::Reindex)) {
+        let count = core_record::reindex(&cli.runs_dir)?;
+        println!(
+            "reindexed {count} session{} in {}",
+            if count == 1 { "" } else { "s" },
+            cli.runs_dir.display()
+        );
+        return Ok(output::EXIT_SUCCESS);
+    }
+
     let mut registry = Registry::coding_agent(&repo)?;
 
     // Load repository-safe run knobs. Routing-sensitive fields are resolved later from trusted
@@ -305,78 +389,56 @@ async fn run_cli() -> anyhow::Result<u8> {
             "warning: ignoring `compaction_trigger_tokens` in the project config (untrusted origin); configure it in ~/.core/config.json"
         );
     }
-    let user_file = FileConfig::load_user()?;
-    for srv in user_file.mcp_servers.clone().unwrap_or_default() {
-        match core_mcp::McpClient::connect(&srv.command, &srv.args, &srv.name).await {
-            Ok(client) => {
-                let client = std::sync::Arc::new(client);
-                match client.list_tools().await {
-                    Ok(specs) => {
-                        let n = specs.len();
-                        for spec in specs {
-                            let bare = spec
-                                .name
-                                .strip_prefix(&format!("{}__", srv.name))
-                                .unwrap_or(&spec.name)
-                                .to_string();
-                            let c = client.clone();
-                            let reg = registry.register_external_effect(spec, move |call, _root| {
-                                let c = c.clone();
-                                let bare = bare.clone();
-                                core_tools::effectfut::box_it(async move {
-                                    match c.call_tool_outcome(&bare, call.input.clone()).await {
-                                        core_mcp::McpToolOutcome::Completed {
-                                            content,
-                                            is_error,
-                                        } => core_tools::ToolExecution::Definite(
-                                            core_protocol::ToolResult {
-                                            tool_use_id: call.id,
-                                            content,
-                                            is_error,
-                                            trust: core_protocol::Trust::Untrusted,
-                                            latency_ms: 0,
-                                        },
-                                        ),
-                                        core_mcp::McpToolOutcome::FailedDefinite(error) => {
-                                            core_tools::ToolExecution::Definite(
-                                                core_protocol::ToolResult {
-                                                    tool_use_id: call.id,
-                                                    content: format!("mcp error: {error}"),
-                                                    is_error: true,
-                                                    trust: core_protocol::Trust::Untrusted,
-                                                    latency_ms: 0,
-                                                },
-                                            )
-                                        }
-                                        core_mcp::McpToolOutcome::Unknown(_) => {
-                                            core_tools::ToolExecution::Unknown(
-                                                core_protocol::ToolResult {
-                                                    tool_use_id: call.id,
-                                                    content: "MCP request was dispatched but no authoritative terminal response was observed; remote outcome is unknown and Core will not retry it automatically".into(),
-                                                    is_error: true,
-                                                    trust: core_protocol::Trust::Untrusted,
-                                                    latency_ms: 0,
-                                                },
-                                            )
-                                        }
-                                    }
-                                })
-                            });
-                            if let Err(e) = reg {
-                                eprintln!("mcp {}: skip tool: {e}", srv.name);
-                            }
-                        }
-                        eprintln!("mcp: connected `{}` ({n} tools)", srv.name);
-                        // The registered executors each hold an Arc clone of `client`, so it
-                        // stays alive as long as the registry (and thus the agent) does. The
-                        // outer `client` handle drops here with no effect on that.
-                    }
-                    Err(e) => eprintln!("mcp {}: list_tools failed: {e}", srv.name),
-                }
-            }
-            Err(e) => eprintln!("mcp {}: connect failed: {e}", srv.name),
-        }
+    if file
+        .rate_cards
+        .as_ref()
+        .is_some_and(|rate_cards| !rate_cards.is_empty())
+    {
+        eprintln!(
+            "warning: ignoring `rate_cards` in the project config (untrusted origin); declare signed rate cards in ~/.core/config.json"
+        );
     }
+    let user_file = FileConfig::load_user()?;
+    let completion_notifications = config::resolve_completion_notifications(
+        user_file.completion_notifications,
+        file.completion_notifications,
+    );
+    if completion_notifications.project_ignored {
+        eprintln!(
+            "warning: ignoring `completion_notifications` in the project config (untrusted origin); configure terminal notifications in ~/.core/config.json"
+        );
+    }
+    // Retry tuning is resolved at the composition root with project input structurally ignored.
+    // It remains deliberately inactive while `RetryProvider` reports opaque internal attempts:
+    // the kernel refuses that decorator until every physical request gets its own durable intent.
+    let retry_environment = config::load_retry_environment().map_err(anyhow::Error::msg)?;
+    let retry_resolution = config::resolve_retry_policy(
+        retry_environment,
+        user_file.retry.as_ref(),
+        file.retry.as_ref(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    if retry_resolution.project_ignored {
+        eprintln!(
+            "warning: ignoring `retry` in the project config (untrusted origin); retry timing and paid-attempt count are operator-owned policy"
+        );
+    }
+    if retry_resolution.trusted_override_present {
+        eprintln!(
+            "warning: retry policy base_ms={} cap_ms={} max_attempts={} is validated but inactive until each physical provider attempt has write-ahead durability",
+            retry_resolution.policy.base_ms,
+            retry_resolution.policy.cap_ms,
+            retry_resolution.policy.max_attempts,
+        );
+    }
+    let pricing_key_env_names =
+        pricing::key_env_names(user_file.rate_cards.as_deref().unwrap_or_default());
+    mcp::register_configured_servers(
+        &mut registry,
+        user_file.mcp_servers.as_deref().unwrap_or_default(),
+        &pricing_key_env_names,
+    )
+    .await?;
 
     // Routing-sensitive defaults never consult the repository config. A cloned project must not
     // be able to redirect source code (and an operator credential) to another provider or host.
@@ -432,7 +494,10 @@ async fn run_cli() -> anyhow::Result<u8> {
         provider_was_explicit = true;
     }
     let provider_directory = providers::ProviderDirectory::discover(&configured_providers).await?;
-    let credential_env_names = provider_directory.credential_env_names();
+    let mut credential_env_names = provider_directory.credential_env_names();
+    credential_env_names.extend(pricing_key_env_names);
+    credential_env_names.sort();
+    credential_env_names.dedup();
     registry.set_sensitive_env_names(credential_env_names.clone());
 
     // A project may suggest only a bare model within the already trusted provider. Recognize a
@@ -554,6 +619,17 @@ async fn run_cli() -> anyhow::Result<u8> {
             None
         }
     });
+    // Acquire the existing rollout's exclusive writer lock before reading any route or message
+    // state. Holding this object through Agent construction makes resume one coherent snapshot:
+    // another process cannot append between replay and the descriptor used for continuation.
+    let resumed_run = resume_id.as_ref().map(|id| RunId(id.clone()));
+    let mut locked_resume = match &resumed_run {
+        Some(run) => Some(
+            Rollout::open_existing(&cli.runs_dir, run, tenant.clone())
+                .map_err(|error| anyhow::anyhow!("cannot resume {run}: {error}"))?,
+        ),
+        None => None,
+    };
     if let Some(resume) = &resume_id {
         let recorded = core_record::load_forked(&cli.runs_dir, &RunId(resume.clone()))?;
         let last_route = recorded.iter().rev().find_map(|event| match &event.kind {
@@ -672,25 +748,49 @@ async fn run_cli() -> anyhow::Result<u8> {
     let model = selection.model_id.clone();
     let provider_id = selection.provider_id.clone();
     let model_capabilities = provider_directory.selection_capabilities(&selection);
+    let (catalog_digest, capability_digest) = provider_directory.selection_digests(&selection);
+    let pricing_route = core_protocol::PricingRoute {
+        provider_id: provider_id.clone(),
+        model_id: model.clone(),
+        catalog_digest: catalog_digest.clone(),
+        capability_digest: capability_digest.clone(),
+    };
+    // Read and authenticate operator pricing material before creating a rollout. A missing or bad
+    // key must not leave a genesis-less record, and a positive ceiling must never start unpriced.
+    let pricing_port =
+        pricing::load_authority(user_file.rate_cards.as_deref().unwrap_or_default())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let selected_rate_card = pricing_port
+        .as_ref()
+        .map(|port| port.resolve_rate_card(&pricing_route, now))
+        .transpose()?
+        .flatten();
+    if max_usd.is_some_and(|ceiling| ceiling > 0.0) && selected_rate_card.is_none() {
+        anyhow::bail!(
+            "cannot enforce the requested USD ceiling: the exact selected route has no active verified rate card"
+        );
+    }
 
     // Resume vs fresh run. Resuming reuses the prior run's id so its rollout continues.
     // A fresh id combines pid + nanos so it cannot collide with a prior run whose pid was
     // reused across reboots (code review: a bare pid can corrupt a stale chain).
-    let run = match &resume_id {
-        Some(id) => RunId(id.clone()),
+    let fresh_clock = resume_id.is_none().then(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+    });
+    let run = match resumed_run {
+        Some(run) => run,
         None => {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
+            let nanos = fresh_clock.map(|duration| duration.as_nanos()).unwrap_or(0);
             RunId(format!("run-{}-{:x}", std::process::id(), nanos))
         }
     };
     let resume_messages = if resume_id.is_some() {
         let path = cli.runs_dir.join(format!("{run}.jsonl"));
-        if !path.exists() {
-            anyhow::bail!("cannot resume {run}: no rollout at {}", path.display());
-        }
         let msgs = Agent::messages_from_rollout(&path)?;
         eprintln!(
             "resuming {run}: {} messages reconstructed from the rollout",
@@ -700,7 +800,17 @@ async fn run_cli() -> anyhow::Result<u8> {
     } else {
         None
     };
-    let rollout = Rollout::open(&cli.runs_dir, &run, TenantId::default())?;
+    let fresh_created_at = fresh_clock.map(|duration| duration.as_secs());
+    // Capture Git/clock-derived facts only for a fresh run. Resume and fork reuse the durable
+    // ContextInjection and therefore do not even invoke the live collector before discarding it.
+    let environment_context = match fresh_created_at {
+        Some(created_at) => Some(environment::capture_at(&repo, created_at).await),
+        None => None,
+    };
+    let rollout = match locked_resume.take() {
+        Some(rollout) => rollout,
+        None => Rollout::open(&cli.runs_dir, &run, tenant.clone())?,
+    };
 
     let budget = Budget {
         max_turns,
@@ -716,28 +826,51 @@ async fn run_cli() -> anyhow::Result<u8> {
         run
     );
     eprintln!("record: {}", rollout.path().display());
-    // Discover repo instructions (AGENTS.md/CLAUDE.md), treated UNTRUSTED (ADR-007): a bidi/
-    // invisible-Unicode injection is rejected, and what is included is framed as untrusted.
-    let mut system = SYSTEM_PROMPT.to_string();
-    let mut system_trust = core_protocol::Trust::Trusted;
-    match core_ctx::discover(&repo) {
-        core_ctx::Instructions::Found { source, content } => {
-            eprintln!("instructions: loaded `{source}` (untrusted guidance)");
-            system.push_str(&core_ctx::framed(&source, &content));
-            system_trust = core_protocol::Trust::Untrusted;
-        }
-        core_ctx::Instructions::Rejected { source, reason } => {
-            eprintln!("instructions: REJECTED `{source}`: {reason}");
-        }
-        core_ctx::Instructions::None => {}
+    // Discover operator + hierarchical repository instructions outside the kernel. Every accepted
+    // source gets its own untrusted provenance frame; imports remain confined and the complete
+    // merged prefix is bounded by core-ctx before it crosses into the Agent.
+    let home_core = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".core"));
+    let SystemPromptAssembly {
+        base_system,
+        instruction_bytes,
+        instruction_trust,
+        bundle: instruction_bundle,
+    } = assemble_system_prompt(home_core.as_deref(), &repo, &repo);
+    for source in instruction_bundle.sources() {
+        eprintln!(
+            "instructions: loaded `{}` (untrusted guidance)",
+            source.source
+        );
+    }
+    for rejection in instruction_bundle.rejections() {
+        eprintln!(
+            "instructions: REJECTED `{}`: {}",
+            rejection.source, rejection.reason
+        );
+    }
+    if instruction_bundle.omitted_sources() > 0 {
+        eprintln!(
+            "instructions: {} sources omitted at the discovery/render bounds",
+            instruction_bundle.omitted_sources()
+        );
     }
     eprintln!("{}", "-".repeat(72));
 
-    let mut agent = Agent::new(provider_arc, registry, rollout, model, system, budget);
-    agent.set_sensitive_env_names(credential_env_names);
+    let mut agent = Agent::new(provider_arc, registry, rollout, model, base_system, budget);
+    agent.set_instruction_context(instruction_bytes, instruction_trust)?;
+    if let Some(environment_context) = environment_context {
+        agent.set_environment_context(environment_context, core_protocol::Trust::Workspace)?;
+    }
+    let (diagnostic_port, diagnostic_drain) = StderrDiagnosticDrain::channel();
+    agent.set_diagnostic_port(diagnostic_port);
+    if let Some(pricing_port) = pricing_port {
+        // Install trust before replay so historical signed projections authenticate without a
+        // mutable catalog lookup or a network/provider request.
+        agent.set_pricing_port(pricing_port);
+    }
+    agent.set_sensitive_env_names(credential_env_names.clone());
     agent.model_context_window = model_capabilities.context_window_tokens;
     agent.model_max_output_tokens = model_capabilities.max_output_tokens;
-    agent.system_trust = system_trust;
     // Build a coherent fresh-session policy before genesis. A resumed session restores its last
     // durable snapshot; only explicit runtime overrides append a new policy event.
     let mut initial_rules = core_protocol::PermissionRules::new();
@@ -750,11 +883,11 @@ async fn run_cli() -> anyhow::Result<u8> {
     if let Some(cmd) = &cli.verify {
         eprintln!("verify gate: harness will run `{cmd}` before accepting 'done'");
     }
-    agent.compaction.trigger_tokens = user_file
-        .compaction_trigger_tokens
-        .unwrap_or_else(|| core_ctx::CompactionPolicy::default().trigger_tokens);
+    if let Some(trigger_tokens) = user_file.compaction_trigger_tokens {
+        agent.compaction.set_fixed_trigger_tokens(trigger_tokens);
+    }
     if let Some(msgs) = resume_messages {
-        agent.set_resume(msgs);
+        agent.set_resume(msgs)?;
         if effort_runtime_override {
             agent.transition_effort(
                 resolved_effort,
@@ -812,21 +945,22 @@ async fn run_cli() -> anyhow::Result<u8> {
             serde_json::to_string(agent.permission_rules()).unwrap_or_default(),
             agent.permission_mode().label().to_string(),
             agent.effort().label().to_string(),
-            agent.compaction.trigger_tokens.to_string(),
+            agent
+                .compaction
+                .effective_trigger_tokens(
+                    agent.model_context_window,
+                    agent.model_max_output_tokens.unwrap_or(8192).min(8192),
+                )
+                .to_string(),
             agent.compaction.keep_recent.to_string(),
             agent.verify_command.clone().unwrap_or_default(),
             format!("{output_format:?}"),
             agent.system.clone(),
         ],
     );
-    let (catalog_digest, capability_digest) = provider_directory.selection_digests(&selection);
     // Record the session genesis header on a FRESH run (SESS-4): cwd/model/effort/created_at, so
     // `--sessions` has metadata and a `--fork` inherits it. Resume already has a genesis.
-    if resume_id.is_none() {
-        let created_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+    if let Some(created_at) = fresh_created_at {
         agent.record_genesis(repo.display().to_string(), created_at, config_digest)?;
     }
     // Record the actual route before any turn can use it. On resume this appends an explicit new
@@ -837,10 +971,18 @@ async fn run_cli() -> anyhow::Result<u8> {
         catalog_digest,
         capability_digest,
     )?;
+    let bound_rate_card = agent.bind_selected_rate_card()?;
+    if agent.budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) && !bound_rate_card {
+        anyhow::bail!(
+            "cannot enforce the requested USD ceiling: the exact selected route has no active verified rate card"
+        );
+    }
     // Lifecycle hooks (R5) from the USER config ONLY (trust-by-origin: a project/cloned-repo config
     // must never run a command). Empty if there is no ~/.core/config.json hooks block.
     if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
-        agent.hooks = core_kernel::hooks::Hooks::load_user(&home);
+        let mut hooks = core_kernel::hooks::Hooks::load_user(&home);
+        hooks.set_sensitive_env_names(credential_env_names);
+        agent.hooks = hooks;
         if !agent.hooks.is_empty() {
             eprintln!("hooks: loaded from ~/.core/config.json (user config)");
         }
@@ -849,7 +991,15 @@ async fn run_cli() -> anyhow::Result<u8> {
     eprintln!("permission mode: {}", agent.permission_mode().label());
 
     if !one_shot {
-        tui::run(agent, cli.task, provider_directory, provider_id).await?;
+        tui::run(
+            agent,
+            cli.task,
+            provider_directory,
+            provider_id,
+            completion_notifications.enabled,
+        )
+        .await?;
+        diagnostic_drain.flush();
         return Ok(output::EXIT_SUCCESS);
     }
 
@@ -913,6 +1063,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             output_error = Some(error);
         }
     }
+    diagnostic_drain.flush();
 
     let (outcome, run_error) = match run_result {
         Ok(outcome) => (outcome, None),
@@ -963,6 +1114,123 @@ async fn run_cli() -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn d7_11_mcp_dispatch_latency_reaches_the_ledger_with_namespaced_attribution() {
+        let args = vec![
+            "-c".to_string(),
+            concat!(
+                "IFS= read -r init; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "IFS= read -r initialized; ",
+                "IFS= read -r list; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"delayed\",\"description\":\"fixture\",\"inputSchema\":{\"type\":\"object\"}}]}}'; ",
+                "IFS= read -r call; sleep 0.03; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}'; ",
+                "exec sleep 60"
+            )
+            .to_string(),
+        ];
+        let client = std::sync::Arc::new(
+            core_mcp::McpClient::connect("/bin/bash", &args, "ledger-server")
+                .await
+                .unwrap(),
+        );
+        let specs = client.list_tools().await.unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "ledger-server__delayed");
+
+        let mut registry = Registry::read_only(std::env::temp_dir()).unwrap();
+        mcp::register_mcp_tool(
+            &mut registry,
+            client.clone(),
+            "ledger-server",
+            specs[0].clone(),
+        )
+        .unwrap();
+        let execution = registry
+            .run_effect(core_protocol::ToolUse {
+                id: "mcp-call-1".into(),
+                name: "ledger-server__delayed".into(),
+                input: serde_json::json!({}),
+            })
+            .await;
+        let core_tools::ToolExecution::Definite(result) = execution else {
+            panic!("fixture MCP call unexpectedly became Unknown");
+        };
+        assert_eq!(result.content, "done\n");
+        assert!(!result.is_error);
+        assert!(result.latency_ms >= 15);
+
+        let mut ledger = core_obs::Ledger::new();
+        ledger.tool(result.latency_ms, 0, result.is_error);
+        assert_eq!(ledger.tool_calls, 1);
+        assert_eq!(
+            ledger
+                .timings()
+                .complete()
+                .expect("live timing is complete")
+                .tool_wall_ms,
+            result.latency_ms
+        );
+        assert!(
+            ledger
+                .summary()
+                .contains(&format!("tool_wall={}ms", result.latency_ms))
+        );
+        drop(client);
+    }
+
+    #[test]
+    fn d6_01_cli_system_assembly_merges_every_instruction_scope_untrusted() {
+        let base = std::env::temp_dir().join(format!(
+            "core-cli-instructions-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home_core = base.join("home/.core");
+        let repo = base.join("repo");
+        let active = repo.join("nested");
+        std::fs::create_dir_all(&home_core).unwrap();
+        std::fs::create_dir_all(&active).unwrap();
+        std::fs::write(home_core.join("instructions.md"), "home guidance").unwrap();
+        std::fs::write(repo.join("AGENTS.md"), "root agents guidance").unwrap();
+        std::fs::write(repo.join("CLAUDE.md"), "root claude guidance").unwrap();
+        std::fs::write(active.join("AGENTS.md"), "nested guidance").unwrap();
+
+        let assembly = assemble_system_prompt(Some(&home_core), &repo, &active);
+        assert_eq!(assembly.instruction_trust, core_protocol::Trust::Untrusted);
+        assert_eq!(assembly.base_system, SYSTEM_PROMPT);
+        assert_eq!(
+            assembly
+                .bundle
+                .sources()
+                .iter()
+                .map(|source| source.source.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "~/.core/instructions.md",
+                "AGENTS.md",
+                "CLAUDE.md",
+                "nested/AGENTS.md",
+            ]
+        );
+        for expected in [
+            "home guidance",
+            "root agents guidance",
+            "root claude guidance",
+            "nested guidance",
+        ] {
+            assert!(assembly.instruction_bytes.contains(expected));
+            assert!(!assembly.base_system.contains(expected));
+        }
+        assert_eq!(assembly.instruction_bytes.matches("UNTRUSTED").count(), 4);
+        std::fs::remove_dir_all(&base).ok();
+    }
 
     #[test]
     fn fresh_route_defaults_to_glm_and_trusted_overrides_keep_precedence() {

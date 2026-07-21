@@ -455,6 +455,69 @@ impl MemStore {
         read_bounded_utf8(&self.source_root, path, max_bytes, self.source_scope())
     }
 
+    /// Create/validate the store one real directory component at a time under its explicit
+    /// source boundary. No component may be a symlink, including the final memory directory.
+    fn ensure_writable_root(&self) -> std::io::Result<PathBuf> {
+        if self.is_stripped() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "cannot write memory to a stripped dependency store",
+            ));
+        }
+        // A generic store uses its own root as the read-confinement boundary. When that directory
+        // does not exist yet, anchor creation at its existing parent without broadening the later
+        // read boundary (user-memory symlinks must still remain inside the memory directory).
+        let (boundary_path, relative) = if self.source_root == self.root {
+            let parent = self.root.parent().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "memory directory has no containing boundary",
+                )
+            })?;
+            let name = self.root.file_name().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "memory directory has no final component",
+                )
+            })?;
+            (parent, Path::new(name))
+        } else {
+            let relative = self.root.strip_prefix(&self.source_root).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "memory directory is outside its source boundary",
+                )
+            })?;
+            (self.source_root.as_path(), relative)
+        };
+        let boundary = boundary_path.canonicalize()?;
+        if relative.is_absolute() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "memory directory is outside its source boundary",
+            ));
+        }
+        let mut current = boundary.clone();
+        for component in relative.components() {
+            let std::path::Component::Normal(component) = component else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "memory directory contains a non-normal path component",
+                ));
+            };
+            current.push(component);
+            ensure_real_directory(&current)?;
+        }
+        let resolved = current.canonicalize()?;
+        if !resolved.starts_with(&boundary) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "memory directory escapes its source boundary",
+            ));
+        }
+        Ok(resolved)
+    }
+
     /// The store's index entries. When a `MEMORY.md` index is present it is parsed line by line
     /// (bidi-suspicious lines skipped); when it is absent the store degrades to listing every
     /// `.md` file — the seed `MemoryStore::load` behaviour — so the R5 model stays strictly
@@ -1002,10 +1065,20 @@ impl MemoryStrategy for FileMemory {
         if trimmed.is_empty() {
             return Err(MemError::Refused("empty fact".into()));
         }
-        std::fs::create_dir_all(&store.root).map_err(|e| MemError::Io(e.to_string()))?;
+        if trimmed.len() > MAX_FACT_BYTES {
+            return Err(MemError::Refused(format!(
+                "fact is {} bytes; limit is {MAX_FACT_BYTES}",
+                trimmed.len()
+            )));
+        }
+        let writable_root = store
+            .ensure_writable_root()
+            .map_err(|error| MemError::Refused(error.to_string()))?;
         // Content-hash slug: adding the same fact twice is idempotent, no wall-clock (ADR-006).
         let slug = format!("m-{}", short_hash(trimmed));
-        std::fs::write(store.fact_path(&slug), trimmed).map_err(|e| MemError::Io(e.to_string()))?;
+        let fact_path = writable_root.join(format!("{slug}.md"));
+        atomic_memory_replace(&writable_root, &fact_path, trimmed.as_bytes(), |_| Ok(()))
+            .map_err(|error| MemError::Io(error.to_string()))?;
         // Append an index line if this slug is not already indexed (idempotent).
         let (title, summary) = derive_title_summary(trimmed, &slug);
         let fact_ref = FactRef {
@@ -1022,6 +1095,11 @@ impl MemoryStrategy for FileMemory {
 /// Append `fact_ref`'s line to the store's `MEMORY.md`, unless a line for that slug is already
 /// present (so repeated adds do not duplicate the index).
 fn append_index_line(store: &MemStore, fact_ref: &FactRef) -> std::io::Result<()> {
+    // The index update is a read-modify-write operation. Serialize that whole critical section
+    // with an OS-backed file lock so writers in other processes cannot both read the same old
+    // index and then overwrite one another's lines. The sibling lock file is intentionally
+    // persistent: unlinking a lock file creates inode races between existing and new openers.
+    let _lock = MemoryIndexLock::acquire(&store.root)?;
     let path = store.index_path();
     let existing = store
         .read_source(&path, MAX_MEMORY_SOURCE_BYTES)
@@ -1036,7 +1114,163 @@ fn append_index_line(store: &MemStore, fact_ref: &FactRef) -> std::io::Result<()
         next.push('\n');
     }
     next.push_str(&fact_ref.line());
-    std::fs::write(&path, next)
+    if next.len() > MAX_MEMORY_SOURCE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("memory index exceeds {MAX_MEMORY_SOURCE_BYTES} bytes"),
+        ));
+    }
+    let writable_root = store.ensure_writable_root()?;
+    let confined_path = writable_root.join("MEMORY.md");
+    debug_assert_eq!(path.file_name(), confined_path.file_name());
+    atomic_memory_replace(&writable_root, &confined_path, next.as_bytes(), |_| Ok(()))
+}
+
+/// Atomically replace one file in an already-confined memory directory.
+///
+/// `before_rename` is a test seam for injecting a failure or process exit after the complete temp
+/// file has been flushed and fsynced but before the destination is touched. Production callers use
+/// a no-op callback. The temp uses `create_new`, the destination changes by one rename, and the
+/// containing directory is fsynced so the rename is durable on Unix filesystems.
+fn atomic_memory_replace<F>(
+    directory: &Path,
+    target: &Path,
+    bytes: &[u8],
+    before_rename: F,
+) -> std::io::Result<()>
+where
+    F: FnOnce(&Path) -> std::io::Result<()>,
+{
+    if target.parent() != Some(directory) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "memory replacement target is outside the confined store",
+        ));
+    }
+    if std::fs::symlink_metadata(target).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "memory replacement target is a symlink",
+        ));
+    }
+
+    let stem = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("memory");
+    let (temporary, mut file) = (0..32_u32)
+        .find_map(|ordinal| {
+            let temporary = directory.join(format!(".{stem}.tmp-{}-{ordinal}", std::process::id()));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+            {
+                Ok(file) => Some(Ok((temporary, file))),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .unwrap_or_else(|| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "could not allocate a memory transaction file",
+            ))
+        })?;
+
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        before_rename(&temporary)?;
+        std::fs::rename(&temporary, target)?;
+        sync_memory_directory(directory)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[cfg(unix)]
+fn sync_memory_directory(directory: &Path) -> std::io::Result<()> {
+    std::fs::File::open(directory)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_memory_directory(_directory: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+const MEMORY_INDEX_LOCK_FILE: &str = ".MEMORY.md.lock";
+const MEMORY_INDEX_LOCK_ATTEMPTS: usize = 5_000;
+const MEMORY_INDEX_LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(1);
+
+/// RAII guard for the cross-process `MEMORY.md` writer lock.
+struct MemoryIndexLock {
+    file: std::fs::File,
+}
+
+impl MemoryIndexLock {
+    fn acquire(store_root: &Path) -> std::io::Result<Self> {
+        Self::acquire_with_budget(
+            store_root,
+            MEMORY_INDEX_LOCK_ATTEMPTS,
+            MEMORY_INDEX_LOCK_RETRY,
+        )
+    }
+
+    fn acquire_with_budget(
+        store_root: &Path,
+        attempts: usize,
+        retry_delay: std::time::Duration,
+    ) -> std::io::Result<Self> {
+        if attempts == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "memory index lock requires at least one attempt",
+            ));
+        }
+
+        let path = store_root.join(MEMORY_INDEX_LOCK_FILE);
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).read(true).write(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        }
+        let file = options.open(&path)?;
+
+        for attempt in 0..attempts {
+            match file.try_lock() {
+                Ok(()) => return Ok(Self { file }),
+                Err(std::fs::TryLockError::WouldBlock) if attempt + 1 < attempts => {
+                    std::thread::sleep(retry_delay);
+                }
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        format!(
+                            "memory index lock `{}` remained busy after {attempts} attempts",
+                            path.display()
+                        ),
+                    ));
+                }
+                Err(std::fs::TryLockError::Error(error)) => return Err(error),
+            }
+        }
+
+        unreachable!("a non-empty bounded lock-attempt loop always returns")
+    }
+}
+
+impl Drop for MemoryIndexLock {
+    fn drop(&mut self) {
+        // Closing the file also releases the lock. Unlock explicitly so the critical-section
+        // boundary is obvious; close remains the fallback if unlocking itself fails.
+        let _ = self.file.unlock();
+    }
 }
 
 /// Parse one `MEMORY.md` line `- [Title](slug.md) — summary` into a `FactRef`. Accepts `-` or `*`
@@ -1744,6 +1978,194 @@ mod tests {
     }
 
     #[test]
+    fn memory_index_lock_contention_is_bounded_and_releases_cleanly() {
+        let root = tmp("index-lock-boundary").join("mem");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let held =
+            MemoryIndexLock::acquire_with_budget(&root, 1, std::time::Duration::ZERO).unwrap();
+        let error = match MemoryIndexLock::acquire_with_budget(&root, 2, std::time::Duration::ZERO)
+        {
+            Ok(_) => panic!("a second writer unexpectedly crossed the held index lock"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+
+        drop(held);
+        let reacquired = MemoryIndexLock::acquire_with_budget(&root, 1, std::time::Duration::ZERO)
+            .expect("closing the first guard releases the OS lock");
+        drop(reacquired);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memory_index_lock_does_not_follow_a_symlinked_lock_file() {
+        let base = tmp("index-lock-symlink");
+        let root = base.join("mem");
+        let outside = base.join("outside-lock-target");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&outside, "must remain untouched").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(MEMORY_INDEX_LOCK_FILE)).unwrap();
+
+        assert!(
+            MemoryIndexLock::acquire_with_budget(&root, 1, std::time::Duration::ZERO).is_err(),
+            "the coordination file must never redirect the lock outside the store"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "must remain untouched"
+        );
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    const PROCESS_LOCK_ROOT_ENV: &str = "CORE_CTX_TEST_MEMORY_LOCK_ROOT";
+
+    #[test]
+    #[ignore = "subprocess helper invoked by process_exit_releases_index_lock_without_drop"]
+    fn abrupt_lock_holder_child() {
+        let Some(root) = std::env::var_os(PROCESS_LOCK_ROOT_ENV).map(PathBuf::from) else {
+            return;
+        };
+        let _lock = MemoryIndexLock::acquire(&root).unwrap();
+        // Deliberately bypass Rust destructors. The operating system must close the descriptor
+        // and release the advisory lock, so the persistent coordination inode is never stale.
+        std::process::exit(0);
+    }
+
+    #[test]
+    fn process_exit_releases_index_lock_without_drop() {
+        let base = tmp("index-lock-process-exit");
+        let root = base.join("mem");
+        std::fs::create_dir_all(&root).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--ignored")
+            .arg("--exact")
+            .arg("memory::tests::abrupt_lock_holder_child")
+            .arg("--test-threads=1")
+            .env(PROCESS_LOCK_ROOT_ENV, &root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "abrupt lock holder failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let recovered = MemoryIndexLock::acquire_with_budget(&root, 1, std::time::Duration::ZERO)
+            .expect("process exit closes the descriptor and releases the lock");
+        drop(recovered);
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    const PROCESS_WRITER_ROOT_ENV: &str = "CORE_CTX_TEST_MEMORY_WRITER_ROOT";
+    const PROCESS_WRITER_ID_ENV: &str = "CORE_CTX_TEST_MEMORY_WRITER_ID";
+
+    #[test]
+    #[ignore = "subprocess helper invoked by concurrent_process_adds_preserve_every_index_line"]
+    fn concurrent_process_add_child() {
+        let Some(base) = std::env::var_os(PROCESS_WRITER_ROOT_ENV).map(PathBuf::from) else {
+            return;
+        };
+        let id: usize = std::env::var(PROCESS_WRITER_ID_ENV)
+            .expect("writer id is set by the parent test")
+            .parse()
+            .expect("writer id is numeric");
+
+        std::fs::write(base.join(format!("ready-{id}")), []).unwrap();
+        let mut started = false;
+        for _ in 0..30_000 {
+            if base.join("start").exists() {
+                started = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(started, "parent did not release the writer start barrier");
+
+        let store = MemStore::new(base.join("mem"), MemTier::User, true);
+        FileMemory
+            .add(
+                &store,
+                &format!("# Writer {id}\nUnique fact from writer process {id}."),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn concurrent_process_adds_preserve_every_index_line() {
+        const WRITERS: usize = 16;
+
+        let base = tmp("concurrent-process-adds");
+        std::fs::create_dir_all(base.join("mem")).unwrap();
+        let test_binary = std::env::current_exe().unwrap();
+        let mut children = Vec::with_capacity(WRITERS);
+        for id in 0..WRITERS {
+            let child = std::process::Command::new(&test_binary)
+                .arg("--ignored")
+                .arg("--exact")
+                .arg("memory::tests::concurrent_process_add_child")
+                .arg("--test-threads=1")
+                .env(PROCESS_WRITER_ROOT_ENV, &base)
+                .env(PROCESS_WRITER_ID_ENV, id.to_string())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            children.push((id, child));
+        }
+
+        let mut ready = 0;
+        for _ in 0..30_000 {
+            ready = (0..WRITERS)
+                .filter(|id| base.join(format!("ready-{id}")).exists())
+                .count();
+            if ready == WRITERS {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // Release every child even if startup timed out, so this test never leaves waiting
+        // subprocesses behind when it reports the readiness failure below.
+        std::fs::write(base.join("start"), []).unwrap();
+
+        let outputs: Vec<_> = children
+            .into_iter()
+            .map(|(id, child)| (id, child.wait_with_output().unwrap()))
+            .collect();
+        assert_eq!(ready, WRITERS, "all writer processes reached the barrier");
+        for (id, output) in outputs {
+            assert!(
+                output.status.success(),
+                "writer {id} failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let index = std::fs::read_to_string(base.join("mem/MEMORY.md")).unwrap();
+        assert_eq!(
+            index.lines().count(),
+            WRITERS,
+            "one index line must survive for every racing writer:\n{index}"
+        );
+        for id in 0..WRITERS {
+            assert_eq!(
+                index.matches(&format!("[Writer {id}]")).count(),
+                1,
+                "writer {id}'s index line is present exactly once"
+            );
+        }
+
+        let store = MemStore::new(base.join("mem"), MemTier::User, true);
+        assert_eq!(store.index_entries().len(), WRITERS);
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
     fn add_writes_body_and_index_line_idempotently() {
         let root = tmp("add").join("mem");
         let store = MemStore::new(root.clone(), MemTier::User, true);
@@ -1778,6 +2200,97 @@ mod tests {
             FileMemory.add(&dep, "anything"),
             Err(MemError::Refused(_))
         ));
+    }
+
+    const ATOMIC_MEMORY_ROOT_ENV: &str = "CORE_CTX_TEST_ATOMIC_MEMORY_ROOT";
+
+    #[test]
+    #[ignore = "subprocess helper invoked by d6_08_crash_before_rename_preserves_complete_fact"]
+    fn abrupt_atomic_memory_writer_child() {
+        let Some(root) = std::env::var_os(ATOMIC_MEMORY_ROOT_ENV).map(PathBuf::from) else {
+            return;
+        };
+        let target = root.join("fact.md");
+        let _ = atomic_memory_replace(&root, &target, b"complete-new-fact", |_| {
+            // Exit after the production path has flushed and fsynced the complete temp file but
+            // before rename. Destructors deliberately do not run, matching a process crash.
+            std::process::exit(73);
+        });
+        unreachable!("the injected abrupt exit must terminate the child");
+    }
+
+    #[test]
+    fn d6_08_crash_before_rename_preserves_complete_fact() {
+        let base = tmp("atomic-crash");
+        let root = base.join("memory");
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("fact.md");
+        std::fs::write(&target, b"complete-old-fact").unwrap();
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--ignored")
+            .arg("--exact")
+            .arg("memory::tests::abrupt_atomic_memory_writer_child")
+            .arg("--test-threads=1")
+            .env(ATOMIC_MEMORY_ROOT_ENV, &root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(73),
+            "fault child did not exit at the injected boundary:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"complete-old-fact");
+
+        atomic_memory_replace(&root, &target, b"complete-new-fact", |_| Ok(())).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"complete-new-fact");
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn d6_08_symlinked_project_memory_directory_is_refused_wholesale() {
+        let base = tmp("write-store-symlink");
+        let repo = base.join("repo");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(repo.join(".core")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join(".core/memory")).unwrap();
+
+        let store = MemStore::project(&repo, true);
+        let error = FileMemory
+            .add(&store, "this must remain inside the repository")
+            .unwrap_err();
+        assert!(matches!(error, MemError::Refused(_)));
+        assert!(
+            std::fs::read_dir(&outside).unwrap().next().is_none(),
+            "the outside directory must receive no fact, index, lock, or temp file"
+        );
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn d6_08_oversized_and_suspicious_facts_are_surfaced_before_write() {
+        let base = tmp("write-validation");
+        let root = base.join("memory");
+        let store = MemStore::new(root.clone(), MemTier::User, true);
+
+        let oversized = "x".repeat(MAX_FACT_BYTES + 1);
+        let error = FileMemory.add(&store, &oversized).unwrap_err();
+        assert!(matches!(error, MemError::Refused(reason) if reason.contains("limit")));
+        assert!(matches!(
+            FileMemory.add(&store, "visible\u{202E}reversed"),
+            Err(MemError::Suspicious(_))
+        ));
+        assert!(
+            !root.exists(),
+            "validation failures must not create the store"
+        );
+        std::fs::remove_dir_all(base).ok();
     }
 
     #[test]

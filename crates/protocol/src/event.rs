@@ -5,6 +5,7 @@
 use crate::ids::{EffectId, Seq, SubmissionId, TurnId};
 use crate::message::{Message, Usage};
 use crate::permission::Verdict;
+use crate::pricing::{CostProjection, SignedRateCard};
 use crate::tool::{Capability, ToolResult, ToolUse};
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +42,10 @@ pub enum RuntimePolicySource {
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowEventVersion {
     V1,
+    /// Adds the distinct `drained` child and workflow terminals. Writers pair this with the
+    /// top-level `workflow_v2` event tag so V1 readers skip the whole event through their existing
+    /// unknown-kind fallback instead of failing inside a known `workflow` payload.
+    V2,
 }
 
 /// The execution topology that was actually admitted, not the topology a planner merely proposed.
@@ -70,6 +75,7 @@ pub enum WorkflowChildOutcome {
     Done,
     Failed,
     Interrupted,
+    Drained,
     SkippedBudget,
     NotStarted,
 }
@@ -81,6 +87,7 @@ pub enum WorkflowOutcome {
     Done,
     Degraded,
     Interrupted,
+    Drained,
     BudgetExhausted,
     Stuck,
     HarnessError,
@@ -105,13 +112,36 @@ pub struct WorkflowMetrics {
     pub usage: Usage,
     pub tool_calls: u64,
     pub tool_errors: u64,
-    pub model_ms: u64,
-    pub tools_ms: u64,
+    /// Process-local child timing. `None` is an explicit unknown, used when a resumed ledger lacks
+    /// complete historical phase timing; legacy numeric JSON values remain wire-compatible.
+    #[serde(default)]
+    pub model_ms: Option<u64>,
+    #[serde(default)]
+    pub tools_ms: Option<u64>,
+    /// Aggregate monetary evidence from the child's own signed per-turn projections. `None` means
+    /// either no completed provider turn or at least one turn was not verifiably priced.
+    #[serde(default)]
+    pub cost: Option<WorkflowCostEvidence>,
 }
 
-/// Typed workflow journal carried by [`EventKind::Workflow`]. Activity chatter is intentionally
-/// absent: the durable boundary records decisions, budgets, attribution, adoption, and terminals;
-/// high-frequency current-tool updates remain a coalescible frontend projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCostEvidence {
+    pub amount_microusd: u64,
+    pub rate_card_digest: String,
+    /// Signed per-turn projections from the child rollout. A parent replay verifies every HMAC and
+    /// usage total before treating the aggregate as priced; the aggregate fields alone are never a
+    /// monetary authority.
+    #[serde(
+        default,
+        deserialize_with = "crate::pricing::deserialize_cost_projections"
+    )]
+    pub projections: Vec<CostProjection>,
+}
+
+/// Typed workflow journal carried by [`EventKind::Workflow`] and [`EventKind::WorkflowV2`].
+/// Activity chatter is intentionally absent: the durable boundary records decisions, budgets,
+/// attribution, adoption, and terminals; high-frequency current-tool updates remain a coalescible
+/// frontend projection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum WorkflowEvent {
@@ -256,6 +286,41 @@ pub struct Event {
     pub kind: EventKind,
 }
 
+/// Maximum serialized frontend environment prefix admitted into one durable context snapshot.
+/// This is intentionally independent of the instruction and memory/skills bounds: each source is
+/// admitted at its owning boundary before the kernel combines their already-bounded bytes.
+pub const MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES: usize = 4 * 1024;
+
+/// Exact frontend-observed environment facts captured for a fresh run. The text is data, not an
+/// instruction source, and keeps its own provenance so combining it cannot silently raise trust.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DurableEnvironmentContext {
+    pub text: String,
+    pub trust: crate::Trust,
+}
+
+/// Exact strategy-admitted frontend prefix carried beside the legacy memory/skills context.
+/// Keeping it as an optional typed field lets older readers ignore the additive evidence while a
+/// current reader can distinguish a complete durable context from a pre-instruction legacy event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DurableInstructionContext {
+    pub text: String,
+    pub trust: crate::Trust,
+    /// Fresh-start environment snapshot. `None` preserves the historical wire shape exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<DurableEnvironmentContext>,
+}
+
+/// Machine-readable reason for refusing an SQ submission before it can affect session state.
+/// This vocabulary intentionally has no free-text or opaque-payload variant: unsupported client
+/// data must be observable without becoming a secret-bearing record field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmissionRejectionReason {
+    UnsupportedOperation,
+    ProtocolVersionMismatch,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
@@ -311,6 +376,9 @@ pub enum EventKind {
     TurnEnd { usage: Usage },
     /// A message for the operator (not part of the transcript).
     Notice { text: String },
+    /// A submission was decoded safely but is not understood by this build. The record contains
+    /// only a closed typed reason; the unknown tag and payload are discarded by `Op::Unknown`.
+    SubmissionRejected { reason: SubmissionRejectionReason },
     /// A capability-gate decision (ADR-007 §3): the request (`verdict: Ask`) and then the
     /// resolution (`Auto` = approved, `Deny` = refused). Recording both makes the approval the
     /// replay decision-log — a deterministic replay reads the recorded verdict and does not
@@ -341,10 +409,18 @@ pub enum EventKind {
         model: String,
         effort: crate::Effort,
         created_at: u64,
+        /// Fresh-run environment facts are duplicated in genesis so a crash before the first
+        /// ContextInjection can resume without consulting a newer live clock or Git state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        environment: Option<DurableEnvironmentContext>,
         parent_run: Option<String>,
         forked_at: Option<u64>,
         parent_hash_at_seq: Option<String>,
         config_digest: String,
+        /// Invocation-independent monetary ceiling. Missing on legacy records. Forks copy the
+        /// effective value into their own genesis so rewinding cannot silently remove it.
+        #[serde(default)]
+        max_usd: Option<f64>,
     },
     /// The exact provider/model routing pair selected for subsequent turns. Provider identity is
     /// separate from model identity because the same model id can exist behind several accounts or
@@ -355,6 +431,21 @@ pub enum EventKind {
         model_id: String,
         catalog_digest: String,
         capability_digest: String,
+    },
+    /// Verified, versioned rate card bound to the exact selected provider/model route. The
+    /// strategy-layer signature and content digest are durable provenance; no price lookup occurs
+    /// in the kernel or during replay.
+    RateCardBound { rate_card: SignedRateCard },
+    /// Signed fixed-point cost for the immediately preceding completed provider turn. Replay binds
+    /// its usage to `TurnEnd` and reconstructs monetary state directly from this evidence.
+    CostProjected { projection: CostProjection },
+    /// Monotone fixed-point monetary policy. Writers append this before establishing or tightening
+    /// a live ceiling; replay and forks take the minimum across the logical history. Absence is the
+    /// legacy format, whose optional `RunStart.max_usd` remains authoritative.
+    UsdCeilingChanged {
+        version: RuntimePolicyEventVersion,
+        source: RuntimePolicySource,
+        max_microusd: u64,
     },
     /// Full snapshot of the effective reasoning/orchestration policy. The rollout is write-ahead:
     /// the kernel fsyncs this event before changing the in-memory value. Full snapshots avoid
@@ -372,11 +463,17 @@ pub enum EventKind {
         mode: crate::PermissionMode,
         rules: crate::PermissionRules,
     },
-    /// The exact context (memory + instructions) injected into the stable prefix this run
+    /// The exact context (environment + instructions + memory/skills) injected into the stable
+    /// prefix this run
     /// (REC-INJECT, R5-review item 1). Replay re-materializes context FROM this record, never from
     /// disk, so a mid-run on-disk edit cannot alter a replay and post-compaction facts do not drop.
     /// Stored protocol-native (the rendered text + its trust) to avoid a dep on the ctx crate.
-    ContextInjection { text: String, trust: crate::Trust },
+    ContextInjection {
+        text: String,
+        trust: crate::Trust,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instructions: Option<DurableInstructionContext>,
+    },
     /// A workspace checkpoint (files) keyed to a record `Seq` — the snapshot ledger in the rollout.
     Checkpoint { at: Seq, tree_ref: String },
     /// A read-only subagent was spawned; links its child rollout to the parent (single-writer
@@ -394,9 +491,30 @@ pub enum EventKind {
         summary_digest: Option<String>,
         evidence_bytes: u32,
     },
+    /// Current directly-dispatched child terminal. Like `workflow_v2`, the distinct top-level tag
+    /// lets V1 readers skip a terminal carrying the new `drained` outcome instead of failing while
+    /// decoding the already-known `subagent_finished` shape.
+    SubagentFinishedV2 {
+        version: WorkflowEventVersion,
+        sub_run: String,
+        outcome: WorkflowChildOutcome,
+        metrics: WorkflowMetrics,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+        summary_digest: Option<String>,
+        evidence_bytes: u32,
+    },
     /// Versioned, typed workflow lifecycle. This is the parent WAL source of truth for child
     /// attribution and terminal reconstruction; `SubagentSpawned` remains for legacy tree views.
     Workflow {
+        version: WorkflowEventVersion,
+        workflow_id: String,
+        event: WorkflowEvent,
+    },
+    /// Current workflow lifecycle envelope. A distinct top-level tag is intentional: readers that
+    /// only know `workflow` V1 deserialize this as `Unknown` instead of rejecting the rollout when
+    /// V2 introduces the `drained` terminal vocabulary.
+    WorkflowV2 {
         version: WorkflowEventVersion,
         workflow_id: String,
         event: WorkflowEvent,
@@ -407,6 +525,61 @@ pub enum EventKind {
     /// version). Deserializes here instead of failing the whole replay (R5-review Risk 6).
     #[serde(other)]
     Unknown,
+}
+
+impl EventKind {
+    /// Enforce the public tag/version contract before an event reaches durable storage. V2 uses a
+    /// new top-level tag because an already-released serde reader can skip an unknown tag, but it
+    /// cannot recover from a new enum value or `null` timing nested inside a known V1 tag.
+    pub fn validate_compatibility_tag(&self) -> Result<(), &'static str> {
+        match self {
+            Self::Workflow {
+                version: WorkflowEventVersion::V1,
+                event,
+                ..
+            } if workflow_event_is_v1_compatible(event) => Ok(()),
+            Self::Workflow { .. } => Err("workflow V1 tag contains V2-only fields or version"),
+            Self::WorkflowV2 {
+                version: WorkflowEventVersion::V2,
+                ..
+            } => Ok(()),
+            Self::WorkflowV2 { .. } => Err("workflow_v2 tag must carry version v2"),
+            Self::SubagentFinished {
+                outcome, metrics, ..
+            } if *outcome != WorkflowChildOutcome::Drained
+                && metrics_are_v1_compatible(metrics) =>
+            {
+                Ok(())
+            }
+            Self::SubagentFinished { .. } => {
+                Err("subagent_finished V1 tag contains V2-only fields")
+            }
+            Self::SubagentFinishedV2 {
+                version: WorkflowEventVersion::V2,
+                ..
+            } => Ok(()),
+            Self::SubagentFinishedV2 { .. } => {
+                Err("subagent_finished_v2 tag must carry version v2")
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+fn metrics_are_v1_compatible(metrics: &WorkflowMetrics) -> bool {
+    metrics.model_ms.is_some() && metrics.tools_ms.is_some()
+}
+
+fn workflow_event_is_v1_compatible(event: &WorkflowEvent) -> bool {
+    match event {
+        WorkflowEvent::ChildFinished {
+            outcome, metrics, ..
+        } => *outcome != WorkflowChildOutcome::Drained && metrics_are_v1_compatible(metrics),
+        WorkflowEvent::Finished {
+            outcome, metrics, ..
+        } => *outcome != WorkflowOutcome::Drained && metrics_are_v1_compatible(metrics),
+        _ => true,
+    }
 }
 
 #[cfg(test)]
@@ -500,10 +673,12 @@ mod tests {
                     model: "model".into(),
                     effort: crate::Effort::Medium,
                     created_at: 1,
+                    environment: None,
                     parent_run: None,
                     forked_at: None,
                     parent_hash_at_seq: None,
                     config_digest: String::new(),
+                    max_usd: None,
                 },
             },
             Event {
@@ -628,8 +803,9 @@ mod tests {
                     },
                     tool_calls: 4,
                     tool_errors: 1,
-                    model_ms: 90,
-                    tools_ms: 12,
+                    model_ms: Some(90),
+                    tools_ms: Some(12),
+                    cost: None,
                 },
                 error_code: Some("child_budget_exhausted".into()),
                 error_detail: Some("bounded child stopped".into()),
@@ -656,5 +832,285 @@ mod tests {
                 },
             } if workflow_id == "workflow-7"
         ));
+    }
+
+    #[test]
+    fn durable_instruction_context_is_additive_and_legacy_absence_is_explicit() {
+        #[derive(Debug, Deserialize)]
+        struct LegacyDurableInstructionContext {
+            text: String,
+            trust: crate::Trust,
+        }
+
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum LegacyEventKind {
+            ContextInjection {
+                text: String,
+                trust: crate::Trust,
+                instructions: Option<LegacyDurableInstructionContext>,
+            },
+            #[serde(other)]
+            Unknown,
+        }
+
+        let current = EventKind::ContextInjection {
+            text: "legacy memory".into(),
+            trust: crate::Trust::Workspace,
+            instructions: Some(DurableInstructionContext {
+                text: "framed instructions".into(),
+                trust: crate::Trust::Untrusted,
+                environment: Some(DurableEnvironmentContext {
+                    text: "framed environment facts".into(),
+                    trust: crate::Trust::Workspace,
+                }),
+            }),
+        };
+        let encoded = serde_json::to_value(&current).unwrap();
+        assert_eq!(encoded["instructions"]["text"], "framed instructions");
+        assert_eq!(
+            encoded["instructions"]["environment"]["text"],
+            "framed environment facts"
+        );
+        assert!(matches!(
+            serde_json::from_value::<LegacyEventKind>(encoded).unwrap(),
+            LegacyEventKind::ContextInjection { text, trust, instructions: Some(instructions) }
+                if text == "legacy memory"
+                    && trust == crate::Trust::Workspace
+                    && instructions.text == "framed instructions"
+                    && instructions.trust == crate::Trust::Untrusted
+        ));
+
+        let legacy: EventKind = serde_json::from_value(serde_json::json!({
+            "kind": "context_injection",
+            "text": "legacy memory",
+            "trust": "workspace"
+        }))
+        .unwrap();
+        assert!(matches!(
+            &legacy,
+            EventKind::ContextInjection {
+                instructions: None,
+                ..
+            }
+        ));
+        assert!(
+            serde_json::to_value(legacy)
+                .unwrap()
+                .get("instructions")
+                .is_none(),
+            "None keeps the historical wire shape byte-compatible"
+        );
+
+        let without_environment = EventKind::ContextInjection {
+            text: String::new(),
+            trust: crate::Trust::Trusted,
+            instructions: Some(DurableInstructionContext {
+                text: "instructions only".into(),
+                trust: crate::Trust::Untrusted,
+                environment: None,
+            }),
+        };
+        assert!(
+            serde_json::to_value(without_environment).unwrap()["instructions"]
+                .get("environment")
+                .is_none(),
+            "None keeps pre-environment instruction records byte-shape compatible"
+        );
+    }
+
+    #[test]
+    fn durable_genesis_environment_is_additive_and_none_preserves_the_legacy_shape() {
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum LegacyEventKind {
+            RunStart {
+                cwd: String,
+                created_at: u64,
+            },
+            #[serde(other)]
+            Unknown,
+        }
+
+        let current = EventKind::RunStart {
+            cwd: "/repo".into(),
+            model: "model".into(),
+            effort: crate::Effort::Medium,
+            created_at: 7,
+            environment: Some(DurableEnvironmentContext {
+                text: "environment snapshot".into(),
+                trust: crate::Trust::Workspace,
+            }),
+            parent_run: None,
+            forked_at: None,
+            parent_hash_at_seq: None,
+            config_digest: String::new(),
+            max_usd: None,
+        };
+        let encoded = serde_json::to_value(current).unwrap();
+        assert_eq!(encoded["environment"]["text"], "environment snapshot");
+        assert!(matches!(
+            serde_json::from_value::<LegacyEventKind>(encoded).unwrap(),
+            LegacyEventKind::RunStart { cwd, created_at }
+                if cwd == "/repo" && created_at == 7
+        ));
+
+        let legacy: EventKind = serde_json::from_value(serde_json::json!({
+            "kind": "run_start",
+            "cwd": "/repo",
+            "model": "model",
+            "effort": "medium",
+            "created_at": 7,
+            "parent_run": null,
+            "forked_at": null,
+            "parent_hash_at_seq": null,
+            "config_digest": "",
+            "max_usd": null
+        }))
+        .unwrap();
+        assert!(matches!(
+            &legacy,
+            EventKind::RunStart {
+                environment: None,
+                ..
+            }
+        ));
+        assert!(
+            serde_json::to_value(legacy)
+                .unwrap()
+                .get("environment")
+                .is_none(),
+            "None keeps the historical RunStart wire shape byte-compatible"
+        );
+    }
+
+    #[test]
+    fn workflow_v2_drain_is_skippable_by_a_v1_reader() {
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum LegacyWorkflowVersion {
+            V1,
+        }
+
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum LegacyEventKind {
+            Workflow {
+                version: LegacyWorkflowVersion,
+            },
+            #[serde(other)]
+            Unknown,
+        }
+
+        let current = EventKind::WorkflowV2 {
+            version: WorkflowEventVersion::V2,
+            workflow_id: "workflow-drained".into(),
+            event: WorkflowEvent::Finished {
+                outcome: WorkflowOutcome::Drained,
+                metrics: WorkflowMetrics::default(),
+                elapsed_ms: 7,
+                error_code: Some("operator_drain".into()),
+                error_detail: None,
+            },
+        };
+        let encoded = serde_json::to_value(&current).unwrap();
+        assert_eq!(encoded["kind"], "workflow_v2");
+        assert_eq!(encoded["version"], "v2");
+        assert_eq!(encoded["event"]["outcome"], "drained");
+        assert!(matches!(
+            serde_json::from_value::<LegacyEventKind>(encoded).unwrap(),
+            LegacyEventKind::Unknown
+        ));
+        assert!(matches!(
+            serde_json::from_value::<LegacyEventKind>(serde_json::json!({
+                "kind": "workflow",
+                "version": "v1"
+            }))
+            .unwrap(),
+            LegacyEventKind::Workflow {
+                version: LegacyWorkflowVersion::V1
+            }
+        ));
+    }
+
+    #[test]
+    fn direct_child_v2_drain_is_skippable_by_a_v1_reader() {
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum LegacyEventKind {
+            SubagentFinished {
+                outcome: LegacyChildOutcome,
+            },
+            #[serde(other)]
+            Unknown,
+        }
+
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum LegacyChildOutcome {
+            Done,
+            Failed,
+            Interrupted,
+            SkippedBudget,
+            NotStarted,
+        }
+
+        let current = EventKind::SubagentFinishedV2 {
+            version: WorkflowEventVersion::V2,
+            sub_run: "direct-drained".into(),
+            outcome: WorkflowChildOutcome::Drained,
+            metrics: WorkflowMetrics::default(),
+            error_code: Some("operator_drain".into()),
+            error_detail: None,
+            summary_digest: None,
+            evidence_bytes: 0,
+        };
+        let encoded = serde_json::to_value(&current).unwrap();
+        assert_eq!(encoded["kind"], "subagent_finished_v2");
+        assert_eq!(encoded["version"], "v2");
+        assert_eq!(encoded["outcome"], "drained");
+        assert!(matches!(
+            serde_json::from_value::<LegacyEventKind>(encoded).unwrap(),
+            LegacyEventKind::Unknown
+        ));
+        assert!(matches!(
+            serde_json::from_value::<LegacyEventKind>(serde_json::json!({
+                "kind": "subagent_finished",
+                "outcome": "done"
+            }))
+            .unwrap(),
+            LegacyEventKind::SubagentFinished {
+                outcome: LegacyChildOutcome::Done
+            }
+        ));
+    }
+
+    #[test]
+    fn workflow_projection_collection_is_bounded_during_deserialization() {
+        let projection = CostProjection {
+            version: crate::PricingVersion::V1,
+            identity: None,
+            route: crate::PricingRoute {
+                provider_id: "p".into(),
+                model_id: "m".into(),
+                catalog_digest: "sha256:a".into(),
+                capability_digest: "sha256:b".into(),
+            },
+            usage: Usage::default(),
+            amount_microusd: 0,
+            projected_at_unix_secs: 1,
+            rate_card_digest: "sha256:card".into(),
+            signer_id: "signer".into(),
+            projection_digest: "sha256:projection".into(),
+            signature: "hmac-sha256:signature".into(),
+        };
+        let oversized = WorkflowCostEvidence {
+            amount_microusd: 0,
+            rate_card_digest: "sha256:card".into(),
+            projections: vec![projection; crate::MAX_WORKFLOW_COST_PROJECTIONS + 1],
+        };
+        let encoded = serde_json::to_value(oversized).unwrap();
+        let error = serde_json::from_value::<WorkflowCostEvidence>(encoded).unwrap_err();
+        assert!(error.to_string().contains("invalid length"));
     }
 }

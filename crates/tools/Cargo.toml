@@ -11,8 +11,11 @@ core-sandbox = { path = "../sandbox" }
 core-ctx = { path = "../ctx" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true }
 walkdir = { workspace = true }
+ignore = { workspace = true }
+regex = { workspace = true }
 thiserror = { workspace = true }
 # The web tools (web_fetch/web_search) egress over HTTP. REUSE the workspace's existing model-API
 # HTTP stack (reqwest + futures-util) — no new HTTP dependency enters the lockfile (ADR-010,

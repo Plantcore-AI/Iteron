@@ -1,0 +1,6 @@
+{
+  "max_turns": 4,
+  "max_usd": 0.5,
+  "max_wall_secs": 60,
+  "max_consecutive_tool_errors": 2
+}

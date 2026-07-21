@@ -1,0 +1,7 @@
+{"type":"text","text":"fixture text"}
+{"type":"text","text":"compacted user message"}
+{"type":"text","text":"compacted reply"}
+{"type":"thinking","thinking":"fixture thinking"}
+{"type":"provider_state","route_scope":"provider-a/model-a","format":"provider-a.continuation.v1","payload":{"cursor":"opaque-fixture"}}
+{"type":"tool_use","id":"call-1","name":"read_file","input":{"path":"README.md"}}
+{"type":"tool_result","tool_use_id":"call-1","content":"fixture result","is_error":false,"trust":"workspace","latency_ms":3}

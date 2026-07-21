@@ -1,0 +1,7 @@
+# This fixture is intentionally vulnerable. It must never be used as a project lockfile.
+version = 3
+
+[[package]]
+name = "time"
+version = "0.1.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"

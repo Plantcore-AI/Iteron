@@ -102,6 +102,7 @@ nav:
       - Configuration: reference/configuration.md
       - Environment variables: reference/environment.md
       - Provider matrix: reference/providers.md
+      - Static provider metadata: reference/provider-metadata.md
       - Output formats: reference/output-formats.md
       - Files and directories: reference/files-and-directories.md
       - Supported platforms: reference/platforms.md

@@ -1,0 +1,5 @@
+{
+  "route_scope": "provider-a/model-a",
+  "format": "provider-a.continuation.v1",
+  "payload": { "cursor": "opaque-fixture" }
+}

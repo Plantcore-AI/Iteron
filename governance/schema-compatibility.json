@@ -1,0 +1,2216 @@
+{
+  "schema_version": 1,
+  "release_ordinal": 1,
+  "minimum_deprecation_releases": 1,
+  "surfaces": [
+    {
+      "id": "protocol.sq-envelope",
+      "current_version": 1,
+      "version_field": "protocol_version",
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "op", "introduced_release": 1 },
+        { "name": "protocol_version", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "protocol.op.user-input",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "op", "value": "user_input" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "op", "introduced_release": 1 },
+        { "name": "text", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "protocol.op.approval-response",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "op", "value": "approval_response" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "approved", "introduced_release": 1 },
+        { "name": "id", "introduced_release": 1 },
+        { "name": "op", "introduced_release": 1 },
+        { "name": "remember", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "protocol.op.steer",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "op", "value": "steer" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "op", "introduced_release": 1 },
+        { "name": "text", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "protocol.op.interrupt",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "op", "value": "interrupt" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "op", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "protocol.op.drain",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "op", "value": "drain" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "op", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "protocol.eq-envelope",
+      "current_version": 1,
+      "version_field": "protocol_version",
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/protocol/eq-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "event", "introduced_release": 1 },
+        { "name": "protocol_version", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.rollout",
+      "current_version": 4,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-v2.jsonl",
+          "format": "jsonl",
+          "schema_version": 2
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-v3.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-event-kinds-v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "hash", "introduced_release": 1 },
+        { "name": "payload", "introduced_release": 1 },
+        { "name": "prev", "introduced_release": 1 },
+        { "name": "seq", "introduced_release": 1 },
+        { "name": "tenant", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "kernel.diagnostic",
+      "current_version": 1,
+      "version_field": "schema_version",
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/kernel/diagnostic-resume-v1.json",
+          "format": "json",
+          "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/kernel/diagnostic-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "diagnostic", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-result",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "result" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/one_shot_json_success.json",
+          "format": "json",
+          "schema_version": 3
+        },
+        {
+          "path": "crates/cli/tests/golden/one_shot_json_success_v4.json",
+          "format": "json",
+          "schema_version": 4
+        },
+        {
+          "path": "crates/cli/tests/golden/one_shot_json_drained_v4.json",
+          "format": "json",
+          "schema_version": 4
+        },
+        {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
+        },
+        {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "assistant_text", "introduced_release": 1 },
+        { "name": "cost_reason", "introduced_release": 1 },
+        { "name": "cost_status", "introduced_release": 1 },
+        { "name": "cost_usd", "introduced_release": 1 },
+        { "name": "error", "introduced_release": 1 },
+        { "name": "exit_code", "introduced_release": 1 },
+        { "name": "outcome", "introduced_release": 1 },
+        { "name": "reason", "introduced_release": 1 },
+        { "name": "run_id", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "success", "introduced_release": 1 },
+        { "name": "turns", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.assistant-text",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "assistant_text" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
+        },
+        {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "delta", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.thinking",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "thinking" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "delta", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.tool-start",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "tool_start" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "args", "introduced_release": 1 },
+        { "name": "name", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "tool_use_id", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.tool-end",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "tool_end" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "diff", "introduced_release": 1 },
+        { "name": "exit_code", "introduced_release": 1 },
+        { "name": "ok", "introduced_release": 1 },
+        { "name": "output", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "tool_use_id", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.phase",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "phase" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
+        },
+        {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "phase", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.turn-end",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "turn_end" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
+        },
+        {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "cache_hit", "introduced_release": 1 },
+        { "name": "context", "introduced_release": 1 },
+        { "name": "cost_reason", "introduced_release": 1 },
+        { "name": "cost_status", "introduced_release": 1 },
+        { "name": "cost_usd", "introduced_release": 1 },
+        { "name": "cumulative_cost_usd", "introduced_release": 1 },
+        { "name": "effort", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "turn", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 },
+        { "name": "usage", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.workflow-start",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "workflow_start" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "class", "introduced_release": 1 },
+        { "name": "name", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 },
+        { "name": "workflow_run_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.workflow-plan",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "workflow_plan" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "budget", "introduced_release": 1 },
+        { "name": "dropped", "introduced_release": 1 },
+        { "name": "duplicates_removed", "introduced_release": 1 },
+        { "name": "execution_mode", "introduced_release": 1 },
+        { "name": "invalid_removed", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "tasks", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 },
+        { "name": "workflow_run_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.workflow-phase",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "workflow_phase" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "phase", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 },
+        { "name": "workflow_run_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.workflow-agent-start",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "workflow_agent_start" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "agent_id", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "sub_run_id", "introduced_release": 1 },
+        { "name": "turn_budget", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 },
+        { "name": "workflow_run_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.workflow-agent-activity",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "workflow_agent_activity" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "activity", "introduced_release": 1 },
+        { "name": "agent_id", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 },
+        { "name": "workflow_run_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.workflow-agent-end",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "workflow_agent_end" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "agent_id", "introduced_release": 1 },
+        { "name": "elapsed_ms", "introduced_release": 1 },
+        { "name": "error_preview", "introduced_release": 1 },
+        { "name": "outcome", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "summary_preview", "introduced_release": 1 },
+        { "name": "tokens", "introduced_release": 1 },
+        { "name": "tool_calls", "introduced_release": 1 },
+        { "name": "turns", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 },
+        { "name": "workflow_run_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.workflow-end",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "workflow_end" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "elapsed_ms", "introduced_release": 1 },
+        { "name": "failed_tasks", "introduced_release": 1 },
+        { "name": "outcome", "introduced_release": 1 },
+        { "name": "provider_attempts", "introduced_release": 1 },
+        { "name": "reason", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "skipped_tasks", "introduced_release": 1 },
+        { "name": "tokens", "introduced_release": 1 },
+        { "name": "tool_calls", "introduced_release": 1 },
+        { "name": "turns", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 },
+        { "name": "workflow_run_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.steer-applied",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "steer_applied" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "count", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.notice",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "notice" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "message", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.approval-request",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "approval_request" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "arguments", "introduced_release": 1 },
+        { "name": "capability", "introduced_release": 1 },
+        { "name": "reason", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "submission_id", "introduced_release": 1 },
+        { "name": "tool", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 },
+        { "name": "workspace", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.run-done",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "run_done" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
+        },
+        {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
+          "format": "jsonl",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-envelope",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-envelope-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "seq",
+          "introduced_release": 1
+        },
+        {
+          "name": "turn",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.phase",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "phase"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "phase",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.turn_start",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "turn_start"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.message",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "message"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "message",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.compaction",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "compaction"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "messages",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.text",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "text"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "delta",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.thinking",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "thinking"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "delta",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.tool_ready",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "tool_ready"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "purity_pure",
+          "introduced_release": 1
+        },
+        {
+          "name": "tool",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.tool_done",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "tool_done"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "effect_id",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "result",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.effect_intent",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "effect_intent"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "arguments",
+          "introduced_release": 1
+        },
+        {
+          "name": "capability",
+          "introduced_release": 1
+        },
+        {
+          "name": "id",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "tool",
+          "introduced_release": 1
+        },
+        {
+          "name": "tool_use_id",
+          "introduced_release": 1
+        },
+        {
+          "name": "workspace",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.effect_unknown",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "effect_unknown"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "reason",
+          "introduced_release": 1
+        },
+        {
+          "name": "tool",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.turn_end",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "turn_end"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "usage",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.notice",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "notice"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "text",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.submission_rejected",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "submission_rejected"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "reason",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.approval",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "approval"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "arguments",
+          "introduced_release": 1
+        },
+        {
+          "name": "capability",
+          "introduced_release": 1
+        },
+        {
+          "name": "id",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "tool",
+          "introduced_release": 1
+        },
+        {
+          "name": "tool_use_id",
+          "introduced_release": 1
+        },
+        {
+          "name": "verdict",
+          "introduced_release": 1
+        },
+        {
+          "name": "workspace",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.run_start",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "run_start"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "config_digest",
+          "introduced_release": 1
+        },
+        {
+          "name": "created_at",
+          "introduced_release": 1
+        },
+        {
+          "name": "cwd",
+          "introduced_release": 1
+        },
+        {
+          "name": "effort",
+          "introduced_release": 1
+        },
+        {
+          "name": "environment",
+          "introduced_release": 1
+        },
+        {
+          "name": "forked_at",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "max_usd",
+          "introduced_release": 1
+        },
+        {
+          "name": "model",
+          "introduced_release": 1
+        },
+        {
+          "name": "parent_hash_at_seq",
+          "introduced_release": 1
+        },
+        {
+          "name": "parent_run",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.model_selected",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "model_selected"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "capability_digest",
+          "introduced_release": 1
+        },
+        {
+          "name": "catalog_digest",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "model_id",
+          "introduced_release": 1
+        },
+        {
+          "name": "provider_id",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.rate_card_bound",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "rate_card_bound"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "rate_card",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.cost_projected",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "cost_projected"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "projection",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.usd_ceiling_changed",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "usd_ceiling_changed"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "max_microusd",
+          "introduced_release": 1
+        },
+        {
+          "name": "source",
+          "introduced_release": 1
+        },
+        {
+          "name": "version",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.effort_changed",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "effort_changed"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "effort",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "source",
+          "introduced_release": 1
+        },
+        {
+          "name": "version",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.policy_changed",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "policy_changed"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "mode",
+          "introduced_release": 1
+        },
+        {
+          "name": "rules",
+          "introduced_release": 1
+        },
+        {
+          "name": "source",
+          "introduced_release": 1
+        },
+        {
+          "name": "version",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.context_injection",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "context_injection"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "instructions",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "text",
+          "introduced_release": 1
+        },
+        {
+          "name": "trust",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.checkpoint",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "checkpoint"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "at",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "tree_ref",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.subagent_spawned",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "subagent_spawned"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "agent",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "sub_run",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.subagent_finished",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "subagent_finished"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "error_code",
+          "introduced_release": 1
+        },
+        {
+          "name": "error_detail",
+          "introduced_release": 1
+        },
+        {
+          "name": "evidence_bytes",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "metrics",
+          "introduced_release": 1
+        },
+        {
+          "name": "outcome",
+          "introduced_release": 1
+        },
+        {
+          "name": "sub_run",
+          "introduced_release": 1
+        },
+        {
+          "name": "summary_digest",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.subagent_finished_v2",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "subagent_finished_v2"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "error_code",
+          "introduced_release": 1
+        },
+        {
+          "name": "error_detail",
+          "introduced_release": 1
+        },
+        {
+          "name": "evidence_bytes",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "metrics",
+          "introduced_release": 1
+        },
+        {
+          "name": "outcome",
+          "introduced_release": 1
+        },
+        {
+          "name": "sub_run",
+          "introduced_release": 1
+        },
+        {
+          "name": "summary_digest",
+          "introduced_release": 1
+        },
+        {
+          "name": "version",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.workflow",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "workflow"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "event",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "version",
+          "introduced_release": 1
+        },
+        {
+          "name": "workflow_id",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.workflow_v2",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "workflow_v2"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "event",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "version",
+          "introduced_release": 1
+        },
+        {
+          "name": "workflow_id",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.done",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "done"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "outcome",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.block.text",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "type", "value": "text" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/blocks-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "text", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.block.thinking",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "type", "value": "thinking" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/blocks-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "thinking", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.block.provider_state",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "type", "value": "provider_state" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/blocks-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "format", "introduced_release": 1 },
+        { "name": "payload", "introduced_release": 1 },
+        { "name": "route_scope", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.block.tool_use",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "type", "value": "tool_use" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/blocks-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "id", "introduced_release": 1 },
+        { "name": "input", "introduced_release": 1 },
+        { "name": "name", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.block.tool_result",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "type", "value": "tool_result" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/blocks-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "content", "introduced_release": 1 },
+        { "name": "is_error", "introduced_release": 1 },
+        { "name": "latency_ms", "introduced_release": 1 },
+        { "name": "tool_use_id", "introduced_release": 1 },
+        { "name": "trust", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.workflow-event.started",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "event", "value": "started" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/workflow-events-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "class", "introduced_release": 1 },
+        { "name": "event", "introduced_release": 1 },
+        { "name": "name", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.workflow-event.planned",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "event", "value": "planned" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/workflow-events-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "dropped", "introduced_release": 1 },
+        { "name": "duplicates_removed", "introduced_release": 1 },
+        { "name": "event", "introduced_release": 1 },
+        { "name": "fan_turn_budget", "introduced_release": 1 },
+        { "name": "fan_wall_secs", "introduced_release": 1 },
+        { "name": "invalid_removed", "introduced_release": 1 },
+        { "name": "mode", "introduced_release": 1 },
+        { "name": "tasks", "introduced_release": 1 },
+        { "name": "writer_turn_reserve", "introduced_release": 1 },
+        { "name": "writer_wall_reserve_secs", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.workflow-event.phase_changed",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "event", "value": "phase_changed" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/workflow-events-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "event", "introduced_release": 1 },
+        { "name": "phase", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.workflow-event.child_started",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "event", "value": "child_started" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/workflow-events-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "budget", "introduced_release": 1 },
+        { "name": "event", "introduced_release": 1 },
+        { "name": "spawn_seq", "introduced_release": 1 },
+        { "name": "sub_run", "introduced_release": 1 },
+        { "name": "task_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.workflow-event.child_finished",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "event", "value": "child_finished" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/workflow-events-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "error_code", "introduced_release": 1 },
+        { "name": "error_detail", "introduced_release": 1 },
+        { "name": "event", "introduced_release": 1 },
+        { "name": "evidence_bytes", "introduced_release": 1 },
+        { "name": "metrics", "introduced_release": 1 },
+        { "name": "outcome", "introduced_release": 1 },
+        { "name": "sub_run", "introduced_release": 1 },
+        { "name": "summary_digest", "introduced_release": 1 },
+        { "name": "task_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.workflow-event.reduced",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "event", "value": "reduced" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/workflow-events-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "done", "introduced_release": 1 },
+        { "name": "elapsed_ms", "introduced_release": 1 },
+        { "name": "event", "introduced_release": 1 },
+        { "name": "evidence_message_seq", "introduced_release": 1 },
+        { "name": "failed", "introduced_release": 1 },
+        { "name": "skipped", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.workflow-event.finished",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "event", "value": "finished" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/workflow-events-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "elapsed_ms", "introduced_release": 1 },
+        { "name": "error_code", "introduced_release": 1 },
+        { "name": "error_detail", "introduced_release": 1 },
+        { "name": "event", "introduced_release": 1 },
+        { "name": "metrics", "introduced_release": 1 },
+        { "name": "outcome", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.cost-attribution.direct_subagent",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "kind", "value": "direct_subagent" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/cost-attributions-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "kind", "introduced_release": 1 },
+        { "name": "parent_run_id", "introduced_release": 1 },
+        { "name": "sub_run", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.cost-attribution.workflow_child",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "kind", "value": "workflow_child" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/cost-attributions-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "kind", "introduced_release": 1 },
+        { "name": "parent_run_id", "introduced_release": 1 },
+        { "name": "sub_run", "introduced_release": 1 },
+        { "name": "task_id", "introduced_release": 1 },
+        { "name": "workflow_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.message",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-message-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "content", "introduced_release": 1 },
+        { "name": "role", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.provider-state",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-provider-state-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "format", "introduced_release": 1 },
+        { "name": "payload", "introduced_release": 1 },
+        { "name": "route_scope", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.tool-use",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-tool-use-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "id", "introduced_release": 1 },
+        { "name": "input", "introduced_release": 1 },
+        { "name": "name", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.tool-result",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-tool-result-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "content", "introduced_release": 1 },
+        { "name": "is_error", "introduced_release": 1 },
+        { "name": "latency_ms", "introduced_release": 1 },
+        { "name": "tool_use_id", "introduced_release": 1 },
+        { "name": "trust", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.usage",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-usage-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "cache_creation", "introduced_release": 1 },
+        { "name": "cache_read", "introduced_release": 1 },
+        { "name": "input", "introduced_release": 1 },
+        { "name": "output", "introduced_release": 1 },
+        { "name": "thinking", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.durable-environment-context",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-durable-environment-context-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "text", "introduced_release": 1 },
+        { "name": "trust", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.durable-instruction-context",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-durable-instruction-context-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "environment", "introduced_release": 1 },
+        { "name": "text", "introduced_release": 1 },
+        { "name": "trust", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.workflow-task-evidence",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-workflow-task-evidence-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "label", "introduced_release": 1 },
+        { "name": "prompt_digest", "introduced_release": 1 },
+        { "name": "task_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.workflow-metrics",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-workflow-metrics-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "completed_turns", "introduced_release": 1 },
+        { "name": "cost", "introduced_release": 1 },
+        { "name": "model_ms", "introduced_release": 1 },
+        { "name": "provider_attempts", "introduced_release": 1 },
+        { "name": "tool_calls", "introduced_release": 1 },
+        { "name": "tool_errors", "introduced_release": 1 },
+        { "name": "tools_ms", "introduced_release": 1 },
+        { "name": "usage", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.workflow-cost-evidence",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-workflow-cost-evidence-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "amount_microusd", "introduced_release": 1 },
+        { "name": "projections", "introduced_release": 1 },
+        { "name": "rate_card_digest", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.budget",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-budget-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "max_consecutive_tool_errors", "introduced_release": 1 },
+        { "name": "max_turns", "introduced_release": 1 },
+        { "name": "max_usd", "introduced_release": 1 },
+        { "name": "max_wall_secs", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.permission-rules",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-permission-rules-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "by_cap", "introduced_release": 1 },
+        { "name": "by_tool", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.pricing-route",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-pricing-route-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "capability_digest", "introduced_release": 1 },
+        { "name": "catalog_digest", "introduced_release": 1 },
+        { "name": "model_id", "introduced_release": 1 },
+        { "name": "provider_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.token-rate-card",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-token-rate-card-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "cache_creation_microusd_per_million", "introduced_release": 1 },
+        { "name": "cache_read_microusd_per_million", "introduced_release": 1 },
+        { "name": "input_microusd_per_million", "introduced_release": 1 },
+        { "name": "output_microusd_per_million", "introduced_release": 1 },
+        { "name": "thinking_microusd_per_million", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.rate-card",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-rate-card-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "expires_at_unix_secs", "introduced_release": 1 },
+        { "name": "issued_at_unix_secs", "introduced_release": 1 },
+        { "name": "provenance", "introduced_release": 1 },
+        { "name": "rates", "introduced_release": 1 },
+        { "name": "route", "introduced_release": 1 },
+        { "name": "version", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.signed-rate-card",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-signed-rate-card-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "rate_card", "introduced_release": 1 },
+        { "name": "rate_card_digest", "introduced_release": 1 },
+        { "name": "signature", "introduced_release": 1 },
+        { "name": "signer_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.cost-projection-identity",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-cost-projection-identity-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "attribution", "introduced_release": 1 },
+        { "name": "provider_attempt", "introduced_release": 1 },
+        { "name": "run_id", "introduced_release": 1 },
+        { "name": "tenant_id", "introduced_release": 1 },
+        { "name": "turn_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.cost-projection",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-cost-projection-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "amount_microusd", "introduced_release": 1 },
+        { "name": "identity", "introduced_release": 1 },
+        { "name": "projected_at_unix_secs", "introduced_release": 1 },
+        { "name": "projection_digest", "introduced_release": 1 },
+        { "name": "rate_card_digest", "introduced_release": 1 },
+        { "name": "route", "introduced_release": 1 },
+        { "name": "signature", "introduced_release": 1 },
+        { "name": "signer_id", "introduced_release": 1 },
+        { "name": "usage", "introduced_release": 1 },
+        { "name": "version", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    }
+  ]
+}

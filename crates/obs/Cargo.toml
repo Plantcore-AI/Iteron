@@ -9,3 +9,6 @@ publish.workspace = true
 core-protocol = { path = "../protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }

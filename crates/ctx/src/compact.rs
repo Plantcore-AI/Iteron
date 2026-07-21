@@ -70,10 +70,12 @@ pub fn estimate_request_context(
 
 #[derive(Debug, Clone, Copy)]
 pub struct CompactionPolicy {
-    /// Compact when the estimated transcript tokens exceed this.
+    /// Compact when the estimated request tokens exceed this fallback. When model-window
+    /// metadata is available the default policy derives a window-relative threshold instead.
     pub trigger_tokens: usize,
     /// Always keep the last N messages verbatim (recent context is highest-signal).
     pub keep_recent: usize,
+    window_relative: bool,
 }
 
 impl Default for CompactionPolicy {
@@ -84,6 +86,7 @@ impl Default for CompactionPolicy {
         CompactionPolicy {
             trigger_tokens: 120_000,
             keep_recent: 6,
+            window_relative: true,
         }
     }
 }
@@ -100,6 +103,32 @@ pub struct CompactionPlan {
 }
 
 impl CompactionPolicy {
+    /// Replace the adaptive default with an exact operator-authored trigger.
+    pub fn set_fixed_trigger_tokens(&mut self, trigger_tokens: usize) {
+        self.trigger_tokens = trigger_tokens;
+        self.window_relative = false;
+    }
+
+    /// Resolve the actual trigger from durable policy plus the catalog-proven model window. The
+    /// calculation is deliberately provider-free and integer-only so replaying the same facts
+    /// produces the same threshold. Twenty percent of usable input space remains as compaction
+    /// headroom; the provider output reservation is never counted as available input space.
+    pub fn effective_trigger_tokens(
+        &self,
+        model_context_window: Option<u64>,
+        reserved_output_tokens: u32,
+    ) -> usize {
+        if !self.window_relative {
+            return self.trigger_tokens;
+        }
+        let Some(window) = model_context_window.filter(|window| *window > 0) else {
+            return self.trigger_tokens;
+        };
+        let usable = window.saturating_sub(u64::from(reserved_output_tokens));
+        let derived = usable.saturating_mul(4) / 5;
+        usize::try_from(derived).unwrap_or(usize::MAX).max(1)
+    }
+
     /// Estimate the transcript's token cost.
     pub fn transcript_tokens(&self, messages: &[Message]) -> usize {
         messages.iter().map(message_content_tokens).sum()
@@ -129,6 +158,24 @@ impl CompactionPolicy {
     ) -> Option<CompactionPlan> {
         let estimate = estimate_request_context(system, messages, tools);
         if messages.len() <= self.keep_recent + 2 || estimate.total_tokens <= self.trigger_tokens {
+            return None;
+        }
+        self.plan_unconditional(messages)
+    }
+
+    /// Window-aware kernel path. A missing window uses the documented fallback; a known window
+    /// scales the default trigger while preserving an explicit fixed operator override.
+    pub fn plan_for_request_with_window(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[ToolSpec],
+        model_context_window: Option<u64>,
+        reserved_output_tokens: u32,
+    ) -> Option<CompactionPlan> {
+        let estimate = estimate_request_context(system, messages, tools);
+        let trigger = self.effective_trigger_tokens(model_context_window, reserved_output_tokens);
+        if messages.len() <= self.keep_recent + 2 || estimate.total_tokens <= trigger {
             return None;
         }
         self.plan_unconditional(messages)
@@ -223,20 +270,22 @@ mod tests {
 
     #[test]
     fn does_not_compact_a_short_transcript() {
-        let policy = CompactionPolicy {
-            trigger_tokens: 1000,
+        let mut policy = CompactionPolicy {
             keep_recent: 2,
+            ..CompactionPolicy::default()
         };
+        policy.set_fixed_trigger_tokens(1000);
         let msgs = vec![big_user(100), big_user(100)];
         assert!(policy.plan(&msgs).is_none());
     }
 
     #[test]
     fn compacts_the_middle_keeps_task_and_tail() {
-        let policy = CompactionPolicy {
-            trigger_tokens: 100,
+        let mut policy = CompactionPolicy {
             keep_recent: 2,
+            ..CompactionPolicy::default()
         };
+        policy.set_fixed_trigger_tokens(100);
         let msgs = vec![
             Message::user_text("THE TASK"),
             big_user(500),
@@ -286,10 +335,11 @@ mod tests {
 
     #[test]
     fn request_plan_can_trigger_on_stable_prefix_not_only_transcript() {
-        let policy = CompactionPolicy {
-            trigger_tokens: 100,
+        let mut policy = CompactionPolicy {
             keep_recent: 2,
+            ..CompactionPolicy::default()
         };
+        policy.set_fixed_trigger_tokens(100);
         let messages = vec![
             Message::user_text("task"),
             Message::user_text("old one"),
@@ -301,6 +351,57 @@ mod tests {
         assert!(
             policy
                 .plan_for_request(&"large prefix ".repeat(100), &messages, &[])
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn adaptive_trigger_is_a_pure_function_of_window_and_output_reservation() {
+        let policy = CompactionPolicy::default();
+        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 19_660);
+        assert_eq!(
+            policy.effective_trigger_tokens(Some(1_000_000), 8_192),
+            793_446
+        );
+        assert_eq!(policy.effective_trigger_tokens(None, 8_192), 120_000);
+        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 19_660);
+    }
+
+    #[test]
+    fn explicit_trigger_remains_fixed_across_model_windows() {
+        let mut policy = CompactionPolicy::default();
+        policy.set_fixed_trigger_tokens(42_000);
+        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 42_000);
+        assert_eq!(
+            policy.effective_trigger_tokens(Some(1_000_000), 8_192),
+            42_000
+        );
+    }
+
+    #[test]
+    fn large_window_does_not_compact_at_the_legacy_default() {
+        let policy = CompactionPolicy::default();
+        let messages = vec![big_user(53_000); policy.keep_recent + 3];
+        let estimate = estimate_request_context("system", &messages, &[]);
+        assert!(estimate.total_tokens > 120_000);
+        assert!(
+            policy
+                .plan_for_request_with_window("system", &messages, &[], Some(1_000_000), 8_192,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn small_window_compacts_before_input_admission_boundary() {
+        let policy = CompactionPolicy::default();
+        let messages = vec![big_user(9_000); policy.keep_recent + 3];
+        let estimate = estimate_request_context("system", &messages, &[]);
+        let usable = 32_768usize - 8_192;
+        assert!(estimate.total_tokens < usable);
+        assert!(estimate.total_tokens > policy.effective_trigger_tokens(Some(32_768), 8_192));
+        assert!(
+            policy
+                .plan_for_request_with_window("system", &messages, &[], Some(32_768), 8_192,)
                 .is_some()
         );
     }

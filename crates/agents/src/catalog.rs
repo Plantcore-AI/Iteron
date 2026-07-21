@@ -542,7 +542,7 @@ mod tests {
                 system: "s".into(),
                 tools: crate::ToolFilter::All,
                 model: None,
-                budget: crate::def::subagent_budget(),
+                budget: crate::def::subagent_budget_ceiling(),
                 trust: Trust::Workspace,
             });
         }

@@ -8,7 +8,11 @@
 //! is NOT in the replay-decision path: which attempt succeeds is recorded as a nondeterministic
 //! input crossing the boundary (ADR-006); the jitter duration itself is timing, not a decision.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+const GOLDEN_RATIO_64: u64 = 0x9E37_79B9_7F4A_7C15;
+static JITTER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy)]
 pub struct BackoffPolicy {
@@ -45,28 +49,26 @@ pub fn full_jitter(policy: &BackoffPolicy, attempt: u32, rand01: f64) -> Duratio
     Duration::from_millis((rand01.clamp(0.0, 1.0) * ceil) as u64)
 }
 
-/// Classify a bare API status as safe to retry for a potentially billable inference request.
-/// Only 429 (rate limit) and 529 (overload) have sufficiently explicit semantics. A 408, 409, or
-/// generic 5xx can arrive after the provider accepted work, so those statuses fail closed unless
-/// a richer provider error supplies a documented rate-limit/overload code.
-pub fn is_retryable(status: u16) -> bool {
-    matches!(status, 429 | 529)
-}
-
-/// A tiny, non-crypto RNG for jitter. Seeded from wall-clock nanos at construction — permitted
-/// here because jitter is timing, not a recorded decision (ADR-006 rule 1 governs decisions).
+/// A tiny, non-crypto RNG for jitter. Seeded from wall-clock nanos, process id, and a lock-free
+/// per-process sequence — permitted because jitter is timing, not a recorded decision (ADR-006
+/// rule 1 governs decisions).
 pub struct Jitter {
     state: u64,
 }
 
 impl Jitter {
     pub fn new() -> Self {
-        let seed = std::time::SystemTime::now()
+        let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x9E3779B97F4A7C15)
-            | 1;
-        Jitter { state: seed }
+            .unwrap_or(GOLDEN_RATIO_64);
+        // Concurrent turns can observe the same clock tick. Mix in a lock-free process-local
+        // sequence (and the process id for cross-process diversity) so their per-call jitter
+        // streams do not start in sync after removing RetryProvider's shared RNG mutex.
+        let sequence = JITTER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        Jitter {
+            state: jitter_seed(nanos, u64::from(std::process::id()), sequence),
+        }
     }
     /// xorshift64; returns a value in [0,1).
     pub fn next01(&mut self) -> f64 {
@@ -77,6 +79,17 @@ impl Jitter {
         self.state = x;
         (x >> 11) as f64 / (1u64 << 53) as f64
     }
+}
+
+fn jitter_seed(nanos: u64, process_id: u64, sequence: u64) -> u64 {
+    // SplitMix64 finalizer: cheap diffusion for seed material, not a cryptographic RNG.
+    let mut z = nanos
+        .wrapping_add(process_id.rotate_left(32))
+        .wrapping_add(sequence.wrapping_mul(GOLDEN_RATIO_64))
+        .wrapping_add(GOLDEN_RATIO_64);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (z ^ (z >> 31)) | 1
 }
 
 impl Default for Jitter {
@@ -114,18 +127,6 @@ mod tests {
     }
 
     #[test]
-    fn retryable_classification() {
-        assert!(is_retryable(429));
-        assert!(is_retryable(529));
-        assert!(!is_retryable(408));
-        assert!(!is_retryable(409));
-        assert!(!is_retryable(503));
-        assert!(!is_retryable(400));
-        assert!(!is_retryable(401));
-        assert!(!is_retryable(200));
-    }
-
-    #[test]
     fn jitter_is_in_unit_interval() {
         let mut j = Jitter {
             state: 0x1234_5678_9ABC_DEF1,
@@ -134,5 +135,17 @@ mod tests {
             let v = j.next01();
             assert!((0.0..1.0).contains(&v));
         }
+    }
+
+    #[test]
+    fn same_clock_tick_gets_distinct_per_call_jitter_seeds() {
+        let states: std::collections::BTreeSet<_> = (0..1_000)
+            .map(|sequence| jitter_seed(123_456_789, 42, sequence))
+            .collect();
+        assert_eq!(
+            states.len(),
+            1_000,
+            "a lock-free sequence diversifies turns created in the same clock tick"
+        );
     }
 }

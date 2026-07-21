@@ -1,0 +1,24 @@
+{
+  "rate_card": {
+    "version": "v1",
+    "route": {
+      "provider_id": "provider-a",
+      "model_id": "model-a",
+      "catalog_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "capability_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "provenance": "catalog-commit-1",
+    "issued_at_unix_secs": 1784591900,
+    "expires_at_unix_secs": 1784592900,
+    "rates": {
+      "input_microusd_per_million": 100,
+      "output_microusd_per_million": 200,
+      "cache_creation_microusd_per_million": 125,
+      "cache_read_microusd_per_million": 10,
+      "thinking_microusd_per_million": 250
+    }
+  },
+  "signer_id": "pricing-strategy",
+  "rate_card_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "signature": "fixture-rate-card-signature"
+}

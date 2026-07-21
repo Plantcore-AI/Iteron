@@ -39,18 +39,25 @@ rust-version = "1.90"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "sync", "time", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "parsing", "visit"] }
+toml = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures-util = "0.3"
 sha2 = "0.10"
 hmac = "0.12"
+zeroize = "1"
 hex = "0.4"
 thiserror = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 walkdir = "2"
+ignore = "0.4"
+regex = "1"
 # Terminal UI: the de-facto standard Rust stack (same as Codex), admitted at the standard-UI layer.
 ratatui = "0.29"
 crossterm = "0.28"
+getrandom = "0.4"
 
 [profile.release]
 lto = "thin"

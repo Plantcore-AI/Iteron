@@ -8,7 +8,7 @@ Both `json` and `stream-json` end with an authoritative result object:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "type": "result",
   "outcome": "done",
   "reason": null,
@@ -26,6 +26,10 @@ Both `json` and `stream-json` end with an authoritative result object:
 
 The example shows shape, not guaranteed values. `cost_usd` can be null or unknown
 when no authoritative price evidence exists.
+
+Schema v4 adds the terminal `outcome` value `drained`: it means the runtime stopped
+cleanly after quiescing admitted work and durably checkpointing the workspace. It
+has `success: true` and exit code `0`, but remains distinct from ordinary `done`.
 
 ## Stream event vocabulary
 

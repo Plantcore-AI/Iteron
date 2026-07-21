@@ -26,14 +26,14 @@ core -p --output-format stream-json "Explain the repository"
 | `stream-json` | One JSON object per UI event, followed by the same final result object |
 
 Diagnostics remain on stderr for machine formats. The current machine schema
-version is `3`; consumers must inspect `schema_version` rather than Rust enum or
+version is `4`; consumers must inspect `schema_version` rather than Rust enum or
 debug text.
 
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
-| `0` | completed with `done` |
+| `0` | completed with `done`, or cleanly `drained` after a durable checkpoint |
 | `2` | harness error |
 | `3` | budget exhausted |
 | `4` | stuck |
@@ -64,6 +64,10 @@ core -p \
   "Run the requested investigation"
 ```
 
-`max_usd` is enforceable only to the extent that the active provider route emits
-trustworthy monetary evidence. Unknown accounting is not converted into a false
-exact amount.
+`max_usd: 0` blocks provider calls immediately. A positive ceiling requires an
+active operator-signed rate card for the exact selected route; otherwise Core
+fails closed before a provider request. A priced run stops with
+`BudgetExhausted("max_usd")` as soon as its durable signed projections cross the
+ceiling. Unknown accounting is never converted into a false exact amount.
+The ceiling is durable across resume and fork; leaving `max_usd` out of a later
+invocation does not remove an earlier recorded ceiling.

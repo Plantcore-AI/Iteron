@@ -1,0 +1,11 @@
+{
+  "tenant_id": "default",
+  "run_id": "event-schema",
+  "turn_id": 1,
+  "provider_attempt": 1,
+  "attribution": {
+    "kind": "direct_subagent",
+    "parent_run_id": "event-schema",
+    "sub_run": "child-1"
+  }
+}

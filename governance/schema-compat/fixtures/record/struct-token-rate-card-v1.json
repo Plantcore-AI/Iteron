@@ -1,0 +1,7 @@
+{
+  "input_microusd_per_million": 100,
+  "output_microusd_per_million": 200,
+  "cache_creation_microusd_per_million": 125,
+  "cache_read_microusd_per_million": 10,
+  "thinking_microusd_per_million": 250
+}

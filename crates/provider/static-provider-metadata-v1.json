@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "bundle_revision": "core-provider-static-metadata@2026-07-20+sha256:41bd2f3ce6a52cdbcd2e4452bbcb137191dfd387ca3bd5668b4280b094553542",
+  "glm_standard_chat": {
+    "version": "glm-chat-completions-schema@2026-07-14+sha256:11d83bc656448de43b2bbf7d1fd78863f75d3f6f75e405a767bfab8d3b14170b",
+    "source": "https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E5%AF%B9%E8%AF%9D%E8%A1%A5%E5%85%A8",
+    "captured_at_unix_secs": 1783987200,
+    "api_root": "https://open.bigmodel.cn/api/paas/v4",
+    "default_model": "glm-5.2",
+    "models": [
+      "glm-5.2",
+      "glm-5.1",
+      "glm-5-turbo",
+      "glm-5",
+      "glm-4.7",
+      "glm-4.7-flash",
+      "glm-4.7-flashx",
+      "glm-4.6",
+      "glm-4.5-air",
+      "glm-4.5-airx",
+      "glm-4.5-flash",
+      "glm-4-flash-250414",
+      "glm-4-flashx-250414"
+    ],
+    "capabilities": {
+      "glm-5.2": {
+        "version": "glm-5.2-model-page@2026-07-15+sha256:eaccca3a8bb43cf8030daafab1926c3e561067d7a56c7cb58042f1ba8a430334",
+        "source": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2",
+        "captured_at_unix_secs": 1784073600,
+        "context_window_tokens": 1000000,
+        "max_output_tokens": 128000,
+        "tool_calling": true,
+        "semantic_effort": true
+      }
+    }
+  },
+  "anthropic_messages": {
+    "effort": {
+      "version": "anthropic-effort-beta@2025-11-24+sha256:5e6597a69f9ed3cf5d646deaa4690d9e09b95285f119a3ea73a1ddb788607fb1",
+      "source": "https://docs.claude.com/en/api/beta-headers",
+      "captured_at_unix_secs": 1763942400,
+      "api_root": "https://api.anthropic.com/v1",
+      "beta_header": "effort-2025-11-24",
+      "models": [
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-sonnet-4-6"
+      ]
+    }
+  }
+}

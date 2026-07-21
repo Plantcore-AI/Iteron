@@ -23,21 +23,95 @@ impl OracleStrength {
     }
 }
 
+/// The execution-level result of verification.
+///
+/// This is deliberately not a boolean: a candidate that failed its tests is actionable model
+/// feedback, while an oracle that timed out, could not start, or was cancelled is harness state.
+/// Conflating those cases makes the completion gate spend retries on infrastructure faults and
+/// eventually misreport them as candidate failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationOutcome {
+    /// The verification command completed successfully.
+    Pass,
+    /// The command ran to completion and reported that the candidate is incorrect.
+    TestFailure,
+    /// The command exceeded its bounded verification deadline.
+    TimedOut,
+    /// The sandbox or command runner could not execute the verification command.
+    InfrastructureFailure,
+    /// The caller cancelled verification before it produced a verdict.
+    Cancelled,
+}
+
+impl VerificationOutcome {
+    pub const fn is_pass(self) -> bool {
+        matches!(self, Self::Pass)
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pass => "passed",
+            Self::TestFailure => "test failure",
+            Self::TimedOut => "timed out",
+            Self::InfrastructureFailure => "infrastructure failure",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
 /// An oracle's verdict on a candidate (or on the current working tree).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verdict {
     pub strength: OracleStrength,
-    pub passed: bool,
+    pub outcome: VerificationOutcome,
     /// Human-legible detail (e.g. the failing test output), truncated for context hygiene.
     pub detail: String,
+}
+
+impl Verdict {
+    pub fn new(
+        strength: OracleStrength,
+        outcome: VerificationOutcome,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            strength,
+            outcome,
+            detail: detail.into(),
+        }
+    }
+
+    pub const fn passed(&self) -> bool {
+        self.outcome.is_pass()
+    }
+
+    /// A caller-side cancellation is still a typed oracle verdict even though the sandbox-backed
+    /// oracle itself does not own the caller's cancellation source.
+    pub fn cancelled(detail: impl Into<String>) -> Self {
+        Self::new(
+            OracleStrength::Strong,
+            VerificationOutcome::Cancelled,
+            detail,
+        )
+    }
+
+    /// A caller-side absolute deadline can expire more precisely than the sandbox's whole-second
+    /// process timeout. Preserve that distinction in the same typed result.
+    pub fn timed_out(detail: impl Into<String>) -> Self {
+        Self::new(
+            OracleStrength::Strong,
+            VerificationOutcome::TimedOut,
+            detail,
+        )
+    }
 }
 
 /// Something that can judge the current state of the workspace.
 #[async_trait::async_trait]
 pub trait Oracle: Send + Sync {
     fn strength(&self) -> OracleStrength;
-    /// Evaluate the current workspace. Returns a verdict; an execution failure is itself a
-    /// non-pass (a test command that cannot run is not a pass).
+    /// Evaluate the current workspace. Execution failures and cancellation remain fail-closed,
+    /// but are represented separately from a candidate's test failure.
     async fn evaluate(&self) -> Verdict;
 }
 
@@ -91,26 +165,44 @@ impl Oracle for TestOracle {
         conf.sensitive_env_names = self.sensitive_env_names.clone();
         match self.sandbox.run(&self.command, &conf).await {
             Ok(out) => {
-                let passed = !out.timed_out && out.exit_code == 0;
+                let outcome = if out.timed_out {
+                    VerificationOutcome::TimedOut
+                } else if out.exit_code == 0 {
+                    VerificationOutcome::Pass
+                } else if matches!(out.exit_code, 126 | 127) {
+                    // POSIX shells reserve 126/127 for "found but cannot execute" and "command
+                    // not found". The configured oracle did not actually run in either case;
+                    // spending candidate-fix retries on that condition would be dishonest.
+                    VerificationOutcome::InfrastructureFailure
+                } else {
+                    VerificationOutcome::TestFailure
+                };
                 let mut detail = String::new();
                 if out.timed_out {
                     detail.push_str("[timed out]\n");
+                } else if matches!(out.exit_code, 126 | 127) {
+                    detail.push_str(&format!(
+                        "[verification command could not execute: exit {}]\n",
+                        out.exit_code
+                    ));
+                }
+                if out.stdout_truncated || out.stderr_truncated {
+                    detail.push_str(&format!(
+                        "[output truncated: stdout={}, stderr={}]\n",
+                        out.stdout_truncated, out.stderr_truncated
+                    ));
                 }
                 // Keep the tail (test failures print last), UTF-8-safe (code review CRITICAL:
                 // a raw byte slice panics on a multibyte char at the cut).
                 let combined = format!("{}\n{}", out.stdout, out.stderr);
                 detail.push_str(&core_protocol::text::tail(&combined, 4000));
-                Verdict {
-                    strength: OracleStrength::Strong,
-                    passed,
-                    detail,
-                }
+                Verdict::new(OracleStrength::Strong, outcome, detail)
             }
-            Err(e) => Verdict {
-                strength: OracleStrength::Strong,
-                passed: false, // a test command that cannot run is not a pass
-                detail: format!("oracle could not run tests: {e}"),
-            },
+            Err(e) => Verdict::new(
+                OracleStrength::Strong,
+                VerificationOutcome::InfrastructureFailure,
+                format!("oracle could not run tests: {e}"),
+            ),
         }
     }
 }
@@ -172,11 +264,140 @@ mod tests {
             "ANOTHER_CREDENTIAL".into(),
         ]);
 
-        assert!(oracle.evaluate().await.passed);
+        assert!(oracle.evaluate().await.passed());
         assert_eq!(
             *observed.lock().unwrap(),
             vec!["ANOTHER_CREDENTIAL", "GATEWAY_KEY"]
         );
+    }
+
+    struct FixedOutputSandbox(core_sandbox::RunOutput);
+
+    #[async_trait::async_trait]
+    impl Sandbox for FixedOutputSandbox {
+        async fn run(
+            &self,
+            _command: &str,
+            _conf: &Confinement,
+        ) -> Result<core_sandbox::RunOutput, core_sandbox::SandboxError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_oracle_preserves_truncation_evidence_across_utf8_safe_tail() {
+        let oracle = TestOracle::new(
+            Box::new(FixedOutputSandbox(core_sandbox::RunOutput {
+                exit_code: 1,
+                stdout: "写".repeat(2_000),
+                stderr: "尾".repeat(2_000),
+                stdout_truncated: true,
+                stderr_truncated: true,
+                timed_out: false,
+            })),
+            std::env::temp_dir(),
+            "test".into(),
+        );
+
+        let verdict = oracle.evaluate().await;
+        assert_eq!(verdict.outcome, VerificationOutcome::TestFailure);
+        assert!(
+            verdict
+                .detail
+                .contains("[output truncated: stdout=true, stderr=true]")
+        );
+        assert!(verdict.detail.contains("… (truncated)"));
+        assert!(verdict.detail.contains('尾'));
+    }
+
+    #[tokio::test]
+    async fn test_oracle_timeout_is_typed_and_bounded_evidence() {
+        let oracle = TestOracle::new(
+            Box::new(FixedOutputSandbox(core_sandbox::RunOutput {
+                exit_code: -1,
+                stdout: "partial verification output".into(),
+                stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                timed_out: true,
+            })),
+            std::env::temp_dir(),
+            "test".into(),
+        );
+
+        let verdict = oracle.evaluate().await;
+        assert_eq!(verdict.outcome, VerificationOutcome::TimedOut);
+        assert!(!verdict.passed());
+        assert!(verdict.detail.starts_with("[timed out]"));
+        assert!(verdict.detail.contains("partial verification output"));
+    }
+
+    struct ErrorSandbox(core_sandbox::SandboxError);
+
+    #[async_trait::async_trait]
+    impl Sandbox for ErrorSandbox {
+        async fn run(
+            &self,
+            _command: &str,
+            _conf: &Confinement,
+        ) -> Result<core_sandbox::RunOutput, core_sandbox::SandboxError> {
+            Err(match &self.0 {
+                core_sandbox::SandboxError::Unsupported => core_sandbox::SandboxError::Unsupported,
+                core_sandbox::SandboxError::Spawn(detail) => {
+                    core_sandbox::SandboxError::Spawn(detail.clone())
+                }
+                core_sandbox::SandboxError::Profile(detail) => {
+                    core_sandbox::SandboxError::Profile(detail.clone())
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn sandbox_refusal_is_infrastructure_failure_not_test_failure() {
+        let oracle = TestOracle::new(
+            Box::new(ErrorSandbox(core_sandbox::SandboxError::Unsupported)),
+            std::env::temp_dir(),
+            "test".into(),
+        );
+
+        let verdict = oracle.evaluate().await;
+        assert_eq!(verdict.outcome, VerificationOutcome::InfrastructureFailure);
+        assert!(verdict.detail.contains("could not run tests"));
+    }
+
+    #[tokio::test]
+    async fn missing_verification_command_is_infrastructure_failure() {
+        let oracle = TestOracle::new(
+            Box::new(FixedOutputSandbox(core_sandbox::RunOutput {
+                exit_code: 127,
+                stdout: String::new(),
+                stderr: "missing-check: command not found".into(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                timed_out: false,
+            })),
+            std::env::temp_dir(),
+            "missing-check".into(),
+        );
+
+        let verdict = oracle.evaluate().await;
+        assert_eq!(verdict.outcome, VerificationOutcome::InfrastructureFailure);
+        assert!(verdict.detail.contains("exit 127"));
+    }
+
+    #[test]
+    fn typed_outcomes_cannot_claim_pass_for_non_pass_states() {
+        for outcome in [
+            VerificationOutcome::TestFailure,
+            VerificationOutcome::TimedOut,
+            VerificationOutcome::InfrastructureFailure,
+            VerificationOutcome::Cancelled,
+        ] {
+            let verdict = Verdict::new(OracleStrength::Strong, outcome, outcome.label());
+            assert!(!verdict.passed(), "{} must fail closed", outcome.label());
+        }
+        assert!(Verdict::new(OracleStrength::Strong, VerificationOutcome::Pass, "ok").passed());
     }
 
     #[cfg(target_os = "macos")]
@@ -185,8 +406,12 @@ mod tests {
         use core_sandbox::platform_sandbox;
         let dir = std::env::temp_dir();
         let o = TestOracle::new(platform_sandbox(), dir, "exit 0".into());
-        assert!(o.evaluate().await.passed);
+        assert!(o.evaluate().await.passed());
         let o2 = TestOracle::new(platform_sandbox(), std::env::temp_dir(), "exit 1".into());
-        assert!(!o2.evaluate().await.passed, "a nonzero exit is not a pass");
+        assert_eq!(
+            o2.evaluate().await.outcome,
+            VerificationOutcome::TestFailure,
+            "a nonzero exit is a candidate test failure"
+        );
     }
 }

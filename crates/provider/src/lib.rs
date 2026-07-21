@@ -12,7 +12,7 @@
 //! dossier) are present as an interface + a conservative default, with the richer policy
 //! marked TODO against their ADRs.
 
-use core_protocol::{Block, Message, StopReason, ToolSpec, ToolUse, Usage};
+use core_protocol::{Block, Message, StopReason, ToolSpec, ToolUse};
 use std::time::{Duration, SystemTime};
 
 pub mod anthropic;
@@ -20,6 +20,8 @@ pub mod catalog;
 pub mod openai;
 pub mod responses;
 pub mod sse;
+mod static_metadata;
+mod usage;
 
 pub use anthropic::Anthropic;
 pub use catalog::{
@@ -31,6 +33,8 @@ pub use catalog::{
 pub use openai::OpenAiCompat;
 pub use responses::OpenAiResponses;
 pub use sse::{StreamItem, parse_sse_stream};
+pub use static_metadata::{StaticModelCapabilities, StaticProviderMetadata};
+pub use usage::{UsageIncompleteReason, UsageReport};
 
 /// Maximum bytes retained from any non-success provider response. The response is dropped as
 /// soon as the cap is crossed; provider-controlled error pages can therefore never create an
@@ -44,6 +48,15 @@ const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(5);
 pub enum RetryDisposition {
     Never,
     Transient,
+}
+
+/// Whether one [`Provider::turn`] call can cross more than one transport dispatch boundary.
+/// The kernel can journal exactly one attempt only for `Single`; opaque internal retries must be
+/// disabled or exposed through a future per-attempt WAL callback before paid inference is safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderAttemptSemantics {
+    Single,
+    OpaqueInternalRetries,
 }
 
 /// The narrowest resource a normalized provider failure is known to affect.
@@ -186,6 +199,17 @@ pub enum ProviderError {
     Stream(StreamError),
     #[error("stream decode: {0}")]
     Decode(String),
+    /// A completed, billable provider turn explicitly refused the request. This is a typed
+    /// terminal condition, not a malformed response and never a successful completion.
+    #[error("provider refused the turn")]
+    Refusal,
+    /// The adapter preserved a valid future stop code, but this runtime has no safe action for it.
+    /// Display/Debug do not expose the provider-controlled raw code; callers may inspect the
+    /// bounded carrier explicitly.
+    #[error("provider returned an unrecognized stop reason")]
+    UnknownStopReason {
+        code: Box<core_protocol::StopReasonCode>,
+    },
     #[error("logical run wall-clock deadline exhausted")]
     DeadlineExceeded,
     #[error("no api key: set ANTHROPIC_API_KEY in the Core process environment")]
@@ -244,6 +268,8 @@ impl ProviderError {
             ProviderError::Api { status, .. } => retry_for_status(*status),
             ProviderError::Http(_) => RetryDisposition::Never,
             ProviderError::Decode(_)
+            | ProviderError::Refusal
+            | ProviderError::UnknownStopReason { .. }
             | ProviderError::DeadlineExceeded
             | ProviderError::NoKey
             | ProviderError::MissingCredential { .. }
@@ -277,6 +303,10 @@ impl ProviderError {
             ProviderError::Http(_) => "provider transport failed".into(),
             ProviderError::Decode(_) | ProviderError::Json(_) => {
                 "provider response was invalid".into()
+            }
+            ProviderError::Refusal => "provider refused the request".into(),
+            ProviderError::UnknownStopReason { .. } => {
+                "provider returned an unsupported stop reason".into()
             }
             ProviderError::DeadlineExceeded => "run wall-clock deadline exhausted".into(),
             ProviderError::NoKey | ProviderError::MissingCredential { .. } => {
@@ -846,6 +876,43 @@ pub struct TurnRequest {
     pub reasoning_effort: core_protocol::ReasoningEffort,
 }
 
+/// Bounded, secret-free strategy notice emitted before a provider request. Notices are
+/// observational: they never veto dispatch or change the wire request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderNotice {
+    pub code: &'static str,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+struct StaticMetadataNoticeRoute {
+    metadata: std::sync::Arc<StaticProviderMetadata>,
+    adapter: AdapterKind,
+    profile: ErrorProfile,
+    api_root: String,
+    model: String,
+}
+
+impl StaticMetadataNoticeRoute {
+    fn notice_at(&self, now_unix_secs: u64) -> Option<String> {
+        self.metadata.run_notice(
+            self.adapter,
+            self.profile,
+            &self.api_root,
+            &self.model,
+            now_unix_secs,
+        )
+    }
+
+    fn notice(&self) -> Option<String> {
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs();
+        self.notice_at(now)
+    }
+}
+
 /// How a provider adapter serialized the requested semantic effort for this route/model.
 /// `Exact` means the semantic value was sent without adapter-side downgrade; it does **not** prove
 /// that the selected model accepts that value. Capability proof belongs to a provenance-bearing
@@ -879,7 +946,7 @@ pub enum EffortApplication {
 pub struct TurnResult {
     pub blocks: Vec<Block>,
     pub stop_reason: StopReason,
-    pub usage: Usage,
+    pub usage: UsageReport,
 }
 
 impl TurnResult {
@@ -908,6 +975,17 @@ impl TurnResult {
 /// and the live Anthropic provider are interchangeable (ADR-006).
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
+    /// Stable configured provider-instance identity for route/accounting binding. Production
+    /// wrappers report the exact catalog instance they dispatch through; unidentified providers
+    /// cannot support a verified priced route.
+    fn provider_instance_id(&self) -> Option<&str> {
+        None
+    }
+
+    fn attempt_semantics(&self) -> ProviderAttemptSemantics {
+        ProviderAttemptSemantics::Single
+    }
+
     /// Report the adapter's actual control surface before the request is sent. Implementations
     /// must be conservative for unknown gateways/models; wire compatibility alone is not proof of
     /// effort support.
@@ -915,6 +993,26 @@ pub trait Provider: Send + Sync {
         EffortApplication::Unsupported {
             requested: req.reasoning_effort,
         }
+    }
+
+    /// Propose bounded strategy/world evidence that the kernel must record once per logical run
+    /// before admitting a provider effect. This method must be pure and repeatable: the durable
+    /// append is the commit boundary, so a failed append or a resumed run may ask again.
+    fn run_notice(&self, _req: &TurnRequest) -> Option<ProviderNotice> {
+        None
+    }
+
+    /// Surface cache-hygiene concerns uniformly for every adapter without turning a heuristic
+    /// into an availability gate. Unlike [`Self::run_notice`], this is evaluated and may be
+    /// emitted before every request. The stable-prefix scan is relevant only when caching is on.
+    fn preflight_notice(&self, req: &TurnRequest) -> Option<ProviderNotice> {
+        if !req.cache_system {
+            return None;
+        }
+        cache_bomb_in_prefix(&req.system).map(|reason| ProviderNotice {
+            code: "cache_hygiene",
+            message: reason.into(),
+        })
     }
 
     /// Run one turn. The callback receives `StreamItem`s as they arrive, so the scheduler can
@@ -935,6 +1033,7 @@ pub struct HealthReportingProvider {
     provider_instance_id: String,
     health: ProviderHealthStore,
     account_failures_are_model_scoped: bool,
+    static_metadata_notice: Option<StaticMetadataNoticeRoute>,
 }
 
 impl HealthReportingProvider {
@@ -948,6 +1047,7 @@ impl HealthReportingProvider {
             provider_instance_id: provider_instance_id.into(),
             health,
             account_failures_are_model_scoped: false,
+            static_metadata_notice: None,
         }
     }
 
@@ -958,6 +1058,27 @@ impl HealthReportingProvider {
         self
     }
 
+    /// Attach the proven route used to compute a secret-free snapshot-freshness proposal at the
+    /// actual preflight boundary. The kernel owns once-per-run durable commit and replay state;
+    /// this wrapper deliberately remains repeatable after a failed append.
+    pub fn with_static_metadata_notice(
+        mut self,
+        metadata: std::sync::Arc<StaticProviderMetadata>,
+        adapter: AdapterKind,
+        profile: ErrorProfile,
+        api_root: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        self.static_metadata_notice = Some(StaticMetadataNoticeRoute {
+            metadata,
+            adapter,
+            profile,
+            api_root: api_root.into(),
+            model: model.into(),
+        });
+        self
+    }
+
     pub fn health_store(&self) -> &ProviderHealthStore {
         &self.health
     }
@@ -965,8 +1086,39 @@ impl HealthReportingProvider {
 
 #[async_trait::async_trait]
 impl Provider for HealthReportingProvider {
+    fn provider_instance_id(&self) -> Option<&str> {
+        Some(&self.provider_instance_id)
+    }
+
+    fn attempt_semantics(&self) -> ProviderAttemptSemantics {
+        self.inner.attempt_semantics()
+    }
+
     fn effort_application(&self, request: &TurnRequest) -> EffortApplication {
         self.inner.effort_application(request)
+    }
+
+    fn run_notice(&self, request: &TurnRequest) -> Option<ProviderNotice> {
+        let inner = self.inner.run_notice(request);
+        let metadata = self
+            .static_metadata_notice
+            .as_ref()
+            .and_then(StaticMetadataNoticeRoute::notice);
+        match (metadata, inner) {
+            (Some(metadata), Some(inner)) => Some(ProviderNotice {
+                code: "static_metadata",
+                message: format!("{metadata}; {}: {}", inner.code, inner.message),
+            }),
+            (Some(metadata), None) => Some(ProviderNotice {
+                code: "static_metadata",
+                message: metadata,
+            }),
+            (None, inner) => inner,
+        }
+    }
+
+    fn preflight_notice(&self, request: &TurnRequest) -> Option<ProviderNotice> {
+        self.inner.preflight_notice(request)
     }
 
     async fn turn(
@@ -1018,14 +1170,14 @@ pub(crate) fn model_matches_family(model_id: &str, family: &str) -> bool {
         })
 }
 
-/// Reject a cache-busting prefix before it is sent (ADR-002 amendment / ADR-007 R15). The
+/// Detect a potentially cache-busting prefix (ADR-002 amendment / ADR-007 R15). The
 /// content linter cannot see runtime timing, but it CAN catch the common static busters: a
 /// clock, a UUID, a per-request nonce embedded in what should be a stable prefix.
 ///
-/// Returns why the `system` prompt (the stable prefix) is a cache bomb, if it is.
+/// Returns a bounded, content-free reason for an observable warning. This heuristic must never
+/// refuse a request: ordinary instructions may legitimately describe dates, clocks, or nonces.
 pub fn cache_bomb_in_prefix(system: &str) -> Option<&'static str> {
-    // Deliberately conservative and explicit; a false positive is cheap to fix, a silent
-    // cache miss is not. The one sanctioned nonce (per-tenant cache_salt, ADR-009) is folded
+    // Deliberately explicit. The one sanctioned nonce (per-tenant cache_salt, ADR-009) is folded
     // at block 0 by the provider, not embedded in the system text, so it is not seen here.
     const MARKERS: &[(&str, &str)] = &[
         ("current time", "a clock in the prefix"),
@@ -1046,6 +1198,9 @@ pub fn cache_bomb_in_prefix(system: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod guard_tests {
     use super::*;
+    use core_protocol::Usage;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1060,6 +1215,55 @@ mod guard_tests {
             thinking_budget: 0,
             reasoning_effort: core_protocol::ReasoningEffort::Low,
         }
+    }
+
+    fn spawn_one_shot_sse(body: String) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut header_end = None;
+            let mut expected_len = None;
+            loop {
+                let mut chunk = [0_u8; 4096];
+                let read = stream.read(&mut chunk).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if header_end.is_none()
+                    && let Some(index) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                {
+                    let end = index + 4;
+                    let headers = String::from_utf8_lossy(&request[..end]);
+                    expected_len = headers.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    });
+                    header_end = Some(end);
+                }
+                if let (Some(end), Some(length)) = (header_end, expected_len)
+                    && request.len() >= end.saturating_add(length)
+                {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        (origin, server)
     }
 
     fn typed_error(profile: ErrorProfile, code: &str, status: u16) -> ProviderError {
@@ -1112,7 +1316,7 @@ mod guard_tests {
             Ok(TurnResult {
                 blocks: Vec::new(),
                 stop_reason: StopReason::EndTurn,
-                usage: Usage::default(),
+                usage: UsageReport::complete(Usage::default()),
             })
         }
     }
@@ -1137,7 +1341,7 @@ mod guard_tests {
             Ok(TurnResult {
                 blocks: Vec::new(),
                 stop_reason: StopReason::EndTurn,
-                usage: Usage::default(),
+                usage: UsageReport::complete(Usage::default()),
             })
         }
     }
@@ -1148,6 +1352,184 @@ mod guard_tests {
     #[test]
     fn linter_passes_a_clean_prefix() {
         assert!(cache_bomb_in_prefix("You are a careful coding agent. Edit minimally.").is_none());
+    }
+
+    #[test]
+    fn static_metadata_notice_age_is_evaluated_at_preflight_time() {
+        const DAY_SECS: u64 = 24 * 60 * 60;
+        const CAPTURED_AT: u64 = 1_783_987_200;
+        let route = StaticMetadataNoticeRoute {
+            metadata: StaticProviderMetadata::embedded(),
+            adapter: AdapterKind::OpenAiCompatibleChat,
+            profile: ErrorProfile::Glm,
+            api_root: "https://open.bigmodel.cn/api/paas/v4".into(),
+            model: "glm-5.1".into(),
+        };
+
+        assert!(
+            route
+                .notice_at(CAPTURED_AT + 30 * DAY_SECS)
+                .unwrap()
+                .contains("catalog is 30 days old (fresh)")
+        );
+        assert!(
+            route
+                .notice_at(CAPTURED_AT + 31 * DAY_SECS)
+                .unwrap()
+                .contains("catalog is 31 days old (stale)")
+        );
+    }
+
+    #[test]
+    fn all_live_adapters_surface_the_same_date_notice_without_refusing_preflight() {
+        let mut request = request("model");
+        request.cache_system = true;
+        request.system = "You are a coding agent. Today's date is supplied by the harness.".into();
+        let root = ApiRoot::parse("https://example.invalid/v1").unwrap();
+        let providers: Vec<Box<dyn Provider>> = vec![
+            Box::new(
+                crate::anthropic::Anthropic::with_root("test-key".into(), root.clone()).unwrap(),
+            ),
+            Box::new(
+                crate::openai::OpenAiCompat::with_root("test-key".into(), root.clone()).unwrap(),
+            ),
+            Box::new(
+                crate::responses::OpenAiResponses::with_root("test-key".into(), root).unwrap(),
+            ),
+        ];
+        let expected = Some(ProviderNotice {
+            code: "cache_hygiene",
+            message: "a date in the prefix".into(),
+        });
+        for provider in providers {
+            assert_eq!(provider.preflight_notice(&request), expected);
+        }
+
+        request.cache_system = false;
+        assert!(
+            crate::anthropic::Anthropic::new("test-key".into(), None)
+                .unwrap()
+                .preflight_notice(&request)
+                .is_none(),
+            "a prefix that will not be cached needs no cache warning"
+        );
+    }
+
+    #[tokio::test]
+    async fn date_bearing_cached_prefix_completes_on_all_three_live_transports() {
+        let mut request = request("model");
+        request.cache_system = true;
+        request.system = "Today's date is 2026-07-20; use it when naming the report.".into();
+
+        let anthropic_sse = concat!(
+            "event: message_start\n",
+            "data: {\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n",
+            "event: message_delta\n",
+            "data: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+            "event: message_stop\n",
+            "data: {}\n\n"
+        )
+        .to_string();
+        let chat_sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n",
+            "data: [DONE]\n\n"
+        )
+        .to_string();
+        let responses_sse = concat!(
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":2}}}\n\n"
+        )
+        .to_string();
+
+        let (anthropic_root, anthropic_server) = spawn_one_shot_sse(anthropic_sse);
+        let (chat_root, chat_server) = spawn_one_shot_sse(chat_sse);
+        let (responses_root, responses_server) = spawn_one_shot_sse(responses_sse);
+        let providers: Vec<Box<dyn Provider>> = vec![
+            Box::new(
+                crate::anthropic::Anthropic::new("test-key".into(), Some(anthropic_root)).unwrap(),
+            ),
+            Box::new(
+                crate::openai::OpenAiCompat::try_new("test-key".into(), Some(chat_root)).unwrap(),
+            ),
+            Box::new(
+                crate::responses::OpenAiResponses::new("test-key".into(), Some(responses_root))
+                    .unwrap(),
+            ),
+        ];
+
+        for provider in providers {
+            assert_eq!(
+                provider
+                    .preflight_notice(&request)
+                    .map(|notice| notice.code),
+                Some("cache_hygiene")
+            );
+            assert!(provider.turn(&request, &mut |_| {}).await.is_ok());
+        }
+        for server in [anthropic_server, chat_server, responses_server] {
+            let wire = server.join().unwrap();
+            assert!(wire.contains("Today's date is 2026-07-20"));
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_stream_without_usage_completes_with_typed_incomplete_evidence() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        )
+        .to_string();
+        let (root, server) = spawn_one_shot_sse(body);
+        let provider = crate::openai::OpenAiCompat::try_new("test-key".into(), Some(root)).unwrap();
+        let mut terminal_usage = None;
+
+        let result = provider
+            .turn(&request("model"), &mut |item| {
+                if let StreamItem::TurnComplete { usage, .. } = item {
+                    terminal_usage = Some(usage);
+                }
+            })
+            .await
+            .expect("valid content remains a successful turn when the provider omits usage");
+
+        assert_eq!(result.text(), "ok");
+        assert_eq!(result.usage, UsageReport::provider_omitted());
+        assert_eq!(terminal_usage, Some(UsageReport::provider_omitted()));
+        let _wire = server.join().unwrap();
+    }
+
+    #[test]
+    fn adapter_sources_have_no_ambient_environment_reads() {
+        for (name, source) in [
+            ("anthropic", include_str!("anthropic.rs")),
+            ("openai_chat", include_str!("openai.rs")),
+            ("openai_responses", include_str!("responses.rs")),
+        ] {
+            assert!(
+                !source.contains("std::env::") && !source.contains("std::env "),
+                "{name} adapter must receive credentials and API roots from the CLI composition root"
+            );
+        }
+    }
+
+    #[test]
+    fn all_adapters_drive_from_injected_config_with_process_environment_cleared() {
+        let executable = std::env::current_exe().unwrap();
+        let output = std::process::Command::new(executable)
+            .env_clear()
+            .args([
+                "--exact",
+                "guard_tests::date_bearing_cached_prefix_completes_on_all_three_live_transports",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "injected adapter subprocess failed with an empty environment:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@ pub enum DiffTag {
 
 /// One diff line: its tag and its text (without the leading +/-/space marker).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiffLine {
     pub tag: DiffTag,
     pub text: String,
@@ -20,6 +21,7 @@ pub struct DiffLine {
 
 /// One hunk: its `@@ … @@` header and its lines.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Hunk {
     pub header: String,
     pub lines: Vec<DiffLine>,
@@ -77,10 +79,71 @@ mod tests {
             .sum();
         assert!(total < 700, "huge diff must be bounded, got {total}");
     }
+
+    #[test]
+    fn d13_14_structured_diff_wire_is_strict_and_covers_every_tag() {
+        let diff = FileDiff {
+            path: "src/lib.rs".into(),
+            adds: 1,
+            dels: 1,
+            hunks: vec![Hunk {
+                header: "@@ -1,2 +1,2 @@".into(),
+                lines: vec![
+                    DiffLine {
+                        tag: DiffTag::Del,
+                        text: "old".into(),
+                    },
+                    DiffLine {
+                        tag: DiffTag::Add,
+                        text: "new".into(),
+                    },
+                    DiffLine {
+                        tag: DiffTag::Ctx,
+                        text: "context".into(),
+                    },
+                ],
+            }],
+        };
+        let frozen = serde_json::json!({
+            "path": "src/lib.rs",
+            "adds": 1,
+            "dels": 1,
+            "hunks": [{
+                "header": "@@ -1,2 +1,2 @@",
+                "lines": [
+                    {"tag": "Del", "text": "old"},
+                    {"tag": "Add", "text": "new"},
+                    {"tag": "Ctx", "text": "context"},
+                ],
+            }],
+        });
+        assert_eq!(serde_json::to_value(&diff).unwrap(), frozen);
+        assert_eq!(serde_json::from_value::<FileDiff>(frozen).unwrap(), diff);
+
+        for malformed in [
+            serde_json::json!({
+                "path": "src/lib.rs", "adds": 1, "dels": 1, "hunks": [], "extra": 1
+            }),
+            serde_json::json!({
+                "path": "src/lib.rs", "adds": 1, "dels": 1,
+                "hunks": [{"header": "@@", "lines": [], "extra": 1}]
+            }),
+            serde_json::json!({
+                "path": "src/lib.rs", "adds": 1, "dels": 1,
+                "hunks": [{"header": "@@", "lines": [{"tag": "Add", "text": "x", "extra": 1}]}]
+            }),
+        ] {
+            assert!(
+                serde_json::from_value::<FileDiff>(malformed).is_err(),
+                "unknown nested diff fields must fail closed"
+            );
+        }
+    }
 }
 
 /// A single file's diff: path, add/delete counts, and hunks.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileDiff {
     pub path: String,
     pub adds: u32,

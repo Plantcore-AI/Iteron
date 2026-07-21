@@ -51,25 +51,117 @@ jobs:
         run: |
           set -euo pipefail
           event_commit=$(git rev-parse "$GITHUB_SHA^{commit}")
-          versions=$(cargo +"$RUST_VERSION" metadata --locked --format-version 1 \
-            | jq -r '.packages[] | select(.source == null) | .version' \
-            | LC_ALL=C sort -u)
-          test "$(printf '%s\n' "$versions" | awk 'NF { count += 1 } END { print count + 0 }')" -eq 1
-          version=$versions
-
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             tag=$GITHUB_REF_NAME
             [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
             test "$(git cat-file -t "refs/tags/$tag")" = tag
             tag_commit=$(git rev-parse "refs/tags/$tag^{commit}")
             test "$tag_commit" = "$event_commit"
-            test "$tag" = "v$version"
             git fetch --no-tags origin main
             main_commit=$(git rev-parse 'origin/main^{commit}')
             test "$tag_commit" = "$main_commit"
           else
             test "$GITHUB_EVENT_NAME" = workflow_dispatch
             tag_commit=$event_commit
+          fi
+
+          [[ "$tag_commit" =~ ^[0-9a-f]{40}$ ]]
+          candidate_root=$RUNNER_TEMP/core-schema-candidate
+          test ! -e "$candidate_root"
+          git worktree add --detach "$candidate_root" "$tag_commit"
+          test "$(git -C "$candidate_root" rev-parse 'HEAD^{commit}')" = "$tag_commit"
+          candidate_status=$RUNNER_TEMP/core-schema-candidate-status
+          git -C "$candidate_root" status \
+            --porcelain=v1 -z --untracked-files=all > "$candidate_status"
+          test ! -s "$candidate_status"
+
+          # Do not invoke Cargo or any repository script before the immutable
+          # predecessor validates this detached tree. Even `cargo metadata` can
+          # execute a candidate-controlled rustc-wrapper from .cargo/config.toml.
+          root_manifest=$candidate_root/Cargo.toml
+          test -f "$root_manifest"
+          test ! -L "$root_manifest"
+          root_manifest_size=$(stat --format='%s' -- "$root_manifest")
+          [[ "$root_manifest_size" =~ ^[0-9]+$ ]]
+          test "$root_manifest_size" -le 65536
+          version=$(python3 -I - "$candidate_root" <<'PY'
+          import pathlib
+          import re
+          import stat
+          import sys
+          import tomllib
+
+          MAX_MANIFEST_BYTES = 65_536
+          MAX_WORKSPACE_MEMBERS = 128
+
+          def load_manifest(path: pathlib.Path, label: str) -> dict:
+              metadata = path.lstat()
+              if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_MANIFEST_BYTES:
+                  raise SystemExit(f"{label} must be a regular file no larger than 64 KiB")
+              with path.open("rb") as handle:
+                  document = tomllib.load(handle)
+              if not isinstance(document, dict):
+                  raise SystemExit(f"{label} must contain a TOML table")
+              return document
+
+          candidate_root = pathlib.Path(sys.argv[1])
+          document = load_manifest(candidate_root / "Cargo.toml", "root Cargo.toml")
+          workspace = document.get("workspace")
+          if not isinstance(workspace, dict):
+              raise SystemExit("root Cargo.toml must define [workspace]")
+          package_defaults = workspace.get("package")
+          if not isinstance(package_defaults, dict):
+              raise SystemExit("root Cargo.toml must define [workspace.package]")
+          version = package_defaults.get("version")
+          if not isinstance(version, str) or re.fullmatch(
+              r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version
+          ) is None:
+              raise SystemExit("workspace.package.version must be strict numeric SemVer")
+
+          members = workspace.get("members")
+          if (
+              not isinstance(members, list)
+              or not 0 < len(members) <= MAX_WORKSPACE_MEMBERS
+              or any(not isinstance(member, str) for member in members)
+              or len(set(members)) != len(members)
+          ):
+              raise SystemExit("workspace.members must be a bounded unique string list")
+          package_names = set()
+          for member in members:
+              if len(member) > 256 or re.fullmatch(
+                  r"[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*",
+                  member,
+              ) is None or any(part in (".", "..") for part in member.split("/")):
+                  raise SystemExit(f"workspace member path is not explicit and safe: {member!r}")
+              directory = candidate_root
+              for part in member.split("/"):
+                  directory /= part
+                  metadata = directory.lstat()
+                  if not stat.S_ISDIR(metadata.st_mode):
+                      raise SystemExit(f"workspace member traverses a non-directory: {member!r}")
+              member_document = load_manifest(
+                  directory / "Cargo.toml", f"workspace member {member!r} Cargo.toml"
+              )
+              package = member_document.get("package")
+              if not isinstance(package, dict):
+                  raise SystemExit(f"workspace member lacks [package]: {member!r}")
+              member_version = package.get("version")
+              if member_version != {"workspace": True} and member_version != version:
+                  raise SystemExit(
+                      f"workspace member {member!r} does not inherit the release version"
+                  )
+              name = package.get("name")
+              if not isinstance(name, str) or re.fullmatch(
+                  r"[A-Za-z0-9_-]{1,128}", name
+              ) is None or name in package_names:
+                  raise SystemExit(f"workspace member has an invalid or duplicate name: {member!r}")
+              package_names.add(name)
+          print(version)
+          PY
+          )
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            test "$GITHUB_REF_NAME" = "v$version"
           fi
 
           epoch=$(git show -s --format=%ct "$tag_commit")
@@ -79,6 +171,247 @@ jobs:
             echo "source-date-epoch=$epoch"
             echo "version=$version"
           } >> "$GITHUB_OUTPUT"
+      - name: Validate against the previous immutable schema release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api_version=2026-03-10
+          pages=$RUNNER_TEMP/core-schema-release-pages.jsonl
+          releases=$RUNNER_TEMP/core-schema-releases.json
+          : > "$pages"
+
+          # Page 11 is a sentinel: ten full pages are admitted, while a non-empty
+          # eleventh page proves that the 1,000-release policy bound was exceeded.
+          for page in $(seq 1 11); do
+            page_json=$RUNNER_TEMP/core-schema-release-page-$page.json
+            gh api \
+              -H "X-GitHub-Api-Version: $api_version" \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100&page=$page" \
+              --jq '[.[] | {tag_name, draft, prerelease, immutable}]' \
+              > "$page_json"
+            jq -e 'type == "array" and length <= 100' "$page_json" >/dev/null
+            count=$(jq -r 'length' "$page_json")
+            if [[ "$page" -eq 11 ]]; then
+              if [[ "$count" -ne 0 ]]; then
+                printf 'published release inventory exceeds the 1,000-release limit\n' >&2
+                exit 1
+              fi
+              break
+            fi
+            jq -c '.' "$page_json" >> "$pages"
+            [[ "$count" -eq 100 ]] || break
+          done
+          jq -s '.' "$pages" > "$releases"
+
+          # Select the proposed anchor without executing any candidate-owned
+          # repository code. The selected immutable release then recomputes the
+          # answer with its own trusted policy before any candidate build runs.
+          previous=$(jq -er --arg candidate "$GITHUB_REF_NAME" '
+            def semver:
+              capture(
+                "^v(?<major>0|[1-9][0-9]*)\\.(?<minor>0|[1-9][0-9]*)\\.(?<patch>0|[1-9][0-9]*)$"
+              )
+              | [
+                  (.major | tonumber),
+                  (.minor | tonumber),
+                  (.patch | tonumber)
+                ];
+            ($candidate | semver) as $candidate_version
+            | [
+                .[][]
+                | if ((.draft | type) != "boolean")
+                    or ((.prerelease | type) != "boolean")
+                  then error("release lacks typed draft/prerelease state")
+                  elif .draft or .prerelease
+                  then empty
+                  elif (.tag_name | type) != "string"
+                  then error("published release lacks a string tag_name")
+                  else . as $release
+                    | ($release.tag_name | try semver catch null) as $version
+                    | select($version != null)
+                    | {
+                        tag_name: $release.tag_name,
+                        immutable: $release.immutable,
+                        version: $version
+                      }
+                  end
+              ] as $stable
+            | if ($stable | group_by(.version) | any(length > 1))
+              then error("published SemVer release is duplicated")
+              elif any($stable[]; .version >= $candidate_version)
+              then error("published release is not older than candidate")
+              elif ($stable | length) == 0
+              then "BOOTSTRAP"
+              else ($stable | max_by(.version)) as $previous
+                | if $previous.immutable != true
+                  then error("highest previous release is not immutable")
+                  else $previous.tag_name
+                  end
+              end
+          ' "$releases")
+          candidate_root=$RUNNER_TEMP/core-schema-candidate
+          candidate_status=$RUNNER_TEMP/core-schema-candidate-status
+          test "$(git -C "$candidate_root" rev-parse 'HEAD^{commit}')" = \
+            "${{ steps.metadata.outputs.commit }}"
+          git -C "$candidate_root" status \
+            --porcelain=v1 -z --untracked-files=all > "$candidate_status"
+          test ! -s "$candidate_status"
+          validate_cargo_workspace_versions() {
+            metadata=$RUNNER_TEMP/core-release-cargo-metadata.json
+            (
+              cd "$candidate_root"
+              CARGO_TARGET_DIR="$RUNNER_TEMP/core-schema-metadata-target" \
+                cargo +"$RUST_VERSION" metadata --locked --format-version 1
+            ) | head -c 8388609 > "$metadata"
+            metadata_size=$(stat --format='%s' -- "$metadata")
+            [[ "$metadata_size" =~ ^[0-9]+$ ]]
+            test "$metadata_size" -le 8388608
+            python3 -I - "$metadata" "$candidate_root" <<'PY'
+          import json
+          import pathlib
+          import stat
+          import sys
+
+          metadata_path = pathlib.Path(sys.argv[1])
+          candidate_root = pathlib.Path(sys.argv[2]).resolve(strict=True)
+          with metadata_path.open("rb") as handle:
+              document = json.load(handle)
+          packages = document.get("packages")
+          if not isinstance(packages, list) or not 0 < len(packages) <= 512:
+              raise SystemExit("Cargo metadata package inventory is not bounded")
+
+          def require_rooted_regular(raw: object, label: str) -> None:
+              if not isinstance(raw, str):
+                  raise SystemExit(f"{label} path is not a string")
+              path = pathlib.Path(raw)
+              if not path.is_absolute():
+                  raise SystemExit(f"{label} path is not absolute")
+              try:
+                  relative = path.relative_to(candidate_root)
+              except ValueError:
+                  raise SystemExit(f"{label} escapes the validated candidate root") from None
+              if any(part in ("", ".", "..") for part in relative.parts):
+                  raise SystemExit(f"{label} path is not normalized")
+              cursor = candidate_root
+              for index, part in enumerate(relative.parts):
+                  cursor /= part
+                  entry = cursor.lstat()
+                  if stat.S_ISLNK(entry.st_mode):
+                      raise SystemExit(f"{label} traverses a symbolic link")
+                  if index + 1 == len(relative.parts):
+                      if not stat.S_ISREG(entry.st_mode):
+                          raise SystemExit(f"{label} is not a regular file")
+                  elif not stat.S_ISDIR(entry.st_mode):
+                      raise SystemExit(f"{label} traverses a non-directory")
+              if path.resolve(strict=True) != cursor:
+                  raise SystemExit(f"{label} resolves outside its lexical candidate path")
+
+          local_packages = [package for package in packages if package.get("source") is None]
+          if not local_packages:
+              raise SystemExit("Cargo metadata contains no local packages")
+          for package in local_packages:
+              require_rooted_regular(package.get("manifest_path"), "local package manifest")
+              targets = package.get("targets")
+              if not isinstance(targets, list) or not targets:
+                  raise SystemExit("local package has no Cargo targets")
+              for target in targets:
+                  if not isinstance(target, dict):
+                      raise SystemExit("local package target is not an object")
+                  require_rooted_regular(target.get("src_path"), "local package target")
+          PY
+            jq -e '
+              (.packages | type == "array" and length > 0 and length <= 512)
+              and all(.packages[];
+                ((.source == null) or (.source | type == "string"))
+                and (.version | type == "string")
+              )
+            ' "$metadata" >/dev/null
+            versions=$(jq -r \
+              '.packages[] | select(.source == null) | .version' "$metadata" \
+              | LC_ALL=C sort -u)
+            test "$(printf '%s\n' "$versions" \
+              | awk 'NF { count += 1 } END { print count + 0 }')" -eq 1
+            test "$versions" = "${{ steps.metadata.outputs.version }}"
+          }
+          if [[ "$previous" == BOOTSTRAP ]]; then
+            # With no predecessor, first-release policy necessarily trusts the
+            # candidate, but confines its Cargo process to the detached tree and
+            # an isolated target directory. This path exists only for the
+            # project's fixed first public version and cannot be reused if
+            # predecessor selection ever regresses.
+            test "$GITHUB_REF_NAME" = v0.0.1
+            test "${{ steps.metadata.outputs.version }}" = 0.0.1
+            jq -e '
+              [
+                .[][]
+                | select(.draft == false and .prerelease == false)
+                | select(
+                    .tag_name
+                    | type == "string"
+                      and test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
+                  )
+              ]
+              | length == 0
+            ' "$releases" >/dev/null
+            (
+              cd "$candidate_root"
+              CARGO_TARGET_DIR="$RUNNER_TEMP/core-schema-bootstrap-target" \
+                cargo +"$RUST_VERSION" run --locked -p core-xtask -- \
+                  schema-compat check-bootstrap
+            )
+            validate_cargo_workspace_versions
+            git -C "$candidate_root" status \
+              --porcelain=v1 -z --untracked-files=all > "$candidate_status"
+            test ! -s "$candidate_status"
+            test "$(git -C "$candidate_root" rev-parse 'HEAD^{commit}')" = \
+              "${{ steps.metadata.outputs.commit }}"
+            test "$(git rev-parse 'HEAD^{commit}')" = \
+              "${{ steps.metadata.outputs.commit }}"
+            workspace_status=$RUNNER_TEMP/core-release-workspace-status
+            git status --porcelain=v1 -z --untracked-files=all > "$workspace_status"
+            test ! -s "$workspace_status"
+            exit 0
+          fi
+
+          [[ "$previous" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$(git cat-file -t "refs/tags/$previous")" = tag
+          previous_commit=$(git rev-parse "refs/tags/$previous^{commit}")
+          [[ "$previous_commit" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor \
+            "$previous_commit" \
+            "${{ steps.metadata.outputs.commit }}"
+          gh release verify "$previous" --repo "$GITHUB_REPOSITORY"
+
+          policy_root=$RUNNER_TEMP/core-schema-policy-base
+          policy_target=$RUNNER_TEMP/core-schema-policy-target
+          git worktree add --detach "$policy_root" "$previous_commit"
+          trusted_previous=$(python3 \
+            "$policy_root/release-tools/schema_release.py" \
+            --input "$releases" \
+            --candidate "$GITHUB_REF_NAME")
+          test "$trusted_previous" = "$previous"
+          (
+            cd "$policy_root"
+            CARGO_TARGET_DIR="$policy_target" \
+              cargo +"$RUST_VERSION" build --locked -p core-xtask
+          )
+          "$policy_target/debug/core-xtask" \
+            --repo "$candidate_root" \
+            schema-compat check-release --base "$previous_commit"
+          validate_cargo_workspace_versions
+          git -C "$candidate_root" status \
+            --porcelain=v1 -z --untracked-files=all > "$candidate_status"
+          test ! -s "$candidate_status"
+          test "$(git -C "$candidate_root" rev-parse 'HEAD^{commit}')" = \
+            "${{ steps.metadata.outputs.commit }}"
+          test "$(git rev-parse 'HEAD^{commit}')" = \
+            "${{ steps.metadata.outputs.commit }}"
+          workspace_status=$RUNNER_TEMP/core-release-workspace-status
+          git status --porcelain=v1 -z --untracked-files=all > "$workspace_status"
+          test ! -s "$workspace_status"
       # Ubuntu 24.04 restricts unprivileged user namespaces unless the invoking program has an
       # explicit AppArmor profile. Attach permission only to the fixed system bwrap path; never
       # disable the host-wide user namespace restriction.
@@ -116,6 +449,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install "$RUST_VERSION" --profile minimal
@@ -206,6 +540,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
       # Keep this identical to CI's narrow Ubuntu 24.04 bwrap authorization. The profile grants
       # user namespaces only to the root-owned system binary and leaves the global restriction on.
@@ -365,6 +700,7 @@ jobs:
         run: test "$RELEASE_IMMUTABLE_CONFIRMED" = true
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -430,6 +766,25 @@ jobs:
           }
           trap cleanup_workflow_draft EXIT
 
+          expected_commit=${{ needs.validate.outputs.commit }}
+          [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]]
+          remote_tag_ref="refs/tags/$GITHUB_REF_NAME"
+          test "$GITHUB_REF" = "$remote_tag_ref"
+          verify_remote_annotated_tag() {
+            stage=$1
+            [[ "$stage" =~ ^[a-z-]+$ ]]
+            verification_ref="refs/core-release-verification/$stage"
+            git fetch --force --no-tags origin \
+              "$remote_tag_ref:$verification_ref"
+            test "$(git cat-file -t "$verification_ref")" = tag
+            remote_commit=$(git rev-parse "$verification_ref^{commit}")
+            test "$remote_commit" = "$expected_commit"
+          }
+
+          # Re-read the remote ref immediately before the first release mutation.
+          # Repository tag protection remains the external atomicity boundary.
+          verify_remote_annotated_tag pre-create
+
           existing_release_ids=$(gh api --paginate \
             -H "X-GitHub-Api-Version: $api_version" \
             "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
@@ -481,6 +836,9 @@ jobs:
           done
           [[ "$verified" == true ]]
 
+          # Uploading a draft can take minutes. Refuse publication if the remote
+          # annotated tag disappeared or moved during that window.
+          verify_remote_annotated_tag pre-publish
           gh api --method PATCH \
             -H "X-GitHub-Api-Version: $api_version" \
             "repos/$GITHUB_REPOSITORY/releases/$created_release_id" \

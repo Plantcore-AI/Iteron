@@ -1,7 +1,7 @@
 //! Skills — progressive-disclosure instruction bundles (Claude Code SKILL.md parity, R5).
 //!
-//! A skill is `<root>/.core/skills/<name>/SKILL.md`: frontmatter (`name`, `description`) plus a
-//! body of instructions. Only the NAME + DESCRIPTION of each skill is injected into the stable
+//! A skill is `<root>/.core/skills/<name>/SKILL.md`: bounded frontmatter plus a body of
+//! instructions. Only model-invocable, path-relevant listing metadata is injected into the stable
 //! prefix (a bounded index); the model pulls a skill's full body on demand with the `use_skill`
 //! tool when its listing looks relevant — the same progressive-disclosure shape as memory (so a
 //! large skill library costs a few tokens per skill until one is actually used).
@@ -16,6 +16,10 @@ use crate::instructions::suspicious_unicode;
 use crate::source::{SourceEntryKind, SourceScope, list_directory_bounded, read_bounded_utf8};
 use core_protocol::Trust;
 use std::path::{Path, PathBuf};
+
+#[path = "skills_metadata.rs"]
+mod metadata;
+pub use metadata::{SkillMetadata, active_paths_from_text};
 
 /// Discovery ceilings apply before parsing or prompt construction.
 const MAX_SKILL_DIRS: usize = 1_024;
@@ -47,6 +51,8 @@ pub struct SkillDef {
     pub body: String,
     pub tier: SkillTier,
     pub trust: Trust,
+    /// Optional advertisement controls. These fields never grant tools or other authority.
+    pub metadata: SkillMetadata,
 }
 
 impl SkillDef {
@@ -183,17 +189,47 @@ impl SkillCatalog {
         Trust::governing(self.defs.iter().map(|definition| definition.trust))
     }
 
-    /// The bounded skill index injected into the stable prefix: one `- name — description` line per
-    /// skill, capped at `budget_bytes` (progressive disclosure — bodies are pulled with `use_skill`).
+    /// The bounded model-facing index with no active path hints. Path-scoped and explicitly
+    /// user-only skills remain available through `get`, but are not advertised to the model.
     pub fn listing(&self, budget_bytes: usize) -> String {
-        if self.defs.is_empty() {
+        self.listing_for_paths(budget_bytes, &[])
+    }
+
+    /// Build the model-facing index for a bounded set of repository-relative active paths.
+    pub fn listing_for_paths(&self, budget_bytes: usize, active_paths: &[PathBuf]) -> String {
+        if !self
+            .defs
+            .iter()
+            .any(|definition| definition.metadata.model_visible(active_paths))
+        {
             return String::new();
         }
         let mut out = String::from(
             "\n\nAvailable skills (use the `use_skill` tool to load one when relevant):\n",
         );
         for d in &self.defs {
-            let line = format!("- {} — {}\n", d.name, one_line(&d.description, 120));
+            if !d.metadata.model_visible(active_paths) {
+                continue;
+            }
+            let argument_hint = d
+                .metadata
+                .argument_hint
+                .as_deref()
+                .map(|hint| format!(" {}", one_line(hint, 80)))
+                .unwrap_or_default();
+            let when_to_use = d
+                .metadata
+                .when_to_use
+                .as_deref()
+                .map(|hint| format!(" (use when: {})", one_line(hint, 120)))
+                .unwrap_or_default();
+            let line = format!(
+                "- {}{} — {}{}\n",
+                d.name,
+                argument_hint,
+                one_line(&d.description, 120),
+                when_to_use
+            );
             if out.len() + line.len() > budget_bytes {
                 out.push_str("- … (more skills omitted; listing bounded)\n");
                 break;
@@ -219,13 +255,14 @@ fn is_vendor_path(p: &Path) -> bool {
     })
 }
 
-/// Parse a `SKILL.md`: `---` frontmatter (`name`, `description`) then the body. Zero-dependency
-/// (no serde_yaml — Principal). Rejects a bidi/invisible-Unicode-laden skill.
+/// Parse a `SKILL.md`: bounded `---` frontmatter then the body. Unknown keys are tolerated for
+/// forward compatibility; malformed known fields are surfaced. Rejects suspicious Unicode.
 fn parse_skill(raw: &str, dir: &Path, tier: SkillTier) -> Result<SkillDef, String> {
     if let Some(cp) = suspicious_unicode(raw) {
         return Err(format!("suspicious Unicode U+{cp:04X}"));
     }
     let (front, body) = split_frontmatter(raw);
+    let metadata = metadata::parse(front)?;
     let mut name = String::new();
     let mut description = String::new();
     for line in front.lines() {
@@ -263,6 +300,7 @@ fn parse_skill(raw: &str, dir: &Path, tier: SkillTier) -> Result<SkillDef, Strin
         body: body.trim().to_string(),
         tier,
         trust: tier.trust(),
+        metadata,
     })
 }
 

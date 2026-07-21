@@ -1,8 +1,10 @@
 # Slash commands
 
-The TUI command registry drives both `/help` and completion. Commands with
-required arguments complete into the editor rather than dispatching an incomplete
-operation.
+The typed TUI command registry drives both `/help` and completion. Every canonical
+entry resolves to an exhaustive in-process handler or an explicit terminal-only
+intercept (`/compact`); an added entry cannot silently fall through to the generic
+unknown-command response. Commands with required arguments complete into the editor
+rather than dispatching an incomplete operation.
 
 | Command | Purpose |
 | --- | --- |
@@ -35,5 +37,6 @@ operation.
 | `/init` | Scaffold repository `.core/config.json` and `AGENTS.md` |
 | `/quit` | Leave the TUI |
 
-Aliases may exist in the dispatcher, but the names above are the documented
-registry. Use `/help` in your installed build for its exact list.
+Compatibility aliases resolve to the same typed command identity but are not
+advertised by help or completion. The names above are the documented registry; use
+`/help` in your installed build for its exact list.

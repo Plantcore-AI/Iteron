@@ -15,7 +15,7 @@ use core_provider::EffortApplication;
 use serde_json::{Value, json};
 use std::io::{self, Write};
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 pub const EXIT_SUCCESS: u8 = 0;
 pub const EXIT_HARNESS: u8 = 2;
 pub const EXIT_BUDGET: u8 = 3;
@@ -25,6 +25,7 @@ pub const EXIT_INTERRUPTED: u8 = 130;
 /// unfinished token until a delimiter arrives so per-delta scrubbing cannot leak its prefix. A
 /// malicious delimiter-free token is replaced at this ceiling rather than growing without bound.
 const MAX_PENDING_STREAM_TOKEN_BYTES: usize = 16 * 1024;
+const MAX_STDERR_NOTICE_BYTES: usize = 4 * 1024;
 
 /// The stdout contract for a one-shot run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -48,7 +49,7 @@ impl OutputFormat {
 /// never need to invoke `process::exit`.
 pub fn outcome_exit_code(outcome: &Outcome) -> u8 {
     match outcome {
-        Outcome::Done => EXIT_SUCCESS,
+        Outcome::Done | Outcome::Drained => EXIT_SUCCESS,
         Outcome::HarnessError => EXIT_HARNESS,
         Outcome::BudgetExhausted(_) => EXIT_BUDGET,
         Outcome::Stuck => EXIT_STUCK,
@@ -59,6 +60,7 @@ pub fn outcome_exit_code(outcome: &Outcome) -> u8 {
 fn outcome_name(outcome: &Outcome) -> &'static str {
     match outcome {
         Outcome::Done => "done",
+        Outcome::Drained => "drained",
         Outcome::HarnessError => "harness_error",
         Outcome::BudgetExhausted(_) => "budget_exhausted",
         Outcome::Stuck => "stuck",
@@ -430,7 +432,7 @@ pub fn final_result(
         "type": "result",
         "outcome": outcome_name(outcome),
         "reason": outcome_reason(outcome),
-        "success": matches!(outcome, Outcome::Done),
+        "success": matches!(outcome, Outcome::Done | Outcome::Drained),
         "assistant_text": scrub(assistant_text),
         "run_id": scrub(run_id),
         "cost_usd": cost.usd(),
@@ -446,6 +448,13 @@ fn write_json_line(mut writer: impl Write, value: &Value) -> io::Result<()> {
     serde_json::to_writer(&mut writer, value)?;
     writer.write_all(b"\n")?;
     writer.flush()
+}
+
+fn display_notice_on_stderr(message: &str) {
+    let message = core_protocol::text::head(&scrub(message), MAX_STDERR_NOTICE_BYTES);
+    // Notices are observational. A closed stderr must not suppress the final JSON result or alter
+    // provider dispatch; stdout failures remain separately tracked by the emitter contract.
+    let _ = writeln!(std::io::stderr().lock(), "notice: {message}");
 }
 
 /// Stateful stdout writer for a single one-shot invocation.
@@ -517,6 +526,7 @@ impl Emitter {
                 UiEvent::TurnEnd { .. } | UiEvent::Done(_) => {
                     self.flush_text_output(true)?;
                 }
+                UiEvent::Notice(message) => display_notice_on_stderr(&message),
                 _ => {}
             },
             OutputFormat::StreamJson => match event {
@@ -536,7 +546,11 @@ impl Emitter {
                 }
                 other => self.write_stream_event(other)?,
             },
-            OutputFormat::Json => {}
+            OutputFormat::Json => {
+                if let UiEvent::Notice(message) = event {
+                    display_notice_on_stderr(&message);
+                }
+            }
         }
         Ok(())
     }
@@ -575,15 +589,40 @@ mod tests {
         WorkflowAgentOutcomeUi, WorkflowExecutionModeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi,
         WorkflowTaskUi,
     };
-    use core_protocol::{Capability, SubmissionId};
+    use core_protocol::{Capability, DiffLine, DiffTag, FileDiff, Hunk, SubmissionId};
 
     #[test]
     fn outcome_exit_codes_are_stable() {
         assert_eq!(outcome_exit_code(&Outcome::Done), 0);
+        assert_eq!(outcome_exit_code(&Outcome::Drained), 0);
         assert_eq!(outcome_exit_code(&Outcome::HarnessError), 2);
         assert_eq!(outcome_exit_code(&Outcome::BudgetExhausted("max_turns")), 3);
         assert_eq!(outcome_exit_code(&Outcome::Stuck), 4);
         assert_eq!(outcome_exit_code(&Outcome::Interrupted), 130);
+    }
+
+    #[test]
+    fn drained_is_a_versioned_clean_checkpoint_terminal() {
+        let value = final_result(
+            &Outcome::Drained,
+            "state checkpointed",
+            "run-drained",
+            &CostState::Zero,
+            1,
+            None,
+        );
+        assert_eq!(value["schema_version"], SCHEMA_VERSION);
+        assert_eq!(value["outcome"], "drained");
+        assert_eq!(value["success"], true);
+        assert_eq!(value["exit_code"], EXIT_SUCCESS);
+        assert_eq!(
+            value,
+            serde_json::from_str::<Value>(include_str!(
+                "../tests/golden/one_shot_json_drained_v4.json"
+            ))
+            .unwrap(),
+            "the complete drained machine terminal is a frozen schema-v4 contract"
+        );
     }
 
     #[test]
@@ -613,7 +652,7 @@ mod tests {
             3,
             None,
         );
-        assert_eq!(value["schema_version"], 3);
+        assert_eq!(value["schema_version"], SCHEMA_VERSION);
         assert_eq!(value["type"], "result");
         assert_eq!(value["outcome"], "done");
         assert_eq!(value["success"], true);
@@ -632,7 +671,7 @@ mod tests {
             reason: core_obs::CostUnknownReason::NoVerifiedRateCard,
         };
         let result = final_result(&Outcome::Done, "done", "run-unpriced", &unknown, 1, None);
-        assert_eq!(result["schema_version"], 3);
+        assert_eq!(result["schema_version"], SCHEMA_VERSION);
         assert_eq!(result["cost_usd"], Value::Null);
         assert_eq!(result["cost_status"], "unknown");
         assert_eq!(result["cost_reason"], "no_verified_rate_card");
@@ -659,7 +698,7 @@ mod tests {
             },
             &mut turn,
         );
-        assert_eq!(event["schema_version"], 3);
+        assert_eq!(event["schema_version"], SCHEMA_VERSION);
         assert_eq!(event["cost_usd"], Value::Null);
         assert_eq!(event["cumulative_cost_usd"], Value::Null);
         assert_eq!(event["cost_status"], "unknown");
@@ -840,6 +879,267 @@ mod tests {
         let steered = stream_event(UiEvent::SteerApplied { count: 2 }, &mut turn);
         assert_eq!(steered["type"], "steer_applied");
         assert_eq!(steered["count"], 2);
+    }
+
+    #[test]
+    fn d13_14_every_stream_record_type_matches_the_frozen_v4_corpus() {
+        fn frozen_turn_end(effort: EffortApplication, turn: &mut u32) -> Value {
+            stream_event(
+                UiEvent::TurnEnd {
+                    cost: CostState::Unknown {
+                        reason: core_obs::CostUnknownReason::NoVerifiedRateCard,
+                    },
+                    usage: core_protocol::Usage::default(),
+                    context: core_ctx::ContextEstimate {
+                        system_tokens: 0,
+                        tool_tokens: 0,
+                        transcript_tokens: 0,
+                        framing_tokens: 0,
+                        total_tokens: 0,
+                        provenance: core_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+                    },
+                    model_context_window: None,
+                    reserved_output_tokens: 8_192,
+                    compaction_trigger_tokens: 120_000,
+                    effort,
+                },
+                turn,
+            )
+        }
+
+        let mut turn = 0;
+        let records = vec![
+            stream_event(UiEvent::Text("answer".into()), &mut turn),
+            stream_event(UiEvent::Thinking("plan".into()), &mut turn),
+            stream_event(
+                UiEvent::ToolStart {
+                    id: "tool-1".into(),
+                    name: "read_file".into(),
+                    args: json!({"path": "src/lib.rs"}),
+                },
+                &mut turn,
+            ),
+            stream_event(
+                UiEvent::ToolEnd {
+                    id: "tool-1".into(),
+                    ok: true,
+                    exit_code: None,
+                    output: "ok".into(),
+                    diff: Some(FileDiff {
+                        path: "src/lib.rs".into(),
+                        adds: 1,
+                        dels: 1,
+                        hunks: vec![Hunk {
+                            header: "@@ -1,2 +1,2 @@".into(),
+                            lines: vec![
+                                DiffLine {
+                                    tag: DiffTag::Del,
+                                    text: "old".into(),
+                                },
+                                DiffLine {
+                                    tag: DiffTag::Add,
+                                    text: "new".into(),
+                                },
+                                DiffLine {
+                                    tag: DiffTag::Ctx,
+                                    text: "context".into(),
+                                },
+                            ],
+                        }],
+                    }),
+                },
+                &mut turn,
+            ),
+            stream_event(UiEvent::Phase(Phase::Context), &mut turn),
+            frozen_turn_end(
+                EffortApplication::Exact {
+                    requested: core_protocol::ReasoningEffort::High,
+                },
+                &mut turn,
+            ),
+            frozen_turn_end(
+                EffortApplication::Mapped {
+                    requested: core_protocol::ReasoningEffort::XHigh,
+                    sent: core_protocol::ReasoningEffort::High,
+                },
+                &mut turn,
+            ),
+            frozen_turn_end(
+                EffortApplication::BudgetBased {
+                    requested: core_protocol::ReasoningEffort::Max,
+                    budget_tokens: 32_000,
+                },
+                &mut turn,
+            ),
+            frozen_turn_end(
+                EffortApplication::ToggleOnly {
+                    requested: core_protocol::ReasoningEffort::Low,
+                    enabled: true,
+                },
+                &mut turn,
+            ),
+            frozen_turn_end(
+                EffortApplication::Unsupported {
+                    requested: core_protocol::ReasoningEffort::Medium,
+                },
+                &mut turn,
+            ),
+            stream_event(
+                UiEvent::Workflow(WorkflowUiEvent::RunStarted {
+                    run_id: "workflow-1".into(),
+                    name: "ultracode".into(),
+                    class: "fan_reduce".into(),
+                }),
+                &mut turn,
+            ),
+            stream_event(
+                UiEvent::Workflow(WorkflowUiEvent::PlanReady {
+                    run_id: "workflow-1".into(),
+                    tasks: vec![WorkflowTaskUi {
+                        id: 0,
+                        label: "inspect".into(),
+                    }],
+                    dropped: 0,
+                    duplicates_removed: 0,
+                    invalid_removed: 0,
+                    execution_mode: WorkflowExecutionModeUi::Sequential,
+                    fan_turn_budget: 4,
+                    writer_turn_reserve: 12,
+                    fan_wall_secs: 60,
+                    writer_wall_reserve_secs: 120,
+                }),
+                &mut turn,
+            ),
+            stream_event(
+                UiEvent::Workflow(WorkflowUiEvent::PhaseChanged {
+                    run_id: "workflow-1".into(),
+                    phase: WorkflowPhaseUi::Exploring,
+                }),
+                &mut turn,
+            ),
+            stream_event(
+                UiEvent::Workflow(WorkflowUiEvent::AgentStarted {
+                    run_id: "workflow-1".into(),
+                    agent_id: 0,
+                    sub_run: "child-1".into(),
+                    turn_budget: 4,
+                }),
+                &mut turn,
+            ),
+            stream_event(
+                UiEvent::Workflow(WorkflowUiEvent::AgentActivity {
+                    run_id: "workflow-1".into(),
+                    agent_id: 0,
+                    activity: "reading".into(),
+                }),
+                &mut turn,
+            ),
+            stream_event(
+                UiEvent::Workflow(WorkflowUiEvent::AgentFinished {
+                    run_id: "workflow-1".into(),
+                    agent_id: 0,
+                    outcome: WorkflowAgentOutcomeUi::Done,
+                    turns: 1,
+                    tokens: 20,
+                    tool_calls: 1,
+                    elapsed_ms: 30,
+                    summary_preview: Some("done".into()),
+                    error_preview: None,
+                }),
+                &mut turn,
+            ),
+            stream_event(
+                UiEvent::Workflow(WorkflowUiEvent::RunFinished {
+                    run_id: "workflow-1".into(),
+                    outcome: WorkflowRunOutcomeUi::Done,
+                    reason: None,
+                    elapsed_ms: 40,
+                    provider_attempts: 1,
+                    turns: 1,
+                    tokens: 20,
+                    tool_calls: 1,
+                    failed_tasks: 0,
+                    skipped_tasks: 0,
+                }),
+                &mut turn,
+            ),
+            stream_event(UiEvent::SteerApplied { count: 1 }, &mut turn),
+            stream_event(UiEvent::Notice("checkpoint".into()), &mut turn),
+            stream_event(
+                UiEvent::ApprovalRequest {
+                    id: SubmissionId(7),
+                    tool: "bash".into(),
+                    capability: Capability::CodeExecuting,
+                    reason: "approve?".into(),
+                    arguments: json!({"command": "cargo test"}),
+                    workspace: "/workspace".into(),
+                },
+                &mut turn,
+            ),
+            stream_event(UiEvent::Done("ignored debug text".into()), &mut turn),
+            final_result(
+                &Outcome::Done,
+                "complete",
+                "run-all-types",
+                &CostState::Zero,
+                5,
+                None,
+            ),
+        ];
+        let frozen = include_str!("../tests/golden/machine_stream_all_v4.jsonl")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records, frozen);
+        let kinds = records
+            .iter()
+            .map(|record| record["type"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(kinds.len(), 18, "every machine stream type is frozen once");
+        let tool_end_diff = records
+            .iter()
+            .find(|record| record["type"] == "tool_end")
+            .and_then(|record| record["diff"].as_object())
+            .expect("the frozen tool_end must carry a non-null typed FileDiff");
+        let diff_tags = tool_end_diff["hunks"]
+            .as_array()
+            .expect("diff hunks")
+            .iter()
+            .flat_map(|hunk| hunk["lines"].as_array().expect("diff lines"))
+            .map(|line| line["tag"].as_str().expect("diff tag"))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            tool_end_diff["hunks"]
+                .as_array()
+                .expect("diff hunks")
+                .iter()
+                .map(|hunk| hunk["lines"].as_array().expect("diff lines").len())
+                .sum::<usize>(),
+            diff_tags.len(),
+            "the exhaustive diff corpus must contain each tag exactly once"
+        );
+        assert_eq!(
+            diff_tags,
+            std::collections::BTreeSet::from(["Add", "Ctx", "Del"]),
+            "the typed CLI corpus must freeze every DiffTag variant"
+        );
+        let effort_variants = records
+            .iter()
+            .filter(|record| record["type"] == "turn_end")
+            .filter_map(|record| record["effort"]["enforcement"].as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            effort_variants,
+            std::collections::BTreeSet::from([
+                "budget_based",
+                "exact",
+                "mapped",
+                "toggle_only",
+                "unsupported",
+            ]),
+            "every nested machine effort shape is frozen"
+        );
     }
 
     #[test]

@@ -1,0 +1,4 @@
+{
+  "by_tool": { "bash": "deny" },
+  "by_cap": { "code_executing": "ask" }
+}

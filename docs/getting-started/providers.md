@@ -20,6 +20,12 @@ manifest proves endpoint schema compatibility, **not** that a particular account
 is funded or entitled to every listed model. Without a credential, its leaves are
 visible but unavailable.
 
+The GLM schema/capability snapshots and Anthropic effort beta metadata are dated
+world data. Core emits one preflight notice per selected provider showing the age
+of every static snapshot used by that run and whether an operator replacement
+changed its provider revision. See [static provider metadata](../reference/provider-metadata.md)
+for the offline refresh path; no network response silently rewrites these claims.
+
 ## Select a built-in provider
 
 For one run:
@@ -32,6 +38,7 @@ Or set trusted user defaults in `~/.core/config.json`:
 
 ```json
 {
+  "schema_version": 2,
   "provider": "anthropic",
   "model": "PROVIDER_MODEL_ID"
 }
@@ -45,6 +52,7 @@ Operator-defined providers also live only in `~/.core/config.json`:
 
 ```json
 {
+  "schema_version": 2,
   "provider": "gateway",
   "providers": [
     {

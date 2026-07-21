@@ -1,12 +1,11 @@
 //! Bounded contracts and non-authoritative assessors for a future Core evolution control plane.
 //!
 //! This crate is intentionally **outside** the runtime trusted computing base. It cannot load a
-//! policy, mutate a registry, change a deployment stage, grant a capability, execute a tool, or
-//! hot-swap a running agent. In particular, [`PromotionGate::assess`] only evaluates untrusted
-//! caller assertions and returns advice for a future release authority; it is not a promotion
-//! gate in the security sense. No activation path is wired, and adaptive policy activation is
-//! explicitly **NO-GO** until a separate evolution TCB supplies authenticated evidence, registry
-//! state, attestation, separation of duties, rollback, and runtime enforcement.
+//! policy, grant a capability, execute a tool, or hot-swap a running agent. Its append-only
+//! registries retain offline evidence. [`PromotionGate::assess`] remains non-authoritative advice;
+//! the separate [`PromotionAuthority`] can only advance an authenticated, fixed-policy offline
+//! release record and active-bundle pointer. It has no runtime registry handle or loader, so
+//! adaptive runtime activation remains explicitly **NO-GO**.
 //!
 //! The contracts are method-agnostic: hand-authored rules, search, contextual bandits, SFT,
 //! preference optimization, GRPO, offline RL, online RL, LoRA/adapters, and generated policy code
@@ -17,7 +16,89 @@ use core_protocol::{Capability, RunId, TenantId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const EVOLUTION_SCHEMA_VERSION: u16 = 1;
+mod admission;
+mod dataset;
+mod dataset_registry;
+mod evidence;
+mod producer;
+mod promotion;
+mod promotion_auth;
+mod promotion_authority;
+mod promotion_authority_verify;
+mod promotion_evaluation;
+mod promotion_journal;
+mod promotion_state;
+mod registry;
+mod schema;
+mod training;
+mod verifier;
+mod verifier_crypto;
+mod verifier_eval;
+
+#[cfg(test)]
+mod verifier_tests;
+
+pub use admission::{
+    CapabilityAdmission, CapabilityAdmissionError, EffectiveCapabilities, ManifestAdmissionPolicy,
+    ParentCapabilityCeiling,
+};
+pub use dataset::{
+    GovernedDatasetError, GovernedTrainingDataset, MAX_GOVERNED_DATASET_BYTES,
+    MAX_GOVERNED_DATASET_TRAJECTORIES,
+};
+pub use dataset_registry::{
+    ConsentAwareDatasetRegistry, DatasetAuditEvent, DatasetAuditKind, DatasetMemberIdentity,
+    DatasetRegistration, DatasetRegistryError, MAX_DATASET_AUDIT_EVENTS, MAX_DATASET_REVOCATIONS,
+    MAX_REGISTERED_DATASETS,
+};
+pub use evidence::{EvidenceRecordError, EvidenceRecorder};
+pub use producer::{
+    MAX_INERT_RULE_ARTIFACT_BYTES, MAX_OFFLINE_RULE_CANDIDATES, OfflineProducerError,
+    OfflineRuleCandidate, OfflineRuleSearchProducer, OfflineRuleSearchSpec,
+    ProducedPolicyCandidate,
+};
+pub use promotion::{
+    DeploymentBundle, EvaluatorTrustAnchor, MAX_DEPLOYMENT_BUNDLE_BYTES,
+    MAX_EVALUATOR_TRUST_ANCHORS, MAX_PROMOTION_AUDIT_EVENTS, MAX_PROMOTION_AUTH_BYTES,
+    MAX_PROMOTION_CANDIDATES, MAX_PROMOTION_KEY_BYTES, MAX_PROMOTION_TRUST_ANCHORS,
+    PromotionAuthorityError, PromotionAuthorityKey, PromotionControlPolicy, PromotionRole,
+    PromotionTrustAnchor, StageLimits,
+};
+pub use promotion_auth::{
+    PromotionAuthorization, PromotionAuthorizer, PromotionOperation, PromotionRequest,
+};
+pub use promotion_authority::PromotionAuthority;
+pub use promotion_evaluation::{
+    BoundedStageExecutor, HeldOutEvaluation, IndependentEvaluator, SignedHeldOutEvaluation,
+    SignedStageObservation, StageObservation, StagePermit,
+};
+pub use promotion_state::{PromotionAuditEvent, PromotionAuditKind, PromotionLineage};
+pub use registry::{
+    BundleLineage, MAX_TRAJECTORY_LINEAGE_POLICIES, MAX_TRAJECTORY_REGISTRY_BYTES,
+    MAX_TRAJECTORY_REGISTRY_ENVELOPE_BYTES, MAX_TRAJECTORY_REGISTRY_RECORD_BYTES,
+    MAX_TRAJECTORY_REGISTRY_RECORDS, RegisteredTrajectory, TrajectoryAddress, TrajectoryIngest,
+    TrajectoryLineage, TrajectoryRegistry, TrajectoryRegistryError,
+};
+pub use schema::{
+    EVOLUTION_PREVIOUS_SCHEMA_VERSION, EvolutionDocumentKind, EvolutionLoadError,
+    MAX_POLICY_MANIFEST_JSON_BYTES, MAX_TRAJECTORY_JSON_BYTES,
+};
+pub use training::{
+    MAX_RETENTION_POLICY_TABLE_ENTRIES, MAX_TRAINING_LICENSE_ALLOWLIST_ENTRIES,
+    RetentionTrainingUse, TrainingAdmissionPolicy, TrainingEligibilityError,
+    TrainingEligibleTrajectory,
+};
+pub use verifier::{
+    AttestationKey, EvolutionVerifier, MAX_ATTESTATION_KEY_BYTES, MAX_TRUSTED_PRODUCERS,
+    MAX_VERIFIED_ARTIFACT_BYTES, ProducerTrustAnchor, SignedTrajectory, VerifiedCandidateInputs,
+    VerifiedTrainingDataset, VerifiedTrajectory, VerifierError,
+};
+pub use verifier_eval::{EvaluationSuite, EvaluationTask, MAX_EVALUATION_TASKS};
+
+#[cfg(test)]
+mod promotion_tests;
+
+pub const EVOLUTION_SCHEMA_VERSION: u16 = 2;
 
 /// Contract bounds are defense in depth after a bounded transport/deserializer. They do not make
 /// it safe to deserialize an arbitrarily large request into memory first.
@@ -205,8 +286,8 @@ fn add_action_size(total: &mut usize, amount: usize) -> Result<(), ContractError
 
 /// Iterative traversal avoids making attacker-selected JSON depth equal Rust call-stack depth.
 /// String and key bytes are charged at their worst-case JSON escape expansion, yielding a
-/// conservative serialized-size estimate. The action digest is only an identifier and is not
-/// proof that the content met this bound.
+/// conservative serialized-size estimate. Contract validation does not recompute the action
+/// digest; callers that need an authoritative content binding must cross [`EvidenceRecorder`].
 fn validate_action_json(value: &serde_json::Value) -> Result<(), ContractError> {
     let mut pending = vec![(value, 1_usize)];
     let mut nodes = 0_usize;
@@ -442,8 +523,9 @@ impl PolicyBundle {
     }
 }
 
-/// Contract for one learnable decision. Digest fields and propensity are caller assertions here;
-/// a trusted recorder must capture and bind them to canonical data before an effect.
+/// Contract for one learnable decision. Digest fields and propensity remain caller assertions
+/// under [`StrategyDecision::validate`]. A trusted capture path must use [`EvidenceRecorder`] to
+/// generate or verify `action_digest` from canonical action bytes before treating it as evidence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StrategyDecision {
     pub decision_id: String,
@@ -616,74 +698,6 @@ impl TrajectoryEnvelope {
         }
         Ok(())
     }
-
-    /// Validate the audit/evaluation envelope, then require explicit training authorization.
-    /// Evaluation-only and denied trajectories remain valid audit contracts but cannot be
-    /// converted into [`TrainingEligibleTrajectory`].
-    pub fn validate_for_training(&self) -> Result<(), TrainingEligibilityError> {
-        self.validate()?;
-        if self.governance.consent != TrainingConsent::Allowed {
-            return Err(TrainingEligibilityError::ConsentNotAllowed(
-                self.governance.consent,
-            ));
-        }
-        if self.governance.contains_secret_material {
-            return Err(TrainingEligibilityError::ContainsSecretMaterial);
-        }
-        if matches!(
-            self.governance.class,
-            DataClass::Secret | DataClass::Unknown
-        ) {
-            return Err(TrainingEligibilityError::ProhibitedDataClass(
-                self.governance.class,
-            ));
-        }
-        if self
-            .governance
-            .content_license
-            .as_ref()
-            .is_none_or(|value| value.trim().is_empty())
-        {
-            return Err(TrainingEligibilityError::MissingContentLicense);
-        }
-        Ok(())
-    }
-}
-
-/// A borrow proven eligible for a training-data export at this contract boundary. This proof does
-/// not authenticate tenant/governance assertions; a future evolution TCB must do that before use.
-#[derive(Debug, Clone, Copy)]
-pub struct TrainingEligibleTrajectory<'a> {
-    envelope: &'a TrajectoryEnvelope,
-}
-
-impl<'a> TrainingEligibleTrajectory<'a> {
-    pub fn envelope(self) -> &'a TrajectoryEnvelope {
-        self.envelope
-    }
-}
-
-impl<'a> TryFrom<&'a TrajectoryEnvelope> for TrainingEligibleTrajectory<'a> {
-    type Error = TrainingEligibilityError;
-
-    fn try_from(envelope: &'a TrajectoryEnvelope) -> Result<Self, Self::Error> {
-        envelope.validate_for_training()?;
-        Ok(Self { envelope })
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum TrainingEligibilityError {
-    #[error("trajectory contract is invalid: {0}")]
-    InvalidContract(#[from] ContractError),
-    #[error("training consent is {0:?}, not allowed")]
-    ConsentNotAllowed(TrainingConsent),
-    #[error("data class {0:?} is prohibited for training")]
-    ProhibitedDataClass(DataClass),
-    #[error("trajectory is marked as containing secret material")]
-    ContainsSecretMaterial,
-    #[error("training requires a non-empty content license")]
-    MissingContentLicense,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1004,6 +1018,21 @@ mod tests {
         }
     }
 
+    fn training_policy() -> TrainingAdmissionPolicy {
+        TrainingAdmissionPolicy::new(
+            ["apache-2.0".to_owned()].into(),
+            [
+                ("training-v1".to_owned(), RetentionTrainingUse::Allowed),
+                (
+                    "enterprise-audit-30d".to_owned(),
+                    RetentionTrainingUse::Prohibited,
+                ),
+            ]
+            .into(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn vertical_slots_are_open_but_namespaced_and_bounded() {
         assert_eq!(
@@ -1025,7 +1054,7 @@ mod tests {
         });
         assert!(audit_only.validate().is_ok());
         assert!(matches!(
-            TrainingEligibleTrajectory::try_from(&audit_only),
+            training_policy().admit(&audit_only),
             Err(TrainingEligibilityError::ConsentNotAllowed(
                 TrainingConsent::EvaluationOnly
             ))
@@ -1042,15 +1071,20 @@ mod tests {
             retention_policy: "training-v1".into(),
         };
         let eligible = envelope(allowed.clone());
-        let proof = TrainingEligibleTrajectory::try_from(&eligible).unwrap();
+        let policy = training_policy();
+        let proof = policy.admit(&eligible).unwrap();
         assert_eq!(proof.envelope().task_id, "task-a");
+        assert!(matches!(
+            TrainingEligibleTrajectory::try_from(&eligible),
+            Err(TrainingEligibilityError::ExplicitAdmissionPolicyRequired)
+        ));
 
         let contains_secret = envelope(DataGovernance {
             contains_secret_material: true,
             ..allowed.clone()
         });
         assert!(matches!(
-            contains_secret.validate_for_training(),
+            policy.validate_trajectory(&contains_secret),
             Err(TrainingEligibilityError::ContainsSecretMaterial)
         ));
 
@@ -1060,7 +1094,7 @@ mod tests {
                 ..allowed.clone()
             });
             assert!(matches!(
-                prohibited.validate_for_training(),
+                policy.validate_trajectory(&prohibited),
                 Err(TrainingEligibilityError::ProhibitedDataClass(actual)) if actual == class
             ));
         }
@@ -1070,7 +1104,7 @@ mod tests {
             ..allowed
         });
         assert!(matches!(
-            unlicensed.validate_for_training(),
+            policy.validate_trajectory(&unlicensed),
             Err(TrainingEligibilityError::MissingContentLicense)
         ));
     }

@@ -11,7 +11,6 @@ use tokio::sync::Semaphore;
 #[derive(Clone)]
 pub struct Governor {
     sem: Arc<Semaphore>,
-    max: usize,
 }
 
 impl Governor {
@@ -22,7 +21,6 @@ impl Governor {
         let max = max.max(1);
         Governor {
             sem: Arc::new(Semaphore::new(max)),
-            max,
         }
     }
 
@@ -40,15 +38,6 @@ impl Governor {
     /// caller (a sync context) must not await, and can fall back to running the work inline.
     pub fn try_acquire(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
         self.sem.clone().try_acquire_owned().ok()
-    }
-
-    pub fn max(&self) -> usize {
-        self.max
-    }
-
-    /// How many slots are free right now (for obs / backpressure signals).
-    pub fn available(&self) -> usize {
-        self.sem.available_permits()
     }
 }
 

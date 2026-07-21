@@ -22,18 +22,36 @@ pub mod checkpoint;
 pub mod redact;
 pub mod session;
 
-pub use checkpoint::{Snapshot, checkpoint, rewind_workspace};
+mod cache_io;
+
+pub use checkpoint::{
+    Snapshot, checkpoint, checkpoint_excluding_runtime_state, checkpoint_supported,
+    rewind_workspace,
+};
 pub use session::{
-    Provenance, SessionMeta, fork, list, load_forked, meta, most_recent, reindex, write_meta,
+    Provenance, ScopedEvent, SessionAncestryReceipt, SessionMeta, fork, list, load_forked,
+    load_forked_scoped, meta, meta_with_pricing, most_recent, reindex,
 };
 
-use core_protocol::{Event, RunId, Seq, TenantId};
+use core_protocol::{
+    Event, EventKind, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, RunId, Seq, TenantId,
+};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
 const MAX_RUN_ID_BYTES: usize = 200;
+pub(crate) const MAX_RECORD_LINE_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_ROLLOUT_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_ROLLOUT_EVENTS: usize = 100_000;
+pub(crate) const MAX_ROLLOUT_PHYSICAL_LINES: usize = MAX_ROLLOUT_EVENTS + 1_024;
+
+#[cfg(test)]
+std::thread_local! {
+    static AFTER_VISIT_METADATA_PREFLIGHT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecordError {
@@ -41,6 +59,8 @@ pub enum RecordError {
     Io(#[from] std::io::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("pricing evidence: {0}")]
+    Pricing(#[from] core_obs::PricingError),
     /// Another live writer already owns this run's journal. Retrying the same run concurrently
     /// would fork the in-memory hash-chain heads and irreversibly interleave the append stream, so
     /// the second writer is rejected before it scans or mutates the file.
@@ -60,6 +80,28 @@ pub enum RecordError {
     /// configured runs directory (or alias a Windows device when records are moved across hosts).
     #[error("invalid run id: {reason}")]
     InvalidRunId { reason: &'static str },
+    /// Public protocol versions are enforced at the one durable append boundary. This prevents an
+    /// embedder from pairing a V2-only nested value with a V1 top-level tag and producing a record
+    /// that an older reader recognizes but cannot deserialize.
+    #[error("invalid public event schema: {reason}")]
+    InvalidEventSchema { reason: &'static str },
+    /// Bound every physical JSONL record before parsing its nested payload. Typed protocol fields
+    /// have their own cardinality caps; this outer bound prevents a hostile line from forcing an
+    /// unbounded `serde_json::Value` allocation first.
+    #[error("record line is {bytes} bytes, exceeding the {max}-byte limit")]
+    RecordLineTooLarge { bytes: usize, max: usize },
+    #[error("durable environment context is {bytes} bytes, exceeding the {max}-byte limit")]
+    EnvironmentContextTooLarge { bytes: usize, max: usize },
+    #[error("rollout is {bytes} bytes, exceeding the {max}-byte replay limit")]
+    RolloutTooLarge { bytes: u64, max: u64 },
+    #[error("rollout exceeds the {max}-event replay limit")]
+    TooManyEvents { max: usize },
+    #[error("rollout exceeds the {max}-physical-line scan limit")]
+    TooManyRecordLines { max: usize },
+    /// Sequence numbers are part of the durable total order, not caller-provided labels. A reader
+    /// must reject gaps, duplicates, and wraparound before using a line as the next chain head.
+    #[error("record sequence is not contiguous: expected {expected}, found {found}")]
+    SequenceBroken { expected: u64, found: u64 },
     /// Once an append has reached file I/O, an error leaves durability ambiguous: the line may be
     /// absent, partial, or complete-but-not-confirmed. Continuing from the old in-memory head could
     /// fork the chain, so the writer fails closed until it is dropped and reopened/recovered.
@@ -201,6 +243,162 @@ fn hash_line(prev: &str, seq: u64, payload: &serde_json::Value) -> String {
     hex::encode(h.finalize())
 }
 
+/// Enforce the environment field's protocol bound at every durable read and write boundary.
+/// Frontend setters are not sufficient: records can be produced by embedders, copied between
+/// versions, or be independently hash-valid while carrying a hostile nested field.
+pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
+    let environment = match &event.kind {
+        EventKind::RunStart { environment, .. } => environment.as_ref(),
+        EventKind::ContextInjection { instructions, .. } => instructions
+            .as_ref()
+            .and_then(|instructions| instructions.environment.as_ref()),
+        _ => None,
+    };
+    if let Some(environment) = environment {
+        let bytes = environment.text.len();
+        if bytes > MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES {
+            return Err(RecordError::EnvironmentContextTooLarge {
+                bytes,
+                max: MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES,
+            });
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_record_line_size(bytes: usize) -> Result<(), RecordError> {
+    if bytes > MAX_RECORD_LINE_BYTES {
+        Err(RecordError::RecordLineTooLarge {
+            bytes,
+            max: MAX_RECORD_LINE_BYTES,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn ensure_rollout_size(bytes: u64) -> Result<(), RecordError> {
+    if bytes > MAX_ROLLOUT_BYTES {
+        Err(RecordError::RolloutTooLarge {
+            bytes,
+            max: MAX_ROLLOUT_BYTES,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn admit_stream_bytes(total: &mut u64, bytes: usize) -> Result<(), RecordError> {
+    *total = total
+        .checked_add(bytes as u64)
+        .ok_or(RecordError::RolloutTooLarge {
+            bytes: u64::MAX,
+            max: MAX_ROLLOUT_BYTES,
+        })?;
+    ensure_rollout_size(*total)
+}
+
+/// Read at most one physical JSONL line without ever allocating past the global line bound.
+/// The boolean reports whether a newline terminated the bytes; an unterminated final line is a
+/// tolerated torn append and is never passed to a parser.
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+) -> Result<Option<(Vec<u8>, bool, usize)>, RecordError> {
+    let mut bytes = Vec::new();
+    let mut bounded = (&mut *reader).take((MAX_RECORD_LINE_BYTES + 1) as u64);
+    let consumed = bounded.read_until(b'\n', &mut bytes)?;
+    if consumed == 0 {
+        return Ok(None);
+    }
+    ensure_record_line_size(consumed)?;
+    let terminated = bytes.last() == Some(&b'\n');
+    if terminated {
+        bytes.pop();
+    }
+    Ok(Some((bytes, terminated, consumed)))
+}
+
+fn visit_record_lines_with_budget(
+    path: &Path,
+    total_bytes: &mut u64,
+    total_physical_lines: &mut usize,
+    mut visitor: impl FnMut(&str) -> Result<(), RecordError>,
+) -> Result<(), RecordError> {
+    let file = File::open(path)?;
+    let declared_total =
+        total_bytes
+            .checked_add(file.metadata()?.len())
+            .ok_or(RecordError::RolloutTooLarge {
+                bytes: u64::MAX,
+                max: MAX_ROLLOUT_BYTES,
+            })?;
+    ensure_rollout_size(declared_total)?;
+    #[cfg(test)]
+    AFTER_VISIT_METADATA_PREFLIGHT.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+    let mut reader = BufReader::new(file);
+    let mut events = 0usize;
+    while let Some((bytes, terminated, consumed)) = read_bounded_line(&mut reader)? {
+        // File length is only a preflight snapshot. Charge the bytes actually consumed as well so
+        // a concurrent append cannot expand one replay from 64 MiB to 100k nearly-8-MiB lines.
+        admit_stream_bytes(total_bytes, consumed)?;
+        if !terminated {
+            break;
+        }
+        *total_physical_lines = total_physical_lines.saturating_add(1);
+        if *total_physical_lines > MAX_ROLLOUT_PHYSICAL_LINES {
+            return Err(RecordError::TooManyRecordLines {
+                max: MAX_ROLLOUT_PHYSICAL_LINES,
+            });
+        }
+        let text = std::str::from_utf8(&bytes).map_err(|error| {
+            RecordError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?;
+        if !text.trim().is_empty() {
+            events = events.saturating_add(1);
+            if events > MAX_ROLLOUT_EVENTS {
+                return Err(RecordError::TooManyEvents {
+                    max: MAX_ROLLOUT_EVENTS,
+                });
+            }
+        }
+        visitor(text)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn visit_record_lines(
+    path: &Path,
+    visitor: impl FnMut(&str) -> Result<(), RecordError>,
+) -> Result<(), RecordError> {
+    let mut total_bytes = 0;
+    let mut total_physical_lines = 0;
+    visit_record_lines_with_budget(path, &mut total_bytes, &mut total_physical_lines, visitor)
+}
+
+pub(crate) fn visit_record_lines_charged(
+    path: &Path,
+    total_bytes: &mut u64,
+    total_physical_lines: &mut usize,
+    visitor: impl FnMut(&str) -> Result<(), RecordError>,
+) -> Result<(), RecordError> {
+    visit_record_lines_with_budget(path, total_bytes, total_physical_lines, visitor)
+}
+
+enum SessionProjectionState {
+    /// No projection has been loaded for this writer. The first durable `TurnStart` (or an
+    /// explicit refresh) performs the one bounded replay needed to initialize it.
+    Uninitialized,
+    /// Exact projection of every durable event through this writer's current tail receipt.
+    Ready(Box<session::SessionProjection>),
+    /// Initialization or observation failed. Do not retry a full replay on every later turn;
+    /// closing and reopening the rollout gives a fresh writer one bounded recovery attempt.
+    Disabled,
+}
+
 /// The append-only, hash-chained rollout for one run. Per-run chain (ADR-008): no global
 /// lock, so 100%-coverage append is not a bottleneck across concurrent runs. The open file holds
 /// an OS-level exclusive lock for this object's full lifetime: one run has exactly one writer,
@@ -211,8 +409,16 @@ pub struct Rollout {
     run: RunId,
     tenant: TenantId,
     seq: Seq,
+    event_count: usize,
+    physical_line_count: usize,
+    /// Exact newline-terminated bytes verified at open or durably written by this descriptor.
+    /// Cache coverage is pinned to this cursor, never promoted from a later metadata() sample.
+    durable_bytes: u64,
     last_hash: String,
     poisoned: bool,
+    /// Record-owned so every public append path observes the actual redacted, stamped event only
+    /// after fsync. A caller cannot bypass the session projection by appending directly.
+    session_projection: SessionProjectionState,
 }
 
 impl Rollout {
@@ -223,14 +429,40 @@ impl Rollout {
         self.seq == Seq::ZERO && self.last_hash == ZERO_HASH
     }
 
+    /// Sequence that will be assigned to the next durable event. Checkpoint producers bind a
+    /// workspace snapshot to this exact position before appending its `Checkpoint` event.
+    pub fn next_sequence(&self) -> Seq {
+        self.seq
+    }
+
     /// Open (creating) the rollout for a run under `dir`. If the file exists, resume the
     /// chain from its tail (recoverable, invariant #2). The exclusive writer lock is acquired
     /// before tail recovery, so a second process can neither race the scan nor interleave appends.
     pub fn open(dir: &Path, run: &RunId, tenant: TenantId) -> Result<Self, RecordError> {
-        let path = validated_run_path(dir, run, ".jsonl")?;
-        std::fs::create_dir_all(dir)?;
+        Self::open_with_create(dir, run, tenant, true)
+    }
+
+    /// Open an existing rollout without creating an empty record when the requested run is absent.
+    /// Resume frontends use this before replay so the writer lock covers route/message recovery as
+    /// well as every later append, closing the read-before-lock race with another process.
+    pub fn open_existing(dir: &Path, run: &RunId, tenant: TenantId) -> Result<Self, RecordError> {
+        Self::open_with_create(dir, run, tenant, false)
+    }
+
+    fn open_with_create(
+        dir: &Path,
+        run: &RunId,
+        tenant: TenantId,
+        create: bool,
+    ) -> Result<Self, RecordError> {
+        let _ = validated_run_path(dir, run, ".jsonl")?;
+        if create {
+            std::fs::create_dir_all(dir)?;
+        }
+        let dir = dir.canonicalize()?;
+        let path = validated_run_path(&dir, run, ".jsonl")?;
         let mut file = OpenOptions::new()
-            .create(true)
+            .create(create)
             .read(true)
             .append(true)
             .open(&path)?;
@@ -243,58 +475,82 @@ impl Rollout {
                 return Err(RecordError::WriterLock { path, source });
             }
         }
-        let (seq, last_hash) = match Self::scan_tail(&mut file, &tenant) {
-            Ok(tail) => tail,
-            Err(error) => {
-                // Make the early-return release explicit. Dropping `file` also releases an OS file
-                // lock, but this keeps the RAII ownership transition obvious at the error edge.
-                let _ = file.unlock();
-                return Err(error);
-            }
-        };
+        let (seq, event_count, physical_line_count, last_hash) =
+            match Self::scan_tail(&mut file, &tenant) {
+                Ok(tail) => tail,
+                Err(error) => {
+                    // Make the early-return release explicit. Dropping `file` also releases an OS file
+                    // lock, but this keeps the RAII ownership transition obvious at the error edge.
+                    let _ = file.unlock();
+                    return Err(error);
+                }
+            };
+        let durable_bytes = file.metadata()?.len();
         Ok(Rollout {
             path,
             file,
             run: run.clone(),
             tenant,
             seq,
+            event_count,
+            physical_line_count,
+            durable_bytes,
             last_hash,
             poisoned: false,
+            session_projection: SessionProjectionState::Uninitialized,
         })
     }
 
     /// Scan to the tail, tolerating a single **torn trailing line** from a crash mid-append
     /// (code review: a partial last line must not make the whole run unresumable). Every
-    /// newline-terminated line is chain-verified (tampering still fails); only an unterminated or
-    /// unparseable FINAL line is treated as torn — the file is truncated back to before it.
-    fn scan_tail(file: &mut File, tenant: &TenantId) -> Result<(Seq, String), RecordError> {
+    /// newline-terminated line is chain-verified (tampering still fails); only an unterminated
+    /// FINAL line is treated as torn — the file is truncated back to before it.
+    fn scan_tail(
+        file: &mut File,
+        tenant: &TenantId,
+    ) -> Result<(Seq, usize, usize, String), RecordError> {
         file.seek(SeekFrom::Start(0))?;
-        let mut content = Vec::new();
-        file.read_to_end(&mut content)?;
-        let mut seq = Seq::ZERO;
+        let mut next_seq = Seq::ZERO;
         let mut last = ZERO_HASH.to_string();
-        let mut saw_line = false;
-        let mut good_len: usize = 0; // byte length of the verified, newline-terminated prefix
-        let mut pos = 0usize;
-        while pos < content.len() {
-            // find the next newline
-            let nl = content[pos..].iter().position(|&b| b == b'\n');
-            let Some(rel) = nl else {
-                // no trailing newline -> the last line is torn; drop it.
+        let mut event_count = 0usize;
+        let mut physical_line_count = 0usize;
+        let mut good_len = 0u64; // byte length of the verified, newline-terminated prefix
+        let mut total_bytes = 0u64;
+        let original_len = file.metadata()?.len();
+        ensure_rollout_size(original_len)?;
+        let mut reader = BufReader::new(&mut *file);
+        while let Some((line, terminated, consumed)) = read_bounded_line(&mut reader)? {
+            admit_stream_bytes(&mut total_bytes, consumed)?;
+            if !terminated {
                 break;
-            };
-            let line_end = pos + rel;
-            let line = &content[pos..line_end];
-            let text = std::str::from_utf8(line).map_err(|e| {
-                RecordError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            }
+            physical_line_count = physical_line_count.saturating_add(1);
+            if physical_line_count > MAX_ROLLOUT_PHYSICAL_LINES {
+                return Err(RecordError::TooManyRecordLines {
+                    max: MAX_ROLLOUT_PHYSICAL_LINES,
+                });
+            }
+            let text = std::str::from_utf8(&line).map_err(|error| {
+                RecordError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
             })?;
             if text.trim().is_empty() {
-                pos = line_end + 1;
-                good_len = pos;
+                good_len = good_len.saturating_add(consumed as u64);
                 continue;
+            }
+            event_count = event_count.saturating_add(1);
+            if event_count > MAX_ROLLOUT_EVENTS {
+                return Err(RecordError::TooManyEvents {
+                    max: MAX_ROLLOUT_EVENTS,
+                });
             }
             match serde_json::from_str::<ChainLine>(text) {
                 Ok(cl) => {
+                    if cl.seq != next_seq.0 {
+                        return Err(RecordError::SequenceBroken {
+                            expected: next_seq.0,
+                            found: cl.seq,
+                        });
+                    }
                     ensure_tenant(tenant, &cl.tenant, cl.seq)?;
                     // verify the chain link
                     let computed = hash_line(&cl.prev, cl.seq, &cl.payload);
@@ -305,27 +561,30 @@ impl Rollout {
                             computed,
                         });
                     }
-                    seq = Seq(cl.seq);
+                    let event: Event = serde_json::from_value(cl.payload)?;
+                    validate_event_bounds(&event)?;
                     last = cl.hash;
-                    saw_line = true;
-                    pos = line_end + 1;
-                    good_len = pos;
+                    next_seq = next_seq.next();
+                    good_len = good_len.saturating_add(consumed as u64);
                 }
                 // A newline-terminated line that fails to parse in the MIDDLE is corruption, not
                 // a torn tail; surface it. (Only an unterminated final line is "torn".)
                 Err(e) => return Err(RecordError::Json(e)),
             }
         }
+        drop(reader);
         // Truncate any torn trailing bytes so the next append starts clean.
-        if good_len < content.len() {
-            file.set_len(good_len as u64)?;
+        let current_len = file.metadata()?.len();
+        ensure_rollout_size(current_len)?;
+        if good_len < current_len {
+            file.set_len(good_len)?;
             file.sync_all()?;
         }
         // `append` ignores the cursor on supported platforms, but restoring it to the verified end
         // makes the intended state explicit and keeps the descriptor ready for any future non-
         // append write implementation.
         file.seek(SeekFrom::End(0))?;
-        Ok((if saw_line { seq.next() } else { Seq::ZERO }, last))
+        Ok((next_seq, event_count, physical_line_count, last))
     }
 
     /// Append an event. Durably `fsync`s before returning (ADR-008 write-ahead durability), and
@@ -338,9 +597,25 @@ impl Rollout {
         if self.poisoned {
             return Err(RecordError::WriterPoisoned);
         }
+        if self.event_count >= MAX_ROLLOUT_EVENTS {
+            return Err(RecordError::TooManyEvents {
+                max: MAX_ROLLOUT_EVENTS,
+            });
+        }
+        if self.physical_line_count >= MAX_ROLLOUT_PHYSICAL_LINES {
+            return Err(RecordError::TooManyRecordLines {
+                max: MAX_ROLLOUT_PHYSICAL_LINES,
+            });
+        }
+        event
+            .kind
+            .validate_compatibility_tag()
+            .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
+        validate_event_bounds(event)?;
         // Scrub known-secret shapes from tool output before it enters the durable record
         // (ADR-008 §1). The caller's live copy (the model context) is untouched.
         let mut event = redact::redact_event(event);
+        validate_event_bounds(&event)?;
         // Stamp the authoritative seq into the payload before hashing so the on-disk record is
         // self-consistent going forward (the caller emits a placeholder seq; see `replay`). The
         // hash then covers the true seq. `replay` still overwrites from the chain line, so legacy
@@ -359,6 +634,23 @@ impl Rollout {
         };
         let mut line = serde_json::to_string(&cl)?;
         line.push('\n');
+        ensure_record_line_size(line.len())?;
+        let current_bytes = self.file.metadata()?.len();
+        if current_bytes != self.durable_bytes {
+            self.poisoned = true;
+            return Err(RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "rollout length changed outside the active writer",
+            )));
+        }
+        let next_bytes =
+            current_bytes
+                .checked_add(line.len() as u64)
+                .ok_or(RecordError::RolloutTooLarge {
+                    bytes: u64::MAX,
+                    max: MAX_ROLLOUT_BYTES,
+                })?;
+        ensure_rollout_size(next_bytes)?;
         // After this point an error is ambiguous: write(2) may have committed any prefix and an
         // fsync error may still follow a complete line. Fail-stop until a fresh scan recovers the
         // descriptor and chain head.
@@ -366,10 +658,67 @@ impl Rollout {
         self.file.write_all(line.as_bytes())?;
         self.file.sync_data()?; // durable BEFORE we advance state
         // Only now, after the line is on disk, advance the chain.
-        self.last_hash = hash;
+        self.last_hash = hash.clone();
         self.seq = seq.next();
+        self.event_count = self.event_count.saturating_add(1);
+        self.physical_line_count = self.physical_line_count.saturating_add(1);
+        self.durable_bytes = next_bytes;
         self.poisoned = false;
+        if let SessionProjectionState::Ready(projection) = &mut self.session_projection
+            && projection.observe_committed(event, seq, &hash).is_err()
+        {
+            self.session_projection = SessionProjectionState::Disabled;
+        }
+        if matches!(&event.kind, EventKind::TurnStart) {
+            // Loading after this append means the initial replay already contains this exact
+            // redacted, seq-stamped line. Do not observe it a second time.
+            let _ = self.ensure_session_projection();
+        }
+        if matches!(
+            &event.kind,
+            EventKind::TurnEnd { .. } | EventKind::Done { .. }
+        ) {
+            // Cache writes are rebuildable and must never turn a successful authoritative append
+            // into a reported failure. Explicit refresh callers can inspect the error if needed.
+            let _ = self.refresh_session_cache();
+        }
         Ok(seq)
+    }
+
+    /// Refresh the rebuildable session sidecars from the record-owned incremental projection.
+    /// The first call performs one bounded verified replay; later calls are O(1) in rollout age.
+    pub fn refresh_session_cache(&mut self) -> Result<bool, RecordError> {
+        if !self.ensure_session_projection()? {
+            return Ok(false);
+        }
+        let SessionProjectionState::Ready(projection) = &mut self.session_projection else {
+            unreachable!("a successful projection initialization must be ready");
+        };
+        projection.persist_at(self.durable_bytes)
+    }
+
+    fn ensure_session_projection(&mut self) -> Result<bool, RecordError> {
+        match self.session_projection {
+            SessionProjectionState::Ready(_) => return Ok(true),
+            SessionProjectionState::Disabled => return Ok(false),
+            SessionProjectionState::Uninitialized => {}
+        }
+        let runs_dir = self.path.parent().ok_or_else(|| {
+            RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?;
+        match session::SessionProjection::load(runs_dir, &self.run) {
+            Ok(projection) => {
+                self.session_projection = SessionProjectionState::Ready(Box::new(projection));
+                Ok(true)
+            }
+            Err(error) => {
+                self.session_projection = SessionProjectionState::Disabled;
+                Err(error)
+            }
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -398,22 +747,24 @@ impl Drop for Rollout {
 /// This is promise (a)+(b): the recorded decisions and outputs replay exactly. A broken
 /// chain is an error, not a warning — the record is the audit.
 pub fn replay(path: &Path) -> Result<Vec<Event>, RecordError> {
-    let content = std::fs::read_to_string(path)?;
     let mut events = Vec::new();
     let mut prev = ZERO_HASH.to_string();
+    let mut expected_seq = 0u64;
     let mut tenant: Option<TenantId> = None;
     // A crash mid-append can leave a partial FINAL line (no trailing newline). Tolerate it — drop a
     // torn tail — so a crashed run stays replayable/resumable (code review: the strict read path
     // otherwise defeats the torn-tail tolerance scan_tail was hardened for on the append path).
-    let mut lines: Vec<&str> = content.lines().collect();
-    if !content.is_empty() && !content.ends_with('\n') {
-        lines.pop();
-    }
-    for line in lines {
+    visit_record_lines(path, |line| {
         if line.trim().is_empty() {
-            continue;
+            return Ok(());
         }
         let cl: ChainLine = serde_json::from_str(line)?;
+        if cl.seq != expected_seq {
+            return Err(RecordError::SequenceBroken {
+                expected: expected_seq,
+                found: cl.seq,
+            });
+        }
         if let Some(expected) = &tenant {
             ensure_tenant(expected, &cl.tenant, cl.seq)?;
         } else {
@@ -431,10 +782,11 @@ pub fn replay(path: &Path) -> Result<Vec<Event>, RecordError> {
             return Err(RecordError::ChainBroken {
                 seq: cl.seq,
                 stored: cl.prev,
-                computed: prev,
+                computed: prev.clone(),
             });
         }
         prev = cl.hash;
+        expected_seq = expected_seq.saturating_add(1);
         // The payload's own `seq` is a WRITE-TIME PLACEHOLDER — the kernel emits every event with
         // `Seq::ZERO` and `append` stamps the assigned seq only onto the chain line, not the embedded
         // payload. The authoritative total order is the chain-line seq (`cl.seq`), so overwrite the
@@ -442,16 +794,21 @@ pub fn replay(path: &Path) -> Result<Vec<Event>, RecordError> {
         // `/rewind`) saw seq 0 and branched at genesis, silently discarding the entire parent
         // transcript (review CRITICAL/HIGH). Handles legacy rollouts (payload seq 0) too.
         let mut event: Event = serde_json::from_value(cl.payload)?;
+        validate_event_bounds(&event)?;
         event.seq = Seq(cl.seq);
         events.push(event);
-    }
+        Ok(())
+    })?;
     Ok(events)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{EventKind, Phase, TurnId};
+    use core_protocol::{
+        Block, DurableEnvironmentContext, DurableInstructionContext, Effort, EventKind, Message,
+        Phase, ProviderState, ProviderStateFormat, Role, Trust, TurnId,
+    };
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -475,6 +832,353 @@ mod tests {
     }
 
     #[test]
+    fn durable_environment_bound_is_enforced_on_append_replay_open_and_fork() {
+        fn run_start_environment(text: String) -> Event {
+            Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::RunStart {
+                    cwd: "/workspace".into(),
+                    model: "model-a".into(),
+                    effort: Effort::Medium,
+                    created_at: 1,
+                    environment: Some(DurableEnvironmentContext {
+                        text,
+                        trust: Trust::Workspace,
+                    }),
+                    parent_run: None,
+                    forked_at: None,
+                    parent_hash_at_seq: None,
+                    config_digest: String::new(),
+                    max_usd: None,
+                },
+            }
+        }
+
+        fn injection_environment(text: String) -> Event {
+            Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::ContextInjection {
+                    text: String::new(),
+                    trust: Trust::Trusted,
+                    instructions: Some(DurableInstructionContext {
+                        text: String::new(),
+                        trust: Trust::Trusted,
+                        environment: Some(DurableEnvironmentContext {
+                            text,
+                            trust: Trust::Workspace,
+                        }),
+                    }),
+                },
+            }
+        }
+
+        fn write_hash_valid(path: &Path, events: Vec<Event>) {
+            let mut previous = ZERO_HASH.to_owned();
+            let mut physical = String::new();
+            for (index, mut event) in events.into_iter().enumerate() {
+                event.seq = Seq(index as u64);
+                let payload = serde_json::to_value(event).unwrap();
+                let hash = hash_line(&previous, index as u64, &payload);
+                let line = ChainLine {
+                    seq: index as u64,
+                    tenant: TenantId::default().0,
+                    prev: previous,
+                    hash: hash.clone(),
+                    payload,
+                };
+                physical.push_str(&serde_json::to_string(&line).unwrap());
+                physical.push('\n');
+                previous = hash;
+            }
+            std::fs::write(path, physical).unwrap();
+        }
+
+        let exact_dir = test_dir("environment-exact-bound");
+        let exact_run = RunId("environment-exact-bound".into());
+        let mut rollout = Rollout::open(&exact_dir, &exact_run, TenantId::default()).unwrap();
+        rollout
+            .append(&run_start_environment(
+                "x".repeat(MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES),
+            ))
+            .unwrap();
+        let exact_path = rollout.path().to_path_buf();
+        let bytes_before_rejection = std::fs::metadata(&exact_path).unwrap().len();
+        let oversized =
+            injection_environment("y".repeat(MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES + 1));
+        assert!(matches!(
+            rollout.append(&oversized),
+            Err(RecordError::EnvironmentContextTooLarge { bytes, max })
+                if bytes == MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES + 1
+                    && max == MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES
+        ));
+        assert_eq!(
+            std::fs::metadata(&exact_path).unwrap().len(),
+            bytes_before_rejection,
+            "oversized nested context must fail before record mutation"
+        );
+        rollout.append(&ev(0)).unwrap();
+        drop(rollout);
+        assert_eq!(replay(&exact_path).unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(exact_dir);
+
+        for (label, events, at) in [
+            (
+                "oversized-genesis",
+                vec![run_start_environment(
+                    "g".repeat(MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES + 1),
+                )],
+                Seq::ZERO,
+            ),
+            (
+                "oversized-injection",
+                vec![
+                    ev(0),
+                    injection_environment("i".repeat(MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES + 1)),
+                ],
+                Seq(1),
+            ),
+        ] {
+            let dir = test_dir(label);
+            std::fs::create_dir_all(&dir).unwrap();
+            let run = RunId(label.into());
+            let path = dir.join(format!("{run}.jsonl"));
+            write_hash_valid(&path, events);
+
+            assert!(matches!(
+                replay(&path),
+                Err(RecordError::EnvironmentContextTooLarge { .. })
+            ));
+            assert!(matches!(
+                Rollout::open(&dir, &run, TenantId::default()),
+                Err(RecordError::EnvironmentContextTooLarge { .. })
+            ));
+            assert!(matches!(
+                fork(&dir, &run, at, &TenantId::default()),
+                Err(RecordError::EnvironmentContextTooLarge { .. })
+            ));
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn oversized_complete_record_line_is_rejected_before_payload_parsing() {
+        let dir = test_dir("oversized-line");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("oversized.jsonl");
+        let mut bytes = vec![b'x'; MAX_RECORD_LINE_BYTES + 1];
+        bytes.push(b'\n');
+        std::fs::write(&path, bytes).unwrap();
+
+        assert!(matches!(
+            replay(&path),
+            Err(RecordError::RecordLineTooLarge { .. })
+        ));
+        assert!(matches!(
+            Rollout::open(&dir, &RunId("oversized".into()), TenantId::default()),
+            Err(RecordError::RecordLineTooLarge { .. })
+        ));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn d9_11_g1_oversized_rollout_is_rejected_before_any_line_parsing() {
+        let dir = test_dir("oversized-rollout");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("oversized.jsonl");
+        let file = File::create(&path).unwrap();
+        file.set_len(MAX_ROLLOUT_BYTES + 1).unwrap();
+
+        assert!(matches!(
+            replay(&path),
+            Err(RecordError::RolloutTooLarge {
+                bytes,
+                max: MAX_ROLLOUT_BYTES,
+            }) if bytes == MAX_ROLLOUT_BYTES + 1
+        ));
+        assert!(matches!(
+            Rollout::open(&dir, &RunId("oversized".into()), TenantId::default()),
+            Err(RecordError::RolloutTooLarge {
+                bytes,
+                max: MAX_ROLLOUT_BYTES,
+            }) if bytes == MAX_ROLLOUT_BYTES + 1
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn d9_11_g1_blank_lines_do_not_let_append_create_an_unreplayable_rollout() {
+        let dir = test_dir("blank-line-boundary");
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = RunId("blank-line-boundary".into());
+        let path = dir.join("blank-line-boundary.jsonl");
+        std::fs::write(&path, vec![b'\n'; MAX_ROLLOUT_EVENTS]).unwrap();
+
+        {
+            let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+            assert_eq!(rollout.event_count, 0);
+            rollout.append(&ev(0)).unwrap();
+            assert_eq!(rollout.event_count, 1);
+        }
+        assert_eq!(replay(&path).unwrap().len(), 1);
+        let reopened = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+        assert_eq!(reopened.event_count, 1);
+
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn d9_11_blank_line_cpu_work_has_a_physical_scan_ceiling() {
+        let dir = test_dir("blank-line-scan-ceiling");
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = RunId("blank-line-scan-ceiling".into());
+        let path = dir.join("blank-line-scan-ceiling.jsonl");
+        std::fs::write(&path, vec![b'\n'; MAX_ROLLOUT_PHYSICAL_LINES + 1]).unwrap();
+
+        assert!(matches!(
+            replay(&path),
+            Err(RecordError::TooManyRecordLines {
+                max: MAX_ROLLOUT_PHYSICAL_LINES,
+            })
+        ));
+        assert!(matches!(
+            Rollout::open(&dir, &run, TenantId::default()),
+            Err(RecordError::TooManyRecordLines {
+                max: MAX_ROLLOUT_PHYSICAL_LINES,
+            })
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn d9_11_append_at_exact_physical_line_cap_fails_without_mutating_rollout() {
+        let dir = test_dir("blank-line-exact-cap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = RunId("blank-line-exact-cap".into());
+        let path = dir.join("blank-line-exact-cap.jsonl");
+        std::fs::write(&path, vec![b'\n'; MAX_ROLLOUT_PHYSICAL_LINES]).unwrap();
+        let original_len = std::fs::metadata(&path).unwrap().len();
+
+        let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+        assert!(matches!(
+            rollout.append(&ev(0)),
+            Err(RecordError::TooManyRecordLines {
+                max: MAX_ROLLOUT_PHYSICAL_LINES,
+            })
+        ));
+        drop(rollout);
+
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), original_len);
+        assert!(replay(&path).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn d9_11_g1_non_contiguous_and_wrapping_sequences_fail_closed() {
+        for found in [1, u64::MAX] {
+            let dir = test_dir("broken-sequence");
+            std::fs::create_dir_all(&dir).unwrap();
+            let run = RunId(format!("broken-sequence-{found}"));
+            let path = dir.join(format!("{}.jsonl", run.0));
+            let payload = serde_json::to_value(ev(0)).unwrap();
+            let line = ChainLine {
+                seq: found,
+                tenant: TenantId::default().0,
+                prev: ZERO_HASH.to_string(),
+                hash: hash_line(ZERO_HASH, found, &payload),
+                payload,
+            };
+            std::fs::write(
+                &path,
+                format!("{}\n", serde_json::to_string(&line).unwrap()),
+            )
+            .unwrap();
+
+            assert!(matches!(
+                replay(&path),
+                Err(RecordError::SequenceBroken {
+                    expected: 0,
+                    found: actual,
+                }) if actual == found
+            ));
+            assert!(matches!(
+                Rollout::open(&dir, &run, TenantId::default()),
+                Err(RecordError::SequenceBroken {
+                    expected: 0,
+                    found: actual,
+                }) if actual == found
+            ));
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn d9_11_g1_writer_event_ceiling_refuses_before_mutation() {
+        let dir = test_dir("event-ceiling");
+        let run = RunId("event-ceiling".into());
+        let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+        rollout.event_count = MAX_ROLLOUT_EVENTS;
+        let before_len = rollout.file.metadata().unwrap().len();
+        let before_seq = rollout.seq;
+
+        assert!(matches!(
+            rollout.append(&ev(0)),
+            Err(RecordError::TooManyEvents {
+                max: MAX_ROLLOUT_EVENTS,
+            })
+        ));
+        assert_eq!(rollout.file.metadata().unwrap().len(), before_len);
+        assert_eq!(rollout.seq, before_seq);
+        drop(rollout);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn d9_11_g2_actual_stream_bytes_cannot_grow_past_the_ceiling() {
+        let mut consumed = MAX_ROLLOUT_BYTES - 1;
+        assert!(matches!(
+            admit_stream_bytes(&mut consumed, 2),
+            Err(RecordError::RolloutTooLarge {
+                bytes,
+                max: MAX_ROLLOUT_BYTES,
+            }) if bytes == MAX_ROLLOUT_BYTES + 1
+        ));
+    }
+
+    #[test]
+    fn d9_11_g2_growth_after_metadata_preflight_is_charged_by_the_real_visitor() {
+        let dir = test_dir("growth-after-preflight");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("growth-after-preflight.jsonl");
+        File::create(&path).unwrap();
+
+        let growing_path = path.clone();
+        AFTER_VISIT_METADATA_PREFLIGHT.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                let mut file = OpenOptions::new().write(true).open(&growing_path).unwrap();
+                file.set_len(MAX_ROLLOUT_BYTES + 1).unwrap();
+                for line in 1..=MAX_ROLLOUT_BYTES / MAX_RECORD_LINE_BYTES as u64 {
+                    file.seek(SeekFrom::Start(line * MAX_RECORD_LINE_BYTES as u64 - 1))
+                        .unwrap();
+                    file.write_all(b"\n").unwrap();
+                }
+                file.sync_all().unwrap();
+            }));
+        });
+
+        assert!(matches!(
+            visit_record_lines(&path, |_| Ok(())),
+            Err(RecordError::RolloutTooLarge {
+                bytes,
+                max: MAX_ROLLOUT_BYTES,
+            }) if bytes == MAX_ROLLOUT_BYTES + 1
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn append_then_replay_roundtrips_and_chain_verifies() {
         let dir = std::env::temp_dir().join(format!("core-rec-{}", std::process::id()));
         let run = RunId("t1".into());
@@ -488,6 +1192,207 @@ mod tests {
         let back = replay(&path).unwrap();
         assert_eq!(back.len(), 3);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn append_rejects_v2_payloads_under_v1_public_tags_without_mutation() {
+        let dir = test_dir("schema-tag-validation");
+        let run = RunId("schema-tag-validation".into());
+        let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+        let v1_metrics = core_protocol::WorkflowMetrics {
+            model_ms: Some(0),
+            tools_ms: Some(0),
+            ..core_protocol::WorkflowMetrics::default()
+        };
+        let invalid = [
+            EventKind::Workflow {
+                version: core_protocol::WorkflowEventVersion::V1,
+                workflow_id: "w".into(),
+                event: core_protocol::WorkflowEvent::Finished {
+                    outcome: core_protocol::WorkflowOutcome::Drained,
+                    metrics: v1_metrics.clone(),
+                    elapsed_ms: 0,
+                    error_code: None,
+                    error_detail: None,
+                },
+            },
+            EventKind::Workflow {
+                version: core_protocol::WorkflowEventVersion::V1,
+                workflow_id: "w".into(),
+                event: core_protocol::WorkflowEvent::Finished {
+                    outcome: core_protocol::WorkflowOutcome::Done,
+                    metrics: core_protocol::WorkflowMetrics::default(),
+                    elapsed_ms: 0,
+                    error_code: None,
+                    error_detail: None,
+                },
+            },
+            EventKind::WorkflowV2 {
+                version: core_protocol::WorkflowEventVersion::V1,
+                workflow_id: "w".into(),
+                event: core_protocol::WorkflowEvent::Started {
+                    name: "w".into(),
+                    class: "direct".into(),
+                },
+            },
+            EventKind::SubagentFinished {
+                sub_run: "child".into(),
+                outcome: core_protocol::WorkflowChildOutcome::Drained,
+                metrics: v1_metrics.clone(),
+                error_code: None,
+                error_detail: None,
+                summary_digest: None,
+                evidence_bytes: 0,
+            },
+            EventKind::SubagentFinished {
+                sub_run: "child".into(),
+                outcome: core_protocol::WorkflowChildOutcome::Done,
+                metrics: core_protocol::WorkflowMetrics::default(),
+                error_code: None,
+                error_detail: None,
+                summary_digest: None,
+                evidence_bytes: 0,
+            },
+            EventKind::SubagentFinishedV2 {
+                version: core_protocol::WorkflowEventVersion::V1,
+                sub_run: "child".into(),
+                outcome: core_protocol::WorkflowChildOutcome::Done,
+                metrics: core_protocol::WorkflowMetrics::default(),
+                error_code: None,
+                error_detail: None,
+                summary_digest: None,
+                evidence_bytes: 0,
+            },
+        ];
+        for kind in invalid {
+            let error = rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind,
+                })
+                .unwrap_err();
+            assert!(matches!(error, RecordError::InvalidEventSchema { .. }));
+            assert_eq!(rollout.next_sequence(), Seq::ZERO);
+        }
+        assert!(replay(rollout.path()).unwrap().is_empty());
+
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Workflow {
+                    version: core_protocol::WorkflowEventVersion::V1,
+                    workflow_id: "legacy-compatible".into(),
+                    event: core_protocol::WorkflowEvent::Finished {
+                        outcome: core_protocol::WorkflowOutcome::Done,
+                        metrics: v1_metrics,
+                        elapsed_ms: 0,
+                        error_code: None,
+                        error_detail: None,
+                    },
+                },
+            })
+            .unwrap();
+        assert_eq!(replay(rollout.path()).unwrap().len(), 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn d9_07_future_provider_state_replays_and_crosses_a_fork() {
+        let dir = test_dir("provider-state-forward-compatible");
+        std::fs::create_dir_all(&dir).unwrap();
+        let parent = RunId("provider-state-parent".into());
+        let tenant = TenantId::default();
+
+        let genesis = Event {
+            seq: Seq::ZERO,
+            turn: TurnId(0),
+            kind: EventKind::RunStart {
+                cwd: dir.display().to_string(),
+                model: "model".into(),
+                effort: core_protocol::Effort::Medium,
+                created_at: 1,
+                environment: None,
+                parent_run: None,
+                forked_at: None,
+                parent_hash_at_seq: None,
+                config_digest: String::new(),
+                max_usd: None,
+            },
+        };
+        let genesis_payload = serde_json::to_value(genesis).unwrap();
+        let genesis_hash = hash_line(ZERO_HASH, 0, &genesis_payload);
+        let genesis_line = ChainLine {
+            seq: 0,
+            tenant: tenant.0.clone(),
+            prev: ZERO_HASH.into(),
+            hash: genesis_hash.clone(),
+            payload: genesis_payload,
+        };
+
+        let message = Event {
+            seq: Seq(1),
+            turn: TurnId(1),
+            kind: EventKind::Message {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![Block::ProviderState(ProviderState {
+                        route_scope: "provider/model".into(),
+                        format: ProviderStateFormat::Unknown(
+                            "openai.responses.output-items.v2".into(),
+                        ),
+                        payload: serde_json::json!({"opaque":"future"}),
+                    })],
+                },
+            },
+        };
+        let mut message_payload = serde_json::to_value(message).unwrap();
+        message_payload["kind"]["message"]["content"][0]
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "added_by_newer_core".into(),
+                serde_json::json!({"must":"not break replay"}),
+            );
+        let message_hash = hash_line(&genesis_hash, 1, &message_payload);
+        let message_line = ChainLine {
+            seq: 1,
+            tenant: tenant.0.clone(),
+            prev: genesis_hash,
+            hash: message_hash,
+            payload: message_payload,
+        };
+        let physical = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&genesis_line).unwrap(),
+            serde_json::to_string(&message_line).unwrap()
+        );
+        std::fs::write(dir.join(format!("{parent}.jsonl")), physical).unwrap();
+
+        let replayed = replay(&dir.join(format!("{parent}.jsonl"))).unwrap();
+        assert_eq!(replayed.len(), 2);
+        let child = fork(&dir, &parent, Seq(1), &tenant).unwrap();
+        let logical_child = load_forked(&dir, &child).unwrap();
+        let state = logical_child
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::Message { message } => message.content.iter().find_map(|block| {
+                    if let Block::ProviderState(state) = block {
+                        Some(state)
+                    } else {
+                        None
+                    }
+                }),
+                _ => None,
+            })
+            .expect("the verified parent provider state must survive logical fork replay");
+        assert_eq!(
+            state.format,
+            ProviderStateFormat::Unknown("openai.responses.output-items.v2".into())
+        );
+        assert_eq!(state.payload, serde_json::json!({"opaque":"future"}));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -704,7 +1609,7 @@ mod tests {
             matches!(
                 error,
                 RecordError::WriterBusy { ref path }
-                    if path == &dir.join("locked-run.jsonl")
+                    if path == &dir.canonicalize().unwrap().join("locked-run.jsonl")
             ),
             "lock contention must be a typed, actionable WriterBusy error: {error}"
         );
@@ -719,6 +1624,30 @@ mod tests {
             assert_eq!(reopened.append(&ev(0)).unwrap(), Seq::ZERO);
         }
         assert_eq!(replay(&dir.join("locked-run.jsonl")).unwrap().len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn open_existing_never_creates_a_missing_resume_target_and_holds_the_writer_lock() {
+        let dir = test_dir("open-existing");
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = RunId("existing-run".into());
+        let path = dir.join("existing-run.jsonl");
+
+        assert!(Rollout::open_existing(&dir, &run, TenantId::default()).is_err());
+        assert!(
+            !path.exists(),
+            "an invalid --resume id must not create an empty rollout"
+        );
+
+        drop(Rollout::open(&dir, &run, TenantId::default()).unwrap());
+        let locked = Rollout::open_existing(&dir, &run, TenantId::default()).unwrap();
+        assert!(matches!(
+            Rollout::open(&dir, &run, TenantId::default()),
+            Err(RecordError::WriterBusy { .. })
+        ));
+        drop(locked);
+        assert!(Rollout::open_existing(&dir, &run, TenantId::default()).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -804,6 +1733,39 @@ ant-api03-SuperSecretTokenValue12345 in config";
     }
 
     #[test]
+    fn secrets_in_notice_are_scrubbed_and_replayable() {
+        let dir = test_dir("notice-redact");
+        let run = RunId("notice-redact".into());
+        let secret = "ghp_AbCdEf1234567890AbCdEf1234567890";
+        {
+            let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+            rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Notice {
+                        text: format!("provider echoed {secret}"),
+                    },
+                })
+                .unwrap();
+        }
+
+        let path = dir.join("notice-redact.jsonl");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !raw.contains(secret),
+            "notice leaked into the durable record"
+        );
+        assert!(raw.contains("[REDACTED"), "notice secret must be masked");
+        let replayed = replay(&path).unwrap();
+        assert!(matches!(
+            &replayed[0].kind,
+            EventKind::Notice { text } if text.contains("[REDACTED")
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn secrets_in_route_metadata_are_absent_from_the_durable_record() {
         let dir = test_dir("route-redact");
         let run = RunId("route-redact".into());
@@ -846,7 +1808,7 @@ AbCdEf1234567890AbCdEf1234567890"
     }
 
     #[test]
-    fn tampering_breaks_the_chain() {
+    fn d9_11_g3_mid_file_tamper_still_breaks_the_streamed_chain() {
         let dir = std::env::temp_dir().join(format!("core-rec-tamper-{}", std::process::id()));
         let run = RunId("t2".into());
         {
@@ -861,6 +1823,10 @@ AbCdEf1234567890AbCdEf1234567890"
         std::fs::write(&path, tampered).unwrap();
         assert!(matches!(
             replay(&path),
+            Err(RecordError::ChainBroken { .. })
+        ));
+        assert!(matches!(
+            Rollout::open(&dir, &run, TenantId::default()),
             Err(RecordError::ChainBroken { .. })
         ));
         std::fs::remove_dir_all(&dir).ok();
@@ -911,5 +1877,180 @@ AbCdEf1234567890AbCdEf1234567890"
         let path = dir.join("t3.jsonl");
         assert_eq!(replay(&path).unwrap().len(), 2);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d13_14_frozen_rollouts_hash_verify_replay_and_preserve_shape() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root exists");
+        let contract: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("governance/schema-compatibility.json"))
+                .expect("compatibility contract is readable"),
+        )
+        .expect("compatibility contract is JSON");
+        let surface = contract["surfaces"]
+            .as_array()
+            .expect("surfaces is an array")
+            .iter()
+            .find(|surface| surface["id"] == "record.rollout")
+            .expect("record surface is declared");
+        let mut compatibility_shims = surface["compatibility_shims"]
+            .as_array()
+            .expect("compatibility shims is an array")
+            .iter()
+            .collect::<Vec<_>>();
+        compatibility_shims.sort_by(|left, right| {
+            left["target_version"]
+                .as_u64()
+                .cmp(&right["target_version"].as_u64())
+                .then_with(|| left["old_field"].as_str().cmp(&right["old_field"].as_str()))
+        });
+        let active_fields = surface["fields"]
+            .as_array()
+            .expect("surface fields is an array")
+            .iter()
+            .map(|field| {
+                field["name"]
+                    .as_str()
+                    .expect("surface field name is a string")
+                    .to_owned()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let current_version = surface["current_version"]
+            .as_u64()
+            .expect("surface current version is an integer");
+
+        for fixture in surface["fixtures"]
+            .as_array()
+            .expect("fixtures is an array")
+        {
+            let relative = fixture["path"].as_str().expect("fixture path is a string");
+            let path = root.join(relative);
+            let physical = std::fs::read_to_string(&path).expect("rollout fixture is UTF-8");
+            let lines = physical
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            for line in &lines {
+                let typed_line: ChainLine =
+                    serde_json::from_value(line.clone()).unwrap_or_else(|error| {
+                        panic!("{} is not runtime-readable: {error}", path.display())
+                    });
+                let encoded = serde_json::to_value(typed_line).unwrap();
+                let raw = line.as_object().expect("rollout line is an object");
+                let mut canonical = raw.clone();
+                for shim in &compatibility_shims {
+                    let old_field = shim["old_field"]
+                        .as_str()
+                        .expect("shim old field is a string");
+                    let Some(old) = canonical.remove(old_field) else {
+                        continue;
+                    };
+                    if raw.contains_key(old_field) {
+                        assert!(
+                            shim["fixtures"]
+                                .as_array()
+                                .expect("shim fixtures is an array")
+                                .iter()
+                                .any(|fixture| fixture.as_str() == Some(relative)),
+                            "rollout {} uses `{old_field}` without declaring the fixture on its shim",
+                            path.display()
+                        );
+                    }
+                    if let Some(replacement) = shim["replacement"].as_str() {
+                        assert!(
+                            !canonical.contains_key(replacement),
+                            "rollout {} migration would overwrite `{replacement}`",
+                            path.display()
+                        );
+                        canonical.insert(replacement.to_owned(), old);
+                    }
+                    if let Some(version_field) = surface["version_field"].as_str() {
+                        canonical.insert(version_field.to_owned(), shim["target_version"].clone());
+                    }
+                }
+                if let Some(version_field) = surface["version_field"].as_str() {
+                    canonical.insert(version_field.to_owned(), current_version.into());
+                }
+                let canonical_fields = canonical
+                    .keys()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert!(
+                    canonical_fields.is_subset(&active_fields),
+                    "canonical rollout migration retained stale fields in {}: {canonical_fields:?}",
+                    path.display()
+                );
+                let encoded = encoded
+                    .as_object()
+                    .expect("typed rollout line is an object");
+                let encoded_fields = encoded
+                    .keys()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert!(
+                    encoded_fields.is_subset(&active_fields),
+                    "typed rollout emitted undeclared fields in {}: {encoded_fields:?}",
+                    path.display()
+                );
+                for (field, value) in canonical {
+                    assert_eq!(
+                        encoded.get(&field),
+                        Some(&value),
+                        "typed rollout migration changed `{field}` in {}",
+                        path.display(),
+                    );
+                }
+                if fixture["schema_version"].as_u64() == Some(current_version) {
+                    assert_eq!(
+                        serde_json::Value::Object(encoded.clone()),
+                        *line,
+                        "current rollout line changed: {}",
+                        path.display()
+                    );
+                }
+            }
+            let events = replay(&path).unwrap_or_else(|error| {
+                panic!("frozen rollout {} did not replay: {error}", path.display())
+            });
+            assert_eq!(events.len(), lines.len(), "{}", path.display());
+            assert!(!events.is_empty(), "{}", path.display());
+            assert!(matches!(
+                events[0].kind,
+                EventKind::TurnStart | EventKind::RunStart { .. }
+            ));
+            if fixture["schema_version"] == 4 {
+                assert!(matches!(
+                    &events[0].kind,
+                    EventKind::RunStart {
+                        environment: Some(environment),
+                        ..
+                    } if environment.text == "environment snapshot"
+                        && environment.trust == core_protocol::Trust::Workspace
+                ));
+                assert!(events.iter().any(|event| matches!(
+                    &event.kind,
+                    EventKind::ContextInjection {
+                        instructions: Some(core_protocol::DurableInstructionContext {
+                            environment: Some(environment),
+                            ..
+                        }),
+                        ..
+                    } if environment.text == "environment snapshot"
+                        && environment.trust == core_protocol::Trust::Workspace
+                )));
+            }
+            for (line, event) in lines.iter().zip(events) {
+                assert_eq!(
+                    serde_json::to_value(event).unwrap(),
+                    line["payload"],
+                    "rollout event shape changed: {}",
+                    path.display()
+                );
+            }
+        }
     }
 }

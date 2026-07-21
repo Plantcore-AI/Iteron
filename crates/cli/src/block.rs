@@ -5,9 +5,10 @@
 //! `ToolEnd` mutates its ORIGINATING card by id, never by a `Vec` position that eviction would shift
 //! (R2).
 
-use crate::markdown::{MarkdownDoc, render_doc};
-use crate::render::{line_width, wrap_spans};
+use crate::markdown::{MarkdownDoc, render_doc, render_doc_with_hyperlinks};
+use crate::render::{RenderedLines, line_width, wrap_spans};
 use crate::theme::Theme;
+use crate::tui::hyperlink::Policy as HyperlinkPolicy;
 use core_protocol::{DiffTag, FileDiff};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -433,6 +434,23 @@ impl Block {
             BlockKind::Welcome { tagline } => render_welcome(tagline, width, theme),
         }
     }
+
+    /// TUI rendering with OSC 8 regions kept as non-printing metadata. Non-assistant blocks cannot
+    /// currently carry Markdown links and therefore reuse their ordinary semantic renderer.
+    pub(crate) fn render_with_hyperlinks(
+        &self,
+        width: u16,
+        theme: &Theme,
+        spin: usize,
+        hyperlinks: &HyperlinkPolicy,
+    ) -> RenderedLines {
+        match &self.kind {
+            BlockKind::Assistant(doc) => {
+                render_assistant_doc_with_hyperlinks(doc, width, theme, hyperlinks)
+            }
+            _ => RenderedLines::plain(self.render(width, theme, spin)),
+        }
+    }
 }
 
 /// Render both settled and streaming assistant prose with one compact bullet. User prompts retain
@@ -462,6 +480,34 @@ pub(crate) fn render_assistant_doc(
             Line::from(spans)
         })
         .collect()
+}
+
+pub(crate) fn render_assistant_doc_with_hyperlinks(
+    doc: &MarkdownDoc,
+    width: u16,
+    theme: &Theme,
+    hyperlinks: &HyperlinkPolicy,
+) -> RenderedLines {
+    const GUTTER: u16 = 2;
+    if width < GUTTER.saturating_add(1) {
+        return render_doc_with_hyperlinks(doc, width, theme, hyperlinks);
+    }
+    let mut rendered =
+        render_doc_with_hyperlinks(doc, width.saturating_sub(GUTTER), theme, hyperlinks);
+    rendered.shift_columns(GUTTER);
+    for (index, row) in rendered.lines.iter_mut().enumerate() {
+        let mut spans = vec![Span::styled(
+            if index == 0 { "● " } else { "  " },
+            if index == 0 {
+                Style::default().fg(theme.role_assistant)
+            } else {
+                Style::default()
+            },
+        )];
+        spans.append(&mut row.spans);
+        *row = Line::from(spans);
+    }
+    rendered
 }
 
 /// How many blank rows to place before `next`, given the `prev` block. Adjacent tool cards / notices

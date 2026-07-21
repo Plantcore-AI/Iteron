@@ -2,9 +2,9 @@
 //!
 //! When N candidate patches exist, select deterministically (ADR-005 R9: non-judgment steps
 //! are code, not model calls): content-addressed dedup, then rank by the oracle ensemble with
-//! the strength rule (a weak oracle never vetoes), then majority vote, tie-broken by first
-//! appearance. The resolve-vs-ceiling gap = (a correct candidate existed) minus (we selected a
-//! correct one) — the field's most actionable, unreported metric.
+//! the strength rule (a weak oracle never vetoes), then use a signed strength-weighted sum,
+//! tie-broken by first appearance. The resolve-vs-ceiling gap = (a correct candidate existed)
+//! minus (we selected a correct one) — the field's most actionable, unreported metric.
 
 use sha2::{Digest, Sha256};
 
@@ -166,5 +166,28 @@ mod tests {
             !sel.resolved,
             "we did not select a correct one -> resolve-vs-ceiling gap"
         );
+    }
+
+    #[test]
+    fn equal_weighted_scores_choose_the_first_candidate() {
+        let sel = select(vec![
+            cand("first", vec![(Medium, true), (Weak, false)], None),
+            cand("second", vec![(Medium, true), (Weak, false)], None),
+        ]);
+        assert_eq!(sel.chosen, Some(0), "lowest deduped index wins a tie");
+    }
+
+    #[test]
+    fn weakest_advice_never_changes_selection() {
+        let baseline = select(vec![
+            cand("higher", vec![(Weak, true)], None),
+            cand("lower", vec![(Weak, false)], None),
+        ]);
+        let with_advice = select(vec![
+            cand("higher", vec![(Weak, true), (Weakest, false)], None),
+            cand("lower", vec![(Weak, false), (Weakest, true)], None),
+        ]);
+        assert_eq!(baseline.chosen, Some(0));
+        assert_eq!(with_advice.chosen, baseline.chosen);
     }
 }

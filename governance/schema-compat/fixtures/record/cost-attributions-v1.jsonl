@@ -1,0 +1,2 @@
+{"kind":"direct_subagent","parent_run_id":"event-schema","sub_run":"child-1"}
+{"kind":"workflow_child","parent_run_id":"event-schema","workflow_id":"workflow-1","task_id":1,"sub_run":"workflow-child-1"}

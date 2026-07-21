@@ -18,5 +18,5 @@
 pub mod oracle;
 pub mod select;
 
-pub use oracle::{Oracle, OracleStrength, TestOracle, Verdict};
+pub use oracle::{Oracle, OracleStrength, TestOracle, Verdict, VerificationOutcome};
 pub use select::{Candidate, Selection};

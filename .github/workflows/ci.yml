@@ -29,10 +29,21 @@ jobs:
       - name: validate installer, release helpers, and workflows
         run: release-tools/validate.sh
 
+  dependency-audit:
+    name: supply / dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: audit locked dependencies against the pinned RustSec database
+        run: release-tools/audit_dependencies.sh linux-x86_64
+
   boundary:
     name: boundary / validate
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -41,33 +52,160 @@ jobs:
       - name: install pinned Rust toolchain
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: validate ownership and dependency contract on main
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push'
         run: cargo run --locked -p core-xtask -- boundaries check
       - name: materialize trusted base policy
-        if: github.event_name == 'pull_request'
+        id: policy
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
           POLICY_ROOT: ${{ runner.temp }}/core-policy-base
-        run: git worktree add --detach "$POLICY_ROOT" "$BASE_SHA"
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            diff_base_sha=$PR_BASE_SHA
+            policy_sha=$PR_BASE_SHA
+          else
+            test "$EVENT_NAME" = merge_group
+            diff_base_sha=$MERGE_GROUP_BASE_SHA
+            policy_ref=$MERGE_GROUP_BASE_REF
+            [[ "$policy_ref" == refs/heads/* ]]
+            git check-ref-format "$policy_ref"
+            policy_tracking_ref=refs/remotes/origin/core-policy-base
+            git fetch --no-tags origin "+$policy_ref:$policy_tracking_ref"
+            policy_sha=$(git rev-parse "$policy_tracking_ref^{commit}")
+          fi
+
+          [[ "$diff_base_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$policy_sha" =~ ^[0-9a-f]{40}$ ]]
+          candidate_sha=$(git rev-parse 'HEAD^{commit}')
+          [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$policy_sha" "$diff_base_sha"
+          git merge-base --is-ancestor "$diff_base_sha" "$candidate_sha"
+          git worktree add --detach "$POLICY_ROOT" "$policy_sha"
+          {
+            echo "diff-base-sha=$diff_base_sha"
+            echo "policy-sha=$policy_sha"
+          } >> "$GITHUB_OUTPUT"
       - name: build trusted base validator
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         working-directory: ${{ runner.temp }}/core-policy-base
         run: cargo build --locked -p core-xtask
+      - name: validate candidate against published schema chronology
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
+          POLICY_ROOT: ${{ runner.temp }}/core-policy-base
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$POLICY_ROOT/release-tools/schema_release.py" ]]; then
+            printf 'published schema chronology activates after the bootstrap policy lands\n'
+            exit 0
+          fi
+
+          api_version=2026-03-10
+          pages=$RUNNER_TEMP/core-schema-release-pages.jsonl
+          releases=$RUNNER_TEMP/core-schema-releases.json
+          : > "$pages"
+          for page in $(seq 1 11); do
+            page_json=$RUNNER_TEMP/core-schema-release-page-$page.json
+            gh api \
+              -H "X-GitHub-Api-Version: $api_version" \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100&page=$page" \
+              --jq '[.[] | {tag_name, draft, prerelease, immutable}]' \
+              > "$page_json"
+            jq -e 'type == "array" and length <= 100' "$page_json" >/dev/null
+            count=$(jq -r 'length' "$page_json")
+            if [[ "$page" -eq 11 ]]; then
+              if [[ "$count" -ne 0 ]]; then
+                printf 'published release inventory exceeds the 1,000-release limit\n' >&2
+                exit 1
+              fi
+              break
+            fi
+            jq -c '.' "$page_json" >> "$pages"
+            [[ "$count" -eq 100 ]] || break
+          done
+          jq -s '.' "$pages" > "$releases"
+
+          previous=$(python3 "$POLICY_ROOT/release-tools/schema_release.py" \
+            --input "$releases" --latest)
+          if [[ "$previous" == BOOTSTRAP ]]; then
+            "$POLICY_BIN" --repo "$GITHUB_WORKSPACE" \
+              schema-compat check-bootstrap
+            exit 0
+          fi
+
+          [[ "$previous" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$(git cat-file -t "refs/tags/$previous")" = tag
+          previous_commit=$(git rev-parse "refs/tags/$previous^{commit}")
+          candidate_commit=$(git rev-parse HEAD)
+          [[ "$previous_commit" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$candidate_commit" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$previous_commit" "$candidate_commit"
+          gh release verify "$previous" --repo "$GITHUB_REPOSITORY"
+          if git diff --quiet \
+            "$previous_commit" "$candidate_commit" \
+            -- governance/schema-compatibility.json; then
+            printf 'schema contract is unchanged from published release %s\n' "$previous"
+            exit 0
+          fi
+
+          release_policy_root=$RUNNER_TEMP/core-schema-published-policy
+          release_policy_target=$RUNNER_TEMP/core-schema-published-target
+          git worktree add --detach "$release_policy_root" "$previous_commit"
+          (
+            cd "$release_policy_root"
+            CARGO_TARGET_DIR="$release_policy_target" \
+              cargo build --locked -p core-xtask
+          )
+          "$release_policy_target/debug/core-xtask" \
+            --repo "$GITHUB_WORKSPACE" \
+            schema-compat check-release --base "$previous_commit"
+      - name: validate candidate against its immediate trusted base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        env:
+          DIFF_BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
+          POLICY_ROOT: ${{ runner.temp }}/core-policy-base
+        run: |
+          set -euo pipefail
+          check='core-xtask boundaries check-base --base <rev>'
+          if jq -e --arg check "$check" '
+            .boundaries[]
+            | select(.id == "protocol-compat")
+            | .checks
+            | index($check) != null
+          ' "$POLICY_ROOT/governance/boundaries.json" >/dev/null; then
+            "$POLICY_BIN" --repo "$GITHUB_WORKSPACE" \
+              boundaries check-base --base "$DIFF_BASE_SHA"
+          elif [[ -f "$POLICY_ROOT/governance/schema-compatibility.json" ]]; then
+            "$POLICY_BIN" --repo "$GITHUB_WORKSPACE" \
+              schema-compat check-base --base "$DIFF_BASE_SHA"
+          else
+            printf 'one-time schema compatibility bootstrap; no trusted contract exists yet\n'
+          fi
       - name: validate candidate with trusted base policy
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
         run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries check'
       - name: summarize pull request boundary impact
         if: github.event_name == 'pull_request'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
         run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries affected --base "$BASE_SHA" >> "$GITHUB_STEP_SUMMARY"'
       - name: validate pull request responsibility contract
         if: github.event_name == 'pull_request'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
           PR_BODY: ${{ github.event.pull_request.body }}
         run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries check-pr --base "$BASE_SHA"'
@@ -117,7 +255,7 @@ jobs:
   release-build:
     name: release build / ${{ matrix.os }}
     if: github.event_name == 'push'
-    needs: [boundary, test]
+    needs: [boundary, dependency-audit, test]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:

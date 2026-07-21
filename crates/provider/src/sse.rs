@@ -17,7 +17,8 @@
 //! (`event:` / `data:` pairs), so it is unit-testable against a recorded fixture and is the
 //! same code that would replay a recorded stream (ADR-006 promise (b)).
 
-use core_protocol::{Block, ProviderState, StopReason, ToolUse, Usage};
+use crate::UsageReport;
+use core_protocol::{Block, ProviderState, StopReason, StopReasonCode, ToolUse, Usage};
 
 const MAX_SSE_FRAME_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ASSEMBLED_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
@@ -42,7 +43,7 @@ pub enum StreamItem {
     TurnComplete {
         blocks: Vec<Block>,
         stop_reason: StopReason,
-        usage: Usage,
+        usage: UsageReport,
     },
 }
 
@@ -430,9 +431,12 @@ impl StreamParser {
                         "tool_use" => StopReason::ToolUse,
                         "max_tokens" => StopReason::MaxTokens,
                         "stop_sequence" => StopReason::StopSequence,
-                        _ => {
-                            return Err("Anthropic message_delta had an unknown stop reason".into());
-                        }
+                        "refusal" => StopReason::Refusal,
+                        "pause_turn" => StopReason::PauseTurn,
+                        future => StopReason::Unknown(
+                            StopReasonCode::parse(future)
+                                .map_err(|_| "Anthropic stop reason code was invalid")?,
+                        ),
                     };
                     self.stop_reason_set = true;
                 }
@@ -502,7 +506,13 @@ impl StreamParser {
                     StopReason::ToolUse if !has_tool_use => {
                         return Err("tool_use stop reason contained no complete tool call".into());
                     }
-                    StopReason::EndTurn | StopReason::StopSequence if has_tool_use => {
+                    StopReason::EndTurn
+                    | StopReason::StopSequence
+                    | StopReason::Refusal
+                    | StopReason::PauseTurn
+                    | StopReason::Unknown(_)
+                        if has_tool_use =>
+                    {
                         return Err(
                             "complete tool call disagreed with the Anthropic stop reason".into(),
                         );
@@ -510,7 +520,10 @@ impl StreamParser {
                     StopReason::EndTurn
                     | StopReason::ToolUse
                     | StopReason::MaxTokens
-                    | StopReason::StopSequence => {}
+                    | StopReason::StopSequence
+                    | StopReason::Refusal
+                    | StopReason::PauseTurn
+                    | StopReason::Unknown(_) => {}
                 }
                 if self.native_replay_complete && !self.native_blocks.is_empty() {
                     let native_bytes = serde_json::to_vec(&self.native_blocks)
@@ -538,7 +551,7 @@ impl StreamParser {
                 items.push(StreamItem::TurnComplete {
                     blocks: std::mem::take(&mut self.blocks),
                     stop_reason: self.stop_reason,
-                    usage: self.usage,
+                    usage: UsageReport::complete(self.usage),
                 });
             }
             "error" => {
@@ -737,6 +750,9 @@ mod tests {
             usage, stop_reason, ..
         } = items.last().unwrap()
         {
+            let UsageReport::Complete(usage) = usage else {
+                panic!("Anthropic terminal usage must be complete");
+            };
             assert_eq!(usage.cache_read, 40);
             assert_eq!(usage.output, 25);
             assert_eq!(*stop_reason, StopReason::ToolUse);
@@ -794,6 +810,9 @@ mod tests {
         else {
             panic!("expected TurnComplete");
         };
+        let UsageReport::Complete(usage) = usage else {
+            panic!("Anthropic terminal usage must be complete");
+        };
         assert_eq!(
             blocks
                 .iter()
@@ -810,6 +829,36 @@ mod tests {
             "output usage from chunk 3 must be captured"
         );
         assert_eq!(*stop_reason, StopReason::EndTurn);
+    }
+
+    #[test]
+    fn d2_22_anthropic_refusal_pause_and_future_reasons_are_typed_terminals() {
+        for (wire, expected) in [
+            ("refusal", StopReason::Refusal),
+            ("pause_turn", StopReason::PauseTurn),
+            (
+                "future_pause_v2",
+                StopReason::Unknown(StopReasonCode::parse("future_pause_v2").unwrap()),
+            ),
+        ] {
+            let frames = vec![
+                message_start(2),
+                message_delta(wire, 3),
+                frame("message_stop", serde_json::json!({})),
+            ];
+            let items = parse_sse_stream(&frames).unwrap();
+            assert!(matches!(
+                items.last(),
+                Some(StreamItem::TurnComplete { stop_reason, .. }) if *stop_reason == expected
+            ));
+        }
+
+        let oversized = "x".repeat(core_protocol::MAX_STOP_REASON_CODE_BYTES + 1);
+        let frames = vec![message_start(0), message_delta(&oversized, 0)];
+        assert_eq!(
+            parse_sse_stream(&frames).unwrap_err(),
+            "Anthropic stop reason code was invalid"
+        );
     }
 
     #[test]
@@ -1055,11 +1104,11 @@ mod tests {
         assert!(matches!(
             items.last(),
             Some(StreamItem::TurnComplete {
-                usage: Usage {
+                usage: UsageReport::Complete(Usage {
                     input: 0,
                     output: 0,
                     ..
-                },
+                }),
                 ..
             })
         ));

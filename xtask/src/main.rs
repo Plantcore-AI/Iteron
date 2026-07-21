@@ -1,5 +1,8 @@
+mod conformance;
 mod model;
 mod render;
+mod rust_source;
+mod schema_compat;
 mod validate;
 
 use anyhow::{Context, Result, bail};
@@ -9,6 +12,28 @@ use std::path::{Path, PathBuf};
 fn main() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let root = selected_root(&mut args)?;
+    match args.as_slice() {
+        [group, command] if group == "schema-compat" && command == "check-bootstrap" => {
+            schema_compat::validate_bootstrap_release(&root)?;
+            println!("bootstrap schema compatibility contract valid");
+            return Ok(());
+        }
+        [group, command, flag, base]
+            if group == "schema-compat" && command == "check-release" && flag == "--base" =>
+        {
+            schema_compat::validate_release_against_base(&root, base)?;
+            println!("release schema compatibility contract valid against {base}");
+            return Ok(());
+        }
+        [group, command, flag, base]
+            if group == "schema-compat" && command == "check-base" && flag == "--base" =>
+        {
+            schema_compat::validate_against_base(&root, base)?;
+            println!("schema compatibility contract valid against immediate base {base}");
+            return Ok(());
+        }
+        _ => {}
+    }
     let registry = load_registry(&root)?;
 
     match args.as_slice() {
@@ -53,6 +78,12 @@ fn main() -> Result<()> {
             validate::affected(&root, &registry, base)?;
         }
         [group, command, flag, base]
+            if group == "boundaries" && command == "check-base" && flag == "--base" =>
+        {
+            validate::validate(&root, &registry)?;
+            validate::check_base(&root, &registry, base)?;
+        }
+        [group, command, flag, base]
             if group == "boundaries" && command == "check-pr" && flag == "--base" =>
         {
             validate::validate(&root, &registry)?;
@@ -71,7 +102,7 @@ fn main() -> Result<()> {
         }
         _ => {
             bail!(
-                "usage: core-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-pr --base REV|check-reviews --base REV>"
+                "usage: core-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
             )
         }
     }

@@ -12,6 +12,9 @@ pub struct Report {
 
 pub fn validate(root: &Path, registry: &Registry) -> Result<Report> {
     validate_registry(registry)?;
+    validate_protocol_boundary(root, registry)?;
+    crate::schema_compat::validate_current(root)?;
+    crate::conformance::validate(root)?;
     let files = public_files(root)?;
     validate_path_coverage(registry, &files)?;
     let packages = validate_cargo_policy(root, registry)?;
@@ -172,7 +175,7 @@ pub fn check_pr(root: &Path, registry: &Registry, base: &str, body: &str) -> Res
     if body.len() > 262_144 {
         bail!("pull request body is too large");
     }
-    let impact = calculate_impact(root, registry, base)?;
+    let impact = validate_candidate_against_base(root, registry, base)?;
     if registry.enforcement.mode == "bootstrap" {
         println!(
             "bootstrap pull request inspected: {} boundaries, {} overlays; responsibility enforcement is not active",
@@ -188,6 +191,120 @@ pub fn check_pr(root: &Path, registry: &Registry, base: &str, body: &str) -> Res
         impact.overlays.len()
     );
     Ok(())
+}
+
+/// Validate code/schema changes against the exact current base without requiring PR prose.
+///
+/// Merge queues synthesize a new candidate after earlier queued changes land. Re-running this
+/// check against that merge-group base prevents two individually monotone protocol bumps from
+/// collapsing to the same version when composed.
+pub fn check_base(root: &Path, registry: &Registry, base: &str) -> Result<()> {
+    let impact = validate_candidate_against_base(root, registry, base)?;
+    println!(
+        "candidate contract valid against immediate base: {} boundaries, {} overlays",
+        impact.boundaries.len(),
+        impact.overlays.len()
+    );
+    Ok(())
+}
+
+fn validate_candidate_against_base(root: &Path, registry: &Registry, base: &str) -> Result<Impact> {
+    let impact = calculate_impact(root, registry, base)?;
+    validate_protocol_version_bump(
+        root,
+        base,
+        impact.boundaries.contains_key("protocol-compat"),
+    )?;
+    crate::schema_compat::validate_against_base(root, base)?;
+    Ok(impact)
+}
+
+pub(crate) const PROTOCOL_VERSION_SOURCE: &str = "crates/protocol/src/wire.rs";
+const MAX_PROTOCOL_VERSION_SOURCE_BYTES: u64 = 64 * 1024;
+
+fn validate_protocol_boundary(root: &Path, registry: &Registry) -> Result<()> {
+    let boundary = registry
+        .boundaries
+        .iter()
+        .find(|boundary| boundary.id == "protocol-compat")
+        .context("boundary registry lacks protocol-compat")?;
+    if !boundary
+        .contracts
+        .iter()
+        .any(|contract| contract == "sqeq-version-lockstep")
+    {
+        bail!("protocol-compat must declare the sqeq-version-lockstep contract");
+    }
+    if !boundary
+        .checks
+        .iter()
+        .any(|check| check == "core-xtask boundaries check-pr --base <rev>")
+    {
+        bail!("protocol-compat must declare the version-skew pull-request check");
+    }
+    if !boundary
+        .checks
+        .iter()
+        .any(|check| check == "core-xtask boundaries check-base --base <rev>")
+    {
+        bail!("protocol-compat must declare the merge-group-safe immediate-base check");
+    }
+    let source = crate::schema_compat::read_candidate_file_bounded(
+        root,
+        PROTOCOL_VERSION_SOURCE,
+        MAX_PROTOCOL_VERSION_SOURCE_BYTES,
+    )
+    .context("cannot read the SQ/EQ protocol version source")?;
+    let version = protocol_version_from_source(&source)?;
+    if version == 0 {
+        bail!("PROTOCOL_VERSION must be positive");
+    }
+    Ok(())
+}
+
+fn validate_protocol_version_bump(root: &Path, base: &str, protocol_changed: bool) -> Result<()> {
+    if !protocol_changed {
+        return Ok(());
+    }
+    let base = resolve_base(root, base)?;
+    let base_version = protocol_version_at_revision(root, &base)?;
+    let candidate_source = crate::schema_compat::read_candidate_file_bounded(
+        root,
+        PROTOCOL_VERSION_SOURCE,
+        MAX_PROTOCOL_VERSION_SOURCE_BYTES,
+    )
+    .context("cannot read candidate SQ/EQ protocol version source")?;
+    let candidate_version = protocol_version_from_source(&candidate_source)?;
+    if candidate_version <= base_version {
+        bail!(
+            "protocol-compat changed without a monotone PROTOCOL_VERSION bump (base {base_version}, candidate {candidate_version})"
+        );
+    }
+    Ok(())
+}
+
+fn protocol_version_at_revision(root: &Path, revision: &str) -> Result<u32> {
+    let Some(source) = crate::schema_compat::read_revision_file_bounded(
+        root,
+        revision,
+        PROTOCOL_VERSION_SOURCE,
+        MAX_PROTOCOL_VERSION_SOURCE_BYTES,
+    )
+    .context("cannot read base SQ/EQ protocol version")?
+    else {
+        // Version zero is the one-time pre-versioning baseline. Once wire.rs lands, deleting it
+        // from a base revision is impossible without already tripping candidate validation.
+        return Ok(0);
+    };
+    protocol_version_from_source(&source)
+}
+
+pub(crate) fn protocol_version_from_source(source: &[u8]) -> Result<u32> {
+    if source.len() as u64 > MAX_PROTOCOL_VERSION_SOURCE_BYTES {
+        bail!("SQ/EQ protocol version source exceeds 64 KiB");
+    }
+    crate::rust_source::public_decimal_const(source, "PROTOCOL_VERSION", "u32")
+        .context("invalid SQ/EQ protocol version constant")
 }
 
 pub fn check_reviews(
@@ -1394,6 +1511,184 @@ mod tests {
             display: id.into(),
             github: Some(handle.into()),
         });
+    }
+
+    #[test]
+    fn d1_02_protocol_surface_change_requires_a_monotone_version_bump() {
+        let fixture = GitFixture::new();
+        let protocol = fixture.root.join("crates/protocol/src");
+        std::fs::create_dir_all(&protocol).unwrap();
+        std::fs::write(
+            protocol.join("wire.rs"),
+            "pub const PROTOCOL_VERSION: u32 = 1;\n",
+        )
+        .unwrap();
+        std::fs::write(protocol.join("lib.rs"), "pub enum Op { Interrupt }\n").unwrap();
+        fixture.git(&[
+            "add",
+            "--",
+            "crates/protocol/src/wire.rs",
+            "crates/protocol/src/lib.rs",
+        ]);
+        fixture.git(&["commit", "--no-gpg-sign", "-m", "versioned protocol base"]);
+        let base = fixture.git(&["rev-parse", "HEAD"]);
+
+        std::fs::write(
+            protocol.join("lib.rs"),
+            "pub enum Op { Interrupt, Future }\n",
+        )
+        .unwrap();
+        assert!(validate_protocol_version_bump(&fixture.root, &base, true).is_err());
+
+        std::fs::write(
+            protocol.join("wire.rs"),
+            "pub const PROTOCOL_VERSION: u32 = 2;\n",
+        )
+        .unwrap();
+        assert!(validate_protocol_version_bump(&fixture.root, &base, true).is_ok());
+        assert!(validate_protocol_version_bump(&fixture.root, &base, false).is_ok());
+    }
+
+    #[test]
+    fn d13_14_protocol_version_rejects_a_commented_decoy_with_include() {
+        let spoof = br#"/*
+pub const PROTOCOL_VERSION: u32 = 9;
+*/
+include!("protocol-version.rs");
+"#;
+        let error = protocol_version_from_source(spoof)
+            .expect_err("a lexical decoy cannot provide the authoritative protocol version");
+        assert!(
+            format!("{error:#}").contains("public Rust constant 'PROTOCOL_VERSION' is missing")
+        );
+
+        assert_eq!(
+            protocol_version_from_source(
+                b"/// Wire schema revision.\npub const PROTOCOL_VERSION: u32 = 9;\n"
+            )
+            .unwrap(),
+            9
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn d13_14_protocol_version_rejects_a_candidate_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = GitFixture::new();
+        let protocol = fixture.root.join("crates/protocol/src");
+        std::fs::create_dir_all(&protocol).unwrap();
+        let wire = protocol.join("wire.rs");
+        std::fs::write(&wire, "pub const PROTOCOL_VERSION: u32 = 1;\n").unwrap();
+        fixture.git(&["add", "--", PROTOCOL_VERSION_SOURCE]);
+        fixture.git(&["commit", "--no-gpg-sign", "-m", "protocol base"]);
+        let base = fixture.git(&["rev-parse", "HEAD"]);
+
+        std::fs::remove_file(&wire).unwrap();
+        std::fs::write(
+            protocol.join("protocol-version.rs"),
+            "pub const PROTOCOL_VERSION: u32 = 2;\n",
+        )
+        .unwrap();
+        symlink("protocol-version.rs", &wire).unwrap();
+
+        let error = validate_protocol_version_bump(&fixture.root, &base, true)
+            .expect_err("candidate protocol source symlinks must fail closed");
+        assert!(format!("{error:#}").contains("contains a symbolic link"));
+    }
+
+    #[test]
+    fn d13_14_protocol_version_rejects_an_oversized_candidate_source() {
+        let fixture = GitFixture::new();
+        let protocol = fixture.root.join("crates/protocol/src");
+        std::fs::create_dir_all(&protocol).unwrap();
+        let wire = protocol.join("wire.rs");
+        std::fs::write(&wire, "pub const PROTOCOL_VERSION: u32 = 1;\n").unwrap();
+        fixture.git(&["add", "--", PROTOCOL_VERSION_SOURCE]);
+        fixture.git(&["commit", "--no-gpg-sign", "-m", "protocol base"]);
+        let base = fixture.git(&["rev-parse", "HEAD"]);
+
+        std::fs::write(
+            &wire,
+            vec![b' '; MAX_PROTOCOL_VERSION_SOURCE_BYTES as usize + 1],
+        )
+        .unwrap();
+        let error = validate_protocol_version_bump(&fixture.root, &base, true)
+            .expect_err("oversized candidate protocol source must fail before parsing");
+        assert!(format!("{error:#}").contains("not a regular file within its byte limit"));
+    }
+
+    #[test]
+    fn d13_14_protocol_version_sizes_the_base_blob_before_reading_it() {
+        let fixture = GitFixture::new();
+        let protocol = fixture.root.join("crates/protocol/src");
+        std::fs::create_dir_all(&protocol).unwrap();
+        let wire = protocol.join("wire.rs");
+        std::fs::write(
+            &wire,
+            vec![b' '; MAX_PROTOCOL_VERSION_SOURCE_BYTES as usize + 1],
+        )
+        .unwrap();
+        fixture.git(&["add", "--", PROTOCOL_VERSION_SOURCE]);
+        fixture.git(&["commit", "--no-gpg-sign", "-m", "oversized protocol base"]);
+        let base = fixture.git(&["rev-parse", "HEAD"]);
+
+        std::fs::write(&wire, "pub const PROTOCOL_VERSION: u32 = 2;\n").unwrap();
+        let error = validate_protocol_version_bump(&fixture.root, &base, true)
+            .expect_err("oversized base blobs must fail at the Git object size boundary");
+        assert!(format!("{error:#}").contains("exceeds its byte limit"));
+    }
+
+    #[test]
+    fn d13_14_immediate_base_check_rejects_merge_queue_protocol_version_skew() {
+        let fixture = GitFixture::new();
+        let protocol = fixture.root.join("crates/protocol/src");
+        std::fs::create_dir_all(&protocol).unwrap();
+        std::fs::write(
+            protocol.join("wire.rs"),
+            "pub const PROTOCOL_VERSION: u32 = 2;\n",
+        )
+        .unwrap();
+        std::fs::write(protocol.join("lib.rs"), "pub enum Op { Interrupt }\n").unwrap();
+        std::fs::write(
+            fixture.root.join("governance/boundaries.json"),
+            include_bytes!("../../governance/boundaries.json"),
+        )
+        .unwrap();
+        fixture.git(&[
+            "add",
+            "--",
+            "crates/protocol/src/wire.rs",
+            "crates/protocol/src/lib.rs",
+            "governance/boundaries.json",
+        ]);
+        fixture.git(&["commit", "--no-gpg-sign", "-m", "merge queue base at v2"]);
+        let base = fixture.git(&["rev-parse", "HEAD"]);
+
+        std::fs::write(
+            protocol.join("lib.rs"),
+            "pub enum Op { Interrupt, Future }\n",
+        )
+        .unwrap();
+        fixture.git(&["add", "--", "crates/protocol/src/lib.rs"]);
+        fixture.git(&[
+            "commit",
+            "--no-gpg-sign",
+            "-m",
+            "stale candidate also at v2",
+        ]);
+
+        let registry: Registry =
+            serde_json::from_str(include_str!("../../governance/boundaries.json")).unwrap();
+        assert!(check_base(&fixture.root, &registry, &base).is_err());
+
+        std::fs::write(
+            protocol.join("wire.rs"),
+            "pub const PROTOCOL_VERSION: u32 = 3;\n",
+        )
+        .unwrap();
+        assert!(check_base(&fixture.root, &registry, &base).is_ok());
     }
 
     #[test]

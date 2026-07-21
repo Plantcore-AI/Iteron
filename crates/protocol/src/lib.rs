@@ -17,23 +17,35 @@ pub mod event;
 pub mod ids;
 pub mod message;
 pub mod permission;
+pub mod pricing;
 pub mod tool;
 pub mod trust;
+pub mod wire;
 
 pub mod home;
 pub mod text;
 
 pub use diff::{DiffLine, DiffTag, FileDiff, Hunk};
 pub use event::{
-    Event, EventKind, Phase, RuntimePolicyEventVersion, RuntimePolicySource, RuntimePolicyState,
-    WorkflowChildOutcome, WorkflowEvent, WorkflowEventVersion, WorkflowExecutionMode,
-    WorkflowMetrics, WorkflowOutcome, WorkflowPhase, WorkflowTaskEvidence,
+    DurableEnvironmentContext, DurableInstructionContext, Event, EventKind,
+    MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, Phase, RuntimePolicyEventVersion, RuntimePolicySource,
+    RuntimePolicyState, SubmissionRejectionReason, WorkflowChildOutcome, WorkflowCostEvidence,
+    WorkflowEvent, WorkflowEventVersion, WorkflowExecutionMode, WorkflowMetrics, WorkflowOutcome,
+    WorkflowPhase, WorkflowTaskEvidence,
 };
 pub use ids::{EffectId, RunId, Seq, SubmissionId, TenantId, TurnId};
-pub use message::{Block, Message, ProviderState, Role, StopReason, Usage};
+pub use message::{
+    Block, MAX_STOP_REASON_CODE_BYTES, Message, ProviderState, ProviderStateFormat, Role,
+    StopReason, StopReasonCode, Usage,
+};
 pub use permission::{PermissionMode, PermissionRules, Verdict, gate};
+pub use pricing::{
+    CostAttribution, CostProjection, CostProjectionIdentity, MAX_WORKFLOW_COST_PROJECTIONS,
+    PricingRoute, PricingVersion, RateCard, SignedRateCard, TokenRateCard,
+};
 pub use tool::{Capability, Purity, ToolResult, ToolSpec, ToolUse};
 pub use trust::Trust;
+pub use wire::{EqEnvelope, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope};
 
 /// A submission on the SQ. The core consumes these; every frontend (CLI first) produces
 /// them. Approvals, interrupts, and steering are all submissions on the same queue, which
@@ -49,6 +61,8 @@ pub enum Op {
     ApprovalResponse {
         id: SubmissionId,
         approved: bool,
+        /// Missing in the first SQ shape. Defaulting it keeps those legacy submissions readable.
+        #[serde(default)]
         remember: bool,
     },
     /// Async steering: inject a message at the top of the next loop iteration.
@@ -57,6 +71,11 @@ pub enum Op {
     Interrupt,
     /// Stop admitting turns, quiesce, sync-checkpoint, exit (the `drain` verb; ADR-008 safe-point).
     Drain,
+    /// Forward-compatible rejection sentinel. Deserialization deliberately discards the unknown
+    /// tag and every accompanying field, so a newer client's opaque payload cannot enter logs,
+    /// errors, UI, or the durable record through this value.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Effort level (session setting). Maps to (a) the model's reasoning/thinking budget and
@@ -212,7 +231,8 @@ pub enum OrchestrationMode {
 pub struct Budget {
     pub max_turns: u32,
     /// Optional operator-requested USD ceiling. `None` is honest absence of a monetary guarantee;
-    /// a route without a verified rate card must reject `Some` before any provider request.
+    /// a positive ceiling requires a verified route-bound rate card, while zero is universally
+    /// enforceable without admitting a provider request.
     pub max_usd: Option<f64>,
     pub max_wall_secs: u64,
     pub max_consecutive_tool_errors: u32,
@@ -256,14 +276,71 @@ impl Budget {
 pub enum Outcome {
     /// The agent declared the task complete.
     Done,
+    /// The operator requested an orderly quiesce; all admitted work reached a safe point and a
+    /// durable workspace checkpoint was committed before exit.
+    Drained,
     /// A budget ceiling was reached (invariant #1).
     BudgetExhausted(&'static str),
-    /// The operator interrupted or drained.
+    /// The operator interrupted at a safe point without requesting a workspace checkpoint.
     Interrupted,
     /// Too many consecutive tool errors — a stability floor tripped.
     Stuck,
     /// An unrecoverable error in the harness itself.
     HarnessError,
+}
+
+#[cfg(test)]
+mod op_tests {
+    use super::{Op, SubmissionId};
+
+    #[test]
+    fn d1_01_g1_unknown_op_round_trips_as_an_opaque_typed_sentinel() {
+        let marker = "secret-marker-must-not-survive-op-decoding";
+        let op: Op = serde_json::from_value(serde_json::json!({
+            "op": "future_remote_control",
+            "text": marker,
+            "nested": {"credential": marker}
+        }))
+        .expect("an unknown op tag must not fail the SQ deserializer");
+        assert!(matches!(op, Op::Unknown));
+        assert!(!format!("{op:?}").contains(marker));
+
+        let encoded = serde_json::to_value(&op).unwrap();
+        assert_eq!(encoded, serde_json::json!({"op": "unknown"}));
+        assert!(!encoded.to_string().contains(marker));
+        assert!(matches!(
+            serde_json::from_value::<Op>(encoded).unwrap(),
+            Op::Unknown
+        ));
+    }
+
+    #[test]
+    fn d1_01_g3_legacy_op_defaults_new_fields_and_ignores_future_fields() {
+        // Exact approval shape from before `remember` was added.
+        let legacy: Op = serde_json::from_value(serde_json::json!({
+            "op": "approval_response",
+            "id": 7,
+            "approved": true
+        }))
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            Op::ApprovalResponse {
+                id: SubmissionId(7),
+                approved: true,
+                remember: false
+            }
+        ));
+
+        // Conversely, an older field set tolerates additions emitted by a newer client.
+        let extended: Op = serde_json::from_value(serde_json::json!({
+            "op": "user_input",
+            "text": "hello",
+            "future_trace_context": {"version": 2}
+        }))
+        .unwrap();
+        assert!(matches!(extended, Op::UserInput { text } if text == "hello"));
+    }
 }
 
 #[cfg(test)]

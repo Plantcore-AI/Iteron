@@ -5,9 +5,9 @@
 //! from the first user message, `turns`/`cache_hit`/`last_outcome` from recorded events,
 //! and `cwd`/initial model/`effort`/`created_at`/`parent` from the seq-0
 //! [`EventKind::RunStart`] genesis header. Later [`EventKind::ModelSelected`] events update the
-//! provider/model projection. The `.meta.json` per-run file and the `sessions.index` append log are a
-//! rebuildable cache in front of that replay (R5 design §2.4): a missing or stale cache is
-//! never an error, it degrades to a replay.
+//! provider/model projection. The `.meta.json` per-run file and compacted `sessions.index` are a
+//! rebuildable cache in front of that replay (R5 design §2.4): a missing or stale cache is never an
+//! error, it degrades to a replay.
 //!
 //! Fork is a record operation, not an in-place edit. The rollout is append-only and
 //! hash-chained (ADR-008), so a single log cannot branch in place. A fork is therefore a new
@@ -18,16 +18,41 @@
 //! detects an altered parent prefix rather than trusting it. Unknown event kinds are tolerated
 //! on replay via `EventKind::Unknown` (R5-review Risk 6), so a cross-version scan does not fail.
 
-use crate::{RecordError, Rollout, ensure_tenant, validated_run_path};
-use core_obs::{CostState, Ledger};
+use crate::{RecordError, Rollout, ensure_tenant, validate_event_bounds, validated_run_path};
+use core_obs::{CostState, Ledger, PricingPort, PricingReplay};
 use core_protocol::{
     Block, Effort, Event, EventKind, Message, Outcome, Role, RunId, RuntimePolicyEventVersion,
     RuntimePolicySource, RuntimePolicyState, Seq, TenantId, TurnId, Usage,
 };
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+const MICROUSD_PER_USD: f64 = 1_000_000.0;
+/// An append-era index with more than two physical writes per live rollout is abandoned after one
+/// extra line and rebuilt. This makes index work O(M), independent of historical turn writes K.
+const INDEX_SCAN_LINES_PER_LIVE_RUN: usize = 2;
+
+#[cfg(test)]
+std::thread_local! {
+    static READ_CHAIN_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static RECEIPT_BYTES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+const RECEIPT_SCAN_CHUNK_BYTES: usize = 8 * 1024;
+
+/// Legacy floating-point ceilings are compatibility data only. Rounding down is deliberately
+/// conservative: reconstructing old journals must never grant one extra micro-dollar.
+fn legacy_usd_to_microusd_floor(value: f64) -> u64 {
+    let scaled = value * MICROUSD_PER_USD;
+    if !scaled.is_finite() || scaled >= u64::MAX as f64 {
+        u64::MAX
+    } else {
+        scaled.floor() as u64
+    }
+}
 
 /// The branch point of a fork/rewind child. `parent_hash_at_seq` cross-links the child to the
 /// parent chain's hash at `forked_at` so an altered parent prefix is detectable on replay
@@ -39,16 +64,52 @@ pub struct Provenance {
     pub parent_hash_at_seq: String,
 }
 
+/// One event in a verified logical fork history together with the physical journal identity that
+/// originally authenticated it. Parent-prefix events deliberately retain their parent run id;
+/// replay must not reinterpret them as if the child had emitted them.
+#[derive(Debug, Clone)]
+pub struct ScopedEvent {
+    pub event: Event,
+    pub tenant: TenantId,
+    pub run_id: RunId,
+}
+
+/// One verified external prefix consumed by a fork session's logical history. `prefix_bytes`
+/// ends exactly after `through_seq`, so later appends to the ancestor do not invalidate a child
+/// projection while truncation or replacement of the pinned prefix does.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionAncestryReceipt {
+    pub run_id: RunId,
+    pub tenant: TenantId,
+    pub through_seq: u64,
+    pub prefix_bytes: u64,
+    pub tail_hash: String,
+    /// Complete ancestor extent observed while building this projection. Equality binds the
+    /// original mtime; growth is accepted only when the old physical tail still exists at this
+    /// exact boundary, distinguishing a valid append from an in-place rewrite.
+    #[serde(default)]
+    pub observed_record_bytes: u64,
+    #[serde(default)]
+    pub observed_tail_seq: u64,
+    #[serde(default)]
+    pub observed_tail_hash: String,
+    #[serde(default)]
+    pub observed_updated_at: u64,
+    #[serde(default)]
+    pub observed_updated_at_subsec_nanos: u32,
+}
+
 /// A session is a PROJECTION of its rollout, never a second source of truth (ADR-006). Populated
-/// either from the meta cache (kernel-written, authoritative for cost) or by replaying the record.
+/// either from a record-writer cache or by replaying the record. Mutable cache bytes are never
+/// accepted as authority for an exact monetary claim.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionMeta {
     /// Projection schema for monetary truth. Legacy caches used a global placeholder price and
     /// are always rebuilt from the rollout rather than trusted.
     #[serde(default)]
     pub pricing_schema_version: u32,
-    /// Projection schema independent of pricing. V1 includes additive child-workflow attribution;
-    /// legacy caches are replayed so a resume/list cannot silently drop subagent spend.
+    /// Projection schema independent of pricing. V3 binds fork ancestry prefix receipts;
+    /// legacy caches are replayed so a resume/list cannot silently drop logical history.
     #[serde(default)]
     pub projection_schema_version: u32,
     pub run_id: RunId,
@@ -66,14 +127,34 @@ pub struct SessionMeta {
     /// Last-touched time. Authoritative when cached (kernel-written); on a replay it degrades to
     /// the rollout file's mtime, since the record carries no per-event wall clock.
     pub updated_at: u64,
+    /// Nanosecond fraction of the same rollout mtime. It both breaks same-second continuation
+    /// ties and detects accidental in-place record changes that preserve length and tail bytes.
+    #[serde(default)]
+    pub updated_at_subsec_nanos: u32,
     /// Physical rollout length covered by this rebuildable projection cache. Older cache files
     /// deserialize with zero and are replayed. An append-only `ModelSelected` increases the
     /// rollout length, invalidating stale provider/model projections without scanning the log.
     #[serde(default)]
     pub record_bytes: u64,
+    /// Exact physical tail receipt observed by the record writer. Fast-path reads compare this
+    /// pair with the bounded final record line before accepting any mutable cache fields.
+    #[serde(default)]
+    pub record_tail_seq: Option<u64>,
+    #[serde(default)]
+    pub record_tail_hash: String,
+    /// Corruption detector over the complete projection plus its record receipt, with this field
+    /// cleared during hashing. It is not a substitute for the hash-chained rollout; a mismatch is
+    /// simply a cache miss that forces authoritative replay.
+    #[serde(default)]
+    pub projection_digest: String,
+    /// Root-to-direct-parent receipts for every external prefix included by a fork projection.
+    /// Empty for an ordinary root run. Each entry is bounded and rechecked without replaying the
+    /// ancestor's full journal.
+    #[serde(default)]
+    pub ancestry: Vec<SessionAncestryReceipt>,
     pub turns: u32,
-    /// Evidence-backed monetary state. Current rollouts have usage but no pinned rate card, so a
-    /// completed provider turn is honestly unknown rather than a placeholder dollar amount.
+    /// Evidence-backed monetary state. Signed route-bound projections produce `Known`; completed
+    /// provider turns without matching durable pricing evidence remain honestly `Unknown`.
     #[serde(default)]
     pub cost: CostState,
     pub cache_hit: f64,
@@ -88,6 +169,143 @@ pub struct SessionMeta {
 impl SessionMeta {
     pub fn cost_usd(&self) -> Option<f64> {
         self.cost.usd()
+    }
+}
+
+/// Incremental, rebuildable projection for the current physical run.
+///
+/// Construction performs one bounded, hash-verified logical replay (including a fork's pinned
+/// parent prefix). After that, the kernel feeds only events whose append+fsync already succeeded,
+/// so turn-boundary cache refreshes are O(1) in historical rollout length rather than replaying
+/// the entire journal on every turn. The projection is never authoritative: a structurally
+/// current projection may be persisted for every session shape, while only an honest `Unknown`
+/// monetary state is directly readable without replay. Stale/corrupt bytes always degrade to
+/// verified replay.
+pub(crate) struct SessionProjection {
+    runs_dir: PathBuf,
+    meta: SessionMeta,
+    turns: u32,
+    usage: Usage,
+    title: String,
+    cost_ledger: Ledger,
+    pricing_replay: PricingReplay,
+}
+
+impl SessionProjection {
+    /// Build from the authoritative logical rollout once. Subsequent events must be supplied only
+    /// after their durable append succeeds.
+    pub(crate) fn load(runs_dir: &Path, run: &RunId) -> Result<Self, RecordError> {
+        load_session_projection(runs_dir, run, None)
+    }
+
+    /// Apply one newly durable event from this projection's physical run.
+    pub(crate) fn observe_committed(
+        &mut self,
+        event: &Event,
+        seq: Seq,
+        hash: &str,
+    ) -> Result<(), RecordError> {
+        let tenant = self.meta.tenant.clone();
+        let run = self.meta.run_id.clone();
+        self.observe_scoped(event, &tenant, &run)?;
+        self.meta.record_tail_seq = Some(seq.0);
+        self.meta.record_tail_hash = hash.to_string();
+        Ok(())
+    }
+
+    /// Atomically refresh the per-run sidecar and canonical index when this projection is current
+    /// and independently bound to the physical rollout plus any fork ancestry it consumed.
+    pub(crate) fn persist_at(&mut self, expected_record_bytes: u64) -> Result<bool, RecordError> {
+        if complete_record_len(&rollout_path(&self.runs_dir, &self.meta.run_id)?)
+            != Some(expected_record_bytes)
+        {
+            self.meta.record_bytes = 0;
+            return Ok(false);
+        }
+        let (updated_at, updated_at_subsec_nanos) =
+            file_mtime(&rollout_path(&self.runs_dir, &self.meta.run_id)?)
+                .unwrap_or((self.meta.created_at, 0));
+        self.meta.updated_at = updated_at;
+        self.meta.updated_at_subsec_nanos = updated_at_subsec_nanos;
+        self.meta.record_bytes = expected_record_bytes;
+        self.refresh_derived();
+        self.meta.cache_hit = json_f64_fixed_point(self.meta.cache_hit)?;
+        self.meta.projection_digest = projection_digest(&self.meta)?;
+        if !projection_is_current(&self.runs_dir, &self.meta) {
+            return Ok(false);
+        }
+        write_meta(&self.runs_dir, &self.meta)?;
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn projected(&self) -> &SessionMeta {
+        &self.meta
+    }
+
+    fn observe_scoped(
+        &mut self,
+        event: &Event,
+        tenant: &TenantId,
+        run: &RunId,
+    ) -> Result<(), RecordError> {
+        self.pricing_replay
+            .observe(event, tenant, run, &mut self.cost_ledger)?;
+        match &event.kind {
+            EventKind::TurnStart => {
+                self.turns = self.turns.saturating_add(1);
+            }
+            EventKind::TurnEnd { usage } => self.usage.add(usage),
+            EventKind::SubagentFinished { metrics, .. }
+            | EventKind::SubagentFinishedV2 { metrics, .. } => {
+                self.turns = self.turns.saturating_add(metrics.provider_attempts);
+                self.usage.add(&metrics.usage);
+            }
+            EventKind::Workflow {
+                event: core_protocol::WorkflowEvent::ChildFinished { metrics, .. },
+                ..
+            }
+            | EventKind::WorkflowV2 {
+                event: core_protocol::WorkflowEvent::ChildFinished { metrics, .. },
+                ..
+            } => {
+                self.turns = self.turns.saturating_add(metrics.provider_attempts);
+                self.usage.add(&metrics.usage);
+            }
+            EventKind::ModelSelected {
+                provider_id,
+                model_id,
+                ..
+            } => {
+                self.meta.provider_id = provider_id.clone();
+                self.meta.model = model_id.clone();
+            }
+            EventKind::EffortChanged { effort, .. } => self.meta.effort = *effort,
+            EventKind::Message { message }
+                if self.title.is_empty() && message.role == Role::User =>
+            {
+                self.title = title_from_message(message);
+            }
+            EventKind::Done { outcome } => self.meta.last_outcome = parse_outcome(outcome),
+            _ => {}
+        }
+        self.refresh_derived();
+        Ok(())
+    }
+
+    fn refresh_derived(&mut self) {
+        self.meta.turns = self.turns;
+        self.meta.cost = self.cost_ledger.cost_state();
+        self.meta.cache_hit = self.usage.cache_hit_ratio();
+        self.meta.title = if self.title.is_empty() {
+            "(untitled)".to_string()
+        } else {
+            self.title.clone()
+        };
+    }
+
+    fn into_meta(self) -> SessionMeta {
+        self.meta
     }
 }
 
@@ -110,7 +328,7 @@ mod outcome_opt {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Paths. The rollout, its per-run meta cache, and the append index all live under `runs_dir`
+// Paths. The rollout, its per-run meta cache, and the compact index all live under `runs_dir`
 // (in practice `.core/runs`). Co-locating the index there keeps the module dependent on the
 // single directory it is handed, and the `.jsonl` listing scan naturally ignores the `.meta.json`
 // and `.index` sidecars (different extensions), so they are never mistaken for rollouts.
@@ -136,26 +354,60 @@ struct ReadLine {
     seq: Seq,
     tenant: TenantId,
     hash: String,
+    end_bytes: u64,
     event: Event,
 }
 
+#[cfg(test)]
 fn read_chain(path: &Path) -> Result<Vec<ReadLine>, RecordError> {
-    let content = std::fs::read_to_string(path)?;
+    let mut total_bytes = 0;
+    let mut total_physical_lines = 0;
+    read_chain_with_limits(path, &mut total_bytes, &mut total_physical_lines, None)
+}
+
+fn read_chain_budgeted(
+    path: &Path,
+    budget: &mut LogicalReplayBudget,
+) -> Result<Vec<ReadLine>, RecordError> {
+    read_chain_with_limits(
+        path,
+        &mut budget.bytes,
+        &mut budget.physical_lines,
+        Some(&mut budget.events),
+    )
+}
+
+fn read_chain_with_limits(
+    path: &Path,
+    total_bytes: &mut u64,
+    total_physical_lines: &mut usize,
+    mut total_events: Option<&mut usize>,
+) -> Result<Vec<ReadLine>, RecordError> {
+    #[cfg(test)]
+    READ_CHAIN_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
     let mut out = Vec::new();
     let mut prev = crate::ZERO_HASH.to_string();
+    let mut expected_seq = 0u64;
     let mut tenant: Option<TenantId> = None;
+    let mut physical_bytes = 0u64;
     // Tolerate a torn trailing line from a crash mid-append (code review): the resume path routes
     // through here, so a strict read would make a crashed run unresumable — exactly the tolerance
     // scan_tail already gives the append path. A partial FINAL line (no trailing newline) is dropped.
-    let mut lines: Vec<&str> = content.lines().collect();
-    if !content.is_empty() && !content.ends_with('\n') {
-        lines.pop();
-    }
-    for line in lines {
+    crate::visit_record_lines_charged(path, total_bytes, total_physical_lines, |line| {
+        physical_bytes = physical_bytes.saturating_add(line.len() as u64 + 1);
         if line.trim().is_empty() {
-            continue;
+            return Ok(());
+        }
+        if let Some(total) = total_events.as_deref_mut() {
+            admit_logical_events(total, 1)?;
         }
         let cl: crate::ChainLine = serde_json::from_str(line)?;
+        if cl.seq != expected_seq {
+            return Err(RecordError::SequenceBroken {
+                expected: expected_seq,
+                found: cl.seq,
+            });
+        }
         if let Some(expected) = &tenant {
             ensure_tenant(expected, &cl.tenant, cl.seq)?;
         } else {
@@ -172,14 +424,18 @@ fn read_chain(path: &Path) -> Result<Vec<ReadLine>, RecordError> {
         // Unknown event kinds deserialize to `EventKind::Unknown` (R5-review Risk 6), so a newer
         // writer's kinds do not fail the scan.
         let event: Event = serde_json::from_value(cl.payload)?;
+        validate_event_bounds(&event)?;
         prev = cl.hash.clone();
+        expected_seq = expected_seq.saturating_add(1);
         out.push(ReadLine {
             seq: Seq(cl.seq),
             tenant: TenantId(cl.tenant),
             hash: cl.hash,
+            end_bytes: physical_bytes,
             event,
         });
-    }
+        Ok(())
+    })?;
     Ok(out)
 }
 
@@ -201,28 +457,335 @@ fn rollout_run_ids(runs_dir: &Path) -> Vec<RunId> {
     ids
 }
 
-fn file_mtime_secs(path: &Path) -> Option<u64> {
-    std::fs::metadata(path)
+fn file_mtime(path: &Path) -> Option<(u64, u32)> {
+    let duration = std::fs::metadata(path)
         .ok()?
         .modified()
         .ok()?
         .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_secs())
+        .ok()?;
+    Some((duration.as_secs(), duration.subsec_nanos()))
 }
 
-fn file_len(path: &Path) -> Option<u64> {
-    std::fs::metadata(path).ok().map(|metadata| metadata.len())
+/// Return the exact physical length only when the file ends at a complete JSONL boundary.
+fn complete_record_len(path: &Path) -> Option<u64> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    if len == 0 {
+        return Some(0);
+    }
+    file.seek(SeekFrom::End(-1)).ok()?;
+    let mut byte = [0u8; 1];
+    file.read_exact(&mut byte).ok()?;
+    (byte[0] == b'\n').then_some(len)
 }
 
-fn projection_covers_rollout(runs_dir: &Path, meta: &SessionMeta) -> bool {
+fn projection_digest(meta: &SessionMeta) -> Result<String, RecordError> {
+    let mut canonical = meta.clone();
+    canonical.projection_digest.clear();
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(&canonical)?);
+    Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
+}
+
+/// Normalize a floating-point cache field to a fixed point of this build's JSON codec. Some
+/// feature combinations round a decimal by one ULP on the first parse; persisting the converged
+/// value lets the projection digest bind the exact f64 without inventing an integrity tolerance.
+fn json_f64_fixed_point(mut value: f64) -> Result<f64, RecordError> {
+    if !value.is_finite() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "session cache-hit ratio is not finite",
+        )
+        .into());
+    }
+    for _ in 0..8 {
+        let encoded = serde_json::to_vec(&value)?;
+        let next: f64 = serde_json::from_slice(&encoded)?;
+        if next.to_bits() == value.to_bits() {
+            return Ok(value);
+        }
+        value = next;
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "session cache-hit ratio JSON encoding did not reach a fixed point",
+    )
+    .into())
+}
+
+struct PhysicalReceipt {
+    seq: u64,
+    hash: String,
+    tenant: String,
+}
+
+#[cfg(test)]
+fn charge_receipt_read(bytes: usize) {
+    RECEIPT_BYTES_READ.with(|total| total.set(total.get().saturating_add(bytes as u64)));
+}
+
+#[cfg(not(test))]
+fn charge_receipt_read(_bytes: usize) {}
+
+/// Read the last nonblank complete chain line ending at the exact byte boundary. Work is
+/// proportional to that physical line (plus one fixed chunk), not to the rollout prefix.
+fn read_receipt_ending_at(path: &Path, end_bytes: u64) -> Option<PhysicalReceipt> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    if end_bytes == 0 || end_bytes > len {
+        return None;
+    }
+    file.seek(SeekFrom::Start(end_bytes - 1)).ok()?;
+    let mut terminator = [0u8; 1];
+    file.read_exact(&mut terminator).ok()?;
+    charge_receipt_read(1);
+    if terminator[0] != b'\n' {
+        return None;
+    }
+    let mut cursor = end_bytes - 1;
+    let mut reverse_chunks: Vec<Vec<u8>> = Vec::new();
+    let mut candidate_len = 0usize;
+    let mut scanned = 1u64;
+
+    let line = loop {
+        if cursor == 0 {
+            if candidate_len == 0 {
+                return None;
+            }
+            let mut line = Vec::with_capacity(candidate_len);
+            for chunk in reverse_chunks.iter().rev() {
+                line.extend_from_slice(chunk);
+            }
+            if line.iter().all(u8::is_ascii_whitespace) {
+                return None;
+            }
+            break line;
+        }
+        let start = cursor.saturating_sub(RECEIPT_SCAN_CHUNK_BYTES as u64);
+        let chunk_len = usize::try_from(cursor - start).ok()?;
+        let mut chunk = vec![0u8; chunk_len];
+        file.seek(SeekFrom::Start(start)).ok()?;
+        file.read_exact(&mut chunk).ok()?;
+        charge_receipt_read(chunk_len);
+        scanned = scanned.checked_add(chunk_len as u64)?;
+        if scanned > crate::MAX_ROLLOUT_BYTES {
+            return None;
+        }
+
+        if let Some(newline) = chunk.iter().rposition(|byte| *byte == b'\n') {
+            let head = &chunk[newline + 1..];
+            candidate_len = candidate_len.checked_add(head.len())?;
+            if candidate_len.checked_add(1)? > crate::MAX_RECORD_LINE_BYTES {
+                return None;
+            }
+            let nonblank = head
+                .iter()
+                .chain(reverse_chunks.iter().rev().flat_map(|part| part.iter()));
+            if nonblank.clone().all(u8::is_ascii_whitespace) {
+                // Skip a complete blank line and continue from its preceding delimiter.
+                reverse_chunks.clear();
+                candidate_len = 0;
+                cursor = start + newline as u64;
+                continue;
+            }
+            let mut line = Vec::with_capacity(candidate_len);
+            line.extend_from_slice(head);
+            for part in reverse_chunks.iter().rev() {
+                line.extend_from_slice(part);
+            }
+            break line;
+        }
+
+        candidate_len = candidate_len.checked_add(chunk.len())?;
+        if candidate_len.checked_add(1)? > crate::MAX_RECORD_LINE_BYTES {
+            return None;
+        }
+        reverse_chunks.push(chunk);
+        cursor = start;
+    };
+
+    let text = std::str::from_utf8(&line).ok()?;
+    let chain: crate::ChainLine = serde_json::from_str(text).ok()?;
+    (crate::hash_line(&chain.prev, chain.seq, &chain.payload) == chain.hash).then_some(
+        PhysicalReceipt {
+            seq: chain.seq,
+            hash: chain.hash,
+            tenant: chain.tenant,
+        },
+    )
+}
+
+fn read_tail_receipt(path: &Path) -> Option<(u64, u64, String, String)> {
+    let len = std::fs::metadata(path).ok()?.len();
+    let receipt = read_receipt_ending_at(path, len)?;
+    Some((len, receipt.seq, receipt.hash, receipt.tenant))
+}
+
+struct GenesisProjection {
+    tenant: TenantId,
+    cwd: PathBuf,
+    created_at: u64,
+    parent: Option<Provenance>,
+}
+
+fn read_genesis_projection(path: &Path) -> Option<GenesisProjection> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return None;
+    };
+    let mut reader = std::io::BufReader::new(file);
+    let Ok(Some((bytes, true, _))) = crate::read_bounded_line(&mut reader) else {
+        return None;
+    };
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return None;
+    };
+    let Ok(chain) = serde_json::from_str::<crate::ChainLine>(text) else {
+        return None;
+    };
+    if chain.seq != 0
+        || chain.prev != crate::ZERO_HASH
+        || crate::hash_line(&chain.prev, chain.seq, &chain.payload) != chain.hash
+    {
+        return None;
+    }
+    let Ok(event) = serde_json::from_value::<Event>(chain.payload) else {
+        return None;
+    };
+    match event.kind {
+        EventKind::RunStart {
+            cwd,
+            created_at,
+            parent_run,
+            forked_at,
+            parent_hash_at_seq,
+            ..
+        } => {
+            let parent = match (parent_run, forked_at, parent_hash_at_seq) {
+                (Some(parent_run), Some(forked_at), Some(parent_hash_at_seq)) => Some(Provenance {
+                    parent_run: RunId(parent_run),
+                    forked_at: Seq(forked_at),
+                    parent_hash_at_seq,
+                }),
+                (None, None, None) => None,
+                _ => return None,
+            };
+            Some(GenesisProjection {
+                tenant: TenantId(chain.tenant),
+                cwd: PathBuf::from(cwd),
+                created_at,
+                parent,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn genesis_matches_meta(path: &Path, meta: &SessionMeta) -> bool {
+    read_genesis_projection(path).is_some_and(|genesis| {
+        genesis.tenant == meta.tenant
+            && genesis.cwd == meta.cwd
+            && genesis.created_at == meta.created_at
+            && genesis.parent == meta.parent
+    })
+}
+
+fn ancestry_matches_rollout(runs_dir: &Path, meta: &SessionMeta) -> bool {
+    if meta.ancestry.len() > MAX_FORK_DEPTH {
+        return false;
+    }
+    let mut expected = meta.parent.clone();
+    for receipt in meta.ancestry.iter().rev() {
+        let Some(provenance) = expected.take() else {
+            return false;
+        };
+        if receipt.run_id != provenance.parent_run
+            || receipt.tenant != meta.tenant
+            || receipt.through_seq != provenance.forked_at.0
+            || receipt.tail_hash != provenance.parent_hash_at_seq
+            || receipt.prefix_bytes == 0
+            || receipt.prefix_bytes > crate::MAX_ROLLOUT_BYTES
+            || receipt.observed_record_bytes < receipt.prefix_bytes
+            || receipt.observed_record_bytes > crate::MAX_ROLLOUT_BYTES
+            || receipt.observed_tail_seq < receipt.through_seq
+        {
+            return false;
+        }
+        let Ok(path) = rollout_path(runs_dir, &receipt.run_id) else {
+            return false;
+        };
+        let prefix_matches =
+            read_receipt_ending_at(&path, receipt.prefix_bytes).is_some_and(|physical| {
+                physical.seq == receipt.through_seq
+                    && physical.hash == receipt.tail_hash
+                    && physical.tenant == receipt.tenant.0
+            });
+        if !prefix_matches {
+            return false;
+        }
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            return false;
+        };
+        let observation_matches = if metadata.len() == receipt.observed_record_bytes {
+            file_mtime(&path).is_some_and(|mtime| {
+                mtime
+                    == (
+                        receipt.observed_updated_at,
+                        receipt.observed_updated_at_subsec_nanos,
+                    )
+            })
+        } else if metadata.len() > receipt.observed_record_bytes {
+            read_receipt_ending_at(&path, receipt.observed_record_bytes).is_some_and(|physical| {
+                physical.seq == receipt.observed_tail_seq
+                    && physical.hash == receipt.observed_tail_hash
+                    && physical.tenant == receipt.tenant.0
+            })
+        } else {
+            false
+        };
+        if !observation_matches {
+            return false;
+        }
+        let Some(genesis) = read_genesis_projection(&path) else {
+            return false;
+        };
+        if genesis.tenant != meta.tenant {
+            return false;
+        }
+        expected = genesis.parent;
+    }
+    expected.is_none()
+}
+
+fn projection_is_current(runs_dir: &Path, meta: &SessionMeta) -> bool {
     let Ok(path) = rollout_path(runs_dir, &meta.run_id) else {
         return false;
     };
-    meta.pricing_schema_version == 1
-        && meta.projection_schema_version == 1
+    let digest_matches =
+        projection_digest(meta).is_ok_and(|expected| expected == meta.projection_digest);
+    let tail_matches = read_tail_receipt(&path).is_some_and(|(bytes, seq, hash, tenant)| {
+        bytes == meta.record_bytes
+            && Some(seq) == meta.record_tail_seq
+            && hash == meta.record_tail_hash
+            && tenant == meta.tenant.0
+    });
+    let mtime_matches = file_mtime(&path)
+        .is_some_and(|mtime| mtime == (meta.updated_at, meta.updated_at_subsec_nanos));
+    meta.pricing_schema_version == 2
+        && meta.projection_schema_version == 3
         && meta.record_bytes > 0
-        && file_len(&path) == Some(meta.record_bytes)
+        && digest_matches
+        && tail_matches
+        && mtime_matches
+        && genesis_matches_meta(&path, meta)
+        && ancestry_matches_rollout(runs_dir, meta)
+}
+
+/// Mutable caches cannot independently prove exact zero or a signed monetary amount. Those
+/// structurally current projections remain useful index entries, but reads replay the rollout so
+/// only an honest `Unknown` cost is ever accepted directly from cache bytes.
+fn projection_covers_rollout(runs_dir: &Path, meta: &SessionMeta) -> bool {
+    matches!(&meta.cost, CostState::Unknown { .. }) && projection_is_current(runs_dir, meta)
 }
 
 fn now_secs() -> u64 {
@@ -260,6 +823,7 @@ fn parse_outcome(s: &str) -> Option<Outcome> {
     let s = s.trim();
     match s {
         "Done" => Some(Outcome::Done),
+        "Drained" => Some(Outcome::Drained),
         "Interrupted" => Some(Outcome::Interrupted),
         "Stuck" => Some(Outcome::Stuck),
         "HarnessError" => Some(Outcome::HarnessError),
@@ -284,13 +848,30 @@ fn parse_outcome(s: &str) -> Option<Outcome> {
 /// Build a [`SessionMeta`] by replaying the run's record (the degrade path, and the truth `reindex`
 /// rebuilds the cache from). Never re-reads disk state that belongs in the record: `created_at`
 /// comes from the genesis header, not the clock.
-fn meta_from_replay(runs_dir: &Path, run: &RunId) -> Result<SessionMeta, RecordError> {
+fn meta_from_replay(
+    runs_dir: &Path,
+    run: &RunId,
+    pricing: Option<Arc<dyn PricingPort>>,
+) -> Result<SessionMeta, RecordError> {
+    Ok(load_session_projection(runs_dir, run, pricing)?.into_meta())
+}
+
+fn load_session_projection(
+    runs_dir: &Path,
+    run: &RunId,
+    pricing: Option<Arc<dyn PricingPort>>,
+) -> Result<SessionProjection, RecordError> {
     let path = rollout_path(runs_dir, run)?;
-    let lines = read_chain(&path)?;
+    let complete_len_before = complete_record_len(&path);
+    // Keep the child journal and its ancestry inside one logical read budget. The verified child
+    // lines are reused below instead of opening and parsing the same near-cap file a second time.
+    let mut replay_budget = LogicalReplayBudget::default();
+    let lines = read_chain_budgeted(&path, &mut replay_budget)?;
+    let physical_tail = lines.last().map(|line| (line.seq, line.hash.clone()));
 
     let mut tenant = TenantId::default();
     let mut cwd = PathBuf::new();
-    let mut provider_id = String::new();
+    let provider_id = String::new();
     let mut model = String::new();
     let mut effort = Effort::default();
     let mut created_at = 0u64;
@@ -325,141 +906,274 @@ fn meta_from_replay(runs_dir: &Path, run: &RunId) -> Result<SessionMeta, RecordE
         }
     }
 
-    let mut turns = 0u32;
-    let mut usage = Usage::default();
-    let mut cost_ledger = Ledger::new();
-    let mut spawned_subagents = HashSet::new();
-    let mut terminal_subagents = HashSet::new();
-    let mut title = String::new();
-    let mut last_outcome = None;
-    for l in &lines {
-        match &l.event.kind {
-            EventKind::TurnStart => {
-                turns += 1;
-                cost_ledger.attempt();
-            }
-            EventKind::TurnEnd { usage: u } => {
-                usage.add(u);
-                cost_ledger.turn(u, 0);
-            }
-            EventKind::SubagentSpawned { sub_run, .. } => {
-                spawned_subagents.insert(sub_run.clone());
-            }
-            EventKind::SubagentFinished {
-                sub_run, metrics, ..
-            } => {
-                turns = turns.saturating_add(metrics.provider_attempts);
-                usage.add(&metrics.usage);
-                cost_ledger.merge_workflow_metrics(metrics);
-                terminal_subagents.insert(sub_run.clone());
-            }
-            EventKind::Workflow {
-                event:
-                    core_protocol::WorkflowEvent::ChildFinished {
-                        sub_run, metrics, ..
-                    },
-                ..
-            } => {
-                turns = turns.saturating_add(metrics.provider_attempts);
-                usage.add(&metrics.usage);
-                cost_ledger.merge_workflow_metrics(metrics);
-                if let Some(sub_run) = sub_run {
-                    terminal_subagents.insert(sub_run.clone());
-                }
-            }
-            EventKind::ModelSelected {
-                provider_id: selected_provider,
-                model_id,
-                ..
-            } => {
-                provider_id = selected_provider.clone();
-                model = model_id.clone();
-            }
-            EventKind::EffortChanged { effort: next, .. } => effort = *next,
-            EventKind::Message { message } if title.is_empty() && message.role == Role::User => {
-                title = title_from_message(message);
-            }
-            EventKind::Done { outcome } => last_outcome = parse_outcome(outcome),
-            _ => {}
+    // Physical fields above describe the child journal itself, but session activity is a logical
+    // projection. A fork stores only its suffix, so usage/cost/title/selection/outcome must include
+    // the bounded, cross-link-verified parent prefix. Preloading `lines` means every journal is
+    // charged and parsed at most once in this top-level projection.
+    let mut ancestry = Vec::new();
+    let logical_events = expand_scoped_from(
+        runs_dir,
+        run,
+        None,
+        0,
+        &mut replay_budget,
+        Some(lines),
+        &mut ancestry,
+    )?;
+
+    let mut projection = SessionProjection {
+        runs_dir: runs_dir.to_path_buf(),
+        meta: SessionMeta {
+            pricing_schema_version: 2,
+            projection_schema_version: 3,
+            run_id: run.clone(),
+            tenant,
+            cwd,
+            provider_id,
+            model,
+            effort,
+            title: String::new(),
+            created_at,
+            updated_at: 0,
+            updated_at_subsec_nanos: 0,
+            record_bytes: 0,
+            record_tail_seq: None,
+            record_tail_hash: String::new(),
+            projection_digest: String::new(),
+            ancestry,
+            turns: 0,
+            cost: CostState::Zero,
+            cache_hit: 0.0,
+            last_outcome: None,
+            parent,
+        },
+        turns: 0,
+        usage: Usage::default(),
+        title: String::new(),
+        cost_ledger: Ledger::new(),
+        pricing_replay: pricing.map(PricingReplay::trusted).unwrap_or_default(),
+    };
+    for scoped in &logical_events {
+        projection.observe_scoped(&scoped.event, &scoped.tenant, &scoped.run_id)?;
+    }
+    let complete_len_after = complete_record_len(&path);
+    if let (Some(before), Some(after)) = (complete_len_before, complete_len_after)
+        && before == after
+    {
+        projection.meta.record_bytes = before;
+        if let Some((seq, hash)) = physical_tail {
+            projection.meta.record_tail_seq = Some(seq.0);
+            projection.meta.record_tail_hash = hash;
         }
     }
+    let (updated_at, updated_at_subsec_nanos) =
+        file_mtime(&path).unwrap_or((projection.meta.created_at, 0));
+    projection.meta.updated_at = updated_at;
+    projection.meta.updated_at_subsec_nanos = updated_at_subsec_nanos;
+    projection.refresh_derived();
+    projection.meta.cache_hit = json_f64_fixed_point(projection.meta.cache_hit)?;
+    projection.meta.projection_digest = projection_digest(&projection.meta)?;
+    Ok(projection)
+}
 
-    let updated_at = file_mtime_secs(&path).unwrap_or(created_at);
-    let record_bytes = file_len(&path).unwrap_or(0);
-    let title = if title.is_empty() {
-        "(untitled)".to_string()
-    } else {
-        title
+struct IndexRead {
+    entries: Vec<SessionMeta>,
+    physical_lines: usize,
+    exact: bool,
+}
+
+fn max_index_scan_lines(live_runs: usize) -> usize {
+    live_runs.saturating_mul(INDEX_SCAN_LINES_PER_LIVE_RUN)
+}
+
+/// Read only a live-run-proportional prefix. Any malformed, torn, oversized, or over-limit cache
+/// invalidates the whole prefix; trusting an early append-era entry could otherwise return an old
+/// projection whose newer line was beyond the read bound.
+fn read_index(runs_dir: &Path, live_runs: usize) -> IndexRead {
+    let max_lines = max_index_scan_lines(live_runs);
+    let Ok(scan) = crate::cache_io::scan_index_lines(&index_path(runs_dir), max_lines) else {
+        return IndexRead {
+            entries: Vec::new(),
+            physical_lines: 0,
+            exact: false,
+        };
     };
-
-    let cost = if spawned_subagents
-        .iter()
-        .any(|sub_run| !terminal_subagents.contains(sub_run))
-    {
-        CostState::Unknown {
-            reason: core_obs::CostUnknownReason::LegacyUnattributed,
+    debug_assert!(scan.lines_examined <= max_lines.saturating_add(1));
+    let physical_lines = scan.lines.len();
+    if !scan.complete {
+        return IndexRead {
+            entries: Vec::new(),
+            physical_lines,
+            exact: false,
+        };
+    }
+    let mut entries = Vec::with_capacity(physical_lines);
+    for line in scan.lines {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            return IndexRead {
+                entries: Vec::new(),
+                physical_lines,
+                exact: false,
+            };
         }
-    } else {
-        cost_ledger.cost_state()
-    };
-
-    Ok(SessionMeta {
-        pricing_schema_version: 1,
-        projection_schema_version: 1,
-        run_id: run.clone(),
-        tenant,
-        cwd,
-        provider_id,
-        model,
-        effort,
-        title,
-        created_at,
-        updated_at,
-        record_bytes,
-        turns,
-        cost,
-        cache_hit: usage.cache_hit_ratio(),
-        last_outcome,
-        parent,
-    })
+        let Ok(meta) = serde_json::from_slice::<SessionMeta>(&line) else {
+            return IndexRead {
+                entries: Vec::new(),
+                physical_lines,
+                exact: false,
+            };
+        };
+        entries.push(meta);
+    }
+    IndexRead {
+        entries,
+        physical_lines,
+        exact: true,
+    }
 }
 
-fn read_index(runs_dir: &Path) -> Vec<SessionMeta> {
-    let Ok(txt) = std::fs::read_to_string(index_path(runs_dir)) else {
-        return Vec::new();
-    };
-    txt.lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str::<SessionMeta>(l).ok())
-        .collect()
+fn encode_index<'a>(
+    metas: impl IntoIterator<Item = &'a SessionMeta>,
+) -> Result<Vec<u8>, RecordError> {
+    let mut ordered: Vec<&SessionMeta> = metas.into_iter().collect();
+    ordered.sort_by(|left, right| left.run_id.0.cmp(&right.run_id.0));
+    let mut bytes = Vec::new();
+    for meta in ordered {
+        let line = serde_json::to_vec(meta)?;
+        let physical_len = line.len().checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "session index line length overflow",
+            )
+        })?;
+        if physical_len > crate::cache_io::MAX_INDEX_LINE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "session index entry is {physical_len} bytes, exceeding the {}-byte limit",
+                    crate::cache_io::MAX_INDEX_LINE_BYTES
+                ),
+            )
+            .into());
+        }
+        bytes.extend_from_slice(&line);
+        bytes.push(b'\n');
+    }
+    Ok(bytes)
 }
 
-/// The metadata for one run: the per-run cache if present and parseable, else a replay of the
-/// record (R5 design §2.5). A missing or corrupt cache is never fatal — it degrades to the record.
+fn rewrite_index_unlocked<'a>(
+    runs_dir: &Path,
+    metas: impl IntoIterator<Item = &'a SessionMeta>,
+) -> Result<(), RecordError> {
+    let bytes = encode_index(metas)?;
+    crate::cache_io::atomic_replace(&index_path(runs_dir), &bytes)?;
+    Ok(())
+}
+
+/// Merge candidate projections with the latest structurally current index snapshot while holding
+/// the stable cross-process lock. This never replays an unrelated rollout: invalid or absent
+/// entries are left for a later `list`/`reindex` repair, while concurrent valid upserts are
+/// preserved. Exact `Zero`/`Known` entries are stored but remain replay-only on reads.
+fn merge_rewrite_index(
+    runs_dir: &Path,
+    proposed: impl IntoIterator<Item = SessionMeta>,
+) -> Result<(), RecordError> {
+    let proposed: Vec<SessionMeta> = proposed.into_iter().collect();
+    crate::cache_io::with_session_index_lock(runs_dir, || {
+        let existing: HashSet<String> = rollout_run_ids(runs_dir)
+            .into_iter()
+            .map(|run| run.0)
+            .collect();
+        let current = read_index(runs_dir, existing.len());
+        let mut by_run = HashMap::new();
+        if current.exact {
+            for candidate in current.entries {
+                if existing.contains(&candidate.run_id.0)
+                    && projection_is_current(runs_dir, &candidate)
+                {
+                    by_run.insert(candidate.run_id.0.clone(), candidate);
+                }
+            }
+        }
+        // Proposed values win only while they still match the exact current physical tail.
+        // A concurrent append therefore drops an older proposal instead of blessing it.
+        for candidate in proposed {
+            if existing.contains(&candidate.run_id.0) && projection_is_current(runs_dir, &candidate)
+            {
+                by_run.insert(candidate.run_id.0.clone(), candidate);
+            }
+        }
+        Ok(rewrite_index_unlocked(runs_dir, by_run.values()))
+    })??;
+    Ok(())
+}
+
+fn write_meta_sidecar(runs_dir: &Path, projected: &SessionMeta) -> Result<(), RecordError> {
+    let path = per_run_meta_path(runs_dir, &projected.run_id)?;
+    let encoded = serde_json::to_vec_pretty(projected)?;
+    if encoded.len() > crate::cache_io::MAX_SESSION_META_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "session metadata exceeds the cache byte limit",
+        )
+        .into());
+    }
+    crate::cache_io::atomic_replace(&path, &encoded)?;
+    Ok(())
+}
+
+/// The metadata for one run: a current cache may directly serve only an honest `Unknown` cost;
+/// `Zero` and `Known` both require replay because mutable cache bytes cannot prove either exact
+/// monetary claim. A missing, stale, or corrupt cache degrades to the record (R5 design §2.5).
 pub fn meta(runs_dir: &Path, run: &RunId) -> Result<SessionMeta, RecordError> {
     let cache = per_run_meta_path(runs_dir, run)?;
-    if let Ok(txt) = std::fs::read_to_string(&cache)
-        && let Ok(m) = serde_json::from_str::<SessionMeta>(&txt)
+    if let Ok(bytes) = crate::cache_io::read_session_meta(&cache)
+        && let Ok(m) = serde_json::from_slice::<SessionMeta>(&bytes)
         && m.run_id == *run
         && projection_covers_rollout(runs_dir, &m)
     {
         return Ok(m);
     }
-    meta_from_replay(runs_dir, run)
+    meta_from_replay(runs_dir, run, None)
+}
+
+/// Rebuild monetary metadata from the durable record with an explicit operator trust port. Cached
+/// `Known` values are never accepted because they do not carry the HMAC evidence needed to verify
+/// them independently.
+pub fn meta_with_pricing(
+    runs_dir: &Path,
+    run: &RunId,
+    pricing: Arc<dyn PricingPort>,
+) -> Result<SessionMeta, RecordError> {
+    meta_from_replay(runs_dir, run, Some(pricing))
 }
 
 /// List the sessions in `runs_dir` for `tenant`, newest first (R5 design §2.5). Listing is
-/// O(runs), not O(bytes): the append index provides each run's meta in one file read, and only a
-/// rollout not covered by the index degrades to a per-run cache read or a replay. Never errors — a
-/// run whose record cannot be projected is skipped, matching the existing degrade-to-scan posture.
+/// O(runs), not O(historical turn writes): at most two index lines per live rollout plus one bound
+/// detector are read. An append-era, torn, oversized, or corrupt index is discarded wholesale;
+/// per-run cache/replay then supplies a complete atomic compacted snapshot. Never errors — a run
+/// whose record cannot be projected is skipped, matching the existing degrade-to-scan posture.
 pub fn list(runs_dir: &Path, tenant: &TenantId) -> Vec<SessionMeta> {
     let existing: HashSet<String> = rollout_run_ids(runs_dir).into_iter().map(|r| r.0).collect();
 
     let mut by_run: HashMap<String, SessionMeta> = HashMap::new();
-    // Fast path: the append index, last write wins. Entries whose rollout was deleted are dropped.
-    for m in read_index(runs_dir) {
-        if existing.contains(&m.run_id.0) && projection_covers_rollout(runs_dir, &m) {
-            by_run.insert(m.run_id.0.clone(), m);
+    let mut indexable: HashMap<String, SessionMeta> = HashMap::new();
+    let index = read_index(runs_dir, existing.len());
+    let mut needs_compaction = !index.exact;
+    // Fast path: a bounded legacy index, last write wins. Entries whose rollout was deleted or
+    // whose record cursor is stale are dropped and force a canonical rewrite.
+    for m in index.entries {
+        if existing.contains(&m.run_id.0) && projection_is_current(runs_dir, &m) {
+            let run = m.run_id.0.clone();
+            if indexable.insert(run.clone(), m.clone()).is_some() {
+                needs_compaction = true;
+            }
+            if projection_covers_rollout(runs_dir, &m) {
+                by_run.insert(run, m);
+            }
+        } else {
+            needs_compaction = true;
         }
     }
     // Degrade: any rollout the index does not cover is projected from its per-run cache or record.
@@ -467,8 +1181,19 @@ pub fn list(runs_dir: &Path, tenant: &TenantId) -> Vec<SessionMeta> {
         if !by_run.contains_key(run)
             && let Ok(m) = meta(runs_dir, &RunId(run.clone()))
         {
+            if projection_is_current(runs_dir, &m) {
+                indexable.insert(run.clone(), m.clone());
+            }
             by_run.insert(run.clone(), m);
         }
+    }
+    if index.physical_lines != indexable.len() {
+        needs_compaction = true;
+    }
+    // Cache repair is best effort: failure (including a crash before atomic rename) leaves either
+    // the complete old index or no usable index, and the result above still came from replay.
+    if needs_compaction {
+        let _ = merge_rewrite_index(runs_dir, indexable.into_values());
     }
 
     let mut metas: Vec<SessionMeta> = by_run
@@ -479,6 +1204,7 @@ pub fn list(runs_dir: &Path, tenant: &TenantId) -> Vec<SessionMeta> {
     metas.sort_by(|a, b| {
         b.updated_at
             .cmp(&a.updated_at)
+            .then_with(|| b.updated_at_subsec_nanos.cmp(&a.updated_at_subsec_nanos))
             .then_with(|| b.run_id.0.cmp(&a.run_id.0))
     });
     metas
@@ -494,23 +1220,15 @@ pub fn most_recent(runs_dir: &Path, cwd: &Path, tenant: &TenantId) -> Option<Run
 }
 
 /// Persist a run's projected metadata (the kernel calls this at each turn boundary). Writes the
-/// authoritative per-run `.meta.json` (atomically, via a temp file and rename) and appends a line
-/// to the `sessions.index` fast path. The record remains the truth; this cache is rebuildable.
-pub fn write_meta(runs_dir: &Path, meta: &SessionMeta) -> Result<(), RecordError> {
-    let path = per_run_meta_path(runs_dir, &meta.run_id)?;
+/// authoritative per-run `.meta.json` and atomically upserts a validated `sessions.index`
+/// snapshot. Both use synced same-directory temporary files and rename; the index therefore holds
+/// at most one physical line per represented run instead of growing once per turn. An already
+/// corrupt index is rebuilt from the current candidate without replaying unrelated runs; [`list`]
+/// later restores any omitted entries from their sidecars or authoritative records.
+pub(crate) fn write_meta(runs_dir: &Path, projected: &SessionMeta) -> Result<(), RecordError> {
     std::fs::create_dir_all(runs_dir)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(meta)?)?;
-    std::fs::rename(&tmp, &path)?;
-
-    let mut line = serde_json::to_string(meta)?;
-    line.push('\n');
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(index_path(runs_dir))?
-        .write_all(line.as_bytes())?;
-    Ok(())
+    write_meta_sidecar(runs_dir, projected)?;
+    merge_rewrite_index(runs_dir, [projected.clone()])
 }
 
 /// Rebuild the cache from the records (R5 design §2.4): replay every rollout, rewrite each per-run
@@ -518,23 +1236,17 @@ pub fn write_meta(runs_dir: &Path, meta: &SessionMeta) -> Result<(), RecordError
 /// safe to run. A corrupt/broken rollout is skipped rather than aborting the whole rebuild; returns
 /// the number of runs indexed.
 pub fn reindex(runs_dir: &Path) -> Result<usize, RecordError> {
+    std::fs::create_dir_all(runs_dir)?;
     let mut metas = Vec::new();
     for run in rollout_run_ids(runs_dir) {
-        if let Ok(m) = meta_from_replay(runs_dir, &run) {
+        if let Ok(m) = meta_from_replay(runs_dir, &run, None) {
             metas.push(m);
         }
     }
     for m in &metas {
-        if let Ok(path) = per_run_meta_path(runs_dir, &m.run_id) {
-            let _ = std::fs::write(path, serde_json::to_vec_pretty(m)?);
-        }
+        write_meta_sidecar(runs_dir, m)?;
     }
-    let mut buf = String::new();
-    for m in &metas {
-        buf.push_str(&serde_json::to_string(m)?);
-        buf.push('\n');
-    }
-    std::fs::write(index_path(runs_dir), buf)?;
+    merge_rewrite_index(runs_dir, metas.iter().cloned())?;
     Ok(metas.len())
 }
 
@@ -561,8 +1273,10 @@ pub fn fork(
     tenant: &TenantId,
 ) -> Result<RunId, RecordError> {
     let parent_path = rollout_path(runs_dir, parent)?;
-    // Read + verify the parent chain, pin its hash at the fork point, and read its genesis config.
-    let parent_lines = read_chain(&parent_path)?;
+    // Read + verify the parent chain exactly once under the same cumulative budget later used for
+    // its ancestors. The verified lines are passed into logical expansion rather than reopened.
+    let mut replay_budget = LogicalReplayBudget::default();
+    let parent_lines = read_chain_budgeted(&parent_path, &mut replay_budget)?;
     if let Some(first) = parent_lines.first() {
         ensure_tenant(tenant, &first.tenant.0, first.seq.0)?;
     }
@@ -580,24 +1294,87 @@ pub fn fork(
             )
         })?;
 
-    let (cwd, mut model, config_digest) = match parent_lines.first().map(|l| &l.event.kind) {
-        Some(EventKind::RunStart {
-            cwd,
-            model,
-            config_digest,
-            ..
-        }) => (cwd.clone(), model.clone(), config_digest.clone()),
-        _ => (String::new(), String::new(), String::new()),
-    };
+    let (cwd, mut model, config_digest, mut environment) =
+        match parent_lines.first().map(|l| &l.event.kind) {
+            Some(EventKind::RunStart {
+                cwd,
+                model,
+                config_digest,
+                environment,
+                ..
+            }) => (
+                cwd.clone(),
+                model.clone(),
+                config_digest.clone(),
+                environment.clone(),
+            ),
+            _ => (String::new(), String::new(), String::new(), None),
+        };
     // Resolve the LOGICAL prefix, not only the parent run's physical lines. At seq 0 of a nested
     // fork, the effective route may live in an ancestor prefix; filtering only `parent_lines`
     // silently lost its provider id. `expand(..., Some(at))` preserves that inherited state while
     // still excluding physical selections after the requested branch point.
-    let logical_prefix = expand(runs_dir, parent, Some(at.0), 0)?;
-    let inherited_policy = RuntimePolicyState::from_events(&logical_prefix);
+    let mut ignored_ancestry = Vec::new();
+    let logical_prefix = expand_scoped_from(
+        runs_dir,
+        parent,
+        Some(at.0),
+        0,
+        &mut replay_budget,
+        Some(parent_lines),
+        &mut ignored_ancestry,
+    )?;
+    if environment.is_none() {
+        environment = logical_prefix.iter().rev().find_map(|scoped| {
+            if let EventKind::RunStart { environment, .. } = &scoped.event.kind {
+                environment.clone()
+            } else {
+                None
+            }
+        });
+    }
+    let mut legacy_max_microusd: Option<u64> = None;
+    for candidate in logical_prefix
+        .iter()
+        .filter_map(|scoped| match &scoped.event.kind {
+            EventKind::RunStart {
+                max_usd: Some(max_usd),
+                ..
+            } => Some(*max_usd),
+            _ => None,
+        })
+    {
+        if !candidate.is_finite() || candidate < 0.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fork history contains an invalid max_usd ceiling",
+            )
+            .into());
+        }
+        let candidate = legacy_usd_to_microusd_floor(candidate);
+        legacy_max_microusd =
+            Some(legacy_max_microusd.map_or(candidate, |current| current.min(candidate)));
+    }
+    let mut exact_max_microusd: Option<u64> = None;
+    for candidate in logical_prefix
+        .iter()
+        .filter_map(|scoped| match &scoped.event.kind {
+            EventKind::UsdCeilingChanged { max_microusd, .. } => Some(*max_microusd),
+            _ => None,
+        })
+    {
+        exact_max_microusd =
+            Some(exact_max_microusd.map_or(candidate, |current| current.min(candidate)));
+    }
+    // Once exact policy exists it is authoritative. The legacy f64 field is consulted only for
+    // pre-policy journals and is reconstructed by flooring, never ceiling.
+    let max_microusd = exact_max_microusd.or(legacy_max_microusd);
+    let max_usd = max_microusd.map(|value| value as f64 / MICROUSD_PER_USD);
+    let inherited_policy =
+        RuntimePolicyState::from_events(logical_prefix.iter().map(|scoped| &scoped.event));
     let inherited_selection = logical_prefix
         .iter()
-        .filter_map(|event| match &event.kind {
+        .filter_map(|scoped| match &scoped.event.kind {
             EventKind::ModelSelected {
                 provider_id,
                 model_id,
@@ -629,13 +1406,26 @@ pub fn fork(
             // projectable without consulting mutable live state.
             effort: inherited_policy.effort,
             created_at: now_secs(),
+            environment,
             parent_run: Some(parent.0.clone()),
             forked_at: Some(at.0),
             parent_hash_at_seq: Some(pinned),
             config_digest,
+            max_usd,
         },
     };
     rollout.append(&genesis)?;
+    if let Some(max_microusd) = max_microusd {
+        rollout.append(&Event {
+            seq: Seq::ZERO,
+            turn: TurnId(0),
+            kind: EventKind::UsdCeilingChanged {
+                version: RuntimePolicyEventVersion::V1,
+                source: RuntimePolicySource::Fork,
+                max_microusd,
+            },
+        })?;
+    }
     rollout.append(&Event {
         seq: Seq::ZERO,
         turn: TurnId(0),
@@ -679,18 +1469,92 @@ const MAX_FORK_DEPTH: usize = 256;
 /// R5-review Risk 3) — then this chain's events are appended. A plain run returns its own events.
 /// The kernel's `messages_from_rollout` will call this; it is exposed here, not wired.
 pub fn load_forked(runs_dir: &Path, run: &RunId) -> Result<Vec<Event>, RecordError> {
-    expand(runs_dir, run, None, 0)
+    Ok(load_forked_scoped(runs_dir, run)?
+        .into_iter()
+        .map(|scoped| scoped.event)
+        .collect())
+}
+
+/// [`load_forked`] with the original tenant/run scope retained for every physical event.
+pub fn load_forked_scoped(runs_dir: &Path, run: &RunId) -> Result<Vec<ScopedEvent>, RecordError> {
+    let mut budget = LogicalReplayBudget::default();
+    expand_scoped(runs_dir, run, None, 0, &mut budget)
+}
+
+#[derive(Default)]
+struct LogicalReplayBudget {
+    bytes: u64,
+    events: usize,
+    physical_lines: usize,
+    expanded_runs: HashSet<RunId>,
+}
+
+impl LogicalReplayBudget {
+    fn ensure_can_expand(&self, run: &RunId) -> Result<(), RecordError> {
+        if self.expanded_runs.contains(run) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("cyclic fork chain repeats run {run}"),
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    fn begin_expand(&mut self, run: &RunId) -> Result<(), RecordError> {
+        self.ensure_can_expand(run)?;
+        if !self.expanded_runs.insert(run.clone()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("cyclic fork chain repeats run {run}"),
+            )
+            .into());
+        }
+        Ok(())
+    }
+}
+
+fn admit_logical_events(total: &mut usize, events: usize) -> Result<(), RecordError> {
+    *total = total.saturating_add(events);
+    if *total > crate::MAX_ROLLOUT_EVENTS {
+        return Err(RecordError::TooManyEvents {
+            max: crate::MAX_ROLLOUT_EVENTS,
+        });
+    }
+    Ok(())
 }
 
 /// Recursively materialize `run`'s event stream, bounded to seq `<= upto` when set. Recurses into a
 /// parent so a fork of a fork (a rewound-then-rewound session) resolves; `depth` guards against a
 /// pathological/cyclic parent pointer in a hand-crafted record.
-fn expand(
+fn expand_scoped(
     runs_dir: &Path,
     run: &RunId,
     upto: Option<u64>,
     depth: usize,
-) -> Result<Vec<Event>, RecordError> {
+    budget: &mut LogicalReplayBudget,
+) -> Result<Vec<ScopedEvent>, RecordError> {
+    let mut ignored_ancestry = Vec::new();
+    expand_scoped_from(
+        runs_dir,
+        run,
+        upto,
+        depth,
+        budget,
+        None,
+        &mut ignored_ancestry,
+    )
+}
+
+fn expand_scoped_from(
+    runs_dir: &Path,
+    run: &RunId,
+    upto: Option<u64>,
+    depth: usize,
+    budget: &mut LogicalReplayBudget,
+    preloaded: Option<Vec<ReadLine>>,
+    ancestry: &mut Vec<SessionAncestryReceipt>,
+) -> Result<Vec<ScopedEvent>, RecordError> {
     if depth > MAX_FORK_DEPTH {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -699,7 +1563,12 @@ fn expand(
         .into());
     }
 
-    let lines = read_chain(&rollout_path(runs_dir, run)?)?;
+    let path = rollout_path(runs_dir, run)?;
+    budget.begin_expand(run)?;
+    let lines = match preloaded {
+        Some(lines) => lines,
+        None => read_chain_budgeted(&path, budget)?,
+    };
     let mut events = Vec::new();
 
     if let Some(EventKind::RunStart {
@@ -710,9 +1579,18 @@ fn expand(
     }) = lines.first().map(|l| &l.event.kind)
     {
         let parent = RunId(pr.clone());
+        if depth >= MAX_FORK_DEPTH {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("fork chain for {run} exceeds max depth {MAX_FORK_DEPTH} (cyclic parent?)"),
+            )
+            .into());
+        }
+        budget.ensure_can_expand(&parent)?;
+        let parent_path = rollout_path(runs_dir, &parent)?;
         // Verify the cross-link BEFORE trusting the parent prefix: the parent chain's actual hash
         // at the fork seq must equal the pinned value, or the parent prefix was tampered.
-        let parent_lines = read_chain(&rollout_path(runs_dir, &parent)?)?;
+        let parent_lines = read_chain_budgeted(&parent_path, budget)?;
         if let (Some(child_first), Some(parent_first)) = (lines.first(), parent_lines.first()) {
             ensure_tenant(
                 &child_first.tenant,
@@ -720,30 +1598,58 @@ fn expand(
                 parent_first.seq.0,
             )?;
         }
-        let actual = parent_lines
+        let pinned_line = parent_lines
             .iter()
             .find(|l| l.seq.0 == *fa)
-            .map(|l| l.hash.clone())
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("parent {parent} has no seq {fa} for fork of {run}"),
                 )
             })?;
-        if &actual != ph {
+        if &pinned_line.hash != ph {
             return Err(RecordError::ForkParentMismatch {
                 parent: parent.0.clone(),
                 forked_at: *fa,
                 pinned: ph.clone(),
-                actual,
+                actual: pinned_line.hash.clone(),
             });
         }
-        events.extend(expand(runs_dir, &parent, Some(*fa), depth + 1)?);
+        let observed_tail = parent_lines
+            .last()
+            .expect("a verified pinned parent line implies a non-empty parent chain");
+        let observed_mtime = file_mtime(&parent_path).unwrap_or_default();
+        let receipt = SessionAncestryReceipt {
+            run_id: parent.clone(),
+            tenant: pinned_line.tenant.clone(),
+            through_seq: *fa,
+            prefix_bytes: pinned_line.end_bytes,
+            tail_hash: pinned_line.hash.clone(),
+            observed_record_bytes: observed_tail.end_bytes,
+            observed_tail_seq: observed_tail.seq.0,
+            observed_tail_hash: observed_tail.hash.clone(),
+            observed_updated_at: observed_mtime.0,
+            observed_updated_at_subsec_nanos: observed_mtime.1,
+        };
+        events.extend(expand_scoped_from(
+            runs_dir,
+            &parent,
+            Some(*fa),
+            depth + 1,
+            budget,
+            Some(parent_lines),
+            ancestry,
+        )?);
+        ancestry.push(receipt);
     }
 
     for l in &lines {
         if upto.map(|u| l.seq.0 <= u).unwrap_or(true) {
-            events.push(l.event.clone());
+            events.push(ScopedEvent {
+                event: l.event.clone(),
+                tenant: l.tenant.clone(),
+                run_id: run.clone(),
+            });
         }
     }
     Ok(events)
@@ -764,6 +1670,55 @@ mod tests {
         d
     }
 
+    #[test]
+    fn logical_fork_budget_bounds_cumulative_bytes_and_events() {
+        let dir = tmpdir("logical-budget");
+        std::fs::create_dir_all(&dir).unwrap();
+        let second = dir.join("second.jsonl");
+        std::fs::File::create(&second)
+            .unwrap()
+            .set_len(crate::MAX_ROLLOUT_BYTES / 2 + 1)
+            .unwrap();
+        let mut bytes = crate::MAX_ROLLOUT_BYTES / 2;
+        let mut physical_lines = 0;
+        assert!(matches!(
+            crate::visit_record_lines_charged(&second, &mut bytes, &mut physical_lines, |_| Ok(())),
+            Err(RecordError::RolloutTooLarge { .. })
+        ));
+
+        let mut events = 0;
+        assert!(matches!(
+            admit_logical_events(&mut events, crate::MAX_ROLLOUT_EVENTS + 1),
+            Err(RecordError::TooManyEvents { .. })
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn logical_fork_budget_bounds_cumulative_physical_lines_across_files() {
+        let dir = tmpdir("logical-physical-lines");
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("first.jsonl");
+        let second = dir.join("second.jsonl");
+        let first_count = crate::MAX_ROLLOUT_PHYSICAL_LINES / 2 + 1;
+        let second_count = crate::MAX_ROLLOUT_PHYSICAL_LINES - first_count + 1;
+        std::fs::write(&first, vec![b'\n'; first_count]).unwrap();
+        std::fs::write(&second, vec![b'\n'; second_count]).unwrap();
+
+        let mut bytes = 0;
+        let mut physical_lines = 0;
+        crate::visit_record_lines_charged(&first, &mut bytes, &mut physical_lines, |_| Ok(()))
+            .unwrap();
+        assert_eq!(physical_lines, first_count);
+        assert!(matches!(
+            crate::visit_record_lines_charged(&second, &mut bytes, &mut physical_lines, |_| Ok(())),
+            Err(RecordError::TooManyRecordLines {
+                max: crate::MAX_ROLLOUT_PHYSICAL_LINES,
+            })
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn genesis_event(cwd: &str) -> Event {
         Event {
             seq: Seq::ZERO,
@@ -773,10 +1728,12 @@ mod tests {
                 model: "claude".into(),
                 effort: Effort::Medium,
                 created_at: 1000,
+                environment: None,
                 parent_run: None,
                 forked_at: None,
                 parent_hash_at_seq: None,
                 config_digest: "cfg".into(),
+                max_usd: None,
             },
         }
     }
@@ -821,6 +1778,50 @@ mod tests {
             },
         })
         .unwrap();
+    }
+
+    fn complete_one_turn(runs_dir: &Path, run: &RunId, tenant: &TenantId, task: &str) {
+        let mut rollout = Rollout::open(runs_dir, run, tenant.clone()).unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::TurnStart,
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Message {
+                    message: Message::user_text(task),
+                },
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::TurnEnd {
+                    usage: Usage {
+                        input: 7,
+                        output: 3,
+                        cache_creation: 0,
+                        cache_read: 2,
+                        thinking: 0,
+                    },
+                },
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Done {
+                    outcome: "Done".into(),
+                },
+            })
+            .unwrap();
     }
 
     fn user_texts(events: &[Event]) -> Vec<String> {
@@ -879,8 +1880,8 @@ mod tests {
         assert_eq!(m.created_at, 1000);
         assert_eq!(m.turns, 1);
         assert!((m.cache_hit - 0.9).abs() < 1e-9);
-        assert_eq!(m.pricing_schema_version, 1);
-        assert_eq!(m.projection_schema_version, 1);
+        assert_eq!(m.pricing_schema_version, 2);
+        assert_eq!(m.projection_schema_version, 3);
         assert_eq!(
             m.cost,
             CostState::Unknown {
@@ -914,8 +1915,8 @@ mod tests {
             .append(&Event {
                 seq: Seq::ZERO,
                 turn: TurnId(1),
-                kind: EventKind::Workflow {
-                    version: core_protocol::WorkflowEventVersion::V1,
+                kind: EventKind::WorkflowV2 {
+                    version: core_protocol::WorkflowEventVersion::V2,
                     workflow_id: "workflow-1".into(),
                     event: core_protocol::WorkflowEvent::ChildFinished {
                         task_id: 0,
@@ -933,8 +1934,9 @@ mod tests {
                             },
                             tool_calls: 4,
                             tool_errors: 0,
-                            model_ms: 10,
-                            tools_ms: 20,
+                            model_ms: Some(10),
+                            tools_ms: Some(20),
+                            cost: None,
                         },
                         error_code: None,
                         error_detail: None,
@@ -959,7 +1961,58 @@ mod tests {
     }
 
     #[test]
-    fn spawned_child_without_terminal_is_legacy_unattributed() {
+    fn direct_child_v2_terminal_restores_session_attempts() {
+        let dir = tmpdir("direct-v2-attribution");
+        let tenant = TenantId::default();
+        let run = RunId("direct-v2-attribution".into());
+        mk_run(&dir, &run, &tenant, "/repo/a", "audit direct child");
+        let mut rollout = Rollout::open(&dir, &run, tenant).unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::SubagentSpawned {
+                    sub_run: "direct-0".into(),
+                    agent: "direct-investigator".into(),
+                },
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::SubagentFinishedV2 {
+                    version: core_protocol::WorkflowEventVersion::V2,
+                    sub_run: "direct-0".into(),
+                    outcome: core_protocol::WorkflowChildOutcome::Drained,
+                    metrics: core_protocol::WorkflowMetrics {
+                        provider_attempts: 2,
+                        completed_turns: 1,
+                        usage: Usage {
+                            input: 10,
+                            output: 2,
+                            cache_creation: 0,
+                            cache_read: 8,
+                            thinking: 0,
+                        },
+                        ..core_protocol::WorkflowMetrics::default()
+                    },
+                    error_code: Some("operator_drain".into()),
+                    error_detail: None,
+                    summary_digest: None,
+                    evidence_bytes: 0,
+                },
+            })
+            .unwrap();
+        drop(rollout);
+
+        let projected = meta(&dir, &run).unwrap();
+        assert_eq!(projected.turns, 3, "1 parent + 2 direct-child attempts");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn spawned_child_without_terminal_has_missing_billing_evidence() {
         let dir = tmpdir("workflow-incomplete");
         let tenant = TenantId::default();
         let run = RunId("workflow-incomplete".into());
@@ -979,7 +2032,40 @@ mod tests {
         assert_eq!(
             meta(&dir, &run).unwrap().cost,
             CostState::Unknown {
-                reason: core_obs::CostUnknownReason::LegacyUnattributed
+                reason: core_obs::CostUnknownReason::BillingEvidenceMissing
+            }
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn workflow_child_started_without_terminal_has_missing_billing_evidence() {
+        let dir = tmpdir("workflow-start-incomplete");
+        let tenant = TenantId::default();
+        let run = RunId("workflow-start-incomplete".into());
+        mk_run(&dir, &run, &tenant, "/repo/a", "audit modules");
+        let mut rollout = Rollout::open(&dir, &run, tenant).unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::Workflow {
+                    version: core_protocol::WorkflowEventVersion::V1,
+                    workflow_id: "workflow-1".into(),
+                    event: core_protocol::WorkflowEvent::ChildStarted {
+                        task_id: 0,
+                        sub_run: "fan-started".into(),
+                        spawn_seq: Seq(1),
+                        budget: core_protocol::Budget::default(),
+                    },
+                },
+            })
+            .unwrap();
+        drop(rollout);
+        assert_eq!(
+            meta(&dir, &run).unwrap().cost,
+            CostState::Unknown {
+                reason: core_obs::CostUnknownReason::BillingEvidenceMissing
             }
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -1070,7 +2156,7 @@ mod tests {
         let run = RunId("legacy".into());
         mk_run(&dir, &run, &tenant, "/repo/legacy", "legacy task");
 
-        let current = meta_from_replay(&dir, &run).unwrap();
+        let current = meta_from_replay(&dir, &run, None).unwrap();
         let mut legacy = serde_json::to_value(&current).unwrap();
         let object = legacy.as_object_mut().unwrap();
         object.remove("provider_id");
@@ -1102,7 +2188,7 @@ mod tests {
 
         // Preserve the exact rollout cursor so the pricing schema is the only reason this cache
         // is rejected. V0 stored a context-free placeholder number under `cost_usd`.
-        let current = meta_from_replay(&dir, &run).unwrap();
+        let current = meta_from_replay(&dir, &run, None).unwrap();
         let mut legacy = serde_json::to_value(&current).unwrap();
         let object = legacy.as_object_mut().unwrap();
         object.remove("pricing_schema_version");
@@ -1115,7 +2201,7 @@ mod tests {
         .unwrap();
 
         let projected = meta(&dir, &run).unwrap();
-        assert_eq!(projected.pricing_schema_version, 1);
+        assert_eq!(projected.pricing_schema_version, 2);
         assert_eq!(
             projected.cost,
             CostState::Unknown {
@@ -1155,6 +2241,1152 @@ mod tests {
     }
 
     #[test]
+    fn d9_01_most_recent_uses_subsecond_activity_before_the_run_id_tiebreaker() {
+        let dir = tmpdir("d9-01-subsecond-recent");
+        let tenant = TenantId::default();
+        let older = RunId("z-older".into());
+        let newer = RunId("a-newer".into());
+        mk_run(&dir, &older, &tenant, "/repo/same", "older task");
+        mk_run(&dir, &newer, &tenant, "/repo/same", "newer task");
+        let same_second = 2_000;
+        for (run, nanos) in [(&older, 100), (&newer, 200)] {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(rollout_path(&dir, run).unwrap())
+                .unwrap();
+            file.set_times(std::fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::new(same_second, nanos),
+            ))
+            .unwrap();
+        }
+        assert_eq!(reindex(&dir).unwrap(), 2);
+        let listed = list(&dir, &tenant);
+        assert_eq!(listed[0].updated_at, same_second);
+        assert_eq!(listed[1].updated_at, same_second);
+        assert_eq!(listed[0].run_id, newer);
+        assert_eq!(
+            most_recent(&dir, Path::new("/repo/same"), &tenant),
+            Some(newer)
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_g1_g2_turn_boundaries_auto_cache_and_covered_reads_replay_zero_rollouts() {
+        let dir = tmpdir("d9-01-auto-fast-path");
+        let tenant = TenantId("acme".into());
+        let runs: Vec<RunId> = (0..4)
+            .map(|position| RunId(format!("auto-{position}")))
+            .collect();
+        for (position, run) in runs.iter().enumerate() {
+            mk_run(
+                &dir,
+                run,
+                &tenant,
+                &format!("/repo/fast-{position}"),
+                &format!("authoritative task {position}"),
+            );
+            assert!(
+                per_run_meta_path(&dir, run).unwrap().is_file(),
+                "Done must automatically persist the per-run projection"
+            );
+        }
+
+        let scan =
+            crate::cache_io::scan_index_lines(&index_path(&dir), max_index_scan_lines(runs.len()))
+                .unwrap();
+        assert!(scan.complete);
+        assert_eq!(scan.lines.len(), runs.len());
+        assert_eq!(scan.lines_examined, runs.len());
+
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        let listed = list(&dir, &tenant);
+        assert_eq!(listed.len(), runs.len());
+        assert!(listed.iter().all(|meta| meta.turns == 1));
+        assert_eq!(
+            most_recent(&dir, Path::new("/repo/fast-2"), &tenant),
+            Some(RunId("auto-2".into()))
+        );
+        assert_eq!(
+            READ_CHAIN_CALLS.with(std::cell::Cell::get),
+            0,
+            "covered list/continue selection must not replay a rollout"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_zero_attempt_terminal_is_indexed_but_its_monetary_claim_replays() {
+        let dir = tmpdir("d9-01-zero-attempt");
+        let tenant = TenantId::default();
+        let run = RunId("zero-attempt".into());
+        {
+            let mut rollout = Rollout::open(&dir, &run, tenant.clone()).unwrap();
+            rollout.append(&genesis_event("/repo/zero")).unwrap();
+            rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Done {
+                        outcome: "Done".into(),
+                    },
+                })
+                .unwrap();
+        }
+
+        let sidecar_path = per_run_meta_path(&dir, &run).unwrap();
+        assert!(sidecar_path.is_file());
+        let persisted: SessionMeta =
+            serde_json::from_slice(&crate::cache_io::read_session_meta(&sidecar_path).unwrap())
+                .unwrap();
+        assert_eq!(persisted.cost, CostState::Zero);
+        assert!(projection_is_current(&dir, &persisted));
+        assert!(!projection_covers_rollout(&dir, &persisted));
+        let index = read_index(&dir, 1);
+        assert!(index.exact);
+        assert_eq!(index.entries.len(), 1);
+        assert_eq!(index.entries[0].run_id, run);
+        assert_eq!(
+            index.entries[0].projection_digest,
+            persisted.projection_digest
+        );
+
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        assert_eq!(meta(&dir, &run).unwrap().cost, CostState::Zero);
+        assert_eq!(READ_CHAIN_CALLS.with(std::cell::Cell::get), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_fork_projection_is_fast_and_bound_to_the_pinned_parent_prefix() {
+        let dir = tmpdir("d9-01-fork-fast-prefix");
+        let tenant = TenantId::default();
+        let parent = RunId("fork-fast-parent".into());
+        mk_run(&dir, &parent, &tenant, "/repo/fork-fast", "parent task");
+        let parent_tail = read_chain(&rollout_path(&dir, &parent).unwrap())
+            .unwrap()
+            .last()
+            .unwrap()
+            .seq;
+        let child = fork(&dir, &parent, parent_tail, &tenant).unwrap();
+        complete_one_turn(&dir, &child, &tenant, "child task");
+
+        let child_sidecar = per_run_meta_path(&dir, &child).unwrap();
+        assert!(child_sidecar.is_file());
+        let persisted: SessionMeta =
+            serde_json::from_slice(&crate::cache_io::read_session_meta(&child_sidecar).unwrap())
+                .unwrap();
+        assert_eq!(persisted.parent.as_ref().unwrap().parent_run, parent);
+        assert_eq!(persisted.ancestry.len(), 1);
+        assert_eq!(persisted.ancestry[0].run_id, parent);
+        assert!(projection_covers_rollout(&dir, &persisted));
+        assert!(
+            read_index(&dir, 2)
+                .entries
+                .iter()
+                .any(|m| m.run_id == child)
+        );
+
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        assert_eq!(meta(&dir, &child).unwrap().turns, 2);
+        assert!(list(&dir, &tenant).iter().any(|m| m.run_id == child));
+        assert_eq!(
+            READ_CHAIN_CALLS.with(std::cell::Cell::get),
+            0,
+            "covered fork meta/list must not replay the child or its parent"
+        );
+
+        // A same-length in-place change keeps both the fork-point and physical tail receipts
+        // byte-identical. The ancestor observation mtime must still invalidate the child cache,
+        // after which full fork replay exposes the broken parent chain.
+        let parent_path = rollout_path(&dir, &parent).unwrap();
+        let original_parent = std::fs::read_to_string(&parent_path).unwrap();
+        let original_parent_tail = read_tail_receipt(&parent_path).unwrap();
+        let parent_receipt = &persisted.ancestry[0];
+        let corrupted_parent = original_parent.replacen("parent task", "forged task", 1);
+        assert_eq!(corrupted_parent.len(), original_parent.len());
+        assert_ne!(corrupted_parent, original_parent);
+        std::fs::write(&parent_path, corrupted_parent).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&parent_path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH
+                    + std::time::Duration::new(
+                        parent_receipt.observed_updated_at.saturating_add(1),
+                        parent_receipt.observed_updated_at_subsec_nanos,
+                    ),
+            ))
+            .unwrap();
+        assert_eq!(
+            read_tail_receipt(&parent_path).unwrap(),
+            original_parent_tail
+        );
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        assert!(matches!(
+            meta(&dir, &child),
+            Err(RecordError::ChainBroken { .. })
+        ));
+        assert!(READ_CHAIN_CALLS.with(std::cell::Cell::get) >= 2);
+
+        // Restore the exact observed parent state so the same child cache can next prove that a
+        // legitimate append-only suffix is accepted without replay.
+        std::fs::write(&parent_path, original_parent).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&parent_path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH
+                    + std::time::Duration::new(
+                        parent_receipt.observed_updated_at,
+                        parent_receipt.observed_updated_at_subsec_nanos,
+                    ),
+            ))
+            .unwrap();
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        assert_eq!(meta(&dir, &child).unwrap().turns, 2);
+        assert_eq!(READ_CHAIN_CALLS.with(std::cell::Cell::get), 0);
+
+        // The receipt binds only the consumed prefix. A valid suffix appended after the fork
+        // point must leave the child's cache current.
+        {
+            let mut parent_rollout = Rollout::open(&dir, &parent, tenant.clone()).unwrap();
+            parent_rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(1),
+                    kind: EventKind::Notice {
+                        text: "later parent suffix".into(),
+                    },
+                })
+                .unwrap();
+            assert!(parent_rollout.refresh_session_cache().unwrap());
+        }
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        assert_eq!(
+            meta(&dir, &child).unwrap().projection_digest,
+            persisted.projection_digest
+        );
+        assert!(list(&dir, &tenant).iter().any(|m| m.run_id == child));
+        assert_eq!(READ_CHAIN_CALLS.with(std::cell::Cell::get), 0);
+
+        // Truncating even one byte from the pinned prefix invalidates the cache and then makes the
+        // authoritative fork replay fail rather than returning a projection with missing history.
+        let pinned_bytes = persisted.ancestry[0].prefix_bytes;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(rollout_path(&dir, &parent).unwrap())
+            .unwrap()
+            .set_len(pinned_bytes - 1)
+            .unwrap();
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        assert!(meta(&dir, &child).is_err());
+        assert!(READ_CHAIN_CALLS.with(std::cell::Cell::get) >= 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_nested_fork_projection_records_every_ancestor_and_reads_without_replay() {
+        let dir = tmpdir("d9-01-nested-fork-cache");
+        let tenant = TenantId::default();
+        let root = RunId("nested-cache-root".into());
+        mk_run(&dir, &root, &tenant, "/repo/nested-cache", "root task");
+        let root_tail = read_chain(&rollout_path(&dir, &root).unwrap())
+            .unwrap()
+            .last()
+            .unwrap()
+            .seq;
+        let first = fork(&dir, &root, root_tail, &tenant).unwrap();
+        {
+            let mut first_rollout = Rollout::open(&dir, &first, tenant.clone()).unwrap();
+            first_rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Done {
+                        outcome: "Done".into(),
+                    },
+                })
+                .unwrap();
+        }
+        let first_tail = read_chain(&rollout_path(&dir, &first).unwrap())
+            .unwrap()
+            .last()
+            .unwrap()
+            .seq;
+        let second = fork(&dir, &first, first_tail, &tenant).unwrap();
+        complete_one_turn(&dir, &second, &tenant, "nested child task");
+
+        let persisted: SessionMeta = serde_json::from_slice(
+            &crate::cache_io::read_session_meta(&per_run_meta_path(&dir, &second).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            persisted
+                .ancestry
+                .iter()
+                .map(|receipt| receipt.run_id.clone())
+                .collect::<Vec<_>>(),
+            vec![root.clone(), first.clone()]
+        );
+        assert!(projection_covers_rollout(&dir, &persisted));
+
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        assert_eq!(meta(&dir, &second).unwrap().turns, 2);
+        assert_eq!(list(&dir, &tenant).len(), 3);
+        assert_eq!(
+            READ_CHAIN_CALLS.with(std::cell::Cell::get),
+            0,
+            "nested fork coverage checks may read receipts but not replay journals"
+        );
+
+        let root_receipt = persisted
+            .ancestry
+            .iter()
+            .find(|receipt| receipt.run_id == root)
+            .unwrap();
+        let root_path = rollout_path(&dir, &root).unwrap();
+        let original_root = std::fs::read_to_string(&root_path).unwrap();
+        let corrupted_root = original_root.replacen("root task", "evil task", 1);
+        assert_eq!(corrupted_root.len(), original_root.len());
+        std::fs::write(&root_path, corrupted_root).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&root_path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH
+                    + std::time::Duration::new(
+                        root_receipt.observed_updated_at.saturating_add(1),
+                        root_receipt.observed_updated_at_subsec_nanos,
+                    ),
+            ))
+            .unwrap();
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        assert!(matches!(
+            meta(&dir, &second),
+            Err(RecordError::ChainBroken { .. })
+        ));
+        assert!(READ_CHAIN_CALLS.with(std::cell::Cell::get) >= 3);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_tail_receipt_io_is_independent_of_the_rollout_prefix() {
+        let dir = tmpdir("d9-01-tail-receipt-bound");
+        let tenant = TenantId::default();
+        let run = RunId("long-tail-receipt".into());
+        {
+            let mut rollout = Rollout::open(&dir, &run, tenant).unwrap();
+            rollout.append(&genesis_event("/repo/long-tail")).unwrap();
+            for position in 0..40 {
+                rollout
+                    .append(&Event {
+                        seq: Seq::ZERO,
+                        turn: TurnId(0),
+                        kind: EventKind::Notice {
+                            text: format!("{}-{position}", "x".repeat(4_096)),
+                        },
+                    })
+                    .unwrap();
+            }
+        }
+        let path = rollout_path(&dir, &run).unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() > (RECEIPT_SCAN_CHUNK_BYTES * 4) as u64);
+        RECEIPT_BYTES_READ.with(|bytes| bytes.set(0));
+        let (_, seq, _, _) = read_tail_receipt(&path).unwrap();
+        assert_eq!(seq, 40);
+        assert!(
+            RECEIPT_BYTES_READ.with(std::cell::Cell::get) <= RECEIPT_SCAN_CHUNK_BYTES as u64 + 1,
+            "tail validation must read at most one fixed chunk for a short final line"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_subprecision_cache_hit_tampering_is_not_tolerated() {
+        let dir = tmpdir("d9-01-cache-hit-exact-digest");
+        let tenant = TenantId::default();
+        let run = RunId("cache-hit-exact".into());
+        mk_run(&dir, &run, &tenant, "/repo/cache-hit", "truth");
+        let mut forged = meta_from_replay(&dir, &run, None).unwrap();
+        let honest_bits = forged.cache_hit.to_bits();
+        forged.cache_hit += 1e-13;
+        assert_ne!(forged.cache_hit.to_bits(), honest_bits);
+        // Retain the old exact digest: even a mutation far below display precision is a cache miss.
+        std::fs::write(
+            per_run_meta_path(&dir, &run).unwrap(),
+            serde_json::to_vec_pretty(&forged).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(index_path(&dir), encode_index([&forged]).unwrap()).unwrap();
+
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        let recovered = meta(&dir, &run).unwrap();
+        assert_eq!(recovered.cache_hit.to_bits(), 0.9_f64.to_bits());
+        assert_eq!(READ_CHAIN_CALLS.with(std::cell::Cell::get), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_same_length_middle_record_corruption_invalidates_the_cache_by_mtime() {
+        let dir = tmpdir("d9-01-middle-record-corruption");
+        let tenant = TenantId::default();
+        let run = RunId("middle-record-corruption".into());
+        mk_run(&dir, &run, &tenant, "/repo/middle-corruption", "truth");
+        let cached: SessionMeta = serde_json::from_slice(
+            &crate::cache_io::read_session_meta(&per_run_meta_path(&dir, &run).unwrap()).unwrap(),
+        )
+        .unwrap();
+        let path = rollout_path(&dir, &run).unwrap();
+        let original_tail = read_tail_receipt(&path).unwrap();
+        let original = std::fs::read_to_string(&path).unwrap();
+        let corrupted = original.replacen("truth", "false", 1);
+        assert_eq!(corrupted.len(), original.len());
+        assert_ne!(corrupted, original);
+        std::fs::write(&path, corrupted).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH
+                    + std::time::Duration::new(
+                        cached.updated_at.saturating_add(1),
+                        cached.updated_at_subsec_nanos,
+                    ),
+            ))
+            .unwrap();
+        assert_eq!(
+            read_tail_receipt(&path).unwrap(),
+            original_tail,
+            "the injected corruption deliberately preserves length and tail receipt"
+        );
+        assert!(!projection_is_current(&dir, &cached));
+
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        assert!(matches!(
+            meta(&dir, &run),
+            Err(RecordError::ChainBroken { .. })
+        ));
+        assert_eq!(READ_CHAIN_CALLS.with(std::cell::Cell::get), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_incremental_projection_matches_full_replay_and_initializes_once() {
+        let dir = tmpdir("d9-01-incremental-equivalence");
+        let tenant = TenantId::default();
+        let run = RunId("incremental-equivalence".into());
+        let mut rollout = Rollout::open(&dir, &run, tenant).unwrap();
+        rollout.append(&genesis_event("/repo/incremental")).unwrap();
+
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::TurnStart,
+            })
+            .unwrap();
+        rollout
+            .append(&selection_event("provider-a", "model-a"))
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Message {
+                    message: Message::user_text("incremental title\nsecond line"),
+                },
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::TurnEnd {
+                    usage: Usage {
+                        input: 11,
+                        output: 7,
+                        cache_creation: 2,
+                        cache_read: 3,
+                        thinking: 1,
+                    },
+                },
+            })
+            .unwrap();
+        assert!(rollout.refresh_session_cache().unwrap());
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::TurnStart,
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::TurnEnd {
+                    usage: Usage {
+                        input: 5,
+                        output: 4,
+                        cache_creation: 0,
+                        cache_read: 1,
+                        thinking: 0,
+                    },
+                },
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::Done {
+                    outcome: "Done".into(),
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            READ_CHAIN_CALLS.with(std::cell::Cell::get),
+            1,
+            "K turn-boundary refreshes must pay for only the initialization replay"
+        );
+
+        let persisted: SessionMeta = serde_json::from_slice(
+            &crate::cache_io::read_session_meta(&per_run_meta_path(&dir, &run).unwrap()).unwrap(),
+        )
+        .unwrap();
+        let in_memory = match &rollout.session_projection {
+            crate::SessionProjectionState::Ready(projection) => projection.projected().clone(),
+            _ => panic!("the incremental projection must remain ready"),
+        };
+        assert!((in_memory.cache_hit - persisted.cache_hit).abs() < 1e-12);
+        let mut stable_in_memory = in_memory;
+        let mut stable_persisted = persisted.clone();
+        stable_in_memory.cache_hit = 0.0;
+        stable_persisted.cache_hit = 0.0;
+        assert_eq!(
+            serde_json::to_value(stable_in_memory).unwrap(),
+            serde_json::to_value(stable_persisted).unwrap(),
+            "the sidecar must serialize the exact in-memory projection"
+        );
+        assert_eq!(
+            projection_digest(&persisted).unwrap(),
+            persisted.projection_digest
+        );
+        assert!(genesis_matches_meta(
+            &rollout_path(&dir, &run).unwrap(),
+            &persisted
+        ));
+        assert!(projection_covers_rollout(&dir, &persisted));
+        let cached = meta(&dir, &run).unwrap();
+        assert_eq!(READ_CHAIN_CALLS.with(std::cell::Cell::get), 1);
+        let replayed = meta_from_replay(&dir, &run, None).unwrap();
+        assert_eq!(cached.turns, 2);
+        assert_eq!(cached.provider_id, "provider-a");
+        assert_eq!(cached.model, "model-a");
+        assert_eq!(cached.title, "incremental title");
+        assert!((cached.cache_hit - replayed.cache_hit).abs() < 1e-12);
+        let mut stable_cached = cached;
+        let mut stable_replayed = replayed;
+        stable_cached.cache_hit = 0.0;
+        stable_replayed.cache_hit = 0.0;
+        assert_eq!(
+            serde_json::to_value(&stable_cached).unwrap(),
+            serde_json::to_value(&stable_replayed).unwrap(),
+            "incremental projection must equal replay on every exact field"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_resumed_writer_replays_once_and_preserves_a_prior_missing_usage_attempt() {
+        let dir = tmpdir("d9-01-resume-missing-usage");
+        let tenant = TenantId::default();
+        let run = RunId("resume-missing-usage".into());
+        {
+            let mut first = Rollout::open(&dir, &run, tenant.clone()).unwrap();
+            first.append(&genesis_event("/repo/resume")).unwrap();
+            first
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::TurnStart,
+                })
+                .unwrap();
+            first
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Notice {
+                        text: "provider attempt failed before reporting usage".into(),
+                    },
+                })
+                .unwrap();
+            let _ = first.refresh_session_cache();
+        }
+
+        let mut resumed = Rollout::open(&dir, &run, tenant).unwrap();
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        resumed
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::TurnStart,
+            })
+            .unwrap();
+        resumed
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::Message {
+                    message: Message::user_text("resumed task"),
+                },
+            })
+            .unwrap();
+        resumed
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::TurnEnd {
+                    usage: Usage {
+                        input: 3,
+                        output: 1,
+                        cache_creation: 0,
+                        cache_read: 0,
+                        thinking: 0,
+                    },
+                },
+            })
+            .unwrap();
+        resumed
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::Done {
+                    outcome: "Done".into(),
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            READ_CHAIN_CALLS.with(std::cell::Cell::get),
+            1,
+            "a resumed writer must initialize from history only once"
+        );
+        let cached = meta(&dir, &run).unwrap();
+        assert_eq!(READ_CHAIN_CALLS.with(std::cell::Cell::get), 1);
+        assert_eq!(cached.turns, 2);
+        assert_eq!(cached.title, "resumed task");
+        assert!(matches!(cached.cost, CostState::Unknown { .. }));
+        let replayed = meta_from_replay(&dir, &run, None).unwrap();
+        assert_eq!(cached.turns, replayed.turns);
+        assert_eq!(cached.cost, replayed.cost);
+        assert_eq!(cached.record_tail_seq, replayed.record_tail_seq);
+        assert_eq!(cached.record_tail_hash, replayed.record_tail_hash);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_g4_later_selection_and_first_message_invalidate_an_untitled_cache() {
+        let dir = tmpdir("d9-01-stale-title-route");
+        let tenant = TenantId::default();
+        let run = RunId("stale-title-route".into());
+        let mut rollout = Rollout::open(&dir, &run, tenant.clone()).unwrap();
+        rollout.append(&genesis_event("/repo/stale")).unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::TurnStart,
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::TurnEnd {
+                    usage: Usage {
+                        input: 1,
+                        output: 1,
+                        cache_creation: 0,
+                        cache_read: 0,
+                        thinking: 0,
+                    },
+                },
+            })
+            .unwrap();
+        assert!(rollout.refresh_session_cache().unwrap());
+        let before = meta(&dir, &run).unwrap();
+        assert_eq!(before.title, "(untitled)");
+
+        rollout
+            .append(&selection_event("provider-b", "model-b"))
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Message {
+                    message: Message::user_text("new authoritative title"),
+                },
+            })
+            .unwrap();
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        let after = meta(&dir, &run).unwrap();
+        assert_eq!(READ_CHAIN_CALLS.with(std::cell::Cell::get), 1);
+        assert!(after.record_bytes > before.record_bytes);
+        assert_eq!(after.provider_id, "provider-b");
+        assert_eq!(after.model, "model-b");
+        assert_eq!(after.title, "new authoritative title");
+        assert_eq!(list(&dir, &tenant)[0].title, "new authoritative title");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_projection_uses_the_same_durable_redacted_event_as_replay() {
+        let dir = tmpdir("d9-01-redacted-projection");
+        let tenant = TenantId::default();
+        let run = RunId("redacted-projection".into());
+        let secret = "ghp_AbCdEf1234567890AbCdEf1234567890";
+        let mut rollout = Rollout::open(&dir, &run, tenant).unwrap();
+        rollout.append(&genesis_event("/repo/redacted")).unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::TurnStart,
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Message {
+                    message: Message::user_text(secret),
+                },
+            })
+            .unwrap();
+        rollout.append(&selection_event(secret, secret)).unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::TurnEnd {
+                    usage: Usage {
+                        input: 3,
+                        output: 2,
+                        cache_creation: 0,
+                        cache_read: 0,
+                        thinking: 0,
+                    },
+                },
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Done {
+                    outcome: "Done".into(),
+                },
+            })
+            .unwrap();
+
+        let cached = meta(&dir, &run).unwrap();
+        let replayed = meta_from_replay(&dir, &run, None).unwrap();
+        assert_eq!(cached.title, replayed.title);
+        assert_eq!(cached.provider_id, replayed.provider_id);
+        assert_eq!(cached.model, replayed.model);
+        assert!(cached.title.contains("[REDACTED"));
+        let all_cache_and_record_bytes = [
+            std::fs::read_to_string(dir.join("redacted-projection.jsonl")).unwrap(),
+            std::fs::read_to_string(per_run_meta_path(&dir, &run).unwrap()).unwrap(),
+            std::fs::read_to_string(index_path(&dir)).unwrap(),
+        ]
+        .join("\n");
+        assert!(!all_cache_and_record_bytes.contains(secret));
+        assert!(all_cache_and_record_bytes.contains("[REDACTED"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_g3_same_length_cache_tampering_degrades_to_tenant_correct_replay() {
+        let dir = tmpdir("d9-01-cache-tamper");
+        let tenant = TenantId("acme".into());
+        let attacker = TenantId("evil".into());
+        let run = RunId("tamper".into());
+        mk_run(&dir, &run, &tenant, "/repo/tamper", "truth");
+
+        let mut forged = meta_from_replay(&dir, &run, None).unwrap();
+        forged.title = "false".into();
+        forged.tenant = attacker.clone();
+        // Deliberately retain the old digest. Both mutations preserve JSON shape and byte length,
+        // so a cursor-only cache check would accept them.
+        let forged_sidecar = serde_json::to_vec_pretty(&forged).unwrap();
+        std::fs::write(per_run_meta_path(&dir, &run).unwrap(), forged_sidecar).unwrap();
+        std::fs::write(index_path(&dir), encode_index([&forged]).unwrap()).unwrap();
+
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        let direct = meta(&dir, &run).unwrap();
+        assert_eq!(direct.title, "truth");
+        assert_eq!(direct.tenant, tenant);
+        assert_eq!(READ_CHAIN_CALLS.with(std::cell::Cell::get), 1);
+
+        // Corrupt both cache layers again so the listing itself must take the replay path.
+        std::fs::write(
+            per_run_meta_path(&dir, &run).unwrap(),
+            serde_json::to_vec_pretty(&forged).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(index_path(&dir), encode_index([&forged]).unwrap()).unwrap();
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        let listed = list(&dir, &tenant);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].title, "truth");
+        assert!(list(&dir, &attacker).is_empty());
+        assert!(READ_CHAIN_CALLS.with(std::cell::Cell::get) >= 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_g3_missing_torn_and_oversized_caches_all_replay_correctly() {
+        let dir = tmpdir("d9-01-cache-degrade");
+        let tenant = TenantId::default();
+        let run = RunId("cache-degrade".into());
+        mk_run(&dir, &run, &tenant, "/repo/cache-degrade", "authoritative");
+        let sidecar = per_run_meta_path(&dir, &run).unwrap();
+        let index = index_path(&dir);
+
+        let corruptions = [
+            b"{".to_vec(),
+            vec![b'x'; crate::cache_io::MAX_SESSION_META_BYTES],
+            vec![b'x'; crate::cache_io::MAX_SESSION_META_BYTES + 1],
+        ];
+        std::fs::remove_file(&sidecar).unwrap();
+        std::fs::remove_file(&index).unwrap();
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        assert_eq!(list(&dir, &tenant)[0].title, "authoritative");
+        assert_eq!(READ_CHAIN_CALLS.with(std::cell::Cell::get), 1);
+
+        for corrupt in corruptions {
+            std::fs::write(&sidecar, &corrupt).unwrap();
+            std::fs::write(&index, &corrupt).unwrap();
+            READ_CHAIN_CALLS.with(|calls| calls.set(0));
+            let listed = list(&dir, &tenant);
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].title, "authoritative");
+            assert_eq!(READ_CHAIN_CALLS.with(std::cell::Cell::get), 1);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_fork_cache_cannot_hide_its_parent_provenance() {
+        let dir = tmpdir("d9-01-fork-cache-forge");
+        let tenant = TenantId::default();
+        let parent = RunId("fork-parent".into());
+        mk_run(&dir, &parent, &tenant, "/repo/fork", "parent task");
+        let tail = read_chain(&rollout_path(&dir, &parent).unwrap())
+            .unwrap()
+            .last()
+            .unwrap()
+            .seq;
+        let child = fork(&dir, &parent, tail, &tenant).unwrap();
+        let mut forged = meta_from_replay(&dir, &child, None).unwrap();
+        assert!(forged.parent.is_some());
+        forged.parent = None;
+        forged.projection_digest = projection_digest(&forged).unwrap();
+        assert!(
+            !projection_covers_rollout(&dir, &forged),
+            "the child genesis must contradict a cache-forged parent=None"
+        );
+        write_meta_sidecar(&dir, &forged).unwrap();
+
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        let recovered = meta(&dir, &child).unwrap();
+        assert_eq!(recovered.parent.unwrap().parent_run, parent);
+        assert!(READ_CHAIN_CALLS.with(std::cell::Cell::get) >= 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_repeated_refresh_never_replays_unrelated_noncoverable_runs() {
+        let dir = tmpdir("d9-01-no-unrelated-replay");
+        let tenant = TenantId::default();
+        let current = RunId("current".into());
+        let parent = RunId("parent".into());
+        mk_run(&dir, &current, &tenant, "/repo/current", "current task");
+        mk_run(&dir, &parent, &tenant, "/repo/parent", "parent task");
+
+        let zero = RunId("zero".into());
+        let mut zero_rollout = Rollout::open(&dir, &zero, tenant.clone()).unwrap();
+        zero_rollout.append(&genesis_event("/repo/zero")).unwrap();
+        drop(zero_rollout);
+        let parent_tail = read_chain(&rollout_path(&dir, &parent).unwrap())
+            .unwrap()
+            .last()
+            .unwrap()
+            .seq;
+        let child = fork(&dir, &parent, parent_tail, &tenant).unwrap();
+        assert!(
+            meta_from_replay(&dir, &child, None)
+                .unwrap()
+                .parent
+                .is_some()
+        );
+
+        let mut current_rollout = Rollout::open(&dir, &current, tenant).unwrap();
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        for _ in 0..12 {
+            assert!(current_rollout.refresh_session_cache().unwrap());
+        }
+        assert_eq!(
+            READ_CHAIN_CALLS.with(std::cell::Cell::get),
+            1,
+            "only the current rollout may be replayed once to initialize its writer projection"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_concurrent_upserts_preserve_exactly_one_entry_per_run() {
+        let dir = tmpdir("d9-01-concurrent-upsert");
+        let tenant = TenantId::default();
+        let run_count = 8usize;
+        let mut rollouts = Vec::new();
+        for position in 0..run_count {
+            let run = RunId(format!("concurrent-{position}"));
+            let mut rollout = Rollout::open(&dir, &run, tenant.clone()).unwrap();
+            rollout
+                .append(&genesis_event(&format!("/repo/concurrent-{position}")))
+                .unwrap();
+            rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::TurnStart,
+                })
+                .unwrap();
+            rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Message {
+                        message: Message::user_text(format!("concurrent task {position}")),
+                    },
+                })
+                .unwrap();
+            rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::TurnEnd {
+                        usage: Usage {
+                            input: 2,
+                            output: 1,
+                            cache_creation: 0,
+                            cache_read: 0,
+                            thinking: 0,
+                        },
+                    },
+                })
+                .unwrap();
+            rollouts.push(rollout);
+        }
+        // TurnEnd now performs the normal automatic boundary write. Remove only the rebuildable
+        // shared index so the barrier below still exercises simultaneous upserts from eight live
+        // record-owned projections.
+        std::fs::remove_file(index_path(&dir)).unwrap();
+        assert!(!index_path(&dir).exists());
+
+        let barrier = Arc::new(std::sync::Barrier::new(run_count));
+        std::thread::scope(|scope| {
+            for mut rollout in rollouts {
+                let barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    assert!(rollout.refresh_session_cache().unwrap());
+                });
+            }
+        });
+
+        let scan =
+            crate::cache_io::scan_index_lines(&index_path(&dir), max_index_scan_lines(run_count))
+                .unwrap();
+        assert!(scan.complete);
+        assert_eq!(scan.lines.len(), run_count);
+        let ids: HashSet<RunId> = scan
+            .lines
+            .iter()
+            .map(|line| serde_json::from_slice::<SessionMeta>(line).unwrap().run_id)
+            .collect();
+        assert_eq!(ids.len(), run_count);
+        assert_eq!(list(&dir, &tenant).len(), run_count);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_cache_failure_never_poisons_the_authoritative_writer() {
+        let dir = tmpdir("d9-01-cache-failure");
+        let tenant = TenantId::default();
+        let run = RunId("cache-failure".into());
+        let mut rollout = Rollout::open(&dir, &run, tenant).unwrap();
+        rollout
+            .append(&genesis_event("/repo/cache-failure"))
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::TurnStart,
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Message {
+                    message: Message::user_text("survives cache failure"),
+                },
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::TurnEnd {
+                    usage: Usage {
+                        input: 1,
+                        output: 1,
+                        cache_creation: 0,
+                        cache_read: 0,
+                        thinking: 0,
+                    },
+                },
+            })
+            .unwrap();
+
+        // Replace the automatically written index with a directory to inject an atomic-replace
+        // failure at the next explicit refresh.
+        std::fs::remove_file(index_path(&dir)).unwrap();
+        std::fs::create_dir_all(index_path(&dir)).unwrap();
+        assert!(rollout.refresh_session_cache().is_err());
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Done {
+                    outcome: "Done".into(),
+                },
+            })
+            .expect("a rebuildable-cache failure must not poison the journal writer");
+        std::fs::remove_dir(index_path(&dir)).unwrap();
+        assert!(rollout.refresh_session_cache().unwrap());
+        drop(rollout);
+
+        assert_eq!(meta(&dir, &run).unwrap().title, "survives cache failure");
+        assert!(
+            matches!(
+                crate::replay(&rollout_path(&dir, &run).unwrap())
+                    .unwrap()
+                    .last()
+                    .map(|event| &event.kind),
+                Some(EventKind::Done { outcome }) if outcome == "Done"
+            ),
+            "the durable terminal event must survive the failed cache refresh"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_01_failed_append_is_never_observed_by_the_projection() {
+        let dir = tmpdir("d9-01-failed-append-projection");
+        let tenant = TenantId::default();
+        let run = RunId("failed-append-projection".into());
+        let attempted_title = "must never become a cached title";
+        let path;
+        {
+            let mut rollout = Rollout::open(&dir, &run, tenant.clone()).unwrap();
+            rollout
+                .append(&genesis_event("/repo/failed-append"))
+                .unwrap();
+            rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::TurnStart,
+                })
+                .unwrap();
+            path = rollout.path().to_path_buf();
+
+            // Simulate an out-of-band torn write after the writer's durable cursor. The next
+            // append must fail before writing or projecting its caller-provided event.
+            let mut external = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            std::io::Write::write_all(&mut external, b"{torn").unwrap();
+            external.sync_all().unwrap();
+            let error = rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Message {
+                        message: Message::user_text(attempted_title),
+                    },
+                })
+                .unwrap_err();
+            assert!(matches!(error, RecordError::Io(_)));
+            assert!(
+                !std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains(attempted_title)
+            );
+            assert!(!rollout.refresh_session_cache().unwrap());
+        }
+
+        // Reopen truncates the torn suffix and gives a fresh projection one bounded replay.
+        let mut recovered = Rollout::open(&dir, &run, tenant).unwrap();
+        recovered
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::TurnEnd {
+                    usage: Usage {
+                        input: 1,
+                        output: 1,
+                        cache_creation: 0,
+                        cache_read: 0,
+                        thinking: 0,
+                    },
+                },
+            })
+            .unwrap();
+        recovered
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Done {
+                    outcome: "Done".into(),
+                },
+            })
+            .unwrap();
+        drop(recovered);
+        assert_eq!(meta(&dir, &run).unwrap().title, "(untitled)");
+        assert!(
+            !std::fs::read_to_string(path)
+                .unwrap()
+                .contains(attempted_title)
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn write_meta_and_reindex_round_trip() {
         let dir = tmpdir("cache");
         let t = TenantId::default();
@@ -1163,19 +3395,226 @@ mod tests {
         // reindex builds the cache from the record
         assert_eq!(reindex(&dir).unwrap(), 1);
         assert!(per_run_meta_path(&dir, &run).unwrap().exists());
-        // write_meta preserves an evidence-bearing cost projection when one eventually exists.
-        let mut m = meta_from_replay(&dir, &run).unwrap();
+        // A cache can be edited independently of the hash-chained rollout and carries no HMAC
+        // evidence. Even a schema-current cache-only Known claim must be ignored by default.
+        let mut m = meta_from_replay(&dir, &run, None).unwrap();
         m.cost = CostState::Known {
             amount_microusd: 1_230_000,
             rate_card_digest: "sha256:test-rate-card".into(),
         };
         write_meta(&dir, &m).unwrap();
         let via_cache = meta(&dir, &run).unwrap();
-        assert!(
-            (via_cache.cost_usd().unwrap() - 1.23).abs() < 1e-9,
-            "cache carries cost"
+        assert_eq!(
+            via_cache.cost,
+            CostState::Unknown {
+                reason: core_obs::CostUnknownReason::NoVerifiedRateCard,
+            },
+            "cache-only Known must be rebuilt without monetary trust"
         );
-        assert_eq!(list(&dir, &t).len(), 1);
+        let listed = list(&dir, &t);
+        assert_eq!(listed.len(), 1);
+        assert!(matches!(listed[0].cost, CostState::Unknown { .. }));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_10_g2_interrupted_meta_replacement_keeps_a_valid_covering_projection() {
+        let dir = tmpdir("cache-atomic-projection");
+        let tenant = TenantId::default();
+        let run = RunId("atomic-projection".into());
+        mk_run(&dir, &run, &tenant, "/repo/atomic", "original title");
+        assert_eq!(reindex(&dir).unwrap(), 1);
+        let path = per_run_meta_path(&dir, &run).unwrap();
+        let old = std::fs::read(&path).unwrap();
+        let old_meta: SessionMeta = serde_json::from_slice(&old).unwrap();
+        assert!(projection_covers_rollout(&dir, &old_meta));
+
+        let mut replacement = old_meta.clone();
+        replacement.title = "replacement title".into();
+        let error = crate::cache_io::fail_before_rename(
+            &path,
+            &serde_json::to_vec_pretty(&replacement).unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(std::fs::read(&path).unwrap(), old);
+
+        let after: SessionMeta = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(projection_covers_rollout(&dir, &after));
+        assert_eq!(meta(&dir, &run).unwrap().title, "original title");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn d9_12_g1_turn_boundary_writes_upsert_one_index_line_per_run() {
+        let dir = tmpdir("bounded-index-upsert");
+        let tenant = TenantId::default();
+        let runs = [RunId("index-a".into()), RunId("index-b".into())];
+        for (position, run) in runs.iter().enumerate() {
+            mk_run(
+                &dir,
+                run,
+                &tenant,
+                "/repo/index",
+                &format!("task {position}"),
+            );
+        }
+
+        for write in 0..32u64 {
+            let run = &runs[(write as usize) % runs.len()];
+            let projected = meta_from_replay(&dir, run, None).unwrap();
+            write_meta(&dir, &projected).unwrap();
+        }
+
+        let scan =
+            crate::cache_io::scan_index_lines(&index_path(&dir), max_index_scan_lines(runs.len()))
+                .unwrap();
+        assert!(scan.complete);
+        assert_eq!(scan.lines_examined, runs.len());
+        assert_eq!(scan.lines.len(), runs.len(), "K writes compact to M lines");
+        let ids: HashSet<RunId> = scan
+            .lines
+            .iter()
+            .map(|line| serde_json::from_slice::<SessionMeta>(line).unwrap().run_id)
+            .collect();
+        assert_eq!(ids, runs.iter().cloned().collect());
+        assert_eq!(list(&dir, &tenant).len(), runs.len());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn d9_12_g1_append_era_index_scan_is_o_live_runs_and_line_bounded() {
+        let dir = tmpdir("bounded-index-read");
+        let tenant = TenantId::default();
+        let runs = [
+            RunId("bounded-a".into()),
+            RunId("bounded-b".into()),
+            RunId("bounded-c".into()),
+        ];
+        let mut projected = Vec::new();
+        for (position, run) in runs.iter().enumerate() {
+            mk_run(
+                &dir,
+                run,
+                &tenant,
+                "/repo/bounded",
+                &format!("bounded task {position}"),
+            );
+            projected.push(meta_from_replay(&dir, run, None).unwrap());
+        }
+
+        let mut historical = Vec::new();
+        for _ in 0..128 {
+            historical.extend_from_slice(&encode_index(projected.iter()).unwrap());
+        }
+        std::fs::write(index_path(&dir), historical).unwrap();
+
+        let max_lines = max_index_scan_lines(runs.len());
+        let scan = crate::cache_io::scan_index_lines(&index_path(&dir), max_lines).unwrap();
+        assert!(!scan.complete, "K historical writes must abandon the cache");
+        assert_eq!(scan.lines_examined, max_lines + 1);
+        assert!(
+            scan.lines.is_empty(),
+            "an incomplete prefix is never trusted"
+        );
+
+        let listed = list(&dir, &tenant);
+        assert_eq!(listed.len(), runs.len());
+        let repaired = crate::cache_io::scan_index_lines(&index_path(&dir), max_lines).unwrap();
+        assert!(repaired.complete);
+        assert_eq!(repaired.lines.len(), runs.len());
+        assert_eq!(repaired.lines_examined, runs.len());
+
+        let oversized = vec![b'x'; crate::cache_io::MAX_INDEX_LINE_BYTES + 1];
+        std::fs::write(index_path(&dir), oversized).unwrap();
+        let oversized_scan =
+            crate::cache_io::scan_index_lines(&index_path(&dir), max_lines).unwrap();
+        assert!(!oversized_scan.complete);
+        assert_eq!(oversized_scan.lines_examined, 1);
+        assert!(oversized_scan.lines.is_empty());
+        assert_eq!(list(&dir, &tenant).len(), runs.len());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn d9_12_g2_crash_mid_compaction_replays_and_repairs_without_wrong_listing() {
+        let dir = tmpdir("index-compaction-crash");
+        let tenant = TenantId::default();
+        let runs = [RunId("crash-a".into()), RunId("crash-b".into())];
+        let mut current = Vec::new();
+        for (position, run) in runs.iter().enumerate() {
+            mk_run(
+                &dir,
+                run,
+                &tenant,
+                "/repo/crash",
+                &format!("authoritative task {position}"),
+            );
+            current.push(meta_from_replay(&dir, run, None).unwrap());
+        }
+
+        let mut stale = current.clone();
+        for meta in &mut stale {
+            meta.record_bytes = 0;
+            meta.title = "forged stale title".into();
+        }
+        let mut append_era = Vec::new();
+        for _ in 0..16 {
+            append_era.extend_from_slice(&encode_index(stale.iter()).unwrap());
+        }
+        crate::cache_io::atomic_replace(&index_path(&dir), &append_era).unwrap();
+        let old = std::fs::read(index_path(&dir)).unwrap();
+
+        let compacted = encode_index(current.iter()).unwrap();
+        let error = crate::cache_io::fail_before_rename(&index_path(&dir), &compacted)
+            .expect_err("injected crash must interrupt the exact atomic replacement primitive");
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(std::fs::read(index_path(&dir)).unwrap(), old);
+
+        let listed = list(&dir, &tenant);
+        assert_eq!(listed.len(), runs.len());
+        assert!(
+            listed
+                .iter()
+                .all(|meta| meta.title.starts_with("authoritative task")),
+            "the stale pre-crash index prefix must never become a listing"
+        );
+        let repaired =
+            crate::cache_io::scan_index_lines(&index_path(&dir), max_index_scan_lines(runs.len()))
+                .unwrap();
+        assert!(repaired.complete);
+        assert_eq!(repaired.lines.len(), runs.len());
+        let repaired_ids: Vec<RunId> = repaired
+            .lines
+            .iter()
+            .map(|line| serde_json::from_slice::<SessionMeta>(line).unwrap().run_id)
+            .collect();
+        assert_eq!(repaired_ids, runs);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn forged_zero_cache_and_index_are_replayed_instead_of_trusted() {
+        let dir = tmpdir("cache-forged-zero");
+        let tenant = TenantId::default();
+        let run = RunId("forged-zero".into());
+        mk_run(&dir, &run, &tenant, "/repo/z", "billable request");
+        let mut forged = meta_from_replay(&dir, &run, None).unwrap();
+        assert!(forged.record_bytes > 0);
+        forged.cost = CostState::Zero;
+        write_meta(&dir, &forged).unwrap();
+
+        let direct = meta(&dir, &run).unwrap();
+        assert_eq!(
+            direct.cost,
+            CostState::Unknown {
+                reason: core_obs::CostUnknownReason::NoVerifiedRateCard,
+            },
+            "an unauthenticated cache cannot prove exact zero after a provider turn"
+        );
+        let listed = list(&dir, &tenant);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].cost, direct.cost);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1259,10 +3698,12 @@ mod tests {
                         model: "claude".into(),
                         effort: Effort::Medium,
                         created_at: 1001,
+                        environment: None,
                         parent_run: Some(parent.0.clone()),
                         forked_at: Some(4),
                         parent_hash_at_seq: Some(pinned),
                         config_digest: "cfg".into(),
+                        max_usd: None,
                     },
                 })
                 .unwrap();
@@ -1309,6 +3750,42 @@ mod tests {
         // load_forked replays the parent prefix, then appends the child's events
         let events = load_forked(&dir, &child).unwrap();
         assert_eq!(user_texts(&events), vec!["parent-task", "child-follow-up"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_11_fork_reads_the_direct_parent_once_under_the_logical_budget() {
+        let dir = tmpdir("fork-single-read");
+        let tenant = TenantId::default();
+        let parent = RunId("fork-single-read-parent".into());
+        mk_run(&dir, &parent, &tenant, "/repo/p", "parent-task");
+
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        let child = fork(&dir, &parent, Seq(4), &tenant).unwrap();
+        let reads = READ_CHAIN_CALLS.with(std::cell::Cell::get);
+        assert_eq!(reads, 1, "fork must reuse its verified parent lines");
+
+        let _ = std::fs::remove_file(rollout_path(&dir, &child).unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn d9_11_meta_reads_each_child_and_parent_journal_once_under_one_budget() {
+        let dir = tmpdir("meta-single-read");
+        let tenant = TenantId::default();
+        let parent = RunId("meta-single-read-parent".into());
+        mk_run(&dir, &parent, &tenant, "/repo/p", "parent-task");
+        let child = fork(&dir, &parent, Seq(4), &tenant).unwrap();
+
+        READ_CHAIN_CALLS.with(|calls| calls.set(0));
+        let projected = meta_from_replay(&dir, &child, None).unwrap();
+        let reads = READ_CHAIN_CALLS.with(std::cell::Cell::get);
+        assert_eq!(projected.parent.unwrap().parent_run, parent);
+        assert_eq!(
+            reads, 2,
+            "meta must read the child and parent exactly once each"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1609,7 +4086,7 @@ mod tests {
         let mut line = serde_json::to_string(&cl).unwrap();
         line.push('\n');
         use std::io::Write as _;
-        OpenOptions::new()
+        std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
             .unwrap()

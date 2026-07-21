@@ -47,6 +47,35 @@
         }
       }
     },
+    "cargo-audit": {
+      "version": "0.22.2",
+      "hosts": {
+        "darwin-arm64": {
+          "archive": "tar.gz",
+          "binary": "cargo-audit",
+          "sha256": "ec7ca4263769593df4d909be85b94a6b79efa2897be5d2bb8ebd516e823175af",
+          "url": "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-aarch64-apple-darwin-v0.22.2.tgz"
+        },
+        "darwin-x86_64": {
+          "archive": "tar.gz",
+          "binary": "cargo-audit",
+          "sha256": "847831323de932155b226ab60ee4a180e13e5d007a019f0d4b7b4d89a6de2ab2",
+          "url": "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-apple-darwin-v0.22.2.tgz"
+        },
+        "linux-arm64": {
+          "archive": "tar.gz",
+          "binary": "cargo-audit",
+          "sha256": "c6603814ddaa45e51263dafd31c0ac98808f688d26f7395804f9670b0fd599dd",
+          "url": "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-aarch64-unknown-linux-gnu-v0.22.2.tgz"
+        },
+        "linux-x86_64": {
+          "archive": "tar.gz",
+          "binary": "cargo-audit",
+          "sha256": "ab28a1bdb54db4d5d8ad5981cf1f959410370b3d28250dbd35f6a44248620e39",
+          "url": "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-unknown-linux-gnu-v0.22.2.tgz"
+        }
+      }
+    },
     "cargo-auditable": {
       "version": "0.7.5",
       "hosts": {
@@ -104,6 +133,15 @@
           "url": "https://github.com/anchore/syft/releases/download/v1.46.0/syft_1.46.0_linux_amd64.tar.gz"
         }
       }
+    }
+  },
+  "advisory_databases": {
+    "rustsec": {
+      "archive": "tar.gz",
+      "commit": "b5fc89b8be99e96f79194d8a6f11e9b4143b99f0",
+      "root": "advisory-db-b5fc89b8be99e96f79194d8a6f11e9b4143b99f0",
+      "sha256": "8ea564d42532b4c1f68468108ee8cbb03d079b9bc68b55df97fa968c03cdc605",
+      "url": "https://github.com/RustSec/advisory-db/archive/b5fc89b8be99e96f79194d8a6f11e9b4143b99f0.tar.gz"
     }
   }
 }

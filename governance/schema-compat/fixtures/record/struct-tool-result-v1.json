@@ -1,0 +1,7 @@
+{
+  "tool_use_id": "call-1",
+  "content": "fixture result",
+  "is_error": false,
+  "trust": "workspace",
+  "latency_ms": 3
+}

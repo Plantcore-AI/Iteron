@@ -1,19 +1,31 @@
 //! The async stdio MCP client: spawn a server, initialize, list tools, call tools.
 
 use crate::{
-    MAX_FRAME_BYTES, MAX_RESPONSE_BYTES, MAX_RESPONSE_FRAMES, McpError, encode_frame,
-    parse_response, request, suspicious_unicode,
+    MAX_FRAME_BYTES, McpError, encode_frame,
+    evidence::{DispatchClock, McpToolCallEvidence},
+    pagination::ToolListLimits,
+    protocol_version::{REQUESTED_PROTOCOL_VERSION, negotiate_initialize_result},
+    request,
+    tool_filter::{McpToolFilter, validate_bare_tool_name, validate_server_name},
 };
-use core_protocol::{Capability, Purity, ToolSpec};
+use core_protocol::ToolSpec;
 use serde_json::{Value, json};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
-const PROTOCOL_VERSION: &str = "2024-11-05";
+mod content;
+mod discovery;
+mod lifecycle;
+mod transport;
+use content::render_tool_content;
+use lifecycle::terminate_and_reap;
+#[cfg(test)]
+use transport::read_frame;
+use transport::{ResponseLimits, read_matching_response};
+
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const READ_BUFFER_BYTES: usize = 8 * 1024;
@@ -23,31 +35,25 @@ const READ_BUFFER_BYTES: usize = 8 * 1024;
 /// the remote process may already have applied the effect.
 #[derive(Debug)]
 pub enum McpToolOutcome {
-    Completed { content: String, is_error: bool },
-    FailedDefinite(McpError),
-    Unknown(McpError),
+    Completed {
+        content: String,
+        is_error: bool,
+        evidence: McpToolCallEvidence,
+    },
+    FailedDefinite {
+        error: McpError,
+        /// `None` means validation/serialization failed before any bytes could be dispatched.
+        evidence: Option<McpToolCallEvidence>,
+    },
+    Unknown {
+        error: McpError,
+        evidence: McpToolCallEvidence,
+    },
 }
 
 enum CallOutcome {
-    Completed(Result<Value, McpError>),
-    Unknown(McpError),
-}
-
-#[derive(Clone, Copy)]
-struct ResponseLimits {
-    frame_bytes: usize,
-    aggregate_bytes: usize,
-    frames: usize,
-}
-
-impl Default for ResponseLimits {
-    fn default() -> Self {
-        Self {
-            frame_bytes: MAX_FRAME_BYTES,
-            aggregate_bytes: MAX_RESPONSE_BYTES,
-            frames: MAX_RESPONSE_FRAMES,
-        }
-    }
+    Completed(Result<Value, McpError>, Option<std::num::NonZeroU64>),
+    Unknown(McpError, std::num::NonZeroU64),
 }
 
 /// A connected MCP server. Owns the child process and its stdio.
@@ -60,6 +66,7 @@ pub struct McpClient {
     calls: Mutex<()>,
     next_id: std::sync::atomic::AtomicU64,
     request_timeout: Duration,
+    negotiated_protocol_version: Option<String>,
     pub server_name: String,
 }
 
@@ -69,6 +76,32 @@ impl McpClient {
         Self::connect_with_deadlines(command, args, name, HANDSHAKE_TIMEOUT, REQUEST_TIMEOUT).await
     }
 
+    /// Protocol version selected during the completed initialize handshake.
+    pub fn negotiated_protocol_version(&self) -> &str {
+        self.negotiated_protocol_version
+            .as_deref()
+            .expect("McpClient is returned only after protocol negotiation")
+    }
+
+    /// Connect while removing the caller's exact credential-variable names from the helper
+    /// environment. MCP servers are trusted configuration, but are not pricing authorities.
+    pub async fn connect_with_sensitive_env_names(
+        command: &str,
+        args: &[String],
+        name: &str,
+        sensitive_env_names: &[String],
+    ) -> Result<Self, McpError> {
+        Self::connect_with_deadlines_and_sensitive_env_names(
+            command,
+            args,
+            name,
+            HANDSHAKE_TIMEOUT,
+            REQUEST_TIMEOUT,
+            sensitive_env_names,
+        )
+        .await
+    }
+
     async fn connect_with_deadlines(
         command: &str,
         args: &[String],
@@ -76,11 +109,33 @@ impl McpClient {
         handshake_timeout: Duration,
         request_timeout: Duration,
     ) -> Result<Self, McpError> {
+        Self::connect_with_deadlines_and_sensitive_env_names(
+            command,
+            args,
+            name,
+            handshake_timeout,
+            request_timeout,
+            &[],
+        )
+        .await
+    }
+
+    async fn connect_with_deadlines_and_sensitive_env_names(
+        command: &str,
+        args: &[String],
+        name: &str,
+        handshake_timeout: Duration,
+        request_timeout: Duration,
+        sensitive_env_names: &[String],
+    ) -> Result<Self, McpError> {
+        // Reject ambiguous namespaces before granting process authority. Server namespaces cannot
+        // contain `_`, so the first `__` in a registered name is an unambiguous separator.
+        validate_server_name(name)?;
         let mut command = tokio::process::Command::new(command);
         // A stdio server is trusted user configuration, but it is not entitled to every provider
         // credential injected into Core. Give it only a toolchain/locale environment; explicit
         // per-server secret grants require a future credential broker.
-        core_sandbox::clear_to_safe_child_env(&mut command);
+        core_sandbox::clear_to_safe_child_env_with_exact(&mut command, sensitive_env_names);
         core_sandbox::configure_process_group(&mut command);
         #[cfg(unix)]
         command.current_dir("/");
@@ -110,22 +165,25 @@ impl McpClient {
             calls: Mutex::new(()),
             next_id: std::sync::atomic::AtomicU64::new(1),
             request_timeout,
+            negotiated_protocol_version: None,
             server_name: name.to_string(),
         };
 
         // One deadline covers both handshake messages, their writes, lock acquisition, and the
         // initialize response. On every failure path the process is explicitly killed and reaped.
         let handshake = async {
-            client
+            let initialize_result = client
                 .call_unbounded_by_outer_deadline(
                     "initialize",
                     json!({
-                        "protocolVersion": PROTOCOL_VERSION,
+                        "protocolVersion": REQUESTED_PROTOCOL_VERSION,
                         "capabilities": {},
                         "clientInfo": {"name": "core", "version": "0.0.1"}
                     }),
                 )
                 .await?;
+            client.negotiated_protocol_version =
+                Some(negotiate_initialize_result(&initialize_result)?);
             client
                 .notify_unbounded_by_outer_deadline("notifications/initialized", json!({}))
                 .await
@@ -154,15 +212,15 @@ impl McpClient {
     }
 
     async fn send_line_unbounded_by_outer_deadline(&self, line: String) -> Result<(), McpError> {
-        let dispatch_started = AtomicBool::new(false);
-        self.send_line_tracking_dispatch(line, &dispatch_started)
+        let dispatch_clock = DispatchClock::default();
+        self.send_line_tracking_dispatch(line, &dispatch_clock)
             .await
     }
 
     async fn send_line_tracking_dispatch(
         &self,
         line: String,
-        dispatch_started: &AtomicBool,
+        dispatch_clock: &DispatchClock,
     ) -> Result<(), McpError> {
         // `line` came from the bounded serializer. Retain the check here so future callers cannot
         // accidentally route an unbounded allocation into the process pipe.
@@ -175,7 +233,7 @@ impl McpClient {
         // From this point onward any failure is conservatively post-dispatch. A pipe write may be
         // partial even when it returns an error, so only pre-serialization/lock failures are
         // provably not sent.
-        dispatch_started.store(true, Ordering::SeqCst);
+        dispatch_clock.mark_dispatched();
         writer
             .write_all(line.as_bytes())
             .await
@@ -209,8 +267,8 @@ impl McpClient {
             .call_with_certainty(method, params, operation.clone())
             .await
         {
-            CallOutcome::Completed(result) => result,
-            CallOutcome::Unknown(error) => Err(error),
+            CallOutcome::Completed(result, _) => result,
+            CallOutcome::Unknown(error, _) => Err(error),
         }
     }
 
@@ -220,18 +278,29 @@ impl McpClient {
         params: Value,
         operation: String,
     ) -> CallOutcome {
-        let dispatch_started = AtomicBool::new(false);
+        self.call_with_certainty_and_dispatch_observer(method, params, operation, None)
+            .await
+    }
+
+    async fn call_with_certainty_and_dispatch_observer(
+        &self,
+        method: &str,
+        params: Value,
+        operation: String,
+        dispatch_observer: Option<Box<dyn FnOnce() + Send>>,
+    ) -> CallOutcome {
+        let dispatch_clock = DispatchClock::with_observer(dispatch_observer);
         match tokio::time::timeout(
             self.request_timeout,
-            self.call_unbounded_with_certainty(method, params, &dispatch_started),
+            self.call_unbounded_with_certainty(method, params, &dispatch_clock),
         )
         .await
         {
             Ok(outcome) => outcome,
-            Err(_) if dispatch_started.load(Ordering::SeqCst) => {
-                CallOutcome::Unknown(McpError::Deadline { operation })
-            }
-            Err(_) => CallOutcome::Completed(Err(McpError::Deadline { operation })),
+            Err(_) => match dispatch_clock.elapsed_ms() {
+                Some(latency) => CallOutcome::Unknown(McpError::Deadline { operation }, latency),
+                None => CallOutcome::Completed(Err(McpError::Deadline { operation }), None),
+            },
         }
     }
 
@@ -240,13 +309,13 @@ impl McpClient {
         method: &str,
         params: Value,
     ) -> Result<Value, McpError> {
-        let dispatch_started = AtomicBool::new(false);
+        let dispatch_clock = DispatchClock::default();
         match self
-            .call_unbounded_with_certainty(method, params, &dispatch_started)
+            .call_unbounded_with_certainty(method, params, &dispatch_clock)
             .await
         {
-            CallOutcome::Completed(result) => result,
-            CallOutcome::Unknown(error) => Err(error),
+            CallOutcome::Completed(result, _) => result,
+            CallOutcome::Unknown(error, _) => Err(error),
         }
     }
 
@@ -254,7 +323,7 @@ impl McpClient {
         &self,
         method: &str,
         params: Value,
-        dispatch_started: &AtomicBool,
+        dispatch_clock: &DispatchClock,
     ) -> CallOutcome {
         let _call = self.calls.lock().await;
         let id = self
@@ -262,108 +331,143 @@ impl McpClient {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let line = match request(id, method, params) {
             Ok(line) => line,
-            Err(error) => return CallOutcome::Completed(Err(error)),
+            Err(error) => return CallOutcome::Completed(Err(error), None),
         };
-        if let Err(error) = self
-            .send_line_tracking_dispatch(line, dispatch_started)
-            .await
-        {
-            return CallOutcome::Unknown(error);
+        if let Err(error) = self.send_line_tracking_dispatch(line, dispatch_clock).await {
+            return CallOutcome::Unknown(
+                error,
+                dispatch_clock
+                    .elapsed_ms()
+                    .expect("the writer marks dispatch before its first fallible write"),
+            );
         }
         let mut reader = self.stdout.lock().await;
         match read_matching_response(&mut *reader, id, ResponseLimits::default()).await {
-            Ok(value) => CallOutcome::Completed(Ok(value)),
+            Ok(value) => CallOutcome::Completed(Ok(value), dispatch_clock.elapsed_ms()),
             // A matching JSON-RPC error response is an authoritative remote terminal. Every
             // framing/EOF/parse failure after the write remains unknown.
-            Err(error @ McpError::Server { .. }) => CallOutcome::Completed(Err(error)),
-            Err(error) => CallOutcome::Unknown(error),
+            Err(error @ McpError::Server { .. }) => {
+                CallOutcome::Completed(Err(error), dispatch_clock.elapsed_ms())
+            }
+            Err(error) => CallOutcome::Unknown(
+                error,
+                dispatch_clock
+                    .elapsed_ms()
+                    .expect("a response read only begins after dispatch"),
+            ),
         }
     }
 
-    /// Discover tools. Each MCP tool becomes a `ToolSpec` with UNTRUSTED defaults (ADR-007 R16):
-    /// `Effecting` capability (never early-dispatched), and a description scanned for injection.
+    /// Discover tools. Each MCP tool becomes a bounded `ToolSpec` with UNTRUSTED defaults
+    /// (ADR-007 R16): `Effecting` capability (never early-dispatched), and a description scanned
+    /// for injection before UTF-8-safe truncation.
     pub async fn list_tools(&self) -> Result<Vec<ToolSpec>, McpError> {
-        let result = self.call("tools/list", json!({})).await?;
-        let tools = result
-            .get("tools")
-            .and_then(|t| t.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let mut specs = Vec::new();
-        for tool in tools {
-            let name = tool
-                .get("name")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .to_string();
-            let mut description = tool
-                .get("description")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .to_string();
-            if suspicious_unicode(&description).is_some() {
-                // Do not feed an injection-laden description to the model; neutralize it.
-                description = format!("[description withheld: suspicious Unicode] tool `{name}`");
-            }
-            let input_schema = tool
-                .get("inputSchema")
-                .cloned()
-                .unwrap_or_else(|| json!({"type":"object"}));
-            specs.push(ToolSpec {
-                name: format!("{}__{}", self.server_name, name), // namespace to avoid collision
-                description,
-                input_schema,
-                purity: Purity::Effecting, // untrusted: never pure by declaration
-                capability: Capability::IrreversibleExternal, // most restrictive until proven
-            });
-        }
-        Ok(specs)
+        self.list_tools_filtered(&McpToolFilter::default()).await
+    }
+
+    /// Discover only tools admitted by an exact per-server operator filter. Filtering occurs
+    /// before excluded descriptions and schemas consume the retained catalog budget.
+    pub async fn list_tools_filtered(
+        &self,
+        filter: &McpToolFilter,
+    ) -> Result<Vec<ToolSpec>, McpError> {
+        filter.validate()?;
+        discovery::list_tools(self, ToolListLimits::default(), filter.clone()).await
+    }
+
+    #[cfg(test)]
+    async fn list_tools_with_limits(
+        &self,
+        limits: ToolListLimits,
+    ) -> Result<Vec<ToolSpec>, McpError> {
+        discovery::list_tools(self, limits, McpToolFilter::default()).await
     }
 
     /// Call an MCP tool without erasing transport certainty. `name` is the bare server-side name
     /// (not the namespaced spec name).
     pub async fn call_tool_outcome(&self, name: &str, arguments: Value) -> McpToolOutcome {
-        let result = match self
-            .call_with_certainty(
+        self.call_tool_outcome_inner(name, arguments, None).await
+    }
+
+    /// Call an MCP tool and notify a local observer at the exact conservative dispatch boundary.
+    /// The callback is an in-process composition seam, not a telemetry sink; it runs immediately
+    /// before the first fallible pipe write and at most once.
+    pub async fn call_tool_outcome_observed<F>(
+        &self,
+        name: &str,
+        arguments: Value,
+        on_dispatch: F,
+    ) -> McpToolOutcome
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.call_tool_outcome_inner(name, arguments, Some(Box::new(on_dispatch)))
+            .await
+    }
+
+    async fn call_tool_outcome_inner(
+        &self,
+        name: &str,
+        arguments: Value,
+        dispatch_observer: Option<Box<dyn FnOnce() + Send>>,
+    ) -> McpToolOutcome {
+        if let Err(error) = validate_bare_tool_name(name) {
+            return McpToolOutcome::FailedDefinite {
+                error,
+                evidence: None,
+            };
+        }
+        let (result, latency) = match self
+            .call_with_certainty_and_dispatch_observer(
                 "tools/call",
                 json!({"name": name, "arguments": arguments}),
                 "request `tools/call`".into(),
+                dispatch_observer,
             )
             .await
         {
-            CallOutcome::Completed(Ok(result)) => result,
-            CallOutcome::Completed(Err(error)) => {
-                return McpToolOutcome::FailedDefinite(error);
+            CallOutcome::Completed(Ok(result), Some(latency)) => (result, latency),
+            CallOutcome::Completed(Ok(_), None) => {
+                return McpToolOutcome::FailedDefinite {
+                    error: McpError::Protocol(
+                        "tools/call completed without dispatch evidence".into(),
+                    ),
+                    evidence: None,
+                };
             }
-            CallOutcome::Unknown(error) => return McpToolOutcome::Unknown(error),
+            CallOutcome::Completed(Err(error), latency) => {
+                return McpToolOutcome::FailedDefinite {
+                    error,
+                    evidence: latency
+                        .map(|latency| McpToolCallEvidence::new(&self.server_name, name, latency)),
+                };
+            }
+            CallOutcome::Unknown(error, latency) => {
+                return McpToolOutcome::Unknown {
+                    error,
+                    evidence: McpToolCallEvidence::new(&self.server_name, name, latency),
+                };
+            }
         };
-        // MCP returns content blocks; concatenate text without allowing the derived allocation to
-        // exceed the same explicit ceiling as the source frame.
-        let content = result.get("content").and_then(|value| value.as_array());
-        let mut output = String::new();
-        for block in content.into_iter().flatten() {
-            if block.get("type").and_then(|value| value.as_str()) != Some("text") {
-                continue;
+        let evidence = McpToolCallEvidence::new(&self.server_name, name, latency);
+        // Preserve text and make every unsupported block observable without reflecting its
+        // untrusted type/payload. The renderer enforces one total output ceiling.
+        let output = match render_tool_content(&result) {
+            Ok(output) => output,
+            Err(error) => {
+                return McpToolOutcome::FailedDefinite {
+                    error,
+                    evidence: Some(evidence),
+                };
             }
-            let text = block
-                .get("text")
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            let required = text.len().saturating_add(1);
-            if required > MAX_FRAME_BYTES.saturating_sub(output.len()) {
-                return McpToolOutcome::FailedDefinite(McpError::OutputTooLarge {
-                    limit: MAX_FRAME_BYTES,
-                });
-            }
-            output.push_str(text);
-            output.push('\n');
-        }
+        };
         McpToolOutcome::Completed {
             content: output,
             is_error: result
                 .get("isError")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            evidence,
         }
     }
 
@@ -372,115 +476,10 @@ impl McpClient {
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<String, McpError> {
         match self.call_tool_outcome(name, arguments).await {
             McpToolOutcome::Completed { content, .. } => Ok(content),
-            McpToolOutcome::FailedDefinite(error) | McpToolOutcome::Unknown(error) => Err(error),
+            McpToolOutcome::FailedDefinite { error, .. }
+            | McpToolOutcome::Unknown { error, .. } => Err(error),
         }
     }
-}
-
-impl Drop for McpClient {
-    fn drop(&mut self) {
-        let Some(mut child) = self.child.take() else {
-            return;
-        };
-
-        // Normal use drops a client inside Tokio. Move the process into a reaper task so drop both
-        // kills and waits instead of leaving a Unix zombie. The fallback still requests a kill;
-        // Tokio's process driver receives the handle for best-effort orphan reaping.
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                terminate_and_reap(&mut child).await;
-            });
-        } else {
-            let _ = child.start_kill();
-        }
-    }
-}
-
-async fn terminate_and_reap(child: &mut Child) {
-    core_sandbox::terminate_process_group_and_reap(child).await;
-}
-
-/// Read one newline-delimited frame with a hard allocation ceiling. Invalid UTF-8 is handled by
-/// the response parser as a typed failure; this layer remains byte-oriented so a hostile peer
-/// cannot force incremental `String` growth before validation.
-async fn read_frame<R>(reader: &mut R, limit: usize) -> Result<Option<Vec<u8>>, McpError>
-where
-    R: AsyncBufRead + Unpin,
-{
-    let mut frame = Vec::with_capacity(limit.min(READ_BUFFER_BYTES));
-    loop {
-        let available = reader
-            .fill_buf()
-            .await
-            .map_err(|e| McpError::Io(e.to_string()))?;
-        if available.is_empty() {
-            return if frame.is_empty() {
-                Ok(None)
-            } else {
-                Err(McpError::Protocol("server closed mid-frame".into()))
-            };
-        }
-
-        if let Some(newline) = available.iter().position(|byte| *byte == b'\n') {
-            if newline > limit.saturating_sub(frame.len()) {
-                return Err(McpError::FrameTooLarge { limit });
-            }
-            frame.extend_from_slice(&available[..newline]);
-            reader.consume(newline + 1);
-            if frame.last() == Some(&b'\r') {
-                frame.pop();
-            }
-            return Ok(Some(frame));
-        }
-
-        if available.len() > limit.saturating_sub(frame.len()) {
-            return Err(McpError::FrameTooLarge { limit });
-        }
-        let consumed = available.len();
-        frame.extend_from_slice(available);
-        reader.consume(consumed);
-    }
-}
-
-async fn read_matching_response<R>(
-    reader: &mut R,
-    id: u64,
-    limits: ResponseLimits,
-) -> Result<Value, McpError>
-where
-    R: AsyncBufRead + Unpin,
-{
-    let mut aggregate_bytes = 0usize;
-    for _ in 0..limits.frames {
-        let frame = read_frame(reader, limits.frame_bytes)
-            .await?
-            .ok_or_else(|| McpError::Protocol("server closed the stream".into()))?;
-        aggregate_bytes =
-            aggregate_bytes
-                .checked_add(frame.len())
-                .ok_or(McpError::ResponseTooLarge {
-                    limit: limits.aggregate_bytes,
-                })?;
-        if aggregate_bytes > limits.aggregate_bytes {
-            return Err(McpError::ResponseTooLarge {
-                limit: limits.aggregate_bytes,
-            });
-        }
-
-        let text = std::str::from_utf8(&frame).map_err(|_| McpError::InvalidUtf8)?;
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let value: Value = serde_json::from_str(trimmed)?;
-        if value.get("id").and_then(Value::as_u64) == Some(id) {
-            drop(value);
-            return parse_response(trimmed);
-        }
-    }
-    Err(McpError::TooManyFrames {
-        limit: limits.frames,
-    })
 }
 
 #[cfg(test)]
@@ -570,6 +569,17 @@ mod tests {
     }
 
     #[cfg(unix)]
+    async fn wait_until_file_exists(path: &std::path::Path) -> bool {
+        for _ in 0..50 {
+            if path.is_file() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    #[cfg(unix)]
     fn pid_file(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
             "core-mcp-{tag}-{}-{}",
@@ -579,6 +589,106 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn supported_protocol_version_completes_before_initialized_notification() {
+        let initialized_path = pid_file("supported-version-initialized");
+        let args = vec![
+            "-c".to_string(),
+            concat!(
+                "IFS= read -r init; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "IFS= read -r initialized; printf '%s' \"$initialized\" > \"$1\"; ",
+                "exec sleep 60"
+            )
+            .to_string(),
+            "mcp-test".to_string(),
+            initialized_path.to_string_lossy().into_owned(),
+        ];
+        let mut client = McpClient::connect_with_deadlines(
+            "/bin/bash",
+            &args,
+            "test",
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            client.negotiated_protocol_version(),
+            REQUESTED_PROTOCOL_VERSION
+        );
+        assert!(wait_until_file_exists(&initialized_path).await);
+        let initialized = std::fs::read_to_string(&initialized_path).unwrap();
+        assert!(initialized.contains("notifications/initialized"));
+
+        client.terminate().await;
+        let _ = std::fs::remove_file(initialized_path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unknown_protocol_version_refuses_before_initialized_and_reaps_server() {
+        let pid_path = pid_file("unsupported-version-pid");
+        let initialized_path = pid_file("unsupported-version-initialized");
+        let args = vec![
+            "-c".to_string(),
+            concat!(
+                "echo $$ > \"$1\"; IFS= read -r init; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2099-01-01\"}}'; ",
+                "if IFS= read -r initialized; then printf '%s' \"$initialized\" > \"$2\"; fi; ",
+                "exec sleep 60"
+            )
+            .to_string(),
+            "mcp-test".to_string(),
+            pid_path.to_string_lossy().into_owned(),
+            initialized_path.to_string_lossy().into_owned(),
+        ];
+        let error = match McpClient::connect_with_deadlines(
+            "/bin/bash",
+            &args,
+            "test",
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        )
+        .await
+        {
+            Ok(mut client) => {
+                client.terminate().await;
+                panic!("unsupported MCP protocol version unexpectedly connected");
+            }
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            &error,
+            McpError::UnsupportedProtocolVersion {
+                client_version,
+                server_version,
+            } if client_version == REQUESTED_PROTOCOL_VERSION && server_version == "2099-01-01"
+        ));
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains(REQUESTED_PROTOCOL_VERSION));
+        assert!(diagnostic.contains("2099-01-01"));
+        let pid: u32 = std::fs::read_to_string(&pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(
+            wait_until_gone(pid).await,
+            "MCP server {pid} was not reaped"
+        );
+        assert!(
+            !initialized_path.exists(),
+            "initialized notification crossed an unsupported-version handshake"
+        );
+
+        let _ = std::fs::remove_file(pid_path);
+        let _ = std::fs::remove_file(initialized_path);
     }
 
     #[cfg(unix)]
@@ -621,35 +731,42 @@ mod tests {
     async fn server_starts_outside_repo_with_default_deny_environment() {
         let observation_path = pid_file("safe-env");
         unsafe {
-            std::env::set_var("GATEWAY_KEY", "mcp-sentinel-must-not-cross");
+            std::env::set_var(
+                "CORE_TEST_PRICING_KEY",
+                "mcp-pricing-sentinel-must-not-cross",
+            );
+            std::env::set_var("XDG_CONFIG_HOME", "mcp-allowlist-sentinel-must-not-cross");
         }
         let args = vec![
             "-c".to_string(),
             concat!(
-                "printf '%s|%s' \"${GATEWAY_KEY-EMPTY}\" \"$PWD\" > \"$1\"; ",
+                "printf '%s|%s|%s' \"${CORE_TEST_PRICING_KEY-EMPTY}\" \"${XDG_CONFIG_HOME-EMPTY}\" \"$PWD\" > \"$1\"; ",
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
                 "IFS= read -r initialized; exec sleep 60"
             )
             .to_string(),
             "mcp-test".to_string(),
             observation_path.to_string_lossy().into_owned(),
         ];
-        let client = McpClient::connect_with_deadlines(
+        let sensitive = vec!["CORE_TEST_PRICING_KEY".into(), "XDG_CONFIG_HOME".into()];
+        let client = McpClient::connect_with_deadlines_and_sensitive_env_names(
             "/bin/bash",
             &args,
             "test",
             Duration::from_secs(2),
             Duration::from_secs(2),
+            &sensitive,
         )
         .await
         .unwrap();
         unsafe {
-            std::env::remove_var("GATEWAY_KEY");
+            std::env::remove_var("CORE_TEST_PRICING_KEY");
+            std::env::remove_var("XDG_CONFIG_HOME");
         }
         let observation = std::fs::read_to_string(&observation_path).unwrap();
-        assert_eq!(observation, "EMPTY|/");
-        assert!(!observation.contains("mcp-sentinel"));
+        assert_eq!(observation, "EMPTY|EMPTY|/");
+        assert!(!observation.contains("sentinel"));
         drop(client);
         let _ = std::fs::remove_file(observation_path);
     }
@@ -662,7 +779,7 @@ mod tests {
             "-c".to_string(),
             concat!(
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
                 "IFS= read -r initialized; echo $$ > \"$1\"; ",
                 "IFS= read -r request; exec sleep 60"
             )
@@ -696,13 +813,85 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn single_flight_wait_is_excluded_from_attributed_dispatch_latency() {
+        let args = vec![
+            "-c".to_string(),
+            concat!(
+                "IFS= read -r init; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "IFS= read -r initialized; ",
+                "IFS= read -r slow; sleep 0.20; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"slow\"}]}}'; ",
+                "IFS= read -r fast; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"fast\"}]}}'; ",
+                "exec sleep 60"
+            )
+            .to_string(),
+        ];
+        let client = std::sync::Arc::new(
+            McpClient::connect_with_deadlines(
+                "/bin/bash",
+                &args,
+                "latency-server",
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap(),
+        );
+
+        let (dispatched_tx, dispatched_rx) = tokio::sync::oneshot::channel();
+        let slow_client = client.clone();
+        let slow = tokio::spawn(async move {
+            slow_client
+                .call_tool_outcome_observed("slow-tool", json!({}), move || {
+                    let _ = dispatched_tx.send(());
+                })
+                .await
+        });
+        dispatched_rx.await.unwrap();
+
+        let fast_total_started = std::time::Instant::now();
+        let fast = client.call_tool_outcome("fast-tool", json!({})).await;
+        let fast_total_ms = fast_total_started.elapsed().as_millis() as u64;
+        let McpToolOutcome::Completed {
+            content,
+            evidence: fast_evidence,
+            ..
+        } = fast
+        else {
+            panic!("fast MCP fixture call did not complete");
+        };
+        let McpToolOutcome::Completed {
+            evidence: slow_evidence,
+            ..
+        } = slow.await.unwrap()
+        else {
+            panic!("slow MCP fixture call did not complete");
+        };
+
+        assert_eq!(content, "fast\n");
+        assert_eq!(fast_evidence.server_name, "latency-server");
+        assert_eq!(fast_evidence.tool_name, "fast-tool");
+        assert!(slow_evidence.dispatch_to_terminal_ms.get() >= 150);
+        assert!(fast_total_ms >= 150, "fixture did not create queue wait");
+        assert!(
+            fast_evidence.dispatch_to_terminal_ms.get() < 100,
+            "single-flight queue wait leaked into dispatch latency: total={fast_total_ms}ms evidence={}ms",
+            fast_evidence.dispatch_to_terminal_ms
+        );
+        drop(client);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn tool_timeout_after_dispatch_is_reported_unknown() {
         let pid_path = pid_file("tool-outcome-timeout");
         let args = vec![
             "-c".to_string(),
             concat!(
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
                 "IFS= read -r initialized; echo $$ > \"$1\"; ",
                 "IFS= read -r request; exec sleep 60"
             )
@@ -719,11 +908,21 @@ mod tests {
         )
         .await
         .unwrap();
-        let outcome = client.call_tool_outcome("mutate", json!({})).await;
-        assert!(matches!(
-            outcome,
-            McpToolOutcome::Unknown(McpError::Deadline { .. })
-        ));
+        let dispatch_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = dispatch_count.clone();
+        let outcome = client
+            .call_tool_outcome_observed("mutate", json!({}), move || {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+            .await;
+        let McpToolOutcome::Unknown { error, evidence } = outcome else {
+            panic!("timed-out dispatched tool did not preserve Unknown certainty");
+        };
+        assert!(matches!(error, McpError::Deadline { .. }));
+        assert_eq!(evidence.server_name, "test");
+        assert_eq!(evidence.tool_name, "mutate");
+        assert!(evidence.dispatch_to_terminal_ms.get() >= 80);
+        assert_eq!(dispatch_count.load(std::sync::atomic::Ordering::SeqCst), 1);
         let pid: u32 = std::fs::read_to_string(&pid_path)
             .unwrap()
             .trim()
@@ -741,7 +940,7 @@ mod tests {
             "-c".to_string(),
             concat!(
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
                 "IFS= read -r initialized; exec sleep 60"
             )
             .to_string(),
@@ -760,8 +959,16 @@ mod tests {
             .await;
         assert!(matches!(
             outcome,
-            McpToolOutcome::FailedDefinite(McpError::FrameTooLarge { .. })
+            McpToolOutcome::FailedDefinite {
+                error: McpError::FrameTooLarge { .. },
+                evidence: None,
+            }
         ));
         drop(client);
     }
 }
+
+#[cfg(test)]
+mod catalog_tests;
+#[cfg(test)]
+mod pagination_tests;

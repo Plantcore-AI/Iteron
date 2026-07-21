@@ -30,7 +30,10 @@ cd "$repo_root"
 python3 -m compileall -q release-tools
 python3 -m unittest discover -s release-tools/tests -p 'test_*.py' -v
 shellcheck -s sh install.sh
-shellcheck -s bash release-tools/validate.sh release-tools/tests/test_install.sh
+shellcheck -s bash \
+  release-tools/audit_dependencies.sh \
+  release-tools/validate.sh \
+  release-tools/tests/test_install.sh
 release-tools/tests/test_install.sh
 python3 release-tools/fetch_tool.py actionlint "$host" --output "$temporary/actionlint"
 "$temporary/actionlint" .github/workflows/*.yml

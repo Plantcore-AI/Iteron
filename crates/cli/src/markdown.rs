@@ -5,8 +5,9 @@
 //! inline-code/links (R8: inline is P0), bullet/numbered lists, blockquotes, fenced code, and rules,
 //! and renders through the semantic `Theme` + the span-aware `wrap_spans` (R3).
 
-use crate::render::{line_width, wrap_spans};
+use crate::render::{AnnotatedSpan, RenderedLines, line_width, wrap_annotated_spans, wrap_spans};
 use crate::theme::Theme;
+use crate::tui::hyperlink::Policy as HyperlinkPolicy;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -365,16 +366,44 @@ fn parse_link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
 
 // ---- rendering ----
 
-/// Convert inline runs to styled spans under a base style.
-fn inline_spans(spans: &[Inline], theme: &Theme, base: Style) -> Vec<Span<'static>> {
+/// Escape control characters at this last semantic render seam. Normal assistant ingress is
+/// already scrubbed, but keeping Markdown independently safe prevents a future caller or malformed
+/// persisted transcript from placing terminal controls in either visible link text or fallback URL.
+fn terminal_safe_text(text: &str) -> String {
+    let mut safe = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character.is_control() {
+            safe.extend(character.escape_default());
+        } else {
+            safe.push(character);
+        }
+    }
+    safe
+}
+
+/// Convert inline runs to styled spans under a base style. Hyperlink targets remain metadata and
+/// never enter Span content; unsupported or unsafe targets retain the existing `text (url)` form.
+fn inline_annotated_spans(
+    spans: &[Inline],
+    theme: &Theme,
+    base: Style,
+    hyperlinks: &HyperlinkPolicy,
+) -> Vec<AnnotatedSpan> {
     let mut out = Vec::new();
     for inl in spans {
         match inl {
-            Inline::Text(t) => out.push(Span::styled(t.clone(), base)),
-            Inline::Bold(t) => out.push(Span::styled(t.clone(), base.add_modifier(Modifier::BOLD))),
-            Inline::Italic(t) => {
-                out.push(Span::styled(t.clone(), base.add_modifier(Modifier::ITALIC)))
-            }
+            Inline::Text(t) => out.push(AnnotatedSpan {
+                span: Span::styled(terminal_safe_text(t), base),
+                hyperlink: None,
+            }),
+            Inline::Bold(t) => out.push(AnnotatedSpan {
+                span: Span::styled(terminal_safe_text(t), base.add_modifier(Modifier::BOLD)),
+                hyperlink: None,
+            }),
+            Inline::Italic(t) => out.push(AnnotatedSpan {
+                span: Span::styled(terminal_safe_text(t), base.add_modifier(Modifier::ITALIC)),
+                hyperlink: None,
+            }),
             Inline::Code(t) => {
                 // Inline code in prose = `fg` on `code_bg`, NEVER green (green was overloaded 3 ways —
                 // TUI v3 §3). The tint alone distinguishes it from prose — so NO padding spaces (the old
@@ -390,37 +419,77 @@ fn inline_spans(spans: &[Inline], theme: &Theme, base: Style) -> Vec<Span<'stati
                 } else {
                     s = s.bg(theme.code_bg);
                 }
-                out.push(Span::styled(t.clone(), s));
+                out.push(AnnotatedSpan {
+                    span: Span::styled(terminal_safe_text(t), s),
+                    hyperlink: None,
+                });
             }
             Inline::Link { text, url } => {
-                out.push(Span::styled(
-                    text.clone(),
-                    base.fg(theme.accent).add_modifier(Modifier::UNDERLINED),
-                ));
-                if !url.is_empty() && url != text {
-                    out.push(Span::styled(
-                        format!(" ({url})"),
-                        Style::default().fg(theme.muted),
-                    ));
+                let text = terminal_safe_text(text);
+                let url_fallback = terminal_safe_text(url);
+                let has_visible_label = text
+                    .chars()
+                    .any(|character| crate::tui::char_width(character) > 0);
+                let target = has_visible_label
+                    .then(|| hyperlinks.admit_target(url))
+                    .flatten();
+                out.push(AnnotatedSpan {
+                    span: Span::styled(
+                        text.clone(),
+                        base.fg(theme.accent).add_modifier(Modifier::UNDERLINED),
+                    ),
+                    hyperlink: target,
+                });
+                if out.last().is_some_and(|span| span.hyperlink.is_none())
+                    && !url_fallback.is_empty()
+                    && url_fallback != text
+                {
+                    out.push(AnnotatedSpan {
+                        span: Span::styled(
+                            format!(" ({url_fallback})"),
+                            Style::default().fg(theme.muted),
+                        ),
+                        hyperlink: None,
+                    });
                 }
             }
         }
     }
     if out.is_empty() {
-        out.push(Span::styled(String::new(), base));
+        out.push(AnnotatedSpan {
+            span: Span::styled(String::new(), base),
+            hyperlink: None,
+        });
     }
     out
+}
+
+#[cfg(test)]
+fn inline_spans(spans: &[Inline], theme: &Theme, base: Style) -> Vec<Span<'static>> {
+    inline_annotated_spans(spans, theme, base, &HyperlinkPolicy::disabled())
+        .into_iter()
+        .map(|span| span.span)
+        .collect()
 }
 
 /// Render the document to wrapped display rows at `width`, through the theme. Fenced code is
 /// syntax-highlighted via the stateful lexer (R6), with a fresh `LexState` per fence.
 pub fn render_doc(doc: &MarkdownDoc, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    let mut out: Vec<Line<'static>> = Vec::new();
+    render_doc_with_hyperlinks(doc, width, theme, &HyperlinkPolicy::disabled()).lines
+}
+
+pub(crate) fn render_doc_with_hyperlinks(
+    doc: &MarkdownDoc,
+    width: u16,
+    theme: &Theme,
+    hyperlinks: &HyperlinkPolicy,
+) -> RenderedLines {
+    let mut out = RenderedLines::default();
     let mut prev_marked = false; // suppress the blank between adjacent list items (critique P1)
     for (bi, b) in doc.blocks.iter().enumerate() {
         let is_marked = matches!(b, MdBlock::Bullet { .. } | MdBlock::Numbered { .. });
         if bi > 0 && !(prev_marked && is_marked) {
-            out.push(Line::from("")); // blank spacer between blocks (not between consecutive list items)
+            out.push_plain(Line::from("")); // blank spacer between blocks (not between consecutive list items)
         }
         prev_marked = is_marked;
         match b {
@@ -433,33 +502,46 @@ pub fn render_doc(doc: &MarkdownDoc, width: u16, theme: &Theme) -> Vec<Line<'sta
                         .fg(theme.muted)
                         .add_modifier(Modifier::BOLD),
                 };
-                out.extend(wrap_spans(&inline_spans(spans, theme, base), width));
+                out.append(wrap_annotated_spans(
+                    &inline_annotated_spans(spans, theme, base, hyperlinks),
+                    width,
+                ));
             }
             MdBlock::Para(spans) => {
-                let s = inline_spans(spans, theme, Style::default().fg(theme.fg));
-                out.extend(wrap_spans(&s, width));
+                let spans =
+                    inline_annotated_spans(spans, theme, Style::default().fg(theme.fg), hyperlinks);
+                out.append(wrap_annotated_spans(&spans, width));
             }
             MdBlock::Bullet { spans } => {
                 // ONE bullet column (findings 4): the marker glyph sits at the open-voice left edge
                 // (col 0), the same edge as prose/headings — not indented 2 cells into its own column
                 // that made lists float away from the rest of the assistant document.
-                out.extend(render_marked("• ", spans, width, theme));
+                out.append(render_marked("• ", spans, width, theme, hyperlinks));
             }
             MdBlock::Numbered { n, spans } => {
-                out.extend(render_marked(&format!("{n}. "), spans, width, theme));
+                out.append(render_marked(
+                    &format!("{n}. "),
+                    spans,
+                    width,
+                    theme,
+                    hyperlinks,
+                ));
             }
             MdBlock::Quote(spans) => {
                 let base = Style::default()
                     .fg(theme.muted)
                     .add_modifier(Modifier::ITALIC);
-                let inner = inline_spans(spans, theme, base);
+                let inner = inline_annotated_spans(spans, theme, base, hyperlinks);
                 let gutter_w = 2u16;
-                let wrapped = wrap_spans(&inner, width.saturating_sub(gutter_w).max(1));
-                for row in wrapped {
+                let mut wrapped =
+                    wrap_annotated_spans(&inner, width.saturating_sub(gutter_w).max(1));
+                wrapped.shift_columns(gutter_w);
+                for row in &mut wrapped.lines {
                     let mut sp = vec![Span::styled("▎ ", Style::default().fg(theme.muted))]; // unified rail glyph
-                    sp.extend(row.spans);
-                    out.push(Line::from(sp));
+                    sp.append(&mut row.spans);
+                    *row = Line::from(sp);
                 }
+                out.append(wrapped);
             }
             MdBlock::Code { lang, lines } => {
                 // A framed fence (TUI v3 §6): a persistent faint `│ ` gutter frames the block even when
@@ -510,43 +592,51 @@ pub fn render_doc(doc: &MarkdownDoc, width: u16, theme: &Theme) -> Vec<Line<'sta
                                 }
                             });
                         }
-                        out.push(line);
+                        out.push_plain(line);
                         first = false;
                     }
                 }
             }
             MdBlock::Rule => {
                 // The ONE rule primitive — full-width, faint, and already width-bounded.
-                out.extend(crate::block::rule_line(width, theme));
+                for line in crate::block::rule_line(width, theme) {
+                    out.push_plain(line);
+                }
             }
         }
     }
-    if out.is_empty() {
-        out.push(Line::from(""));
+    if out.lines.is_empty() {
+        out.push_plain(Line::from(""));
     }
     out
 }
 
 /// Render a list item with a hanging indent: the marker on the first row, aligned spaces on
 /// continuation rows.
-fn render_marked(marker: &str, spans: &[Inline], width: u16, theme: &Theme) -> Vec<Line<'static>> {
+fn render_marked(
+    marker: &str,
+    spans: &[Inline],
+    width: u16,
+    theme: &Theme,
+    hyperlinks: &HyperlinkPolicy,
+) -> RenderedLines {
     let marker_w = marker.chars().map(crate::tui::char_width).sum::<u16>();
-    let inner = inline_spans(spans, theme, Style::default().fg(theme.fg));
+    let inner = inline_annotated_spans(spans, theme, Style::default().fg(theme.fg), hyperlinks);
     // .max(1): wrap_spans at width 0 returns UNWRAPPED content, which would overflow the row on a
     // terminal narrower than the marker (review LOW). At least 1 keeps it wrapping.
-    let wrapped = wrap_spans(&inner, width.saturating_sub(marker_w).max(1));
-    let mut out = Vec::new();
-    for (ri, row) in wrapped.into_iter().enumerate() {
+    let mut wrapped = wrap_annotated_spans(&inner, width.saturating_sub(marker_w).max(1));
+    wrapped.shift_columns(marker_w);
+    for (ri, row) in wrapped.lines.iter_mut().enumerate() {
         let lead = if ri == 0 {
             Span::styled(marker.to_string(), Style::default().fg(theme.muted))
         } else {
             Span::raw(" ".repeat(marker_w as usize))
         };
         let mut sp = vec![lead];
-        sp.extend(row.spans);
-        out.push(Line::from(sp));
+        sp.append(&mut row.spans);
+        *row = Line::from(sp);
     }
-    out
+    wrapped
 }
 
 #[cfg(test)]
@@ -687,6 +777,73 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn osc8_capability_keeps_link_text_and_records_clickable_regions() {
+        let theme = Theme::dark();
+        let doc = MarkdownDoc::parse("Read [the guide](https://example.com/guide) now.");
+        let policy = HyperlinkPolicy::new(
+            crate::tui::hyperlink::Capability::Osc8,
+            &std::env::current_dir().unwrap(),
+        );
+        let rendered = render_doc_with_hyperlinks(&doc, 80, &theme, &policy);
+        let visible: String = rendered
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(visible, "Read the guide now.");
+        assert_eq!(rendered.hyperlinks.len(), 1);
+        assert_eq!(rendered.hyperlinks[0].col, 5);
+        assert_eq!(rendered.hyperlinks[0].width, 9);
+        assert_eq!(rendered.hyperlinks[0].target, "https://example.com/guide");
+    }
+
+    #[test]
+    fn non_capable_terminal_has_exact_plain_link_fallback() {
+        let theme = Theme::dark();
+        let doc = MarkdownDoc::parse("Read [the guide](https://example.com/guide) now.");
+        let rows = render_doc(&doc, 80, &theme);
+        let visible: String = rows
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(visible, "Read the guide (https://example.com/guide) now.");
+        assert!(!visible.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn hyperlinked_spans_keep_wrap_invariant_and_hostile_targets_stay_plain() {
+        let theme = Theme::dark();
+        let policy = HyperlinkPolicy::new(
+            crate::tui::hyperlink::Capability::Osc8,
+            &std::env::current_dir().unwrap(),
+        );
+        let doc = MarkdownDoc::parse(
+            "prefix [a clickable link with wide 文本](https://example.com/docs) suffix",
+        );
+        for width in [8u16, 12, 20, 40] {
+            let rendered = render_doc_with_hyperlinks(&doc, width, &theme, &policy);
+            assert!(rendered.lines.iter().all(|line| line_width(line) <= width));
+            assert!(rendered.hyperlinks.iter().all(|link| {
+                link.col.saturating_add(link.width) <= width && link.row < rendered.lines.len()
+            }));
+        }
+
+        let hostile = MarkdownDoc::parse("[safe label](https://example.com/\u{1b}]8;;injected)");
+        let rendered = render_doc_with_hyperlinks(&hostile, 80, &theme, &policy);
+        assert!(rendered.hyperlinks.is_empty());
+        let visible: String = rendered
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(!visible.contains('\u{1b}'));
+        assert!(visible.contains("\\u{1b}"));
     }
 
     #[test]

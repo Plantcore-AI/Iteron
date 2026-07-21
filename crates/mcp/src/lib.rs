@@ -8,18 +8,30 @@
 //! SECURITY (ADR-007 R16): MCP-declared purity is UNTRUSTED. An MCP tool defaults to `Effecting`
 //! (gated at message_stop + approval), never early-dispatched, until its confinement is
 //! evidenced — a third-party server does not get to declare itself pure. Tool descriptions are
-//! untrusted content and are scanned for bidi/invisible Unicode before the model sees them.
+//! untrusted content and are scanned for bidi/invisible Unicode, UTF-8-safely truncated, and
+//! catalog-budgeted before the model sees them. Names and schemas fail closed at fixed ceilings.
 //!
 //! What is here: the JSON-RPC framing (pure, unit-tested), the async stdio client, and the
-//! mapping from an MCP tool to a `ToolSpec` with the untrusted defaults. Live testing needs a
-//! real MCP server; the protocol layer is tested in isolation.
+//! mapping from an MCP tool to a `ToolSpec` with the untrusted defaults. Deterministic local stdio
+//! fixtures exercise discovery without credentials or an external MCP server.
 
 use serde_json::{Value, json};
 use std::io::Write;
 
 pub mod client;
+mod evidence;
+mod pagination;
+mod protocol_version;
+mod tool_catalog;
+mod tool_filter;
 
 pub use client::{McpClient, McpToolOutcome};
+pub use evidence::McpToolCallEvidence;
+pub use tool_filter::{
+    CombinedToolCatalog, MAX_COMBINED_MCP_CATALOG_BYTES, MAX_COMBINED_MCP_TOOLS,
+    MAX_MCP_BARE_TOOL_NAME_BYTES, MAX_MCP_SERVER_NAME_BYTES, MAX_MCP_TOOL_FILTER_ENTRIES,
+    McpToolFilter, validate_server_name,
+};
 
 /// Maximum payload size of one newline-delimited JSON-RPC frame, in bytes.
 ///
@@ -36,6 +48,32 @@ pub const MAX_RESPONSE_BYTES: usize = 4 * MAX_FRAME_BYTES;
 /// lines or tiny notifications without reaching the aggregate byte ceiling.
 pub const MAX_RESPONSE_FRAMES: usize = 1024;
 
+/// Maximum number of `tools/list` pages accepted from one discovery pass.
+pub const MAX_TOOL_LIST_PAGES: usize = 64;
+
+/// Maximum number of tools accepted across one paginated discovery pass.
+pub const MAX_TOOL_LIST_TOOLS: usize = 4096;
+
+/// Maximum cumulative serialized bytes accepted across all `tools/list` results.
+pub const MAX_TOOL_LIST_BYTES: usize = 4 * MAX_FRAME_BYTES;
+
+/// Maximum bytes in the final namespaced name of one MCP tool. Oversized names are rejected,
+/// never truncated, because truncation could collide two callable identities.
+pub const MAX_MCP_TOOL_NAME_BYTES: usize = 256;
+
+/// Maximum UTF-8 bytes retained from one MCP tool description, including its truncation marker.
+pub const MAX_MCP_TOOL_DESCRIPTION_BYTES: usize = 2048;
+
+/// Maximum serialized JSON bytes in one MCP input schema. Schemas are rejected rather than
+/// truncated because partial JSON Schema has different semantics.
+pub const MAX_MCP_TOOL_SCHEMA_BYTES: usize = 64 * 1024;
+
+/// Maximum description bytes retained across one server's complete tool catalog.
+pub const MAX_MCP_TOOL_DESCRIPTIONS_BYTES: usize = 64 * 1024;
+
+/// Maximum serialized bytes in the complete retained `ToolSpec` catalog for one MCP server.
+pub const MAX_MCP_TOOL_CATALOG_BYTES: usize = 512 * 1024;
+
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
     #[error("spawn: {0}")]
@@ -44,6 +82,15 @@ pub enum McpError {
     Io(String),
     #[error("protocol: {0}")]
     Protocol(String),
+    #[error("invalid MCP initialize protocolVersion; client supports `{client_version}`")]
+    InvalidProtocolVersion { client_version: String },
+    #[error(
+        "unsupported MCP protocol version: client supports `{client_version}` but server selected `{server_version}`"
+    )]
+    UnsupportedProtocolVersion {
+        client_version: String,
+        server_version: String,
+    },
     #[error("MCP frame exceeds {limit} byte limit")]
     FrameTooLarge { limit: usize },
     #[error("MCP response frames exceed {limit} aggregate byte limit")]
@@ -52,6 +99,40 @@ pub enum McpError {
     TooManyFrames { limit: usize },
     #[error("MCP tool output exceeds {limit} byte limit")]
     OutputTooLarge { limit: usize },
+    #[error("MCP tools/list exceeds {limit} page limit")]
+    ToolListPageLimit { limit: usize },
+    #[error("MCP tools/list exceeds {limit} tool limit")]
+    ToolListToolLimit { limit: usize },
+    #[error("MCP tools/list exceeds {limit} cumulative byte limit")]
+    ToolListByteLimit { limit: usize },
+    #[error("MCP tools/list repeated a pagination cursor")]
+    ToolListCursorCycle,
+    #[error("MCP tool name exceeds {limit} byte limit")]
+    ToolNameTooLong { limit: usize },
+    #[error("invalid MCP server namespace (expected a lowercase ASCII slug up to {limit} bytes)")]
+    InvalidServerName { limit: usize },
+    #[error(
+        "invalid MCP bare tool name (expected safe ASCII alphanumeric, `_`, `-`, or `.` up to {limit} bytes)"
+    )]
+    InvalidToolName { limit: usize },
+    #[error("invalid MCP tool filter (exact unique safe names; at most {limit} entries)")]
+    InvalidToolFilter { limit: usize },
+    #[error("duplicate MCP namespaced tool identity")]
+    ToolNameCollision,
+    #[error("combined MCP tool catalog exceeds {limit} tool limit")]
+    CombinedToolLimit { limit: usize },
+    #[error("combined MCP tool catalog exceeds {limit} serialized byte limit")]
+    CombinedToolCatalogByteLimit { limit: usize },
+    #[error("combined MCP tool limit must be in 1..={maximum}")]
+    InvalidCombinedToolLimit { maximum: usize },
+    #[error("combined MCP catalog byte limit must be in 2..={maximum}")]
+    InvalidCombinedCatalogByteLimit { maximum: usize },
+    #[error("MCP tool input schema exceeds {limit} serialized byte limit")]
+    ToolSchemaTooLarge { limit: usize },
+    #[error("MCP tool descriptions exceed {limit} cumulative byte limit")]
+    ToolDescriptionBudgetExceeded { limit: usize },
+    #[error("MCP tool catalog exceeds {limit} serialized byte limit")]
+    ToolCatalogTooLarge { limit: usize },
     #[error("MCP frame is not valid UTF-8")]
     InvalidUtf8,
     #[error("deadline exceeded during {operation}")]
@@ -60,6 +141,86 @@ pub enum McpError {
     Server { code: i64, message: String },
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+}
+
+impl McpError {
+    /// Stable diagnostic safe for model/terminal projection.
+    ///
+    /// MCP peer strings, OS errors, command paths, and parser detail are intentionally omitted.
+    /// The typed error remains available to in-process callers for control flow and tests.
+    pub fn public_summary(&self) -> String {
+        match self {
+            Self::Spawn(_) => "MCP server spawn failed".into(),
+            Self::Io(_) => "MCP transport I/O failed".into(),
+            Self::Protocol(_) => "MCP protocol exchange failed".into(),
+            Self::InvalidProtocolVersion { .. } => {
+                "MCP server returned an invalid protocol version".into()
+            }
+            Self::UnsupportedProtocolVersion { .. } => {
+                "MCP server selected an unsupported protocol version".into()
+            }
+            Self::FrameTooLarge { limit } => {
+                format!("MCP frame exceeds {limit} byte limit")
+            }
+            Self::ResponseTooLarge { limit } => {
+                format!("MCP response frames exceed {limit} aggregate byte limit")
+            }
+            Self::TooManyFrames { limit } => {
+                format!("MCP response exceeds {limit} frame limit")
+            }
+            Self::OutputTooLarge { limit } => {
+                format!("MCP tool output exceeds {limit} byte limit")
+            }
+            Self::ToolListPageLimit { limit } => {
+                format!("MCP tools/list exceeds {limit} page limit")
+            }
+            Self::ToolListToolLimit { limit } => {
+                format!("MCP tools/list exceeds {limit} tool limit")
+            }
+            Self::ToolListByteLimit { limit } => {
+                format!("MCP tools/list exceeds {limit} cumulative byte limit")
+            }
+            Self::ToolListCursorCycle => "MCP tools/list repeated a pagination cursor".into(),
+            Self::ToolNameTooLong { limit } => {
+                format!("MCP tool name exceeds {limit} byte limit")
+            }
+            Self::InvalidServerName { limit } => {
+                format!("invalid MCP server namespace (maximum {limit} bytes)")
+            }
+            Self::InvalidToolName { limit } => {
+                format!("invalid MCP bare tool name (maximum {limit} bytes)")
+            }
+            Self::InvalidToolFilter { limit } => {
+                format!("invalid MCP tool filter (maximum {limit} entries)")
+            }
+            Self::ToolNameCollision => "duplicate MCP namespaced tool identity".into(),
+            Self::CombinedToolLimit { limit } => {
+                format!("combined MCP tool catalog exceeds {limit} tool limit")
+            }
+            Self::CombinedToolCatalogByteLimit { limit } => {
+                format!("combined MCP tool catalog exceeds {limit} serialized byte limit")
+            }
+            Self::InvalidCombinedToolLimit { maximum } => {
+                format!("combined MCP tool limit must be in 1..={maximum}")
+            }
+            Self::InvalidCombinedCatalogByteLimit { maximum } => {
+                format!("combined MCP catalog byte limit must be in 2..={maximum}")
+            }
+            Self::ToolSchemaTooLarge { limit } => {
+                format!("MCP tool input schema exceeds {limit} serialized byte limit")
+            }
+            Self::ToolDescriptionBudgetExceeded { limit } => {
+                format!("MCP tool descriptions exceed {limit} cumulative byte limit")
+            }
+            Self::ToolCatalogTooLarge { limit } => {
+                format!("MCP tool catalog exceeds {limit} serialized byte limit")
+            }
+            Self::InvalidUtf8 => "MCP frame is not valid UTF-8".into(),
+            Self::Deadline { .. } => "MCP operation deadline exceeded".into(),
+            Self::Server { code, .. } => format!("MCP server returned error code {code}"),
+            Self::Json(_) => "MCP peer returned invalid JSON".into(),
+        }
+    }
 }
 
 /// Build a JSON-RPC 2.0 request line (newline-delimited transport).
@@ -176,6 +337,19 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}"#,
         );
         assert!(matches!(e, Err(McpError::Server { code: -32601, .. })));
+    }
+
+    #[test]
+    fn public_error_summary_never_reflects_peer_or_terminal_control_text() {
+        let secret = "opaque-secret\u{1b}[31m";
+        let error = McpError::Server {
+            code: -32_001,
+            message: secret.into(),
+        };
+        let summary = error.public_summary();
+        assert_eq!(summary, "MCP server returned error code -32001");
+        assert!(!summary.contains(secret));
+        assert!(!summary.contains('\u{1b}'));
     }
 
     #[test]

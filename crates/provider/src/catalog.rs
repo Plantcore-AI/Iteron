@@ -5,6 +5,9 @@
 //! from visibility: unknown model IDs remain visible without being silently treated as valid
 //! coding-turn models.
 
+pub use crate::static_metadata::{
+    GLM_STANDARD_CHAT_MANIFEST, GLM_STANDARD_CHAT_MODELS, StaticCatalogManifest,
+};
 use crate::{AvailabilityTransition, ProviderError, api_error_from_response};
 use futures_util::StreamExt;
 use reqwest::Url;
@@ -106,49 +109,6 @@ pub enum CatalogStrategy {
     Unsupported { reason: String },
 }
 
-/// Provenance for a bounded built-in model manifest derived from an official request schema.
-/// Such a manifest proves only that an identifier is documented for an endpoint. It never proves
-/// that the configured credential is entitled or funded, so account health must remain Unknown
-/// until independent provider evidence exists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StaticCatalogManifest {
-    pub provider: &'static str,
-    pub version: &'static str,
-    pub api_root: &'static str,
-    pub source: &'static str,
-    pub default_model: Option<&'static str>,
-    pub models: &'static [&'static str],
-}
-
-/// Exact text-model enum published by GLM's synchronous Chat Completions request schema, captured
-/// on 2026-07-14. Coding Plan and Anthropic-compatible roots are intentionally not conflated with
-/// this standard-root schema.
-pub const GLM_STANDARD_CHAT_MODELS: &[&str] = &[
-    "glm-5.2",
-    "glm-5.1",
-    "glm-5-turbo",
-    "glm-5",
-    "glm-4.7",
-    "glm-4.7-flash",
-    "glm-4.7-flashx",
-    "glm-4.6",
-    "glm-4.5-air",
-    "glm-4.5-airx",
-    "glm-4.5-flash",
-    "glm-4-flash-250414",
-    "glm-4-flashx-250414",
-];
-
-pub const GLM_STANDARD_CHAT_MANIFEST: StaticCatalogManifest = StaticCatalogManifest {
-    provider: "GLM",
-    version: "glm-chat-completions-schema@2026-07-14",
-    api_root: GLM_STANDARD_ROOT,
-    source: "https://docs.bigmodel.cn/api-reference/模型-api/对话补全",
-    // The same official request schema labels glm-5.2 as its default.
-    default_model: Some("glm-5.2"),
-    models: GLM_STANDARD_CHAT_MODELS,
-};
-
 /// A parsed API root whose path is authoritative. `https://host/v1` and
 /// `https://host/inference/v1` remain exactly those roots; endpoint construction never guesses,
 /// inserts, or strips a version segment.
@@ -247,6 +207,7 @@ pub struct ProviderInstance {
     api_root: ApiRoot,
     catalog_strategy: CatalogStrategy,
     credential: Option<String>,
+    static_metadata: Arc<crate::StaticProviderMetadata>,
 }
 
 impl fmt::Debug for ProviderInstance {
@@ -259,6 +220,10 @@ impl fmt::Debug for ProviderInstance {
             .field("error_profile", &self.error_profile)
             .field("api_root", &self.api_root)
             .field("catalog_strategy", &self.catalog_strategy)
+            .field(
+                "static_metadata_revision",
+                &self.static_metadata.bundle_revision(),
+            )
             .field(
                 "credential",
                 &self.credential.as_ref().map(|_| "[REDACTED]"),
@@ -335,6 +300,7 @@ impl ProviderInstance {
             api_root,
             catalog_strategy,
             credential,
+            static_metadata: crate::StaticProviderMetadata::embedded(),
         })
     }
 
@@ -381,12 +347,29 @@ impl ProviderInstance {
         self
     }
 
+    /// Replace dated world-data snapshots while retaining the exact configured route and adapter.
+    pub fn with_static_metadata(
+        mut self,
+        static_metadata: Arc<crate::StaticProviderMetadata>,
+    ) -> Self {
+        self.static_metadata = static_metadata;
+        self
+    }
+
     pub fn api_root(&self) -> &ApiRoot {
         &self.api_root
     }
 
     pub fn catalog_strategy(&self) -> &CatalogStrategy {
         &self.catalog_strategy
+    }
+
+    pub fn static_metadata(&self) -> &crate::StaticProviderMetadata {
+        &self.static_metadata
+    }
+
+    pub fn static_metadata_handle(&self) -> Arc<crate::StaticProviderMetadata> {
+        self.static_metadata.clone()
     }
 
     pub fn has_credential(&self) -> bool {
@@ -426,11 +409,13 @@ impl ProviderInstance {
             AdapterKind::AnthropicMessages => Ok(Box::new(
                 crate::Anthropic::with_root(credential, self.api_root.clone())?
                     .with_error_profile(self.error_profile)
+                    .with_static_metadata(self.static_metadata.clone())
                     .with_route_scope(self.id.clone())?,
             )),
             AdapterKind::OpenAiCompatibleChat => Ok(Box::new(
                 crate::OpenAiCompat::with_root(credential, self.api_root.clone())?
                     .with_error_profile(self.error_profile)
+                    .with_static_metadata(self.static_metadata.clone())
                     .with_route_scope(self.id.clone())?,
             )),
             AdapterKind::OpenAiResponses => Ok(Box::new(
@@ -658,7 +643,8 @@ impl CatalogSnapshot {
 pub fn glm_standard_schema_catalog(
     instance: &ProviderInstance,
 ) -> Result<CatalogSnapshot, ProviderError> {
-    if instance.api_root.as_str() != GLM_STANDARD_CHAT_MANIFEST.api_root
+    let manifest = instance.static_metadata();
+    if instance.api_root.as_str() != manifest.glm_api_root()
         || instance.adapter != AdapterKind::OpenAiCompatibleChat
     {
         return Err(ProviderError::Configuration(
@@ -666,12 +652,12 @@ pub fn glm_standard_schema_catalog(
                 .into(),
         ));
     }
-    let models = GLM_STANDARD_CHAT_MANIFEST
-        .models
+    let models = manifest
+        .glm_models()
         .iter()
         .map(|model_id| RawModel {
-            id: (*model_id).to_string(),
-            display_name: Some((*model_id).to_string()),
+            id: model_id.clone(),
+            display_name: Some(model_id.clone()),
             created_at: None,
             owned_by: None,
         })
@@ -3254,14 +3240,19 @@ mod tests {
 
     #[test]
     fn glm_standard_schema_manifest_is_exact_static_and_entitlement_neutral() {
-        assert_eq!(GLM_STANDARD_CHAT_MANIFEST.provider, "GLM");
-        assert_eq!(
-            GLM_STANDARD_CHAT_MANIFEST.version,
-            "glm-chat-completions-schema@2026-07-14"
+        let metadata = crate::StaticProviderMetadata::embedded();
+        assert!(
+            metadata
+                .glm_catalog_version()
+                .starts_with("glm-chat-completions-schema@2026-07-14+sha256:")
         );
-        assert_eq!(GLM_STANDARD_CHAT_MANIFEST.default_model, Some("glm-5.2"));
+        assert_eq!(metadata.glm_default_model(), "glm-5.2");
         assert_eq!(
-            GLM_STANDARD_CHAT_MANIFEST.models,
+            metadata
+                .glm_models()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
             &[
                 "glm-5.2",
                 "glm-5.1",
@@ -3291,12 +3282,16 @@ mod tests {
         let health = ProviderHealthStore::new(4);
         let catalog = glm_standard_schema_catalog(&glm).unwrap();
         assert_eq!(health.get("glm").availability, AccountAvailability::Unknown);
-        assert_eq!(catalog.models.len(), GLM_STANDARD_CHAT_MODELS.len());
+        assert_eq!(catalog.models.len(), metadata.glm_models().len());
         assert!(catalog.models.iter().all(|model| {
             model.compatibility == Compatibility::Compatible
                 && model.selectability == Selectability::Selectable
         }));
-        let mut expected = GLM_STANDARD_CHAT_MODELS.to_vec();
+        let mut expected = metadata
+            .glm_models()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
         expected.sort_unstable();
         assert_eq!(
             catalog

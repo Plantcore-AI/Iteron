@@ -38,6 +38,7 @@ const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 const GIT_EXCLUDE_LIMIT: u64 = 1024 * 1024;
 const MAX_TEMP_ATTEMPTS: u64 = 32;
+const INTERNAL_EXCLUDE_PREFIX: &str = ":(top,literal,exclude)";
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
@@ -365,7 +366,9 @@ impl IsolatedGit {
                 | ["write-tree"]
                 | ["checkout-index", "-a", "-f"]
                 | ["ls-files", "-z"]
-        ) || matches!(args, ["commit-tree", object, "-m", _] if valid_object_id(object))
+        ) || matches!(args, ["add", "-A", "--", ".", exclusion]
+            if valid_internal_exclusion(exclusion))
+            || matches!(args, ["commit-tree", object, "-m", _] if valid_object_id(object))
             || matches!(args, ["read-tree", object] if valid_object_id(object));
         if !allowed {
             return Err(io::Error::new(
@@ -388,6 +391,19 @@ impl IsolatedGit {
         }
         command.args(args);
         finish_git(&mut command, args.first().copied().unwrap_or("unknown"))
+    }
+
+    fn stage_all(&self, excluded_runtime_dir: Option<&str>) -> Result<(), RecordError> {
+        match excluded_runtime_dir {
+            Some(relative) => {
+                let exclusion = format!("{INTERNAL_EXCLUDE_PREFIX}{relative}");
+                self.run(&["add", "-A", "--", ".", &exclusion])?;
+            }
+            None => {
+                self.run(&["add", "-A", "--", "."])?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -418,6 +434,56 @@ fn sanitize(s: &str) -> String {
 
 fn shadow_ref(run: &RunId, at: Seq) -> String {
     format!("refs/core/{}/{}", sanitize(&run.0), at.0)
+}
+
+fn valid_internal_exclusion(exclusion: &str) -> bool {
+    let Some(relative) = exclusion.strip_prefix(INTERNAL_EXCLUDE_PREFIX) else {
+        return false;
+    };
+    !relative.is_empty()
+        && Path::new(relative)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+/// Resolve an existing runtime-state directory to a Git-root-relative, UTF-8 path. State outside
+/// the workspace cannot enter the snapshot and needs no exclusion. A state directory equal to the
+/// workspace would make a meaningful checkpoint impossible and is rejected instead of silently
+/// producing an empty tree.
+fn runtime_state_relative(
+    workspace: &Path,
+    runtime_state_dir: &Path,
+) -> Result<Option<String>, RecordError> {
+    let workspace = workspace.canonicalize()?;
+    let runtime_state_dir = runtime_state_dir.canonicalize()?;
+    let Ok(relative) = runtime_state_dir.strip_prefix(&workspace) else {
+        return Ok(None);
+    };
+    if relative.as_os_str().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "checkpoint runtime-state directory cannot be the workspace root",
+        )
+        .into());
+    }
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "checkpoint runtime-state path is not workspace-relative",
+            )
+            .into());
+        };
+        let component = component.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "checkpoint runtime-state path is not valid UTF-8",
+            )
+        })?;
+        parts.push(component);
+    }
+    Ok(Some(parts.join("/")))
 }
 
 fn create_private_temp_dir(run: &RunId, at: Seq) -> io::Result<PathBuf> {
@@ -531,10 +597,35 @@ fn checked_workspace_path(workspace: &Path, relative: &str) -> Result<PathBuf, R
 /// private temp index, so the operator's index/HEAD are untouched and no hook runs (ADR-007 §4).
 /// `.gitignore`d files are excluded (standard git snapshot semantics), matching CC's files-only,
 /// separate-from-your-git checkpoint.
+pub fn checkpoint_supported(workspace: &Path) -> bool {
+    run_repo_git(workspace, &["rev-parse", "--is-inside-work-tree"])
+        .is_ok_and(|inside| inside.trim() == "true")
+}
+
 pub fn checkpoint(run: &RunId, at: Seq, workspace: &Path) -> Result<Snapshot, RecordError> {
-    let inside =
-        run_repo_git(workspace, &["rev-parse", "--is-inside-work-tree"]).unwrap_or_default();
-    if inside.trim() != "true" {
+    checkpoint_inner(run, at, workspace, None)
+}
+
+/// Snapshot a workspace while unconditionally excluding Core's mutable rollout/session-state
+/// directory when it lives under that workspace. This exclusion is independent of repository
+/// `.gitignore` and `info/exclude`: rewinding a workspace checkpoint must never overwrite the
+/// append-only audit record that authorizes the rewind.
+pub fn checkpoint_excluding_runtime_state(
+    run: &RunId,
+    at: Seq,
+    workspace: &Path,
+    runtime_state_dir: &Path,
+) -> Result<Snapshot, RecordError> {
+    checkpoint_inner(run, at, workspace, Some(runtime_state_dir))
+}
+
+fn checkpoint_inner(
+    run: &RunId,
+    at: Seq,
+    workspace: &Path,
+    runtime_state_dir: Option<&Path>,
+) -> Result<Snapshot, RecordError> {
+    if !checkpoint_supported(workspace) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
@@ -549,8 +640,12 @@ pub fn checkpoint(run: &RunId, at: Seq, workspace: &Path) -> Result<Snapshot, Re
     // to an arbitrary process. Run all content-transforming commands against a fresh Git dir whose
     // only config was created by Core. It shares the real object database, but never reads the real
     // `.git/config`; an attribute naming an unavailable external driver therefore remains inert.
+    let excluded_runtime_dir = runtime_state_dir
+        .map(|path| runtime_state_relative(workspace, path))
+        .transpose()?
+        .flatten();
     let isolated = IsolatedGit::create(run, at, workspace)?;
-    isolated.run(&["add", "-A", "--", "."])?;
+    isolated.stage_all(excluded_runtime_dir.as_deref())?;
     let tree = isolated.run(&["write-tree"])?;
     let tree = tree.trim();
     if !valid_object_id(tree) {
@@ -673,6 +768,7 @@ mod tests {
         }
         let ws = tmp_repo("roundtrip");
         test_git(&ws, &["init", "-q"]);
+        assert!(checkpoint_supported(&ws));
         std::fs::write(ws.join("a.txt"), "one").unwrap();
         test_git(&ws, &["add", "a.txt"]);
         // commit-tree-free initial commit is not needed; checkpoint snapshots the working tree.
@@ -701,6 +797,7 @@ mod tests {
             return;
         }
         let ws = tmp_repo("norepo");
+        assert!(!checkpoint_supported(&ws));
         let err = checkpoint(&RunId("ck2".into()), Seq(0), &ws).unwrap_err();
         assert!(matches!(err, RecordError::Io(_)));
         std::fs::remove_dir_all(&ws).ok();
@@ -722,6 +819,37 @@ mod tests {
         let listing = test_git(&ws, &["ls-tree", "-r", "--name-only", &snapshot.tree_ref]);
         assert!(listing.lines().any(|path| path == "kept.txt"));
         assert!(!listing.lines().any(|path| path == "secret.txt"));
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
+    #[test]
+    fn checkpoint_unconditionally_excludes_in_workspace_runtime_state() {
+        if !git_available() {
+            eprintln!("skipping: git not available");
+            return;
+        }
+        let ws = tmp_repo("runtime-state-exclude");
+        test_git(&ws, &["init", "-q"]);
+        std::fs::write(ws.join("kept.txt"), "kept").unwrap();
+        std::fs::create_dir_all(ws.join(".core/runs")).unwrap();
+        std::fs::write(ws.join(".core/config.json"), "{}\n").unwrap();
+        std::fs::write(ws.join(".core/runs/live.jsonl"), "authoritative\n").unwrap();
+        std::fs::write(ws.join(".core/runs/sessions.index"), "mutable\n").unwrap();
+
+        let snapshot = checkpoint_excluding_runtime_state(
+            &RunId("runtime-state".into()),
+            Seq(2),
+            &ws,
+            &ws.join(".core/runs"),
+        )
+        .unwrap();
+        let listing = test_git(&ws, &["ls-tree", "-r", "--name-only", &snapshot.tree_ref]);
+        assert!(listing.lines().any(|path| path == "kept.txt"));
+        assert!(listing.lines().any(|path| path == ".core/config.json"));
+        assert!(
+            !listing.lines().any(|path| path.starts_with(".core/runs/")),
+            "runtime journals and projections must never enter a workspace checkpoint"
+        );
         std::fs::remove_dir_all(&ws).ok();
     }
 

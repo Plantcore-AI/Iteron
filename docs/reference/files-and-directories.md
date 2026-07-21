@@ -7,7 +7,8 @@ historical product directories.
 
 | Path | Purpose |
 | --- | --- |
-| `~/.core/config.json` | Trusted user defaults, provider instances, MCP servers, and hooks |
+| `~/.core/config.json` | Trusted user defaults, provider instances, signed rate cards, MCP servers, and hooks |
+| `~/.core/provider-metadata.json` | Optional, strictly versioned replacement for dated built-in provider metadata |
 | `~/.core/skills/<name>/SKILL.md` | Trusted operator skills |
 | `~/.core/agents/*.md` | Trusted operator agent definitions |
 | `~/.core/memory/` | Trusted operator memory |

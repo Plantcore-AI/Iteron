@@ -10,8 +10,6 @@
 //! (ADR-011), not built here. It is a pure function of `(task, RepoSignals)` with no I/O, so the
 //! routing decision is reproducible and unit-testable.
 
-use core_protocol::Budget;
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -130,7 +128,7 @@ impl Decomposer {
     /// a `Fan → Reduce` plan. Leaves are normalized and deduplicated before `FAN_CAP` is applied;
     /// cap drops, duplicates, and invalid inputs are recorded separately — never silently. Empty
     /// normalized leaves return `None` (nothing to fan → single agent).
-    pub fn plan(class: TaskClass, leaves: Vec<String>, aggregate: Budget) -> Option<WorkflowPlan> {
+    pub fn plan(class: TaskClass, leaves: Vec<String>) -> Option<WorkflowPlan> {
         if !class.fans_out() {
             return None;
         }
@@ -148,7 +146,6 @@ impl Decomposer {
             .collect();
         Some(WorkflowPlan {
             stages: vec![Stage::Fan { tasks }, Stage::Reduce],
-            aggregate,
             class,
             truncated,
             duplicates_removed: normalized.duplicates_removed,
@@ -264,6 +261,19 @@ const RUN_INTENT_MARKERS: &[&str] = &[
     "execute the ",
 ];
 
+/// High-signal non-English intent markers. These deliberately stay small and explicit: routing
+/// is a deterministic proposal, so an unbounded language detector or locale-dependent tokenizer
+/// would be a worse fit than a reviewed vocabulary. Unicode lowercasing handles cased scripts;
+/// CJK entries compare directly.
+const INTERNATIONAL_RUN_MARKERS: &[&str] = &[
+    "复现",
+    "重现",
+    "再現",
+    "reproducir",
+    "reproduire",
+    "reproduzieren",
+];
+
 const MULTI_MARKERS: &[&str] = &[
     "across",
     "everywhere",
@@ -282,6 +292,26 @@ const MULTI_MARKERS: &[&str] = &[
     "multiple files",
     "many files",
     "each module",
+];
+
+const INTERNATIONAL_MULTI_MARKERS: &[&str] = &[
+    "重命名",
+    "重构",
+    "迁移",
+    "所有地方",
+    "所有文件",
+    "所有调用",
+    "所有引用",
+    "全局替换",
+    "跨文件",
+    "名前を変更",
+    "すべてのファイル",
+    "renombrar",
+    "en todas partes",
+    "todos los archivos",
+    "renommer partout",
+    "umbenennen",
+    "in allen dateien",
 ];
 
 const TEST_INTENT: &[&str] = &[
@@ -310,11 +340,19 @@ const BROAD_VERBS: &[&str] = &[
 const LARGE_REPO: usize = 200;
 
 fn evidence_class(task: &str, repo: &RepoSignals) -> TaskClass {
-    let lower = task.to_ascii_lowercase();
-    if RUN_MARKERS.iter().any(|m| lower.contains(m)) {
+    let lower = task.to_lowercase();
+    if RUN_MARKERS
+        .iter()
+        .chain(INTERNATIONAL_RUN_MARKERS)
+        .any(|m| lower.contains(m))
+    {
         return TaskClass::RunToUnderstand;
     }
-    if MULTI_MARKERS.iter().any(|m| lower.contains(m)) {
+    if MULTI_MARKERS
+        .iter()
+        .chain(INTERNATIONAL_MULTI_MARKERS)
+        .any(|m| lower.contains(m))
+    {
         return TaskClass::MultiFile;
     }
     // Repo-shaped tie-breaks (RepoSignals is load-bearing here, not decoration).
@@ -328,13 +366,19 @@ fn evidence_class(task: &str, repo: &RepoSignals) -> TaskClass {
 }
 
 fn explicit_evidence_intent(task: &str, repo: &RepoSignals) -> Option<TaskClass> {
-    let lower = task.to_ascii_lowercase();
-    if RUN_INTENT_MARKERS.iter().any(|m| lower.contains(m))
+    let lower = task.to_lowercase();
+    if RUN_INTENT_MARKERS
+        .iter()
+        .chain(INTERNATIONAL_RUN_MARKERS)
+        .any(|m| lower.contains(m))
         || (repo.has_test_command && TEST_INTENT.iter().any(|m| lower.contains(m)))
     {
         return Some(TaskClass::RunToUnderstand);
     }
-    if MULTI_MARKERS.iter().any(|m| lower.contains(m))
+    if MULTI_MARKERS
+        .iter()
+        .chain(INTERNATIONAL_MULTI_MARKERS)
+        .any(|m| lower.contains(m))
         || (repo.file_count >= LARGE_REPO && BROAD_VERBS.iter().any(|m| lower.contains(m)))
     {
         return Some(TaskClass::MultiFile);
@@ -549,6 +593,26 @@ mod tests {
     }
 
     #[test]
+    fn non_english_intent_routes_deterministically() {
+        let repo = RepoSignals {
+            has_test_command: true,
+            file_count: 5_000,
+        };
+        let cases = [
+            ("请复现这个崩溃并找到原因", TaskClass::RunToUnderstand),
+            ("把这个配置字段在所有地方重命名", TaskClass::MultiFile),
+            ("クラッシュを再現してください", TaskClass::RunToUnderstand),
+            ("renombrar el campo en todas partes", TaskClass::MultiFile),
+        ];
+        for (task, expected) in cases {
+            assert_eq!(Decomposer::route(task, &repo), expected);
+            for _ in 0..32 {
+                assert_eq!(Decomposer::route(task, &repo), expected);
+            }
+        }
+    }
+
+    #[test]
     fn under_specified_is_the_default() {
         let s = sig();
         assert_eq!(
@@ -598,16 +662,14 @@ mod tests {
 
     #[test]
     fn plan_none_for_localized_and_empty() {
-        assert!(
-            Decomposer::plan(TaskClass::Localized, vec!["x".into()], Budget::default()).is_none()
-        );
-        assert!(Decomposer::plan(TaskClass::MultiFile, vec![], Budget::default()).is_none());
+        assert!(Decomposer::plan(TaskClass::Localized, vec!["x".into()]).is_none());
+        assert!(Decomposer::plan(TaskClass::MultiFile, vec![]).is_none());
     }
 
     #[test]
     fn plan_builds_fan_then_reduce() {
         let leaves = vec!["find callers".into(), "find the schema".into()];
-        let plan = Decomposer::plan(TaskClass::MultiFile, leaves, Budget::default()).unwrap();
+        let plan = Decomposer::plan(TaskClass::MultiFile, leaves).unwrap();
         assert_eq!(plan.stages.len(), 2);
         assert!(matches!(plan.stages[0], Stage::Fan { .. }));
         assert!(matches!(plan.stages[1], Stage::Reduce));
@@ -635,7 +697,7 @@ mod tests {
     #[test]
     fn plan_truncates_to_fan_cap_and_records_it() {
         let leaves: Vec<String> = (0..10).map(|i| format!("leaf {i}")).collect();
-        let plan = Decomposer::plan(TaskClass::UnderSpecified, leaves, Budget::default()).unwrap();
+        let plan = Decomposer::plan(TaskClass::UnderSpecified, leaves).unwrap();
         assert_eq!(plan.fan_tasks().len(), FAN_CAP, "capped at FAN_CAP");
         assert_eq!(
             plan.truncated,
@@ -677,7 +739,7 @@ mod tests {
         ];
         leaves.extend((2..=7).map(|n| format!("question {n}")));
 
-        let plan = Decomposer::plan(TaskClass::MultiFile, leaves, Budget::default()).unwrap();
+        let plan = Decomposer::plan(TaskClass::MultiFile, leaves).unwrap();
         assert_eq!(plan.duplicates_removed, 1);
         assert_eq!(plan.invalid_removed, 2);
         assert_eq!(plan.truncated, Some(1));
@@ -705,13 +767,6 @@ mod tests {
         ]);
         assert!(normalized.leaves.is_empty());
         assert_eq!(normalized.invalid_removed, 3);
-        assert!(
-            Decomposer::plan(
-                TaskClass::UnderSpecified,
-                vec!["\u{200b}".into()],
-                Budget::default(),
-            )
-            .is_none()
-        );
+        assert!(Decomposer::plan(TaskClass::UnderSpecified, vec!["\u{200b}".into()],).is_none());
     }
 }

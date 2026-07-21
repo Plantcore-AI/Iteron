@@ -1,14 +1,7 @@
-//! core-tools — the tool ABI and the concrete tools.
-//!
-//! The ABI's job is to make the design's type rules true *at registration*:
-//!   - A `Pure` tool coupled with an egress capability is a registration error (ADR-007 R16).
-//!   - Every tool declares its `Purity` and `Capability`, which the scheduler and policy read.
-//!
-//! Vertical-slice tools: read_file, list_dir, grep (Pure/ReadOnly), edit (Effecting/
-//! ReversibleLocal, minimal structured diff with a uniqueness guard — Codex's first-match
-//! patcher is a named defect), and bash (Effecting/CodeExecuting). The full egress-off
-//! sandbox for bash is ADR-007's job and is stubbed here with an honest boundary: this crate
-//! runs bash in-process for the slice; `sandbox` wraps it next.
+//! core-tools owns the tool ABI, concrete executors, and their generation-scoped memo.
+//! Registration enforces that `Pure` means `ReadOnly`; effecting tools carry explicit capability
+//! and invalidate cached reads when their attempt completes. Code execution crosses the platform
+//! sandbox rather than relying on the model's declaration.
 
 use core_protocol::{Capability, Purity, ToolResult, ToolSpec, ToolUse, Trust};
 use std::path::{Path, PathBuf};
@@ -17,12 +10,26 @@ use std::time::Instant;
 mod edit;
 mod fs_tools;
 mod git;
+mod git_filters;
+mod git_harness;
+mod git_observe;
+mod grep_tool;
+mod mcp_timing;
 mod mem;
+mod memo;
+mod multi_file_patch;
+mod multi_file_patch_error;
+mod multi_file_patch_input;
+mod schema;
+mod schema_error;
 mod shell;
 mod skill;
 mod web;
+mod write_file;
 
 pub use edit::apply_unique_edit;
+pub use mcp_timing::{McpDispatchClock, McpEffectAttribution};
+use memo::{Lookup, Memo};
 
 /// Shared hardened Git observation used by the registry tool and the operator `/diff` surface.
 /// It remains an observable process effect; callers outside the registry must provide their own
@@ -33,6 +40,12 @@ pub async fn git_diff_observation(
     requested_path: Option<&str>,
 ) -> Result<String, String> {
     git::run_git_diff(root, stat, requested_path).await
+}
+
+/// Bounded, hook/filter/config-neutralized branch and status-count snapshot for a trusted frontend
+/// to record as environment context. No repository path or commit text is returned.
+pub async fn git_environment_observation(root: &Path) -> Result<String, String> {
+    git_observe::run_git_environment(root).await
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -98,33 +111,39 @@ pub mod effectfut {
     }
 }
 
+struct RegisteredExecution {
+    outcome: ToolExecution,
+    /// Present only for a registry-minted, explicitly attributed MCP dispatch clock.
+    dispatch_to_terminal_ms: Option<u64>,
+}
+
+mod registeredfut {
+    use super::RegisteredExecution;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    pub type BoxFut = Pin<Box<dyn Future<Output = RegisteredExecution> + Send>>;
+
+    pub fn box_it(f: impl Future<Output = RegisteredExecution> + Send + 'static) -> BoxFut {
+        Box::pin(f)
+    }
+}
+
 /// A registered tool: its spec plus its executor.
 pub struct Tool {
     pub spec: ToolSpec,
-    run: Box<dyn Fn(ToolUse, PathBuf) -> effectfut::BoxFut + Send + Sync>,
+    run: Box<dyn Fn(ToolUse, PathBuf) -> registeredfut::BoxFut + Send + Sync>,
 }
 
-/// The tool registry. Enforces the purity/capability coupling at registration, and memoizes
-/// PURE tool results within a "generation" (ADR-004: content-addressed memoization of pure
-/// tools). The generation is bumped whenever an EFFECTING tool runs, so any write invalidates
-/// every cached read — a stale read can never be served (the correctness precondition).
+/// The tool registry. Enforces the purity/capability coupling at registration and memoizes PURE
+/// tool results in a fixed-bounded generation cache. Every completed EFFECTING attempt advances
+/// the generation, so a registry-mediated write invalidates prior reads and raced old-generation
+/// results cannot repopulate the cache.
 pub struct Registry {
     tools: Vec<Tool>,
     root: PathBuf,
-    memo: std::sync::Arc<std::sync::Mutex<MemoState>>,
+    memo: std::sync::Arc<Memo>,
     sensitive_env_names: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-}
-
-#[derive(Default)]
-struct MemoState {
-    generation: u64,
-    cache: std::collections::HashMap<String, ToolResult>,
-    hits: u64,
-    misses: u64,
-}
-
-fn memo_key(call: &ToolUse) -> String {
-    format!("{}::{}", call.name, call.input)
 }
 
 impl Registry {
@@ -142,6 +161,8 @@ impl Registry {
         mem::register(&mut r)?;
         skill::register(&mut r)?;
         edit::register(&mut r)?;
+        multi_file_patch::register(&mut r)?;
+        write_file::register(&mut r)?;
         shell::register(&mut r)?;
         // Web egress (web_fetch/web_search): Effecting/IrreversibleExternal, so the capability gate
         // never auto-approves them (ADR-007 §3) and they are absent from the read_only subagent set.
@@ -162,7 +183,7 @@ impl Registry {
             sensitive_env_names: Default::default(),
         };
         fs_tools::register(&mut r)?; // read_file, list_dir, grep, repo_map only
-        git::register(&mut r)?; // git_diff (Pure/ReadOnly) — safe for read-only subagents too
+        git::register(&mut r)?; // confined Git observations (Effecting/ReadOnly)
         mem::register(&mut r)?; // read_memory (Pure/ReadOnly) — progressive-disclosure recall
         skill::register(&mut r)?; // use_skill (Pure/ReadOnly) — on-demand skill load
         Ok(r)
@@ -179,6 +200,12 @@ impl Registry {
                 s.name, s.capability
             )));
         }
+        schema::validate_schema(&s.input_schema).map_err(|error| {
+            ToolError::Registration(format!(
+                "tool `{}` has an invalid input schema: {error}",
+                s.name
+            ))
+        })?;
         if self.tools.iter().any(|t| t.spec.name == s.name) {
             return Err(ToolError::Registration(format!(
                 "duplicate tool `{}`",
@@ -227,32 +254,35 @@ impl Registry {
     /// read (a write must never leave a stale read servable).
     pub async fn run_effect(&self, call: ToolUse) -> ToolExecution {
         let started = Instant::now();
-        let root = self.root.clone();
         let id = call.id.clone();
-        let is_effecting = self.purity_of(&call.name) == Some(Purity::Effecting);
-        let found = self.tools.iter().find(|t| t.spec.name == call.name);
-        let mut outcome = match found {
-            Some(t) => (t.run)(call, root).await,
-            None => ToolExecution::Definite(ToolResult {
+        let Some(tool) = self.tools.iter().find(|tool| tool.spec.name == call.name) else {
+            return ToolExecution::Definite(ToolResult {
                 tool_use_id: id.clone(),
                 content: format!("unknown tool `{}`", call.name),
                 is_error: true,
                 trust: Trust::Trusted,
-                latency_ms: 0,
-            }),
+                latency_ms: started.elapsed().as_millis() as u64,
+            });
         };
+        if let Err(error) = schema::validate_arguments(&tool.spec.input_schema, &call.input) {
+            return ToolExecution::Definite(err_result(id, error.model_json(&tool.spec.name)));
+        }
+
+        let is_effecting = tool.spec.purity == Purity::Effecting;
+        let registered = (tool.run)(call, self.root.clone()).await;
+        let mut outcome = registered.outcome;
         // A plugin closure does not own provider correlation identity. Normalize it at the
         // registry boundary so a buggy/malicious implementation cannot mis-associate a result.
         let result = outcome.result_mut();
         result.tool_use_id = id;
-        result.latency_ms = started.elapsed().as_millis() as u64;
+        result.latency_ms = registered
+            .dispatch_to_terminal_ms
+            .unwrap_or_else(|| started.elapsed().as_millis() as u64);
         if is_effecting {
             // An effecting implementation may mutate partially before returning an error. The
             // only safe cache rule is therefore to invalidate on every completed attempt, not
             // only on a success-shaped ToolResult.
-            let mut m = self.memo.lock().unwrap();
-            m.generation += 1;
-            m.cache.clear();
+            self.memo.invalidate();
         }
         outcome
     }
@@ -265,8 +295,7 @@ impl Registry {
 
     /// Memo hit/miss counts (for obs telemetry).
     pub fn memo_stats(&self) -> (u64, u64) {
-        let m = self.memo.lock().unwrap();
-        (m.hits, m.misses)
+        self.memo.stats()
     }
 
     /// Hand back an owned, `'static` future for a tool call — so the scheduler can
@@ -274,79 +303,68 @@ impl Registry {
     /// it with the still-decoding turn (ADR-004, the flagship). The borrow of `&self` ends
     /// when this returns; the future it yields owns everything it needs.
     pub fn dispatch(&self, call: ToolUse) -> boxfut::BoxFut {
+        let Some(tool) = self.tools.iter().find(|tool| tool.spec.name == call.name) else {
+            let id = call.id.clone();
+            let name = call.name.clone();
+            return boxfut::box_it(async move { err_result(id, format!("unknown tool `{name}`")) });
+        };
+        if let Err(error) = schema::validate_arguments(&tool.spec.input_schema, &call.input) {
+            let result = err_result(call.id.clone(), error.model_json(&tool.spec.name));
+            return boxfut::box_it(async move { result });
+        }
+
         let root = self.root.clone();
-        let is_pure = self.purity_of(&call.name) == Some(Purity::Pure);
+        let is_pure = tool.spec.purity == Purity::Pure;
         // Memoize pure tools within the current generation: a repeated identical read/grep
-        // during exploration is served from cache instead of hitting the filesystem again
-        // (ADR-004). Correct because any effecting tool bumps the generation.
+        // during exploration is served from cache instead of hitting the filesystem again.
+        // Every registry-mediated effect bumps the generation; ambient changes are not inferred.
         if is_pure {
-            let key = memo_key(&call);
-            let (gen0, cached) = {
-                let m = self.memo.lock().unwrap();
-                (m.generation, m.cache.get(&key).cloned())
-            };
-            if let Some(mut hit) = cached {
-                self.memo.lock().unwrap().hits += 1;
-                hit.tool_use_id = call.id.clone(); // this call's id, cached content
-                hit.latency_ms = 0;
-                return boxfut::box_it(async move { hit });
-            }
-            self.memo.lock().unwrap().misses += 1;
-            match self.tools.iter().find(|t| t.spec.name == call.name) {
-                Some(t) => {
-                    let id = call.id.clone();
-                    let inner = (t.run)(call, root);
-                    let memo = self.memo.clone();
-                    return boxfut::box_it(async move {
-                        let started = Instant::now();
-                        let mut r = inner.await.into_result();
-                        r.tool_use_id = id;
-                        r.latency_ms = started.elapsed().as_millis() as u64;
-                        // Insert only if the generation has not advanced (no write raced us) and
-                        // the result is not an error (errors are never cached, per ADR-004).
-                        if !r.is_error {
-                            let mut m = memo.lock().unwrap();
-                            if m.generation == gen0 {
-                                m.cache.insert(key, r.clone());
-                            }
-                        }
-                        r
-                    });
-                }
-                None => {
-                    let id = call.id.clone();
-                    let name = call.name.clone();
-                    return boxfut::box_it(async move {
-                        err_result(id, format!("unknown tool `{name}`"))
-                    });
-                }
-            }
-        }
-        // Non-pure (or unknown): no memo.
-        match self.tools.iter().find(|t| t.spec.name == call.name) {
-            Some(t) => {
-                let id = call.id.clone();
-                let inner = (t.run)(call, root);
-                let memo = self.memo.clone();
-                boxfut::box_it(async move {
-                    let started = Instant::now();
-                    let mut r = inner.await.into_result();
-                    r.tool_use_id = id;
-                    r.latency_ms = started.elapsed().as_millis() as u64;
-                    if !is_pure {
-                        let mut memo = memo.lock().unwrap();
-                        memo.generation += 1;
-                        memo.cache.clear();
+            let pending = match Memo::key(&call.name, &call.input) {
+                Some(key) => match self.memo.lookup(key) {
+                    Lookup::Hit(mut hit) => {
+                        hit.tool_use_id = call.id.clone(); // this call's id, cached content
+                        hit.latency_ms = 0;
+                        return boxfut::box_it(async move { hit });
                     }
-                    r
-                })
-            }
-            None => {
-                let id = call.id.clone();
-                let name = call.name.clone();
-                boxfut::box_it(async move { err_result(id, format!("unknown tool `{name}`")) })
-            }
+                    Lookup::Miss(pending) => Some(pending),
+                },
+                None => None,
+            };
+            let id = call.id.clone();
+            let inner = (tool.run)(call, root);
+            let memo = self.memo.clone();
+            return boxfut::box_it(async move {
+                let started = Instant::now();
+                let registered = inner.await;
+                let mut r = registered.outcome.into_result();
+                r.tool_use_id = id;
+                r.latency_ms = registered
+                    .dispatch_to_terminal_ms
+                    .unwrap_or_else(|| started.elapsed().as_millis() as u64);
+                // A generation token prevents a read that raced a completed write from
+                // repopulating stale data. Oversized logical keys and errors are never cached.
+                if let Some(pending) = pending {
+                    memo.complete(pending, &r);
+                }
+                r
+            });
         }
+        // Effecting tools are never memoized. Validation above runs before this executor future
+        // is even constructed, so malformed calls cannot mutate state or invalidate read caches.
+        let id = call.id.clone();
+        let inner = (tool.run)(call, root);
+        let memo = self.memo.clone();
+        boxfut::box_it(async move {
+            let started = Instant::now();
+            let registered = inner.await;
+            let mut r = registered.outcome.into_result();
+            r.tool_use_id = id;
+            r.latency_ms = registered
+                .dispatch_to_terminal_ms
+                .unwrap_or_else(|| started.elapsed().as_millis() as u64);
+            memo.invalidate();
+            r
+        })
     }
 
     pub(crate) fn push_tool(
@@ -356,7 +374,12 @@ impl Registry {
     ) -> Result<(), ToolError> {
         let adapted = move |call, root| {
             let future = run(call, root);
-            effectfut::box_it(async move { ToolExecution::Definite(future.await) })
+            registeredfut::box_it(async move {
+                RegisteredExecution {
+                    outcome: ToolExecution::Definite(future.await),
+                    dispatch_to_terminal_ms: None,
+                }
+            })
         };
         self.register(Tool {
             spec,
@@ -389,9 +412,56 @@ impl Registry {
                 spec.name
             )));
         }
+        let adapted = move |call, root| {
+            let future = run(call, root);
+            registeredfut::box_it(async move {
+                RegisteredExecution {
+                    outcome: future.await,
+                    dispatch_to_terminal_ms: None,
+                }
+            })
+        };
         self.register(Tool {
             spec,
-            run: Box::new(run),
+            run: Box::new(adapted),
+        })
+    }
+
+    /// Register one namespaced MCP effect with registry-owned dispatch timing.
+    ///
+    /// Unlike the general external hook, the executor cannot submit a duration. It receives an
+    /// opaque one-shot clock bound to `(server_name, tool_name)` and may only mark the true pipe
+    /// dispatch point; the registry samples the terminal time after the future resolves.
+    pub fn register_mcp_effect(
+        &mut self,
+        spec: ToolSpec,
+        attribution: McpEffectAttribution,
+        run: impl Fn(ToolUse, PathBuf, McpDispatchClock) -> effectfut::BoxFut + Send + Sync + 'static,
+    ) -> Result<(), ToolError> {
+        let expected_name = attribution.namespaced_name();
+        if spec.name != expected_name {
+            return Err(ToolError::Registration(format!(
+                "MCP attribution `{expected_name}` does not match registered tool `{}`",
+                spec.name
+            )));
+        }
+        let adapted = move |call, root| {
+            let clock = McpDispatchClock::new(attribution.clone());
+            let future = run(call, root, clock.clone());
+            registeredfut::box_it(async move {
+                let outcome = future.await;
+                RegisteredExecution {
+                    outcome,
+                    // `Some(0)` is intentional for a typed pre-dispatch MCP rejection: there is
+                    // no dispatch->terminal interval, and the ordinary registry-wide fallback
+                    // would incorrectly include local validation/serialization time.
+                    dispatch_to_terminal_ms: Some(clock.elapsed_to_terminal_ms().unwrap_or(0)),
+                }
+            })
+        };
+        self.register(Tool {
+            spec,
+            run: Box::new(adapted),
         })
     }
 }
@@ -513,6 +583,14 @@ pub(crate) fn err_result(id: String, msg: String) -> ToolResult {
 }
 
 #[cfg(test)]
+#[path = "schema_tests.rs"]
+mod schema_tests;
+
+#[cfg(test)]
+#[path = "memo_tests.rs"]
+mod memo_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -553,7 +631,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memo_serves_repeats_but_invalidates_after_a_write() {
+    async fn d2_16_g1_memo_hit_then_write_invalidates_prior_read_through_registry() {
         let root = std::env::temp_dir().join(format!("core-memo-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("a.txt"), "v1").unwrap();
@@ -565,8 +643,10 @@ mod tests {
             input: serde_json::json!({"path":"a.txt"}),
         };
         // first read = miss; second identical read = hit (served from cache)
-        let _ = reg.dispatch(read("1")).await;
-        let _ = reg.dispatch(read("2")).await;
+        let first = reg.dispatch(read("1")).await;
+        let second = reg.dispatch(read("2")).await;
+        assert!(first.content.contains("v1"));
+        assert_eq!(first.content, second.content);
         let (hits, misses) = reg.memo_stats();
         assert_eq!(
             (hits, misses),
@@ -580,8 +660,14 @@ mod tests {
             name: "edit".into(),
             input: serde_json::json!({"path":"a.txt","old":"v1","new":"v2"}),
         };
-        let _ = reg.run(edit).await;
-        let _ = reg.dispatch(read("3")).await;
+        let edited = reg.run(edit).await;
+        assert!(
+            !edited.is_error,
+            "test write must actually complete: {edited:?}"
+        );
+        let reread = reg.dispatch(read("3")).await;
+        assert!(reread.content.contains("v2"));
+        assert!(!reread.content.contains("v1"));
         let (hits2, misses2) = reg.memo_stats();
         assert_eq!(hits2, 1, "no new hit after a write");
         assert_eq!(
@@ -592,7 +678,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_effect_invalidates_reads_and_cannot_replace_call_identity() {
+    async fn d2_16_g1_failed_effect_also_invalidates_prior_reads() {
         let root =
             std::env::temp_dir().join(format!("core-memo-failed-effect-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -668,7 +754,7 @@ mod tests {
                             content: "remote outcome unknown".into(),
                             is_error: true,
                             trust: Trust::Untrusted,
-                            latency_ms: 0,
+                            latency_ms: u64::MAX,
                         })
                     })
                 },
@@ -686,9 +772,38 @@ mod tests {
             ToolExecution::Unknown(result) => {
                 assert_eq!(result.tool_use_id, "provider-id");
                 assert!(result.is_error);
+                assert_ne!(
+                    result.latency_ms,
+                    u64::MAX,
+                    "ordinary executors cannot submit their own latency"
+                );
             }
             ToolExecution::Definite(_) => panic!("unknown effect was flattened"),
         }
+    }
+
+    #[test]
+    fn mcp_timing_registration_requires_exact_server_tool_attribution() {
+        let mut registry = Registry::read_only(".").unwrap();
+        let error = registry
+            .register_mcp_effect(
+                ToolSpec {
+                    name: "server__actual".into(),
+                    description: "test".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity: Purity::Effecting,
+                    capability: Capability::IrreversibleExternal,
+                },
+                McpEffectAttribution::new("server", "different"),
+                |_, _, _| {
+                    effectfut::box_it(async {
+                        unreachable!("mismatched attribution must fail before registration")
+                    })
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("server__different"));
+        assert!(error.to_string().contains("server__actual"));
     }
 
     #[cfg(unix)]

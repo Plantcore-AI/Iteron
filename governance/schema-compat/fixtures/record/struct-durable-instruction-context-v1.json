@@ -1,0 +1,8 @@
+{
+  "text": "instruction snapshot",
+  "trust": "untrusted",
+  "environment": {
+    "text": "environment snapshot",
+    "trust": "workspace"
+  }
+}

@@ -85,6 +85,29 @@ const PROTECTED_MACH_SERVICES: &[&str] = &[
     "com.apple.securityd.xpc",
     "com.apple.securityd.general",
     "com.apple.securityd.systemkeychain",
+    // DNS resolution crosses Mach to mDNSResponder and can otherwise bypass `(deny network*)`
+    // as a DNS exfiltration channel. Keep these explicit denies even while ordinary toolchain
+    // services remain under the broad compatibility grant below.
+    "com.apple.mDNSResponder",
+    "com.apple.mDNSResponder_Helper",
+    "com.apple.dnssd.service",
+    // GUI and clipboard brokers are unnecessary for headless build/test commands and would turn
+    // the sandbox into an ambient desktop-data reader if blanket Mach lookup returned.
+    "com.apple.pboard",
+    "com.apple.pasteboard.1",
+    "com.apple.WindowServer",
+    "com.apple.windowserver.active",
+];
+
+/// Narrow Mach services used by ordinary non-interactive shells and toolchains. Everything else
+/// remains denied by `(deny default)`. Keep this list evidence-driven: additions expand ambient
+/// host authority and require a live build regression test.
+const ALLOWED_MACH_SERVICES: &[&str] = &[
+    "com.apple.cfprefsd.agent",
+    "com.apple.cfprefsd.daemon",
+    "com.apple.system.logger",
+    "com.apple.logd",
+    "com.apple.system.opendirectoryd.libinfo",
 ];
 
 /// Host roots required by ordinary macOS shells, compilers, SDKs, Homebrew, and dynamic linking.
@@ -99,8 +122,9 @@ const READABLE_SYSTEM_SUBPATHS: &[&str] = &[
     "/opt",
     "/Applications",
     "/private/etc",
-    "/private/tmp",
-    "/private/var/folders",
+    // xcrun/xcode-select resolves the active developer directory through this system-owned
+    // symlink. Without it Rust/C/C++ compilation can start but cannot link against the macOS SDK.
+    "/private/var/select",
     "/dev",
 ];
 
@@ -231,6 +255,7 @@ pub fn profile(conf: &Confinement) -> Result<String, SandboxError> {
 
 fn profile_for_home(conf: &Confinement, home: &Path) -> Result<String, SandboxError> {
     let workspaces = sbpl_path_variants(&conf.workspace, "workspace")?;
+    let scratch_paths = sbpl_path_variants(&conf.scratch, "private scratch")?;
     let home = if home.is_absolute() {
         home
     } else {
@@ -246,7 +271,11 @@ fn profile_for_home(conf: &Confinement, home: &Path) -> Result<String, SandboxEr
     p.push_str("(allow process-fork)\n");
     p.push_str("(allow signal (target self))\n");
     p.push_str("(allow sysctl-read)\n");
-    p.push_str("(allow mach-lookup)\n");
+    for service in ALLOWED_MACH_SERVICES {
+        p.push_str(&format!(
+            "(allow mach-lookup (global-name \"{service}\"))\n"
+        ));
+    }
     // Read allowlist. Parent literals grant only traversal/metadata needed to reach named roots;
     // their contents are not readable. There is intentionally no ambient `(allow file-read*)`.
     // Seatbelt requires opening the root directory while resolving every absolute path. A literal
@@ -269,6 +298,9 @@ fn profile_for_home(conf: &Confinement, home: &Path) -> Result<String, SandboxEr
     for workspace in &workspaces {
         p.push_str(&format!("(allow file-read* (subpath \"{workspace}\"))\n"));
     }
+    for scratch in &scratch_paths {
+        p.push_str(&format!("(allow file-read* (subpath \"{scratch}\"))\n"));
+    }
     for root in READABLE_SYSTEM_SUBPATHS {
         let root = sbpl_path(Path::new(root), "system read root")?;
         p.push_str(&format!("(allow file-read* (subpath \"{root}\"))\n"));
@@ -282,8 +314,9 @@ fn profile_for_home(conf: &Confinement, home: &Path) -> Result<String, SandboxEr
     for workspace in &workspaces {
         p.push_str(&format!("(allow file-write* (subpath \"{workspace}\"))\n"));
     }
-    p.push_str("(allow file-write* (subpath \"/private/tmp\"))\n");
-    p.push_str("(allow file-write* (subpath \"/private/var/folders\"))\n"); // macOS $TMPDIR
+    for scratch in &scratch_paths {
+        p.push_str(&format!("(allow file-write* (subpath \"{scratch}\"))\n"));
+    }
     p.push_str("(allow file-write-data (literal \"/dev/null\"))\n");
     p.push_str("(allow file-write-data (literal \"/dev/stdout\"))\n");
     p.push_str("(allow file-write-data (literal \"/dev/stderr\"))\n");
@@ -319,6 +352,8 @@ fn profile_for_home(conf: &Confinement, home: &Path) -> Result<String, SandboxEr
 #[async_trait::async_trait]
 impl Sandbox for Seatbelt {
     async fn run(&self, command: &str, conf: &Confinement) -> Result<RunOutput, SandboxError> {
+        prepare_private_scratch(&conf.scratch)?;
+        let _scratch_cleanup = ScratchCleanup(conf.scratch.clone());
         let prof = profile(conf)?;
         // sandbox-exec -p <profile> /bin/bash -c <command>, cwd = workspace, pagers disabled.
         // `-c` intentionally avoids login/profile startup files from ambient HOME.
@@ -335,6 +370,9 @@ impl Sandbox for Seatbelt {
         // (live-e2e review: env_clear + HOME=/tmp broke Python user site-packages).
         crate::confine_env_with_exact(&mut cmd, &conf.sensitive_env_names);
         cmd.env("TERM", "dumb")
+            .env("TMPDIR", &conf.scratch)
+            .env("TMP", &conf.scratch)
+            .env("TEMP", &conf.scratch)
             .env("PAGER", "cat")
             .env("MANPAGER", "cat")
             .env("GIT_PAGER", "cat")
@@ -362,10 +400,72 @@ impl Sandbox for Seatbelt {
     }
 }
 
+fn prepare_private_scratch(path: &Path) -> Result<(), SandboxError> {
+    if !path.is_absolute() {
+        return Err(SandboxError::Profile(
+            "private scratch path must be absolute".into(),
+        ));
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Err(SandboxError::Profile(
+            "private scratch path already exists; refusing to reuse or remove it".into(),
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => create_private_dir(path)
+            .map_err(|error| SandboxError::Spawn(format!("create private scratch: {error}"))),
+        Err(error) => Err(SandboxError::Spawn(format!(
+            "inspect private scratch: {error}"
+        ))),
+    }
+}
+
+#[cfg(unix)]
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    std::fs::DirBuilder::new().mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(path)
+}
+
+fn cleanup_private_scratch(path: &Path) {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let _ = std::fs::remove_file(path);
+        }
+        Ok(metadata) if metadata.file_type().is_dir() => {
+            let _ = std::fs::remove_dir_all(path);
+        }
+        Ok(_) => {
+            let _ = std::fs::remove_file(path);
+        }
+        Err(_) => {}
+    }
+}
+
+struct ScratchCleanup(PathBuf);
+
+impl Drop for ScratchCleanup {
+    fn drop(&mut self) {
+        cleanup_private_scratch(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[cfg(target_os = "macos")]
+    async fn bounded_command_output(mut command: tokio::process::Command) -> std::process::Output {
+        command.kill_on_drop(true);
+        tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
+            .await
+            .expect("live sandbox-exec probe exceeded ten seconds")
+            .unwrap()
+    }
 
     #[test]
     fn profile_denies_network_by_default_and_confines_writes() {
@@ -378,9 +478,59 @@ mod tests {
         );
         assert!(!p.contains("(allow network*)"));
         assert!(
+            !p.lines().any(|line| line == "(allow mach-lookup)"),
+            "Mach lookup must be a named allowlist, never an ambient grant"
+        );
+        for service in ALLOWED_MACH_SERVICES {
+            assert!(
+                p.contains(&format!("(allow mach-lookup (global-name \"{service}\"))")),
+                "required toolchain service must be explicitly named"
+            );
+        }
+        for service in [
+            "com.apple.mDNSResponder",
+            "com.apple.pboard",
+            "com.apple.WindowServer",
+        ] {
+            assert!(
+                p.contains(&format!("(deny mach-lookup (global-name \"{service}\"))")),
+                "DNS, clipboard, and GUI services stay explicitly denied"
+            );
+        }
+        assert!(
             p.contains("(allow file-write* (subpath \"/repo\"))"),
             "workspace writable"
         );
+        assert!(
+            p.contains(&format!(
+                "(allow file-write* (subpath \"{}\"))",
+                conf.scratch.display()
+            )),
+            "only the capability-private scratch is writable"
+        );
+        assert!(!p.contains("(allow file-write* (subpath \"/private/tmp\"))"));
+        assert!(!p.contains("(allow file-write* (subpath \"/private/var/folders\"))"));
+    }
+
+    #[test]
+    fn existing_scratch_is_refused_and_preserved() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "core-seatbelt-existing-scratch-{}-{nonce:x}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        let marker = path.join("owner-data");
+        std::fs::write(&marker, "preserve").unwrap();
+
+        let error = prepare_private_scratch(&path).unwrap_err();
+        assert!(error.to_string().contains("refusing to reuse or remove"));
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "preserve");
+
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
@@ -503,8 +653,21 @@ mod tests {
     // Live confinement tests: only run on macOS where sandbox-exec exists.
     #[cfg(target_os = "macos")]
     #[tokio::test]
-    async fn code_runs_but_network_is_actually_blocked() {
-        let dir = std::env::temp_dir();
+    async fn d4_13_d5_14_macos_live_network_is_actually_blocked() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "core-seatbelt-build-{}-{nonce:x}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(
+            dir.join("hello.rs"),
+            "fn main() { println!(\"compiled-inside-seatbelt\"); }\n",
+        )
+        .unwrap();
         let sb = Seatbelt::new();
         let conf = Confinement::egress_off(&dir);
 
@@ -513,32 +676,94 @@ mod tests {
         assert!(ok.stdout.contains("confined"), "sandbox failed: {ok:?}");
         assert_eq!(ok.exit_code, 0);
 
-        // User toolchains remain readable even though credential files under HOME are carved out.
-        // This test binary was built by rustc, so the toolchain must be available on test hosts.
-        let rustc = sb.run("rustc --version", &conf).await.unwrap();
-        assert_eq!(
-            rustc.exit_code, 0,
-            "the protected-path carve-outs must not hide rustc: {rustc:?}"
-        );
-        assert!(rustc.stdout.starts_with("rustc "));
+        // Compile and execute a real source file. This catches an over-narrow Mach or filesystem
+        // allowlist that would pass `rustc --version` while breaking ordinary builds.
+        let rustc = sb
+            .run("rustc hello.rs -o hello && ./hello", &conf)
+            .await
+            .unwrap();
+        assert_eq!(rustc.exit_code, 0, "confined rustc failed: {rustc:?}");
+        assert!(rustc.stdout.contains("compiled-inside-seatbelt"));
 
-        // A network attempt is actually blocked by the kernel (not just by prompt). We use a
-        // raw TCP connect that must fail under the profile. curl may not exist; use bash's
-        // /dev/tcp which the kernel will refuse.
+        // Bind a loopback listener that is provably reachable from the host, then require the same
+        // connect to fail inside Seatbelt. This assertion fails if `(deny network*)` regresses;
+        // it cannot pass merely because an external address happened to be down.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let host_probe =
+            std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(1))
+                .expect("the host-side loopback precondition must be reachable");
+        drop(host_probe);
+        let port = address.port();
         let net = sb
             .run(
-                "bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' 2>&1; echo done",
+                &format!(
+                    "if bash -c 'exec 3<>/dev/tcp/127.0.0.1/{port}' 2>/dev/null; then echo network-open; exit 97; else echo network-blocked; fi"
+                ),
                 &conf,
             )
             .await
             .unwrap();
-        assert!(
-            net.stdout.contains("done"),
-            "the command ran; the connect inside it was refused by the sandbox"
+        assert_eq!(
+            net.exit_code, 0,
+            "loopback unexpectedly reachable from the sandbox: {net:?}"
         );
-        // The connect must NOT have succeeded silently: the profile denies network*, so the
-        // /dev/tcp open errors. We assert the run completed (kernel refused the socket), which
-        // is the containment we can portably check here.
+        assert!(net.stdout.contains("network-blocked"));
+        assert!(!net.stdout.contains("network-open"));
+
+        // `dns-sd` talks to mDNSResponder over Mach rather than opening the caller's own socket.
+        // Resolving localhost is a deterministic host precondition and would return both loopback
+        // addresses under the former blanket mach-lookup grant. The explicit DNS-service denials
+        // must instead fail fast, closing that proxy/exfiltration path as well as direct sockets.
+        let dns = sb
+            .run("/usr/bin/dns-sd -G v4v6 localhost", &conf)
+            .await
+            .unwrap();
+        assert!(!dns.timed_out, "denied DNS service lookup must fail fast");
+        assert_ne!(dns.exit_code, 0, "mDNSResponder must be unreachable");
+        assert!(
+            !dns.stdout.contains("127.0.0.1") && !dns.stdout.contains("0000:0000:0000:0000"),
+            "DNS resolution escaped through mDNSResponder: {dns:?}"
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn sibling_in_host_temp_is_not_readable_or_writable() {
+        let pid = std::process::id();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("core-seatbelt-sibling-{pid}-{nonce:x}"));
+        let workspace = root.join("workspace");
+        let sibling_read = root.join("outside-read");
+        let sibling_write = root.join("outside-write");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(&sibling_read, "must-not-be-readable").unwrap();
+        let confinement = Confinement::egress_off(&workspace);
+        let command = format!(
+            "cat '{}' 2>/dev/null || true; printf escaped > '{}'",
+            sibling_read.display(),
+            sibling_write.display()
+        );
+        let output = Seatbelt::new().run(&command, &confinement).await.unwrap();
+        assert_ne!(output.exit_code, 0);
+        assert!(
+            !output.stdout.contains("must-not-be-readable"),
+            "a sandbox command must not read a sibling host-temp path"
+        );
+        assert!(
+            !sibling_write.exists(),
+            "a sandbox command must not write to a sibling host-temp path"
+        );
+        assert!(
+            !confinement.scratch.exists(),
+            "capability-private scratch is removed after the command"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(target_os = "macos")]
@@ -637,10 +862,7 @@ mod tests {
             cmd
         };
 
-        let allowed = run("/bin/cat", &[visible.to_str().unwrap()])
-            .output()
-            .await
-            .unwrap();
+        let allowed = bounded_command_output(run("/bin/cat", &[visible.to_str().unwrap()])).await;
         assert!(
             allowed.status.success(),
             "workspace read must remain available: {allowed:?}"
@@ -650,27 +872,21 @@ mod tests {
             "workspace-visible"
         );
 
-        let denied = run("/bin/cat", &[secret.to_str().unwrap()])
-            .output()
-            .await
-            .unwrap();
+        let denied = bounded_command_output(run("/bin/cat", &[secret.to_str().unwrap()])).await;
         assert!(
             !denied.status.success(),
             "direct secret read must be denied"
         );
         assert!(!String::from_utf8_lossy(&denied.stdout).contains("must-not-be-readable"));
 
-        let via_link = run("/bin/cat", &["secret-link"]).output().await.unwrap();
+        let via_link = bounded_command_output(run("/bin/cat", &["secret-link"])).await;
         assert!(
             !via_link.status.success(),
             "a workspace symlink must not bypass the secret deny"
         );
         assert!(!String::from_utf8_lossy(&via_link.stdout).contains("must-not-be-readable"));
 
-        let keychain = run("/usr/bin/security", &["list-keychains"])
-            .output()
-            .await
-            .unwrap();
+        let keychain = bounded_command_output(run("/usr/bin/security", &["list-keychains"])).await;
         assert!(
             !keychain.status.success(),
             "Keychain IPC must be denied, not merely its files"

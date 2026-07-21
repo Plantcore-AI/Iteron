@@ -1,0 +1,204 @@
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+pub const EVAL_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Partition {
+    Train,
+    HeldOut,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluationPurpose {
+    Tune,
+    Score,
+}
+
+impl EvaluationPurpose {
+    pub fn required_partition(self) -> Partition {
+        match self {
+            Self::Tune => Partition::Train,
+            Self::Score => Partition::HeldOut,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Completed,
+    Errored,
+    Censored,
+    TimedOut,
+}
+
+impl RunStatus {
+    pub fn enters_resolved_denominator(self) -> bool {
+        self == Self::Completed
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OracleStatus {
+    Passed,
+    TestFailed,
+    TimedOut,
+    InfrastructureFailed,
+    NotRun,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CostStatus {
+    Known,
+    Zero,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BenchmarkReference {
+    pub name: String,
+    pub instance_id: String,
+    pub dataset_revision: String,
+    pub environment_setup_commit: String,
+    pub environment_image: Option<String>,
+    pub test_patch_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CostObservation {
+    pub status: CostStatus,
+    pub usd: Option<f64>,
+    pub reason: Option<String>,
+}
+
+impl CostObservation {
+    pub fn known(usd: f64) -> Self {
+        Self {
+            status: CostStatus::Known,
+            usd: Some(usd),
+            reason: None,
+        }
+    }
+
+    pub fn zero() -> Self {
+        Self {
+            status: CostStatus::Zero,
+            // Human reports render this as `zero`, never as a misleading priced `$0.0000` cell.
+            usd: None,
+            reason: None,
+        }
+    }
+
+    pub fn unknown(reason: Option<String>) -> Self {
+        Self {
+            status: CostStatus::Unknown,
+            usd: None,
+            reason,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SamplingControl {
+    pub requested_seed: u64,
+    pub enforcement: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CellKey<'a> {
+    pub task: &'a str,
+    pub config: &'a str,
+    pub seed: u64,
+    pub partition: Partition,
+    pub repo_url: &'a str,
+    pub commit: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CellResult {
+    pub task: String,
+    pub config: String,
+    pub seed: u64,
+    pub partition: Partition,
+    pub repo_url: String,
+    pub commit: String,
+    pub benchmark: Option<BenchmarkReference>,
+    pub resolved: Option<bool>,
+    pub run_status: RunStatus,
+    pub failure_phase: Option<String>,
+    pub exit_code: Option<i32>,
+    pub terminal_outcome: Option<String>,
+    pub cost_status: CostStatus,
+    pub cost_usd: Option<f64>,
+    pub cost_reason: Option<String>,
+    pub turns: Option<u32>,
+    pub oracle_status: OracleStatus,
+    pub oracle_detail: Option<String>,
+    pub sampling: SamplingControl,
+    pub elapsed_ms: u64,
+    pub error: Option<String>,
+    pub candidate_diff: Option<String>,
+}
+
+impl CellResult {
+    pub fn errored(key: CellKey<'_>, phase: &str, error: impl Into<String>) -> Self {
+        Self {
+            task: key.task.to_owned(),
+            config: key.config.to_owned(),
+            seed: key.seed,
+            partition: key.partition,
+            repo_url: key.repo_url.to_owned(),
+            commit: key.commit.to_owned(),
+            benchmark: None,
+            resolved: None,
+            run_status: RunStatus::Errored,
+            failure_phase: Some(phase.to_owned()),
+            exit_code: None,
+            terminal_outcome: None,
+            cost_status: CostStatus::Unknown,
+            cost_usd: None,
+            cost_reason: Some("harness_error".into()),
+            turns: None,
+            oracle_status: OracleStatus::NotRun,
+            oracle_detail: None,
+            sampling: SamplingControl {
+                requested_seed: key.seed,
+                enforcement: "uncontrolled".into(),
+                reason: Some("route exposes no sampling-seed contract".into()),
+            },
+            elapsed_ms: 0,
+            error: Some(error.into()),
+            candidate_diff: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvaluationManifest {
+    pub schema_version: u32,
+    pub run_id: String,
+    pub corpus_version: String,
+    pub dataset_digest: String,
+    pub model: String,
+    pub provider: Option<String>,
+    pub purpose: EvaluationPurpose,
+    pub seeds: u64,
+    pub minimum_seeds: u64,
+    pub run_timeout_secs: u64,
+    pub result_path: PathBuf,
+    pub cells: Vec<CellResult>,
+    pub aggregate: crate::report::Aggregate,
+    pub comparison: crate::report::Comparison,
+    pub selections: Vec<crate::report::SelectionSummary>,
+}

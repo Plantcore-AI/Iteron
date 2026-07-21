@@ -1,10 +1,19 @@
 //! The semantic color theme (ADR-015 §4). Every render site references a *semantic token* (role,
 //! tool, success, a syntax class) — never a raw `Color` literal — so the palette is swappable and
-//! degrades cleanly: `NO_COLOR` → monochrome, a non-truecolor terminal keeps the same tokens (ratatui
-//! maps `Rgb` down to the nearest 256/16 on output). One tuned dark theme ships first; a light theme
-//! and a runtime `/theme` swap are P2.
+//! degrades cleanly: `NO_COLOR` → monochrome, and a session-stable terminal profile projects RGB
+//! tokens deterministically to 256/16-color output. OSC 11 background evidence selects light/dark
+//! only for the interactive adapter and is bounded by a short startup deadline.
+
+pub(crate) mod capabilities;
 
 use ratatui::style::{Color, Modifier, Style};
+
+use capabilities::{BackgroundTone, ColorDepth, Environment, Preset};
+
+pub(crate) struct DetectedTheme {
+    pub(crate) theme: Theme,
+    pub(crate) color_depth: ColorDepth,
+}
 
 /// A lexical token class the highlighter emits; the theme maps it to a color (ADR-015 R6 — the
 /// backend returns SEMANTIC classes, not tmTheme RGB, so the app theme stays authoritative).
@@ -67,32 +76,37 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// Pick a theme from the environment. An explicit override always wins. Without one, a reliable
-    /// `COLORFGBG` background hint selects the tuned light/dark palette; absent or malformed evidence
-    /// falls back to terminal-inherit so open terminal-native surfaces remain legible on either
-    /// background. `NO_COLOR` → mono; `/theme` swaps at runtime.
-    pub fn detect() -> Self {
-        if std::env::var_os("NO_COLOR").is_some() {
-            return Self::mono();
-        }
-        match std::env::var("CORE_THEME").ok().as_deref() {
-            Some("light") => Self::light(),
-            Some("terminal") => Self::terminal(),
-            Some("high-contrast") | Some("hc") => Self::high_contrast(),
-            Some("mono") => Self::mono(),
-            Some("dark") => Self::dark(),
-            // No explicit override: use fixed RGB only when the terminal supplies background evidence.
-            _ => Self::detect_by_background(),
+    pub(crate) fn detect_with(
+        environment: Environment,
+        background: Option<BackgroundTone>,
+    ) -> DetectedTheme {
+        let color_depth = environment.color_depth;
+        let base = if environment.no_color {
+            Self::mono()
+        } else if let Some(preset) = environment.preset {
+            match preset {
+                Preset::Terminal => Self::terminal(),
+                Preset::Dark => Self::dark(),
+                Preset::Light => Self::light(),
+                Preset::HighContrast => Self::high_contrast(),
+                Preset::Mono => Self::mono(),
+            }
+        } else if let Some(background) = background {
+            match background {
+                BackgroundTone::Dark => Self::dark(),
+                BackgroundTone::Light => Self::light(),
+            }
+        } else {
+            Self::for_colorfgbg(environment.colorfgbg.as_deref())
+        };
+        DetectedTheme {
+            theme: color_depth.project_theme(base),
+            color_depth,
         }
     }
 
-    /// Probe `COLORFGBG` (set by many terminals as `"fg;bg"`, e.g. `"15;0"` dark, `"0;15"` light) to
-    /// pick light vs dark. Only the trailing background field decides. Anything missing, malformed or
-    /// outside the ANSI 0–15 range inherits the terminal palette instead of guessing a contrast.
-    fn detect_by_background() -> Self {
-        Self::for_colorfgbg(std::env::var("COLORFGBG").ok().as_deref())
-    }
-
+    /// Interpret `COLORFGBG` (`"fg;bg"`) only as a fallback after a missing OSC 11 response. The
+    /// trailing ANSI 0–15 background field decides; malformed evidence inherits terminal colors.
     fn for_colorfgbg(value: Option<&str>) -> Self {
         match value
             .and_then(|value| value.rsplit(';').next())
@@ -327,6 +341,61 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn environment(
+        no_color: bool,
+        preset: Option<Preset>,
+        colorfgbg: Option<&str>,
+        color_depth: ColorDepth,
+    ) -> Environment {
+        Environment {
+            no_color,
+            preset,
+            colorfgbg: colorfgbg.map(str::to_owned),
+            color_depth,
+            interactive_query_supported: true,
+        }
+    }
+
+    #[test]
+    fn detection_precedence_is_no_color_override_osc11_then_colorfgbg() {
+        let no_color = Theme::detect_with(
+            environment(
+                true,
+                Some(Preset::Light),
+                Some("0;15"),
+                ColorDepth::TrueColor,
+            ),
+            Some(BackgroundTone::Light),
+        );
+        assert!(
+            no_color.theme.mono,
+            "NO_COLOR must override every color signal"
+        );
+
+        let explicit = Theme::detect_with(
+            environment(
+                false,
+                Some(Preset::Dark),
+                Some("0;15"),
+                ColorDepth::TrueColor,
+            ),
+            Some(BackgroundTone::Light),
+        );
+        assert_eq!(explicit.theme.fg, Theme::dark().fg);
+
+        let queried = Theme::detect_with(
+            environment(false, None, Some("15;0"), ColorDepth::TrueColor),
+            Some(BackgroundTone::Light),
+        );
+        assert_eq!(queried.theme.fg, Theme::light().fg);
+
+        let fallback = Theme::detect_with(
+            environment(false, None, Some("0;15"), ColorDepth::TrueColor),
+            None,
+        );
+        assert_eq!(fallback.theme.fg, Theme::light().fg);
+    }
 
     #[test]
     fn background_detection_uses_a_portable_ansi_user_surface_without_rgb_evidence() {

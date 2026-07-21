@@ -7,5 +7,10 @@ publish.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+core-agents = { path = "../crates/agents" }
+core-tools = { path = "../crates/tools" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
+toml = { workspace = true }

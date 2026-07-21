@@ -19,6 +19,7 @@ MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 4096
 MAX_DECLARED_ARCHIVE_BYTES = 256 * 1024 * 1024
 ALLOWED_FINAL_HOSTS = (
+    "codeload.github.com",
     "github.com",
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",

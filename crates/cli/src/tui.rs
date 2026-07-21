@@ -3,13 +3,20 @@
 //! Layout: a full-width semantic transcript; an on-demand activity shelf and explicit steer/after-
 //! turn lanes; one framed composer; contextual help; and a stable bottom status line. Metrics
 //! progressively disclose instead of becoming permanent dashboard chrome. Ctrl-C/Esc request a
-//! safe-point stop; Esc/Ctrl-D quits when idle.
+//! safe-point stop; Ctrl-D drains active work (or quits when idle); Ctrl-T toggles terminal-native
+//! selection; Esc quits when idle.
 //!
 //! The agent runs in a background task and streams `UiEvent`s over a channel; the render loop
 //! drains them and redraws. The kernel does the work; this is a thin, replaceable front-end
 //! on the same core (ADR-010: frontends are adapters).
 
-use crate::commands;
+pub(crate) mod hyperlink;
+mod keyboard_enhancement;
+mod mouse_capture;
+mod notification;
+mod terminal_input;
+
+use crate::commands::{self, SlashCommand};
 use crate::editor::Editor;
 use crate::providers::{ModelSelection, ProviderDirectory};
 use crate::{block, surface, theme};
@@ -20,12 +27,12 @@ use core_kernel::{
 use core_obs::CostState;
 use core_protocol::{
     Capability, Effort, Op, Outcome, PermissionMode, PermissionRules, ReasoningEffort,
-    RuntimePolicySource, SubmissionId, Usage, Verdict,
+    RuntimePolicySource, SqEnvelope, SubmissionId, Usage, Verdict,
 };
 use core_provider::EffortApplication;
 use crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event as CEvent, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    DisableBracketedPaste, EnableBracketedPaste, Event as CEvent, KeyCode, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEventKind,
 };
 use crossterm::{cursor, execute, terminal};
 use ratatui::layout::Rect;
@@ -124,6 +131,7 @@ fn approval_operation_text(pending: &Pending) -> String {
 fn outcome_label(o: &Outcome) -> String {
     match o {
         Outcome::Done => "done".into(),
+        Outcome::Drained => "drained".into(),
         Outcome::Interrupted => "interrupted".into(),
         Outcome::Stuck => "stuck".into(),
         Outcome::HarnessError => "harness error".into(),
@@ -622,18 +630,23 @@ struct App {
     workflow_index: std::collections::HashMap<String, u64>,
     /// The active color theme (ADR-015 §4).
     theme: theme::Theme,
+    /// Captured once at startup; runtime `/theme` previews are projected to the same terminal depth.
+    color_depth: theme::capabilities::ColorDepth,
     theme_epoch: u64,
+    /// Session-stable, conservatively admitted OSC 8 support and local-link workspace boundary.
+    hyperlink_policy: hyperlink::Policy,
     /// Settled semantic blocks render once per width/theme/revision. Active blocks bypass this cache
     /// so spinner and workflow state remain live.
     /// One render slot per settled block. Replacing the `(revision, rows)` tuple on mutation keeps
     /// repeated fold/unfold cycles bounded instead of retaining every historical revision.
-    render_cache: std::collections::HashMap<u64, (u64, Vec<Line<'static>>)>,
+    render_cache: std::collections::HashMap<u64, (u64, crate::render::RenderedLines)>,
     render_cache_width: u16,
     render_cache_theme_epoch: u64,
     editor: Editor,
     status: String,
     running: bool,
     interrupting: bool,
+    draining: bool,
     /// Rows scrolled UP from the bottom (0 = pinned to the newest line).
     bottom_offset: u16,
     /// Whether new output follows the tail. Scrolling up disables follow until Ctrl-End or the
@@ -644,6 +657,9 @@ struct App {
     last_view_h: u16,
     /// true once the user asks to quit and no run is active.
     quit: bool,
+    /// Captured delivers wheel/click events to Core; released gives mouse ownership back to the
+    /// terminal for native text selection and copying.
+    mouse_capture: mouse_capture::State,
     // live-accumulating current assistant paragraph (so streamed text coalesces into one line)
     cur_text: String,
     cur_text_revision: u64,
@@ -714,8 +730,15 @@ struct App {
 }
 
 impl App {
+    #[cfg(test)]
     fn new() -> Self {
-        let theme = theme::Theme::detect();
+        let environment = theme::capabilities::Environment::capture();
+        let detected = theme::Theme::detect_with(environment, None);
+        Self::new_with_detected_theme(detected)
+    }
+
+    fn new_with_detected_theme(detected: theme::DetectedTheme) -> Self {
+        let theme::DetectedTheme { theme, color_depth } = detected;
         // The pet landing is a one-time terminal-native signature in the transcript, not permanent
         // chrome. It progressively collapses with width and naturally scrolls away after work starts.
         let welcome = block::Block::new(
@@ -731,7 +754,9 @@ impl App {
             pending_tools: VecDeque::new(),
             workflow_index: std::collections::HashMap::new(),
             theme,
+            color_depth,
             theme_epoch: 0,
+            hyperlink_policy: hyperlink::Policy::disabled(),
             render_cache: std::collections::HashMap::new(),
             render_cache_width: 0,
             render_cache_theme_epoch: 0,
@@ -739,12 +764,14 @@ impl App {
             status: "idle".into(),
             running: false,
             interrupting: false,
+            draining: false,
             bottom_offset: 0,
             follow_tail: true,
             unread_updates: 0,
             last_total_rows: 0,
             last_view_h: 0,
             quit: false,
+            mouse_capture: mouse_capture::State::default(),
             cur_text: String::new(),
             cur_text_revision: 0,
             cur_doc_revision: 0,
@@ -1796,7 +1823,7 @@ impl App {
     }
 
     fn set_theme(&mut self, theme: theme::Theme) {
-        self.theme = theme;
+        self.theme = self.color_depth.project_theme(theme);
         self.theme_epoch = self.theme_epoch.wrapping_add(1);
         self.render_cache.clear();
     }
@@ -2247,14 +2274,19 @@ fn item(_glyph: &str, label: &str, hint: &str) -> block::PanelRow {
 /// by `TermGuard::Drop`, the panic hook, and the SIGTERM/SIGHUP handler — `process::exit` skips Drop, so
 /// the signal path must restore EXPLICITLY, else a `kill <pid>` / terminal-close leaves the tty in raw +
 /// mouse-capture mode spewing 乱码.
-fn restore_terminal() {
-    let _ = terminal::disable_raw_mode();
+fn restore_terminal(keyboard: &keyboard_enhancement::Restorer) {
     // Keep every cleanup independent: a broken/closing terminal can reject one escape while still
     // accepting the rest. One multi-command `execute!` would stop at the first write failure and
     // could leave the shell cursor hidden or its style inverted after a picker/signal exit.
     let mut stdout = std::io::stdout();
+    let _ = keyboard.restore(&mut stdout);
+    restore_terminal_modes(&mut stdout);
+}
+
+fn restore_terminal_modes(stdout: &mut impl Write) {
+    let _ = terminal::disable_raw_mode();
     let _ = execute!(stdout, DisableBracketedPaste);
-    let _ = execute!(stdout, DisableMouseCapture);
+    let _ = mouse_capture::release(stdout);
     let _ = execute!(stdout, cursor::Show);
     let _ = execute!(
         stdout,
@@ -2264,12 +2296,38 @@ fn restore_terminal() {
     let _ = execute!(stdout, terminal::LeaveAlternateScreen);
 }
 
+/// Panic hooks run before unwinding releases a writer/state guard. If keyboard negotiation itself
+/// is panicking, defer all stdout work to `TermGuard::Drop`; attempting terminal I/O here could
+/// re-enter the same stdout lock in addition to the keyboard gate.
+fn restore_terminal_after_panic(keyboard: &keyboard_enhancement::Restorer) {
+    let mut stdout = std::io::stdout();
+    let _ = restore_terminal_after_panic_to(keyboard, &mut stdout);
+}
+
+fn restore_terminal_after_panic_to(
+    keyboard: &keyboard_enhancement::Restorer,
+    stdout: &mut impl Write,
+) -> bool {
+    if matches!(
+        keyboard.restore_after_panic(stdout),
+        Ok(keyboard_enhancement::PanicRestoreOutcome::Deferred)
+    ) {
+        return false;
+    }
+    restore_terminal_modes(stdout);
+    true
+}
+
 /// Restores the terminal (leaves raw mode + alternate screen) on drop, so the terminal is never
 /// left broken — the #1 TUI failure mode. Covers early `?` returns AND panics (a panic unwinds
 /// through the guard). A panic hook additionally restores before printing the panic message.
-struct TermGuard;
+struct TermGuard {
+    keyboard: keyboard_enhancement::Controller,
+    mouse_capture: mouse_capture::Controller<std::io::Stdout>,
+}
 impl TermGuard {
     fn new() -> std::io::Result<Self> {
+        let keyboard = keyboard_enhancement::Controller::default();
         terminal::enable_raw_mode()?;
         // EnableMouseCapture so trackpad/wheel scroll arrives as ScrollUp/Down events and scrolls the
         // CHAT transcript. WITHOUT capture the terminal maps scroll to ↑/↓, which then drives prompt
@@ -2280,27 +2338,50 @@ impl TermGuard {
         if let Err(error) = execute!(
             std::io::stdout(),
             terminal::EnterAlternateScreen,
-            EnableBracketedPaste,
-            EnableMouseCapture
+            EnableBracketedPaste
         ) {
             // Construction has not returned a guard yet, so rollback this partially-entered state
             // explicitly. Without this branch an I/O failure after raw-mode enable would leave the
             // operator's terminal unusable.
-            restore_terminal();
+            restore_terminal(&keyboard.restorer());
             return Err(error);
         }
+        let mouse_capture = match mouse_capture::Controller::capture(std::io::stdout()) {
+            Ok(mouse_capture) => mouse_capture,
+            Err(error) => {
+                restore_terminal(&keyboard.restorer());
+                return Err(error);
+            }
+        };
         // Install a panic hook that restores the terminal (incl. mouse capture) first, then the default.
         let default = std::panic::take_hook();
+        let panic_keyboard = keyboard.restorer();
         std::panic::set_hook(Box::new(move |info| {
-            restore_terminal();
+            restore_terminal_after_panic(&panic_keyboard);
             default(info);
         }));
-        Ok(TermGuard)
+        Ok(TermGuard {
+            keyboard,
+            mouse_capture,
+        })
+    }
+
+    fn keyboard_restorer(&self) -> keyboard_enhancement::Restorer {
+        self.keyboard.restorer()
+    }
+
+    fn negotiate_keyboard(&self) -> std::io::Result<bool> {
+        self.keyboard.negotiate()
+    }
+
+    fn toggle_mouse_capture(&mut self) -> std::io::Result<mouse_capture::State> {
+        self.mouse_capture.toggle()
     }
 }
 impl Drop for TermGuard {
     fn drop(&mut self) {
-        restore_terminal();
+        let _ = self.mouse_capture.release();
+        restore_terminal(&self.keyboard.restorer());
     }
 }
 
@@ -2327,29 +2408,48 @@ pub async fn run(
     initial_task: Option<String>,
     providers: ProviderDirectory,
     provider_id: String,
+    completion_notifications: bool,
 ) -> anyhow::Result<()> {
+    // Drain promises a real workspace checkpoint. Probe once before raw mode so a non-Git
+    // workspace can reject that verb explicitly without blocking or breaking the terminal.
+    let drain_available = core_record::checkpoint_supported(&agent.workspace);
     // RAII: the terminal is restored on ANY exit path (error/panic/normal).
-    let _guard = TermGuard::new()?;
+    let mut guard = TermGuard::new()?;
     // Catchable termination signals (kill <pid> = SIGTERM, terminal close = SIGHUP) bypass Drop via
     // process::exit — restore the terminal explicitly before exiting so a kill never leaves 乱码.
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
+        let keyboard = guard.keyboard_restorer();
         for kind in [SignalKind::terminate(), SignalKind::hangup()] {
             if let Ok(mut s) = signal(kind) {
+                let keyboard = keyboard.clone();
                 tokio::spawn(async move {
                     s.recv().await;
-                    restore_terminal();
+                    restore_terminal(&keyboard);
                     std::process::exit(143);
                 });
             }
         }
     }
+    // The query is fail-soft: terminals that do not implement the protocol keep the portable
+    // Ctrl-J path and receive neither a push nor a pop. Signal/panic cleanup is installed before
+    // negotiation so even an exit during startup can restore an already-pushed stack frame.
+    let _ = guard.negotiate_keyboard();
+    // OSC 11 runs after raw-mode entry. The input adapter demultiplexes the response from operator
+    // events, replays unrelated startup input, and remains armed to swallow a late reply.
+    let environment = theme::capabilities::Environment::capture();
+    let mut terminal_input = terminal_input::TerminalInput::default();
+    let background = terminal_input.query_background(&environment);
+    let detected_theme = theme::Theme::detect_with(environment, background);
     let backend = ratatui::backend::CrosstermBackend::new(std::io::stdout());
     let mut term = Terminal::new(backend)?;
+    let mut notifier = notification::TerminalNotifier::new(completion_notifications);
+    let mut notification_writer = notification::LiveTerminalWriter;
 
     let repo = agent.workspace.clone();
-    let mut app = App::new();
+    let mut app = App::new_with_detected_theme(detected_theme);
+    app.hyperlink_policy = hyperlink::Policy::detect(&repo);
     app.mode = agent.permission_mode();
     app.effort = agent.effort();
     app.model = agent.model.clone();
@@ -2358,12 +2458,14 @@ pub async fn run(
     let provider_credential_envs = providers.credential_env_names();
     let interrupt = Arc::new(AtomicBool::new(false));
     agent.set_interrupt(interrupt.clone());
+    let drain = Arc::new(AtomicBool::new(false));
+    agent.set_drain(drain.clone());
 
     // The approvals channel back into the running kernel (the one genuinely-new runtime path,
     // R5 §4): an `Ask` verdict makes the kernel emit UiEvent::ApprovalRequest and block on this
     // receiver for an `Op::ApprovalResponse`. One channel for the whole session; the receiver
     // travels with the agent in/out of the run task, the sender stays here to answer.
-    let (atx, arx): (UnboundedSender<Op>, UnboundedReceiver<Op>) =
+    let (atx, arx): (UnboundedSender<SqEnvelope>, UnboundedReceiver<SqEnvelope>) =
         tokio::sync::mpsc::unbounded_channel();
     agent.set_approvals(arx);
 
@@ -2395,7 +2497,7 @@ pub async fn run(
         // Drain any pending UI events (non-blocking).
         if let Some(r) = rx.as_mut() {
             while let Ok(ev) = r.try_recv() {
-                apply_event(&mut app, ev);
+                apply_live_event(&mut app, ev, &mut notifier, &mut notification_writer);
                 redraw = true;
             }
         }
@@ -2416,16 +2518,18 @@ pub async fn run(
             // observation and task completion cannot be discarded with the receiver.
             if let Some(r) = rx.as_mut() {
                 while let Ok(ev) = r.try_recv() {
-                    apply_event(&mut app, ev);
+                    apply_live_event(&mut app, ev, &mut notifier, &mut notification_writer);
                 }
             }
             app.running = false;
             app.interrupting = false;
+            app.draining = false;
             app.run_started = None;
             app.flush_text();
             app.pending = None; // a pending approval cannot outlive its run
             app.settle_unfinished_tools();
             interrupt.store(false, Ordering::Relaxed);
+            drain.store(false, Ordering::Relaxed);
             match joined {
                 Ok((mut agent_back, completion)) => {
                     // A channel send is not delivery. Atomically drain the reclaimed Agent's
@@ -2505,29 +2609,8 @@ pub async fn run(
                 if q.is_empty() {
                     continue;
                 } else if let Some(cmd) = q.strip_prefix('/') {
-                    app.push(bold(app.theme.accent), format!("/{cmd}"));
-                    let is_compact = cmd == "compact"
-                        || cmd
-                            .strip_prefix("compact")
-                            .is_some_and(|r| r.starts_with(char::is_whitespace));
-                    if is_compact {
-                        if let Some(ag) = agent_slot.as_mut() {
-                            let focus =
-                                cmd.strip_prefix("compact").unwrap_or("").trim().to_string();
-                            match ag
-                                .compact_now(if focus.is_empty() { None } else { Some(focus) })
-                                .await
-                            {
-                                Ok(r) => app.push(
-                                    fg(Color::Green),
-                                    format!("compacted {} -> {} messages", r.before, r.after),
-                                ),
-                                Err(e) => app.push(fg(Color::Red), format!("compact failed: {e}")),
-                            }
-                        }
-                    } else {
-                        handle_command(&mut app, &mut agent_slot, &providers, cmd).await;
-                    }
+                    dispatch_slash_command(&mut term, &mut app, &mut agent_slot, &providers, cmd)
+                        .await?;
                 } else if let Some(bash) = q.strip_prefix('!') {
                     run_bash_inline(&mut app, &repo, bash.trim(), &provider_credential_envs).await;
                 } else {
@@ -2565,9 +2648,9 @@ pub async fn run(
         } else {
             Duration::from_secs(1)
         };
-        if event::poll(poll_for)? {
+        if let Some(input_event) = terminal_input.read(poll_for)? {
             redraw = true;
-            match event::read()? {
+            match input_event {
                 // Bracketed paste: insert the WHOLE pasted text (incl. newlines) into the editor
                 // rather than letting each pasted newline submit a partial line (review HIGH).
                 CEvent::Paste(pasted) => {
@@ -2576,7 +2659,7 @@ pub async fn run(
                 }
                 // Mouse: wheel/trackpad scroll moves the CHAT transcript (prompt history stays on ↑/↓);
                 // a left-click on a card row folds/unfolds it.
-                CEvent::Mouse(m) => match m.kind {
+                CEvent::Mouse(m) if app.mouse_capture.is_captured() => match m.kind {
                     MouseEventKind::ScrollUp => {
                         app.scroll_up(3);
                     }
@@ -2595,11 +2678,35 @@ pub async fn run(
                     }
                     _ => {}
                 },
+                // A terminal can have already queued one last mouse report when Ctrl-T releases
+                // capture. Ignore it so native selection cannot mutate transcript state.
+                CEvent::Mouse(_) => {}
                 CEvent::Key(k) => {
                     if k.kind != KeyEventKind::Press {
                         continue;
                     }
                     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+
+                    // Global even while a picker or approval owns normal keyboard input: Ctrl-T is
+                    // the escape hatch that gives mouse ownership back to native terminal selection.
+                    if k.code == KeyCode::Char('t') && ctrl {
+                        match guard.toggle_mouse_capture() {
+                            Ok(state) => app.mouse_capture = state,
+                            Err(error) => app.note(
+                                block::NoticeLevel::Err,
+                                format!("could not change terminal mouse capture: {error}"),
+                            ),
+                        }
+                        continue;
+                    }
+
+                    // Ctrl-D while active is the graceful drain verb: stop admitting turns,
+                    // checkpoint at the next safe point, and return a resumable Drained outcome.
+                    // Idle Ctrl-D retains shell-like quit/delete behavior below.
+                    if k.code == KeyCode::Char('d') && ctrl && app.running {
+                        request_drain(&mut app, &atx, &drain, drain_available);
+                        continue;
+                    }
 
                     // On terminals without key-disambiguation, a standalone Esc immediately
                     // followed by the next command's first printable byte arrives as Alt+char.
@@ -2626,7 +2733,7 @@ pub async fn run(
                     if app.running && app.pending.is_some() {
                         if k.code == KeyCode::Char('c') && ctrl {
                             // Ctrl-C while pending = deny this call + park the run at a safe point.
-                            let _ = atx.send(Op::Interrupt);
+                            let _ = atx.send(Op::Interrupt.into());
                             app.interrupting = true;
                             if let Some(p) = app.pending.take() {
                                 app.note(
@@ -2640,11 +2747,14 @@ pub async fn run(
                             app.approval_key(k.code)
                             && let Some(p) = app.pending.take()
                         {
-                            let _ = atx.send(Op::ApprovalResponse {
-                                id: p.id,
-                                approved,
-                                remember,
-                            });
+                            let _ = atx.send(
+                                Op::ApprovalResponse {
+                                    id: p.id,
+                                    approved,
+                                    remember,
+                                }
+                                .into(),
+                            );
                             let verb = match (approved, remember) {
                                 (true, true) => "approved (always)",
                                 (true, false) => "approved",
@@ -2676,6 +2786,7 @@ pub async fn run(
                                     }
                                     app.running = false;
                                     app.interrupting = false;
+                                    app.draining = false;
                                     app.flush_text();
                                     app.pending = None;
                                     app.steer_previews.clear();
@@ -2923,7 +3034,10 @@ pub async fn run(
                                 InputDestination::SteerCurrentRun => {
                                     match app.steer_admission(&text) {
                                         SubmissionAdmission::Accept => {
-                                            if atx.send(Op::Steer { text: text.clone() }).is_ok() {
+                                            if atx
+                                                .send(Op::Steer { text: text.clone() }.into())
+                                                .is_ok()
+                                            {
                                                 app.track_steer(text);
                                             } else {
                                                 // Receiver disappeared at the run boundary:
@@ -2960,7 +3074,14 @@ pub async fn run(
                         KeyCode::Char('?')
                             if !app.running && app.editor.is_empty() && !menu_open =>
                         {
-                            handle_command(&mut app, &mut agent_slot, &providers, "help").await;
+                            handle_registered_command(
+                                &mut app,
+                                &mut agent_slot,
+                                &providers,
+                                SlashCommand::Help,
+                                "",
+                            )
+                            .await;
                         }
                         // ordinary typing works in both idle and running composer states.
                         KeyCode::Char(c) if !ctrl && !alt => {
@@ -2999,31 +3120,87 @@ async fn dispatch_slash_command(
     cmd: &str,
 ) -> anyhow::Result<()> {
     app.push(bold(app.theme.accent), format!("/{cmd}"));
-    let is_compact = cmd == "compact"
-        || cmd
-            .strip_prefix("compact")
-            .is_some_and(|rest| rest.starts_with(char::is_whitespace));
-    if !is_compact {
-        handle_command(app, agent_slot, providers, cmd).await;
-        return Ok(());
-    }
+    let routed = match commands::dispatch(cmd) {
+        Ok(routed) => routed,
+        Err(unknown) => {
+            app.push(
+                fg(Color::Red),
+                format!(
+                    "unknown command /{} (try /help)",
+                    ui_safe_text(unknown.name)
+                ),
+            );
+            return Ok(());
+        }
+    };
 
-    let focus = cmd.strip_prefix("compact").unwrap_or("").trim().to_string();
-    if let Some(agent) = agent_slot.as_mut() {
-        app.push(dim(), "compacting…");
-        term.draw(|frame| draw(frame, app))?;
-        match agent
-            .compact_now((!focus.is_empty()).then_some(focus))
-            .await
-        {
-            Ok(result) => app.push(
-                fg(Color::Green),
-                format!("compacted {} -> {} messages", result.before, result.after),
-            ),
-            Err(error) => app.push(fg(Color::Red), format!("compact failed: {error}")),
+    match routed.route {
+        commands::DispatchRoute::InProcess(command) => {
+            handle_registered_command(app, agent_slot, providers, command, &routed.invocation.args)
+                .await;
+        }
+        commands::DispatchRoute::NotHere(commands::TerminalIntercept::Compact) => {
+            let focus = routed.invocation.args;
+            if let Some(agent) = agent_slot.as_mut() {
+                app.push(dim(), "compacting…");
+                term.draw(|frame| draw(frame, app))?;
+                match agent
+                    .compact_now((!focus.is_empty()).then_some(focus))
+                    .await
+                {
+                    Ok(result) => app.push(
+                        fg(Color::Green),
+                        format!("compacted {} -> {} messages", result.before, result.after),
+                    ),
+                    Err(error) => app.push(fg(Color::Red), format!("compact failed: {error}")),
+                }
+            } else {
+                app.push(fg(Color::Red), "no agent available");
+            }
         }
     }
     Ok(())
+}
+
+fn request_drain(
+    app: &mut App,
+    approvals: &UnboundedSender<SqEnvelope>,
+    drain: &Arc<AtomicBool>,
+    checkpoint_supported: bool,
+) {
+    if !app.running || app.draining {
+        return;
+    }
+    if !checkpoint_supported {
+        app.note(
+            block::NoticeLevel::Warn,
+            "drain requires a Git worktree because no durable workspace checkpoint is available",
+        );
+        return;
+    }
+    if approvals.send(Op::Drain.into()).is_err() {
+        app.note(
+            block::NoticeLevel::Err,
+            "could not request a drain because the active run is no longer reachable",
+        );
+        return;
+    }
+    // The queue event is the durable ordering source; the shared flag lets an already-admitted
+    // child observe the request at its own next turn boundary while the parent awaits it.
+    drain.store(true, Ordering::Relaxed);
+    app.draining = true;
+    app.status = "draining at the next checkpoint".into();
+    if app.pending.take().is_some() {
+        app.note(
+            block::NoticeLevel::Warn,
+            "drain requested · pending approval denied · checkpointing at the next safe point",
+        );
+    } else {
+        app.push(
+            bold(Color::Yellow),
+            "draining at the next safe point · the session will remain resumable",
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3044,6 +3221,7 @@ fn start_run(
     *rx = Some(new_rx);
     app.running = true;
     app.interrupting = false;
+    app.draining = false;
     app.status = "running…".into();
     app.run_started = Some(Instant::now());
     app.completion = None;
@@ -3090,7 +3268,8 @@ fn apply_model_selection(
     // Write-ahead audit: if the hash-chained record cannot durably accept the route, keep the old
     // provider/model pair. The frontend never sends a turn through an unrecorded destination.
     let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
-    if let Err(error) = agent.record_model_selection(
+    if let Err(error) = agent.record_provider_model_selection(
+        provider,
         selection.provider_id.clone(),
         selection.model_id.clone(),
         catalog_digest,
@@ -3105,8 +3284,6 @@ fn apply_model_selection(
 
     // Commit point: adapter construction, availability validation, and durable recording have
     // all succeeded.
-    agent.provider = provider;
-    agent.model = selection.model_id.clone();
     let capabilities = directory.selection_capabilities(&selection);
     agent.model_context_window = capabilities.context_window_tokens;
     agent.model_max_output_tokens = capabilities.max_output_tokens;
@@ -3116,6 +3293,17 @@ fn apply_model_selection(
         clear_last_turn_telemetry(app, &mut agent.ledger);
     }
     app.model_context_window = agent.model_context_window;
+    match agent.bind_selected_rate_card() {
+        Ok(false) if agent.budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) => app.note(
+            block::NoticeLevel::Err,
+            "selected route has no active verified rate card; the USD ceiling will block provider calls",
+        ),
+        Err(error) => app.note(
+            block::NoticeLevel::Err,
+            format!("cannot authenticate pricing for the selected route: {error}"),
+        ),
+        Ok(_) => {}
+    }
     app.note(
         block::NoticeLevel::Ok,
         format!(
@@ -3573,6 +3761,11 @@ fn session_picker_items(
         right
             .updated_at
             .cmp(&left.updated_at)
+            .then_with(|| {
+                right
+                    .updated_at_subsec_nanos
+                    .cmp(&left.updated_at_subsec_nanos)
+            })
             .then_with(|| right.created_at.cmp(&left.created_at))
             .then_with(|| left.run_id.0.cmp(&right.run_id.0))
     });
@@ -3898,34 +4091,32 @@ fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-/// Slash-command dispatcher (runs only when idle; `agent` is Some). Built-ins operate on the
-/// idle agent + UI state; commands needing the memory/session modules are wired as those land.
-async fn handle_command(
+/// In-process half of the slash-command dispatcher (runs only while idle). Matching the typed
+/// identity exhaustively makes a newly registered variant a compile error until it has a handler.
+async fn handle_registered_command(
     app: &mut App,
     agent: &mut Option<Agent>,
     directory: &ProviderDirectory,
-    cmd: &str,
+    command: SlashCommand,
+    arg: &str,
 ) {
-    let mut parts = cmd.split_whitespace();
-    let name = parts.next().unwrap_or("");
-    let arg = parts.collect::<Vec<_>>().join(" ");
     let Some(ag) = agent.as_mut() else {
         app.push(fg(Color::Red), "no agent available");
         return;
     };
-    match name {
-        "help" | "?" => {
+    match command {
+        SlashCommand::Help => {
             let mut rows: Vec<block::PanelRow> = commands::COMMANDS
                 .iter()
                 .map(|c| item("/", &format!("{} {}", c.name, c.args), c.help))
                 .collect();
-            rows.push(block::PanelRow::Note("keys: ↑↓ history · ←→/Ctrl-A/E/U/K/W edit · @file · !shell · Shift+Tab mode · Ctrl-C interrupt".into()));
+            rows.push(block::PanelRow::Note("keys: ↑↓ history · ←→/Ctrl-A/E/U/K/W edit · @file · !shell · Shift+Tab mode · Ctrl-T mouse/native selection · Ctrl-C interrupt".into()));
             rows.push(block::PanelRow::Note(
                 "while running: Enter steer · Tab queue · Ctrl-J newline · Alt-Up edit queued · Ctrl-End follow".into(),
             ));
             app.panel("?", "commands", rows);
         }
-        "clear" => {
+        SlashCommand::Clear => {
             app.transcript.clear();
             app.tool_index.clear();
             app.workflow_index.clear();
@@ -3937,10 +4128,10 @@ async fn handle_command(
             app.render_cache.clear();
             app.push(dim(), "transcript cleared");
         }
-        "effort" => {
+        SlashCommand::Effort => {
             if arg.is_empty() {
                 open_picker(app, ag, directory, "effort"); // interactive picker (R7.a)
-            } else if let Some(e) = core_protocol::Effort::parse(&arg) {
+            } else if let Some(e) = core_protocol::Effort::parse(arg) {
                 if commit_effort(app, ag, e) {
                     app.push(fg(Color::Green), format!("effort set to {}", e.label()));
                 }
@@ -3951,7 +4142,7 @@ async fn handle_command(
                 );
             }
         }
-        "model" => {
+        SlashCommand::Model => {
             if arg.is_empty() {
                 open_picker(app, ag, directory, "model"); // interactive picker (R7.a)
             } else if arg == "retry" || arg.starts_with("retry ") {
@@ -3979,7 +4170,7 @@ async fn handle_command(
                     ),
                 }
             } else {
-                match directory.resolve_model(&arg, Some(&app.provider_id)) {
+                match directory.resolve_model(arg, Some(&app.provider_id)) {
                     Ok(selection) => apply_model_selection(app, ag, directory, selection),
                     Err(error) => app.note(
                         block::NoticeLevel::Err,
@@ -3988,10 +4179,10 @@ async fn handle_command(
                 }
             }
         }
-        "theme" => {
+        SlashCommand::Theme => {
             open_picker(app, ag, directory, "theme");
         }
-        "status" => {
+        SlashCommand::Status => {
             let run = ag
                 .rollout
                 .path()
@@ -4020,14 +4211,14 @@ async fn handle_command(
             ]);
             app.panel("≡", "status", rows);
         }
-        "cost" => {
+        SlashCommand::Cost => {
             app.panel(
                 "$",
                 "cost",
                 vec![block::PanelRow::Note(ag.ledger.summary())],
             );
         }
-        "context" => {
+        SlashCommand::Context => {
             let mut rows = Vec::new();
             if let Some(context) = app.last_context {
                 rows.extend([
@@ -4135,10 +4326,10 @@ async fn handle_command(
             }
             app.panel("◔", "context — last provider turn", rows);
         }
-        "mode" => {
+        SlashCommand::Mode => {
             if arg.is_empty() {
                 open_picker(app, ag, directory, "mode"); // interactive picker (Shift+Tab still cycles)
-            } else if let Some(m) = PermissionMode::parse(&arg) {
+            } else if let Some(m) = PermissionMode::parse(arg) {
                 if commit_permission_mode(app, ag, m) {
                     app.push(fg(Color::Green), format!("mode set to {}", m.label()));
                 }
@@ -4149,7 +4340,7 @@ async fn handle_command(
                 );
             }
         }
-        "permissions" | "perms" => {
+        SlashCommand::Permissions => {
             let mut sub = arg.split_whitespace();
             match sub.next() {
                 None => open_picker(app, ag, directory, "permissions"),
@@ -4197,7 +4388,7 @@ async fn handle_command(
                 }
             }
         }
-        "allow-code" | "allow_code" => match arg.as_str() {
+        SlashCommand::AllowCode => match arg {
             "on" | "true" | "" => {
                 if commit_permission_capability(app, ag, Capability::CodeExecuting, Verdict::Auto) {
                     app.push(
@@ -4213,7 +4404,7 @@ async fn handle_command(
             }
             _ => app.push(fg(Color::Red), "usage: /allow-code on|off"),
         },
-        "memory" | "mem" => {
+        SlashCommand::Memory => {
             let ws = ag.memory_workspace.clone();
             let Some(ws) = ws else {
                 app.push(fg(Color::Red), "memory not available");
@@ -4271,7 +4462,7 @@ async fn handle_command(
                 ),
             }
         }
-        "diff" => {
+        SlashCommand::Diff => {
             // Reuse the same absolute-executable, filter-disabled, process-group-bounded runner as
             // the registry tool. This operator command is still awaiting the universal effect WAL.
             let stat = arg.trim() == "stat";
@@ -4309,10 +4500,10 @@ async fn handle_command(
                 ),
             }
         }
-        "sessions" => {
+        SlashCommand::Sessions => {
             open_session_picker(app, ag);
         }
-        "workflows" | "tasks" => {
+        SlashCommand::Workflows => {
             let mut rows = Vec::new();
             for card in app.transcript.iter().rev().filter_map(|entry| {
                 if let block::BlockKind::Workflow(card) = &entry.kind {
@@ -4357,7 +4548,7 @@ async fn handle_command(
             }
             app.panel("", "workflows", rows);
         }
-        "fork" => {
+        SlashCommand::Fork => {
             // Fork the CURRENT session at its tail into a new branch (shared past, divergent future).
             let path = ag.rollout.path().to_path_buf();
             let runs = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
@@ -4386,7 +4577,7 @@ async fn handle_command(
                 Err(e) => app.push(fg(Color::Red), format!("cannot read this session: {e}")),
             }
         }
-        "agents" => {
+        SlashCommand::Agents => {
             let user = std::env::var_os("HOME")
                 .map(|h| std::path::PathBuf::from(h).join(".core").join("agents"))
                 .unwrap_or_default();
@@ -4409,7 +4600,7 @@ async fn handle_command(
             }
             app.panel("⑂", "agents", rows);
         }
-        "skills" => {
+        SlashCommand::Skills => {
             let user = core_ctx::skills::user_skills_dir().unwrap_or_default();
             let cat = core_ctx::skills::SkillCatalog::discover(&user, &ag.workspace);
             let mut rows: Vec<block::PanelRow> = cat
@@ -4430,7 +4621,7 @@ async fn handle_command(
             }
             app.panel("◇", "skills", rows);
         }
-        "config" => {
+        SlashCommand::Config => {
             let mut rows = vec![
                 kv(
                     "provider",
@@ -4462,7 +4653,7 @@ async fn handle_command(
             }
             app.panel("⚙", "config", rows);
         }
-        "tools" => {
+        SlashCommand::Tools => {
             // Visualize every tool + its capability tier + purity (user: tool 所有能的可视化).
             let cap_glyph = |c: Capability| match c {
                 Capability::ReadOnly => "read-only",
@@ -4482,7 +4673,7 @@ async fn handle_command(
                 .collect();
             app.panel("⚙", &format!("{} tools available", rows.len()), rows);
         }
-        "mcp" => {
+        SlashCommand::Mcp => {
             let mcp: Vec<_> = ag
                 .registry
                 .specs()
@@ -4502,7 +4693,7 @@ async fn handle_command(
                 app.panel("◈", "MCP tools", rows);
             }
         }
-        "hooks" => {
+        SlashCommand::Hooks => {
             let home = std::env::var_os("HOME")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_default();
@@ -4519,7 +4710,7 @@ async fn handle_command(
                 );
             }
         }
-        "export" => {
+        SlashCommand::Export => {
             let requested = if arg.trim().is_empty() {
                 "core-transcript.md"
             } else {
@@ -4545,7 +4736,7 @@ async fn handle_command(
                 Err(e) => app.push(fg(Color::Red), format!("export failed: {e}")),
             }
         }
-        "init" => {
+        SlashCommand::Init => {
             let dir = match ensure_real_workspace_dir(&ag.workspace, ".core") {
                 Ok(dir) => dir,
                 Err(error) => {
@@ -4562,8 +4753,7 @@ async fn handle_command(
             } else {
                 // Repository config can only choose a bare model and tighten ceilings. Provider,
                 // MCP, hooks, effort, and grants belong in trusted ~/.core/config.json.
-                let starter =
-                    "{\n  \"model\": null,\n  \"max_turns\": 40,\n  \"allow_code\": false\n}\n";
+                let starter = crate::config::starter_project_config();
                 match write_new_synced(&cfg, starter.as_bytes()) {
                     Ok(_) => app.push(fg(Color::Green), format!("wrote {}", cfg.display())),
                     Err(e) => app.push(fg(Color::Red), format!("init failed: {e}")),
@@ -4585,7 +4775,7 @@ async fn handle_command(
                 }
             }
         }
-        "rewind" => {
+        SlashCommand::Rewind => {
             // Conversation rewind: branch at an EARLIER seq (shared past, divergent future). With no
             // arg it lists the turn boundaries; `/rewind <seq>` forks at that point. (Workspace-file
             // rewind needs recorded checkpoints, which normal runs don't yet emit — honest gap.)
@@ -4628,7 +4818,7 @@ async fn handle_command(
                 Err(e) => app.push(fg(Color::Red), format!("cannot read this session: {e}")),
             }
         }
-        "resume" => {
+        SlashCommand::Resume => {
             if arg.is_empty() {
                 open_session_picker(app, ag);
             } else {
@@ -4642,20 +4832,36 @@ async fn handle_command(
                     .iter()
                     .any(|session| session.run_id.0 == arg);
                 if exists {
-                    app.prepare_resume_handoff(&arg);
+                    app.prepare_resume_handoff(arg);
                 } else {
                     app.note(
                         block::NoticeLevel::Err,
-                        format!("no recorded session with run id `{}`", ui_safe_text(&arg)),
+                        format!("no recorded session with run id `{}`", ui_safe_text(arg)),
                     );
                 }
             }
         }
-        "quit" | "exit" => app.quit = true,
-        other => app.push(
-            fg(Color::Red),
-            format!("unknown command /{other} (try /help)"),
+        SlashCommand::Quit => app.quit = true,
+        SlashCommand::Compact => app.note(
+            block::NoticeLevel::Err,
+            "compact requires the interactive terminal dispatcher",
         ),
+    }
+}
+
+/// Project one live event into retained UI state, then send any fixed terminal notification
+/// directly through the backend. Keeping the writer outside `App` makes it impossible for an OSC
+/// payload to enter transcript blocks or ratatui's frame buffer.
+fn apply_live_event<W: Write>(
+    app: &mut App,
+    ev: UiEvent,
+    notifier: &mut notification::TerminalNotifier,
+    writer: &mut W,
+) {
+    let trigger = notifier.trigger_for_event(&ev);
+    apply_event(app, ev);
+    if let Some(trigger) = trigger {
+        notifier.emit(writer, trigger);
     }
 }
 
@@ -5126,7 +5332,9 @@ fn render_lr_line(f: &mut Frame, area: Rect, left: Vec<Span<'static>>, right: Ve
 }
 
 fn status_right_bits(app: &App, density: surface::Density) -> Vec<String> {
-    let mut bits = Vec::new();
+    // Mouse ownership is persistent user-facing state, but yields first when a narrow status row
+    // needs its safety/liveness text. The hint row independently keeps the Ctrl-T action visible.
+    let mut bits = vec![app.mouse_capture.status_label().to_string()];
     // Economics is drill-down information and the first metadata dropped under pressure. Keep it
     // off the standard surface; `/cost` remains the authoritative full-run view.
     if density == surface::Density::Wide
@@ -5183,7 +5391,12 @@ fn render_status(f: &mut Frame, area: Rect, density: surface::Density, app: &App
     let accent = Style::default().fg(th.accent).add_modifier(Modifier::BOLD);
     let warn = Style::default().fg(th.warn).add_modifier(Modifier::BOLD);
 
-    let mut left = if app.pending.is_some() {
+    let mut left = if app.draining {
+        vec![
+            Span::styled("! ", warn),
+            Span::styled("draining · checkpointing at a safe point", warn),
+        ]
+    } else if app.pending.is_some() {
         vec![
             Span::styled("! ", warn),
             Span::styled("approval required", warn),
@@ -5239,7 +5452,6 @@ fn render_status(f: &mut Frame, area: Rect, density: surface::Density, app: &App
             muted,
         )]
     };
-
     // Right-side metadata is progressively disclosed. When it does not fit, low-priority economics
     // disappear first; the route/pending state at the end survives and is clipped explicitly.
     let mut bits = status_right_bits(app, density);
@@ -5636,8 +5848,8 @@ fn route_label(app: &App) -> String {
 
 fn footer_spans(text: &str, theme: &theme::Theme) -> Vec<Span<'static>> {
     const KEYS: &[&str] = &[
-        "enter", "tab", "esc", "ctrl+j", "ctrl+z", "alt+↑", "ctrl+end", "y", "a", "n", "n/esc",
-        "/", "@", "!", "?",
+        "enter", "tab", "esc", "ctrl+j", "ctrl+t", "ctrl+z", "alt+↑", "ctrl+end", "y", "a", "n",
+        "n/esc", "/", "@", "!", "?",
     ];
     let mut spans = Vec::new();
     for (index, item) in text.split(" · ").enumerate() {
@@ -5726,6 +5938,7 @@ fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, app: &App) 
     } else {
         left.to_string()
     };
+    let left = format!("{left} · {}", app.mouse_capture.hint());
     let left = clip_text(&left, area.width);
     render_lr_line(f, area, footer_spans(&left, &app.theme), Vec::new());
 }
@@ -5787,10 +6000,12 @@ fn draw(f: &mut Frame, app: &mut App) {
     // the semantic document.
     ensure_stream_doc(app);
     let mut lines: Vec<Line> = Vec::new();
+    let mut hyperlink_regions = Vec::new();
     let mut row_map: Vec<usize> = Vec::new(); // block index per rendered row (usize::MAX = spacer/stream)
     {
         let theme = &app.theme;
         let spin = app.spin;
+        let hyperlink_policy = &app.hyperlink_policy;
         let render_cache = &mut app.render_cache;
         for (bi, b) in app.transcript.iter().enumerate() {
             if bi > 0 {
@@ -5802,22 +6017,28 @@ fn draw(f: &mut Frame, app: &mut App) {
                     row_map.push(usize::MAX);
                 }
             }
-            let rows = if b.cacheable() {
+            let rendered = if b.cacheable() {
                 match render_cache.get(&b.id) {
-                    Some((revision, rows)) if *revision == b.revision => rows.clone(),
+                    Some((revision, rendered)) if *revision == b.revision => rendered.clone(),
                     _ => {
-                        let rows = b.render(inner_w, theme, spin);
-                        render_cache.insert(b.id, (b.revision, rows.clone()));
-                        rows
+                        let rendered =
+                            b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy);
+                        render_cache.insert(b.id, (b.revision, rendered.clone()));
+                        rendered
                     }
                 }
             } else {
-                b.render(inner_w, theme, spin)
+                b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy)
             };
-            for _ in 0..rows.len() {
+            let row_offset = lines.len();
+            for mut hyperlink in rendered.hyperlinks {
+                hyperlink.row = hyperlink.row.saturating_add(row_offset);
+                hyperlink_regions.push(hyperlink);
+            }
+            for _ in 0..rendered.lines.len() {
                 row_map.push(bi);
             }
-            lines.extend(rows);
+            lines.extend(rendered.lines);
         }
         // live streaming blocks (reasoning, then the in-flight answer) through the SAME render path
         if !app.cur_think.trim().is_empty() {
@@ -5841,15 +6062,21 @@ fn draw(f: &mut Frame, app: &mut App) {
                 lines.push(Line::from(""));
                 row_map.push(usize::MAX);
             }
-            let rows = block::render_assistant_doc(
+            let rendered = block::render_assistant_doc_with_hyperlinks(
                 app.cur_doc
                     .as_ref()
                     .expect("non-empty streaming text has a parsed document"),
                 inner_w,
                 theme,
+                hyperlink_policy,
             );
-            row_map.extend(std::iter::repeat_n(usize::MAX, rows.len()));
-            lines.extend(rows);
+            let row_offset = lines.len();
+            for mut hyperlink in rendered.hyperlinks {
+                hyperlink.row = hyperlink.row.saturating_add(row_offset);
+                hyperlink_regions.push(hyperlink);
+            }
+            row_map.extend(std::iter::repeat_n(usize::MAX, rendered.lines.len()));
+            lines.extend(rendered.lines);
             // blinking caret on the last row while streaming
             if app.running
                 && (app.spin / 4).is_multiple_of(2)
@@ -5894,6 +6121,13 @@ fn draw(f: &mut Frame, app: &mut App) {
     app.view_h = view_h;
     let transcript = Paragraph::new(lines).scroll((scroll, 0)); // NO .wrap(): rows == scroll units
     f.render_widget(transcript, surface.transcript);
+    hyperlink::apply_to_buffer(
+        f.buffer_mut(),
+        surface.transcript,
+        scroll,
+        &hyperlink_regions,
+        &app.hyperlink_policy,
+    );
 
     // Scrollbar in the reserved right column — a position indicator (polish backlog P0). Only when
     // the content overflows the viewport, so a short session stays clean.
@@ -6024,6 +6258,44 @@ fn draw(f: &mut Frame, app: &mut App) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn active_keyboard_panic_restore_pops_once_and_restores_terminal_modes() {
+        let controller = keyboard_enhancement::Controller::default();
+        let restorer = controller.restorer();
+        let mut output = Vec::new();
+
+        assert!(controller.negotiate_with(&mut output, true).unwrap());
+        assert!(restore_terminal_after_panic_to(&restorer, &mut output));
+
+        for sequence in [
+            b"\x1b[<1u".as_slice(),
+            b"\x1b[?2004l".as_slice(),
+            b"\x1b[?25h".as_slice(),
+            b"\x1b[?1049l".as_slice(),
+        ] {
+            assert!(
+                output
+                    .windows(sequence.len())
+                    .any(|bytes| bytes == sequence),
+                "panic restore omitted {sequence:?}"
+            );
+        }
+        assert_eq!(
+            output
+                .windows(b"\x1b[<1u".len())
+                .filter(|bytes| *bytes == b"\x1b[<1u")
+                .count(),
+            1
+        );
+
+        let after_panic_restore = output.clone();
+        assert_eq!(
+            restorer.restore(&mut output).unwrap(),
+            keyboard_enhancement::RestoreOutcome::AlreadyInactive
+        );
+        assert_eq!(output, after_panic_restore);
+    }
+
     fn turn_end(cost: f64, usage: Usage) -> UiEvent {
         let total = request_input_tokens(usage) as usize;
         UiEvent::TurnEnd {
@@ -6130,7 +6402,7 @@ mod tests {
         turns: u32,
     ) -> core_record::SessionMeta {
         core_record::SessionMeta {
-            pricing_schema_version: 1,
+            pricing_schema_version: 2,
             projection_schema_version: 1,
             run_id: core_protocol::RunId(run_id.into()),
             tenant: core_protocol::TenantId::default(),
@@ -6141,7 +6413,12 @@ mod tests {
             title: title.into(),
             created_at: updated_at.saturating_sub(10),
             updated_at,
+            updated_at_subsec_nanos: 0,
             record_bytes: 100,
+            record_tail_seq: None,
+            record_tail_hash: String::new(),
+            projection_digest: String::new(),
+            ancestry: Vec::new(),
             turns,
             cost: CostState::Known {
                 amount_microusd: 2_500_000,
@@ -6559,7 +6836,11 @@ mod tests {
             ],
         });
         app.picker_key(KeyCode::Down); // preview light
-        assert_eq!(app.theme.fg, light.fg, "nav previews the theme");
+        assert_eq!(
+            app.theme.fg,
+            app.color_depth.project_color(light.fg),
+            "nav previews the theme at the detected color depth"
+        );
         app.picker_key(KeyCode::Esc); // restore
         assert_eq!(app.theme.fg, orig.fg, "Esc restores the pre-open theme");
         assert!(app.picker.is_none());
@@ -6626,7 +6907,7 @@ mod tests {
             PickAction::SetTheme(theme) => apply_theme_selection(&mut app, theme),
             _ => panic!("theme picker returned the wrong action"),
         }
-        assert_eq!(app.theme.fg, selected.fg);
+        assert_eq!(app.theme.fg, app.color_depth.project_color(selected.fg));
     }
 
     #[test]
@@ -7156,6 +7437,19 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             bottom.contains("● high"),
             "effort stays in bottom row: {bottom:?}"
         );
+    }
+
+    #[test]
+    fn mouse_capture_state_is_visible_in_hint_and_status_chrome() {
+        let mut app = App::new();
+        let captured = render_text(&mut app, 80, 12);
+        assert!(captured.contains("mouse:on"));
+        assert!(captured.contains("ctrl+t select"));
+
+        app.mouse_capture = mouse_capture::State::Released;
+        let released = render_text(&mut app, 80, 12);
+        assert!(released.contains("selection:on"));
+        assert!(released.contains("ctrl+t mouse"));
     }
 
     #[test]
@@ -7785,6 +8079,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn outcome_label_is_human_not_debug() {
         // TUI v3 §7: the status slot never shows `BudgetExhausted("max_turns")` Debug.
         assert_eq!(outcome_label(&Outcome::Done), "done");
+        assert_eq!(outcome_label(&Outcome::Drained), "drained");
         assert_eq!(outcome_label(&Outcome::Stuck), "stuck");
         assert_eq!(
             outcome_label(&Outcome::BudgetExhausted("max_turns")),
@@ -8527,6 +8822,122 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
+    fn notifications_use_only_the_out_of_band_writer_and_never_stream_deltas() {
+        let mut app = App::new();
+        let mut output = Vec::new();
+        let mut notifier = notification::TerminalNotifier::new(true);
+
+        apply_live_event(
+            &mut app,
+            UiEvent::Text("visible streamed answer".into()),
+            &mut notifier,
+            &mut output,
+        );
+        assert!(
+            output.is_empty(),
+            "a streamed delta must remain byte-silent"
+        );
+
+        apply_live_event(
+            &mut app,
+            turn_end(0.01, Usage::default()),
+            &mut notifier,
+            &mut output,
+        );
+        let after_turn = output.len();
+        assert_eq!(output, b"\x07", "one turn boundary emits one terminal bell");
+
+        let approval = UiEvent::ApprovalRequest {
+            id: SubmissionId(41),
+            tool: "hostile\x1b]9;injected".into(),
+            capability: Capability::CodeExecuting,
+            reason: "fixture".into(),
+            arguments: serde_json::json!({"command": "true"}),
+            workspace: "/fixture".into(),
+        };
+        apply_live_event(&mut app, approval.clone(), &mut notifier, &mut output);
+        apply_live_event(&mut app, approval, &mut notifier, &mut output);
+        assert_eq!(
+            &output[after_turn..],
+            b"\x07",
+            "a repeated approval id is notified only once"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output).contains("injected"),
+            "untrusted event content must not enter a control sequence"
+        );
+
+        app.flush_text();
+        for block in &app.transcript {
+            let retained = block.to_text();
+            assert!(!retained.contains('\x1b'));
+            assert!(!retained.contains('\x07'));
+        }
+    }
+
+    #[test]
+    fn done_notifies_a_successful_model_turn_when_usage_and_turn_end_are_missing() {
+        let mut app = App::new();
+        let mut output = Vec::new();
+        let mut notifier = notification::TerminalNotifier::new(true);
+
+        apply_live_event(
+            &mut app,
+            UiEvent::Phase(core_protocol::Phase::Model),
+            &mut notifier,
+            &mut output,
+        );
+        apply_live_event(
+            &mut app,
+            UiEvent::Text("valid response without usage".into()),
+            &mut notifier,
+            &mut output,
+        );
+        assert!(output.is_empty(), "model activity is not a completion");
+        apply_live_event(
+            &mut app,
+            UiEvent::Done("Done".into()),
+            &mut notifier,
+            &mut output,
+        );
+        apply_live_event(
+            &mut app,
+            UiEvent::Done("duplicate transport delivery".into()),
+            &mut notifier,
+            &mut output,
+        );
+        assert_eq!(
+            output, b"\x07",
+            "Done supplies exactly one fallback when truthful missing usage omits TurnEnd"
+        );
+
+        let mut normal_output = Vec::new();
+        let mut normal_notifier = notification::TerminalNotifier::new(true);
+        apply_live_event(
+            &mut app,
+            UiEvent::Phase(core_protocol::Phase::Model),
+            &mut normal_notifier,
+            &mut normal_output,
+        );
+        apply_live_event(
+            &mut app,
+            turn_end(0.01, Usage::default()),
+            &mut normal_notifier,
+            &mut normal_output,
+        );
+        apply_live_event(
+            &mut app,
+            UiEvent::Done("Done".into()),
+            &mut normal_notifier,
+            &mut normal_output,
+        );
+        assert_eq!(
+            normal_output, b"\x07",
+            "a normal TurnEnd plus Done must not double-notify"
+        );
+    }
+
+    #[test]
     fn route_or_effort_change_clears_request_telemetry_but_not_static_capacity() {
         let usage = Usage {
             input: 10,
@@ -8655,6 +9066,51 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(screen.contains("interrupt requested"));
         assert!(screen.contains("safe point"));
         assert!(!screen.contains("✢ verifying"));
+    }
+
+    #[test]
+    fn running_ctrl_d_requests_exactly_one_drain_and_surfaces_checkpointing() {
+        let mut app = App::new();
+        app.running = true;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let drain = Arc::new(AtomicBool::new(false));
+
+        request_drain(&mut app, &tx, &drain, true);
+        request_drain(&mut app, &tx, &drain, true);
+
+        assert!(app.draining);
+        assert!(drain.load(Ordering::Relaxed));
+        assert!(app.status.contains("draining"));
+        assert!(matches!(
+            rx.try_recv()
+                .expect("Ctrl-D submits one control envelope")
+                .into_current()
+                .expect("current protocol envelope"),
+            Op::Drain
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "repeated Ctrl-D must not spam drain submissions"
+        );
+        let screen = render_text(&mut app, 80, 16);
+        assert!(screen.contains("draining"));
+        assert!(screen.contains("checkpoint"));
+    }
+
+    #[test]
+    fn running_ctrl_d_refuses_cleanly_when_workspace_cannot_be_checkpointed() {
+        let mut app = App::new();
+        app.running = true;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let drain = Arc::new(AtomicBool::new(false));
+
+        request_drain(&mut app, &tx, &drain, false);
+
+        assert!(!app.draining);
+        assert!(!drain.load(Ordering::Relaxed));
+        assert!(rx.try_recv().is_err());
+        let screen = render_text(&mut app, 90, 16);
+        assert!(screen.contains("requires a Git worktree"));
     }
 
     #[test]

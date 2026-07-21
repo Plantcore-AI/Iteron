@@ -13,8 +13,55 @@
 //! and the OTel GenAI export are interface-present / TODO against ADR-002; the token/latency/
 //! phase substrate they need is all collected here.
 
-use core_protocol::{Phase, Usage, WorkflowMetrics};
+use core_protocol::{
+    CostProjection, CostProjectionIdentity, MAX_WORKFLOW_COST_PROJECTIONS, SignedRateCard, Usage,
+    WorkflowCostEvidence, WorkflowMetrics,
+};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
+
+mod metrics;
+mod phase;
+pub mod pricing;
+pub use metrics::{EphemeralTimings, ReproducibleCounters, TimingSnapshot};
+pub use phase::PhaseSpan;
+pub use pricing::{
+    HmacPricingAuthority, HmacPricingKey, MAX_TRUSTED_RATE_CARDS, PricingError, PricingPort,
+    PricingReplay, sign_rate_card, validate_projection_digest, validate_rate_card_digest,
+};
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProjectionAdmissionError {
+    Pricing(PricingError),
+    Ledger(&'static str),
+}
+
+/// Authenticate one live signed projection through the injected trust port before it may advance
+/// monetary ledger state. Digest validity alone is content integrity, not billing authority.
+pub fn admit_verified_projection(
+    pricing: &dyn PricingPort,
+    rate_card: &SignedRateCard,
+    expected_identity: &CostProjectionIdentity,
+    projection: &CostProjection,
+    ledger: &mut Ledger,
+) -> Result<(), ProjectionAdmissionError> {
+    if projection.identity.as_ref() != Some(expected_identity) {
+        return Err(ProjectionAdmissionError::Pricing(
+            if projection.identity.is_none() {
+                PricingError::MissingProjectionIdentity
+            } else {
+                PricingError::ProjectionIdentityMismatch
+            },
+        ));
+    }
+    pricing
+        .verify_projection(rate_card, projection)
+        .map_err(ProjectionAdmissionError::Pricing)?;
+    ledger
+        .apply_cost_projection(projection)
+        .map_err(ProjectionAdmissionError::Ledger)
+}
 
 /// Honest cumulative monetary state. Core does not infer billing from token counts without a
 /// route-bound, versioned rate card and does not treat an attempt without usage as free.
@@ -24,8 +71,8 @@ pub enum CostState {
     /// No provider request has been admitted, so zero is provable.
     #[default]
     Zero,
-    /// Reserved for the future per-attempt rate-card transaction. Amounts are fixed-point micro-USD,
-    /// never floating point; no production path constructs this variant yet.
+    /// Every completed provider turn has a durable, route-bound pricing projection. Amounts are
+    /// fixed-point micro-USD, never floating point.
     Known {
         amount_microusd: u64,
         rate_card_digest: String,
@@ -75,6 +122,7 @@ pub enum CostUnknownReason {
     NoVerifiedRateCard,
     BillingEvidenceMissing,
     LegacyUnattributed,
+    AmountOverflow,
 }
 
 impl CostUnknownReason {
@@ -83,6 +131,7 @@ impl CostUnknownReason {
             Self::NoVerifiedRateCard => "no_verified_rate_card",
             Self::BillingEvidenceMissing => "billing_evidence_missing",
             Self::LegacyUnattributed => "legacy_unattributed",
+            Self::AmountOverflow => "amount_overflow",
         }
     }
 
@@ -91,6 +140,7 @@ impl CostUnknownReason {
             Self::NoVerifiedRateCard => "no verified rate card",
             Self::BillingEvidenceMissing => "billing evidence missing for one or more attempts",
             Self::LegacyUnattributed => "legacy usage has no route/rate-card attribution",
+            Self::AmountOverflow => "fixed-point amount exceeded its representable range",
         }
     }
 }
@@ -114,13 +164,26 @@ pub struct Ledger {
     /// The most recently completed direct provider turn. `merge` deliberately does not overwrite
     /// it; a child finishing is not the parent's last model request.
     pub last_turn_usage: Option<Usage>,
-    /// tau_wall: total measured tool wall-clock, and how much of it overlapped decoding.
-    pub tool_wall_ms: u64,
-    pub tool_overlapped_ms: u64,
     pub tool_calls: u64,
     pub tool_errors: u64,
-    pub phase_model_ms: u64,
-    pub phase_tools_ms: u64,
+    /// Pure-tool calls that could not acquire an early-dispatch slot and were routed to the
+    /// bounded inline collection path instead. This is an admission-pressure signal, not an
+    /// execution error.
+    pub tool_inline_overflow_events: u64,
+    /// Wall-clock is process-local and private so callers must acknowledge replay completeness
+    /// through [`Self::timings`] instead of reading a plausible-looking restored zero.
+    timings: EphemeralTimings,
+    timing_history_unknown: bool,
+    /// Completed turns for which a signed projection has been durably admitted.
+    priced_turns: u32,
+    amount_microusd: u64,
+    amount_overflowed: bool,
+    rate_card_digests: BTreeSet<String>,
+    cost_projections: Vec<CostProjection>,
+    /// Durable child admissions whose terminal accounting has not been observed. This is kept
+    /// separate from provider attempts: a child may have crashed before dispatch, but it may also
+    /// have spent money that the parent never received, so zero/Known is no longer provable.
+    unresolved_child_attributions: u32,
 }
 
 impl Ledger {
@@ -134,13 +197,97 @@ impl Ledger {
         self.provider_attempts = self.provider_attempts.saturating_add(1);
     }
 
+    /// Stable, record-derived accounting with all ephemeral timing excluded by construction.
+    pub fn reproducible_counters(&self) -> ReproducibleCounters {
+        ReproducibleCounters {
+            provider_attempts: self.provider_attempts,
+            completed_turns: self.turns,
+            usage: self.usage,
+            tool_calls: self.tool_calls,
+            tool_errors: self.tool_errors,
+        }
+    }
+
+    /// Process-local timing with an explicit completeness marker.
+    pub fn timings(&self) -> TimingSnapshot {
+        if self.timing_history_unknown {
+            TimingSnapshot::UnknownAfterReplay {
+                observed_partial: self.timings,
+            }
+        } else {
+            TimingSnapshot::Complete(self.timings)
+        }
+    }
+
+    /// Replay can reconstruct counters, but not every historical phase duration. Clear any
+    /// process-local values and make that missing history absorbing for subsequent merges.
+    pub(crate) fn mark_timing_unknown_after_replay(&mut self) {
+        if !self.timing_history_unknown {
+            self.timings = EphemeralTimings::default();
+            self.timing_history_unknown = true;
+        }
+    }
+
+    pub(crate) fn admit_child_attribution(&mut self) {
+        self.unresolved_child_attributions = self.unresolved_child_attributions.saturating_add(1);
+    }
+
+    pub(crate) fn resolve_child_attribution(&mut self) {
+        self.unresolved_child_attributions = self.unresolved_child_attributions.saturating_sub(1);
+    }
+
     /// Record a completed model turn's usage by cache class.
     pub fn turn(&mut self, usage: &Usage, model_ms: u64) {
-        self.turns += 1;
+        self.turns = self.turns.saturating_add(1);
         self.usage.add(usage);
         self.local_usage.add(usage);
         self.last_turn_usage = Some(*usage);
-        self.phase_model_ms += model_ms;
+        self.timings.phase_model_ms = self.timings.phase_model_ms.saturating_add(model_ms);
+    }
+
+    /// Restore a completed provider turn from durable usage without inventing model wall time.
+    pub(crate) fn replay_turn(&mut self, usage: &Usage) {
+        self.turns = self.turns.saturating_add(1);
+        self.usage.add(usage);
+        self.local_usage.add(usage);
+        self.last_turn_usage = Some(*usage);
+    }
+
+    /// Record model time for a successful response whose provider omitted authoritative usage.
+    ///
+    /// This intentionally does not increment `turns` or add a synthetic zero [`Usage`]. The
+    /// preceding [`Self::attempt`] therefore remains unmatched, which makes [`Self::cost_state`]
+    /// report `BillingEvidenceMissing` and prevents a known-zero dollar result.
+    pub fn turn_without_usage(&mut self, model_ms: u64) {
+        self.last_turn_usage = None;
+        self.timings.phase_model_ms = self.timings.phase_model_ms.saturating_add(model_ms);
+    }
+
+    /// Bind a signed, content-addressed price to the immediately preceding completed turn. The
+    /// live kernel calls this only after the projection event is durable; replay calls it only
+    /// after checking the projection digest and route/card binding.
+    pub(crate) fn apply_cost_projection(
+        &mut self,
+        projection: &CostProjection,
+    ) -> Result<(), &'static str> {
+        pricing::validate_projection_digest(projection)
+            .map_err(|_| "invalid pricing projection digest")?;
+        if self.priced_turns >= self.turns {
+            return Err("pricing projection has no unpriced completed turn");
+        }
+        if self.last_turn_usage != Some(projection.usage) {
+            return Err("pricing projection usage does not match the completed turn");
+        }
+        self.priced_turns = self.priced_turns.saturating_add(1);
+        if let Some(amount) = self.amount_microusd.checked_add(projection.amount_microusd) {
+            self.amount_microusd = amount;
+        } else {
+            self.amount_overflowed = true;
+        }
+        self.rate_card_digests
+            .insert(projection.rate_card_digest.clone());
+        self.cost_projections.push(projection.clone());
+        Ok(())
     }
 
     /// Attribute a child-agent ledger to its owning run. Child rollouts remain separate for
@@ -152,39 +299,78 @@ impl Ledger {
         self.turns = self.turns.saturating_add(child.turns);
         self.usage.add(&child.usage);
         self.child_usage.add(&child.usage);
-        self.tool_wall_ms = self.tool_wall_ms.saturating_add(child.tool_wall_ms);
-        self.tool_overlapped_ms = self
-            .tool_overlapped_ms
-            .saturating_add(child.tool_overlapped_ms);
+        self.timings.merge(child.timings);
+        self.timing_history_unknown |= child.timing_history_unknown;
         self.tool_calls = self.tool_calls.saturating_add(child.tool_calls);
         self.tool_errors = self.tool_errors.saturating_add(child.tool_errors);
-        self.phase_model_ms = self.phase_model_ms.saturating_add(child.phase_model_ms);
-        self.phase_tools_ms = self.phase_tools_ms.saturating_add(child.phase_tools_ms);
+        self.tool_inline_overflow_events = self
+            .tool_inline_overflow_events
+            .saturating_add(child.tool_inline_overflow_events);
+        self.priced_turns = self.priced_turns.saturating_add(child.priced_turns);
+        if let Some(amount) = self.amount_microusd.checked_add(child.amount_microusd) {
+            self.amount_microusd = amount;
+        } else {
+            self.amount_overflowed = true;
+        }
+        self.amount_overflowed |= child.amount_overflowed;
+        self.rate_card_digests
+            .extend(child.rate_card_digests.iter().cloned());
+        self.cost_projections
+            .extend(child.cost_projections.iter().cloned());
+        self.unresolved_child_attributions = self
+            .unresolved_child_attributions
+            .saturating_add(child.unresolved_child_attributions);
     }
 
     /// Content-free attribution snapshot suitable for the parent workflow journal. Child rollouts
     /// keep full messages; the parent needs only additive accounting to make resume and session
     /// projection preserve the same hard ceilings as the live run.
     pub fn workflow_metrics(&self) -> WorkflowMetrics {
+        let complete_timings = (!self.timing_history_unknown).then_some(self.timings);
         WorkflowMetrics {
             provider_attempts: self.provider_attempts,
             completed_turns: self.turns,
             usage: self.usage,
             tool_calls: self.tool_calls,
             tool_errors: self.tool_errors,
-            model_ms: self.phase_model_ms,
-            tools_ms: self.phase_tools_ms,
+            model_ms: complete_timings.map(|timings| timings.phase_model_ms),
+            tools_ms: complete_timings.map(|timings| timings.phase_tools_ms),
+            cost: self.workflow_cost_evidence(),
         }
     }
 
     /// Metrics attributable to work after `baseline`. Workflow terminal cards use this delta so a
     /// follow-up does not relabel the whole session's historical usage as the latest workflow.
     pub fn workflow_metrics_since(&self, baseline: &Ledger) -> WorkflowMetrics {
+        let completed_turns = self.turns.saturating_sub(baseline.turns);
+        let priced_turns = self.priced_turns.saturating_sub(baseline.priced_turns);
+        let projections = self
+            .cost_projections
+            .get(baseline.cost_projections.len()..)
+            .unwrap_or_default()
+            .to_vec();
+        let delta_rate_card_digests = projections
+            .iter()
+            .map(|projection| projection.rate_card_digest.clone())
+            .collect::<BTreeSet<_>>();
+        let cost = (completed_turns > 0
+            && priced_turns == completed_turns
+            && !self.amount_overflowed
+            && !baseline.amount_overflowed
+            && self.unresolved_child_attributions == 0
+            && baseline.unresolved_child_attributions == 0)
+            .then(|| WorkflowCostEvidence {
+                amount_microusd: self
+                    .amount_microusd
+                    .saturating_sub(baseline.amount_microusd),
+                rate_card_digest: combined_rate_card_digest(&delta_rate_card_digests),
+                projections,
+            });
         WorkflowMetrics {
             provider_attempts: self
                 .provider_attempts
                 .saturating_sub(baseline.provider_attempts),
-            completed_turns: self.turns.saturating_sub(baseline.turns),
+            completed_turns,
             usage: Usage {
                 input: self.usage.input.saturating_sub(baseline.usage.input),
                 output: self.usage.output.saturating_sub(baseline.usage.output),
@@ -200,14 +386,29 @@ impl Ledger {
             },
             tool_calls: self.tool_calls.saturating_sub(baseline.tool_calls),
             tool_errors: self.tool_errors.saturating_sub(baseline.tool_errors),
-            model_ms: self.phase_model_ms.saturating_sub(baseline.phase_model_ms),
-            tools_ms: self.phase_tools_ms.saturating_sub(baseline.phase_tools_ms),
+            model_ms: (!self.timing_history_unknown && !baseline.timing_history_unknown).then(
+                || {
+                    self.timings
+                        .phase_model_ms
+                        .saturating_sub(baseline.timings.phase_model_ms)
+                },
+            ),
+            tools_ms: (!self.timing_history_unknown && !baseline.timing_history_unknown).then(
+                || {
+                    self.timings
+                        .phase_tools_ms
+                        .saturating_sub(baseline.timings.phase_tools_ms)
+                },
+            ),
+            cost,
         }
     }
 
-    /// Restore one child's additive metrics from a verified parent workflow terminal. This mirrors
-    /// [`Self::merge`] without pretending the child was a direct request on the active transcript.
+    /// Restore one child's non-monetary additive metrics. Monetary fields are deliberately ignored:
+    /// callers must use [`Self::merge_verified_workflow_metrics`] after authenticating every signed
+    /// projection through a trusted pricing port.
     pub fn merge_workflow_metrics(&mut self, child: &WorkflowMetrics) {
+        self.mark_timing_unknown_after_replay();
         self.provider_attempts = self
             .provider_attempts
             .saturating_add(child.provider_attempts);
@@ -216,23 +417,107 @@ impl Ledger {
         self.child_usage.add(&child.usage);
         self.tool_calls = self.tool_calls.saturating_add(child.tool_calls);
         self.tool_errors = self.tool_errors.saturating_add(child.tool_errors);
-        self.phase_model_ms = self.phase_model_ms.saturating_add(child.model_ms);
-        self.phase_tools_ms = self.phase_tools_ms.saturating_add(child.tools_ms);
+        // These legacy workflow duration fields cover only child model/tools time and cannot make
+        // the parent run's missing context/verify history complete. Replay callers mark the
+        // ledger unknown and intentionally restore only reproducible counters here.
+    }
+
+    /// Merge child monetary attribution only after the replay caller authenticated all projection
+    /// HMACs. This method independently checks aggregate amount, usage, digest set, and cardinality.
+    pub(crate) fn merge_verified_workflow_metrics(
+        &mut self,
+        child: &WorkflowMetrics,
+    ) -> Result<(), &'static str> {
+        let cost = child
+            .cost
+            .as_ref()
+            .ok_or("missing workflow cost evidence")?;
+        let expected_projections = usize::try_from(child.completed_turns)
+            .map_err(|_| "workflow projection cardinality overflow")?;
+        if expected_projections == 0
+            || cost.projections.len() != expected_projections
+            || cost.projections.len() > MAX_WORKFLOW_COST_PROJECTIONS
+        {
+            return Err("workflow projection cardinality mismatch");
+        }
+        let mut usage = Usage::default();
+        let mut amount = Some(0u64);
+        let mut digests = BTreeSet::new();
+        for projection in &cost.projections {
+            pricing::validate_projection_digest(projection)
+                .map_err(|_| "invalid workflow projection digest")?;
+            usage.add(&projection.usage);
+            amount = amount.and_then(|current| current.checked_add(projection.amount_microusd));
+            digests.insert(projection.rate_card_digest.clone());
+        }
+        if amount.is_none() {
+            self.merge_workflow_metrics(child);
+            self.priced_turns = self.priced_turns.saturating_add(child.completed_turns);
+            self.amount_overflowed = true;
+            self.rate_card_digests.extend(digests);
+            self.cost_projections
+                .extend(cost.projections.iter().cloned());
+            return Ok(());
+        }
+        if usage != child.usage
+            || amount != Some(cost.amount_microusd)
+            || combined_rate_card_digest(&digests) != cost.rate_card_digest
+        {
+            return Err("workflow pricing aggregate mismatch");
+        }
+        self.merge_workflow_metrics(child);
+        self.priced_turns = self.priced_turns.saturating_add(child.completed_turns);
+        if let Some(amount) = self.amount_microusd.checked_add(cost.amount_microusd) {
+            self.amount_microusd = amount;
+        } else {
+            self.amount_overflowed = true;
+        }
+        self.rate_card_digests.extend(digests);
+        self.cost_projections
+            .extend(cost.projections.iter().cloned());
+        Ok(())
+    }
+
+    fn workflow_cost_evidence(&self) -> Option<WorkflowCostEvidence> {
+        (self.turns > 0
+            && self.priced_turns == self.turns
+            && !self.amount_overflowed
+            && self.unresolved_child_attributions == 0)
+            .then(|| WorkflowCostEvidence {
+                amount_microusd: self.amount_microusd,
+                rate_card_digest: combined_rate_card_digest(&self.rate_card_digests),
+                projections: self.cost_projections.clone(),
+            })
     }
 
     /// Record one tool execution. `overlapped_ms` is the portion that ran concurrently with
     /// decoding (the flagship's measured payoff; 0 for effecting tools run after the turn).
     pub fn tool(&mut self, latency_ms: u64, overlapped_ms: u64, is_error: bool) {
-        self.tool_calls += 1;
-        self.tool_wall_ms += latency_ms;
-        self.tool_overlapped_ms += overlapped_ms;
+        self.tool_calls = self.tool_calls.saturating_add(1);
+        self.timings.tool_wall_ms = self.timings.tool_wall_ms.saturating_add(latency_ms);
+        self.timings.tool_overlapped_ms = self
+            .timings
+            .tool_overlapped_ms
+            .saturating_add(overlapped_ms);
         if is_error {
-            self.tool_errors += 1;
+            self.tool_errors = self.tool_errors.saturating_add(1);
         }
     }
 
-    pub fn phase_tools(&mut self, ms: u64) {
-        self.phase_tools_ms += ms;
+    /// Restore only the durable portion of a completed tool event.
+    pub(crate) fn replay_tool(&mut self, is_error: bool) {
+        self.tool_calls = self.tool_calls.saturating_add(1);
+        if is_error {
+            self.tool_errors = self.tool_errors.saturating_add(1);
+        }
+    }
+
+    /// Record deterministic overflow from the early-dispatch concurrency governor to the inline
+    /// fallback. `usize` is accepted at the collection boundary and converted without wrapping.
+    pub fn tool_inline_overflow(&mut self, count: usize) {
+        self.tool_inline_overflow_events = self
+            .tool_inline_overflow_events
+            .saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
     }
 
     /// Cache-hit ratio for the last direct provider turn, not a cumulative or child-blended ratio.
@@ -254,13 +539,22 @@ impl Ledger {
     /// unknown until per-attempt route/rate-card snapshots exist; failed or in-flight attempts are
     /// stronger unknowns because even billable usage may be absent.
     pub fn cost_state(&self) -> CostState {
-        if self.provider_attempts > self.turns {
+        if self.amount_overflowed {
+            CostState::Unknown {
+                reason: CostUnknownReason::AmountOverflow,
+            }
+        } else if self.unresolved_child_attributions > 0 || self.provider_attempts != self.turns {
             CostState::Unknown {
                 reason: CostUnknownReason::BillingEvidenceMissing,
             }
-        } else if self.turns > 0 {
+        } else if self.turns > self.priced_turns {
             CostState::Unknown {
                 reason: CostUnknownReason::NoVerifiedRateCard,
+            }
+        } else if self.turns > 0 {
+            CostState::Known {
+                amount_microusd: self.amount_microusd,
+                rate_card_digest: combined_rate_card_digest(&self.rate_card_digests),
             }
         } else {
             CostState::Zero
@@ -270,14 +564,9 @@ impl Ledger {
     /// A one-screen human summary. The phase oracle made legible.
     pub fn summary(&self) -> String {
         let hit = self.usage.cache_hit_ratio() * 100.0;
-        let overlap_pct = if self.tool_wall_ms > 0 {
-            self.tool_overlapped_ms as f64 / self.tool_wall_ms as f64 * 100.0
-        } else {
-            0.0
-        };
-        format!(
+        let stable = format!(
             "turns={} | tokens in={} out={} cache_read={} cache_write={} (cache hit {:.0}%) | \
-             cost={} | tools={} err={} | tool_wall={}ms overlapped={:.0}% | model_ms={}",
+             cost={} | tools={} err={} inline_overflow={}",
             self.turns,
             self.usage.input,
             self.usage.output,
@@ -287,30 +576,53 @@ impl Ledger {
             self.cost_state().human(),
             self.tool_calls,
             self.tool_errors,
-            self.tool_wall_ms,
-            overlap_pct,
-            self.phase_model_ms,
-        )
-    }
-}
-
-/// A phase span: name a phase, measure its wall-clock. The harness declaring its own phase
-/// is the whole point.
-pub struct PhaseSpan {
-    pub phase: Phase,
-    started: std::time::Instant,
-}
-
-impl PhaseSpan {
-    pub fn enter(phase: Phase) -> Self {
-        PhaseSpan {
-            phase,
-            started: std::time::Instant::now(),
+            self.tool_inline_overflow_events,
+        );
+        match self.timings() {
+            TimingSnapshot::Complete(timings) => {
+                let overlap_pct = if timings.tool_wall_ms > 0 {
+                    timings.tool_overlapped_ms as f64 / timings.tool_wall_ms as f64 * 100.0
+                } else {
+                    0.0
+                };
+                format!(
+                    "{stable} | tool_wall={}ms overlapped={overlap_pct:.0}% | phase_ms context={} model={} tools={} verify={}",
+                    timings.tool_wall_ms,
+                    timings.phase_context_ms,
+                    timings.phase_model_ms,
+                    timings.phase_tools_ms,
+                    timings.phase_verify_ms,
+                )
+            }
+            TimingSnapshot::UnknownAfterReplay { observed_partial } => format!(
+                "{stable} | timing=unknown_after_replay (observed_partial tool_wall={}ms context={}ms model={}ms tools={}ms verify={}ms)",
+                observed_partial.tool_wall_ms,
+                observed_partial.phase_context_ms,
+                observed_partial.phase_model_ms,
+                observed_partial.phase_tools_ms,
+                observed_partial.phase_verify_ms,
+            ),
         }
     }
-    pub fn elapsed_ms(&self) -> u64 {
-        self.started.elapsed().as_millis() as u64
+}
+
+fn combined_rate_card_digest(digests: &BTreeSet<String>) -> String {
+    if let Some(only) = digests.iter().next().filter(|_| digests.len() == 1) {
+        return only.clone();
     }
+    let mut hasher = Sha256::new();
+    hasher.update(b"core/rate-card-set/v1");
+    for digest in digests {
+        hasher.update((digest.len() as u64).to_be_bytes());
+        hasher.update(digest.as_bytes());
+    }
+    let bytes = hasher.finalize();
+    let mut output = String::from("sha256:");
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
 }
 
 #[cfg(test)]
@@ -342,6 +654,32 @@ mod tests {
             l.cost_state(),
             CostState::Unknown {
                 reason: CostUnknownReason::NoVerifiedRateCard
+            }
+        );
+    }
+
+    #[test]
+    fn successful_turn_without_usage_remains_unknown_instead_of_zero() {
+        let mut ledger = Ledger::new();
+        ledger.attempt();
+        ledger.turn_without_usage(37);
+
+        assert_eq!(ledger.provider_attempts, 1);
+        assert_eq!(ledger.turns, 0);
+        assert_eq!(ledger.usage, Usage::default());
+        assert_eq!(ledger.last_turn_usage, None);
+        assert_eq!(
+            ledger
+                .timings()
+                .complete()
+                .expect("live timing is complete")
+                .phase_model_ms,
+            37
+        );
+        assert_eq!(
+            ledger.cost_state(),
+            CostState::Unknown {
+                reason: CostUnknownReason::BillingEvidenceMissing,
             }
         );
     }
@@ -395,5 +733,119 @@ mod tests {
         assert_eq!(parent.local_cache_hit_ratio(), 0.5);
         assert_eq!(parent.child_usage, child_usage);
         assert!(parent.aggregate_cache_hit_ratio() < parent.local_cache_hit_ratio());
+    }
+
+    #[test]
+    fn inline_overflow_counter_is_saturating_visible_and_additive() {
+        let mut parent = Ledger::new();
+        parent.tool_inline_overflow(2);
+        let mut child = Ledger::new();
+        child.tool_inline_overflow(3);
+        parent.merge(&child);
+
+        assert_eq!(parent.tool_inline_overflow_events, 5);
+        assert!(parent.summary().contains("inline_overflow=5"));
+        parent.tool_inline_overflow_events = u64::MAX;
+        parent.tool_inline_overflow(1);
+        assert_eq!(parent.tool_inline_overflow_events, u64::MAX);
+    }
+
+    #[test]
+    fn unsigned_workflow_cost_evidence_never_constructs_known() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let metrics = WorkflowMetrics {
+            provider_attempts: 1,
+            completed_turns: 1,
+            usage: Usage {
+                input: 3,
+                output: 2,
+                ..Usage::default()
+            },
+            cost: Some(WorkflowCostEvidence {
+                amount_microusd: 7,
+                rate_card_digest: digest.clone(),
+                projections: Vec::new(),
+            }),
+            ..WorkflowMetrics::default()
+        };
+        let mut restored = Ledger::new();
+        restored.merge_workflow_metrics(&metrics);
+        assert_eq!(
+            restored.cost_state(),
+            CostState::Unknown {
+                reason: CostUnknownReason::NoVerifiedRateCard,
+            }
+        );
+    }
+
+    fn fixture_projection(tag: &str, key: [u8; 32], usage: Usage) -> CostProjection {
+        let card = core_protocol::RateCard {
+            version: core_protocol::PricingVersion::V1,
+            route: core_protocol::PricingRoute {
+                provider_id: format!("provider-{tag}"),
+                model_id: format!("model-{tag}"),
+                catalog_digest: format!("sha256:{}", tag.repeat(64)),
+                capability_digest: format!("sha256:{}", "f".repeat(64)),
+            },
+            provenance: format!("manifest@{tag}"),
+            issued_at_unix_secs: 1,
+            expires_at_unix_secs: 100,
+            rates: core_protocol::TokenRateCard {
+                input_microusd_per_million: 1_000_000,
+                output_microusd_per_million: 1_000_000,
+                cache_creation_microusd_per_million: 1_000_000,
+                cache_read_microusd_per_million: 1_000_000,
+                thinking_microusd_per_million: 1_000_000,
+            },
+        };
+        let signed = pricing::sign_rate_card(card, format!("root-{tag}"), key).unwrap();
+        let authority = pricing::HmacPricingAuthority::new(vec![(
+            signed.clone(),
+            pricing::HmacPricingKey::from_bytes(key),
+        )])
+        .unwrap();
+        authority
+            .project(
+                &signed,
+                CostProjectionIdentity {
+                    tenant_id: "tenant".into(),
+                    run_id: format!("run-{tag}"),
+                    turn_id: 0,
+                    provider_attempt: 1,
+                    attribution: None,
+                },
+                usage,
+                50,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn workflow_delta_digest_excludes_prior_rate_card_history() {
+        let first_usage = Usage {
+            input: 1,
+            output: 1,
+            ..Usage::default()
+        };
+        let second_usage = Usage {
+            input: 2,
+            output: 1,
+            ..Usage::default()
+        };
+        let first = fixture_projection("a", [1; 32], first_usage);
+        let second = fixture_projection("b", [2; 32], second_usage);
+        let mut ledger = Ledger::new();
+        ledger.attempt();
+        ledger.turn(&first_usage, 1);
+        ledger.apply_cost_projection(&first).unwrap();
+        let baseline = ledger.clone();
+
+        ledger.attempt();
+        ledger.turn(&second_usage, 1);
+        ledger.apply_cost_projection(&second).unwrap();
+        let delta = ledger.workflow_metrics_since(&baseline);
+        let cost = delta.cost.expect("the new turn is fully priced");
+        assert_eq!(cost.rate_card_digest, second.rate_card_digest);
+        assert_eq!(cost.projections, vec![second]);
     }
 }

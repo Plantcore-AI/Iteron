@@ -31,8 +31,10 @@ futures-util = { workspace = true }
 async-trait = "0.1"
 url = "2"
 sha2 = { workspace = true }
+getrandom = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
 portable-pty = "=0.9.0"
 vt100 = "=0.15.2"
+tokio = { workspace = true, features = ["test-util"] }

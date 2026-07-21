@@ -3,19 +3,163 @@
 
 use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
 use core_protocol::{Capability, Purity, ToolSpec};
+use std::path::Path;
+use tokio::io::AsyncReadExt;
 use walkdir::WalkDir;
+
+const MAX_READ_OUTPUT_BYTES: usize = 40_000;
+const MAX_READ_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+const TRUNCATION_MARKER_RESERVE_BYTES: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReadWindow {
+    /// Absolute, 1-based first line to return.
+    offset: u64,
+    /// Maximum lines to return; `None` means through EOF or the byte cap.
+    limit: Option<u64>,
+}
+
+impl ReadWindow {
+    fn from_input(input: &serde_json::Value) -> Result<Self, String> {
+        let offset = positive_integer(input, "offset")?.unwrap_or(1);
+        let limit = positive_integer(input, "limit")?;
+        Ok(Self { offset, limit })
+    }
+}
+
+fn positive_integer(input: &serde_json::Value, field: &str) -> Result<Option<u64>, String> {
+    let Some(value) = input.get(field) else {
+        return Ok(None);
+    };
+    value
+        .as_u64()
+        .filter(|value| *value > 0)
+        .map(Some)
+        .ok_or_else(|| format!("read_file: `{field}` must be a positive integer (minimum 1)"))
+}
+
+async fn read_numbered_file(path: &Path, window: ReadWindow) -> std::io::Result<String> {
+    let file = tokio::fs::File::open(path).await?;
+    let metadata = file.metadata().await?;
+    if metadata.len() > MAX_READ_SOURCE_BYTES as u64 {
+        return Ok(format!(
+            "(oversized file, not shown; read_file source limit is {MAX_READ_SOURCE_BYTES} bytes)"
+        ));
+    }
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(metadata.len())
+            .unwrap_or(MAX_READ_SOURCE_BYTES)
+            .min(MAX_READ_SOURCE_BYTES)
+            .saturating_add(1),
+    );
+    file.take(MAX_READ_SOURCE_BYTES.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() > MAX_READ_SOURCE_BYTES {
+        return Ok(format!(
+            "(oversized file, not shown; read_file source limit is {MAX_READ_SOURCE_BYTES} bytes)"
+        ));
+    }
+    if bytes.contains(&0) {
+        return Ok("(binary or unsupported encoded file, not shown)".into());
+    }
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        Err(_) => return Ok("(binary or non-UTF-8 file, not shown)".into()),
+    };
+
+    let mut absolute_line = 0_u64;
+    let mut emitted = 0_u64;
+    let mut output = String::new();
+    let mut truncated_before = None;
+
+    for line in text.lines() {
+        absolute_line = absolute_line
+            .checked_add(1)
+            .ok_or_else(|| std::io::Error::other("read_file line counter overflow"))?;
+        if absolute_line < window.offset {
+            continue;
+        }
+
+        let numbered = format!("{absolute_line:>6}\t{line}");
+        let separator_bytes = usize::from(!output.is_empty());
+        if output
+            .len()
+            .saturating_add(separator_bytes)
+            .saturating_add(numbered.len())
+            > MAX_READ_OUTPUT_BYTES - TRUNCATION_MARKER_RESERVE_BYTES
+        {
+            truncated_before = Some(absolute_line);
+            break;
+        }
+        if separator_bytes > 0 {
+            output.push('\n');
+        }
+        output.push_str(&numbered);
+        emitted += 1;
+        if window.limit.is_some_and(|limit| emitted >= limit) {
+            break;
+        }
+    }
+
+    if let Some(next_line) = truncated_before {
+        let marker = format!(
+            "… (truncated before line {next_line}; read_file output is capped at \
+             {MAX_READ_OUTPUT_BYTES} bytes; continue with offset={next_line})"
+        );
+        if marker.len() >= TRUNCATION_MARKER_RESERVE_BYTES {
+            return Err(std::io::Error::other(
+                "read_file truncation marker exceeded its reserved output budget",
+            ));
+        }
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(&marker);
+        debug_assert!(output.len() <= MAX_READ_OUTPUT_BYTES);
+    }
+
+    if output.is_empty() {
+        if absolute_line == 0 {
+            Ok("(empty file)".into())
+        } else {
+            Ok(format!(
+                "(no lines in requested range; file has {absolute_line} lines)"
+            ))
+        }
+    } else {
+        Ok(output)
+    }
+}
 
 pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     register_outline(r)?;
+    crate::grep_tool::register(r)?;
     r.push_tool(
         ToolSpec {
             name: "read_file".into(),
-            description: "Read a UTF-8 text file relative to the workspace root. Returns the \
-                          content with 1-based line numbers so edits can reference exact lines."
+            description: "Read a bounded window of a UTF-8 text file relative to the workspace \
+                          root. Returns absolute 1-based line numbers so edits can reference exact \
+                          text. `offset` is the optional 1-based first line (default 1); `limit` is \
+                          the optional number of lines. Output is capped at 40,000 bytes and source \
+                          reads at 8 MiB; binary, unsupported-encoding, and oversized files are not \
+                          injected. Truncation reports the next offset to read."
                 .into(),
             input_schema: serde_json::json!({
                 "type":"object",
-                "properties":{"path":{"type":"string","description":"path relative to the repo root"}},
+                "properties":{
+                    "path":{"type":"string","description":"path relative to the repo root"},
+                    "offset":{
+                        "type":"integer",
+                        "minimum":1,
+                        "description":"optional 1-based first line to return; defaults to 1"
+                    },
+                    "limit":{
+                        "type":"integer",
+                        "minimum":1,
+                        "description":"optional maximum number of lines to return; the 40,000-byte output cap still applies"
+                    }
+                },
                 "required":["path"]
             }),
             purity: Purity::Pure,
@@ -25,20 +169,14 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
             boxfut::box_it(async move {
                 let id = call.id.clone();
                 let path = call.input.get("path").and_then(|x| x.as_str()).unwrap_or("");
+                let window = match ReadWindow::from_input(&call.input) {
+                    Ok(window) => window,
+                    Err(error) => return err_result(id, error),
+                };
                 match resolve_in_root(&root, path) {
                     Err(e) => err_result(id, e),
-                    Ok(p) => match tokio::fs::read_to_string(&p).await {
-                        Ok(s) => {
-                            let numbered: String = s
-                                .lines()
-                                .enumerate()
-                                .map(|(i, l)| format!("{:>6}\t{}", i + 1, l))
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            // Cap output so a huge file can't blow the context window; UTF-8-safe.
-                            let bounded = core_protocol::text::elide_middle(&numbered, 40_000);
-                            ok_result(id, if bounded.is_empty() { "(empty file)".into() } else { bounded })
-                        }
+                    Ok(p) => match read_numbered_file(&p, window).await {
+                        Ok(content) => ok_result(id, content),
                         Err(e) => err_result(id, format!("read {path}: {e}")),
                     },
                 }
@@ -138,68 +276,6 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
         },
     )?;
 
-    r.push_tool(
-        ToolSpec {
-            name: "grep".into(),
-            description: "Search file contents for a substring under the repo root. Returns \
-                          matching `path:line: text`, capped. Prefer this over reading whole \
-                          files (push the filter into the tool)."
-                .into(),
-            input_schema: serde_json::json!({
-                "type":"object",
-                "properties":{
-                    "pattern":{"type":"string"},
-                    "path":{"type":"string","description":"subtree relative to repo root; default '.'"}
-                },
-                "required":["pattern"]
-            }),
-            purity: Purity::Pure,
-            capability: Capability::ReadOnly,
-        },
-        |call, root| {
-            boxfut::box_it(async move {
-                let id = call.id.clone();
-                let pat = call.input.get("pattern").and_then(|x| x.as_str()).unwrap_or("");
-                let rel = call.input.get("path").and_then(|x| x.as_str()).unwrap_or(".");
-                if pat.is_empty() {
-                    return err_result(id, "empty pattern".into());
-                }
-                let base = match resolve_in_root(&root, rel) {
-                    Ok(b) => b,
-                    Err(e) => return err_result(id, e),
-                };
-                let mut hits = Vec::new();
-                for entry in WalkDir::new(&base)
-                    .max_depth(8)
-                    .into_iter()
-                    .filter_entry(|e| !is_ignored(e.file_name().to_str().unwrap_or("")))
-                    .flatten()
-                {
-                    if !entry.file_type().is_file() {
-                        continue;
-                    }
-                    if let Ok(content) = tokio::fs::read_to_string(entry.path()).await {
-                        let rel_path = entry
-                            .path()
-                            .strip_prefix(&root)
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_default();
-                        for (i, line) in content.lines().enumerate() {
-                            if line.contains(pat) {
-                                hits.push(format!("{}:{}: {}", rel_path, i + 1, line.trim()));
-                                if hits.len() >= 100 {
-                                    hits.push("… (100+ matches; narrow the search)".into());
-                                    return ok_result(id, hits.join("\n"));
-                                }
-                            }
-                        }
-                    }
-                }
-                ok_result(id, if hits.is_empty() { format!("no matches for `{pat}`") } else { hits.join("\n") })
-            })
-        },
-    )?;
-
     Ok(())
 }
 
@@ -251,9 +327,18 @@ pub(crate) fn register_outline(r: &mut Registry) -> Result<(), ToolError> {
             description: "Get a skeleton of the repository: every code file and its top-level \
                           declarations (functions, classes, types), no bodies. Read this FIRST \
                           on an unfamiliar repo to localize, then read_file only the files you \
-                          actually need."
+                          actually need. Optional `query` task text or identifiers boost files \
+                          that declare those identifiers above unrelated declaration-heavy files."
                 .into(),
-            input_schema: serde_json::json!({"type":"object","properties":{}}),
+            input_schema: serde_json::json!({
+                "type":"object",
+                "properties":{
+                    "query":{
+                        "type":"string",
+                        "description":"optional task text or identifier names for deterministic relevance ranking"
+                    }
+                }
+            }),
             purity: Purity::Pure,
             capability: Capability::ReadOnly,
         },
@@ -261,7 +346,12 @@ pub(crate) fn register_outline(r: &mut Registry) -> Result<(), ToolError> {
             boxfut::box_it(async move {
                 let id = call.id.clone();
                 // Budget the map so it never dominates the window (late materialization).
-                let map = core_ctx::repo_outline(&root, 6_000);
+                let query = call
+                    .input
+                    .get("query")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                let map = core_ctx::repo_outline_for_task(&root, 6_000, query);
                 ok_result(id, map)
             })
         },
@@ -269,24 +359,5 @@ pub(crate) fn register_outline(r: &mut Registry) -> Result<(), ToolError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::glob_match;
-
-    #[test]
-    fn glob_matches_segments_and_globstar() {
-        assert!(glob_match("*.rs", "main.rs"));
-        assert!(!glob_match("*.rs", "src/main.rs")); // `*` never crosses a `/`
-        assert!(glob_match("src/*.rs", "src/main.rs"));
-        assert!(!glob_match("src/*.rs", "src/a/b.rs"));
-        assert!(glob_match("**/*.rs", "a/b/c.rs"));
-        assert!(glob_match("**/*.rs", "c.rs")); // `**` matches zero segments
-        assert!(glob_match("src/**/*.rs", "src/a/b.rs"));
-        assert!(glob_match("src/**/*.rs", "src/b.rs"));
-        assert!(!glob_match("src/**/*.rs", "lib/b.rs"));
-        assert!(glob_match("?.txt", "a.txt"));
-        assert!(!glob_match("?.txt", "ab.txt"));
-        assert!(glob_match("**", "any/thing/here"));
-        assert!(glob_match("Cargo.toml", "Cargo.toml"));
-        assert!(!glob_match("Cargo.toml", "crates/Cargo.toml"));
-    }
-}
+#[path = "fs_tools_tests.rs"]
+mod tests;

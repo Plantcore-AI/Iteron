@@ -5,15 +5,14 @@
 //! performs bounded discovery concurrently, and resolves an explicit `(provider, model)` pair.
 
 use crate::config::ProviderConfig;
-use core_provider::catalog::{GLM_STANDARD_CHAT_MANIFEST, glm_standard_schema_catalog};
+use core_provider::catalog::glm_standard_schema_catalog;
 use core_provider::{
     AccountAvailability, AccountProbe, AccountProbeResult, AdapterKind, ApiRoot,
     BalanceAvailability, CatalogSnapshot, CatalogStrategy, Compatibility, ErrorProfile,
     HealthReportingProvider, ModelDescriptor, ModelFamily, Provider, ProviderError, ProviderHealth,
-    ProviderHealthStore, ProviderInstance, RawModel, Selectability, StreamItem, TurnRequest,
-    TurnResult, discover_catalog, probe_account,
+    ProviderHealthStore, ProviderInstance, RawModel, Selectability, StaticProviderMetadata,
+    StreamItem, TurnRequest, TurnResult, discover_catalog, probe_account,
 };
-use core_sched::{BackoffPolicy, RetryProvider};
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -44,8 +43,7 @@ const MAX_CACHED_MODELS_PER_ENTRY: usize = 10_000;
 const MAX_CACHED_MODELS_TOTAL: usize = 50_000;
 const MAX_CACHED_FAMILIES_PER_ENTRY: usize = 1_024;
 const MAX_CACHED_TEXT_BYTES: usize = 512;
-const GLM_52_CAPABILITY_VERSION: &str = "glm-5.2-model-page@2026-07-15";
-const GLM_52_CAPABILITY_SOURCE: &str = "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2";
+const STATIC_PROVIDER_METADATA_FILE: &str = "provider-metadata.json";
 static CACHE_TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,14 +54,14 @@ pub(crate) struct ModelSelection {
 
 /// Versioned, provenance-bearing execution limits for one exact route. Unknown fields remain
 /// `None`; dynamic model visibility never implies undocumented capacity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModelCapabilities {
     pub context_window_tokens: Option<u64>,
     pub max_output_tokens: Option<u32>,
     pub tool_calling: Option<bool>,
     pub semantic_effort: Option<bool>,
-    pub version: Option<&'static str>,
-    pub source: Option<&'static str>,
+    pub version: Option<String>,
+    pub source: Option<String>,
 }
 
 impl ModelCapabilities {
@@ -82,17 +80,18 @@ impl ModelCapabilities {
 /// Stable evidence class for the model inventory attached to one provider entry. This is kept
 /// separate from the snapshot itself so equal model ids cannot make operator, static, cached and
 /// credential-visible catalogs hash to the same provenance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum CatalogProvenance {
     Unavailable,
     DynamicFresh,
+    /// A still-valid, credential-scoped snapshot loaded without another discovery request.
+    CachedFresh,
     StaticOfficial {
-        version: &'static str,
-        source: &'static str,
+        version: String,
+        source: String,
     },
     OperatorManifest,
     OperatorExplicit,
-    CachedDisplay,
 }
 
 #[derive(Clone)]
@@ -106,7 +105,7 @@ pub(crate) struct ProviderEntry {
     /// A discovery failure that is not evidence about inference authorization. The hierarchical
     /// picker remains fail-closed, but an operator may explicitly type `provider:model-id`.
     pub catalog_fallback_explicit: bool,
-    /// True only when the catalog came from the versioned last-known-good cache.
+    /// True only for cached display evidence that must not authorize a picker selection.
     pub catalog_stale: bool,
     catalog_provenance: CatalogProvenance,
 }
@@ -170,7 +169,9 @@ struct CachedModel {
 }
 
 /// Installation-local HMAC key used only to bind credential-visible inventory to the credential
-/// that produced it. The key has no serde/debug surface and is kept in a separate 0600 file.
+/// that produced it. The key has no serde/debug surface and is kept in a separate fixed-size file;
+/// Unix additionally enforces exact owner/0600 metadata, while Windows rejects reparse paths and
+/// inherits the operator cache directory's ACL.
 #[derive(Clone)]
 struct CatalogCacheScopeKey([u8; CATALOG_CACHE_SCOPE_KEY_BYTES]);
 
@@ -455,7 +456,9 @@ impl CatalogCache {
             drop(file);
             fs::rename(&temporary_path, path)?;
             // Persist the rename itself where the platform supports directory fsync.
-            let _ = directory.sync_all();
+            if let Some(directory) = directory {
+                let _ = directory.sync_all();
+            }
             Ok(())
         })();
         if result.is_err() {
@@ -717,10 +720,11 @@ fn hash_selectability(hasher: &mut Sha256, value: &Selectability) {
     }
 }
 
-fn hash_catalog_provenance(hasher: &mut Sha256, provenance: CatalogProvenance) {
+fn hash_catalog_provenance(hasher: &mut Sha256, provenance: &CatalogProvenance) {
     match provenance {
         CatalogProvenance::Unavailable => hash_part(hasher, b"unavailable"),
         CatalogProvenance::DynamicFresh => hash_part(hasher, b"dynamic-fresh"),
+        CatalogProvenance::CachedFresh => hash_part(hasher, b"cached-fresh"),
         CatalogProvenance::StaticOfficial { version, source } => {
             hash_part(hasher, b"static-official");
             hash_part(hasher, version.as_bytes());
@@ -728,7 +732,6 @@ fn hash_catalog_provenance(hasher: &mut Sha256, provenance: CatalogProvenance) {
         }
         CatalogProvenance::OperatorManifest => hash_part(hasher, b"operator-manifest"),
         CatalogProvenance::OperatorExplicit => hash_part(hasher, b"operator-explicit"),
-        CatalogProvenance::CachedDisplay => hash_part(hasher, b"cached-display"),
     }
 }
 
@@ -753,8 +756,16 @@ fn cache_identity_for_instance(
 }
 
 impl CatalogCacheScopeKey {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn load_or_create(cache_path: &Path) -> io::Result<Self> {
+        Self::load_or_create_with_rng(cache_path, fill_scope_key_from_os)
+    }
+
+    #[cfg(any(unix, windows))]
+    fn load_or_create_with_rng(
+        cache_path: &Path,
+        fill_random: impl FnOnce(&mut [u8]) -> io::Result<()>,
+    ) -> io::Result<Self> {
         let parent = cache_path.parent().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "cache path has no parent")
         })?;
@@ -767,7 +778,7 @@ impl CatalogCacheScopeKey {
         }
 
         let mut bytes = [0_u8; CATALOG_CACHE_SCOPE_KEY_BYTES];
-        File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+        fill_random(&mut bytes)?;
         if bytes.iter().all(|byte| *byte == 0) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -788,8 +799,11 @@ impl CatalogCacheScopeKey {
             ));
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
             match options.open(&candidate) {
                 Ok(file) => {
                     temporary = Some((candidate, file));
@@ -813,7 +827,9 @@ impl CatalogCacheScopeKey {
             match fs::hard_link(&temporary_path, &key_path) {
                 Ok(()) => {
                     fs::remove_file(&temporary_path)?;
-                    let _ = directory.sync_all();
+                    if let Some(directory) = &directory {
+                        let _ = directory.sync_all();
+                    }
                     load_existing_scope_key(&key_path)
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -829,10 +845,9 @@ impl CatalogCacheScopeKey {
         result
     }
 
-    /// No portable standard-library CSPRNG exists on non-Unix targets. Silently deriving a key
-    /// from time/process state would turn the HMAC into a naked hash, so persistent catalogs are
-    /// deliberately disabled there until a trusted OS RNG backend is admitted.
-    #[cfg(not(unix))]
+    /// Targets outside the explicitly admitted Unix/Windows OS-RNG set stay disabled. Silently
+    /// deriving a key from time/process state would turn the HMAC into a naked hash.
+    #[cfg(not(any(unix, windows)))]
     fn load_or_create(_cache_path: &Path) -> io::Result<Self> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -841,7 +856,19 @@ impl CatalogCacheScopeKey {
     }
 }
 
-fn prepare_private_cache_directory(path: &Path) -> io::Result<File> {
+#[cfg(any(unix, windows))]
+fn fill_scope_key_from_os(destination: &mut [u8]) -> io::Result<()> {
+    getrandom::fill(destination).map_err(|error| {
+        let kind = if error == getrandom::Error::UNSUPPORTED {
+            io::ErrorKind::Unsupported
+        } else {
+            io::ErrorKind::Other
+        };
+        io::Error::new(kind, "operating-system randomness is unavailable")
+    })
+}
+
+fn prepare_private_cache_directory(path: &Path) -> io::Result<Option<File>> {
     fs::create_dir_all(path)?;
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -850,16 +877,27 @@ fn prepare_private_cache_directory(path: &Path) -> io::Result<File> {
             "provider cache parent is not a real directory",
         ));
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "provider cache parent must not be a Windows reparse point",
+            ));
+        }
+    }
     #[cfg(unix)]
     fs::set_permissions(path, {
         use std::os::unix::fs::PermissionsExt;
         fs::Permissions::from_mode(0o700)
     })?;
-    let directory = File::open(path)?;
-    let opened_metadata = directory.metadata()?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
+        let directory = File::open(path)?;
+        let opened_metadata = directory.metadata()?;
         if metadata.dev() != opened_metadata.dev()
             || metadata.ino() != opened_metadata.ino()
             || opened_metadata.mode() & 0o777 != 0o700
@@ -869,14 +907,16 @@ fn prepare_private_cache_directory(path: &Path) -> io::Result<File> {
                 "provider cache directory identity or permissions changed",
             ));
         }
+        Ok(Some(directory))
     }
-    Ok(directory)
+    #[cfg(not(unix))]
+    {
+        Ok(None)
+    }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn load_existing_scope_key(path: &Path) -> io::Result<CatalogCacheScopeKey> {
-    use std::os::unix::fs::MetadataExt;
-
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink()
         || !metadata.is_file()
@@ -887,21 +927,42 @@ fn load_existing_scope_key(path: &Path) -> io::Result<CatalogCacheScopeKey> {
             "provider cache scope key is not a regular fixed-size file",
         ));
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "provider cache scope key must not be a Windows reparse point",
+            ));
+        }
+    }
     let file = File::open(path)?;
     let opened_metadata = file.metadata()?;
-    let parent_metadata = fs::symlink_metadata(path.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "cache key path has no parent")
-    })?)?;
-    if metadata.dev() != opened_metadata.dev()
-        || metadata.ino() != opened_metadata.ino()
-        || opened_metadata.mode() & 0o777 != 0o600
-        || opened_metadata.nlink() != 1
-        || opened_metadata.uid() != parent_metadata.uid()
-    {
+    if !opened_metadata.is_file() || opened_metadata.len() != CATALOG_CACHE_SCOPE_KEY_BYTES as u64 {
         return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "provider cache scope key identity, owner, or permissions are unsafe",
+            io::ErrorKind::InvalidData,
+            "opened provider cache scope key is not a regular fixed-size file",
         ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let parent_metadata = fs::symlink_metadata(path.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "cache key path has no parent")
+        })?)?;
+        if metadata.dev() != opened_metadata.dev()
+            || metadata.ino() != opened_metadata.ino()
+            || opened_metadata.mode() & 0o777 != 0o600
+            || opened_metadata.nlink() != 1
+            || opened_metadata.uid() != parent_metadata.uid()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "provider cache scope key identity, owner, or permissions are unsafe",
+            ));
+        }
     }
     let mut bytes = Vec::with_capacity(CATALOG_CACHE_SCOPE_KEY_BYTES + 1);
     file.take((CATALOG_CACHE_SCOPE_KEY_BYTES + 1) as u64)
@@ -923,6 +984,25 @@ fn default_catalog_cache_path() -> Option<PathBuf> {
         return None;
     }
     Some(core_protocol::home::path(&home, "cache/providers").join(CATALOG_CACHE_FILE))
+}
+
+fn default_static_provider_metadata_path() -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    home.is_absolute()
+        .then(|| core_protocol::home::path(&home, STATIC_PROVIDER_METADATA_FILE))
+}
+
+fn load_static_provider_metadata() -> anyhow::Result<Arc<StaticProviderMetadata>> {
+    let metadata = if let Some(path) = default_static_provider_metadata_path() {
+        StaticProviderMetadata::load_optional(&path)?
+            .unwrap_or_else(StaticProviderMetadata::embedded)
+    } else {
+        StaticProviderMetadata::embedded()
+    };
+    let now = current_unix_secs()
+        .ok_or_else(|| anyhow::anyhow!("system clock is before the Unix epoch"))?;
+    metadata.validate_capture_times(now)?;
+    Ok(metadata)
 }
 
 fn apply_catalog_failure(
@@ -1012,7 +1092,8 @@ impl ProviderDirectory {
     /// catalogs concurrently across provider instances. Missing credentials make zero network
     /// requests.
     pub async fn discover(user: &[ProviderConfig]) -> anyhow::Result<Self> {
-        let mut entries = builtin_entries()?;
+        let static_metadata = load_static_provider_metadata()?;
+        let mut entries = builtin_entries_with_metadata(static_metadata.clone())?;
         let mut ids: BTreeSet<String> = entries.iter().map(|entry| entry.id().to_owned()).collect();
 
         for configured in user {
@@ -1022,7 +1103,10 @@ impl ProviderDirectory {
                     configured.id
                 );
             }
-            entries.push(entry_from_config(configured)?);
+            entries.push(entry_from_config_with_metadata(
+                configured,
+                static_metadata.clone(),
+            )?);
         }
         if entries.len() > MAX_PROVIDER_INSTANCES {
             anyhow::bail!("provider directory exceeds {MAX_PROVIDER_INSTANCES} instances");
@@ -1058,16 +1142,18 @@ impl ProviderDirectory {
             let cache = cache.clone();
             let cache_scope_key = cache_scope_key.clone();
             async move {
-                // A cache is display evidence, never credential or account evidence. Attach it
-                // before the early exits so an offline operator can still see model names, while
-                // `blocked_reason` keeps the entire tree disabled until the account is usable.
+                // A valid cache is exact provider/API/adapter/classifier and credential-scoped
+                // evidence. It may satisfy model discovery until its fixed TTL, but never proves
+                // account health: missing credentials and typed probe failures still gate use.
+                let mut served_from_cache = false;
                 if entry.catalog_enabled
                     && let Some(scope_key) = cache_scope_key.as_ref()
                     && let Some(catalog) = cache.lookup(&entry, scope_key)
                 {
                     entry.catalog = Some(catalog);
-                    entry.catalog_stale = true;
-                    entry.catalog_provenance = CatalogProvenance::CachedDisplay;
+                    entry.catalog_stale = false;
+                    entry.catalog_provenance = CatalogProvenance::CachedFresh;
+                    served_from_cache = true;
                 }
                 if !entry.enabled {
                     return entry;
@@ -1084,7 +1170,7 @@ impl ProviderDirectory {
                 // completed reads had a meaningful fixed observation order. Unsupported catalogs
                 // (notably GLM) are disabled at construction, so they still make no speculative
                 // `/models` request.
-                if entry.catalog_enabled {
+                if entry.catalog_enabled && !served_from_cache {
                     let result = discover_catalog(&entry.instance).await;
                     apply_catalog_result(&mut entry, &health, result);
                 }
@@ -1320,8 +1406,7 @@ impl ProviderDirectory {
         // instead of accidentally choosing the lexicographically first identifier. Dynamic and
         // operator catalogs keep their existing deterministic first-selectable behavior.
         let preferred = is_glm_standard_schema_entry(entry)
-            .then_some(GLM_STANDARD_CHAT_MANIFEST.default_model)
-            .flatten()
+            .then(|| entry.instance.static_metadata().glm_default_model())
             .and_then(|default| catalog.models.iter().find(|model| model.raw.id == default));
         let model = preferred
             .filter(|model| {
@@ -1434,23 +1519,34 @@ impl ProviderDirectory {
         ))
     }
 
-    /// Instantiate the already-validated wire adapter, then wrap it in bounded pre-stream retry.
-    /// Callers replace the agent's provider/model only after this function succeeds.
+    /// Instantiate the already-validated wire adapter. A `Provider::turn` is exactly one physical
+    /// transport attempt so the kernel can durably journal it before dispatch; transparent retry
+    /// decorators are intentionally excluded until they expose a per-attempt WAL callback.
     pub fn build(&self, selection: &ModelSelection) -> Result<Arc<dyn Provider>, String> {
         self.validate_selection(selection, true)?;
         let entry = self
             .entry(&selection.provider_id)
             .ok_or_else(|| format!("unknown provider `{}`", selection.provider_id))?;
-        let base = entry
+        let provider = entry
             .instance
             .build_turn_provider()
             .map_err(|error| error.to_string())?;
-        let retry: Box<dyn Provider> = Box::new(RetryProvider::new(base, BackoffPolicy::default()));
         Ok(Arc::new(
-            HealthReportingProvider::new(retry, selection.provider_id.clone(), self.health.clone())
-                .with_model_scoped_account_failures(
-                    entry.instance.error_profile() == ErrorProfile::Fireworks,
-                ),
+            HealthReportingProvider::new(
+                provider,
+                selection.provider_id.clone(),
+                self.health.clone(),
+            )
+            .with_model_scoped_account_failures(
+                entry.instance.error_profile() == ErrorProfile::Fireworks,
+            )
+            .with_static_metadata_notice(
+                entry.instance.static_metadata_handle(),
+                entry.instance.adapter(),
+                entry.instance.error_profile(),
+                entry.instance.api_root().as_str(),
+                selection.model_id.clone(),
+            ),
         ))
     }
 
@@ -1461,18 +1557,19 @@ impl ProviderDirectory {
         let Some(entry) = self.entry(&selection.provider_id) else {
             return ModelCapabilities::unknown();
         };
-        if entry.instance.api_root().as_str() == GLM_STANDARD_CHAT_MANIFEST.api_root
+        let metadata = entry.instance.static_metadata();
+        if entry.instance.api_root().as_str() == metadata.glm_api_root()
             && entry.instance.adapter() == AdapterKind::OpenAiCompatibleChat
             && entry.instance.error_profile() == ErrorProfile::Glm
-            && selection.model_id == "glm-5.2"
+            && let Some(capabilities) = metadata.glm_model_capabilities(&selection.model_id)
         {
             return ModelCapabilities {
-                context_window_tokens: Some(1_000_000),
-                max_output_tokens: Some(128_000),
-                tool_calling: Some(true),
-                semantic_effort: Some(true),
-                version: Some(GLM_52_CAPABILITY_VERSION),
-                source: Some(GLM_52_CAPABILITY_SOURCE),
+                context_window_tokens: capabilities.context_window_tokens,
+                max_output_tokens: capabilities.max_output_tokens,
+                tool_calling: capabilities.tool_calling,
+                semantic_effort: capabilities.semantic_effort,
+                version: Some(capabilities.version.clone()),
+                source: Some(capabilities.source.clone()),
             };
         }
         ModelCapabilities::unknown()
@@ -1491,7 +1588,7 @@ impl ProviderDirectory {
             // is operator evidence. Never hash stale display inventory as execution evidence.
             CatalogProvenance::OperatorExplicit
         } else {
-            entry.catalog_provenance
+            entry.catalog_provenance.clone()
         };
         hash_part(&mut catalog, b"core-provider-catalog-v2");
         hash_part(&mut catalog, entry.id().as_bytes());
@@ -1504,7 +1601,7 @@ impl ProviderDirectory {
             &mut catalog,
             catalog_strategy_key(entry.instance.catalog_strategy()).as_bytes(),
         );
-        hash_catalog_provenance(&mut catalog, execution_provenance);
+        hash_catalog_provenance(&mut catalog, &execution_provenance);
         if let Some(snapshot) = entry
             .catalog
             .as_ref()
@@ -1538,7 +1635,17 @@ impl ProviderDirectory {
             &mut capability,
             error_profile_key(entry.instance.error_profile()).as_bytes(),
         );
-        hash_catalog_provenance(&mut capability, execution_provenance);
+        if let Some(revision) = entry.instance.static_metadata().route_revision_evidence(
+            entry.instance.adapter(),
+            entry.instance.error_profile(),
+            entry.instance.api_root().as_str(),
+            &selection.model_id,
+        ) {
+            hash_part(&mut capability, revision.as_bytes());
+        } else {
+            hash_part(&mut capability, b"no-static-route-revision");
+        }
+        hash_catalog_provenance(&mut capability, &execution_provenance);
         let documented = self.selection_capabilities(selection);
         hash_part(
             &mut capability,
@@ -1574,11 +1681,19 @@ impl ProviderDirectory {
         );
         hash_part(
             &mut capability,
-            documented.version.unwrap_or("unknown-version").as_bytes(),
+            documented
+                .version
+                .as_deref()
+                .unwrap_or("unknown-version")
+                .as_bytes(),
         );
         hash_part(
             &mut capability,
-            documented.source.unwrap_or("unknown-source").as_bytes(),
+            documented
+                .source
+                .as_deref()
+                .unwrap_or("unknown-source")
+                .as_bytes(),
         );
         if let Some(model) = entry
             .catalog
@@ -1648,6 +1763,10 @@ struct UnavailableProvider {
 
 #[async_trait::async_trait]
 impl Provider for UnavailableProvider {
+    fn provider_instance_id(&self) -> Option<&str> {
+        Some(&self.provider_id)
+    }
+
     async fn turn(
         &self,
         _request: &TurnRequest,
@@ -1713,7 +1832,14 @@ const BUILTINS: &[Builtin] = &[
     },
 ];
 
+#[cfg(test)]
 fn builtin_entries() -> anyhow::Result<Vec<ProviderEntry>> {
+    builtin_entries_with_metadata(StaticProviderMetadata::embedded())
+}
+
+fn builtin_entries_with_metadata(
+    static_metadata: Arc<StaticProviderMetadata>,
+) -> anyhow::Result<Vec<ProviderEntry>> {
     BUILTINS
         .iter()
         .map(|builtin| {
@@ -1724,14 +1850,15 @@ fn builtin_entries() -> anyhow::Result<Vec<ProviderEntry>> {
                 builtin.adapter,
                 ApiRoot::parse(builtin.api_root)?,
                 credential,
-            )?;
+            )?
+            .with_static_metadata(static_metadata.clone());
             let (catalog_enabled, mut catalog_error) = catalog_configuration(&instance, true);
             // GLM publishes a finite model enum in the exact standard Chat Completions request
             // schema, but no list-models operation. Expose that official schema without turning
             // on discovery: it is endpoint compatibility evidence only, never credential/account
             // entitlement evidence, and this construction performs no network request.
             let catalog = if builtin.id == "glm"
-                && instance.api_root().as_str() == GLM_STANDARD_CHAT_MANIFEST.api_root
+                && instance.api_root().as_str() == static_metadata.glm_api_root()
             {
                 // `Unsupported` describes network discovery, not the static official evidence we
                 // just loaded. Do not leave a contradictory catalog error on a usable manifest.
@@ -1742,8 +1869,8 @@ fn builtin_entries() -> anyhow::Result<Vec<ProviderEntry>> {
             };
             let catalog_provenance = if catalog.is_some() {
                 CatalogProvenance::StaticOfficial {
-                    version: GLM_STANDARD_CHAT_MANIFEST.version,
-                    source: GLM_STANDARD_CHAT_MANIFEST.source,
+                    version: static_metadata.glm_catalog_version().into(),
+                    source: static_metadata.glm_catalog_source().into(),
                 }
             } else {
                 CatalogProvenance::Unavailable
@@ -1767,15 +1894,23 @@ fn builtin_entries() -> anyhow::Result<Vec<ProviderEntry>> {
 fn is_glm_standard_schema_entry(entry: &ProviderEntry) -> bool {
     entry.id() == "glm"
         && entry.instance.adapter() == AdapterKind::OpenAiCompatibleChat
-        && entry.instance.api_root().as_str() == GLM_STANDARD_CHAT_MANIFEST.api_root
+        && entry.instance.api_root().as_str() == entry.instance.static_metadata().glm_api_root()
         && !entry.catalog_enabled
         && matches!(
-            entry.catalog_provenance,
+            &entry.catalog_provenance,
             CatalogProvenance::StaticOfficial { .. }
         )
 }
 
+#[cfg(test)]
 fn entry_from_config(config: &ProviderConfig) -> anyhow::Result<ProviderEntry> {
+    entry_from_config_with_metadata(config, StaticProviderMetadata::embedded())
+}
+
+fn entry_from_config_with_metadata(
+    config: &ProviderConfig,
+    static_metadata: Arc<StaticProviderMetadata>,
+) -> anyhow::Result<ProviderEntry> {
     let adapter = match config.adapter.as_str() {
         "anthropic_messages" => AdapterKind::AnthropicMessages,
         "openai_responses" => AdapterKind::OpenAiResponses,
@@ -1790,7 +1925,8 @@ fn entry_from_config(config: &ProviderConfig) -> anyhow::Result<ProviderEntry> {
         adapter,
         ApiRoot::parse(&config.api_root)?,
         credential,
-    )?;
+    )?
+    .with_static_metadata(static_metadata);
     if let Some(profile) = config.error_profile.as_deref() {
         let profile = match profile {
             "anthropic" => ErrorProfile::Anthropic,
@@ -2073,14 +2209,22 @@ mod tests {
     }
 
     fn glm_static_entry(credential: Option<String>) -> ProviderEntry {
+        glm_static_entry_with_metadata(credential, StaticProviderMetadata::embedded())
+    }
+
+    fn glm_static_entry_with_metadata(
+        credential: Option<String>,
+        metadata: Arc<StaticProviderMetadata>,
+    ) -> ProviderEntry {
         let instance = ProviderInstance::new(
             "glm",
             "GLM / 智谱",
             AdapterKind::OpenAiCompatibleChat,
-            ApiRoot::parse(GLM_STANDARD_CHAT_MANIFEST.api_root).unwrap(),
+            ApiRoot::parse(metadata.glm_api_root()).unwrap(),
             credential,
         )
-        .unwrap();
+        .unwrap()
+        .with_static_metadata(metadata.clone());
         let (catalog_enabled, _) = catalog_configuration(&instance, true);
         let catalog = Some(glm_standard_schema_catalog(&instance).unwrap());
         ProviderEntry {
@@ -2093,8 +2237,8 @@ mod tests {
             catalog_fallback_explicit: false,
             catalog_stale: false,
             catalog_provenance: CatalogProvenance::StaticOfficial {
-                version: GLM_STANDARD_CHAT_MANIFEST.version,
-                source: GLM_STANDARD_CHAT_MANIFEST.source,
+                version: metadata.glm_catalog_version().into(),
+                source: metadata.glm_catalog_source().into(),
             },
         }
     }
@@ -2396,8 +2540,32 @@ mod tests {
         remove_test_cache(&path);
     }
 
+    #[test]
+    fn d13_13_rng_unavailable_is_unsupported_without_a_weak_fallback_key() {
+        let path = test_cache_path("unsupported-rng");
+        let error = CatalogCacheScopeKey::load_or_create_with_rng(&path, |_| {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "test target has no admitted OS CSPRNG",
+            ))
+        })
+        .err()
+        .expect("an unsupported RNG must disable persistent catalog caching");
+
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(
+            !path
+                .parent()
+                .unwrap()
+                .join(CATALOG_CACHE_SCOPE_KEY_FILE)
+                .exists(),
+            "time, pid, and temporary-file nonces must never become fallback key material"
+        );
+        remove_test_cache(&path);
+    }
+
     #[tokio::test]
-    async fn successful_dynamic_refresh_atomically_updates_the_cache() {
+    async fn d13_13_fresh_cache_serves_a_second_run_without_rediscovery() {
         let path = test_cache_path("refresh");
         let body = serde_json::json!({
             "data": [{"id": "gpt-4o-mini", "owned_by": "openai"}]
@@ -2406,9 +2574,12 @@ mod tests {
         let (api_root, server) = spawn_json_server(body);
         let target = policy_entry("refresh-test", &api_root);
 
-        let directory = ProviderDirectory::discover_entries(vec![target], Some(path.clone()))
-            .await
-            .unwrap();
+        let directory =
+            ProviderDirectory::discover_entries(vec![target.clone()], Some(path.clone()))
+                .await
+                .unwrap();
+        // The fixture accepts exactly one request and then exits. Any second discovery attempt
+        // therefore fails closed instead of accidentally making this a cache-hit-shaped test.
         server.join().unwrap();
         let refreshed = directory.entry("refresh-test").unwrap();
         assert!(!refreshed.catalog_stale);
@@ -2421,6 +2592,23 @@ mod tests {
             CatalogCache::load(&path)
                 .lookup(refreshed, &scope_key)
                 .is_some()
+        );
+
+        let second = ProviderDirectory::discover_entries(vec![target], Some(path.clone()))
+            .await
+            .unwrap();
+        let cached = second.entry("refresh-test").unwrap();
+        assert_eq!(cached.catalog_provenance, CatalogProvenance::CachedFresh);
+        assert!(!cached.catalog_stale);
+        assert!(cached.catalog_error.is_none());
+        assert_eq!(
+            second
+                .resolve_model("gpt-4o-mini", Some("refresh-test"))
+                .unwrap(),
+            ModelSelection {
+                provider_id: "refresh-test".into(),
+                model_id: "gpt-4o-mini".into(),
+            }
         );
         remove_test_cache(&path);
     }
@@ -2462,7 +2650,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn different_credential_cannot_load_cached_inventory() {
+    async fn d13_13_cache_identity_is_credential_scoped_across_accounts() {
         let path = test_cache_path("different-key");
         let api_root = closed_api_root();
         let source = catalogued_entry("different-cache", &api_root, "private-model");
@@ -2509,25 +2697,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transient_refresh_failure_keeps_picker_stale_but_allows_explicit_fallback() {
-        let path = test_cache_path("transient");
+    async fn expired_cache_cannot_skip_refresh_or_authorize_a_bare_selection() {
+        let path = test_cache_path("expired");
         let api_root = closed_api_root();
-        let source = catalogued_entry("transient-cache", &api_root, "gpt-4o-mini");
+        let source = catalogued_entry("expired-cache", &api_root, "gpt-4o-mini");
         seed_cache(&path, &source);
-        let target = policy_entry("transient-cache", &api_root);
+        let mut expired = CatalogCache::load(&path);
+        expired.entries[0].fetched_at_unix_secs = current_unix_secs()
+            .unwrap()
+            .saturating_sub(CATALOG_CACHE_TTL_SECS + 1);
+        expired.save_atomic(&path).unwrap();
+        let target = policy_entry("expired-cache", &api_root);
 
         let directory = ProviderDirectory::discover_entries(vec![target], Some(path.clone()))
             .await
             .unwrap();
-        let stale = directory.entry("transient-cache").unwrap();
-        assert!(stale.catalog_stale);
-        assert!(stale.catalog_error.is_some());
-        assert!(directory.status_label(stale).contains("informational only"));
+        let entry = directory.entry("expired-cache").unwrap();
+        assert!(!entry.catalog_stale);
+        assert!(entry.catalog.is_none());
+        assert!(entry.catalog_error.is_some());
         assert!(
             directory
                 .validate_selection(
                     &ModelSelection {
-                        provider_id: "transient-cache".into(),
+                        provider_id: "expired-cache".into(),
                         model_id: "gpt-4o-mini".into(),
                     },
                     true,
@@ -2537,9 +2730,9 @@ mod tests {
         );
         assert!(
             directory
-                .resolve_model("gpt-4o-mini", Some("transient-cache"))
+                .resolve_model("gpt-4o-mini", Some("expired-cache"))
                 .is_err(),
-            "a bare picker selection must not use stale display evidence"
+            "an expired cache must not authorize a bare picker selection"
         );
         remove_test_cache(&path);
     }
@@ -2550,7 +2743,7 @@ mod tests {
         let fresh = catalogued_entry("fresh", "https://fresh.example/v1", model_id);
         let mut stale = catalogued_entry("stale", "https://stale.example/v1", model_id);
         stale.catalog_stale = true;
-        stale.catalog_provenance = CatalogProvenance::CachedDisplay;
+        stale.catalog_provenance = CatalogProvenance::CachedFresh;
         let health = ProviderHealthStore::new(4);
         health.mark_ready("fresh");
         health.mark_ready("stale");
@@ -2576,12 +2769,11 @@ mod tests {
         operator.catalog_provenance = CatalogProvenance::OperatorManifest;
         let mut static_catalog = dynamic.clone();
         static_catalog.catalog_provenance = CatalogProvenance::StaticOfficial {
-            version: "schema@test-v1",
-            source: "https://docs.example/schema",
+            version: "schema@test-v1".into(),
+            source: "https://docs.example/schema".into(),
         };
-        let mut cached = dynamic.clone();
-        cached.catalog_stale = true;
-        cached.catalog_provenance = CatalogProvenance::CachedDisplay;
+        let mut cached_fresh = dynamic.clone();
+        cached_fresh.catalog_provenance = CatalogProvenance::CachedFresh;
         let selection = ModelSelection {
             provider_id: "same".into(),
             model_id: model_id.into(),
@@ -2598,7 +2790,7 @@ mod tests {
             digest_for(dynamic),
             digest_for(operator),
             digest_for(static_catalog),
-            digest_for(cached),
+            digest_for(cached_fresh),
         ];
         for left in 0..digests.len() {
             for right in left + 1..digests.len() {
@@ -2850,12 +3042,13 @@ mod tests {
             .expect("built-in GLM must expose its official static schema");
         assert_eq!(
             catalog.models.len(),
-            GLM_STANDARD_CHAT_MANIFEST.models.len()
+            glm.instance.static_metadata().glm_models().len()
         );
         assert!(catalog.models.iter().all(|model| {
-            GLM_STANDARD_CHAT_MANIFEST
-                .models
-                .contains(&model.raw.id.as_str())
+            glm.instance
+                .static_metadata()
+                .glm_models()
+                .contains(&model.raw.id)
                 && model.compatibility == Compatibility::Compatible
                 && model.selectability == Selectability::Selectable
         }));
@@ -2984,8 +3177,16 @@ mod tests {
         assert_eq!(capabilities.max_output_tokens, Some(128_000));
         assert_eq!(capabilities.tool_calling, Some(true));
         assert_eq!(capabilities.semantic_effort, Some(true));
-        assert_eq!(capabilities.version, Some(GLM_52_CAPABILITY_VERSION));
-        assert_eq!(capabilities.source, Some(GLM_52_CAPABILITY_SOURCE));
+        assert!(
+            capabilities
+                .version
+                .as_deref()
+                .is_some_and(|version| version.starts_with("glm-5.2-model-page@2026-07-15+sha256:"))
+        );
+        assert_eq!(
+            capabilities.source.as_deref(),
+            Some("https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2")
+        );
         assert_eq!(
             directory.selection_capabilities(&ModelSelection {
                 provider_id: "glm".into(),
@@ -3004,6 +3205,79 @@ mod tests {
             directory
                 .status_label(directory.entry("glm").unwrap())
                 .contains("official static schema · account entitlement unknown")
+        );
+    }
+
+    #[tokio::test]
+    async fn refreshed_static_metadata_updates_catalog_capability_adapter_and_run_notice() {
+        let now = current_unix_secs().unwrap();
+        let captured = now.saturating_sub(42 * 24 * 60 * 60);
+        let mut document: serde_json::Value = serde_json::from_str(include_str!(
+            "../../provider/static-provider-metadata-v1.json"
+        ))
+        .unwrap();
+        document["bundle_revision"] = serde_json::json!("operator-refresh@test-v2");
+        document["glm_standard_chat"]["version"] =
+            serde_json::json!("glm-chat-completions-schema@test-v2");
+        document["glm_standard_chat"]["captured_at_unix_secs"] = serde_json::json!(captured);
+        document["glm_standard_chat"]["default_model"] = serde_json::json!("glm-5.1");
+        document["glm_standard_chat"]["capabilities"]["glm-5.1"] = serde_json::json!({
+            "version": "glm-5.1-model-page@test-v2",
+            "source": "https://docs.bigmodel.cn/operator-refresh-test",
+            "captured_at_unix_secs": captured,
+            "context_window_tokens": 131072,
+            "max_output_tokens": 8192,
+            "tool_calling": true,
+            "semantic_effort": true
+        });
+        StaticProviderMetadata::stamp_content_versions(&mut document).unwrap();
+        let metadata = Arc::new(
+            StaticProviderMetadata::from_slice(&serde_json::to_vec(&document).unwrap()).unwrap(),
+        );
+        let directory = ProviderDirectory::discover_entries(
+            vec![glm_static_entry_with_metadata(
+                Some("test-key".into()),
+                metadata,
+            )],
+            None,
+        )
+        .await
+        .unwrap();
+        let selection = directory.default_selection("glm").unwrap();
+        assert_eq!(selection.model_id, "glm-5.1");
+        let capabilities = directory.selection_capabilities(&selection);
+        assert_eq!(capabilities.context_window_tokens, Some(131_072));
+        assert_eq!(capabilities.max_output_tokens, Some(8_192));
+        assert!(
+            capabilities
+                .version
+                .as_deref()
+                .is_some_and(|version| version.starts_with("glm-5.1-model-page@test-v2+sha256:"))
+        );
+
+        let provider = directory.build(&selection).unwrap();
+        let request = TurnRequest {
+            model: selection.model_id,
+            system: "stable prefix".into(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            max_tokens: 1_024,
+            cache_system: true,
+            thinking_budget: 4_096,
+            reasoning_effort: core_protocol::ReasoningEffort::Medium,
+        };
+        assert!(matches!(
+            provider.effort_application(&request),
+            core_provider::EffortApplication::Mapped { .. }
+        ));
+        let notice = provider.run_notice(&request).unwrap();
+        assert_eq!(notice.code, "static_metadata");
+        assert!(notice.message.contains("42 days old (stale)"));
+        assert!(notice.message.contains("provider revision changed"));
+        assert_eq!(
+            provider.run_notice(&request),
+            Some(notice),
+            "the proposal remains repeatable until the kernel durably commits it"
         );
     }
 

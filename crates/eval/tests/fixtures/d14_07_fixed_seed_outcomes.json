@@ -1,0 +1,31 @@
+{
+  "minimum_seeds": 3,
+  "baseline": "verify_OFF",
+  "treatment": "verify_ON",
+  "outcomes": [
+    { "task": "alpha", "config": "verify_ON",  "seed": 44, "resolved": false },
+    { "task": "beta",  "config": "verify_OFF", "seed": 11, "resolved": true },
+    { "task": "alpha", "config": "verify_OFF", "seed": 22, "resolved": false },
+    { "task": "beta",  "config": "verify_ON",  "seed": 66, "resolved": true },
+    { "task": "alpha", "config": "verify_ON",  "seed": 11, "resolved": false },
+    { "task": "beta",  "config": "verify_OFF", "seed": 33, "resolved": false },
+    { "task": "alpha", "config": "verify_OFF", "seed": 55, "resolved": true },
+    { "task": "beta",  "config": "verify_ON",  "seed": 22, "resolved": false },
+    { "task": "alpha", "config": "verify_OFF", "seed": 11, "resolved": false },
+    { "task": "beta",  "config": "verify_ON",  "seed": 55, "resolved": false },
+    { "task": "alpha", "config": "verify_ON",  "seed": 33, "resolved": true },
+    { "task": "beta",  "config": "verify_OFF", "seed": 66, "resolved": true },
+    { "task": "alpha", "config": "verify_OFF", "seed": 66, "resolved": true },
+    { "task": "beta",  "config": "verify_ON",  "seed": 11, "resolved": true },
+    { "task": "alpha", "config": "verify_ON",  "seed": 22, "resolved": true },
+    { "task": "beta",  "config": "verify_OFF", "seed": 44, "resolved": true },
+    { "task": "alpha", "config": "verify_OFF", "seed": 33, "resolved": true },
+    { "task": "beta",  "config": "verify_ON",  "seed": 33, "resolved": true },
+    { "task": "alpha", "config": "verify_ON",  "seed": 55, "resolved": true },
+    { "task": "beta",  "config": "verify_OFF", "seed": 22, "resolved": false },
+    { "task": "alpha", "config": "verify_OFF", "seed": 44, "resolved": false },
+    { "task": "beta",  "config": "verify_ON",  "seed": 44, "resolved": true },
+    { "task": "alpha", "config": "verify_ON",  "seed": 66, "resolved": true },
+    { "task": "beta",  "config": "verify_OFF", "seed": 55, "resolved": false }
+  ]
+}

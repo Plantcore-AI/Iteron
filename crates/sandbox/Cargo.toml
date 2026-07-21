@@ -6,7 +6,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-core-protocol = { path = "../protocol" }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 async-trait = "0.1"

@@ -10,4 +10,13 @@ name = "core-eval"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = { workspace = true }
+clap = { workspace = true }
+core-sandbox = { path = "../sandbox" }
+core-verify = { path = "../verify" }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+url = "2"

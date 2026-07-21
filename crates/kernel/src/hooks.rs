@@ -7,9 +7,10 @@
 //! (`~/.core/config.json`) — NEVER from a project/`.core/config.json` that could arrive with a
 //! cloned repo. This is the same trust-by-origin discipline as skills/memory/agents (ADR-007 §6):
 //! tree-discovered config is untrusted and must not be able to run code. Hooks are the operator's
-//! own infrastructure (like the git hooks they wrote), so they run un-sandboxed with the operator
-//! env — but only because their PROVENANCE is the trusted user config. Each run is bounded by a
-//! timeout (invariant #1). A `PreToolUse` hook that exits with code 2 DENIES the tool.
+//! own infrastructure (like the git hooks they wrote), so they run un-sandboxed but with a
+//! default-deny, credential-sanitized helper environment — and only because their PROVENANCE is
+//! the trusted user config. Each run is bounded by a timeout (invariant #1). A `PreToolUse` hook
+//! that exits with code 2 DENIES the tool.
 //!
 //! Security caveats a hook AUTHOR must know (surfaced per the adversarial review, not hidden):
 //! - **Fail-OPEN.** Only exit code **2** blocks. A hook that times out (bounded at 30s), fails to
@@ -69,6 +70,7 @@ struct HooksFile {
 pub struct Hooks {
     by_event: BTreeMap<String, Vec<String>>,
     timeout_secs: u64,
+    sensitive_env_names: Vec<String>,
 }
 
 /// What a `PreToolUse` hook decided.
@@ -94,7 +96,16 @@ impl Hooks {
         Hooks {
             by_event,
             timeout_secs: 30,
+            sensitive_env_names: Vec::new(),
         }
+    }
+
+    /// Remove these exact credential indirections from every hook process. Hook commands are
+    /// operator-authored, but they do not need provider or pricing signing keys.
+    pub fn set_sensitive_env_names(&mut self, mut names: Vec<String>) {
+        names.sort();
+        names.dedup();
+        self.sensitive_env_names = names;
     }
 
     pub fn is_empty(&self) -> bool {
@@ -113,7 +124,13 @@ impl Hooks {
     /// events are observational (the exit code is ignored). Bounded by the per-hook timeout.
     pub async fn run(&self, event: HookEvent, context_json: &str) -> HookDecision {
         for cmd in self.commands(event) {
-            let out = run_one(cmd, context_json, self.timeout_secs).await;
+            let out = run_one(
+                cmd,
+                context_json,
+                self.timeout_secs,
+                &self.sensitive_env_names,
+            )
+            .await;
             // DENY convention (matches the leading agent): ONLY exit code 2 blocks. exit 0 allows;
             // any OTHER non-zero (1, 127 from a typo'd command, a spawn error, a timeout) is a hook
             // ERROR, treated as "no opinion" -> allow. This makes a misconfigured hook fail SAFE
@@ -237,15 +254,36 @@ where
 /// Run one hook command with `ctx` on stdin, bounded by `timeout_secs`. Returns its exit and
 /// bounded, marked output if it ran to completion; spawn/read/wait errors and timeouts are no
 /// opinion, preserving the existing fail-open hook semantics.
-async fn run_one(cmd: &str, ctx: &str, timeout_secs: u64) -> Option<HookRunOutput> {
-    run_one_with_timeout(cmd, ctx, Duration::from_secs(timeout_secs)).await
+async fn run_one(
+    cmd: &str,
+    ctx: &str,
+    timeout_secs: u64,
+    sensitive_env_names: &[String],
+) -> Option<HookRunOutput> {
+    run_one_with_sensitive_env_names(
+        cmd,
+        ctx,
+        Duration::from_secs(timeout_secs),
+        sensitive_env_names,
+    )
+    .await
 }
 
+#[cfg(test)]
 async fn run_one_with_timeout(cmd: &str, ctx: &str, timeout: Duration) -> Option<HookRunOutput> {
+    run_one_with_sensitive_env_names(cmd, ctx, timeout, &[]).await
+}
+
+async fn run_one_with_sensitive_env_names(
+    cmd: &str,
+    ctx: &str,
+    timeout: Duration,
+    sensitive_env_names: &[String],
+) -> Option<HookRunOutput> {
     use tokio::io::AsyncWriteExt;
 
     let mut command = tokio::process::Command::new("/bin/bash");
-    core_sandbox::clear_to_safe_child_env(&mut command);
+    core_sandbox::clear_to_safe_child_env_with_exact(&mut command, sensitive_env_names);
     core_sandbox::configure_process_group(&mut command);
     let mut child = command
         .arg("-c")
@@ -367,26 +405,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hook_child_gets_toolchain_env_but_no_custom_provider_credential() {
-        // `GATEWAY_KEY` is a valid configured provider key_env name but intentionally does not
-        // match the generic *_API_KEY heuristic. Hook children use a default-deny allowlist, so it
-        // must still be absent while PATH remains usable.
+    async fn hook_child_gets_toolchain_env_but_no_exact_pricing_credential() {
         unsafe {
-            std::env::set_var("GATEWAY_KEY", "hook-sentinel-must-not-cross");
+            std::env::set_var(
+                "CORE_TEST_PRICING_KEY",
+                "hook-pricing-sentinel-must-not-cross",
+            );
+            std::env::set_var("XDG_CONFIG_HOME", "hook-allowlist-sentinel-must-not-cross");
         }
-        let output = run_one_with_timeout(
-            "test -z \"${GATEWAY_KEY+x}\" && command -v sh >/dev/null",
+        let sensitive = vec!["CORE_TEST_PRICING_KEY".into(), "XDG_CONFIG_HOME".into()];
+        let output = run_one_with_sensitive_env_names(
+            "test -z \"${CORE_TEST_PRICING_KEY+x}\" && test -z \"${XDG_CONFIG_HOME+x}\" && command -v sh >/dev/null",
             "",
             Duration::from_secs(2),
+            &sensitive,
         )
         .await
         .expect("hook should run");
         unsafe {
-            std::env::remove_var("GATEWAY_KEY");
+            std::env::remove_var("CORE_TEST_PRICING_KEY");
+            std::env::remove_var("XDG_CONFIG_HOME");
         }
         assert_eq!(output.code, 0);
-        assert!(!output.stdout.contains("hook-sentinel"));
-        assert!(!output.stderr.contains("hook-sentinel"));
+        assert!(!output.stdout.contains("sentinel"));
+        assert!(!output.stderr.contains("sentinel"));
     }
 
     #[test]

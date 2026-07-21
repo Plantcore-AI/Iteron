@@ -8,7 +8,7 @@
 use crate::sse::StreamItem;
 use crate::{
     AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderError, TurnRequest,
-    TurnResult,
+    TurnResult, UsageReport,
 };
 use core_protocol::{
     Block, Message, ProviderState, ReasoningEffort, Role, StopReason, ToolUse, Usage,
@@ -86,14 +86,6 @@ impl OpenAiResponses {
         Ok(self)
     }
 
-    pub fn from_env() -> Result<Self, ProviderError> {
-        let key =
-            std::env::var("OPENAI_API_KEY").map_err(|_| ProviderError::MissingCredential {
-                provider: "openai".to_string(),
-            })?;
-        Self::new(key, std::env::var("OPENAI_BASE_URL").ok())
-    }
-
     fn body(&self, request: &TurnRequest) -> Result<serde_json::Value, ProviderError> {
         request_body(request, self.error_profile, &self.route_scope)
     }
@@ -153,7 +145,7 @@ fn request_body(
     if let Some(effort) =
         responses_reasoning_effort(error_profile, &request.model, request.reasoning_effort)
     {
-        body["reasoning"] = serde_json::json!({"effort": effort, "summary": "auto"});
+        body["reasoning"] = serde_json::json!({"effort": effort.label(), "summary": "auto"});
     }
     Ok(body)
 }
@@ -165,11 +157,16 @@ fn responses_reasoning_effort(
     error_profile: ErrorProfile,
     model_id: &str,
     requested: ReasoningEffort,
-) -> Option<&'static str> {
+) -> Option<ReasoningEffort> {
     if error_profile != ErrorProfile::OpenAi || !is_openai_reasoning_family(model_id) {
         return None;
     }
-    Some(requested.label())
+    // The adapter's portable, catalog-proven OpenAI enum ends at `high`. Clamp stronger Core
+    // values instead of emitting `xhigh`/`max` as unproven labels.
+    Some(match requested {
+        ReasoningEffort::XHigh | ReasoningEffort::Max => ReasoningEffort::High,
+        supported => supported,
+    })
 }
 
 fn responses_effort_application(
@@ -177,8 +174,12 @@ fn responses_effort_application(
     model_id: &str,
     requested: ReasoningEffort,
 ) -> EffortApplication {
-    if responses_reasoning_effort(error_profile, model_id, requested).is_some() {
-        EffortApplication::Exact { requested }
+    if let Some(sent) = responses_reasoning_effort(error_profile, model_id, requested) {
+        if sent == requested {
+            EffortApplication::Exact { requested }
+        } else {
+            EffortApplication::Mapped { requested, sent }
+        }
     } else {
         EffortApplication::Unsupported { requested }
     }
@@ -411,6 +412,7 @@ struct OutputAcc {
     text: BTreeMap<u64, String>,
     thinking: BTreeMap<(u8, u64), String>,
     tool: Option<ToolUse>,
+    refusal: bool,
 }
 
 struct FunctionMeta {
@@ -503,6 +505,9 @@ impl ResponseParser {
                 let delta = required_str(&value, "delta")?;
                 let output_index = required_u64(&value, "output_index")?;
                 let content_index = required_u64(&value, "content_index")?;
+                if event_type == "response.refusal.delta" {
+                    self.mark_refusal(output_index)?;
+                }
                 self.append_text(output_index, content_index, delta)?;
                 Ok(vec![StreamItem::TextDelta(delta.to_string())])
             }
@@ -769,6 +774,7 @@ impl ResponseParser {
         };
 
         self.reconcile_output(response, incomplete)?;
+        let has_refusal = self.outputs.values().any(|output| output.refusal);
         let unfinished: Vec<&str> = self
             .functions
             .keys()
@@ -783,11 +789,17 @@ impl ResponseParser {
         }
         let usage = parse_usage(response)?;
         let blocks = self.assemble_blocks();
-        let stop_reason = if stop_reason == StopReason::EndTurn
-            && blocks
-                .iter()
-                .any(|block| matches!(block, Block::ToolUse(_)))
-        {
+        let has_tool_use = blocks
+            .iter()
+            .any(|block| matches!(block, Block::ToolUse(_)));
+        if has_refusal && has_tool_use {
+            return Err(ProviderError::Decode(
+                "Responses terminal mixed a refusal with function calls".into(),
+            ));
+        }
+        let stop_reason = if stop_reason == StopReason::EndTurn && has_refusal {
+            StopReason::Refusal
+        } else if stop_reason == StopReason::EndTurn && has_tool_use {
             StopReason::ToolUse
         } else {
             stop_reason
@@ -828,7 +840,8 @@ impl ResponseParser {
                             ProviderError::Decode("Responses message lacked content array".into())
                         })?;
                     for (content_index, part) in content.iter().enumerate() {
-                        let full = match required_str(part, "type")? {
+                        let part_type = required_str(part, "type")?;
+                        let full = match part_type {
                             "output_text" => required_str(part, "text")?,
                             "refusal" => required_str(part, "refusal")?,
                             other => {
@@ -838,6 +851,9 @@ impl ResponseParser {
                                 ));
                             }
                         };
+                        if part_type == "refusal" {
+                            self.mark_refusal(output_index)?;
+                        }
                         self.reconcile_text(output_index, content_index as u64, full)?;
                     }
                 }
@@ -912,6 +928,15 @@ impl ResponseParser {
             .ok_or_else(|| ProviderError::Decode("Responses output state was inconsistent".into()))?
             .text
             .insert(content_index, full.to_string());
+        Ok(())
+    }
+
+    fn mark_refusal(&mut self, output_index: u64) -> Result<(), ProviderError> {
+        self.reserve_output(output_index)?;
+        self.outputs
+            .get_mut(&output_index)
+            .ok_or_else(|| ProviderError::Decode("Responses output state was inconsistent".into()))?
+            .refusal = true;
         Ok(())
     }
 
@@ -1207,22 +1232,22 @@ fn parse_arguments(_name: &str, arguments: &str) -> Result<serde_json::Value, Pr
     })
 }
 
-fn parse_usage(response: &serde_json::Value) -> Result<Usage, ProviderError> {
-    let usage = response
-        .get("usage")
-        .ok_or_else(|| ProviderError::Decode("terminal response lacked usage".into()))?;
+fn parse_usage(response: &serde_json::Value) -> Result<UsageReport, ProviderError> {
+    let Some(usage) = response.get("usage").filter(|usage| !usage.is_null()) else {
+        return Ok(UsageReport::provider_omitted());
+    };
     let total_input = required_u64(usage, "input_tokens")?;
     let cache_read = optional_nested_u64(usage, "/input_tokens_details/cached_tokens")?;
     let input = total_input.checked_sub(cache_read).ok_or_else(|| {
         ProviderError::Decode("Responses cached tokens exceeded total input tokens".into())
     })?;
-    Ok(Usage {
+    Ok(UsageReport::complete(Usage {
         input,
         output: required_u64(usage, "output_tokens")?,
         cache_creation: 0,
         cache_read,
         thinking: optional_nested_u64(usage, "/output_tokens_details/reasoning_tokens")?,
-    })
+    }))
 }
 
 fn optional_nested_u64(value: &serde_json::Value, pointer: &str) -> Result<u64, ProviderError> {
@@ -1295,9 +1320,6 @@ impl Provider for OpenAiResponses {
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
         let deadline = Instant::now() + STREAM_TOTAL_TIMEOUT;
-        if let Some(why) = crate::cache_bomb_in_prefix(&request.system) {
-            return Err(ProviderError::Decode(format!("cache-bomb refused: {why}")));
-        }
         let endpoint = self.root.endpoint("responses")?;
         let body = self.body(request)?;
         let request = self
@@ -1546,18 +1568,43 @@ mod tests {
     }
 
     #[test]
+    fn openai_responses_high_effort_wire_matches_mapped_application() {
+        let provider = OpenAiResponses::new("test-credential".into(), None).unwrap();
+
+        for requested in [ReasoningEffort::XHigh, ReasoningEffort::Max] {
+            let mut request = request();
+            request.reasoning_effort = requested;
+            let encoded = serde_json::to_vec(&provider.body(&request).unwrap()).unwrap();
+            let wire: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+
+            assert_eq!(
+                wire["reasoning"]["effort"], "high",
+                "{requested:?} is never serialized as an unproven OpenAI label"
+            );
+            assert_eq!(
+                provider.effort_application(&request),
+                EffortApplication::Mapped {
+                    requested,
+                    sent: ReasoningEffort::High,
+                },
+                "the reported semantic effort must equal the serialized wire value"
+            );
+        }
+    }
+
+    #[test]
     fn reasoning_object_requires_official_profile_and_known_family() {
         assert_eq!(
             responses_reasoning_effort(ErrorProfile::OpenAi, "gpt-5", ReasoningEffort::Low),
-            Some("low")
+            Some(ReasoningEffort::Low)
         );
         assert_eq!(
             responses_reasoning_effort(ErrorProfile::OpenAi, "gpt-5", ReasoningEffort::Low),
-            Some("low")
+            Some(ReasoningEffort::Low)
         );
         assert_eq!(
             responses_reasoning_effort(ErrorProfile::OpenAi, "o3-mini", ReasoningEffort::Medium),
-            Some("medium")
+            Some(ReasoningEffort::Medium)
         );
         assert_eq!(
             responses_reasoning_effort(
@@ -1565,7 +1612,7 @@ mod tests {
                 "codex-mini-latest",
                 ReasoningEffort::High
             ),
-            Some("high")
+            Some(ReasoningEffort::High)
         );
         for model in ["gpt-4.1", "gpt-4o", "gpt-50", "unknown"] {
             assert_eq!(
@@ -1711,6 +1758,9 @@ mod tests {
         assert_eq!(state.format, OPENAI_RESPONSES_OUTPUT_FORMAT);
         assert_eq!(state.payload, expected_native);
         assert!(matches!(&blocks[1], Block::ToolUse(tool) if tool.id == "call_1"));
+        let UsageReport::Complete(usage) = usage else {
+            panic!("fixture supplies complete usage");
+        };
         assert_eq!(usage.cache_read, 40);
         assert!(parser.finish().is_ok());
     }
@@ -1802,14 +1852,56 @@ mod tests {
         );
         assert_eq!(
             *usage,
-            Usage {
+            UsageReport::complete(Usage {
                 input: 60,
                 output: 25,
                 cache_creation: 0,
                 cache_read: 40,
                 thinking: 7
-            }
+            })
         );
+    }
+
+    #[test]
+    fn d2_22_responses_refusal_is_not_reported_as_a_successful_end_turn() {
+        let mut parser = ResponseParser::default();
+        parser
+            .push_frame(
+                frame(serde_json::json!({
+                    "type":"response.refusal.delta","item_id":"msg_refusal",
+                    "output_index":0,"content_index":0,"delta":"cannot comply"
+                })),
+                None,
+                None,
+            )
+            .unwrap();
+        let terminal = parser
+            .push_frame(
+                frame(serde_json::json!({
+                    "type":"response.completed",
+                    "response":{
+                        "status":"completed",
+                        "output":[{
+                            "id":"msg_refusal","type":"message","role":"assistant",
+                            "status":"completed","content":[{
+                                "type":"refusal","refusal":"cannot comply"
+                            }]
+                        }],
+                        "usage":usage()
+                    }
+                })),
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(matches!(
+            terminal.as_slice(),
+            [StreamItem::TurnComplete {
+                stop_reason: StopReason::Refusal,
+                blocks,
+                ..
+            }] if blocks.iter().any(|block| matches!(block, Block::Text { text } if text == "cannot comply"))
+        ));
     }
 
     #[test]
@@ -1843,8 +1935,17 @@ mod tests {
                     "output_tokens_details": {"reasoning_tokens": 0}
                 }
             }))
-            .unwrap(),
-            Usage::default()
+            .unwrap()
+            .complete_usage(),
+            Some(Usage::default())
+        );
+        assert_eq!(
+            parse_usage(&serde_json::json!({})).unwrap(),
+            UsageReport::provider_omitted()
+        );
+        assert_eq!(
+            parse_usage(&serde_json::json!({"usage": null})).unwrap(),
+            UsageReport::provider_omitted()
         );
     }
 

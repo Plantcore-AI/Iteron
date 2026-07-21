@@ -14,9 +14,11 @@
 use crate::sse::StreamItem;
 use crate::{
     AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderError, TurnRequest,
-    TurnResult,
+    TurnResult, UsageReport,
 };
-use core_protocol::{Block, ProviderState, ReasoningEffort, Role, StopReason, ToolUse, Usage};
+use core_protocol::{
+    Block, ProviderState, ReasoningEffort, Role, StopReason, StopReasonCode, ToolUse, Usage,
+};
 use futures_util::StreamExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -40,6 +42,7 @@ pub struct OpenAiCompat {
     configuration_error: Option<String>,
     error_profile: ErrorProfile,
     route_scope: String,
+    static_metadata: std::sync::Arc<crate::StaticProviderMetadata>,
     client: reqwest::Client,
 }
 
@@ -57,6 +60,7 @@ impl OpenAiCompat {
                 configuration_error: Some(error.to_string()),
                 error_profile: ErrorProfile::CustomConservative,
                 route_scope: direct_chat_route_scope(),
+                static_metadata: crate::StaticProviderMetadata::embedded(),
                 client: reqwest::Client::new(),
             },
         }
@@ -75,6 +79,7 @@ impl OpenAiCompat {
             configuration_error: None,
             error_profile: ErrorProfile::CustomConservative,
             route_scope: direct_chat_route_scope(),
+            static_metadata: crate::StaticProviderMetadata::embedded(),
             client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(30))
                 .redirect(reqwest::redirect::Policy::none())
@@ -90,6 +95,14 @@ impl OpenAiCompat {
         self
     }
 
+    pub(crate) fn with_static_metadata(
+        mut self,
+        static_metadata: std::sync::Arc<crate::StaticProviderMetadata>,
+    ) -> Self {
+        self.static_metadata = static_metadata;
+        self
+    }
+
     /// Bind opaque reasoning continuation data to one provider-directory instance. Direct
     /// constructors already receive a unique process-local scope, while directory providers use
     /// their stable instance id so resume/fork can replay state through the same configured route.
@@ -97,15 +110,6 @@ impl OpenAiCompat {
         validate_chat_route_scope(&route_scope)?;
         self.route_scope = route_scope;
         Ok(self)
-    }
-
-    /// Read key from an env var (name varies by provider); base URL from another.
-    pub fn from_env(key_var: &str, base_url_var: &str) -> Result<Self, ProviderError> {
-        let key = std::env::var(key_var).map_err(|_| ProviderError::MissingCredential {
-            provider: key_var.to_string(),
-        })?;
-        let base = std::env::var(base_url_var).ok();
-        Self::try_new(key, base)
     }
 
     fn body(&self, req: &TurnRequest) -> Result<serde_json::Value, ProviderError> {
@@ -134,13 +138,15 @@ impl OpenAiCompat {
         if !tools.is_empty() {
             b["tools"] = serde_json::json!(tools);
         }
-        if let Some(level) = chat_reasoning_effort(
+        if let Some(level) = chat_reasoning_effort_with_metadata(
             self.error_profile,
+            self.api_root.as_ref(),
+            &self.static_metadata,
             &req.model,
             req.reasoning_effort,
             req.thinking_budget,
         ) {
-            b["reasoning_effort"] = serde_json::json!(level);
+            b["reasoning_effort"] = serde_json::json!(level.label());
         }
         if supports_thinking_toggle(self.error_profile, &req.model) {
             b["thinking"] = serde_json::json!({
@@ -170,29 +176,77 @@ fn validate_chat_route_scope(route_scope: &str) -> Result<(), ProviderError> {
 
 /// Chat-compatible vendors do not share OpenAI's optional request parameters. Until a provider
 /// documents an equivalent field, omit it even when its model performs internal reasoning.
+#[cfg(test)]
 fn chat_reasoning_effort(
     error_profile: ErrorProfile,
     model_id: &str,
     requested: ReasoningEffort,
     thinking_budget: u32,
-) -> Option<&'static str> {
+) -> Option<ReasoningEffort> {
+    chat_reasoning_effort_proven(
+        error_profile,
+        model_id,
+        requested,
+        thinking_budget,
+        crate::StaticProviderMetadata::embedded()
+            .glm_model_capabilities(model_id)
+            .is_some_and(|capability| capability.semantic_effort == Some(true)),
+    )
+}
+
+fn chat_reasoning_effort_with_metadata(
+    error_profile: ErrorProfile,
+    api_root: Option<&ApiRoot>,
+    static_metadata: &crate::StaticProviderMetadata,
+    model_id: &str,
+    requested: ReasoningEffort,
+    thinking_budget: u32,
+) -> Option<ReasoningEffort> {
+    let glm_semantic_effort = api_root.is_some_and(|root| {
+        root.as_str() == static_metadata.glm_api_root()
+            && static_metadata
+                .glm_model_capabilities(model_id)
+                .is_some_and(|capability| capability.semantic_effort == Some(true))
+    });
+    chat_reasoning_effort_proven(
+        error_profile,
+        model_id,
+        requested,
+        thinking_budget,
+        glm_semantic_effort,
+    )
+}
+
+fn chat_reasoning_effort_proven(
+    error_profile: ErrorProfile,
+    model_id: &str,
+    requested: ReasoningEffort,
+    thinking_budget: u32,
+    glm_semantic_effort: bool,
+) -> Option<ReasoningEffort> {
     match error_profile {
-        ErrorProfile::OpenAi if is_openai_reasoning_family(model_id) => Some(requested.label()),
+        // The portable OpenAI reasoning surface proven by this adapter ends at `high`. Core's
+        // stronger XHigh/Max dial values must not be sent as invented wire labels: clamp them and
+        // report the same mapped semantic value through `effort_application` below.
+        ErrorProfile::OpenAi if is_openai_reasoning_family(model_id) => Some(match requested {
+            ReasoningEffort::XHigh | ReasoningEffort::Max => ReasoningEffort::High,
+            supported => supported,
+        }),
         // GLM-5.2's standard Chat Completions API documents `reasoning_effort`, but exposes a
         // smaller effective control surface than the portable Core dial: low/medium resolve to
         // high and xhigh resolves to max. Normalize before sending so telemetry describes the
         // value that actually reaches inference rather than merely echoing an accepted alias.
         // A zero thinking budget uses the separate `thinking: disabled` control and deliberately
         // omits this field because reasoning_effort is effective only while thinking is enabled.
-        ErrorProfile::Glm if model_id == "glm-5.2" => {
+        ErrorProfile::Glm if glm_semantic_effort => {
             if thinking_budget == 0 {
                 None
             } else {
                 match requested {
                     ReasoningEffort::Low | ReasoningEffort::Medium | ReasoningEffort::High => {
-                        Some("high")
+                        Some(ReasoningEffort::High)
                     }
-                    ReasoningEffort::XHigh | ReasoningEffort::Max => Some("max"),
+                    ReasoningEffort::XHigh | ReasoningEffort::Max => Some(ReasoningEffort::Max),
                 }
             }
         }
@@ -204,9 +258,9 @@ fn chat_reasoning_effort(
             } else {
                 match requested {
                     ReasoningEffort::Low | ReasoningEffort::Medium | ReasoningEffort::High => {
-                        Some("high")
+                        Some(ReasoningEffort::High)
                     }
-                    ReasoningEffort::XHigh | ReasoningEffort::Max => Some("max"),
+                    ReasoningEffort::XHigh | ReasoningEffort::Max => Some(ReasoningEffort::Max),
                 }
             }
         }
@@ -214,47 +268,45 @@ fn chat_reasoning_effort(
     }
 }
 
+#[cfg(test)]
 fn chat_effort_application(
     error_profile: ErrorProfile,
     model_id: &str,
     requested: ReasoningEffort,
     thinking_budget: u32,
 ) -> EffortApplication {
-    if error_profile == ErrorProfile::OpenAi && is_openai_reasoning_family(model_id) {
-        return EffortApplication::Exact { requested };
-    }
-    if error_profile == ErrorProfile::Glm && model_id == "glm-5.2" {
-        if thinking_budget == 0 {
-            return EffortApplication::ToggleOnly {
-                requested,
-                enabled: false,
-            };
-        }
-        let sent = match requested {
-            ReasoningEffort::Low | ReasoningEffort::Medium | ReasoningEffort::High => {
-                ReasoningEffort::High
-            }
-            ReasoningEffort::XHigh | ReasoningEffort::Max => ReasoningEffort::Max,
-        };
+    if let Some(sent) = chat_reasoning_effort(error_profile, model_id, requested, thinking_budget) {
         return if sent == requested {
             EffortApplication::Exact { requested }
         } else {
             EffortApplication::Mapped { requested, sent }
         };
     }
-    if error_profile == ErrorProfile::DeepSeek && is_deepseek_reasoning_family(model_id) {
-        if thinking_budget == 0 {
-            return EffortApplication::ToggleOnly {
-                requested,
-                enabled: false,
-            };
-        }
-        let sent = match requested {
-            ReasoningEffort::Low | ReasoningEffort::Medium | ReasoningEffort::High => {
-                ReasoningEffort::High
-            }
-            ReasoningEffort::XHigh | ReasoningEffort::Max => ReasoningEffort::Max,
+    if supports_thinking_toggle(error_profile, model_id) {
+        return EffortApplication::ToggleOnly {
+            requested,
+            enabled: thinking_budget > 0,
         };
+    }
+    EffortApplication::Unsupported { requested }
+}
+
+fn chat_effort_application_with_metadata(
+    error_profile: ErrorProfile,
+    api_root: Option<&ApiRoot>,
+    static_metadata: &crate::StaticProviderMetadata,
+    model_id: &str,
+    requested: ReasoningEffort,
+    thinking_budget: u32,
+) -> EffortApplication {
+    if let Some(sent) = chat_reasoning_effort_with_metadata(
+        error_profile,
+        api_root,
+        static_metadata,
+        model_id,
+        requested,
+        thinking_budget,
+    ) {
         return if sent == requested {
             EffortApplication::Exact { requested }
         } else {
@@ -497,12 +549,11 @@ fn decode_finish_reason(value: &str) -> Result<StopReason, ProviderError> {
         "tool_calls" => Ok(StopReason::ToolUse),
         "length" => Ok(StopReason::MaxTokens),
         "stop_sequence" => Ok(StopReason::StopSequence),
-        "content_filter" => Err(ProviderError::Decode(
-            "provider stopped the response because of content filtering".into(),
-        )),
-        _ => Err(ProviderError::Decode(
-            "provider returned an unsupported finish reason".into(),
-        )),
+        "content_filter" | "refusal" => Ok(StopReason::Refusal),
+        "pause_turn" => Ok(StopReason::PauseTurn),
+        future => StopReasonCode::parse(future)
+            .map(StopReason::Unknown)
+            .map_err(|_| ProviderError::Decode("provider finish reason code was invalid".into())),
     }
 }
 
@@ -668,20 +719,13 @@ fn apply_reported_usage(
     Ok(true)
 }
 
-fn require_usage_report(saw_usage: bool) -> Result<(), ProviderError> {
-    if !saw_usage {
-        return Err(ProviderError::Decode(
-            "OpenAI-compatible stream ended without the requested usage report".into(),
-        ));
-    }
-    Ok(())
-}
-
 #[async_trait::async_trait]
 impl Provider for OpenAiCompat {
     fn effort_application(&self, req: &TurnRequest) -> EffortApplication {
-        chat_effort_application(
+        chat_effort_application_with_metadata(
             self.error_profile,
+            self.api_root.as_ref(),
+            &self.static_metadata,
             &req.model,
             req.reasoning_effort,
             req.thinking_budget,
@@ -969,7 +1013,11 @@ impl Provider for OpenAiCompat {
         let stop = stop.ok_or_else(|| {
             ProviderError::Decode("OpenAI-compatible stream ended before finish_reason".into())
         })?;
-        require_usage_report(saw_usage)?;
+        let usage = if saw_usage {
+            UsageReport::complete(usage)
+        } else {
+            UsageReport::provider_omitted()
+        };
 
         // Assemble. Tool calls are known complete only now (no per-call stop event), so we emit
         // ToolUseComplete here — before the turn's TurnResult is used, still enabling next-turn
@@ -1179,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn requested_usage_must_be_explicit_but_zero_counts_are_valid() {
+    fn omitted_usage_is_distinct_from_an_explicit_zero_report() {
         let mut usage = Usage {
             input: 9,
             output: 8,
@@ -1190,7 +1238,7 @@ mod tests {
         assert!(!apply_reported_usage(&serde_json::json!({}), &mut usage).unwrap());
         assert!(!apply_reported_usage(&serde_json::json!({"usage":null}), &mut usage).unwrap());
         assert!(apply_reported_usage(&serde_json::json!({"usage":{}}), &mut usage).is_err());
-        assert!(require_usage_report(false).is_err());
+        assert_eq!(UsageReport::provider_omitted().complete_usage(), None);
         assert!(
             apply_reported_usage(
                 &serde_json::json!({
@@ -1205,8 +1253,11 @@ mod tests {
             )
             .unwrap()
         );
-        assert!(require_usage_report(true).is_ok());
         assert_eq!(usage, Usage::default());
+        assert_eq!(
+            UsageReport::complete(usage).complete_usage(),
+            Some(Usage::default())
+        );
         assert!(apply_reported_usage(&serde_json::json!({"usage":0}), &mut usage).is_err());
         assert!(
             apply_reported_usage(
@@ -1364,8 +1415,19 @@ mod tests {
             decode_finish_reason("stop_sequence").unwrap(),
             StopReason::StopSequence
         );
-        assert!(decode_finish_reason("content_filter").is_err());
-        assert!(decode_finish_reason("future_reason").is_err());
+        assert_eq!(
+            decode_finish_reason("content_filter").unwrap(),
+            StopReason::Refusal
+        );
+        assert_eq!(
+            decode_finish_reason("pause_turn").unwrap(),
+            StopReason::PauseTurn
+        );
+        let StopReason::Unknown(raw) = decode_finish_reason("future_reason").unwrap() else {
+            panic!("future reason must remain typed and observable");
+        };
+        assert_eq!(raw.as_str(), "future_reason");
+        assert!(decode_finish_reason(&"x".repeat(129)).is_err());
     }
 
     #[test]
@@ -1393,7 +1455,7 @@ mod tests {
                 ReasoningEffort::Medium,
                 9_000
             ),
-            Some("high")
+            Some(ReasoningEffort::High)
         );
         assert_eq!(
             chat_reasoning_effort(
@@ -1402,7 +1464,7 @@ mod tests {
                 ReasoningEffort::XHigh,
                 16_384
             ),
-            Some("max")
+            Some(ReasoningEffort::Max)
         );
         assert_eq!(
             chat_reasoning_effort(
@@ -1424,11 +1486,11 @@ mod tests {
         );
         assert_eq!(
             chat_reasoning_effort(ErrorProfile::Glm, "glm-5.2", ReasoningEffort::Medium, 4_096),
-            Some("high")
+            Some(ReasoningEffort::High)
         );
         assert_eq!(
             chat_reasoning_effort(ErrorProfile::Glm, "glm-5.2", ReasoningEffort::XHigh, 16_384),
-            Some("max")
+            Some(ReasoningEffort::Max)
         );
         assert_eq!(
             chat_reasoning_effort(ErrorProfile::Glm, "glm-5.2", ReasoningEffort::Low, 0),
@@ -1461,11 +1523,11 @@ mod tests {
         assert!(!supports_thinking_toggle(ErrorProfile::Glm, "glm-4-flash"));
 
         let cases = [
-            ("o1-mini", Some("medium")),
-            ("o3", Some("medium")),
-            ("o4-mini", Some("medium")),
-            ("gpt-5.2-codex", Some("medium")),
-            ("codex-mini-latest", Some("medium")),
+            ("o1-mini", Some(ReasoningEffort::Medium)),
+            ("o3", Some(ReasoningEffort::Medium)),
+            ("o4-mini", Some(ReasoningEffort::Medium)),
+            ("gpt-5.2-codex", Some(ReasoningEffort::Medium)),
+            ("codex-mini-latest", Some(ReasoningEffort::Medium)),
             ("gpt-4.1", None),
             ("gpt-50", None),
         ];
@@ -1478,8 +1540,46 @@ mod tests {
         }
         assert_eq!(
             chat_reasoning_effort(ErrorProfile::OpenAi, "gpt-5", ReasoningEffort::Low, 0),
-            Some("low")
+            Some(ReasoningEffort::Low)
         );
+    }
+
+    #[test]
+    fn openai_chat_high_effort_wire_matches_mapped_application() {
+        let provider = OpenAiCompat::with_root(
+            "test-credential".into(),
+            ApiRoot::parse("https://api.openai.com/v1").unwrap(),
+        )
+        .unwrap()
+        .with_error_profile(ErrorProfile::OpenAi);
+
+        for requested in [ReasoningEffort::XHigh, ReasoningEffort::Max] {
+            let request = TurnRequest {
+                model: "gpt-5".into(),
+                system: "stable system".into(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                max_tokens: 8_192,
+                cache_system: false,
+                thinking_budget: 16_384,
+                reasoning_effort: requested,
+            };
+            let encoded = serde_json::to_vec(&provider.body(&request).unwrap()).unwrap();
+            let wire: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+
+            assert_eq!(
+                wire["reasoning_effort"], "high",
+                "{requested:?} is never serialized as an unproven OpenAI label"
+            );
+            assert_eq!(
+                provider.effort_application(&request),
+                EffortApplication::Mapped {
+                    requested,
+                    sent: ReasoningEffort::High,
+                },
+                "the reported semantic effort must equal the serialized wire value"
+            );
+        }
     }
 
     #[test]
@@ -1515,5 +1615,52 @@ mod tests {
         let body = provider.body(&request).unwrap();
         assert_eq!(body["thinking"]["type"], "disabled");
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn refreshed_metadata_can_revoke_glm_semantic_effort_without_adapter_changes() {
+        let mut document: serde_json::Value =
+            serde_json::from_str(include_str!("../static-provider-metadata-v1.json")).unwrap();
+        document["bundle_revision"] = serde_json::json!("operator-refresh@test-v2");
+        document["glm_standard_chat"]["capabilities"]["glm-5.2"]["version"] =
+            serde_json::json!("glm-5.2-model-page@test-v2");
+        document["glm_standard_chat"]["capabilities"]["glm-5.2"]["semantic_effort"] =
+            serde_json::json!(false);
+        crate::StaticProviderMetadata::stamp_content_versions(&mut document).unwrap();
+        let metadata = std::sync::Arc::new(
+            crate::StaticProviderMetadata::from_slice(&serde_json::to_vec(&document).unwrap())
+                .unwrap(),
+        );
+        let provider = OpenAiCompat::with_root(
+            "key".into(),
+            ApiRoot::parse("https://open.bigmodel.cn/api/paas/v4").unwrap(),
+        )
+        .unwrap()
+        .with_error_profile(ErrorProfile::Glm)
+        .with_static_metadata(metadata);
+        let request = TurnRequest {
+            model: "glm-5.2".into(),
+            system: "system".into(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            max_tokens: 1_024,
+            cache_system: false,
+            thinking_budget: 4_096,
+            reasoning_effort: ReasoningEffort::Medium,
+        };
+        assert!(
+            provider
+                .body(&request)
+                .unwrap()
+                .get("reasoning_effort")
+                .is_none()
+        );
+        assert_eq!(
+            provider.effort_application(&request),
+            EffortApplication::ToggleOnly {
+                requested: ReasoningEffort::Medium,
+                enabled: true,
+            }
+        );
     }
 }

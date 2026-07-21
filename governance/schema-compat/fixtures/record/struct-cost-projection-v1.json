@@ -1,0 +1,33 @@
+{
+  "version": "v1",
+  "identity": {
+    "tenant_id": "default",
+    "run_id": "event-schema",
+    "turn_id": 1,
+    "provider_attempt": 1,
+    "attribution": {
+      "kind": "direct_subagent",
+      "parent_run_id": "event-schema",
+      "sub_run": "child-1"
+    }
+  },
+  "route": {
+    "provider_id": "provider-a",
+    "model_id": "model-a",
+    "catalog_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "capability_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "usage": {
+    "input": 101,
+    "output": 23,
+    "cache_creation": 7,
+    "cache_read": 41,
+    "thinking": 5
+  },
+  "amount_microusd": 17,
+  "projected_at_unix_secs": 1784592001,
+  "rate_card_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "signer_id": "pricing-strategy",
+  "projection_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "signature": "fixture-projection-signature"
+}
