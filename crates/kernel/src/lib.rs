@@ -1359,6 +1359,18 @@ fn effective_capability(input: &serde_json::Value, base: Capability) -> Capabili
     base
 }
 
+/// The ADR-007 egress taint decision as a pure function (unit-testable without a full turn). An
+/// egress capability is pre-denied ONLY when the governing context is not egress-permitted AND the
+/// lenient `allow_tainted_egress` policy is off. When lenient, egress falls through to the
+/// capability gate instead (web tools auto-approved, other external effects still prompt).
+fn egress_taint_blocks(
+    cap: Capability,
+    governing_trust: Trust,
+    allow_tainted_egress: bool,
+) -> bool {
+    cap.is_egress() && !governing_trust.egress_permitted() && !allow_tainted_egress
+}
+
 /// Narrow journal seam for runtime-policy transactions. Production uses `Rollout::append`, whose
 /// success means the hash-chained line and `sync_all` completed. The seam also lets failure-order
 /// tests prove that in-memory authority never advances when durability is uncertain.
@@ -1667,6 +1679,14 @@ pub struct Agent {
     /// claims done, and refuses to accept "done" if it fails (ADR-005: ground truth in the loop,
     /// don't trust the self-report). None disables the gate.
     pub verify_command: Option<String>,
+    /// Lenient-egress policy (Owner-directed 2026-07-21). When true, the ADR-007 taint gate does NOT
+    /// pre-deny an egress tool just because the governing context is Workspace/untrusted-tainted;
+    /// egress instead falls through to the capability gate (where the first-party web tools are
+    /// auto-approved and every other external effect still prompts). False in this constructor
+    /// (safe default for tests/embedders); the CLI sets it true for the product default, and
+    /// `--strict-egress` restores the taint block. This trades the strict prompt-injection
+    /// exfiltration guard for out-of-the-box web access — the deliberate product posture here.
+    pub allow_tainted_egress: bool,
     /// Exact provider credential-variable names supplied by trusted CLI configuration. These are
     /// control metadata, never values, and are removed from verification and child-agent command
     /// processes through their sandbox confinement.
@@ -1808,6 +1828,7 @@ impl Agent {
             compaction: CompactionPolicy::default(),
             workspace: std::path::PathBuf::from("."),
             verify_command: None,
+            allow_tainted_egress: false,
             sensitive_env_names: Vec::new(),
             #[cfg(test)]
             pricing_now_unix_secs: None,
@@ -4470,7 +4491,14 @@ impl Agent {
                 // cannot auto-approve it (code review: the carve-out was otherwise unreachable).
                 let cap = effective_capability(&tu.input, base_cap);
                 let governing_trust = self.governing_turn_trust(&messages);
-                let taint_blocks_egress = cap.is_egress() && !governing_trust.egress_permitted();
+                // The ADR-007 taint gate: an egress tool is pre-denied when the governing context is
+                // not Trusted, so untrusted content cannot drive exfiltration. The Owner-directed
+                // lenient posture (`allow_tainted_egress`, set by the CLI) turns this off so web
+                // access works out of the box; egress then still passes through the capability gate
+                // below (web tools auto-approved, other external effects prompt). `--strict-egress`
+                // restores the block.
+                let taint_blocks_egress =
+                    egress_taint_blocks(cap, governing_trust, self.allow_tainted_egress);
                 let verdict = if taint_blocks_egress {
                     Verdict::Deny
                 } else {
@@ -6288,8 +6316,8 @@ pub struct CompactionReport {
 
 #[cfg(test)]
 mod capability_tests {
-    use super::{effective_capability, is_trust_mutating_path};
-    use core_protocol::{Capability, PermissionMode, PermissionRules, Verdict, gate};
+    use super::{effective_capability, egress_taint_blocks, is_trust_mutating_path};
+    use core_protocol::{Capability, PermissionMode, PermissionRules, Trust, Verdict, gate};
     use serde_json::json;
 
     #[test]
@@ -6334,6 +6362,48 @@ mod capability_tests {
             effective_capability(&json!({"path": ".git/config"}), Capability::ReadOnly),
             Capability::ReadOnly
         );
+    }
+
+    #[test]
+    fn egress_taint_gate_blocks_only_when_strict_and_tainted() {
+        use Capability::*;
+        // Strict posture (allow_tainted_egress = false): egress is pre-denied in a tainted
+        // (non-Trusted) context and permitted only from a fully Trusted context.
+        assert!(egress_taint_blocks(
+            IrreversibleExternal,
+            Trust::Workspace,
+            false
+        ));
+        assert!(egress_taint_blocks(
+            IrreversibleExternal,
+            Trust::Untrusted,
+            false
+        ));
+        assert!(!egress_taint_blocks(
+            IrreversibleExternal,
+            Trust::Trusted,
+            false
+        ));
+        // Lenient posture (allow_tainted_egress = true, the product default): the taint gate never
+        // pre-denies egress; the capability gate downstream still governs (web tools auto, other
+        // external effects prompt).
+        assert!(!egress_taint_blocks(
+            IrreversibleExternal,
+            Trust::Workspace,
+            true
+        ));
+        assert!(!egress_taint_blocks(
+            IrreversibleExternal,
+            Trust::Untrusted,
+            true
+        ));
+        // A non-egress capability is never touched by this gate, in either posture.
+        assert!(!egress_taint_blocks(CodeExecuting, Trust::Workspace, false));
+        assert!(!egress_taint_blocks(
+            ReversibleLocal,
+            Trust::Untrusted,
+            false
+        ));
     }
 
     #[test]

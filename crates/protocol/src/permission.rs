@@ -185,16 +185,24 @@ pub fn gate(mode: PermissionMode, rules: &PermissionRules, tool: &str, cap: Capa
     if mode == Plan {
         return Verdict::Deny;
     }
-    // The two carve-outs are NON-NEGOTIABLE (invariant #5): no mode and NO session rule may
-    // auto-approve a TrustMutating (.git/hooks, CI config, instruction-file write) or an
-    // IrreversibleExternal (push/publish) call — so the carve-out check precedes the rule lookup.
-    // A rule may still TIGHTEN to Deny; it can never loosen these to Auto (code review: a
-    // `remember`/`/permissions allow` on these classes was an unbounded, unaudited bypass).
+    // The two carve-outs (invariant #5): no MODE and no capability-CLASS rule may auto-approve a
+    // TrustMutating (.git/hooks, CI config, instruction-file write) or an IrreversibleExternal
+    // (push/publish, external egress) call — a blanket `remember`/`/permissions allow <class>` was
+    // an unbounded, unaudited bypass, so a class-wide Auto stays impossible (`try_set_cap` refuses
+    // it and `by_cap` Auto is never consulted here). What IS honored is a rule on the EXACT tool
+    // name: that is a bounded, audited, per-tool operator/harness decision, so it wins — it may
+    // pre-approve (Auto) or tighten (Ask/Deny) one named tool without approving the class. This is
+    // how the first-party egress tools (web_fetch/web_search) are auto-approved by default while
+    // `git push`, publish, and arbitrary external effects still prompt: the default names only the
+    // web tools, never the class.
     if matches!(cap, TrustMutating | IrreversibleExternal) {
-        if rules.by_tool.get(tool) == Some(&Verdict::Deny)
-            || rules.by_cap.get(&cap) == Some(&Verdict::Deny)
-        {
+        // A capability-CLASS Deny hard-stops the whole class first.
+        if rules.by_cap.get(&cap) == Some(&Verdict::Deny) {
             return Verdict::Deny;
+        }
+        // An exact-tool-name rule (from `/permissions` or the harness default seed) wins.
+        if let Some(v) = rules.by_tool.get(tool) {
+            return *v;
         }
         return Verdict::Ask;
     }
@@ -318,12 +326,12 @@ mod tests {
     }
 
     #[test]
-    fn carve_outs_are_non_negotiable_even_with_an_allow_rule() {
-        // A session "always allow" rule must NOT loosen the two carve-outs to Auto (invariant #5).
+    fn class_wide_allow_never_loosens_carve_outs_but_deny_tightens() {
+        // A session "always allow" on the whole CAPABILITY CLASS must NOT loosen the two carve-outs
+        // to Auto (invariant #5) — only an exact-tool rule can pre-approve a single named tool.
         let mut r = PermissionRules::new();
         r.allow_cap(TrustMutating);
         r.allow_cap(IrreversibleExternal);
-        r.set_tool("git_push", Verdict::Auto);
         for m in [
             PermissionMode::Default,
             PermissionMode::AcceptEdits,
@@ -332,12 +340,12 @@ mod tests {
             assert_eq!(
                 gate(m, &r, "hook_write", TrustMutating),
                 Verdict::Ask,
-                "TrustMutating must stay Ask"
+                "a class-wide allow must NOT auto-approve TrustMutating"
             );
             assert_eq!(
                 gate(m, &r, "git_push", IrreversibleExternal),
                 Verdict::Ask,
-                "IrreversibleExternal must stay Ask"
+                "a class-wide allow must NOT auto-approve IrreversibleExternal"
             );
         }
         // but a DENY rule may still tighten a carve-out to Deny.
@@ -345,6 +353,45 @@ mod tests {
         d.set_cap(IrreversibleExternal, Verdict::Deny);
         assert_eq!(
             gate(PermissionMode::Yolo, &d, "git_push", IrreversibleExternal),
+            Verdict::Deny
+        );
+    }
+
+    #[test]
+    fn named_tool_rule_wins_inside_a_carve_out() {
+        // A rule on the EXACT tool name is a bounded, audited per-tool decision and is honored even
+        // inside a carve-out — this is how web_fetch/web_search auto-approve by default while the
+        // rest of the IrreversibleExternal class keeps prompting.
+        let mut r = PermissionRules::new();
+        r.set_tool("web_fetch", Verdict::Auto);
+        r.set_tool("web_search", Verdict::Auto);
+        for m in [
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Yolo,
+        ] {
+            assert_eq!(
+                gate(m, &r, "web_fetch", IrreversibleExternal),
+                Verdict::Auto,
+                "a named-tool Auto pre-approves that one egress tool"
+            );
+            // an unnamed sibling in the same class still prompts (the class default is unchanged)
+            assert_eq!(
+                gate(m, &r, "git_push", IrreversibleExternal),
+                Verdict::Ask,
+                "the class default is unchanged for tools without a rule"
+            );
+        }
+        // Plan still hard-denies even a pre-approved egress tool (read-only-explore overlay wins).
+        assert_eq!(
+            gate(PermissionMode::Plan, &r, "web_fetch", IrreversibleExternal),
+            Verdict::Deny
+        );
+        // A per-tool Deny still tightens a carve-out tool to Deny.
+        let mut d = PermissionRules::new();
+        d.set_tool("web_fetch", Verdict::Deny);
+        assert_eq!(
+            gate(PermissionMode::Yolo, &d, "web_fetch", IrreversibleExternal),
             Verdict::Deny
         );
     }

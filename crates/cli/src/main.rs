@@ -185,15 +185,23 @@ struct Cli {
     #[arg(long)]
     max_usd: Option<f64>,
 
-    /// Allow the agent to run code (bash/build/test). Off by default. When on, code runs in an
-    /// egress-off sandbox: network denied, writes confined to the workspace (ADR-007). Equivalent
-    /// to a session `/permissions allow code_executing` rule.
+    /// Force-enable code execution (bash/build/test). Code execution is already ON by default
+    /// (Owner-directed lenient posture); a project `.core/config.json` "allow_code": false or
+    /// `--mode plan` disables it. Code runs in an egress-off sandbox: network denied, writes
+    /// confined to the workspace (ADR-007).
     #[arg(long)]
     allow_code: bool,
 
+    /// Keep the strict ADR-007 egress taint gate: refuse web_fetch/web_search whenever the governing
+    /// context is Workspace/untrusted-tainted. Off by default so the web tools work out of the box;
+    /// pass this to restore the prompt-injection exfiltration guard.
+    #[arg(long)]
+    strict_egress: bool,
+
     /// Permission mode: default | acceptEdits | plan | yolo (ADR-007 §3). Reads always auto; the
-    /// mode governs edits/code/etc. `yolo` still asks for trust-mutating + external-egress actions —
-    /// there is no unbounded bypass. Defaults to acceptEdits in one-shot, default in the TUI.
+    /// mode governs edits/code/etc. Defaults to acceptEdits (edits auto) in BOTH one-shot and the
+    /// TUI (Owner-directed lenient posture); pass `--mode default` for per-edit prompts or
+    /// `--mode plan` for read-only.
     #[arg(long)]
     mode: Option<String>,
 
@@ -537,10 +545,12 @@ async fn run_cli() -> anyhow::Result<u8> {
     let max_usd = config::tighten_optional(file.max_usd, trusted_max_usd);
     let trusted_max_wall_secs = user_file.max_wall_secs.unwrap_or(1800);
     let max_wall_secs = config::tighten(file.max_wall_secs, trusted_max_wall_secs);
-    // A cloned repository is not an authorization principal. Only an explicit CLI flag or the
-    // operator-owned user config may grant code execution; project `true` is inert while project
-    // `false` may tighten the grant.
-    let trusted_allow_code = cli.allow_code || user_file.allow_code.unwrap_or(false);
+    // Lenient default (Owner-directed 2026-07-21): code execution is ON by default so bash/build/
+    // test run without a flag. A cloned repository is STILL not an authorization principal — a
+    // project `allow_code:false` may TIGHTEN this off and `--mode plan` hard-disables it, while a
+    // project `true` stays inert (only a CLI flag, the user config, or this default may grant it —
+    // never the untrusted repo).
+    let trusted_allow_code = cli.allow_code || user_file.allow_code.unwrap_or(true);
     let allow_code = config::tighten_grant(file.allow_code, trusted_allow_code);
 
     // ---- Validate ALL purely-local arguments BEFORE opening the rollout ----
@@ -574,16 +584,16 @@ async fn run_cli() -> anyhow::Result<u8> {
             "--output-format is a one-shot option; pass -p/--print with a task (or omit it for the TUI)"
         );
     }
-    // Explicit --mode wins; otherwise default by interactivity: one-shot has no human to answer an
-    // `Ask`, so it defaults to acceptEdits (edits auto, code still gated by --allow-code); the
-    // interactive TUI defaults to `default` (edits prompt live). (ADR-007 §3, R5.)
+    // Explicit --mode wins. Otherwise the default is the Owner-directed lenient posture (2026-07-21):
+    // acceptEdits in BOTH one-shot and the interactive TUI — edits auto, code auto (via the default
+    // allow_code grant above), web egress auto (via the seeded per-tool rules below). Pass
+    // `--mode default` to restore per-edit prompts, or `--mode plan` for read-only. (ADR-007 §3, R5.)
     let mode_runtime_override = cli.mode.is_some();
     let mode = match cli.mode.as_deref() {
         Some(s) => core_protocol::PermissionMode::parse(s).ok_or_else(|| {
             anyhow::anyhow!("unknown --mode `{s}` (default|acceptEdits|plan|yolo)")
         })?,
-        None if one_shot => core_protocol::PermissionMode::AcceptEdits,
-        None => core_protocol::PermissionMode::Default,
+        None => core_protocol::PermissionMode::AcceptEdits,
     };
     // A no-terminal invocation that is NOT one-shot would fall into the interactive TUI and die in
     // raw-mode setup with a cryptic OS error (review LOW). Fail clearly, before opening a rollout.
@@ -877,7 +887,18 @@ async fn run_cli() -> anyhow::Result<u8> {
     if allow_code {
         initial_rules.allow_cap(core_protocol::Capability::CodeExecuting);
     }
+    // Lenient egress default (Owner-directed 2026-07-21): the first-party web tools auto-approve by
+    // default. A rule on the EXACT tool name is honored inside the IrreversibleExternal carve-out
+    // (permission::gate), so this pre-approves web_fetch/web_search WITHOUT approving the class —
+    // git push / publish / arbitrary external effects still prompt. Tighten at runtime with
+    // `/permissions deny web_fetch` (a per-tool Deny wins), or `--mode plan` (hard read-only).
+    initial_rules.set_tool("web_fetch", core_protocol::Verdict::Auto);
+    initial_rules.set_tool("web_search", core_protocol::Verdict::Auto);
     agent.workspace = repo.clone();
+    // Lenient egress default (Owner-directed 2026-07-21): let egress pass the ADR-007 taint gate so
+    // web_fetch/web_search work in a normal (Workspace-tainted) repo context; the capability gate
+    // still governs (web tools auto, other external effects prompt). `--strict-egress` restores it.
+    agent.allow_tainted_egress = !cli.strict_egress;
     agent.memory_workspace = Some(repo.clone()); // modular memory: .core/memory (R5)
     agent.verify_command = cli.verify.clone(); // validated above (needs --allow-code), before open
     if let Some(cmd) = &cli.verify {
