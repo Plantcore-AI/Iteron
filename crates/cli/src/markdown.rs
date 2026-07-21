@@ -39,6 +39,10 @@ pub enum MdBlock {
         lines: Vec<String>,
     },
     Rule,
+    Table {
+        headers: Vec<Vec<Inline>>,
+        rows: Vec<Vec<Vec<Inline>>>,
+    },
 }
 
 /// A parsed markdown document.
@@ -77,6 +81,25 @@ impl MarkdownDoc {
                     out.push_str("```\n");
                 }
                 MdBlock::Rule => out.push_str("---\n"),
+                MdBlock::Table { headers, rows } => {
+                    out.push('|');
+                    for c in headers {
+                        out.push_str(&format!(" {} |", inline_text(c)));
+                    }
+                    out.push('\n');
+                    out.push('|');
+                    for _ in headers {
+                        out.push_str(" --- |");
+                    }
+                    out.push('\n');
+                    for r in rows {
+                        out.push('|');
+                        for c in r {
+                            out.push_str(&format!(" {} |", inline_text(c)));
+                        }
+                        out.push('\n');
+                    }
+                }
             }
         }
         out
@@ -193,12 +216,59 @@ fn parse_blocks(text: &str) -> Vec<MdBlock> {
             i += 1;
             continue;
         }
+        // table: a pipe row immediately followed by a `|---|---|` separator row.
+        if trimmed.contains('|') && i + 1 < lines.len() && is_separator_row(lines[i + 1].trim()) {
+            flush_para(&mut blocks, &mut para);
+            let headers: Vec<Vec<Inline>> = split_table_row(trimmed)
+                .iter()
+                .map(|c| parse_inline(c))
+                .collect();
+            let ncols = headers.len();
+            i += 2; // consume the header row and the separator row
+            let mut rows = Vec::new();
+            while i < lines.len() {
+                let t = lines[i].trim();
+                if t.is_empty() || !t.contains('|') {
+                    break;
+                }
+                let mut cells: Vec<Vec<Inline>> =
+                    split_table_row(t).iter().map(|c| parse_inline(c)).collect();
+                cells.resize(ncols, Vec::new()); // normalize to the header column count
+                cells.truncate(ncols);
+                rows.push(cells);
+                i += 1;
+            }
+            blocks.push(MdBlock::Table { headers, rows });
+            continue;
+        }
         // otherwise, accumulate into a paragraph
         para.push(trimmed.to_string());
         i += 1;
     }
     flush_para(&mut blocks, &mut para);
     blocks
+}
+
+/// Split a markdown table row `| a | b |` into trimmed cell strings (outer pipes optional).
+fn split_table_row(line: &str) -> Vec<String> {
+    let t = line.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = t.strip_suffix('|').unwrap_or(t);
+    t.split('|').map(|c| c.trim().to_string()).collect()
+}
+
+/// Is this the `|---|:--:|---:|` separator row that sits under a table header? Every cell must be
+/// non-empty dashes with optional leading/trailing `:` (alignment markers) and contain at least one `-`.
+fn is_separator_row(line: &str) -> bool {
+    if !line.contains('-') || !line.contains('|') {
+        return false;
+    }
+    let cells = split_table_row(line);
+    !cells.is_empty()
+        && cells.iter().all(|c| {
+            let c = c.trim();
+            !c.is_empty() && c.contains('-') && c.chars().all(|ch| ch == '-' || ch == ':')
+        })
 }
 
 fn parse_heading(s: &str) -> Option<MdBlock> {
@@ -464,7 +534,6 @@ fn inline_annotated_spans(
     out
 }
 
-#[cfg(test)]
 fn inline_spans(spans: &[Inline], theme: &Theme, base: Style) -> Vec<Span<'static>> {
     inline_annotated_spans(spans, theme, base, &HyperlinkPolicy::disabled())
         .into_iter()
@@ -603,10 +672,142 @@ pub(crate) fn render_doc_with_hyperlinks(
                     out.push_plain(line);
                 }
             }
+            MdBlock::Table { headers, rows } => {
+                out.append(render_table(headers, rows, width, theme));
+            }
         }
     }
     if out.lines.is_empty() {
         out.push_plain(Line::from(""));
+    }
+    out
+}
+
+/// Render a markdown table as a box-drawn grid, CJK-aware and bounded to `width`. Column widths are
+/// the natural cell widths, shrunk proportionally if the whole table would exceed `width`; each cell
+/// is fit (truncated + padded) to its column. Header cells are bold; borders are faint. Inline cell
+/// styling (code/bold/links) is preserved within the fit.
+fn render_table(
+    headers: &[Vec<Inline>],
+    rows: &[Vec<Vec<Inline>>],
+    width: u16,
+    theme: &Theme,
+) -> RenderedLines {
+    use crate::tui::char_width;
+    let mut out = RenderedLines::default();
+    let ncols = headers.len();
+    if ncols == 0 {
+        return out;
+    }
+    let cell_w = |cell: &[Inline]| -> usize {
+        inline_text(cell)
+            .chars()
+            .map(|c| char_width(c) as usize)
+            .sum()
+    };
+    // Natural column widths (max of header + body cell widths, at least 1).
+    let mut col: Vec<usize> = (0..ncols)
+        .map(|c| {
+            let h = cell_w(&headers[c]);
+            let b = rows
+                .iter()
+                .map(|r| r.get(c).map(|x| cell_w(x)).unwrap_or(0))
+                .max()
+                .unwrap_or(0);
+            h.max(b).max(1)
+        })
+        .collect();
+    // Fit to width. Border overhead = `│ ` + `… │ …` + ` │` = 3*ncols + 1 fixed cells.
+    let overhead = 3 * ncols + 1;
+    let avail = (width as usize).saturating_sub(overhead).max(ncols);
+    let total: usize = col.iter().sum();
+    if total > avail {
+        for w in col.iter_mut() {
+            *w = ((*w * avail) / total).max(1);
+        }
+        let mut over = col.iter().sum::<usize>().saturating_sub(avail);
+        while over > 0 {
+            match col.iter_mut().filter(|w| **w > 1).max_by_key(|w| **w) {
+                Some(m) => {
+                    *m -= 1;
+                    over -= 1;
+                }
+                None => break,
+            }
+        }
+    }
+    let faint = Style::default().fg(theme.faint);
+    let border = |left: char, mid: char, right: char| -> Line<'static> {
+        let mut s = String::new();
+        s.push(left);
+        for (i, w) in col.iter().enumerate() {
+            if i > 0 {
+                s.push(mid);
+            }
+            for _ in 0..(w + 2) {
+                s.push('─');
+            }
+        }
+        s.push(right);
+        Line::from(Span::styled(s, faint))
+    };
+    let data_row = |cells: &[Vec<Inline>], header: bool| -> Line<'static> {
+        let base = if header {
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg)
+        };
+        let mut sp: Vec<Span<'static>> = Vec::new();
+        for (c, &w) in col.iter().enumerate() {
+            sp.push(Span::styled(
+                if c == 0 { "│ " } else { " " }.to_string(),
+                faint,
+            ));
+            let empty: Vec<Inline> = Vec::new();
+            let cell = cells.get(c).unwrap_or(&empty);
+            sp.extend(fit_spans(inline_spans(cell, theme, base), w, base));
+            sp.push(Span::styled(" │".to_string(), faint));
+        }
+        Line::from(sp)
+    };
+    out.push_plain(border('┌', '┬', '┐'));
+    out.push_plain(data_row(headers, true));
+    out.push_plain(border('├', '┼', '┤'));
+    for r in rows {
+        out.push_plain(data_row(r, false));
+    }
+    out.push_plain(border('└', '┴', '┘'));
+    out
+}
+
+/// Truncate a styled span list to exactly `w` display cells (CJK-aware), padding the tail with
+/// spaces. A wide char that would overflow the last cell is dropped rather than split.
+fn fit_spans(spans: Vec<Span<'static>>, w: usize, pad_style: Style) -> Vec<Span<'static>> {
+    use crate::tui::char_width;
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    'outer: for sp in spans {
+        if used >= w {
+            break;
+        }
+        let mut taken = String::new();
+        for ch in sp.content.chars() {
+            let cw = char_width(ch) as usize;
+            if used + cw > w {
+                if !taken.is_empty() {
+                    out.push(Span::styled(std::mem::take(&mut taken), sp.style));
+                }
+                break 'outer;
+            }
+            taken.push(ch);
+            used += cw;
+        }
+        if !taken.is_empty() {
+            out.push(Span::styled(taken, sp.style));
+        }
+    }
+    if used < w {
+        out.push(Span::styled(" ".repeat(w - used), pad_style));
     }
     out
 }
@@ -642,6 +843,54 @@ fn render_marked(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plain(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn parses_and_renders_a_table() {
+        let md = "before\n\n| Name | Role |\n|---|:--:|\n| Exa | search |\n| 蔡治郅 | 杭州工核智能负责人 |\n\nafter";
+        let doc = MarkdownDoc::parse(md);
+        let (headers, rows) = doc
+            .blocks
+            .iter()
+            .find_map(|b| match b {
+                MdBlock::Table { headers, rows } => Some((headers, rows)),
+                _ => None,
+            })
+            .expect("a table block was parsed");
+        assert_eq!(headers.len(), 2);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(inline_text(&headers[0]), "Name");
+        assert_eq!(inline_text(&rows[1][0]), "蔡治郅");
+        // surrounding paragraphs are still their own blocks (para + table + para)
+        assert_eq!(doc.blocks.len(), 3);
+
+        let theme = Theme::dark();
+        let lines = render_doc(&doc, 40, &theme);
+        let text = plain(&lines);
+        eprintln!("\n{text}\n"); // eyeball with --nocapture
+        assert!(text.contains('┌') && text.contains('┼') && text.contains('┴'));
+        assert!(text.contains('│'));
+        // every rendered row fits the width (no horizontal overflow)
+        assert!(
+            lines.iter().all(|l| crate::render::line_width(l) <= 40),
+            "a table row exceeded the width bound"
+        );
+        // a not-a-table pipe line stays a paragraph (needs the separator row)
+        let p = MarkdownDoc::parse("a | b | c");
+        assert!(p.blocks.iter().all(|b| !matches!(b, MdBlock::Table { .. })));
+    }
 
     #[test]
     fn intraword_underscore_is_not_italic() {
