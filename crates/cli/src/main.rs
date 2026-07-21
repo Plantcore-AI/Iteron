@@ -198,6 +198,12 @@ struct Cli {
     #[arg(long)]
     strict_egress: bool,
 
+    /// DANGEROUS: auto-approve EVERY tool so the agent never prompts (used by the internal team
+    /// edition). Skips the whole capability gate; Plan mode still hard-denies and an explicit
+    /// `/permissions deny` is still honored. Off by default.
+    #[arg(long)]
+    dangerously_bypass_permissions: bool,
+
     /// Permission mode: default | acceptEdits | plan | yolo (ADR-007 §3). Reads always auto; the
     /// mode governs edits/code/etc. Defaults to acceptEdits (edits auto) in BOTH one-shot and the
     /// TUI (Owner-directed lenient posture); pass `--mode default` for per-edit prompts or
@@ -899,6 +905,12 @@ async fn run_cli() -> anyhow::Result<u8> {
     // web_fetch/web_search work in a normal (Workspace-tainted) repo context; the capability gate
     // still governs (web tools auto, other external effects prompt). `--strict-egress` restores it.
     agent.allow_tainted_egress = !cli.strict_egress;
+    agent.bypass_permissions = cli.dangerously_bypass_permissions;
+    if agent.bypass_permissions {
+        eprintln!(
+            "permissions: BYPASS (every tool auto-approved; plan mode + explicit denies still apply)"
+        );
+    }
     agent.memory_workspace = Some(repo.clone()); // modular memory: .core/memory (R5)
     agent.verify_command = cli.verify.clone(); // validated above (needs --allow-code), before open
     if let Some(cmd) = &cli.verify {

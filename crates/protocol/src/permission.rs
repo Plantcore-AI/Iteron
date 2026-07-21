@@ -114,6 +114,11 @@ impl PermissionRules {
     pub fn cap_rule(&self, c: Capability) -> Option<Verdict> {
         self.by_cap.get(&c).copied()
     }
+    /// Return the explicit session override for an exact tool name, if one exists. Used by the
+    /// bypass path to still honor a `/permissions deny <tool>` even when all else is auto-approved.
+    pub fn tool_rule(&self, tool: &str) -> Option<Verdict> {
+        self.by_tool.get(tool).copied()
+    }
     /// Set an operator-facing capability rule only when it can affect the gate truthfully. Reads
     /// are constitutionally automatic, while the two carve-outs can be tightened to Ask/Deny but
     /// never relaxed to Auto.

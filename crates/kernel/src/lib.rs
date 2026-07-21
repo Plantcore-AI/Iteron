@@ -1371,6 +1371,17 @@ fn egress_taint_blocks(
     cap.is_egress() && !governing_trust.egress_permitted() && !allow_tainted_egress
 }
 
+/// The bypass-mode verdict (DANGEROUS opt-in `--dangerously-bypass-permissions`): auto-approve
+/// unless an explicit deny rule blocks the exact tool or its capability. The caller applies the
+/// Plan-mode read-only override before consulting this, so bypass never punches through Plan.
+fn bypass_verdict(rules: &PermissionRules, tool: &str, cap: Capability) -> Verdict {
+    if rules.tool_rule(tool) == Some(Verdict::Deny) || rules.cap_rule(cap) == Some(Verdict::Deny) {
+        Verdict::Deny
+    } else {
+        Verdict::Auto
+    }
+}
+
 /// Narrow journal seam for runtime-policy transactions. Production uses `Rollout::append`, whose
 /// success means the hash-chained line and `sync_all` completed. The seam also lets failure-order
 /// tests prove that in-memory authority never advances when durability is uncertain.
@@ -1687,6 +1698,11 @@ pub struct Agent {
     /// `--strict-egress` restores the taint block. This trades the strict prompt-injection
     /// exfiltration guard for out-of-the-box web access — the deliberate product posture here.
     pub allow_tainted_egress: bool,
+    /// DANGEROUS opt-in (CLI `--dangerously-bypass-permissions`, used by the internal team edition).
+    /// When true the capability gate is skipped entirely: every tool auto-approves so the agent
+    /// never prompts. Plan mode still hard-denies (read-only explore), and an explicit
+    /// `/permissions deny` on a tool or capability is still honored. Default false (safe).
+    pub bypass_permissions: bool,
     /// Exact provider credential-variable names supplied by trusted CLI configuration. These are
     /// control metadata, never values, and are removed from verification and child-agent command
     /// processes through their sandbox confinement.
@@ -1829,6 +1845,7 @@ impl Agent {
             workspace: std::path::PathBuf::from("."),
             verify_command: None,
             allow_tainted_egress: false,
+            bypass_permissions: false,
             sensitive_env_names: Vec::new(),
             #[cfg(test)]
             pricing_now_unix_secs: None,
@@ -4499,11 +4516,17 @@ impl Agent {
                 // restores the block.
                 let taint_blocks_egress =
                     egress_taint_blocks(cap, governing_trust, self.allow_tainted_egress);
-                let verdict = if taint_blocks_egress {
-                    Verdict::Deny
-                } else {
-                    gate(self.permission_mode, &self.permission_rules, &tu.name, cap)
-                };
+                let verdict =
+                    if self.bypass_permissions && self.permission_mode != PermissionMode::Plan {
+                        // DANGEROUS opt-in: auto-approve everything (skip mode/taint/carve-out) so the
+                        // agent never prompts. Plan still hard-denies; an explicit `deny` rule on the
+                        // exact tool or its capability is still honored.
+                        bypass_verdict(&self.permission_rules, &tu.name, cap)
+                    } else if taint_blocks_egress {
+                        Verdict::Deny
+                    } else {
+                        gate(self.permission_mode, &self.permission_rules, &tu.name, cap)
+                    };
                 let approval_projection_incomplete = verdict == Verdict::Ask
                     && ui_approval_arguments(&tu.input)
                         .get("_truncated_for_ui")
@@ -6316,9 +6339,39 @@ pub struct CompactionReport {
 
 #[cfg(test)]
 mod capability_tests {
-    use super::{effective_capability, egress_taint_blocks, is_trust_mutating_path};
+    use super::{
+        bypass_verdict, effective_capability, egress_taint_blocks, is_trust_mutating_path,
+    };
     use core_protocol::{Capability, PermissionMode, PermissionRules, Trust, Verdict, gate};
     use serde_json::json;
+
+    #[test]
+    fn bypass_auto_approves_everything_except_explicit_denies() {
+        use Capability::*;
+        let empty = PermissionRules::new();
+        // Every capability class auto-approves under bypass (incl. the carve-outs).
+        for cap in [
+            ReversibleLocal,
+            CodeExecuting,
+            TrustMutating,
+            IrreversibleExternal,
+        ] {
+            assert_eq!(bypass_verdict(&empty, "any_tool", cap), Verdict::Auto);
+        }
+        // An explicit capability-class deny is still honored.
+        let mut d = PermissionRules::new();
+        d.set_cap(IrreversibleExternal, Verdict::Deny);
+        assert_eq!(
+            bypass_verdict(&d, "git_push", IrreversibleExternal),
+            Verdict::Deny
+        );
+        // An explicit exact-tool deny is still honored.
+        let mut dt = PermissionRules::new();
+        dt.set_tool("bash", Verdict::Deny);
+        assert_eq!(bypass_verdict(&dt, "bash", CodeExecuting), Verdict::Deny);
+        // A different tool in that class is unaffected by the tool deny.
+        assert_eq!(bypass_verdict(&dt, "make", CodeExecuting), Verdict::Auto);
+    }
 
     #[test]
     fn writes_to_trust_mutating_paths_are_elevated() {
