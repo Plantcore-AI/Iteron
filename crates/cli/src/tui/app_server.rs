@@ -1,9 +1,4 @@
-//! Library surface of the Core Code CLI: the frontend's versioned client of the runtime.
-//!
-//! This file is the crate root of the `core_cli` library target (see `[lib]` in `Cargo.toml`).
-//! It lives beside the TUI it serves because the App Server client is a frontend seam, and it
-//! is compiled as a small independently-testable library so the version-negotiation contract
-//! can be exercised without driving a terminal.
+//! The TUI's versioned client handle to the runtime App Server.
 //!
 //! Historically the interactive TUI *co-composed the runtime*: it held the kernel `Agent` and
 //! stuffed bare `Op` values straight onto the submission queue, implicitly assuming the peer
@@ -26,7 +21,7 @@ use tokio::sync::mpsc::UnboundedSender;
 /// The client cannot be constructed without a completed handshake, so a version-skewed
 /// frontend can never obtain a handle it would use to push envelopes the server rejects.
 #[derive(Debug, Clone)]
-pub struct AppServerClient {
+pub(crate) struct AppServerClient {
     submissions: UnboundedSender<SqEnvelope>,
     negotiated_version: u32,
 }
@@ -36,7 +31,7 @@ pub struct AppServerClient {
 /// This is the client-side view of a closed submission queue: the run task that owned the
 /// receiver has ended, so there is no longer a server to accept the operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Disconnected;
+pub(crate) struct Disconnected;
 
 impl std::fmt::Display for Disconnected {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -55,7 +50,11 @@ impl AppServerClient {
     /// surfaced up front as a [`ProtocolVersionError`] instead of being discovered one
     /// rejected submission at a time. On success every later submission is stamped with the
     /// negotiated version.
-    pub fn connect(
+    ///
+    /// The in-process frontend uses [`current`](Self::current); this skew-refusing constructor
+    /// is the entry point for the future extracted transport and is exercised by the tests.
+    #[allow(dead_code)]
+    pub(crate) fn connect(
         server_version: u32,
         submissions: UnboundedSender<SqEnvelope>,
     ) -> Result<Self, ProtocolVersionError> {
@@ -77,7 +76,7 @@ impl AppServerClient {
     /// This is the handshake for today's modular monolith. Extracting the App Server over a
     /// transport replaces it with [`connect`](Self::connect) fed the version read off the
     /// live connection.
-    pub fn current(submissions: UnboundedSender<SqEnvelope>) -> Self {
+    pub(crate) fn current(submissions: UnboundedSender<SqEnvelope>) -> Self {
         Self {
             submissions,
             negotiated_version: PROTOCOL_VERSION,
@@ -85,7 +84,8 @@ impl AppServerClient {
     }
 
     /// The protocol version agreed during the handshake and stamped on every submission.
-    pub fn negotiated_version(&self) -> u32 {
+    #[allow(dead_code)]
+    pub(crate) fn negotiated_version(&self) -> u32 {
         self.negotiated_version
     }
 
@@ -93,9 +93,49 @@ impl AppServerClient {
     ///
     /// Returns [`Disconnected`] when the server side of the queue has been dropped, letting
     /// the frontend preserve the operator's intent instead of losing it silently.
-    pub fn submit(&self, op: Op) -> Result<(), Disconnected> {
+    pub(crate) fn submit(&self, op: Op) -> Result<(), Disconnected> {
         self.submissions
             .send(SqEnvelope::with_version(self.negotiated_version, op))
             .map_err(|_| Disconnected)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc::error::TryRecvError;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    #[test]
+    fn matching_version_connects_and_stamps_every_submission() {
+        let (tx, mut rx) = unbounded_channel::<SqEnvelope>();
+        let client = AppServerClient::connect(PROTOCOL_VERSION, tx)
+            .expect("the current server version accepts the handshake");
+        assert_eq!(client.negotiated_version(), PROTOCOL_VERSION);
+
+        client.submit(Op::Interrupt).expect("submit reaches the queue");
+        let envelope = rx.try_recv().expect("submission is queued");
+        assert_eq!(envelope.protocol_version, PROTOCOL_VERSION);
+        assert!(matches!(envelope.into_current(), Ok(Op::Interrupt)));
+        assert_eq!(rx.try_recv().unwrap_err(), TryRecvError::Empty);
+    }
+
+    #[test]
+    fn version_skew_is_refused_up_front() {
+        let (tx, mut rx) = unbounded_channel::<SqEnvelope>();
+        let err = AppServerClient::connect(PROTOCOL_VERSION + 1, tx.clone())
+            .expect_err("a peer on a different version must be refused");
+        assert_eq!(err.expected, PROTOCOL_VERSION);
+        assert_eq!(err.actual, PROTOCOL_VERSION + 1);
+        assert_eq!(rx.try_recv().unwrap_err(), TryRecvError::Empty);
+        assert!(AppServerClient::connect(PROTOCOL_VERSION - 1, tx).is_err());
+    }
+
+    #[test]
+    fn submit_reports_a_closed_queue() {
+        let (tx, rx) = unbounded_channel::<SqEnvelope>();
+        let client = AppServerClient::current(tx);
+        drop(rx);
+        assert_eq!(client.submit(Op::Drain), Err(Disconnected));
     }
 }

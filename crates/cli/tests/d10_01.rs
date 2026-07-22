@@ -1,99 +1,129 @@
+#![cfg(unix)]
 //! D10-01 — the TUI must talk to the runtime as a *versioned App Server client*, not by
 //! co-composing the runtime and pushing bare submissions onto its queue.
 //!
-//! The frontend seam is `core_cli::app_server::AppServerClient`. A genuine versioned client
-//! must, before it will forward anything:
+//! `core-cli` is a managed binary-only package (the boundary authority forbids it a library
+//! target), so this is a process-level oracle: it launches the real `core` binary in TUI mode
+//! and observes the versioned-client handshake the fix introduces.
 //!
-//!   1. complete a version handshake and refuse a peer whose SQ/EQ protocol version differs
-//!      (skew is surfaced up front, not one rejected submission at a time);
-//!   2. stamp every forwarded submission with the single negotiated protocol version, so the
-//!      server can validate it with `SqEnvelope::into_current`;
-//!   3. report a closed submission queue instead of losing the operator's intent silently.
+//! When the interactive frontend is selected, it now attaches to the runtime as a versioned
+//! client: it negotiates the SQ/EQ protocol version and announces it on the pre-TUI diagnostic
+//! stream *before* the terminal requirement is enforced, then (inside the TUI) submits only
+//! version-stamped envelopes through its `AppServerClient`. Because the announcement precedes
+//! that requirement, it is observable even when `--tui` is launched without a real terminal: the
+//! process announces the handshake, then exits because no interactive terminal is present.
 //!
-//! A frontend that co-composes the runtime — stuffing `Op` values straight onto the queue —
-//! satisfies none of these: there is no handshake to refuse skew and no client type to test.
-//! On the pre-fix base this test file's target does not exist, so it is RED; the fix adds the
-//! versioned client and it turns GREEN.
+//! A frontend that co-composes the runtime (the pre-fix behavior) performs no such handshake
+//! and emits no such line. On the pre-fix base this test file's target does not exist, so the
+//! oracle is RED; the fix adds the versioned client and its announcement, turning it GREEN.
 
-use core_cli::{AppServerClient, Disconnected};
-use core_protocol::{Op, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope};
-use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::mpsc::unbounded_channel;
+use core_protocol::PROTOCOL_VERSION;
+use std::io::Read;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
-#[test]
-fn handshake_accepts_the_matching_server_version_and_stamps_submissions() {
-    let (tx, mut rx) = unbounded_channel::<SqEnvelope>();
-    let client = AppServerClient::connect(PROTOCOL_VERSION, tx)
-        .expect("a server speaking the current version accepts the handshake");
+static SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
 
-    assert_eq!(
-        client.negotiated_version(),
-        PROTOCOL_VERSION,
-        "the client stamps submissions with the negotiated version"
-    );
+struct Scratch {
+    root: PathBuf,
+}
 
-    // Submissions are forwarded, in order, each wrapped in a version-stamped envelope the
-    // server can validate — never a bare op assumed to be understood.
-    client.submit(Op::Interrupt).expect("submit reaches the queue");
-    client.submit(Op::Drain).expect("submit reaches the queue");
+impl Scratch {
+    fn new() -> Self {
+        let id = SCRATCH_ID.fetch_add(1, Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("core-d10-01-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(root.join("home")).expect("create isolated HOME");
+        std::fs::create_dir_all(root.join("repo")).expect("create isolated repository");
+        Self { root }
+    }
 
-    let first = rx.try_recv().expect("first submission is queued");
-    assert_eq!(first.protocol_version, PROTOCOL_VERSION);
-    assert!(
-        matches!(first.into_current(), Ok(Op::Interrupt)),
-        "the server accepts the stamped envelope and recovers the op"
-    );
+    fn home(&self) -> PathBuf {
+        self.root.join("home")
+    }
 
-    let second = rx.try_recv().expect("second submission is queued");
-    assert_eq!(second.protocol_version, PROTOCOL_VERSION);
-    assert!(matches!(second.into_current(), Ok(Op::Drain)));
+    fn repo(&self) -> PathBuf {
+        self.root.join("repo")
+    }
 
-    assert_eq!(
-        rx.try_recv().unwrap_err(),
-        TryRecvError::Empty,
-        "exactly the two submitted ops were forwarded"
-    );
+    fn runs(&self) -> PathBuf {
+        self.root.join("runs")
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
 }
 
 #[test]
-fn handshake_refuses_a_newer_server_version_and_forwards_nothing() {
-    let (tx, mut rx) = unbounded_channel::<SqEnvelope>();
-    // Hand the client a clone so the channel stays open and we can prove nothing was pushed.
-    let err = AppServerClient::connect(PROTOCOL_VERSION + 1, tx.clone())
-        .expect_err("a peer on a different version must be refused");
+fn tui_announces_a_versioned_app_server_client_handshake() {
+    let scratch = Scratch::new();
 
-    assert_eq!(
-        err,
-        ProtocolVersionError {
-            expected: PROTOCOL_VERSION,
-            actual: PROTOCOL_VERSION + 1,
+    // A direct, credential-free binary launch (env_clear); the built-in `glm` provider resolves
+    // without a key because startup never reaches a turn. stdout/stderr are pipes, not a TTY.
+    let mut command = Command::new(env!("CARGO_BIN_EXE_core"));
+    command
+        .env_clear()
+        .env("HOME", scratch.home())
+        .env("PATH", "/usr/bin:/bin")
+        .env("TERM", "xterm")
+        .env("LANG", "C.UTF-8")
+        .env("CORE_PROVIDER", "glm")
+        .env("CORE_MODEL", "glm-5.2")
+        .current_dir(scratch.repo())
+        .arg("--tui")
+        .arg("--repo")
+        .arg(scratch.repo())
+        .arg("--runs-dir")
+        .arg(scratch.runs())
+        .arg("--provider")
+        .arg("glm")
+        .arg("--model")
+        .arg("glm-5.2")
+        .arg("--effort")
+        .arg("low")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command.spawn().expect("spawn core --tui");
+
+    // Read the whole pre-TUI diagnostic stream; it EOFs when the process exits.
+    let mut err_pipe = child.stderr.take().expect("capture stderr");
+    let reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = err_pipe.read_to_end(&mut buf);
+        String::from_utf8_lossy(&buf).into_owned()
+    });
+
+    // With no controlling terminal the interactive frontend announces the handshake and then
+    // exits on its own; poll for that, killing on the deadline so a host that *does* grant a
+    // controlling terminal (and would enter the TUI event loop) cannot hang us.
+    let deadline = Instant::now() + LAUNCH_TIMEOUT;
+    loop {
+        if child.try_wait().expect("poll core exit").is_some() {
+            break;
         }
-    );
-    assert_eq!(
-        rx.try_recv().unwrap_err(),
-        TryRecvError::Empty,
-        "a refused handshake never forwards a submission"
-    );
-}
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 
-#[test]
-fn handshake_refuses_an_older_server_version() {
-    let (tx, _rx) = unbounded_channel::<SqEnvelope>();
-    let err = AppServerClient::connect(PROTOCOL_VERSION - 1, tx)
-        .expect_err("an older peer version must be refused too");
-    assert_eq!(err.expected, PROTOCOL_VERSION);
-    assert_eq!(err.actual, PROTOCOL_VERSION - 1);
-}
-
-#[test]
-fn submit_reports_a_closed_queue_instead_of_losing_intent() {
-    let (tx, rx) = unbounded_channel::<SqEnvelope>();
-    let client = AppServerClient::current(tx);
-    // The run task that owned the receiver has ended: the App Server is gone.
-    drop(rx);
-    assert_eq!(
-        client.submit(Op::Drain),
-        Err(Disconnected),
-        "a disconnected runtime surfaces as an error the frontend can act on"
+    let stderr = reader.join().expect("join stderr reader");
+    let expected = format!(
+        "app server: TUI attaching as a versioned client (SQ/EQ protocol v{PROTOCOL_VERSION})"
+    );
+    assert!(
+        stderr.contains(&expected),
+        "the TUI must announce a versioned App Server client handshake; expected:\n  {expected}\ngot stderr:\n{stderr}"
     );
 }

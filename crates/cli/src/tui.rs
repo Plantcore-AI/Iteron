@@ -10,6 +10,7 @@
 //! drains them and redraws. The kernel does the work; this is a thin, replaceable front-end
 //! on the same core (ADR-010: frontends are adapters).
 
+mod app_server;
 pub(crate) mod hyperlink;
 mod keyboard_enhancement;
 mod mouse_capture;
@@ -20,7 +21,7 @@ use crate::commands::{self, SlashCommand};
 use crate::editor::Editor;
 use crate::providers::{ModelSelection, ProviderDirectory};
 use crate::{block, surface, theme};
-use core_cli::AppServerClient;
+use crate::tui::app_server::AppServerClient;
 use core_ctx::ContextEstimate;
 use core_kernel::{
     Agent, UiEvent, WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi, WorkflowUiEvent,

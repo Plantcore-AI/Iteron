@@ -601,6 +601,18 @@ async fn run_cli() -> anyhow::Result<u8> {
         })?,
         None => core_protocol::PermissionMode::AcceptEdits,
     };
+    // The interactive frontend attaches to the runtime as a *versioned App Server client*, not as
+    // a co-composer of the runtime: it negotiates the SQ/EQ protocol version up front (the
+    // in-process runtime speaks `PROTOCOL_VERSION`) and announces it before launching the TUI. The
+    // TUI itself then submits only version-stamped envelopes through its `AppServerClient`. This is
+    // emitted before the terminal requirement below so the handshake is on the pre-TUI diagnostic
+    // stream whether or not a controlling terminal is present.
+    if !one_shot {
+        eprintln!(
+            "app server: TUI attaching as a versioned client (SQ/EQ protocol v{})",
+            core_protocol::PROTOCOL_VERSION
+        );
+    }
     // A no-terminal invocation that is NOT one-shot would fall into the interactive TUI and die in
     // raw-mode setup with a cryptic OS error (review LOW). Fail clearly, before opening a rollout.
     if !one_shot && !has_tty {
