@@ -212,6 +212,13 @@ pub enum ProviderError {
     },
     #[error("logical run wall-clock deadline exhausted")]
     DeadlineExceeded,
+    /// The runtime aborted this turn mid-stream in response to a cooperative interrupt (e.g.
+    /// Ctrl-C). Synthesized by the kernel — like [`ProviderError::DeadlineExceeded`] — when the
+    /// interrupt flag flips true while a provider stream is still in flight: the pending turn
+    /// future is dropped, which closes the transport and stops decoding immediately. The turn
+    /// produced no authoritative usage, so it is never retried.
+    #[error("provider turn interrupted mid-stream")]
+    Interrupted,
     #[error("no api key: set ANTHROPIC_API_KEY in the Core process environment")]
     NoKey,
     #[error("provider credential is missing for {provider}")]
@@ -271,6 +278,7 @@ impl ProviderError {
             | ProviderError::Refusal
             | ProviderError::UnknownStopReason { .. }
             | ProviderError::DeadlineExceeded
+            | ProviderError::Interrupted
             | ProviderError::NoKey
             | ProviderError::MissingCredential { .. }
             | ProviderError::UnsupportedCatalog { .. }
@@ -309,6 +317,7 @@ impl ProviderError {
                 "provider returned an unsupported stop reason".into()
             }
             ProviderError::DeadlineExceeded => "run wall-clock deadline exhausted".into(),
+            ProviderError::Interrupted => "run was interrupted before the turn completed".into(),
             ProviderError::NoKey | ProviderError::MissingCredential { .. } => {
                 "provider credential is missing".into()
             }
@@ -1023,6 +1032,54 @@ pub trait Provider: Send + Sync {
         req: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError>;
+}
+
+/// Run one provider turn, but abort the in-flight stream the moment a cooperative interrupt is
+/// observed.
+///
+/// A [`Provider::turn`] call is a single future whose only cancellation path is being dropped.
+/// Awaiting it directly means a slow, wedged, or maliciously-stalled stream ignores an operator
+/// interrupt (Ctrl-C) until the model decides to finish — there is no mid-stream cancellation.
+/// This races the turn against a bounded poll of `cancel`: while the flag stays clear the turn
+/// runs (and its `on_item` callback keeps firing) untouched; the moment the flag is set, the turn
+/// future is dropped — which closes the transport and stops decoding — and
+/// [`ProviderError::Interrupted`] is returned. Worst-case latency from flag-set to abort is one
+/// `poll_interval`.
+///
+/// `cancel` is `None` for callers with no interrupt installed, in which case this is exactly a
+/// bare `provider.turn(..).await` with no added polling. A completed turn always wins over a
+/// simultaneously-observed interrupt, so a turn that finishes in the same tick is never discarded.
+pub async fn turn_cancellable(
+    provider: &dyn Provider,
+    request: &TurnRequest,
+    on_item: &mut (dyn FnMut(StreamItem) + Send),
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    poll_interval: Duration,
+) -> Result<TurnResult, ProviderError> {
+    use std::sync::atomic::Ordering;
+    let Some(cancel) = cancel else {
+        return provider.turn(request, on_item).await;
+    };
+    // An interrupt that is already pending must not even open the stream.
+    if cancel.load(Ordering::Relaxed) {
+        return Err(ProviderError::Interrupted);
+    }
+    // `async_trait` returns a `Pin<Box<dyn Future + Send>>`, which is `Unpin`, so `&mut turn` is
+    // itself a `Future` and can be re-polled across loop iterations without an explicit pin.
+    let mut turn = provider.turn(request, on_item);
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut turn => return result,
+            () = tokio::time::sleep(poll_interval) => {
+                if cancel.load(Ordering::Relaxed) {
+                    // Returning drops `turn`, cancelling the in-flight provider stream: the
+                    // transport future is dropped and the connection is closed.
+                    return Err(ProviderError::Interrupted);
+                }
+            }
+        }
+    }
 }
 
 /// Decorates a live provider with shared account-health reporting without buffering, replacing,
@@ -2096,5 +2153,133 @@ mod guard_tests {
                 "the successful sibling must not inherit the failed leaf marker"
             );
         }
+    }
+
+    // ---- D1-16: an interrupt must be able to abort an in-flight provider stream ----
+    #[tokio::test]
+    async fn d1_16_interrupt_aborts_in_flight_provider_stream() {
+        use std::sync::atomic::AtomicBool;
+
+        // Records, via its `Drop`, whether the turn future was dropped (aborted) rather than run
+        // to completion — the observable proof of mid-stream cancellation.
+        struct DropFlag(Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        // A provider whose stream starts (emits deltas), signals it is in flight, then hangs
+        // forever: the model never sends its terminal frame, so the only way the turn can end is
+        // by being dropped.
+        struct HangingStreamProvider {
+            streaming: Arc<AtomicBool>,
+            dropped: Arc<AtomicBool>,
+        }
+        #[async_trait::async_trait]
+        impl Provider for HangingStreamProvider {
+            async fn turn(
+                &self,
+                _request: &TurnRequest,
+                on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<TurnResult, ProviderError> {
+                on_item(StreamItem::TextDelta("hel".into()));
+                on_item(StreamItem::TextDelta("lo".into()));
+                let _guard = DropFlag(self.dropped.clone());
+                self.streaming.store(true, Ordering::SeqCst);
+                std::future::pending::<()>().await;
+                unreachable!("a hung stream can only end by being dropped");
+            }
+        }
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let streaming = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let provider = HangingStreamProvider {
+            streaming: streaming.clone(),
+            dropped: dropped.clone(),
+        };
+
+        let mut seen: Vec<String> = Vec::new();
+        let mut on_item = |item: StreamItem| {
+            if let StreamItem::TextDelta(t) = item {
+                seen.push(t);
+            }
+        };
+
+        // Flip the interrupt only once the stream is genuinely in flight, so the test proves the
+        // abort happened MID-stream and not before dispatch.
+        let cancel_bg = cancel.clone();
+        let streaming_bg = streaming.clone();
+        let flipper = tokio::spawn(async move {
+            while !streaming_bg.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            cancel_bg.store(true, Ordering::SeqCst);
+        });
+
+        // If cancellation did not work the call would hang on the stream and the outer timeout
+        // would trip instead of returning.
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            turn_cancellable(
+                &provider,
+                &request("hanging"),
+                &mut on_item,
+                Some(cancel.as_ref()),
+                Duration::from_millis(2),
+            ),
+        )
+        .await
+        .expect("turn_cancellable must abort the in-flight stream, not wait for it to finish");
+        flipper.await.unwrap();
+
+        assert!(
+            matches!(result, Err(ProviderError::Interrupted)),
+            "a mid-stream interrupt must surface as ProviderError::Interrupted, got {result:?}"
+        );
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "the in-flight provider stream future must be dropped (aborted), not left running"
+        );
+        assert_eq!(
+            seen,
+            vec!["hel".to_string(), "lo".to_string()],
+            "stream items emitted before the interrupt must still be observed"
+        );
+
+        // Guard against a degenerate always-Interrupted implementation: with the flag never set,
+        // a provider that completes must pass straight through as Ok.
+        struct DoneProvider;
+        #[async_trait::async_trait]
+        impl Provider for DoneProvider {
+            async fn turn(
+                &self,
+                _request: &TurnRequest,
+                on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<TurnResult, ProviderError> {
+                on_item(StreamItem::TextDelta("done".into()));
+                Ok(TurnResult {
+                    blocks: vec![Block::Text {
+                        text: "done".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage::default()),
+                })
+            }
+        }
+        let never = Arc::new(AtomicBool::new(false));
+        let mut sink = |_item: StreamItem| {};
+        let ok = turn_cancellable(
+            &DoneProvider,
+            &request("done"),
+            &mut sink,
+            Some(never.as_ref()),
+            Duration::from_millis(2),
+        )
+        .await
+        .expect("a turn that completes before any interrupt must pass through as Ok");
+        assert_eq!(ok.text(), "done");
+        assert!(!never.load(Ordering::SeqCst));
     }
 }
