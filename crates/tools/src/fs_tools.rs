@@ -10,6 +10,117 @@ use walkdir::WalkDir;
 const MAX_READ_OUTPUT_BYTES: usize = 40_000;
 const MAX_READ_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 const TRUNCATION_MARKER_RESERVE_BYTES: usize = 256;
+const UTF8_BOM: &[u8; 3] = b"\xef\xbb\xbf";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineEnding {
+    Lf,
+    CrLf,
+}
+
+impl LineEnding {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Lf => "\n",
+            Self::CrLf => "\r\n",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TextFileError {
+    BinaryOrUnsupported,
+    NonUtf8,
+}
+
+impl std::fmt::Display for TextFileError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BinaryOrUnsupported => {
+                formatter.write_str("target is binary or uses an unsupported encoding")
+            }
+            Self::NonUtf8 => formatter.write_str("target is binary or non-UTF-8 text"),
+        }
+    }
+}
+
+/// UTF-8 text plus the byte-level format that an edit is not allowed to change.
+pub(crate) struct EditableText<'a> {
+    content: &'a str,
+    has_bom: bool,
+    line_ending: Option<LineEnding>,
+    trailing_line_ending: Option<LineEnding>,
+}
+
+impl<'a> EditableText<'a> {
+    pub(crate) fn parse(bytes: &'a [u8]) -> Result<Self, TextFileError> {
+        let (has_bom, content_bytes) = bytes
+            .strip_prefix(UTF8_BOM)
+            .map_or((false, bytes), |content| (true, content));
+        if content_bytes.contains(&0) {
+            return Err(TextFileError::BinaryOrUnsupported);
+        }
+        let content = std::str::from_utf8(content_bytes).map_err(|_| TextFileError::NonUtf8)?;
+        let line_ending = content
+            .as_bytes()
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|newline| {
+                if newline > 0 && content.as_bytes()[newline - 1] == b'\r' {
+                    LineEnding::CrLf
+                } else {
+                    LineEnding::Lf
+                }
+            });
+        Ok(Self {
+            content,
+            has_bom,
+            line_ending,
+            trailing_line_ending: content.ends_with('\n').then(|| {
+                if content.ends_with("\r\n") {
+                    LineEnding::CrLf
+                } else {
+                    LineEnding::Lf
+                }
+            }),
+        })
+    }
+
+    pub(crate) fn content(&self) -> &'a str {
+        self.content
+    }
+
+    pub(crate) fn normalize_replacement(&self, replacement: &str) -> String {
+        match self.line_ending {
+            None => replacement.to_owned(),
+            Some(LineEnding::Lf) => replacement.replace("\r\n", "\n"),
+            Some(LineEnding::CrLf) => replacement.replace("\r\n", "\n").replace('\n', "\r\n"),
+        }
+    }
+
+    pub(crate) fn encode(&self, mut updated: String) -> Vec<u8> {
+        if let Some(trailing_line_ending) = self.trailing_line_ending {
+            if !updated.ends_with('\n') {
+                updated.push_str(trailing_line_ending.as_str());
+            }
+        } else {
+            while updated.ends_with('\n') {
+                updated.pop();
+                if updated.ends_with('\r') {
+                    updated.pop();
+                }
+            }
+        }
+
+        let bom_bytes = usize::from(self.has_bom) * UTF8_BOM.len();
+        let mut encoded = Vec::with_capacity(updated.len().saturating_add(bom_bytes));
+        if self.has_bom {
+            encoded.extend_from_slice(UTF8_BOM);
+        }
+        encoded.extend_from_slice(updated.as_bytes());
+        encoded
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ReadWindow {
@@ -60,12 +171,14 @@ async fn read_numbered_file(path: &Path, window: ReadWindow) -> std::io::Result<
             "(oversized file, not shown; read_file source limit is {MAX_READ_SOURCE_BYTES} bytes)"
         ));
     }
-    if bytes.contains(&0) {
-        return Ok("(binary or unsupported encoded file, not shown)".into());
-    }
-    let text = match std::str::from_utf8(&bytes) {
-        Ok(text) => text,
-        Err(_) => return Ok("(binary or non-UTF-8 file, not shown)".into()),
+    let text = match EditableText::parse(&bytes) {
+        Ok(text) => text.content(),
+        Err(TextFileError::BinaryOrUnsupported) => {
+            return Ok("(binary or unsupported encoded file, not shown)".into());
+        }
+        Err(TextFileError::NonUtf8) => {
+            return Ok("(binary or non-UTF-8 file, not shown)".into());
+        }
     };
 
     let mut absolute_line = 0_u64;
