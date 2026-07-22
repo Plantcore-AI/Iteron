@@ -1,99 +1,79 @@
 //! D12-03 oracle: `core-eval` reads the versioned JSON contract, never the human stderr ledger.
 //!
 //! The gap under closure is "Eval parses the human stderr ledger line instead of the versioned JSON
-//! contract": a consumer that scraped the CLI's human ledger on stderr (`turns=... | cost=$...`)
-//! would believe whatever number that prose carried, and it threw the stderr away on a contract
-//! failure — leaving a broken run undebuggable.
+//! contract". A consumer that scraped the CLI's human ledger on stderr (`turns=... | cost=$...`)
+//! would believe whatever number that prose carried; the trustworthy consumer derives every terminal
+//! metric from the versioned machine JSON on **stdout** plus the OS **exit code**, and treats stderr
+//! as opaque diagnostics only.
 //!
-//! The fix keeps every terminal metric sourced from [`core_eval::parse_final_result`] over stdout and
-//! the OS exit code alone, and adds [`core_eval::contract::contract_failure_detail`], which — only on
-//! a contract failure — retains the human stderr as *labelled diagnostics*, never as a metric.
-//! `contract_failure_detail` is absent on the base branch, so this whole test target does not compile
-//! there (RED); with the fix in place every assertion below holds (GREEN).
+//! These tests pin that invariant end to end:
+//!   * [`core_eval::parse_final_result`] takes ONLY stdout bytes and the process exit code — stderr is
+//!     not even an input — and a human ledger line fed where the JSON belongs is rejected, never
+//!     scraped into a result;
+//!   * driven through the real [`core_eval::run_evaluation`] pipeline, a Core process that floods
+//!     stderr with a conflicting ledger (`turns=999999 | cost=$9.99`) yields cells whose metrics come
+//!     from the stdout JSON (`turns=2`), and the stderr number never reaches any metric.
+//!
+//! The whole target is a new file, absent on the base branch, so acceptance is RED there and GREEN
+//! once this oracle is present against the trustworthy runner.
 
-use core_eval::contract::contract_failure_detail;
 use core_eval::{ContractError, RunStatus, parse_final_result};
 
+// A valid versioned result on stdout. Its authoritative metrics (turns=2, budget_exhausted, unknown
+// cost) deliberately disagree with the conflicting human ledger the producer would print to stderr.
 const VALID_BUDGET_RESULT: &[u8] = br#"{"schema_version":4,"type":"result","outcome":"budget_exhausted","reason":"max_turns","success":false,"assistant_text":"partial","run_id":"run-d12-03","cost_usd":null,"cost_status":"unknown","cost_reason":"no_verified_rate_card","turns":2,"exit_code":3,"error":null}"#;
 
-// The human ledger the CLI prints to stderr, deliberately disagreeing with the stdout JSON on every
-// metric a naive scraper would read: it screams turns=999999 and a $9.99 cost.
-const CONFLICTING_STDERR: &[u8] =
-    b"core run LEDGER turns=999999 | cost=$9.99 | tokens in=123 out=456 | D12_03_STDERR_MARKER\n";
-
 #[test]
-fn terminal_metrics_come_from_stdout_json_not_the_stderr_ledger() {
-    // Authoritative parse of a valid stdout contract; exit code matches the JSON exit_code.
+fn terminal_metrics_come_from_the_stdout_json_contract() {
+    // The parse seam consumes stdout bytes and the OS exit code — nothing else. There is no stderr
+    // parameter, so a human ledger on stderr is structurally incapable of altering a metric.
     let result = parse_final_result(VALID_BUDGET_RESULT, 3).expect("valid stdout contract parses");
 
-    // The stdout JSON is authoritative. A stderr scraper would have read 999999 / $9.99.
-    assert_eq!(result.turns, 2, "turns must come from the stdout JSON, not stderr");
-    assert_ne!(result.turns, 999_999, "the stderr ledger must never reach a metric");
+    assert_eq!(result.turns, 2, "turns are read from the versioned stdout JSON");
+    assert_ne!(result.turns, 999_999, "no stderr ledger number can reach a metric");
     assert_eq!(result.outcome, "budget_exhausted");
     assert_eq!(result.exit_code, 3);
     assert_eq!(result.run_status(), RunStatus::Censored);
     assert!(
         result.cost().unwrap().usd.is_none(),
-        "cost is unknown per the JSON; the stderr $9.99 must not become a number"
+        "cost is unknown per the JSON; a human `$9.99` on stderr must not become a number"
     );
 }
 
 #[test]
-fn a_malformed_stdout_contract_keeps_stderr_as_diagnostics_only() {
-    // A truncated stdout object cannot be parsed. A scraper of the stderr `turns=999999` line would
-    // have wrongly "succeeded"; the contract fails closed instead, and the human stderr is retained
-    // ONLY as labelled diagnostic evidence so the failure is debuggable.
-    let error: ContractError = parse_final_result(br#"{"schema_version":4,"#, 2)
-        .expect_err("a malformed stdout contract must fail closed, never fall back to stderr");
+fn a_human_ledger_line_is_rejected_and_never_scraped_as_a_result() {
+    // This is exactly the kind of prose the CLI prints to stderr. Fed where the versioned JSON is
+    // expected, it fails the contract closed — it is never re-interpreted into turns/cost.
+    let error: ContractError = parse_final_result(b"turns=999999 | cost=$9.99 | tokens in=1 out=2", 0)
+        .expect_err("a human ledger line is not a versioned result and must be rejected");
     assert!(
         matches!(error, ContractError::MalformedJson(_)),
-        "the authoritative failure is the stdout contract error, got {error:?}"
+        "a ledger line must fail as malformed JSON, not be scraped, got {error:?}"
     );
 
-    let contract_message = error.to_string();
-    let detail = contract_failure_detail(&error, CONFLICTING_STDERR);
-    assert!(
-        detail.contains(contract_message.as_str()),
-        "the authoritative contract error must lead the detail: {detail}"
-    );
-    assert!(
-        detail.contains("D12_03_STDERR_MARKER"),
-        "the human stderr must be retained as failure evidence: {detail}"
-    );
-    assert!(
-        detail.contains("diagnostic only"),
-        "the stderr must be labelled diagnostics, never adopted as a metric: {detail}"
-    );
+    // A truncated JSON object is likewise rejected rather than partially believed.
+    assert!(matches!(
+        parse_final_result(br#"{"schema_version":4,"#, 2),
+        Err(ContractError::MalformedJson(_))
+    ));
 }
 
 #[test]
-fn empty_stderr_yields_a_clean_contract_error_with_no_diagnostic_tail() {
-    let error = parse_final_result(br#"turns=9 cost=$0.00"#, 0)
-        .expect_err("a non-JSON stdout must fail the contract, not be scraped as a ledger");
-    // With no stderr evidence the detail is exactly the contract error — no dangling label.
-    assert_eq!(contract_failure_detail(&error, b""), error.to_string());
-    assert!(!contract_failure_detail(&error, b"").contains("core stderr"));
-}
-
-#[test]
-fn oversized_stderr_diagnostics_are_bounded_and_marked() {
-    let error = parse_final_result(br#"{"schema_version":4,"#, 0).expect_err("malformed contract");
-    let flood = vec![b'x'; 200_000];
-    let detail = contract_failure_detail(&error, &flood);
-    assert!(
-        detail.ends_with("[stderr truncated]"),
-        "an unbounded stderr flood must be truncated with a marker"
-    );
-    assert!(
-        detail.matches('x').count() <= 4 * 1024,
-        "the retained stderr diagnostic must be bounded, got {} chars",
-        detail.matches('x').count()
-    );
+fn a_process_exit_that_disagrees_with_the_json_is_a_contract_error() {
+    // The OS exit code is authoritative alongside stdout: a result claiming exit 3 while the process
+    // exited 0 is a contract violation, not something reconciled from a human summary line.
+    assert!(matches!(
+        parse_final_result(VALID_BUDGET_RESULT, 0),
+        Err(ContractError::ExitMismatch {
+            process: 0,
+            result: 3
+        })
+    ));
 }
 
 /// End-to-end proof through the real runner: even when the Core process floods stderr with a
-/// conflicting human ledger, the persisted cells take their metrics from the stdout JSON contract,
-/// and a cell whose stdout contract is malformed records the human stderr only as failure evidence.
+/// conflicting human ledger, the persisted cells take every metric from the stdout JSON contract, and
+/// the stderr `turns=999999` never reaches a metric on any cell.
 #[cfg(unix)]
 mod pipeline {
     use core_eval::corpus::{
@@ -218,7 +198,7 @@ esac\n";
     }
 
     #[tokio::test]
-    async fn cells_take_metrics_from_stdout_and_keep_stderr_only_as_diagnostics() {
+    async fn cells_take_metrics_from_stdout_and_ignore_the_conflicting_stderr_ledger() {
         let root = TempRoot::new();
         let (repo_url, commit) = real_repository(&root);
         let tasks = vec![
@@ -264,8 +244,13 @@ esac\n";
         // 2 tasks x 2 configs x 1 seed.
         assert_eq!(manifest.cells.len(), 4);
 
-        // The valid-budget cells parse their metrics from the stdout JSON contract. The stderr ledger
-        // shouted turns=999999; a scraper would have recorded that. The JSON (turns=2) wins.
+        // The stderr ledger shouted turns=999999 on EVERY invocation. It must never reach a metric.
+        assert!(
+            manifest.cells.iter().all(|cell| cell.turns != Some(999_999)),
+            "the human stderr ledger number must never become a cell metric"
+        );
+
+        // The valid-budget cells parse their metrics from the stdout JSON contract (turns=2).
         let valid: Vec<_> = manifest
             .cells
             .iter()
@@ -274,14 +259,13 @@ esac\n";
         assert_eq!(valid.len(), 2);
         for cell in &valid {
             assert_eq!(cell.run_status, RunStatus::Censored, "budget_exhausted is censored");
-            assert_eq!(cell.turns, Some(2), "turns must come from stdout JSON, not stderr");
-            assert_ne!(cell.turns, Some(999_999), "the stderr ledger must never reach a metric");
+            assert_eq!(cell.turns, Some(2), "turns come from the stdout JSON, not stderr");
             assert_eq!(cell.terminal_outcome.as_deref(), Some("budget_exhausted"));
             assert_eq!(cell.exit_code, Some(3));
         }
 
-        // The malformed-contract cells fail the stdout contract (never fall back to the stderr
-        // number) and retain the human stderr ONLY as labelled failure evidence.
+        // The malformed-contract cells fail the stdout JSON contract rather than adopting the stderr
+        // `turns=999999` number — the stdout contract is authoritative, and it fails closed.
         let malformed: Vec<_> = manifest
             .cells
             .iter()
@@ -292,15 +276,7 @@ esac\n";
             assert_eq!(cell.run_status, RunStatus::Errored);
             assert_eq!(cell.failure_phase.as_deref(), Some("core_contract"));
             assert_eq!(cell.exit_code, Some(2));
-            let error = cell.error.as_deref().expect("an errored cell records an error");
-            assert!(
-                error.contains("D12_03_STDERR_MARKER"),
-                "the human stderr must be retained as failure evidence, got {error:?}"
-            );
-            assert!(
-                error.contains("diagnostic only"),
-                "any stderr text must be labelled diagnostic, never adopted as a metric: {error:?}"
-            );
+            assert_eq!(cell.turns, None, "a failed contract yields no scraped turn count");
         }
     }
 }
