@@ -2,8 +2,10 @@
 //!
 //! When N candidate patches exist, select deterministically (ADR-005 R9: non-judgment steps
 //! are code, not model calls): content-addressed dedup, then rank by the oracle ensemble with
-//! the strength rule (a weak oracle never vetoes), then use a signed strength-weighted sum,
-//! tie-broken by first appearance. The resolve-vs-ceiling gap = (a correct candidate existed)
+//! the strength rule (a weak oracle never vetoes), then a strength-dominant lexicographic
+//! comparison (net Strong, then net Medium, then net Weak; a stronger tier is never overturned
+//! by any amount of weaker evidence), tie-broken by first appearance. The resolve-vs-ceiling
+//! gap = (a correct candidate existed)
 //! minus (we selected a correct one) — the field's most actionable, unreported metric.
 
 use sha2::{Digest, Sha256};
@@ -31,21 +33,25 @@ impl Candidate {
             .any(|(s, passed)| s.may_veto() && !passed)
     }
 
-    /// A rank score: strong passes weigh most, then medium, then weak (evidence only). Weakest
-    /// never contributes to selection.
-    fn score(&self) -> i64 {
-        self.verdicts
-            .iter()
-            .map(|(s, passed)| {
-                let w: i64 = match s {
-                    super::OracleStrength::Strong => 100,
-                    super::OracleStrength::Medium => 10,
-                    super::OracleStrength::Weak => 1,
-                    super::OracleStrength::Weakest => 0, // advisory: never enters selection
-                };
-                if *passed { w } else { -w }
-            })
-            .sum()
+    /// The strength-dominant rank key: net signed verdicts per tier, ordered so a stronger
+    /// oracle always outranks a weaker one no matter how much weaker evidence accumulates.
+    /// Compared lexicographically as `(net Strong, net Medium, net Weak)`, a single Strong pass
+    /// can never be overturned by any number of Medium/Weak passes; this honors the design rule
+    /// that weaker oracles may rank but never override a stronger tier's signal (a plain
+    /// weighted sum would let e.g. eleven Medium passes outweigh one Strong pass). Weakest is
+    /// advisory and never enters selection.
+    fn strength_key(&self) -> (i64, i64, i64) {
+        let (mut strong, mut medium, mut weak) = (0i64, 0i64, 0i64);
+        for (s, passed) in &self.verdicts {
+            let delta: i64 = if *passed { 1 } else { -1 };
+            match s {
+                super::OracleStrength::Strong => strong += delta,
+                super::OracleStrength::Medium => medium += delta,
+                super::OracleStrength::Weak => weak += delta,
+                super::OracleStrength::Weakest => {} // advisory: never enters selection
+            }
+        }
+        (strong, medium, weak)
     }
 }
 
@@ -78,9 +84,14 @@ pub fn select(candidates: Vec<Candidate>) -> Selection {
         .filter(|&i| !deduped[i].vetoed())
         .collect();
 
-    // 3. among the living, pick the highest score; ties break by first appearance (lowest index).
+    // 3. among the living, pick the strength-dominant maximum; ties break by first appearance
+    //    (lowest index). The reversed secondary key makes the lower index compare as greater, so
+    //    max_by (which keeps the last maximal element) returns it.
     let chosen = live.iter().copied().max_by(|&a, &b| {
-        deduped[a].score().cmp(&deduped[b].score()).then(b.cmp(&a)) // lower index wins the tie -> reverse so max_by keeps it
+        deduped[a]
+            .strength_key()
+            .cmp(&deduped[b].strength_key())
+            .then(b.cmp(&a))
     });
 
     // 4. resolve-vs-ceiling (eval only).
