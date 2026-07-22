@@ -112,7 +112,7 @@ impl InstructionBundle {
 pub(crate) fn suspicious_unicode(s: &str) -> Option<u32> {
     s.chars().map(|c| c as u32).find(|&c| {
         matches!(c,
-            0x061C | 0x200B..=0x200F | 0x202A..=0x202E | 0x2066..=0x206F | 0x00AD | 0xFEFF)
+            0x061C | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0x00AD | 0xFEFF)
     })
 }
 
