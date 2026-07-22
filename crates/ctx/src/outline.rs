@@ -475,6 +475,41 @@ mod tests {
     }
 
     #[test]
+    fn d6_06_repo_outline_rejects_zero_width_word_joiner() {
+        const ASSERTIONS_RAN: &str = "D6_06_ZERO_WIDTH_OUTLINE_ASSERTIONS_RAN";
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("core-ctx-d6-06-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("clean.rs"), "pub fn visible_declaration() {}\n").unwrap();
+        std::fs::write(
+            dir.join("hostile.rs"),
+            "pub fn trusted_\u{2060}hidden() {}\n",
+        )
+        .unwrap();
+
+        let map = repo_outline(&dir, 10_000);
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(
+            map.contains("pub fn visible_declaration"),
+            "a hostile neighbor must not suppress safe declarations:\n{map}"
+        );
+        assert!(
+            !map.contains('\u{2060}') && !map.contains("trusted_"),
+            "a declaration containing U+2060 WORD JOINER entered the outline:\n{map}"
+        );
+        assert!(
+            map.to_ascii_lowercase().contains("omitted"),
+            "the suspicious declaration or file omission was not surfaced:\n{map}"
+        );
+        println!("{ASSERTIONS_RAN}");
+    }
+
+    #[test]
     fn a_tiny_budget_drops_files_and_says_so() {
         let dir = std::env::temp_dir().join(format!("core-ctx-tiny-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
