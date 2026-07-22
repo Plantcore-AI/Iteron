@@ -166,6 +166,16 @@ fn print_summary(manifest: &core_eval::types::EvaluationManifest) {
         ),
     }
     println!("artifact={}", manifest.result_path.display());
+    println!(
+        "failed_runs={} (errored+timed_out); exit_code={}",
+        manifest.failed_runs(),
+        manifest.exit_code()
+    );
+    // `main` is a frozen schema-authority function, so the run outcome is finalized into the
+    // process exit status here. The evaluation artifact is already persisted; a run that recorded
+    // failed cells must not be reported to CI as a clean success by unconditionally exiting zero.
+    let _ = std::io::Write::flush(&mut std::io::stdout().lock());
+    std::process::exit(i32::from(manifest.exit_code()));
 }
 
 #[cfg(test)]

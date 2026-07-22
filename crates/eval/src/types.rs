@@ -3,6 +3,19 @@ use std::path::PathBuf;
 
 pub const EVAL_SCHEMA_VERSION: u32 = 1;
 
+/// Stable process exit codes for the `core-eval` binary.
+///
+/// The evaluation artifact is always persisted, but the process exit status must not silently
+/// discard the run outcome: a completed-with-failures run and a clean run cannot both report
+/// success. CI and operators rely on these codes to detect harness / infrastructure failures.
+pub const EVAL_EXIT_SUCCESS: u8 = 0;
+/// One or more cells failed to run under the harness — subprocess spawn / JSON-contract failures,
+/// checkout failures, ground-truth infrastructure failures, or wall-clock timeouts. The manifest is
+/// still written; this code makes the failed-run accounting visible in the exit status.
+pub const EVAL_EXIT_RUN_FAILURES: u8 = 1;
+/// The harness could not produce a manifest at all (`run_evaluation` returned an error).
+pub const EVAL_EXIT_HARNESS: u8 = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Partition {
@@ -201,4 +214,31 @@ pub struct EvaluationManifest {
     pub aggregate: crate::report::Aggregate,
     pub comparison: crate::report::Comparison,
     pub selections: Vec<crate::report::SelectionSummary>,
+}
+
+impl EvaluationManifest {
+    /// Count cells whose run failed under the harness rather than reaching a terminal model
+    /// outcome: subprocess spawn / JSON-contract failures, checkout failures, ground-truth
+    /// infrastructure failures ([`RunStatus::Errored`]) and wall-clock timeouts
+    /// ([`RunStatus::TimedOut`]).
+    ///
+    /// Censored runs ([`RunStatus::Censored`] — budget-exhausted, interrupted, or stuck) are
+    /// legitimate model outcomes, not harness failures, and are deliberately excluded so a model
+    /// that simply exhausts its turn budget does not mark the whole evaluation as broken.
+    pub fn failed_runs(&self) -> u64 {
+        self.cells
+            .iter()
+            .filter(|cell| matches!(cell.run_status, RunStatus::Errored | RunStatus::TimedOut))
+            .count() as u64
+    }
+
+    /// Stable process exit code for the whole evaluation. Any failed run yields a non-zero status
+    /// so the run outcome is not discarded behind an unconditional success.
+    pub fn exit_code(&self) -> u8 {
+        if self.failed_runs() > 0 {
+            EVAL_EXIT_RUN_FAILURES
+        } else {
+            EVAL_EXIT_SUCCESS
+        }
+    }
 }
