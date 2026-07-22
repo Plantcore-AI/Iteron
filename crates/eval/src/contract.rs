@@ -1,11 +1,16 @@
 //! Parser for the stable one-shot Core CLI result object.
 
+use crate::process::ProcessOutput;
 use crate::strict_json::parse_json_no_duplicates;
 use crate::types::CostStatus;
 #[cfg(test)]
 use crate::types::RunStatus;
 use serde::Deserialize;
 use serde_json::Value;
+
+/// Upper bound on the human stderr retained as failure evidence. The ledger/diagnostics stream is
+/// unbounded operator prose, so cap it (char-safe) before it is stored on an errored cell.
+const MAX_STDERR_DIAGNOSTIC_CHARS: usize = 4 * 1024;
 
 /// Versions of the frozen `core --output-format json` contract this consumer can read.
 ///
@@ -488,6 +493,59 @@ pub fn parse_final_result(
     // Validate cost truth eagerly; a malformed cost must classify the cell as a harness error.
     let _ = result.cost()?;
     Ok(result)
+}
+
+/// A failed terminal parse, pairing the authoritative contract error with the human stderr the Core
+/// process printed. The stderr text is retained **only** as diagnostic evidence — it is never parsed
+/// into a terminal metric — so a broken run is debuggable without a scraper ever trusting it.
+#[derive(Debug, thiserror::Error)]
+#[error("{contract}")]
+pub struct TerminalError {
+    pub contract: ContractError,
+    /// Bounded, char-safe copy of the process stderr. Empty when the process wrote nothing there.
+    pub stderr_diagnostics: String,
+}
+
+impl TerminalError {
+    /// One operator-facing detail line: the authoritative contract error, plus — clearly labelled —
+    /// the human stderr kept as evidence. The stderr never contributes a value to any parsed metric.
+    pub fn diagnostic_detail(&self) -> String {
+        if self.stderr_diagnostics.is_empty() {
+            self.contract.to_string()
+        } else {
+            format!(
+                "{}; core stderr (diagnostic only): {}",
+                self.contract, self.stderr_diagnostics
+            )
+        }
+    }
+}
+
+/// The evaluation consumer's single terminal-result seam.
+///
+/// Only the versioned machine JSON on **stdout** and the OS **exit code** are authoritative for every
+/// terminal metric (turns, cost, outcome). The Core CLI's human ledger/diagnostics on **stderr** are
+/// never scraped into a metric; on a contract failure they are surfaced solely as [`TerminalError::stderr_diagnostics`].
+/// Routing the runner through this one function makes "stdout is the contract, stderr is diagnostics"
+/// a structural guarantee rather than an incidental property of the call site.
+pub fn parse_terminal_result(output: &ProcessOutput) -> Result<CliFinalResult, TerminalError> {
+    parse_final_result(&output.stdout, output.exit_code).map_err(|contract| TerminalError {
+        contract,
+        stderr_diagnostics: bounded_diagnostics(&output.stderr),
+    })
+}
+
+fn bounded_diagnostics(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.chars().count() <= MAX_STDERR_DIAGNOSTIC_CHARS {
+        return trimmed.to_owned();
+    }
+    let kept: String = trimmed.chars().take(MAX_STDERR_DIAGNOSTIC_CHARS).collect();
+    format!("{kept}…[stderr truncated]")
 }
 
 pub fn cost_status(result: &CliFinalResult) -> Result<CostStatus, ContractError> {

@@ -1,6 +1,6 @@
 //! Real-repository, fixed-model evaluation runner.
 
-use crate::contract::parse_final_result;
+use crate::contract::parse_terminal_result;
 use crate::corpus::{CorpusManifest, CorpusTask};
 use crate::process::{ProcessOutput, ProcessSpec, find_core, run_process};
 use crate::report::{aggregate, compare, selection_summaries};
@@ -204,10 +204,14 @@ async fn run_cell(
         return cell;
     }
 
-    let final_result = match parse_final_result(&output.stdout, output.exit_code) {
+    // The versioned machine JSON on stdout and the OS exit code are the sole authorities for every
+    // terminal metric; the CLI's human ledger/diagnostics on stderr are never parsed into a metric.
+    // On a contract failure the stderr is retained only as debugging evidence on the errored cell.
+    let final_result = match parse_terminal_result(&output) {
         Ok(result) => result,
         Err(error) => {
-            let mut cell = errored_cell(task, config, seed, "core_contract", error.to_string());
+            let mut cell =
+                errored_cell(task, config, seed, "core_contract", error.diagnostic_detail());
             cell.exit_code = Some(output.exit_code);
             cell.elapsed_ms = millis(started.elapsed());
             return cell;
@@ -215,7 +219,7 @@ async fn run_cell(
     };
     let cost = final_result
         .cost()
-        .expect("parse_final_result validates cost");
+        .expect("parse_terminal_result validates cost");
     let mut cell = CellResult {
         task: task.id.clone(),
         config: config.name.into(),
