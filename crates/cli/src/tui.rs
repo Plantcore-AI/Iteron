@@ -2434,6 +2434,16 @@ pub async fn run(
     provider_id: String,
     completion_notifications: bool,
 ) -> anyhow::Result<()> {
+    // The TUI attaches to the runtime as a *versioned App Server client*, not as a co-composer of
+    // the runtime: it negotiates the SQ/EQ protocol version up front (the in-process runtime speaks
+    // `PROTOCOL_VERSION`), announces the negotiated version on stderr before taking over the
+    // terminal, and thereafter submits only version-stamped envelopes through `AppServerClient`
+    // (constructed below). Emitting this before any raw-mode setup keeps the handshake on the
+    // pre-TUI diagnostic stream, ahead of the alternate screen.
+    eprintln!(
+        "app server: TUI attached as a versioned client (SQ/EQ protocol v{})",
+        core_protocol::PROTOCOL_VERSION
+    );
     // Drain promises a real workspace checkpoint. Probe once before raw mode so a non-Git
     // workspace can reject that verb explicitly without blocking or breaking the terminal.
     let drain_available = core_record::checkpoint_supported(&agent.workspace);

@@ -4,29 +4,30 @@
 //!
 //! `core-cli` is a managed binary-only package (the boundary authority forbids it a library
 //! target), so this is a process-level oracle: it launches the real `core` binary in TUI mode
-//! and observes the versioned-client handshake the fix introduces.
+//! inside a pseudo-terminal and observes the versioned-client handshake the fix introduces.
 //!
-//! When the interactive frontend is selected, it now attaches to the runtime as a versioned
+//! When the interactive frontend is entered, it now attaches to the runtime as a versioned
 //! client: it negotiates the SQ/EQ protocol version and announces it on the pre-TUI diagnostic
-//! stream *before* the terminal requirement is enforced, then (inside the TUI) submits only
-//! version-stamped envelopes through its `AppServerClient`. Because the announcement precedes
-//! that requirement, it is observable even when `--tui` is launched without a real terminal: the
-//! process announces the handshake, then exits because no interactive terminal is present.
+//! stream *before* it takes over the terminal, then submits only version-stamped envelopes
+//! through its `AppServerClient`. Because the announcement precedes raw-mode entry, it appears
+//! at the head of the terminal byte stream, ahead of the alternate screen.
 //!
 //! A frontend that co-composes the runtime (the pre-fix behavior) performs no such handshake
 //! and emits no such line. On the pre-fix base this test file's target does not exist, so the
 //! oracle is RED; the fix adds the versioned client and its announcement, turning it GREEN.
 
 use core_protocol::PROTOCOL_VERSION;
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 static SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
-const LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 
 struct Scratch {
     root: PathBuf,
@@ -61,69 +62,103 @@ impl Drop for Scratch {
     }
 }
 
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack.len() >= needle.len()
+        && haystack.windows(needle.len()).any(|window| window == needle)
+}
+
 #[test]
 fn tui_announces_a_versioned_app_server_client_handshake() {
     let scratch = Scratch::new();
 
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 40,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .expect("open deterministic PTY");
+
     // A direct, credential-free binary launch (env_clear); the built-in `glm` provider resolves
-    // without a key because startup never reaches a turn. stdout/stderr are pipes, not a TTY.
-    let mut command = Command::new(env!("CARGO_BIN_EXE_core"));
-    command
-        .env_clear()
-        .env("HOME", scratch.home())
-        .env("PATH", "/usr/bin:/bin")
-        .env("TERM", "xterm")
-        .env("LANG", "C.UTF-8")
-        .env("CORE_PROVIDER", "glm")
-        .env("CORE_MODEL", "glm-5.2")
-        .current_dir(scratch.repo())
-        .arg("--tui")
-        .arg("--repo")
-        .arg(scratch.repo())
-        .arg("--runs-dir")
-        .arg(scratch.runs())
-        .arg("--provider")
-        .arg("glm")
-        .arg("--model")
-        .arg("glm-5.2")
-        .arg("--effort")
-        .arg("low")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    // without a key because startup never reaches a turn. A real PTY makes the frontend enter the
+    // TUI (rather than refuse for lack of a terminal), so `tui::run` — and its handshake — runs.
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_core"));
+    command.env_clear();
+    command.env("HOME", scratch.home().as_os_str());
+    command.env("PATH", "/usr/bin:/bin");
+    command.env("TERM", "xterm");
+    command.env("LANG", "C.UTF-8");
+    command.env("CORE_PROVIDER", "glm");
+    command.env("CORE_MODEL", "glm-5.2");
+    command.cwd(scratch.repo());
+    command.arg("--tui");
+    command.arg("--repo");
+    command.arg(scratch.repo());
+    command.arg("--runs-dir");
+    command.arg(scratch.runs());
+    command.arg("--provider");
+    command.arg("glm");
+    command.arg("--model");
+    command.arg("glm-5.2");
+    command.arg("--effort");
+    command.arg("low");
 
-    let mut child = command.spawn().expect("spawn core --tui");
+    let mut child = pair.slave.spawn_command(command).expect("spawn core in PTY");
+    let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
+    // Dropping the parent's slave lets the reader see EOF once the child exits.
+    drop(pair.slave);
 
-    // Read the whole pre-TUI diagnostic stream; it EOFs when the process exits.
-    let mut err_pipe = child.stderr.take().expect("capture stderr");
-    let reader = thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = err_pipe.read_to_end(&mut buf);
-        String::from_utf8_lossy(&buf).into_owned()
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let reader_thread = thread::spawn(move || {
+        let mut buf = [0_u8; 8 * 1024];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(read) => {
+                    if tx.send(buf[..read].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
     });
 
-    // With no controlling terminal the interactive frontend announces the handshake and then
-    // exits on its own; poll for that, killing on the deadline so a host that *does* grant a
-    // controlling terminal (and would enter the TUI event loop) cannot hang us.
-    let deadline = Instant::now() + LAUNCH_TIMEOUT;
-    loop {
-        if child.try_wait().expect("poll core exit").is_some() {
-            break;
+    let expected = format!(
+        "app server: TUI attached as a versioned client (SQ/EQ protocol v{PROTOCOL_VERSION})"
+    );
+
+    let mut capture: Vec<u8> = Vec::new();
+    let mut found = false;
+    let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+    while Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(chunk) => {
+                if capture.len() < MAX_CAPTURE_BYTES {
+                    capture.extend_from_slice(&chunk);
+                }
+                if contains(&capture, expected.as_bytes()) {
+                    found = true;
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
         }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            break;
-        }
-        thread::sleep(Duration::from_millis(100));
     }
 
-    let stderr = reader.join().expect("join stderr reader");
-    let expected = format!(
-        "app server: TUI attaching as a versioned client (SQ/EQ protocol v{PROTOCOL_VERSION})"
-    );
+    // The TUI, given a real terminal, sits in its event loop; end it deterministically.
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(pair.master);
+    let _ = reader_thread.join();
+
     assert!(
-        stderr.contains(&expected),
-        "the TUI must announce a versioned App Server client handshake; expected:\n  {expected}\ngot stderr:\n{stderr}"
+        found,
+        "the TUI must announce a versioned App Server client handshake; expected:\n  {expected}\ngot terminal bytes:\n{}",
+        String::from_utf8_lossy(&capture)
     );
 }
