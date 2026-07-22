@@ -15,8 +15,8 @@ mod strict_json;
 pub mod types;
 
 pub use contract::{
-    CliFinalResult, CliMachineEventKind, CliMachineRecord, ContractError, TerminalError,
-    parse_final_result, parse_machine_record, parse_terminal_result,
+    CliFinalResult, CliMachineEventKind, CliMachineRecord, ContractError, parse_final_result,
+    parse_machine_record,
 };
 pub use corpus::{CorpusError, CorpusManifest, CorpusTask};
 pub use report::{
