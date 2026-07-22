@@ -101,7 +101,7 @@ pub(crate) struct AdmittedRegistryTool {
     pub workspace: String,
 }
 
-pub(crate) trait DurableEffectLog {
+pub trait DurableEffectLog {
     fn append_effect(&mut self, event: &Event) -> Result<Seq, core_record::RecordError>;
 }
 
@@ -111,9 +111,116 @@ impl DurableEffectLog for core_record::Rollout {
     }
 }
 
-/// The only registry-effect dispatch sequence: durable intent, exactly one executor invocation,
-/// durable terminal. It returns no result until the terminal append/fsync succeeds, keeping every
-/// UI/transcript/ledger projection downstream of canonical state.
+/// The universal effect-boundary descriptor. Registry tool calls are only one *kind* of effect that
+/// must cross the single durable WAL boundary; provider requests, hooks, checkpoints, memory writes,
+/// and subagents are others. Every one of them fills the same `EffectIntent`, so the boundary owns a
+/// single, kind-agnostic ordering rule rather than a registry-only one. Constructing this value
+/// grants no authority — the caller must already have completed the constitutional
+/// capability/taint/approval checks; from here the boundary owns only the non-negotiable WAL order.
+pub struct BrokeredEffect {
+    pub turn: TurnId,
+    pub effect_id: EffectId,
+    /// Provider/model correlation for effects that originate from a model `tool_use` block. Empty
+    /// for harness-internal effects (checkpoints, memory writes, subagent lifecycle) that have no
+    /// such id — the harness-minted `effect_id` is then the sole correlation key.
+    pub tool_use_id: String,
+    /// Stable, human-readable effect kind recorded in the intent and any unknown marker.
+    pub kind: String,
+    pub capability: Capability,
+    pub audit_arguments: serde_json::Value,
+    pub workspace: String,
+}
+
+/// What an executor proves back to the boundary. `Definite` carries the exact durable terminal event
+/// to append after a proven outcome; `Unknown` means the executor dispatched the operation but could
+/// not observe an authoritative terminal, so the boundary journals `EffectUnknown` and never retries.
+pub enum EffectDisposition<T> {
+    Definite { terminal: EventKind, value: T },
+    Unknown { reason: String, value: T },
+}
+
+/// The boundary's report to the caller: the same Definite/Unknown split, carrying the executor value
+/// only after its terminal state is durable.
+pub enum BrokeredOutcome<T> {
+    Definite(T),
+    Unknown(T),
+}
+
+impl<T> BrokeredOutcome<T> {
+    pub fn into_value(self) -> T {
+        match self {
+            BrokeredOutcome::Definite(value) | BrokeredOutcome::Unknown(value) => value,
+        }
+    }
+}
+
+/// The one and only effect-dispatch sequence, for ANY effect kind: durable intent, exactly one
+/// executor invocation, durable terminal. It returns no outcome until the terminal append/fsync
+/// succeeds, keeping every downstream projection strictly behind canonical state. A failed intent
+/// append means the executor is never entered (no effect, no terminal); a failed terminal append
+/// leaves a single recoverable pending intent rather than a silently-lost effect. `execute_registry_tool`
+/// is one caller of this; it is not the only kind of effect the boundary admits.
+pub async fn broker_effect<L, Execute, ExecuteFuture, T>(
+    log: &mut L,
+    effect: BrokeredEffect,
+    execute: Execute,
+) -> Result<BrokeredOutcome<T>, core_record::RecordError>
+where
+    L: DurableEffectLog,
+    Execute: FnOnce() -> ExecuteFuture,
+    ExecuteFuture: Future<Output = EffectDisposition<T>>,
+{
+    let BrokeredEffect {
+        turn,
+        effect_id,
+        tool_use_id,
+        kind,
+        capability,
+        audit_arguments,
+        workspace,
+    } = effect;
+    log.append_effect(&Event {
+        seq: Seq::ZERO,
+        turn,
+        kind: EventKind::EffectIntent {
+            id: effect_id.clone(),
+            tool_use_id,
+            tool: kind.clone(),
+            capability,
+            arguments: audit_arguments,
+            workspace,
+        },
+    })?;
+
+    match execute().await {
+        EffectDisposition::Definite { terminal, value } => {
+            log.append_effect(&Event {
+                seq: Seq::ZERO,
+                turn,
+                kind: terminal,
+            })?;
+            Ok(BrokeredOutcome::Definite(value))
+        }
+        EffectDisposition::Unknown { reason, value } => {
+            log.append_effect(&Event {
+                seq: Seq::ZERO,
+                turn,
+                kind: EventKind::EffectUnknown {
+                    id: effect_id,
+                    tool: kind,
+                    reason,
+                },
+            })?;
+            Ok(BrokeredOutcome::Unknown(value))
+        }
+    }
+}
+
+/// The registry-effect dispatch sequence, expressed as one instance of the universal
+/// [`broker_effect`] boundary: durable intent, exactly one executor invocation, durable terminal. It
+/// returns no result until the terminal append/fsync succeeds, keeping every UI/transcript/ledger
+/// projection downstream of canonical state. Sharing `broker_effect` is what keeps registry tools
+/// and every other brokered effect on a single, non-diverging WAL ordering.
 pub(crate) async fn execute_registry_tool<L, Execute, ExecuteFuture, Execution>(
     log: &mut L,
     admitted: AdmittedRegistryTool,
@@ -134,51 +241,42 @@ where
         workspace,
     } = admitted;
     let provider_tool_use_id = call.id.clone();
-    let tool_name = call.name.clone();
-    log.append_effect(&Event {
-        seq: Seq::ZERO,
+    let terminal_effect_id = effect_id.clone();
+    let effect = BrokeredEffect {
         turn,
-        kind: EventKind::EffectIntent {
-            id: effect_id.clone(),
-            tool_use_id: provider_tool_use_id.clone(),
-            tool: call.name.clone(),
-            capability,
-            arguments: audit_arguments,
-            workspace,
-        },
-    })?;
-
-    let mut outcome = execute(call).await.into();
-    // Correlation identity belongs to the admitted call, never to plugin-returned data. Registry
-    // already enforces this; repeating it here protects future executors behind the same boundary.
-    let result = match &mut outcome {
-        ToolExecution::Definite(result) | ToolExecution::Unknown(result) => result,
+        effect_id,
+        tool_use_id: provider_tool_use_id.clone(),
+        kind: call.name.clone(),
+        capability,
+        audit_arguments,
+        workspace,
     };
-    result.tool_use_id = provider_tool_use_id;
-    match &outcome {
-        ToolExecution::Definite(result) => {
-            log.append_effect(&Event {
-                seq: Seq::ZERO,
-                turn,
-                kind: EventKind::ToolDone {
+    let outcome = broker_effect(log, effect, move || async move {
+        let mut outcome: ToolExecution = execute(call).await.into();
+        // Correlation identity belongs to the admitted call, never to plugin-returned data. Registry
+        // already enforces this; repeating it here protects every executor behind the same boundary.
+        {
+            let result = match &mut outcome {
+                ToolExecution::Definite(result) | ToolExecution::Unknown(result) => result,
+            };
+            result.tool_use_id = provider_tool_use_id;
+        }
+        match outcome {
+            ToolExecution::Definite(result) => EffectDisposition::Definite {
+                terminal: EventKind::ToolDone {
                     result: result.clone(),
-                    effect_id: Some(effect_id),
+                    effect_id: Some(terminal_effect_id),
                 },
-            })?;
+                value: ToolExecution::Definite(result),
+            },
+            ToolExecution::Unknown(result) => EffectDisposition::Unknown {
+                reason: "executor dispatched the operation but did not observe an authoritative terminal outcome; automatic retry is forbidden".into(),
+                value: ToolExecution::Unknown(result),
+            },
         }
-        ToolExecution::Unknown(_) => {
-            log.append_effect(&Event {
-                seq: Seq::ZERO,
-                turn,
-                kind: EventKind::EffectUnknown {
-                    id: effect_id,
-                    tool: tool_name,
-                    reason: "executor dispatched the operation but did not observe an authoritative terminal outcome; automatic retry is forbidden".into(),
-                },
-            })?;
-        }
-    }
-    Ok(outcome)
+    })
+    .await?;
+    Ok(outcome.into_value())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
