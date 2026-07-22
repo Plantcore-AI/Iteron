@@ -146,8 +146,10 @@ pub enum McpError {
 impl McpError {
     /// Stable diagnostic safe for model/terminal projection.
     ///
-    /// MCP peer strings, OS errors, command paths, and parser detail are intentionally omitted.
-    /// The typed error remains available to in-process callers for control flow and tests.
+    /// Unbounded or unsafe MCP peer strings, OS errors, command paths, and parser detail are
+    /// intentionally omitted. Bounded dated protocol versions are retained so an operator can
+    /// resolve a version mismatch. The typed error remains available to in-process callers for
+    /// control flow and tests.
     pub fn public_summary(&self) -> String {
         match self {
             Self::Spawn(_) => "MCP server spawn failed".into(),
@@ -155,6 +157,18 @@ impl McpError {
             Self::Protocol(_) => "MCP protocol exchange failed".into(),
             Self::InvalidProtocolVersion { .. } => {
                 "MCP server returned an invalid protocol version".into()
+            }
+            Self::UnsupportedProtocolVersion {
+                client_version,
+                server_version,
+            } if protocol_version::is_actionable_version_mismatch(
+                client_version,
+                server_version,
+            ) =>
+            {
+                format!(
+                    "MCP protocol version mismatch: client supports `{client_version}` but server selected `{server_version}`"
+                )
             }
             Self::UnsupportedProtocolVersion { .. } => {
                 "MCP server selected an unsupported protocol version".into()
@@ -350,6 +364,35 @@ mod tests {
         assert_eq!(summary, "MCP server returned error code -32001");
         assert!(!summary.contains(secret));
         assert!(!summary.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn public_protocol_mismatch_summary_only_reflects_known_dated_versions() {
+        let actionable = McpError::UnsupportedProtocolVersion {
+            client_version: "2024-11-05".into(),
+            server_version: "2099-01-01".into(),
+        }
+        .public_summary();
+        assert!(actionable.contains("2024-11-05"));
+        assert!(actionable.contains("2099-01-01"));
+
+        let credential_shaped = ["gh", "p_", "AbCdEf1234567890AbCdEf1234567890"].concat();
+        for unsafe_version in [
+            credential_shaped,
+            "2099-01-01\nforged".to_owned(),
+            "2".repeat(65),
+        ] {
+            let redacted = McpError::UnsupportedProtocolVersion {
+                client_version: "2024-11-05".into(),
+                server_version: unsafe_version.clone(),
+            }
+            .public_summary();
+            assert_eq!(
+                redacted,
+                "MCP server selected an unsupported protocol version"
+            );
+            assert!(!redacted.contains(&unsafe_version));
+        }
     }
 
     #[test]
