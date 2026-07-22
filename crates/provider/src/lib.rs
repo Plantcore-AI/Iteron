@@ -21,6 +21,7 @@ pub mod openai;
 pub mod responses;
 pub mod sse;
 mod static_metadata;
+pub mod transport;
 mod usage;
 
 pub use anthropic::Anthropic;
@@ -34,6 +35,7 @@ pub use openai::OpenAiCompat;
 pub use responses::OpenAiResponses;
 pub use sse::{StreamItem, parse_sse_stream};
 pub use static_metadata::{StaticModelCapabilities, StaticProviderMetadata};
+pub use transport::{DefaultHttpTransport, HttpTransport};
 pub use usage::{UsageIncompleteReason, UsageReport};
 
 /// Maximum bytes retained from any non-success provider response. The response is dropped as

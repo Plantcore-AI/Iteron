@@ -9,24 +9,42 @@
 //! (correctness over cleverness; ADR-006 R2).
 
 use crate::backoff::{BackoffPolicy, Jitter, full_jitter};
+use crate::clock::{Clock, TokioClock};
 use async_trait::async_trait;
 use core_provider::{
     EffortApplication, Provider, ProviderAttemptSemantics, ProviderError, RetryDisposition,
     StreamItem, TurnRequest, TurnResult,
 };
+use std::sync::Arc;
 
 pub struct RetryProvider {
     inner: Box<dyn Provider>,
     policy: BackoffPolicy,
-    /// A hook so tests can observe backoff without sleeping; None uses tokio::time::sleep.
+    /// Injected time port: backoff waits go through this seam instead of a direct
+    /// `tokio::time::sleep`, so scheduler time is brokered, not hard-wired (D2-21).
+    clock: Arc<dyn Clock>,
+    /// A synchronous probe so tests can observe backoff without sleeping. When set it
+    /// short-circuits the clock; production paths leave it `None` and wait on the port.
     sleep_hook: Option<Box<dyn Fn(std::time::Duration) + Send + Sync>>,
 }
 
 impl RetryProvider {
     pub fn new(inner: Box<dyn Provider>, policy: BackoffPolicy) -> Self {
+        Self::with_clock(inner, policy, Arc::new(TokioClock))
+    }
+
+    /// Construct with an injected time port. The scheduler waits between retry
+    /// attempts through `clock` rather than the ambient runtime clock, so a host
+    /// can broker, virtualize, or observe backoff (D2-21).
+    pub fn with_clock(
+        inner: Box<dyn Provider>,
+        policy: BackoffPolicy,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         RetryProvider {
             inner,
             policy,
+            clock,
             sleep_hook: None,
         }
     }
@@ -35,7 +53,7 @@ impl RetryProvider {
         if let Some(h) = &self.sleep_hook {
             h(d);
         } else {
-            tokio::time::sleep(d).await;
+            self.clock.sleep(d).await;
         }
     }
 }

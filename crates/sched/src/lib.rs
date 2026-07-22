@@ -12,9 +12,11 @@
 //! (ADR-004 amendment: no speculative provider calls).
 
 pub mod backoff;
+pub mod clock;
 pub mod governor;
 pub mod retry;
 
 pub use backoff::{BackoffPolicy, full_jitter};
+pub use clock::{Clock, TokioClock};
 pub use governor::Governor;
 pub use retry::RetryProvider;

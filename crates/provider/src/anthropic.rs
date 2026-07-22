@@ -45,13 +45,20 @@ impl Anthropic {
     }
 
     pub fn with_root(key: String, api_root: ApiRoot) -> Result<Self, ProviderError> {
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(30))
-            // The configured API root is an authority boundary. Never replay an API key, prompt,
-            // or POST body through an HTTP redirect selected by the remote endpoint.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| ProviderError::Configuration("HTTP client could not be built".into()))?;
+        Self::with_transport(key, api_root, &crate::transport::DefaultHttpTransport)
+    }
+
+    /// Construct against an exact API root while obtaining the HTTP client from an
+    /// injected network-I/O port instead of building it inline. `with_root` is the
+    /// default-transport convenience wrapper; a host that must broker, observe, or
+    /// substitute transport injects its own [`crate::transport::HttpTransport`] here
+    /// (D2-21).
+    pub fn with_transport(
+        key: String,
+        api_root: ApiRoot,
+        transport: &dyn crate::transport::HttpTransport,
+    ) -> Result<Self, ProviderError> {
+        let client = transport.client()?;
         Ok(Self {
             key,
             route_scope: direct_route_scope(),
