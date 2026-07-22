@@ -303,3 +303,49 @@ async fn d3_07_g4_lf_and_trailing_newline_state_round_trip_exactly() {
     assert_eq!(std::fs::read(trailing).unwrap(), b"alpha\nBETA\n");
     assert_eq!(std::fs::read(no_trailing).unwrap(), b"alpha\nBETA");
 }
+
+#[tokio::test]
+async fn d3_07_edit_keeps_trailing_newline_state_when_replacement_disagrees() {
+    let root = TestRoot::new("trailing-newline-fidelity");
+    let trailing = root.0.join("trailing.txt");
+    let no_trailing = root.0.join("no-trailing.txt");
+    std::fs::write(&trailing, b"alpha\nbeta\n").unwrap();
+    std::fs::write(&no_trailing, b"alpha\nbeta").unwrap();
+    let registry = Registry::coding_agent(&root.0).unwrap();
+
+    let remove = registry
+        .run(edit_call("remove", "trailing.txt", "beta\n", "BETA"))
+        .await;
+    let add = registry
+        .run(edit_call("add", "no-trailing.txt", "beta", "BETA\n"))
+        .await;
+
+    assert!(!remove.is_error, "{}", remove.content);
+    assert!(!add.is_error, "{}", add.content);
+    assert_eq!(std::fs::read(trailing).unwrap(), b"alpha\nBETA\n");
+    assert_eq!(std::fs::read(no_trailing).unwrap(), b"alpha\nBETA");
+}
+
+#[tokio::test]
+async fn d3_07_acceptance_edit_preserves_crlf_and_bom() {
+    let root = TestRoot::new("crlf-edit-fidelity");
+    let path = root.0.join("windows.txt");
+    std::fs::write(&path, b"\xef\xbb\xbfalpha\r\nbeta\r\ngamma\r\n").unwrap();
+    let registry = Registry::coding_agent(&root.0).unwrap();
+
+    let result = registry
+        .run(edit_call(
+            "line-ending",
+            "windows.txt",
+            "beta\r\n",
+            "BETA\n",
+        ))
+        .await;
+
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(
+        std::fs::read(path).unwrap(),
+        b"\xef\xbb\xbfalpha\r\nBETA\r\ngamma\r\n",
+        "edit must retain the UTF-8 BOM and encode the edited line using the target's CRLF style"
+    );
+}
