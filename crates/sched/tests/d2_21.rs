@@ -1,20 +1,45 @@
-//! D2-21 oracle — the scheduler's backoff wait is an *injected* time port, not a
-//! direct `tokio::time::sleep`.
+//! D2-21 oracle — provider network I/O and the scheduler are *injected* capability
+//! ports, not direct-constructed dependencies.
 //!
-//! Injecting a custom [`Clock`] must route every retry wait through it. This test
-//! target is absent on the base branch, and its `RetryProvider::with_clock` /
-//! `Clock` API does not exist there, so it is RED on base and GREEN once the
-//! injected scheduler port lands.
+//! Two seams the architecture roadmap wants injected:
+//!   * the scheduler's backoff wait — routed through an injected [`Clock`] instead
+//!     of a direct `tokio::time::sleep`; and
+//!   * a provider adapter's HTTP client — obtained from an injected
+//!     [`HttpTransport`] instead of an inline `reqwest::Client::builder()`.
+//!
+//! This test target is absent on the base branch, and the `with_clock` / `Clock`
+//! / `with_transport` / `HttpTransport` API it drives does not exist there, so it
+//! is RED on base and GREEN once the injected ports land. Both ports are exercised
+//! from `core-sched` (which depends on `core-provider`), keeping the oracle inside
+//! the scheduler boundary tree.
 
 use async_trait::async_trait;
 use core_protocol::{ReasoningEffort, StopReason};
 use core_provider::{
-    Provider, ProviderError, StreamItem, TurnRequest, TurnResult, UsageReport,
+    Anthropic, ApiRoot, DefaultHttpTransport, HttpClient, HttpTransport, OpenAiResponses, Provider,
+    ProviderError, StreamItem, TurnRequest, TurnResult, UsageReport,
 };
 use core_sched::{BackoffPolicy, Clock, RetryProvider, TokioClock};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
+
+fn req() -> TurnRequest {
+    TurnRequest {
+        model: "m".into(),
+        system: "s".into(),
+        messages: vec![],
+        tools: vec![],
+        max_tokens: 10,
+        cache_system: false,
+        thinking_budget: 0,
+        reasoning_effort: ReasoningEffort::Low,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scheduler time port
+// ---------------------------------------------------------------------------
 
 /// Fails with a retryable 429 `fail_n` times, then succeeds.
 struct Flaky {
@@ -57,19 +82,6 @@ impl Clock for CountingClock {
     async fn sleep(&self, dur: Duration) {
         self.sleeps.fetch_add(1, Ordering::SeqCst);
         *self.last.lock().unwrap() = Some(dur);
-    }
-}
-
-fn req() -> TurnRequest {
-    TurnRequest {
-        model: "m".into(),
-        system: "s".into(),
-        messages: vec![],
-        tools: vec![],
-        max_tokens: 10,
-        cache_system: false,
-        thinking_budget: 0,
-        reasoning_effort: ReasoningEffort::Low,
     }
 }
 
@@ -125,4 +137,69 @@ async fn default_clock_port_is_publicly_injectable() {
         Arc::new(TokioClock),
     );
     assert!(provider.turn(&req(), &mut |_| {}).await.is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// Provider network-I/O port
+// ---------------------------------------------------------------------------
+
+/// A transport whose client construction is observable and can be forced to fail.
+struct ProbeTransport {
+    built: AtomicU32,
+    fail: bool,
+}
+
+impl HttpTransport for ProbeTransport {
+    fn client(&self) -> Result<HttpClient, ProviderError> {
+        self.built.fetch_add(1, Ordering::SeqCst);
+        if self.fail {
+            Err(ProviderError::Configuration("probe refused transport".into()))
+        } else {
+            // Delegate to the default secure client so the adapter is otherwise real.
+            DefaultHttpTransport.client()
+        }
+    }
+}
+
+#[tokio::test]
+async fn anthropic_obtains_its_client_from_the_injected_transport_port() {
+    let transport = ProbeTransport {
+        built: AtomicU32::new(0),
+        fail: false,
+    };
+    let root = ApiRoot::parse("https://api.anthropic.com/v1").expect("valid root");
+
+    let provider = Anthropic::with_transport("k".into(), root, &transport);
+    assert!(
+        provider.is_ok(),
+        "adapter builds through the injected transport"
+    );
+    assert_eq!(
+        transport.built.load(Ordering::SeqCst),
+        1,
+        "the client came from the injected transport port, not an inline reqwest builder"
+    );
+}
+
+#[tokio::test]
+async fn injected_transport_failure_fails_adapter_construction() {
+    // A refused transport port must fail construction. This is only observable if
+    // the adapter actually goes through the injected port for its network I/O; an
+    // inline `reqwest::Client::builder()` could never surface this error.
+    let transport = ProbeTransport {
+        built: AtomicU32::new(0),
+        fail: true,
+    };
+    let root = ApiRoot::parse("https://api.openai.com/v1").expect("valid root");
+
+    let provider = OpenAiResponses::with_transport("k".into(), root, &transport);
+    assert!(
+        matches!(provider, Err(ProviderError::Configuration(_))),
+        "a refused transport port must fail adapter construction"
+    );
+    assert_eq!(
+        transport.built.load(Ordering::SeqCst),
+        1,
+        "the adapter consulted the injected transport port exactly once"
+    );
 }
