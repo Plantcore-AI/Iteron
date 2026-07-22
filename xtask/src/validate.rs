@@ -319,6 +319,36 @@ pub fn check_reviews(
     }
     let impact = calculate_impact(root, registry, base)?;
     if registry.enforcement.mode == "bootstrap" {
+        // Honest bootstrap keeps ordinary responsibility review non-enforcing so early
+        // contributions are not falsely rejected. The ownership registry, however, is the
+        // root of trust: `governance/boundaries.json` defines every boundary and the
+        // enforcement mode itself. Leaving it under the non-enforcing pass lets a change
+        // silently rewrite the boundary/enforcement definitions. Enforce the one bootstrap
+        // floor the runbook already reserves — an ownership-registry change requires the
+        // Owner's accountable authorship or a current-commit Owner approval — while every
+        // other responsibility group stays advisory.
+        let registry_floor: BTreeMap<String, BTreeSet<String>> = impact
+            .review_groups
+            .iter()
+            .filter(|(group, _)| group.starts_with("owner:registry-"))
+            .map(|(group, handles)| (group.clone(), handles.clone()))
+            .collect();
+        if !registry_floor.is_empty() {
+            let head = resolve_base(root, "HEAD")?;
+            let floor = Impact {
+                boundaries: BTreeMap::new(),
+                overlays: BTreeSet::new(),
+                responsible: BTreeSet::new(),
+                review_groups: registry_floor,
+            };
+            validate_review_contract(&floor, &head, author, reviews_json)
+                .context("bootstrap ownership-registry floor")?;
+            println!(
+                "bootstrap review inspected: {} responsibility groups; ownership-registry change enforced against the Owner floor",
+                impact.review_groups.len()
+            );
+            return Ok(());
+        }
         println!(
             "bootstrap review inspected: {} responsibility groups; registered-human review enforcement is not active",
             impact.review_groups.len()
