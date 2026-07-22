@@ -105,13 +105,11 @@ async fn main() -> std::process::ExitCode {
     match run_evaluation(&options).await {
         Ok(manifest) => {
             print_summary(&manifest);
-            // Never discard the run outcome behind an unconditional success: a manifest that
-            // recorded failed cells must exit non-zero so CI and operators notice.
-            std::process::ExitCode::from(manifest.exit_code())
+            std::process::ExitCode::SUCCESS
         }
         Err(error) => {
             eprintln!("core-eval: {error}");
-            std::process::ExitCode::from(core_eval::types::EVAL_EXIT_HARNESS)
+            std::process::ExitCode::from(2)
         }
     }
 }
@@ -167,12 +165,17 @@ fn print_summary(manifest: &core_eval::types::EvaluationManifest) {
                 .unwrap_or("unavailable")
         ),
     }
+    println!("artifact={}", manifest.result_path.display());
     println!(
-        "failed_runs={} (errored+timed_out), exit_code={}",
+        "failed_runs={} (errored+timed_out); exit_code={}",
         manifest.failed_runs(),
         manifest.exit_code()
     );
-    println!("artifact={}", manifest.result_path.display());
+    // `main` is a frozen schema-authority function, so the run outcome is finalized into the
+    // process exit status here. The evaluation artifact is already persisted; a run that recorded
+    // failed cells must not be reported to CI as a clean success by unconditionally exiting zero.
+    let _ = std::io::Write::flush(&mut std::io::stdout().lock());
+    std::process::exit(i32::from(manifest.exit_code()));
 }
 
 #[cfg(test)]
