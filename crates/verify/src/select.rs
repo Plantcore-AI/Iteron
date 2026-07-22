@@ -97,6 +97,105 @@ pub fn select(candidates: Vec<Candidate>) -> Selection {
     }
 }
 
+impl Selection {
+    /// The resolve-vs-ceiling gap for THIS selection: a correct candidate existed
+    /// (`ceiling`) yet we did not select one (`!resolved`) — a solvable task left on the
+    /// table. This is the single per-task signal the headline metric aggregates. It is
+    /// meaningful only where ground truth (`Candidate::is_correct_oracle`) is known (eval);
+    /// at run time both components are false and this is trivially false.
+    pub fn resolve_vs_ceiling_gap(&self) -> bool {
+        self.ceiling && !self.resolved
+    }
+}
+
+/// The resolve-vs-ceiling metric aggregated over many selections — the field's most
+/// actionable, unreported number (ADR-005). It answers: of the tasks a correct candidate was
+/// actually produced for, how often did selection fail to pick a correct one?
+///
+/// The per-selection `ceiling`/`resolved` booleans already existed but nothing folded or
+/// emitted them: every caller re-derived the gap inline and no batch-level headline ever
+/// reached a log or eval report. This type is that emittable form — deterministic,
+/// order-independent structured counts plus a one-line [`std::fmt::Display`] record a runtime
+/// verify-phase log or an eval reducer can surface directly.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResolveCeilingMetric {
+    /// Selections observed.
+    pub total: u64,
+    /// Selections where a correct candidate existed (the achievable ceiling).
+    pub ceiling: u64,
+    /// Selections where we actually selected a correct candidate. Always `<= ceiling`:
+    /// selecting a correct candidate implies one existed.
+    pub resolved: u64,
+    /// Selections where a correct candidate existed but we failed to select one
+    /// (`ceiling && !resolved`). Equals `ceiling - resolved`.
+    pub gap: u64,
+}
+
+impl ResolveCeilingMetric {
+    /// Fold a batch of selections into the metric. Deterministic and order-independent.
+    pub fn from_selections<'a, I>(selections: I) -> Self
+    where
+        I: IntoIterator<Item = &'a Selection>,
+    {
+        let mut metric = Self::default();
+        for selection in selections {
+            metric.record(selection);
+        }
+        metric
+    }
+
+    /// Fold one more selection into the running metric, so a runtime verify phase can emit an
+    /// updated headline incrementally rather than buffering every selection first.
+    pub fn record(&mut self, selection: &Selection) {
+        self.total += 1;
+        if selection.ceiling {
+            self.ceiling += 1;
+        }
+        if selection.resolved {
+            self.resolved += 1;
+        }
+        if selection.resolve_vs_ceiling_gap() {
+            self.gap += 1;
+        }
+    }
+
+    /// Fraction of *solvable* selections (a correct candidate existed) that selection
+    /// nonetheless failed to resolve — the actionable headline. `None` when nothing was
+    /// solvable, so a zero-ceiling batch never masquerades as a perfect selector (a 0.0 gap).
+    pub fn gap_rate(&self) -> Option<f64> {
+        (self.ceiling > 0).then(|| self.gap as f64 / self.ceiling as f64)
+    }
+
+    /// Fraction of solvable selections we actually resolved (`= 1 - gap_rate`). `None` when
+    /// nothing was solvable.
+    pub fn resolved_rate(&self) -> Option<f64> {
+        (self.ceiling > 0).then(|| self.resolved as f64 / self.ceiling as f64)
+    }
+}
+
+impl std::fmt::Display for ResolveCeilingMetric {
+    /// One emittable line carrying the headline numbers. Percentage is of the *solvable*
+    /// denominator (the ceiling), which is the number the gap exists to expose.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.gap_rate() {
+            Some(rate) => write!(
+                formatter,
+                "resolve_vs_ceiling: gap={}/{} ({:.1}% of solvable tasks unselected), resolved={}, total={}",
+                self.gap,
+                self.ceiling,
+                rate * 100.0,
+                self.resolved,
+                self.total
+            ),
+            None => write!(
+                formatter,
+                "resolve_vs_ceiling: gap=0/0 (no solvable task observed), total={}",
+                self.total
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +274,59 @@ mod tests {
             cand("second", vec![(Medium, true), (Weak, false)], None),
         ]);
         assert_eq!(sel.chosen, Some(0), "lowest deduped index wins a tie");
+    }
+
+    #[test]
+    fn per_selection_gap_is_a_first_class_method() {
+        let gapped = select(vec![
+            cand("correct-but-vetoed", vec![(Strong, false)], Some(true)),
+            cand("wrong-but-passes", vec![(Strong, true)], Some(false)),
+        ]);
+        assert!(
+            gapped.resolve_vs_ceiling_gap(),
+            "a solvable task we left unselected is the gap"
+        );
+
+        let closed = select(vec![cand("right-and-picked", vec![(Strong, true)], Some(true))]);
+        assert!(!closed.resolve_vs_ceiling_gap(), "resolved -> no gap");
+
+        let unsolvable = select(vec![cand("wrong", vec![(Strong, true)], Some(false))]);
+        assert!(
+            !unsolvable.resolve_vs_ceiling_gap(),
+            "no correct candidate existed -> not a gap"
+        );
+    }
+
+    #[test]
+    fn batch_metric_folds_counts_and_emits_the_headline() {
+        let gapped = select(vec![
+            cand("correct-but-vetoed", vec![(Strong, false)], Some(true)),
+            cand("wrong-but-passes", vec![(Strong, true)], Some(false)),
+        ]);
+        let resolved = select(vec![cand("right-and-picked", vec![(Strong, true)], Some(true))]);
+        let unsolvable = select(vec![cand("all-wrong", vec![(Weak, true)], Some(false))]);
+
+        let metric = ResolveCeilingMetric::from_selections([&gapped, &resolved, &unsolvable]);
+        assert_eq!(metric.total, 3);
+        assert_eq!(metric.ceiling, 2);
+        assert_eq!(metric.resolved, 1);
+        assert_eq!(metric.gap, 1);
+        // resolved is always a subset of ceiling, so the gap is exactly their difference.
+        assert_eq!(metric.gap, metric.ceiling - metric.resolved);
+        assert_eq!(metric.gap_rate(), Some(0.5));
+        assert_eq!(metric.resolved_rate(), Some(0.5));
+        assert!(metric.to_string().contains("resolve_vs_ceiling"));
+        assert!(metric.to_string().contains("1/2"));
+    }
+
+    #[test]
+    fn zero_ceiling_batch_is_undefined_not_a_perfect_score() {
+        let unsolvable = select(vec![cand("wrong", vec![(Strong, true)], Some(false))]);
+        let metric = ResolveCeilingMetric::from_selections([&unsolvable]);
+        assert_eq!(metric.ceiling, 0);
+        assert_eq!(metric.gap_rate(), None, "no solvable task -> undefined, never 0.0");
+        assert_eq!(metric.resolved_rate(), None);
+        assert!(metric.to_string().contains("no solvable task"));
     }
 
     #[test]
