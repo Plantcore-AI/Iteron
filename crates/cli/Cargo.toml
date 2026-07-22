@@ -9,6 +9,13 @@ publish.workspace = true
 name = "core"
 path = "src/main.rs"
 
+# The frontend's versioned App Server client is compiled as a small library so its
+# version-negotiation contract is testable without driving a terminal. The crate root lives
+# beside the TUI it serves (crates/cli/src/tui/); the binary above links it.
+[lib]
+name = "core_cli"
+path = "src/tui/app_server.rs"
+
 [dependencies]
 core-protocol = { path = "../protocol" }
 core-record = { path = "../record" }
