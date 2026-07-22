@@ -198,12 +198,7 @@ fn validate_task(task: &CorpusTask) -> Result<(), CorpusError> {
     if task.id.trim().is_empty() || task.id.len() > 256 {
         return Err(invalid("id", "must contain 1..=256 bytes"));
     }
-    if task.commit.len() != 40
-        || !task
-            .commit
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
+    if !is_lower_hex_sha(&task.commit, false) {
         return Err(invalid("commit", "must be a lowercase 40-hex Git SHA-1"));
     }
     let url = url::Url::parse(&task.repo_url)
@@ -270,12 +265,19 @@ fn validate_benchmark(task: &CorpusTask, binding: &BenchmarkBinding) -> Result<(
             return Err(invalid(field, &format!("must contain 1..={limit} bytes")));
         }
     }
-    if reference.environment_setup_commit.len() != 40
-        || !reference
-            .environment_setup_commit
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
+    if !is_lower_hex_sha(&reference.dataset_revision, true) {
+        return Err(invalid(
+            "benchmark.dataset_revision",
+            "must be a lowercase 40- or 64-hex immutable revision",
+        ));
+    }
+    if !task.provenance.source.contains(&reference.dataset_revision) {
+        return Err(invalid(
+            "provenance.source",
+            "must bind the benchmark dataset revision",
+        ));
+    }
+    if !is_lower_hex_sha(&reference.environment_setup_commit, false) {
         return Err(invalid(
             "benchmark.environment_setup_commit",
             "must be a lowercase 40-hex Git SHA-1",
@@ -309,6 +311,13 @@ fn validate_benchmark(task: &CorpusTask, binding: &BenchmarkBinding) -> Result<(
         ));
     }
     Ok(())
+}
+
+fn is_lower_hex_sha(value: &str, allow_sha256: bool) -> bool {
+    (value.len() == 40 || (allow_sha256 && value.len() == 64))
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]
@@ -435,7 +444,12 @@ mod tests {
     #[test]
     fn benchmark_binding_round_trips_and_rejects_a_tampered_test_patch() {
         let mut bound_task = task("benchmark", Partition::HeldOut);
-        bound_task.benchmark = Some(benchmark_binding());
+        let binding = benchmark_binding();
+        bound_task.provenance.source = format!(
+            "https://example.invalid/dataset/tree/{}",
+            binding.reference.dataset_revision
+        );
+        bound_task.benchmark = Some(binding);
         let corpus = manifest(vec![bound_task]);
         corpus.validate().unwrap();
         let encoded = serde_json::to_vec(&corpus).unwrap();
@@ -453,6 +467,42 @@ mod tests {
             tampered.validate(),
             Err(CorpusError::InvalidTask {
                 field: "benchmark.test_patch_sha256",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn benchmark_revision_must_be_pinned_and_bound_by_provenance() {
+        let mut bound_task = task("benchmark", Partition::HeldOut);
+        let binding = benchmark_binding();
+        bound_task.provenance.source = format!(
+            "https://example.invalid/dataset/tree/{}",
+            binding.reference.dataset_revision
+        );
+        bound_task.benchmark = Some(binding);
+
+        let mut unpinned = manifest(vec![bound_task.clone()]);
+        unpinned.tasks[0]
+            .benchmark
+            .as_mut()
+            .unwrap()
+            .reference
+            .dataset_revision = "main".into();
+        assert!(matches!(
+            unpinned.validate(),
+            Err(CorpusError::InvalidTask {
+                field: "benchmark.dataset_revision",
+                ..
+            })
+        ));
+
+        bound_task.provenance.source = "https://example.invalid/dataset/tree/main".into();
+        let unbound = manifest(vec![bound_task]);
+        assert!(matches!(
+            unbound.validate(),
+            Err(CorpusError::InvalidTask {
+                field: "provenance.source",
                 ..
             })
         ));
