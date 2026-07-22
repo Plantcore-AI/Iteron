@@ -15,9 +15,12 @@ use std::collections::HashSet;
 
 use crate::stage::{AgentTask, Stage, WorkflowPlan};
 
-/// The fan-out ceiling (ADR-004: the fan-out ceiling is cited at the call site; cap 4–6). Leaves
-/// beyond this are truncated, and the truncation is recorded on the `WorkflowPlan`.
-pub const FAN_CAP: usize = 6;
+/// The fan-out ceiling (ADR-004: the fan-out ceiling is cited at the call site). Leaves beyond this
+/// are truncated, and the truncation is recorded on the `WorkflowPlan`. The kernel now runs the fan
+/// bounded-concurrent (owned `tokio::spawn` per worker under a `Governor`), so the breadth ceiling is
+/// raised to 16 and the actual wall-clock concurrency is bounded separately by the permit count
+/// (`min(FAN_CAP, cores-2, admitted_workers)`), never by this cap alone.
+pub const FAN_CAP: usize = 16;
 
 /// Hard limit for one normalized investigation objective, measured in Unicode scalar values rather
 /// than bytes so slicing can never split UTF-8. Over-limit leaves are rejected and counted instead
@@ -696,7 +699,7 @@ mod tests {
 
     #[test]
     fn plan_truncates_to_fan_cap_and_records_it() {
-        let leaves: Vec<String> = (0..10).map(|i| format!("leaf {i}")).collect();
+        let leaves: Vec<String> = (0..(FAN_CAP + 4)).map(|i| format!("leaf {i}")).collect();
         let plan = Decomposer::plan(TaskClass::UnderSpecified, leaves).unwrap();
         assert_eq!(plan.fan_tasks().len(), FAN_CAP, "capped at FAN_CAP");
         assert_eq!(
@@ -737,7 +740,7 @@ mod tests {
             "\u{202e}unsafe".into(),
             String::new(),
         ];
-        leaves.extend((2..=7).map(|n| format!("question {n}")));
+        leaves.extend((2..=17).map(|n| format!("question {n}")));
 
         let plan = Decomposer::plan(TaskClass::MultiFile, leaves).unwrap();
         assert_eq!(plan.duplicates_removed, 1);

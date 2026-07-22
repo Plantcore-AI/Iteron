@@ -19,6 +19,7 @@ mod render;
 mod surface;
 mod theme;
 mod tui;
+mod workflow;
 
 use clap::{Parser, Subcommand};
 use config::FileConfig;
@@ -65,10 +66,27 @@ impl Drop for StderrDiagnosticDrain {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 enum LocalCommand {
     /// Rebuild session metadata and the sessions index from hash-chained rollout truth.
     Reindex,
+    /// Run an ultracode workflow (.js) end-to-end, streaming progress to stdout.
+    Workflow {
+        #[command(subcommand)]
+        action: WorkflowAction,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+enum WorkflowAction {
+    /// Execute a workflow script now (agent()/parallel()/pipeline()/phase()/log()).
+    Run {
+        /// Path to the `.js` workflow script.
+        script: PathBuf,
+        /// JSON passed to the script as the ambient `args` (e.g. --args '{"n":3}').
+        #[arg(long)]
+        args: Option<String>,
+    },
 }
 
 const SYSTEM_PROMPT: &str = "\
@@ -293,6 +311,13 @@ async fn run_cli() -> anyhow::Result<u8> {
             cli.runs_dir.display()
         );
         return Ok(output::EXIT_SUCCESS);
+    }
+
+    // `core workflow run <script.js>` — runs the ultracode-workflow engine directly. It needs a
+    // provider but none of the rollout/agent/genesis machinery, so it branches out before that setup.
+    if let Some(LocalCommand::Workflow { action }) = &cli.command {
+        let user_file = FileConfig::load_user()?;
+        return run_workflow_command(&cli, &repo, &user_file, action).await;
     }
 
     let mut registry = Registry::coding_agent(&repo)?;
@@ -1142,6 +1167,80 @@ async fn run_cli() -> anyhow::Result<u8> {
         return Err(anyhow::anyhow!("writing machine output: {error}"));
     }
     Ok(output::outcome_exit_code(&outcome))
+}
+
+/// `core workflow run <script.js> [--args <json>]`: build a provider (trusted precedence, no rollout
+/// or pricing machinery), then drive `core_workflow::WorkflowEngine` with a real provider-backed
+/// spawner and the plain stdout progress renderer.
+async fn run_workflow_command(
+    cli: &Cli,
+    repo: &std::path::Path,
+    user_file: &FileConfig,
+    action: &WorkflowAction,
+) -> anyhow::Result<u8> {
+    let WorkflowAction::Run { script, args } = action;
+    let src = std::fs::read_to_string(script)
+        .map_err(|error| anyhow::anyhow!("cannot read workflow script {}: {error}", script.display()))?;
+    let args_value: serde_json::Value = match args {
+        Some(text) => serde_json::from_str(text)
+            .map_err(|error| anyhow::anyhow!("--args is not valid JSON: {error}"))?,
+        None => serde_json::Value::Null,
+    };
+
+    // Provider selection with the same trusted precedence as a normal run (CLI > env > user config >
+    // built-in). Routing never consults the project config (untrusted origin).
+    let configured_providers = user_file.providers.clone().unwrap_or_default();
+    let (provider_name, _origin) = config::pick_trusted_string(
+        cli.provider.clone(),
+        config::env_string("CORE_PROVIDER"),
+        user_file.provider.clone(),
+        BUILTIN_DEFAULT_PROVIDER,
+    );
+    let provider_directory = providers::ProviderDirectory::discover(&configured_providers).await?;
+    let requested_model = cli
+        .model
+        .clone()
+        .or_else(|| config::env_string("CORE_MODEL"))
+        .or_else(|| user_file.model.clone());
+    let selection = match requested_model.as_deref() {
+        Some(model_id) => provider_directory
+            .resolve_model(model_id, Some(&provider_name))
+            .map_err(|error| anyhow::anyhow!("cannot resolve model: {error}"))?,
+        None => provider_directory
+            .default_selection(&provider_name)
+            .ok_or_else(|| anyhow::anyhow!("provider `{provider_name}` has no selectable model"))?,
+    };
+    let provider_arc = provider_directory
+        .build(&selection)
+        .map_err(|error| anyhow::anyhow!("selected provider/model is unavailable: {error}"))?;
+    let model = selection.model_id.clone();
+
+    let meta = core_workflow::extract_meta(&src);
+    eprintln!(
+        "workflow \u{b7} repo={} \u{b7} provider={} \u{b7} model={}",
+        repo.display(),
+        selection.provider_id,
+        model
+    );
+    if let Some(meta) = &meta {
+        let name = meta.name.clone().unwrap_or_else(|| "workflow".into());
+        match meta.description.as_deref() {
+            Some(desc) if !desc.is_empty() => eprintln!("summary: {name} - {desc}"),
+            _ => eprintln!("summary: {name}"),
+        }
+    }
+    eprintln!("{}", "-".repeat(72));
+
+    let spawner: std::sync::Arc<dyn core_workflow::AgentSpawner> =
+        std::sync::Arc::new(workflow::ProviderSpawner::new(provider_arc, model));
+    let sink: std::sync::Arc<dyn core_workflow::ProgressSink> =
+        std::sync::Arc::new(workflow::StdoutProgressSink::new());
+
+    let value = core_workflow::WorkflowEngine::run(&src, args_value, spawner, sink).await?;
+
+    eprintln!("{}", "-".repeat(72));
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(output::EXIT_SUCCESS)
 }
 
 #[cfg(test)]

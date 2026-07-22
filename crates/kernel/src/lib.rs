@@ -409,13 +409,16 @@ pub struct WorkflowTaskUi {
     pub label: String,
 }
 
-/// Actual execution posture. Keeping this explicit prevents a sequential executor from being
-/// visualized as parallel lanes merely because the logical stage is named `Fan`.
+/// Actual execution posture. Keeping this explicit prevents the fan from being mislabeled: `Direct`
+/// is the single-writer path, `Concurrent` is the bounded-concurrent read-only investigation fan
+/// (owned tasks under a `Governor` permit cap). `Sequential` is retained for older frontends/tests
+/// that still describe the pre-concurrency executor; the kernel no longer emits it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowExecutionModeUi {
     Direct,
     Sequential,
+    Concurrent,
 }
 
 /// The user-visible phases of the built-in ultracode Fan -> Reduce workflow. This vocabulary is
@@ -524,6 +527,136 @@ struct InvestigatorReport {
     sub_run: Option<String>,
     error_code: Option<String>,
     error_detail: Option<String>,
+}
+
+/// A fully-prepared read-only investigator: an owned child `Agent` plus its assigned prompt and
+/// bookkeeping, ready to run on its own `tokio::spawn` task. Splitting preparation (which needs the
+/// parent's `&mut self` for durable emission) from execution (which owns everything) is what lets
+/// the fan run bounded-concurrent without holding a `&mut self` borrow across each child `.await`.
+struct PreparedInvestigator {
+    idx: usize,
+    started: Instant,
+    sub_run: String,
+    sub: Agent,
+    full: String,
+    forwarder: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl PreparedInvestigator {
+    /// Drive the owned child to completion and distill its terminal report. Consumes `self`, so the
+    /// future is `Send + 'static` and can be moved onto a `tokio::spawn` task; the child observes
+    /// operator stop through the shared interrupt/drain flags installed at preparation time.
+    async fn run(self) -> InvestigatorReport {
+        let PreparedInvestigator {
+            idx: _,
+            started,
+            sub_run,
+            mut sub,
+            full,
+            forwarder,
+        } = self;
+        // `run_leaf`, not `run`: a read-only investigator never orchestrates (SingleAgent effort),
+        // so this is behavior-identical, and its future type does NOT reach `run_fan` — which is
+        // what lets the owning `tokio::spawn` satisfy `Send` without a recursive obligation cycle.
+        let outcome = sub.run_leaf(&full).await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let last_text = std::mem::take(&mut sub.last_assistant_text);
+        let ledger = std::mem::take(&mut sub.ledger);
+        drop(sub);
+        if let Some(forwarder) = forwarder {
+            let _ = forwarder.await;
+        }
+        investigator_report_from_outcome(outcome, &last_text, ledger, elapsed_ms, sub_run)
+    }
+}
+
+/// Distill a child investigator's run `Outcome` into the parent's `InvestigatorReport`. Pure
+/// bookkeeping over already-owned values, so it needs no access to the parent agent (which is what
+/// keeps `PreparedInvestigator::run` free of any `&mut self` borrow).
+fn investigator_report_from_outcome(
+    outcome: Result<Outcome, KernelError>,
+    last_assistant_text: &str,
+    ledger: Ledger,
+    elapsed_ms: u64,
+    sub_run: String,
+) -> InvestigatorReport {
+    let drained = matches!(&outcome, Ok(Outcome::Drained));
+    let mut state = match &outcome {
+        Ok(Outcome::Done) => WorkflowAgentOutcomeUi::Done,
+        Ok(Outcome::Interrupted | Outcome::Drained) => WorkflowAgentOutcomeUi::Interrupted,
+        Ok(_) | Err(_) => WorkflowAgentOutcomeUi::Failed,
+    };
+    let child_budget_exhausted = matches!(&outcome, Ok(Outcome::BudgetExhausted(_)));
+    let child_stuck = matches!(&outcome, Ok(Outcome::Stuck));
+    let (mut text, mut error_code, mut error_detail) = match outcome {
+        Ok(_) => {
+            let s = strict_utf8_head(last_assistant_text.trim(), 16 * 1024);
+            if s.is_empty() {
+                state = WorkflowAgentOutcomeUi::Failed;
+                (
+                    "[subagent returned no summary]".into(),
+                    Some("empty_report".into()),
+                    Some("investigator completed without a report".into()),
+                )
+            } else {
+                (s, None, None)
+            }
+        }
+        Err(error) => {
+            let detail = error.public_summary();
+            (
+                format!("[subagent error: {detail}]"),
+                Some("child_kernel_error".into()),
+                Some(detail),
+            )
+        }
+    };
+    if state == WorkflowAgentOutcomeUi::Interrupted {
+        if drained {
+            error_code = Some("operator_drain".into());
+            error_detail = Some("investigator drained after a durable checkpoint".into());
+            text = "[fan worker drained]".into();
+        } else {
+            error_code = Some("operator_stop".into());
+            error_detail = Some("investigator interrupted at a safe point".into());
+            text = "[fan worker interrupted]".into();
+        }
+    } else if child_budget_exhausted {
+        error_code = Some("child_budget_exhausted".into());
+        error_detail = Some("investigator exhausted its bounded turn or wall budget".into());
+    } else if child_stuck {
+        error_code = Some("child_tool_error_limit".into());
+        error_detail = Some("investigator reached the consecutive tool-error limit".into());
+    }
+    InvestigatorReport {
+        text,
+        outcome: state,
+        drained,
+        ledger,
+        elapsed_ms,
+        sub_run: Some(sub_run),
+        error_code,
+        error_detail,
+    }
+}
+
+/// Build a non-running fan worker's report (skipped for budget/deadline reasons). It carries no
+/// ledger and no sub-run, and is never candidate evidence.
+fn skipped_investigator_report(
+    text: &str,
+    error_code: &str,
+    error_detail: &str,
+) -> InvestigatorReport {
+    InvestigatorReport {
+        text: text.into(),
+        outcome: WorkflowAgentOutcomeUi::SkippedBudget,
+        drained: false,
+        ledger: Ledger::default(),
+        elapsed_ms: 0,
+        sub_run: None,
+        error_code: Some(error_code.into()),
+        error_detail: Some(error_detail.into()),
+    }
 }
 
 enum FanRun {
@@ -821,9 +954,11 @@ fn workflow_terminal(
     }
 }
 
-/// Reserve the writer first. Investigators are evidence acquisition, so they may consume at most
-/// one third of the remaining provider calls and wall time; each admitted worker gets 2–4 turns so
-/// it can request reads and still produce a grounded report. A tiny budget bypasses the fan.
+/// Reserve the writer first, then hand the fan its share. The writer keeps about half of the
+/// remaining provider calls (rebalanced from two thirds: the fan is bounded-concurrent now, so it no
+/// longer pays a serial-latency penalty for a larger turn share) plus two thirds of the wall time.
+/// Each admitted worker may draw up to the discovered-subagent ceiling; the aggregate stays within
+/// the fan half so the writer reserve always survives. A tiny budget bypasses the fan.
 fn allocate_orchestration(
     remaining_turns: u32,
     task_count: usize,
@@ -832,17 +967,23 @@ fn allocate_orchestration(
     if task_count == 0 || remaining_turns < 6 || remaining_wall_secs < 3 {
         return None;
     }
-    let initial_writer_reserve = ((u64::from(remaining_turns) * 2).div_ceil(3) as u32)
+    // Half-plus-one keeps the writer strictly dominant while relaxing the old two-thirds reserve.
+    let initial_writer_reserve = ((remaining_turns / 2).saturating_add(1))
         .max(4)
         .min(remaining_turns);
     let fan_available = remaining_turns.saturating_sub(initial_writer_reserve);
+    // Admit as many distinct investigators as the fan turn budget can each fund with >=2 turns,
+    // capped by FAN_CAP. Wall-clock is bounded separately by the concurrency permit count.
     let active_workers = task_count
         .min(core_agents::FAN_CAP)
         .min((fan_available / 2) as usize);
     if active_workers == 0 {
         return None;
     }
-    let fan_turns = fan_available.min((active_workers as u32).saturating_mul(4));
+    // Each admitted worker may reach the per-worker ceiling, but the aggregate never exceeds the
+    // fan half — so the writer reserve is preserved even though workers run concurrently.
+    let ceiling = core_agents::subagent_budget_ceiling().max_turns;
+    let fan_turns = fan_available.min((active_workers as u32).saturating_mul(ceiling));
     let fan_wall_secs = (remaining_wall_secs / 3).max(1);
     Some(OrchestrationAllocation {
         fan_turns,
@@ -851,6 +992,20 @@ fn allocate_orchestration(
         fan_wall_secs,
         writer_wall_reserved_secs: remaining_wall_secs.saturating_sub(fan_wall_secs),
     })
+}
+
+/// The wall-clock concurrency cap for the read-only investigation fan: never more than `FAN_CAP`,
+/// the machine's usable parallelism (`cores - 2`, leaving headroom for the runtime + writer), or the
+/// number of admitted workers. Always at least one. This bounds the `Governor` permit pool, so the
+/// fan's turn/dollar budgets bound cost while this bounds wall-clock inflight work.
+fn fan_concurrency_permits(active_workers: usize) -> usize {
+    let usable_cores = std::thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(2))
+        .unwrap_or(1);
+    core_agents::FAN_CAP
+        .min(usable_cores)
+        .min(active_workers)
+        .max(1)
 }
 
 fn approx_workspace_file_count(root: &std::path::Path) -> usize {
@@ -897,9 +1052,11 @@ mod orchestration_allocation_tests {
 
     #[test]
     fn writer_is_reserved_before_fan_and_workers_have_two_turns() {
+        // Writer keeps half-plus-one (30 of 59); the fan gets the rest and stays strictly smaller.
         let allocation = allocate_orchestration(59, 6, 900).expect("viable fan");
-        assert_eq!(allocation.writer_turns_reserved, 40);
-        assert_eq!(allocation.fan_turns, 19);
+        assert_eq!(allocation.writer_turns_reserved, 30);
+        assert_eq!(allocation.fan_turns, 29);
+        assert!(allocation.writer_turns_reserved > allocation.fan_turns);
         assert_eq!(allocation.active_workers, 6);
         assert!(allocation.fan_turns >= allocation.active_workers as u32 * 2);
         assert!(allocation.writer_wall_reserved_secs > allocation.fan_wall_secs);
@@ -3633,6 +3790,67 @@ impl Agent {
         outcome
     }
 
+    /// A bounded run that NEVER orchestrates — the entry point for a read-only fan investigator.
+    /// It is a faithful copy of `run`'s prologue/epilogue but runs `drive` directly instead of the
+    /// `orchestrate` branch. Two reasons this exists rather than reusing `run`:
+    /// 1. Behavior: a fan leaf has `SingleAgent` effort, so `run` would take the `drive` branch
+    ///    anyway — this is behavior-identical for that (only) caller.
+    /// 2. Concurrency: because `run_leaf`'s future does NOT type-reach `run_orchestrated`/`run_fan`,
+    ///    `run_fan` can move each leaf onto an owned `tokio::spawn` task without the compiler hitting
+    ///    a recursive `Send` obligation cycle (proving `spawn(child): Send` would otherwise require
+    ///    proving `run_fan: Send`, which requires proving `spawn(child): Send` …). `Agent::run`
+    ///    itself stays `Send`, so top-level callers can still spawn it.
+    async fn run_leaf(&mut self, task: &str) -> Result<Outcome, KernelError> {
+        self.guard_unresolved_effects()?;
+        if self.seq_turn == u32::MAX {
+            return Err(KernelError::IdentityExhausted("turn"));
+        }
+        let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+        self.budget.validate().map_err(KernelError::InvalidBudget)?;
+        self.synchronize_usd_budget()?;
+        self.close_usd_budget_on_unknown_cost();
+        if let Some(outcome) = self.finish_requested_control(TurnId(self.seq_turn))? {
+            if outcome != Outcome::Drained && !self.hooks.is_empty() {
+                let ctx = serde_json::json!({"event":"Stop","outcome":format!("{outcome:?}")})
+                    .to_string();
+                let _ = self.hooks.run(HookEvent::Stop, &ctx).await;
+            }
+            return Ok(outcome);
+        }
+        if self
+            .usd_budget
+            .as_ref()
+            .is_some_and(|budget| budget.requires_pricing())
+            && (self.pricing_port.is_none()
+                || self.pricing.is_none()
+                || matches!(self.ledger.cost_state(), CostState::Unknown { .. }))
+        {
+            return Err(KernelError::UnpricedUsdCeiling);
+        }
+        let owns_deadline = self.run_deadline.is_none();
+        if owns_deadline {
+            self.run_deadline = Some(
+                Instant::now()
+                    .checked_add(Duration::from_secs(self.budget.max_wall_secs))
+                    .unwrap_or_else(Instant::now),
+            );
+        }
+        // A leaf never orchestrates: run the single-agent bounded loop directly.
+        let outcome = self.drive(task).await;
+        if owns_deadline {
+            self.run_deadline = None;
+        }
+        if !self.hooks.is_empty()
+            && let Ok(o) = &outcome
+            && *o != Outcome::Drained
+        {
+            let ctx = serde_json::json!({"event":"Stop","outcome":format!("{o:?}")}).to_string();
+            let _ = self.hooks.run(HookEvent::Stop, &ctx).await;
+        }
+        let _ = self.rollout.refresh_session_cache();
+        outcome
+    }
+
     /// Durably admit one operator submission before any provider request derived from it. Both
     /// direct and orchestrated paths consume this exact projection; orchestration may add a second
     /// harness-evidence message later, but it never sends an unrecorded task to decomposition.
@@ -5106,7 +5324,11 @@ impl Agent {
         task: &str,
     ) -> Result<Outcome, KernelError> {
         const CHILD_CONTROL_POLL: Duration = Duration::from_millis(25);
-        let mut execution = Box::pin(child.run(task));
+        // A dispatched subagent is read-only + SingleAgent effort, so it never orchestrates:
+        // `run_leaf` is behavior-identical to `run` here and keeps `run` (hence `run_orchestrated`
+        // -> `run_fan`) OUT of every child's call graph, so the fan's owned `tokio::spawn` of a
+        // child has no recursive `Send` obligation cycle and `Agent::run` itself stays `Send`.
+        let mut execution = Box::pin(child.run_leaf(task));
         loop {
             match tokio::time::timeout(CHILD_CONTROL_POLL, &mut execution).await {
                 Ok(outcome) => {
@@ -5538,7 +5760,7 @@ impl Agent {
                 version: core_protocol::WorkflowEventVersion::V2,
                 workflow_id: run_id.to_string(),
                 event: core_protocol::WorkflowEvent::Planned {
-                    mode: core_protocol::WorkflowExecutionMode::SequentialFan,
+                    mode: core_protocol::WorkflowExecutionMode::ConcurrentFan,
                     tasks: task_evidence,
                     dropped: dropped as u32,
                     duplicates_removed: duplicates_removed as u32,
@@ -5562,7 +5784,7 @@ impl Agent {
             dropped,
             duplicates_removed,
             invalid_removed,
-            execution_mode: WorkflowExecutionModeUi::Sequential,
+            execution_mode: WorkflowExecutionModeUi::Concurrent,
             fan_turn_budget: allocation.fan_turns,
             writer_turn_reserve: allocation.writer_turns_reserved,
             fan_wall_secs: allocation.fan_wall_secs,
@@ -5574,8 +5796,10 @@ impl Agent {
             TurnId(self.seq_turn),
             EventKind::Notice {
                 text: format!(
-                    "ultracode: running up to {} of {n} read-only investigators sequentially; writer reserve {} turns ({class:?})",
-                    allocation.active_workers, allocation.writer_turns_reserved
+                    "ultracode: running up to {} of {n} read-only investigators bounded-concurrent (<={} at once); writer reserve {} turns ({class:?})",
+                    allocation.active_workers,
+                    fan_concurrency_permits(allocation.active_workers),
+                    allocation.writer_turns_reserved
                 ),
             },
         );
@@ -5762,15 +5986,21 @@ impl Agent {
 
     /// Fan out read-only investigator subagents (ADR-013). Each shares the provider, gets a
     /// `Registry::read_only` (no edit/bash, no `dispatch_agent` → cannot write or recurse), a
-    /// bounded budget, and a durable child rollout. Summaries are collected index-addressed —
-    /// `reduce()` reads them in declaration order, so completion order never leaks (ADR-006 R7).
+    /// bounded per-worker budget, and a durable child rollout. Summaries are collected
+    /// index-addressed — `reduce()` reads them in declaration order, so completion order never leaks
+    /// (ADR-006 R7).
     ///
-    /// Workers run SEQUENTIALLY here. The honest benefit of the fan is context-window management
-    /// and investigation breadth (each worker's raw exploration stays in its own isolated context;
-    /// only its ~1–2k-token summary reaches the writer), NOT a wall-clock speedup (R5 review Risk
-    /// 1). Bounded-concurrent execution is a latency refinement (ADR-004 overlap) deferred until the
-    /// coding benefit itself is measured; a concurrent spawn also hits a recursive `Send` cycle
-    /// (a spawned Agent whose `run` can spawn more Agents) that the sequential `Box::pin` avoids.
+    /// Workers run BOUNDED-CONCURRENT. Each admitted investigator is prepared under `&mut self` (its
+    /// durable spawn + `ChildStarted` records) and then moved onto its own owned `tokio::spawn`
+    /// task, so no `&mut self` borrow is held across the child `.await`s — that borrow, not any real
+    /// recursion, was the only thing forcing the old sequential loop (a read-only leaf has no
+    /// dispatch tool and cannot recurse; `tokio::spawn`'s type erasure also breaks the future-type
+    /// `Send` cycle a naive `&mut self` spawn would hit). A `Governor` permit pool caps inflight
+    /// work at `min(FAN_CAP, cores-2, admitted)`. The turn budget still bounds total cost (per-worker
+    /// slices sum within the fan share, so the writer reserve survives even under concurrency); the
+    /// permit pool bounds wall-clock. Operator stop translates queued Interrupt/Drain into the shared
+    /// flags every child observes, and the run finishes only once every admitted child has quiesced
+    /// — never orphaning an in-flight worker.
     async fn run_fan(
         &mut self,
         workflow_run_id: &str,
@@ -5781,166 +6011,255 @@ impl Agent {
         workflow_state: &mut WorkflowRunState,
     ) -> Result<FanRun, KernelError> {
         let seq = self.seq_turn;
-        // Every admitted worker gets at least two turns: one to request repository reads and one
-        // to consume their results and report. One-turn workers create activity but no evidence.
+        let ceiling = core_agents::subagent_budget_ceiling().max_turns;
+        // Every admitted worker gets at least two turns: one to request repository reads and one to
+        // consume their results and report. The per-worker slices sum within the fan turn budget, so
+        // the writer reserve is preserved even though the workers run concurrently; each slice is
+        // additionally capped at the per-worker ceiling.
         let active_workers = tasks.len().min((aggregate.max_turns / 2) as usize);
         let divisor = active_workers.max(1);
         let base_turns = aggregate.max_turns / divisor as u32;
         let extra_turns = aggregate.max_turns % divisor as u32;
-        let per_wall = (aggregate.max_wall_secs / divisor as u64).max(1);
-        let mut summaries = Vec::new();
+        // Concurrent: wall-clock is bounded by the permit pool, NOT by slicing the wall across
+        // workers, so each worker may use the whole fan wall window (tightened by the run deadline).
+        let per_wall = aggregate.max_wall_secs.max(1);
+        let governor = core_sched::Governor::new(fan_concurrency_permits(active_workers));
+
+        // Phase A: prepare each admitted worker under `&mut self` (its durable spawn records), then
+        // move it into an OWNED `tokio::spawn` task — so no `&mut self` borrow is held across the
+        // child `.await`s, which is the only thing that forced the fan sequential. Each worker runs
+        // `Agent::run_leaf`, a non-orchestrating entry whose future does NOT type-reach `run_fan`,
+        // so `tokio::spawn`'s `Send` bound has no recursive obligation cycle. Never-run workers
+        // report inline. A `Governor` permit bounds inflight work.
+        let mut running: Vec<(usize, String, tokio::task::JoinHandle<InvestigatorReport>)> =
+            Vec::new();
+        let mut inline: Vec<(usize, InvestigatorReport)> = Vec::new();
         for task in tasks {
-            if let Some(outcome) =
-                self.collect_and_finish_requested_control(TurnId(self.seq_turn))?
-            {
-                return Ok(FanRun::Stopped(outcome));
+            // Stop admitting NEW workers once operator control is requested; already-spawned workers
+            // are joined (and quiesce via the shared flags) in Phase B before the run finishes.
+            let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+            if !matches!(self.requested_control(), InboundControl::None) {
+                break;
             }
             let idx = task.id;
             let worker_turns = if idx < active_workers {
-                base_turns + u32::from((idx as u32) < extra_turns)
+                (base_turns + u32::from((idx as u32) < extra_turns)).min(ceiling)
             } else {
                 0
             };
-            let report = if worker_turns == 0 {
-                InvestigatorReport {
-                    text: "[fan worker skipped: aggregate turn budget reserved elsewhere]".into(),
-                    outcome: WorkflowAgentOutcomeUi::SkippedBudget,
-                    drained: false,
-                    ledger: Ledger::default(),
-                    elapsed_ms: 0,
-                    sub_run: None,
-                    error_code: Some("not_admitted_budget".into()),
-                    error_detail: Some(
-                        "writer-first budget reserve left no safe worker allocation".into(),
+            if worker_turns == 0 {
+                inline.push((
+                    idx,
+                    skipped_investigator_report(
+                        "[fan worker skipped: aggregate turn budget reserved elsewhere]",
+                        "not_admitted_budget",
+                        "writer-first budget reserve left no safe worker allocation",
                     ),
-                }
-            } else if self.inference_budget_exhaustion()?.is_some() {
-                InvestigatorReport {
-                    text: "[fan worker skipped: parent inference budget exhausted]".into(),
-                    outcome: WorkflowAgentOutcomeUi::SkippedBudget,
-                    drained: false,
-                    ledger: Ledger::default(),
-                    elapsed_ms: 0,
-                    sub_run: None,
-                    error_code: Some("parent_inference_budget".into()),
-                    error_detail: Some(
-                        "parent turn or monetary ceiling was exhausted before admission".into(),
-                    ),
-                }
-            } else if self.run_deadline_exhausted() {
-                InvestigatorReport {
-                    text: "[fan worker skipped: parent run wall deadline exhausted]".into(),
-                    outcome: WorkflowAgentOutcomeUi::SkippedBudget,
-                    drained: false,
-                    ledger: Ledger::default(),
-                    elapsed_ms: 0,
-                    sub_run: None,
-                    error_code: Some("parent_deadline".into()),
-                    error_detail: Some(
-                        "parent run wall deadline exhausted before admission".into(),
-                    ),
-                }
-            } else {
-                let mut worker_budget = Budget {
-                    max_turns: worker_turns,
-                    max_usd: None,
-                    max_wall_secs: per_wall,
-                    max_consecutive_tool_errors: 3,
-                };
-                if let Some(remaining) = self.run_time_remaining() {
-                    worker_budget.max_wall_secs =
-                        worker_budget.max_wall_secs.min(remaining.as_secs().max(1));
-                }
-                self.spawn_investigator(
-                    workflow_run_id,
-                    seq,
-                    root_task,
-                    class,
-                    task,
-                    &worker_budget,
-                )
-                .await?
-            };
-            let metrics = report.ledger.workflow_metrics();
-            let summary_digest = (!report.text.trim().is_empty()).then(|| sha256_hex(&report.text));
-            self.emit_durable(
-                TurnId(self.seq_turn),
-                EventKind::WorkflowV2 {
-                    version: core_protocol::WorkflowEventVersion::V2,
-                    workflow_id: workflow_run_id.to_string(),
-                    event: core_protocol::WorkflowEvent::ChildFinished {
-                        task_id: idx as u32,
-                        sub_run: report.sub_run.clone(),
-                        outcome: if report.drained {
-                            core_protocol::WorkflowChildOutcome::Drained
-                        } else {
-                            match report.outcome {
-                                WorkflowAgentOutcomeUi::Done => {
-                                    core_protocol::WorkflowChildOutcome::Done
-                                }
-                                WorkflowAgentOutcomeUi::Failed => {
-                                    core_protocol::WorkflowChildOutcome::Failed
-                                }
-                                WorkflowAgentOutcomeUi::Interrupted => {
-                                    core_protocol::WorkflowChildOutcome::Interrupted
-                                }
-                                WorkflowAgentOutcomeUi::SkippedBudget => {
-                                    core_protocol::WorkflowChildOutcome::SkippedBudget
-                                }
-                                WorkflowAgentOutcomeUi::NotStarted => {
-                                    core_protocol::WorkflowChildOutcome::NotStarted
-                                }
-                            }
-                        },
-                        metrics,
-                        error_code: report.error_code.clone(),
-                        error_detail: report.error_detail.clone(),
-                        summary_digest,
-                        evidence_bytes: report.text.len().min(u32::MAX as usize) as u32,
-                    },
-                },
-            )?;
-            self.ui(UiEvent::Workflow(WorkflowUiEvent::AgentFinished {
-                run_id: workflow_run_id.to_string(),
-                agent_id: idx,
-                outcome: report.outcome,
-                turns: report.ledger.turns,
-                tokens: ledger_tokens(&report.ledger),
-                tool_calls: report.ledger.tool_calls,
-                elapsed_ms: report.elapsed_ms,
-                summary_preview: (report.outcome == WorkflowAgentOutcomeUi::Done)
-                    .then(|| ui_workflow_label(&report.text)),
-                error_preview: report.error_detail.clone(),
-            }));
-            workflow_state.observe(report.outcome);
-            self.merge_child_ledger(&report.ledger);
-            summaries.push(core_agents::Summary {
-                idx,
-                assigned_question: task.objective.clone(),
-                outcome: match report.outcome {
-                    WorkflowAgentOutcomeUi::Done => core_agents::SummaryOutcome::Done,
-                    WorkflowAgentOutcomeUi::Failed | WorkflowAgentOutcomeUi::Interrupted => {
-                        core_agents::SummaryOutcome::Failed
-                    }
-                    WorkflowAgentOutcomeUi::SkippedBudget | WorkflowAgentOutcomeUi::NotStarted => {
-                        core_agents::SummaryOutcome::Skipped
-                    }
-                },
-                text: report.text,
-            });
-            if let Some(outcome) =
-                self.collect_and_finish_requested_control(TurnId(self.seq_turn))?
-            {
-                return Ok(FanRun::Stopped(outcome));
+                ));
+                continue;
             }
+            if self.inference_budget_exhaustion()?.is_some() {
+                inline.push((
+                    idx,
+                    skipped_investigator_report(
+                        "[fan worker skipped: parent inference budget exhausted]",
+                        "parent_inference_budget",
+                        "parent turn or monetary ceiling was exhausted before admission",
+                    ),
+                ));
+                continue;
+            }
+            if self.run_deadline_exhausted() {
+                inline.push((
+                    idx,
+                    skipped_investigator_report(
+                        "[fan worker skipped: parent run wall deadline exhausted]",
+                        "parent_deadline",
+                        "parent run wall deadline exhausted before admission",
+                    ),
+                ));
+                continue;
+            }
+            let mut worker_budget = Budget {
+                max_turns: worker_turns,
+                max_usd: None,
+                max_wall_secs: per_wall,
+                max_consecutive_tool_errors: 3,
+            };
+            if let Some(remaining) = self.run_time_remaining() {
+                worker_budget.max_wall_secs =
+                    worker_budget.max_wall_secs.min(remaining.as_secs().max(1));
+            }
+            match self.prepare_investigator(
+                workflow_run_id,
+                seq,
+                root_task,
+                class,
+                task,
+                &worker_budget,
+            )? {
+                Ok(prepared) => {
+                    let idx = prepared.idx;
+                    let sub_run = prepared.sub_run.clone();
+                    let governor = governor.clone();
+                    let handle = tokio::spawn(async move {
+                        let _permit = governor.acquire().await;
+                        prepared.run().await
+                    });
+                    running.push((idx, sub_run, handle));
+                }
+                Err(report) => inline.push((idx, report)),
+            }
+        }
+
+        // Phase B: terminalize. Emit the inline (never-ran) reports first, then each concurrent
+        // worker's terminal as it completes — pumping operator control so a stop reaches every
+        // child's shared flags.
+        let mut summaries: Vec<core_agents::Summary> = Vec::with_capacity(tasks.len());
+        for (idx, report) in inline {
+            let question = tasks.get(idx).map(|t| t.objective.as_str()).unwrap_or_default();
+            summaries.push(self.record_worker_terminal(
+                workflow_run_id,
+                idx,
+                question,
+                report,
+                workflow_state,
+            )?);
+        }
+        const FAN_JOIN_POLL: Duration = Duration::from_millis(25);
+        let mut cursor = 0usize;
+        while !running.is_empty() {
+            let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+            let index = cursor % running.len();
+            let joined = tokio::time::timeout(FAN_JOIN_POLL, &mut running[index].2).await;
+            let Ok(joined) = joined else {
+                cursor = cursor.wrapping_add(1);
+                continue;
+            };
+            let (idx, sub_run, _handle) = running.swap_remove(index);
+            let report = joined.unwrap_or_else(|_| InvestigatorReport {
+                text: "[fan worker task terminated abnormally]".into(),
+                outcome: WorkflowAgentOutcomeUi::Failed,
+                drained: false,
+                ledger: Ledger::default(),
+                elapsed_ms: 0,
+                sub_run: Some(sub_run),
+                error_code: Some("child_task_panic".into()),
+                error_detail: Some(
+                    "investigator task terminated before returning a report".into(),
+                ),
+            });
+            let question = tasks.get(idx).map(|t| t.objective.as_str()).unwrap_or_default();
+            summaries.push(self.record_worker_terminal(
+                workflow_run_id,
+                idx,
+                question,
+                report,
+                workflow_state,
+            )?);
+        }
+
+        // Keep the reducer's input in declaration order (reduce() re-sorts by idx, but this is the
+        // contract, and completion order must never leak).
+        summaries.sort_by_key(|summary| summary.idx);
+
+        // Every admitted child has terminalized; honor a pending operator stop now (no orphans).
+        if let Some(outcome) = self.collect_and_finish_requested_control(TurnId(self.seq_turn))? {
+            return Ok(FanRun::Stopped(outcome));
         }
         Ok(FanRun::Completed(summaries))
     }
 
-    /// One read-only fan worker: a sub-`Agent` with the generic investigator prompt, a durable
-    /// child rollout under `<runs>/subagents/`, and a bounded budget. `Box::pin` breaks the
-    /// recursive `run → spawn → run` future type (the same discipline as `spawn_subagent`).
-    async fn spawn_investigator(
+    /// Emit one worker's durable `ChildFinished` + live `AgentFinished`, fold its ledger into the
+    /// parent, and project it to the ordered `Summary` the reducer consumes. Shared by the inline
+    /// (skipped / setup-failed) path and the joined concurrent workers so both terminalize
+    /// identically.
+    fn record_worker_terminal(
+        &mut self,
+        workflow_run_id: &str,
+        idx: usize,
+        assigned_question: &str,
+        report: InvestigatorReport,
+        workflow_state: &mut WorkflowRunState,
+    ) -> Result<core_agents::Summary, KernelError> {
+        let metrics = report.ledger.workflow_metrics();
+        let summary_digest = (!report.text.trim().is_empty()).then(|| sha256_hex(&report.text));
+        self.emit_durable(
+            TurnId(self.seq_turn),
+            EventKind::WorkflowV2 {
+                version: core_protocol::WorkflowEventVersion::V2,
+                workflow_id: workflow_run_id.to_string(),
+                event: core_protocol::WorkflowEvent::ChildFinished {
+                    task_id: idx as u32,
+                    sub_run: report.sub_run.clone(),
+                    outcome: if report.drained {
+                        core_protocol::WorkflowChildOutcome::Drained
+                    } else {
+                        match report.outcome {
+                            WorkflowAgentOutcomeUi::Done => {
+                                core_protocol::WorkflowChildOutcome::Done
+                            }
+                            WorkflowAgentOutcomeUi::Failed => {
+                                core_protocol::WorkflowChildOutcome::Failed
+                            }
+                            WorkflowAgentOutcomeUi::Interrupted => {
+                                core_protocol::WorkflowChildOutcome::Interrupted
+                            }
+                            WorkflowAgentOutcomeUi::SkippedBudget => {
+                                core_protocol::WorkflowChildOutcome::SkippedBudget
+                            }
+                            WorkflowAgentOutcomeUi::NotStarted => {
+                                core_protocol::WorkflowChildOutcome::NotStarted
+                            }
+                        }
+                    },
+                    metrics,
+                    error_code: report.error_code.clone(),
+                    error_detail: report.error_detail.clone(),
+                    summary_digest,
+                    evidence_bytes: report.text.len().min(u32::MAX as usize) as u32,
+                },
+            },
+        )?;
+        self.ui(UiEvent::Workflow(WorkflowUiEvent::AgentFinished {
+            run_id: workflow_run_id.to_string(),
+            agent_id: idx,
+            outcome: report.outcome,
+            turns: report.ledger.turns,
+            tokens: ledger_tokens(&report.ledger),
+            tool_calls: report.ledger.tool_calls,
+            elapsed_ms: report.elapsed_ms,
+            summary_preview: (report.outcome == WorkflowAgentOutcomeUi::Done)
+                .then(|| ui_workflow_label(&report.text)),
+            error_preview: report.error_detail.clone(),
+        }));
+        workflow_state.observe(report.outcome);
+        self.merge_child_ledger(&report.ledger);
+        Ok(core_agents::Summary {
+            idx,
+            assigned_question: assigned_question.to_string(),
+            outcome: match report.outcome {
+                WorkflowAgentOutcomeUi::Done => core_agents::SummaryOutcome::Done,
+                WorkflowAgentOutcomeUi::Failed | WorkflowAgentOutcomeUi::Interrupted => {
+                    core_agents::SummaryOutcome::Failed
+                }
+                WorkflowAgentOutcomeUi::SkippedBudget | WorkflowAgentOutcomeUi::NotStarted => {
+                    core_agents::SummaryOutcome::Skipped
+                }
+            },
+            text: report.text,
+        })
+    }
+
+    /// Prepare one read-only fan worker: build its owned child `Agent` (generic investigator prompt,
+    /// a durable child rollout under `<runs>/subagents/`, inherited provider/route/pricing/hooks and
+    /// the shared interrupt/drain flags), emit its durable spawn + `ChildStarted` records, and
+    /// return it ready to run on its own task. The child's actual `run` is deliberately NOT done
+    /// here: keeping preparation (`&mut self`) separate from execution (owned) is what lets the
+    /// caller move the worker onto `tokio::spawn` and escape the `&mut self` borrow — the only thing
+    /// that forced the fan sequential. `Ok(Err(report))` is a setup failure that still terminalizes
+    /// cleanly; `Err(_)` is a durable-record failure that halts the run.
+    fn prepare_investigator(
         &mut self,
         workflow_run_id: &str,
         seq: u32,
@@ -5948,7 +6267,7 @@ impl Agent {
         class: core_agents::TaskClass,
         task: &core_agents::AgentTask,
         budget: &Budget,
-    ) -> Result<InvestigatorReport, KernelError> {
+    ) -> Result<Result<PreparedInvestigator, InvestigatorReport>, KernelError> {
         if self.delegation_depth >= MAX_DELEGATION_DEPTH {
             return Err(KernelError::DelegationDepthExceeded);
         }
@@ -5959,7 +6278,7 @@ impl Agent {
         let registry = match Registry::read_only(&self.workspace) {
             Ok(r) => r,
             Err(_) => {
-                return Ok(InvestigatorReport {
+                return Ok(Err(InvestigatorReport {
                     text: "[fan worker setup failed]".into(),
                     outcome: WorkflowAgentOutcomeUi::Failed,
                     drained: false,
@@ -5968,13 +6287,13 @@ impl Agent {
                     sub_run: Some(sub_run.0),
                     error_code: Some("registry_setup".into()),
                     error_detail: Some("read-only tool registry could not be created".into()),
-                });
+                }));
             }
         };
         let rollout = match Rollout::open(&sub_dir, &sub_run, self.rollout.tenant().clone()) {
             Ok(r) => r,
             Err(_) => {
-                return Ok(InvestigatorReport {
+                return Ok(Err(InvestigatorReport {
                     text: "[fan worker record failed]".into(),
                     outcome: WorkflowAgentOutcomeUi::Failed,
                     drained: false,
@@ -5983,7 +6302,7 @@ impl Agent {
                     sub_run: Some(sub_run.0),
                     error_code: Some("child_record_open".into()),
                     error_detail: Some("child session record could not be opened".into()),
-                });
+                }));
             }
         };
         let spawn_seq = self.emit_durable_seq(
@@ -6047,7 +6366,7 @@ impl Agent {
         }
         sub.drain = self.drain.clone();
         sub.owns_drain = false;
-        let activity_forwarder = self.ui_tx.as_ref().map(|parent_tx| {
+        let forwarder = self.ui_tx.as_ref().map(|parent_tx| {
             let parent_tx = parent_tx.clone();
             let run_id = workflow_run_id.to_string();
             let (child_tx, mut child_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -6076,70 +6395,14 @@ impl Agent {
             task.scope,
             task.deliverable,
         );
-        let outcome = self.run_child_with_control(&mut sub, &full).await;
-        let drained = matches!(&outcome, Ok(Outcome::Drained));
-        let mut state = match &outcome {
-            Ok(Outcome::Done) => WorkflowAgentOutcomeUi::Done,
-            Ok(Outcome::Interrupted | Outcome::Drained) => WorkflowAgentOutcomeUi::Interrupted,
-            Ok(_) | Err(_) => WorkflowAgentOutcomeUi::Failed,
-        };
-        let child_budget_exhausted = matches!(&outcome, Ok(Outcome::BudgetExhausted(_)));
-        let child_stuck = matches!(&outcome, Ok(Outcome::Stuck));
-        let (mut text, mut error_code, mut error_detail) = match outcome {
-            Ok(_) => {
-                let s = strict_utf8_head(sub.last_assistant_text.trim(), 16 * 1024);
-                if s.is_empty() {
-                    state = WorkflowAgentOutcomeUi::Failed;
-                    (
-                        "[subagent returned no summary]".into(),
-                        Some("empty_report".into()),
-                        Some("investigator completed without a report".into()),
-                    )
-                } else {
-                    (s, None, None)
-                }
-            }
-            Err(error) => {
-                let detail = error.public_summary();
-                (
-                    format!("[subagent error: {detail}]"),
-                    Some("child_kernel_error".into()),
-                    Some(detail),
-                )
-            }
-        };
-        if state == WorkflowAgentOutcomeUi::Interrupted {
-            if drained {
-                error_code = Some("operator_drain".into());
-                error_detail = Some("investigator drained after a durable checkpoint".into());
-                text = "[fan worker drained]".into();
-            } else {
-                error_code = Some("operator_stop".into());
-                error_detail = Some("investigator interrupted at a safe point".into());
-                text = "[fan worker interrupted]".into();
-            }
-        } else if child_budget_exhausted {
-            error_code = Some("child_budget_exhausted".into());
-            error_detail = Some("investigator exhausted its bounded turn or wall budget".into());
-        } else if child_stuck {
-            error_code = Some("child_tool_error_limit".into());
-            error_detail = Some("investigator reached the consecutive tool-error limit".into());
-        }
-        let ledger = std::mem::take(&mut sub.ledger);
-        drop(sub);
-        if let Some(forwarder) = activity_forwarder {
-            let _ = forwarder.await;
-        }
-        Ok(InvestigatorReport {
-            text,
-            outcome: state,
-            drained,
-            ledger,
-            elapsed_ms: started.elapsed().as_millis() as u64,
-            sub_run: Some(sub_run.0),
-            error_code,
-            error_detail,
-        })
+        Ok(Ok(PreparedInvestigator {
+            idx,
+            started,
+            sub_run: sub_run.0,
+            sub,
+            full,
+            forwarder,
+        }))
     }
 
     /// Run the strong verification oracle: the configured test command, in the egress-off
@@ -7032,7 +7295,10 @@ mod gate_integration_tests {
     #[derive(Default)]
     struct BlockingUltraChild {
         child_started: tokio::sync::Notify,
-        child_release: tokio::sync::Notify,
+        // A persistent release latch (not a one-shot Notify): concurrent investigators may reach
+        // their block at different times and, under a permit cap of 1, sequentially — a latch avoids
+        // both a missed-notification hang and any dependence on the machine's core count.
+        released: std::sync::atomic::AtomicBool,
         total_calls: AtomicUsize,
         child_calls: AtomicUsize,
     }
@@ -7048,11 +7314,16 @@ mod gate_integration_tests {
             let text = if req.system.starts_with("You decompose") {
                 "Inspect first boundary\nInspect second boundary".to_string()
             } else if req.system.contains("read-only investigation subagent") {
-                let child_call = self.child_calls.fetch_add(1, Ordering::SeqCst);
-                assert_eq!(child_call, 0, "drain must prevent later child turns");
+                // Bounded-concurrent fan: an admitted investigator enters its first turn before
+                // drain is observed, makes exactly one provider turn, then quiesces at its post-turn
+                // safe point on the shared drain flag (the old sequential loop stopped the second
+                // child before it ever started). Block on the persistent release latch.
+                self.child_calls.fetch_add(1, Ordering::SeqCst);
                 self.child_started.notify_one();
-                self.child_release.notified().await;
-                "first child quiesced".to_string()
+                while !self.released.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                "child quiesced".to_string()
             } else {
                 panic!("drain must prevent writer admission")
             };
@@ -10988,7 +11259,7 @@ ant-api03-SuperSecretModelToken12345"
         let run = core_protocol::RunId("ultra".into());
         let rollout = Rollout::open(&runs, &run, core_protocol::TenantId::default()).unwrap();
         let budget = Budget {
-            // Writer-first allocation reserves two thirds; 20 leaves enough for two 2+ turn
+            // Writer-first allocation reserves about half; 20 leaves enough for two 2+ turn
             // investigators and a multi-turn writer.
             max_turns: 20,
             max_usd: None,
@@ -11191,9 +11462,16 @@ ant-api03-SuperSecretModelToken12345"
                 UiEvent::Workflow(WorkflowUiEvent::AgentStarted { agent_id: 1, .. })
             )
         });
+        // Bounded-concurrent fan: workers are admitted in declaration order (all AgentStarted are
+        // emitted during the sequential setup phase), then run concurrently — so the second worker
+        // starts before the first finishes. Completion order is not asserted (it is not guaranteed).
         assert!(
-            agent_0_start < agent_0_end && agent_0_end < agent_1_start,
-            "the UI must truthfully expose the current sequential executor"
+            agent_0_start < agent_1_start,
+            "workers are admitted in declaration order"
+        );
+        assert!(
+            agent_1_start < agent_0_end,
+            "the fan runs investigators concurrently: every admitted worker starts before any finishes"
         );
         assert!(matches!(
             ui_events.last(),
@@ -14739,13 +15017,22 @@ ant-api03-SuperSecretModelToken12345"
                 .run("improve error handling across the whole project")
                 .await
         });
+        // Wait until an admitted investigator has entered its (blocked) first turn, so drain is
+        // observed only AFTER admission — the concurrent analogue of "drain during a child". How
+        // many children run a turn depends on the machine's concurrency permit count, so the test
+        // asserts the drain INVARIANT (writer never admitted), not an exact call count.
         provider.child_started.notified().await;
         tx.send(Op::Drain.into()).unwrap();
         tokio::time::sleep(Duration::from_millis(40)).await;
-        provider.child_release.notify_one();
+        provider.released.store(true, Ordering::SeqCst);
         assert_eq!(running.await.unwrap().unwrap(), Outcome::Drained);
-        assert_eq!(provider.total_calls.load(Ordering::SeqCst), 2);
-        assert_eq!(provider.child_calls.load(Ordering::SeqCst), 1);
+        let child_calls = provider.child_calls.load(Ordering::SeqCst);
+        assert!(
+            child_calls >= 1,
+            "at least one admitted investigator runs its turn before drain"
+        );
+        // decomposition (1) + every child that ran a turn; the writer is never admitted after drain.
+        assert_eq!(provider.total_calls.load(Ordering::SeqCst), 1 + child_calls);
         let events = core_record::replay(&ws.join(".core/runs/drain-ultra-child.jsonl")).unwrap();
         let child_run = events
             .iter()

@@ -1,10 +1,10 @@
 //! `reduce()` — the deterministic declaration-order projection of fan-out results into the bundle
 //! the single writer consumes.
 //!
-//! The current kernel runs fan workers sequentially, but the result boundary deliberately does not
-//! encode that execution detail. `reduce()` reads results in **index (declaration) order** so a
-//! future bounded-concurrent executor cannot leak completion order into the writer decision. The
-//! projection is a pure function, unit-tested here without a network.
+//! The kernel runs fan workers bounded-concurrent, but the result boundary deliberately does not
+//! encode that execution detail. `reduce()` reads results in **index (declaration) order** so the
+//! concurrent executor cannot leak completion order into the writer decision. The projection is a
+//! pure function, unit-tested here without a network.
 
 use serde::{Deserialize, Serialize};
 

@@ -16,6 +16,7 @@ core-obs = { path = "../obs" }
 core-provider = { path = "../provider" }
 core-tools = { path = "../tools" }
 core-sched = { path = "../sched" }
+core-workflow = { path = "../workflow" }
 core-kernel = { path = "../kernel" }
 core-ctx = { path = "../ctx" }
 core-agents = { path = "../agents" }

@@ -15,6 +15,7 @@ members = [
     "crates/verify",
     "crates/mcp",
     "crates/sched",
+    "crates/workflow",
     "crates/agents",
     "crates/kernel",
     "crates/cli",

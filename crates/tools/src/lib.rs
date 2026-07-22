@@ -25,6 +25,7 @@ mod schema_error;
 mod shell;
 mod skill;
 mod web;
+mod workflow_tool;
 mod write_file;
 
 pub use edit::apply_unique_edit;
@@ -168,6 +169,9 @@ impl Registry {
         // never auto-approves them (ADR-007 §3) and they are absent from the read_only subagent set.
         web::register(&mut r)?;
         register_dispatch_agent(&mut r)?;
+        // The Workflow launch tool is a WRITER-only surface: it fans out real sub-agents, so it is
+        // registered here and deliberately absent from `read_only` (design §4.1).
+        workflow_tool::register(&mut r)?;
         Ok(r)
     }
 

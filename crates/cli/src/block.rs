@@ -826,14 +826,18 @@ fn render_workflow(
 
         if width >= 80
             && running
-            && card.execution_mode == core_kernel::WorkflowExecutionModeUi::Sequential
+            && card.execution_mode != core_kernel::WorkflowExecutionModeUi::Direct
         {
+            let posture = match card.execution_mode {
+                core_kernel::WorkflowExecutionModeUi::Concurrent => "concurrent",
+                _ => "sequential",
+            };
             rows.push(vec![
                 Span::styled("│  ", Style::default().fg(theme.faint)),
                 Span::styled("RESERVE  ", Style::default().fg(theme.faint)),
                 Span::styled(
                     format!(
-                        "{} fan / {} writer turns · sequential",
+                        "{} fan / {} writer turns · {posture}",
                         card.fan_turn_budget, card.writer_turn_reserve
                     ),
                     Style::default().fg(theme.muted),

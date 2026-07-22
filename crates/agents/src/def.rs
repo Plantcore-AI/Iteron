@@ -122,9 +122,12 @@ pub struct AgentDef {
 }
 
 /// The largest budget a discovered subagent may receive. Admission can only narrow this ceiling.
-pub(crate) fn subagent_budget_ceiling() -> Budget {
+/// Raised to 30 turns: fan workers now run bounded-concurrent (owned tasks under a `Governor`), so
+/// each admitted investigator gets its own real budget rather than a thin slice of one serial chain;
+/// total cost stays bounded by the shared `max_usd`/wall/run-deadline ceilings and the permit count.
+pub fn subagent_budget_ceiling() -> Budget {
     Budget {
-        max_turns: 15,
+        max_turns: 30,
         // No verified per-route rate card is inherited by a discovered worker yet. Turn/time
         // ceilings remain enforceable; a guessed dollar ceiling would not.
         max_usd: None,
@@ -133,13 +136,15 @@ pub(crate) fn subagent_budget_ceiling() -> Budget {
     }
 }
 
-/// Allocate one direct-investigator budget while reserving two thirds of the remaining turns for
-/// the single writer. This is the authoritative policy consumed by the kernel: budget arithmetic
-/// belongs here with the agent definition, so the execution plane cannot grow a second set of
-/// mirrored limits.
+/// Allocate one direct-investigator budget while reserving about half of the remaining turns for
+/// the single writer (rebalanced from two thirds: the writer still keeps the dominant share, but a
+/// bounded-concurrent fan no longer needs to starve investigators down a serial chain). This is the
+/// authoritative policy consumed by the kernel: budget arithmetic belongs here with the agent
+/// definition, so the execution plane cannot grow a second set of mirrored limits.
 pub fn subagent_budget(remaining_turns: u32, remaining_wall_secs: u64) -> Option<Budget> {
     let ceiling = subagent_budget_ceiling();
-    let writer_reserve = ((u64::from(remaining_turns) * 2).div_ceil(3) as u32)
+    // Half-plus-one keeps the writer strictly dominant while relaxing the old two-thirds reserve.
+    let writer_reserve = ((remaining_turns / 2).saturating_add(1))
         .max(2)
         .min(remaining_turns);
     let child_turns = remaining_turns
@@ -313,12 +318,13 @@ mod tests {
         assert_eq!(g.trust, Trust::Trusted);
         assert_eq!(g.tools, ToolFilter::All);
         assert!(g.model.is_none());
-        assert_eq!(g.budget.max_turns, 15);
+        assert_eq!(g.budget.max_turns, 30);
     }
 
     #[test]
     fn direct_subagent_budget_is_writer_first_and_bounded() {
-        assert!(subagent_budget(5, 300).is_none());
+        // The writer keeps about half; a budget too small to leave a >=2-turn child bypasses the fan.
+        assert!(subagent_budget(4, 300).is_none());
         assert!(subagent_budget(60, 2).is_none());
 
         let minimum = subagent_budget(6, 9).expect("two child turns remain after writer reserve");
@@ -327,7 +333,7 @@ mod tests {
 
         let capped = subagent_budget(u32::MAX, u64::MAX)
             .expect("large inputs remain bounded without overflowing");
-        assert_eq!(capped.max_turns, 15);
+        assert_eq!(capped.max_turns, 30);
         assert_eq!(capped.max_usd, None);
         assert_eq!(capped.max_wall_secs, 300);
         assert_eq!(capped.max_consecutive_tool_errors, 3);

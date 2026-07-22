@@ -53,7 +53,12 @@ pub enum WorkflowEventVersion {
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowExecutionMode {
     Direct,
+    /// Legacy: fan workers executed one at a time. Retained so historical durable records still
+    /// deserialize; the kernel no longer emits it.
     SequentialFan,
+    /// Fan workers run bounded-concurrent (owned tasks under a `Governor` permit cap). This is the
+    /// mode the kernel emits for every read-only investigation fan.
+    ConcurrentFan,
 }
 
 /// Durable workflow phases. `Writing` is distinct from `Reducing`: deterministic bundle assembly

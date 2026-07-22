@@ -23,8 +23,9 @@
 //!
 //! The review corrected the R5 draft's rationale: ultracode fans out **only read-only
 //! investigation** and forbids parallel edit/verify (ADR-001, the single-writer invariant). The
-//! current kernel executes those workers sequentially, so this release makes no wall-clock speedup
-//! claim. The honest, defensible benefit is
+//! kernel now runs those read-only workers **bounded-concurrent** (each an owned task under a
+//! `Governor` permit cap), so there is a real but modest wall-clock overlap; the harness makes no
+//! inflated "2.9× speedup" claim. The primary, defensible benefit remains
 //! **context-window management and investigation breadth**: N read-only workers each explore an
 //! isolated slice in their own context window and return ~1–2k tokens, so the single writer sees a
 //! wide, bounded synthesis instead of drowning in raw file contents. No "2.9× speedup" claim
@@ -48,7 +49,7 @@ pub use catalog::{AgentCatalog, LoadError};
 pub use decompose::{
     Decomposer, FAN_CAP, LEAF_MAX_CHARS, NormalizedLeaves, RepoSignals, TaskClass,
 };
-pub use def::{AgentDef, READ_ONLY_TOOLS, ToolFilter, subagent_budget};
+pub use def::{AgentDef, READ_ONLY_TOOLS, ToolFilter, subagent_budget, subagent_budget_ceiling};
 pub use reduce::{OrderedBundle, Summary, SummaryOutcome, reduce};
 pub use stage::{
     AgentTask, BudgetedWorkflowPlan, INVESTIGATOR_DELIVERABLE, INVESTIGATOR_SCOPE, Stage,
