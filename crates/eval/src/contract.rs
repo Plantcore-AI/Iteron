@@ -7,10 +7,6 @@ use crate::types::RunStatus;
 use serde::Deserialize;
 use serde_json::Value;
 
-/// Upper bound on the human stderr retained as failure evidence. The ledger/diagnostics stream is
-/// unbounded operator prose, so cap it (char-safe) before it is stored on an errored cell.
-const MAX_STDERR_DIAGNOSTIC_CHARS: usize = 4 * 1024;
-
 /// Versions of the frozen `core --output-format json` contract this consumer can read.
 ///
 /// Keep the current version last. The schema-compatibility corpus test below binds this list to
@@ -492,36 +488,6 @@ pub fn parse_final_result(
     // Validate cost truth eagerly; a malformed cost must classify the cell as a harness error.
     let _ = result.cost()?;
     Ok(result)
-}
-
-/// Build the operator-facing detail for a **failed** terminal contract parse.
-///
-/// D12-03 invariant: the versioned machine JSON on stdout and the OS exit code are the sole
-/// authorities for every terminal metric (turns, cost, outcome). The Core CLI's human
-/// ledger/diagnostics on **stderr** are never parsed into a metric — but on a contract failure they
-/// are the best evidence of what actually went wrong, so they are appended here, clearly labelled,
-/// as diagnostics only. The stderr text never contributes a value to any parsed metric; the runner
-/// keeps deriving every terminal fact from [`parse_final_result`] over stdout alone.
-pub fn contract_failure_detail(error: &ContractError, stderr: &[u8]) -> String {
-    let diagnostics = bounded_diagnostics(stderr);
-    if diagnostics.is_empty() {
-        error.to_string()
-    } else {
-        format!("{error}; core stderr (diagnostic only): {diagnostics}")
-    }
-}
-
-fn bounded_diagnostics(stderr: &[u8]) -> String {
-    let text = String::from_utf8_lossy(stderr);
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    if trimmed.chars().count() <= MAX_STDERR_DIAGNOSTIC_CHARS {
-        return trimmed.to_owned();
-    }
-    let kept: String = trimmed.chars().take(MAX_STDERR_DIAGNOSTIC_CHARS).collect();
-    format!("{kept}…[stderr truncated]")
 }
 
 pub fn cost_status(result: &CliFinalResult) -> Result<CostStatus, ContractError> {

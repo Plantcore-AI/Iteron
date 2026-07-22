@@ -204,14 +204,10 @@ async fn run_cell(
         return cell;
     }
 
-    // The versioned machine JSON on stdout and the OS exit code are the sole authorities for every
-    // terminal metric; the CLI's human ledger/diagnostics on stderr are never parsed into a metric.
-    // On a contract failure the stderr is retained only as debugging evidence on the errored cell.
     let final_result = match parse_final_result(&output.stdout, output.exit_code) {
         Ok(result) => result,
         Err(error) => {
-            let detail = crate::contract::contract_failure_detail(&error, &output.stderr);
-            let mut cell = errored_cell(task, config, seed, "core_contract", detail);
+            let mut cell = errored_cell(task, config, seed, "core_contract", error.to_string());
             cell.exit_code = Some(output.exit_code);
             cell.elapsed_ms = millis(started.elapsed());
             return cell;
