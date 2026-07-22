@@ -36,6 +36,31 @@ fn is_bounded_protocol_token(version: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_'))
 }
 
+/// Permit version details in a public diagnostic only when the client side is repository-owned
+/// vocabulary and the peer side has the bounded dated shape used by MCP revisions.
+pub(crate) fn is_actionable_version_mismatch(client_version: &str, server_version: &str) -> bool {
+    SUPPORTED_PROTOCOL_VERSIONS.contains(&client_version)
+        && is_dated_protocol_version(server_version)
+}
+
+fn is_dated_protocol_version(version: &str) -> bool {
+    let bytes = version.as_bytes();
+    if bytes.len() != 10
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes
+            .iter()
+            .enumerate()
+            .any(|(index, byte)| !matches!(index, 4 | 7) && !byte.is_ascii_digit())
+    {
+        return false;
+    }
+
+    let month = (bytes[5] - b'0') * 10 + (bytes[6] - b'0');
+    let day = (bytes[8] - b'0') * 10 + (bytes[9] - b'0');
+    (1..=12).contains(&month) && (1..=31).contains(&day)
+}
+
 fn invalid_protocol_version() -> McpError {
     McpError::InvalidProtocolVersion {
         client_version: REQUESTED_PROTOCOL_VERSION.to_owned(),
@@ -54,6 +79,32 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(version, REQUESTED_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn actionable_public_mismatch_requires_known_client_and_dated_server() {
+        let credential_shaped = ["gh", "p_", "AbCdEf1234567890"].concat();
+        assert!(is_actionable_version_mismatch(
+            REQUESTED_PROTOCOL_VERSION,
+            "2099-01-01"
+        ));
+        assert!(!is_actionable_version_mismatch(
+            &credential_shaped,
+            "2099-01-01"
+        ));
+        for server_version in [
+            credential_shaped.as_str(),
+            "20990101",
+            "2099-00-01",
+            "2099-13-01",
+            "2099-01-00",
+            "2099-01-32",
+        ] {
+            assert!(!is_actionable_version_mismatch(
+                REQUESTED_PROTOCOL_VERSION,
+                server_version
+            ));
+        }
     }
 
     #[test]
