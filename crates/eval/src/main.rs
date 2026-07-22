@@ -105,11 +105,13 @@ async fn main() -> std::process::ExitCode {
     match run_evaluation(&options).await {
         Ok(manifest) => {
             print_summary(&manifest);
-            std::process::ExitCode::SUCCESS
+            // Never discard the run outcome behind an unconditional success: a manifest that
+            // recorded failed cells must exit non-zero so CI and operators notice.
+            std::process::ExitCode::from(manifest.exit_code())
         }
         Err(error) => {
             eprintln!("core-eval: {error}");
-            std::process::ExitCode::from(2)
+            std::process::ExitCode::from(core_eval::types::EVAL_EXIT_HARNESS)
         }
     }
 }
@@ -165,6 +167,11 @@ fn print_summary(manifest: &core_eval::types::EvaluationManifest) {
                 .unwrap_or("unavailable")
         ),
     }
+    println!(
+        "failed_runs={} (errored+timed_out), exit_code={}",
+        manifest.failed_runs(),
+        manifest.exit_code()
+    );
     println!("artifact={}", manifest.result_path.display());
 }
 
