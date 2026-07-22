@@ -388,7 +388,8 @@
       "paths": [
         { "kind": "file", "path": "crates/agents/src/decompose.rs" },
         { "kind": "file", "path": "crates/agents/src/reduce.rs" },
-        { "kind": "file", "path": "crates/agents/src/stage.rs" }
+        { "kind": "file", "path": "crates/agents/src/stage.rs" },
+        { "kind": "tree", "path": "crates/agents/tests" }
       ],
       "contracts": ["single-writer-fan-reduce", "declaration-order-reduction"],
       "checks": ["cargo test -p core-agents --locked"]
