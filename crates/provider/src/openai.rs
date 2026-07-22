@@ -73,7 +73,7 @@ impl OpenAiCompat {
     }
 
     pub fn with_root(key: String, api_root: ApiRoot) -> Result<Self, ProviderError> {
-        Self::with_transport(key, api_root, &crate::transport::DefaultHttpTransport)
+        Self::with_transport(key, api_root, &crate::catalog::DefaultHttpTransport)
     }
 
     /// Build against an exact API root, obtaining the HTTP client from an injected
@@ -82,7 +82,7 @@ impl OpenAiCompat {
     pub fn with_transport(
         key: String,
         api_root: ApiRoot,
-        transport: &dyn crate::transport::HttpTransport,
+        transport: &dyn crate::catalog::HttpTransport,
     ) -> Result<Self, ProviderError> {
         Ok(OpenAiCompat {
             key,

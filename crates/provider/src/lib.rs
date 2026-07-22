@@ -34,70 +34,7 @@ pub use openai::OpenAiCompat;
 pub use responses::OpenAiResponses;
 pub use sse::{StreamItem, parse_sse_stream};
 pub use static_metadata::{StaticModelCapabilities, StaticProviderMetadata};
-pub use transport::{DefaultHttpTransport, HttpClient, HttpTransport};
 pub use usage::{UsageIncompleteReason, UsageReport};
-
-/// The provider's network-I/O capability port.
-///
-/// Every live adapter used to build its own `reqwest::Client` inline with an
-/// identical, security-critical policy (redirects disabled — the configured API
-/// root is an authority boundary — plus a bounded connect timeout). That direct
-/// construction left the network seam unmediated: a host could neither broker,
-/// observe, nor substitute transport for the provider adapters. This module turns
-/// that seam into an injected port ([`HttpTransport`]) with one default
-/// implementation ([`DefaultHttpTransport`]); adapters now obtain their client
-/// from the port instead of constructing it inline (D2-21).
-pub mod transport {
-    use crate::ProviderError;
-    use std::time::Duration;
-
-    /// Bounded connect timeout shared by every adapter's HTTP client.
-    const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-
-    /// The concrete HTTP client an adapter dispatches through. Re-exported so a
-    /// host implementing [`HttpTransport`] can name the port's return type without
-    /// depending on `reqwest` directly.
-    pub type HttpClient = reqwest::Client;
-
-    /// Injected network-I/O port for provider adapters. An implementation hands
-    /// out the [`HttpClient`] an adapter dispatches through, so transport
-    /// construction is a brokered capability rather than something each adapter
-    /// builds for itself.
-    ///
-    /// This is the network half of the injected provider port the architecture
-    /// roadmap targets: the adapter receives its transport instead of reaching for
-    /// the runtime's HTTP stack directly.
-    pub trait HttpTransport: Send + Sync {
-        /// Produce the HTTP client an adapter will send requests through.
-        ///
-        /// Implementations MUST disable transparent redirects: the configured API
-        /// root is an authority boundary, and an API key, prompt, or POST body
-        /// must never be replayed to a redirect target chosen by the remote
-        /// endpoint.
-        fn client(&self) -> Result<HttpClient, ProviderError>;
-    }
-
-    /// Default transport: the mandated secure client construction the adapters
-    /// used to copy-paste. It disables redirects and applies the shared connect
-    /// timeout.
-    #[derive(Debug, Default, Clone, Copy)]
-    pub struct DefaultHttpTransport;
-
-    impl HttpTransport for DefaultHttpTransport {
-        fn client(&self) -> Result<HttpClient, ProviderError> {
-            reqwest::Client::builder()
-                .connect_timeout(CONNECT_TIMEOUT)
-                // The configured API root is an authority boundary. Never replay
-                // an API key, prompt, or POST body through an endpoint-chosen
-                // redirect.
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .map_err(|_| {
-                    ProviderError::Configuration("HTTP client could not be built".into())
-                })
-        }
-    }
-}
 
 /// Maximum bytes retained from any non-success provider response. The response is dropped as
 /// soon as the cap is crossed; provider-controlled error pages can therefore never create an

@@ -53,7 +53,7 @@ impl OpenAiResponses {
     }
 
     pub fn with_root(key: String, root: ApiRoot) -> Result<Self, ProviderError> {
-        Self::with_transport(key, root, &crate::transport::DefaultHttpTransport)
+        Self::with_transport(key, root, &crate::catalog::DefaultHttpTransport)
     }
 
     /// Build against an exact API root, obtaining the HTTP client from an injected
@@ -62,7 +62,7 @@ impl OpenAiResponses {
     pub fn with_transport(
         key: String,
         root: ApiRoot,
-        transport: &dyn crate::transport::HttpTransport,
+        transport: &dyn crate::catalog::HttpTransport,
     ) -> Result<Self, ProviderError> {
         let client = transport.client()?;
         Ok(Self {

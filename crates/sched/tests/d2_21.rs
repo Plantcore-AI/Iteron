@@ -15,9 +15,10 @@
 
 use async_trait::async_trait;
 use core_protocol::{ReasoningEffort, StopReason};
+use core_provider::catalog::{DefaultHttpTransport, HttpClient, HttpTransport};
 use core_provider::{
-    Anthropic, ApiRoot, DefaultHttpTransport, HttpClient, HttpTransport, OpenAiResponses, Provider,
-    ProviderError, StreamItem, TurnRequest, TurnResult, UsageReport,
+    Anthropic, ApiRoot, OpenAiResponses, Provider, ProviderError, StreamItem, TurnRequest,
+    TurnResult, UsageReport,
 };
 use core_sched::{BackoffPolicy, Clock, RetryProvider, TokioClock};
 use std::sync::Arc;

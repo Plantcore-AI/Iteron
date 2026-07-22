@@ -45,18 +45,18 @@ impl Anthropic {
     }
 
     pub fn with_root(key: String, api_root: ApiRoot) -> Result<Self, ProviderError> {
-        Self::with_transport(key, api_root, &crate::transport::DefaultHttpTransport)
+        Self::with_transport(key, api_root, &crate::catalog::DefaultHttpTransport)
     }
 
     /// Construct against an exact API root while obtaining the HTTP client from an
     /// injected network-I/O port instead of building it inline. `with_root` is the
     /// default-transport convenience wrapper; a host that must broker, observe, or
-    /// substitute transport injects its own [`crate::transport::HttpTransport`] here
+    /// substitute transport injects its own [`crate::catalog::HttpTransport`] here
     /// (D2-21).
     pub fn with_transport(
         key: String,
         api_root: ApiRoot,
-        transport: &dyn crate::transport::HttpTransport,
+        transport: &dyn crate::catalog::HttpTransport,
     ) -> Result<Self, ProviderError> {
         let client = transport.client()?;
         Ok(Self {
