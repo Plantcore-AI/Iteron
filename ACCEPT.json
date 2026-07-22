@@ -1,0 +1,1 @@
+["cargo test -p core-eval --test d12_01"]
