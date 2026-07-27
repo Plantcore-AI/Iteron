@@ -9,6 +9,7 @@ pub use crate::static_metadata::{
     GLM_STANDARD_CHAT_MANIFEST, GLM_STANDARD_CHAT_MODELS, StaticCatalogManifest,
 };
 use crate::{AvailabilityTransition, ProviderError, api_error_from_response};
+use core_protocol::{TokenRateCard, Usage};
 use futures_util::StreamExt;
 use reqwest::Url;
 use serde::Deserialize;
@@ -16,6 +17,54 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Bounded connect timeout shared by every adapter's HTTP client.
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The concrete HTTP client an adapter dispatches through. Re-exported so a host
+/// implementing [`HttpTransport`] can name the port's return type without
+/// depending on `reqwest` directly.
+pub type HttpClient = reqwest::Client;
+
+/// The provider's network-I/O capability port.
+///
+/// Every live adapter used to build its own `reqwest::Client` inline with an
+/// identical, security-critical policy (redirects disabled — the configured API
+/// root is an authority boundary — plus a bounded connect timeout). That direct
+/// construction left the network seam unmediated: a host could neither broker,
+/// observe, nor substitute transport for the provider adapters. This port turns
+/// that seam into an injected capability with one default implementation
+/// ([`DefaultHttpTransport`]); adapters now obtain their client from the port
+/// instead of constructing it inline (D2-21).
+///
+/// This is the network half of the injected provider port the architecture
+/// roadmap targets: the adapter receives its transport instead of reaching for
+/// the runtime's HTTP stack directly.
+pub trait HttpTransport: Send + Sync {
+    /// Produce the HTTP client an adapter will send requests through.
+    ///
+    /// Implementations MUST disable transparent redirects: the configured API
+    /// root is an authority boundary, and an API key, prompt, or POST body must
+    /// never be replayed to a redirect target chosen by the remote endpoint.
+    fn client(&self) -> Result<HttpClient, ProviderError>;
+}
+
+/// Default transport: the mandated secure client construction the adapters used
+/// to copy-paste. It disables redirects and applies the shared connect timeout.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DefaultHttpTransport;
+
+impl HttpTransport for DefaultHttpTransport {
+    fn client(&self) -> Result<HttpClient, ProviderError> {
+        reqwest::Client::builder()
+            .connect_timeout(HTTP_CONNECT_TIMEOUT)
+            // The configured API root is an authority boundary. Never replay an
+            // API key, prompt, or POST body through an endpoint-chosen redirect.
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| ProviderError::Configuration("HTTP client could not be built".into()))
+    }
+}
 
 const CATALOG_PAGE_SIZE: usize = 100;
 const MAX_CATALOG_PAGES: usize = 32;
@@ -2500,6 +2549,211 @@ fn valid_health_key(value: &str, max_bytes: usize) -> bool {
     !value.is_empty() && value.len() <= max_bytes && !value.chars().any(char::is_control)
 }
 
+// ===========================================================================
+// Route-bound published model pricing (world data).
+//
+// A configured route (`ProviderInstance`) already fixes an adapter, an error profile, and an API
+// root; before this it carried capability world-data but no price, so a dollar cost could never be
+// realized for a bound route/model. A published rate card supplies that missing world-data:
+// provenance-bearing, route-scoped, and fail-closed. Absence remains unknown — an unrecognized
+// gateway never inherits an official provider's list price merely by sharing its wire syntax.
+//
+// Token-to-money projection stays the observability/pricing strategy layer's signed authority
+// (`core_protocol::pricing`); this only *publishes* the per-route rate and offers a matching
+// list-price realization so the amount can finally be attached to a route/model.
+// ===========================================================================
+
+/// Micro-token normalizer: prices are quoted per one million tokens.
+const MICROTOKENS_PER_TOKEN_CLASS: u128 = 1_000_000;
+
+/// One published, route-scoped list-price snapshot for a model family.
+///
+/// The rates are fixed-point micro-USD per one million tokens, exactly as
+/// [`core_protocol::TokenRateCard`] documents, so a realized amount here reconciles against a
+/// signed `CostProjection` on identical inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishedRateCard {
+    /// The model family this list price was published for (matched against the requested id).
+    pub family: &'static str,
+    /// Non-secret provenance for the list price (a documentation URL or operator manifest id).
+    pub source: &'static str,
+    /// UTC capture time of the published list price.
+    pub captured_at_unix_secs: u64,
+    /// Fixed-point token prices in micro-USD per one million tokens.
+    pub rates: TokenRateCard,
+}
+
+impl PublishedRateCard {
+    /// Realize the list-price dollar cost, in micro-USD, of one provider usage sample on this
+    /// route. Each token class is priced independently and ceil-rounded so a sub-unit turn is
+    /// never silently rounded down to free. Thinking tokens exceeding total output, or any
+    /// fixed-point overflow, fail closed with `None` rather than fabricating a cheaper amount.
+    pub fn realize_cost_microusd(&self, usage: &Usage) -> Option<u64> {
+        realize_cost_microusd(&self.rates, usage)
+    }
+}
+
+struct FamilyRate {
+    family: &'static str,
+    source: &'static str,
+    captured_at_unix_secs: u64,
+    rates: TokenRateCard,
+}
+
+const fn token_rates(
+    input: u64,
+    output: u64,
+    cache_creation: u64,
+    cache_read: u64,
+    thinking: u64,
+) -> TokenRateCard {
+    TokenRateCard {
+        input_microusd_per_million: input,
+        output_microusd_per_million: output,
+        cache_creation_microusd_per_million: cache_creation,
+        cache_read_microusd_per_million: cache_read,
+        thinking_microusd_per_million: thinking,
+    }
+}
+
+// 2026-07-14 published list prices, in micro-USD per one million tokens. Thinking is priced as
+// output because these providers bill reasoning tokens at the output rate.
+const ANTHROPIC_PRICING_SOURCE: &str = "https://docs.anthropic.com/en/docs/about-claude/pricing";
+const ANTHROPIC_RATES: &[FamilyRate] = &[
+    FamilyRate {
+        family: "claude-opus",
+        source: ANTHROPIC_PRICING_SOURCE,
+        captured_at_unix_secs: 1_752_451_200,
+        rates: token_rates(15_000_000, 75_000_000, 18_750_000, 1_500_000, 75_000_000),
+    },
+    FamilyRate {
+        family: "claude-sonnet",
+        source: ANTHROPIC_PRICING_SOURCE,
+        captured_at_unix_secs: 1_752_451_200,
+        rates: token_rates(3_000_000, 15_000_000, 3_750_000, 300_000, 15_000_000),
+    },
+    FamilyRate {
+        family: "claude-haiku",
+        source: ANTHROPIC_PRICING_SOURCE,
+        captured_at_unix_secs: 1_752_451_200,
+        rates: token_rates(800_000, 4_000_000, 1_000_000, 80_000, 4_000_000),
+    },
+];
+
+// `gpt-5-mini` precedes `gpt-5` because the family matcher accepts `gpt-5` as a prefix of
+// `gpt-5-mini`; first-match therefore requires the more specific family first.
+const OPENAI_PRICING_SOURCE: &str = "https://openai.com/api/pricing/";
+const OPENAI_RATES: &[FamilyRate] = &[
+    FamilyRate {
+        family: "gpt-5-mini",
+        source: OPENAI_PRICING_SOURCE,
+        captured_at_unix_secs: 1_752_451_200,
+        rates: token_rates(250_000, 2_000_000, 250_000, 25_000, 2_000_000),
+    },
+    FamilyRate {
+        family: "gpt-5",
+        source: OPENAI_PRICING_SOURCE,
+        captured_at_unix_secs: 1_752_451_200,
+        rates: token_rates(1_250_000, 10_000_000, 1_250_000, 125_000, 10_000_000),
+    },
+];
+
+// GLM families order specific-before-general for the same first-match reason (`glm-5` prefixes
+// `glm-5.2`).
+const GLM_PRICING_SOURCE: &str = "https://docs.bigmodel.cn/pricing";
+const GLM_RATES: &[FamilyRate] = &[
+    FamilyRate {
+        family: "glm-5.2",
+        source: GLM_PRICING_SOURCE,
+        captured_at_unix_secs: 1_752_451_200,
+        rates: token_rates(600_000, 2_200_000, 600_000, 110_000, 2_200_000),
+    },
+    FamilyRate {
+        family: "glm-4.6",
+        source: GLM_PRICING_SOURCE,
+        captured_at_unix_secs: 1_752_451_200,
+        rates: token_rates(600_000, 2_200_000, 600_000, 110_000, 2_200_000),
+    },
+];
+
+/// Select the published list-price table for exactly one official route, or `None`.
+///
+/// The route is identified by adapter *and* error profile *and* the official API root together: a
+/// custom gateway that merely reuses OpenAI-compatible wire syntax resolves to
+/// [`ErrorProfile::CustomConservative`] and receives no official list price.
+fn pricing_route_table(
+    adapter: AdapterKind,
+    profile: ErrorProfile,
+    api_root: &str,
+) -> Option<&'static [FamilyRate]> {
+    match (adapter, profile) {
+        (AdapterKind::AnthropicMessages, ErrorProfile::Anthropic) if api_root == ANTHROPIC_ROOT => {
+            Some(ANTHROPIC_RATES)
+        }
+        (AdapterKind::OpenAiResponses, ErrorProfile::OpenAi) if api_root == OPENAI_ROOT => {
+            Some(OPENAI_RATES)
+        }
+        (AdapterKind::OpenAiCompatibleChat, ErrorProfile::Glm) if api_root == GLM_STANDARD_ROOT => {
+            Some(GLM_RATES)
+        }
+        _ => None,
+    }
+}
+
+/// Resolve the published rate card bound to one exact route and model, or `None` when the route is
+/// unrecognized or the model has no published list price. The lookup fails closed: an unknown
+/// gateway never inherits an official provider's price.
+pub fn published_rate_card(
+    adapter: AdapterKind,
+    profile: ErrorProfile,
+    api_root: &str,
+    model: &str,
+) -> Option<PublishedRateCard> {
+    pricing_route_table(adapter, profile, api_root)?
+        .iter()
+        .find(|entry| crate::model_matches_family(model, entry.family))
+        .map(|entry| PublishedRateCard {
+            family: entry.family,
+            source: entry.source,
+            captured_at_unix_secs: entry.captured_at_unix_secs,
+            rates: entry.rates,
+        })
+}
+
+/// Realize the list-price dollar cost, in micro-USD, of one usage sample under a rate card. Each
+/// token class is priced and ceil-rounded independently; thinking above total output, or any
+/// fixed-point overflow, returns `None`. This mirrors the observability strategy's signed
+/// projection so a published estimate and an authoritative projection agree on the same inputs.
+pub fn realize_cost_microusd(rates: &TokenRateCard, usage: &Usage) -> Option<u64> {
+    let non_thinking_output = usage.output.checked_sub(usage.thinking)?;
+    let classes = [
+        (usage.input, rates.input_microusd_per_million),
+        (non_thinking_output, rates.output_microusd_per_million),
+        (usage.cache_creation, rates.cache_creation_microusd_per_million),
+        (usage.cache_read, rates.cache_read_microusd_per_million),
+        (usage.thinking, rates.thinking_microusd_per_million),
+    ];
+    let mut total: u128 = 0;
+    for (tokens, rate) in classes {
+        let numerator = u128::from(tokens).checked_mul(u128::from(rate))?;
+        let class_cost =
+            numerator.checked_add(MICROTOKENS_PER_TOKEN_CLASS - 1)? / MICROTOKENS_PER_TOKEN_CLASS;
+        total = total.checked_add(class_cost)?;
+    }
+    u64::try_from(total).ok()
+}
+
+impl ProviderInstance {
+    /// Resolve the published rate card bound to this instance's exact route for one model.
+    ///
+    /// This is the route-bound entry point: the instance already fixes the adapter, error profile,
+    /// and API root, so the returned card (and any [`PublishedRateCard::realize_cost_microusd`]
+    /// amount) is attributable to precisely this configured provider instance.
+    pub fn published_rate_card(&self, model: &str) -> Option<PublishedRateCard> {
+        published_rate_card(self.adapter, self.error_profile, self.api_root.as_str(), model)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3622,5 +3876,102 @@ mod tests {
         store.mark_ready("q");
         store.update_from_error("q", &model);
         assert_eq!(store.get("q").availability, AccountAvailability::Ready);
+    }
+}
+
+#[cfg(test)]
+mod d2_23_pricing {
+    use super::*;
+    use core_protocol::Usage;
+
+    /// D2-23 — a route-bound model rate card must exist so a dollar cost is finally realized.
+    ///
+    /// Before this gap a configured route carried capability world-data but no price, so the
+    /// observability layer had nothing to project and a turn's dollar cost was never realized.
+    /// This exercises the new route-bound published rate card and its list-price realization end
+    /// to end through the crate's public surface.
+    #[test]
+    fn d2_23_route_bound_rate_card_realizes_dollar_cost() {
+        // (1) Headline: a bound Anthropic route now yields a card and a concrete, non-zero dollar
+        // amount. 1M input + 1M output on the Opus list price ($15/MTok in, $75/MTok out) realizes
+        // exactly $90.00 = 90_000_000 micro-USD.
+        let route = ProviderInstance::builtin(BuiltinProvider::Anthropic, None).unwrap();
+        let card = route
+            .published_rate_card("claude-opus-4-7-20260720")
+            .expect("a bound Anthropic route must publish a rate card for a known family");
+        assert_eq!(card.family, "claude-opus");
+        let usage = Usage {
+            input: 1_000_000,
+            output: 1_000_000,
+            ..Usage::default()
+        };
+        let realized = card
+            .realize_cost_microusd(&usage)
+            .expect("a bounded usage sample must realize a finite dollar cost");
+        assert_eq!(realized, 90_000_000, "1M in + 1M out on Opus is $90.00");
+        assert!(realized > 0, "the dollar cost must actually be realized");
+
+        // (2) Ceil rounding: a sub-unit turn is never rounded down to free. One cache-read token on
+        // the Opus card ($1.50/MTok) costs 1.5 micro-USD, which ceils to 2.
+        let sub_unit = Usage {
+            cache_read: 1,
+            ..Usage::default()
+        };
+        assert_eq!(card.realize_cost_microusd(&sub_unit), Some(2));
+
+        // (3) Thinking above total output fails closed instead of underpricing.
+        let bad = Usage {
+            output: 1,
+            thinking: 2,
+            ..Usage::default()
+        };
+        assert_eq!(card.realize_cost_microusd(&bad), None);
+
+        // (4) Fail closed: a foreign gateway reusing OpenAI-compatible wire inherits no official
+        // price, via both the free function and a route-bound instance.
+        assert!(
+            published_rate_card(
+                AdapterKind::OpenAiCompatibleChat,
+                ErrorProfile::CustomConservative,
+                "https://gateway.invalid/v1",
+                "gpt-5",
+            )
+            .is_none()
+        );
+        let unknown = ProviderInstance::custom(
+            "house-gateway",
+            "House Gateway",
+            AdapterKind::OpenAiCompatibleChat,
+            ApiRoot::parse("https://gateway.invalid/v1").unwrap(),
+            None,
+        )
+        .unwrap();
+        assert!(unknown.published_rate_card("gpt-5").is_none());
+
+        // (5) Distinct routes price their own families — the card is bound to the exact route, not
+        // a global default. The instance lookup and free function agree, and GLM does not alias the
+        // Anthropic Opus price.
+        let glm = ProviderInstance::custom(
+            "glm-standard",
+            "GLM",
+            AdapterKind::OpenAiCompatibleChat,
+            ApiRoot::parse(GLM_STANDARD_ROOT).unwrap(),
+            None,
+        )
+        .unwrap();
+        let via_instance = glm.published_rate_card("glm-5.2").unwrap();
+        let via_function = published_rate_card(
+            AdapterKind::OpenAiCompatibleChat,
+            ErrorProfile::Glm,
+            GLM_STANDARD_ROOT,
+            "glm-5.2",
+        )
+        .unwrap();
+        assert_eq!(via_instance, via_function);
+        assert_eq!(via_instance.family, "glm-5.2");
+        assert_ne!(
+            via_instance.rates.output_microusd_per_million, 75_000_000,
+            "GLM must not carry the Anthropic Opus price"
+        );
     }
 }

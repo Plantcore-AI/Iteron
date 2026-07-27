@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "record_type": "imported_benchmark_outcome",
+  "corpus_version": "core-eval-governed-2026-07-v1",
+  "dataset_digest": "sha256:4b08f1178b7c363186b0e4e324179b9c1823cbe06d531632611e566d3d4f3aed",
+  "source_evaluation": {
+    "kind": "swe-bench-lite-gold-validation",
+    "source": "https://github.com/SWE-bench/experiments/blob/2f15350cd32becc4569e0d826361048555b605c0/validation/lite_20240627/astropy__astropy-12907/report.json",
+    "source_revision": "2f15350cd32becc4569e0d826361048555b605c0",
+    "recorded_at": "2026-07-22",
+    "note": "Imported projection of the upstream gold-patch validation; this is not a Core model run."
+  },
+  "cells": [
+    {
+      "task": "astropy__astropy-12907",
+      "partition": "held_out",
+      "benchmark": {
+        "name": "SWE-bench Lite",
+        "instance_id": "astropy__astropy-12907",
+        "dataset_revision": "6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2"
+      },
+      "run_status": "completed",
+      "resolved": true,
+      "evidence": {
+        "patch_exists": true,
+        "patch_successfully_applied": true,
+        "fail_to_pass_success": [
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+        ],
+        "fail_to_pass_failure": []
+      }
+    }
+  ]
+}

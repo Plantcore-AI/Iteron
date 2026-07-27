@@ -53,13 +53,18 @@ impl OpenAiResponses {
     }
 
     pub fn with_root(key: String, root: ApiRoot) -> Result<Self, ProviderError> {
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| {
-                ProviderError::Configuration("OpenAI HTTP client could not be built".into())
-            })?;
+        Self::with_transport(key, root, &crate::catalog::DefaultHttpTransport)
+    }
+
+    /// Build against an exact API root, obtaining the HTTP client from an injected
+    /// network-I/O port rather than constructing it inline. `with_root` delegates
+    /// here with the default transport (D2-21).
+    pub fn with_transport(
+        key: String,
+        root: ApiRoot,
+        transport: &dyn crate::catalog::HttpTransport,
+    ) -> Result<Self, ProviderError> {
+        let client = transport.client()?;
         Ok(Self {
             key,
             route_scope: direct_route_scope(),

@@ -5,6 +5,7 @@
 //! must be **unique**. If `old` appears zero times or more than once, the edit is refused,
 //! not applied to a guessed location. That refusal is the whole safety property.
 
+use crate::fs_tools::EditableText;
 use crate::write_file::{
     GuardedCommitFailure, StagedWrite, file_changed_json, read_existing_snapshot,
 };
@@ -409,11 +410,13 @@ where
     let snapshot = read_existing_snapshot(&target)
         .await
         .map_err(|error| format!("read {path}: {error}"))?;
-    let content = std::str::from_utf8(&snapshot.bytes)
-        .map_err(|_| format!("read {path}: target is not UTF-8 text"))?;
-    let updated =
-        apply_unique_edit(content, old, new).map_err(|error| format!("edit {path}: {error}"))?;
-    let staged = StagedWrite::prepare(&target, updated.as_bytes())
+    let text =
+        EditableText::parse(&snapshot.bytes).map_err(|error| format!("read {path}: {error}"))?;
+    let replacement = text.normalize_replacement(new);
+    let updated = apply_unique_edit(text.content(), old, &replacement)
+        .map_err(|error| format!("edit {path}: {error}"))?;
+    let encoded = text.encode(updated);
+    let staged = StagedWrite::prepare(&target, &encoded)
         .await
         .map_err(|error| format!("stage {path}: {error}"))?;
     before_commit(&target);
@@ -436,9 +439,10 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
             description: "Replace one UNIQUE snippet in a file with new text. Exact matching is \
                           tried first; an exact miss may match after deterministic per-line \
                           indentation, trailing-space, and LF/CRLF normalization. Zero or multiple \
-                          candidates are refused. The replacement is crash-atomic and refused if \
-                          the matched file changes while staging. Prefer small edits with \
-                          surrounding context."
+                          candidates are refused. The target's UTF-8 BOM, line-ending style, and \
+                          trailing-newline state are retained. The replacement is crash-atomic and \
+                          refused if the matched file changes while staging. Prefer small edits \
+                          with surrounding context."
                 .into(),
             input_schema: serde_json::json!({
                 "type":"object",

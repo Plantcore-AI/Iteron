@@ -473,8 +473,72 @@ pub fn scrub(s: &str) -> String {
             }
             continue; // drop PEM body lines
         }
-        out.push_str(&scrub_tokens_in_line(line));
+        // Mask any `scheme://user:password@host` basic-auth credential before the token scanner
+        // runs: the password otherwise fuses with the host into one `@`/`.`-bearing word that no
+        // shape rule and no lone-token boundary can catch, so it would survive into the record.
+        out.push_str(&scrub_tokens_in_line(&mask_url_credentials(line)));
     }
+    out
+}
+
+/// Mask the password in a URL's `user:password@host` userinfo before the ordinary token scanner
+/// runs. Provider error and diagnostic notices routinely echo a request URL, and a basic-auth
+/// credential otherwise survives redaction because the password fuses with the host into a single
+/// word containing `@`/`.` that matches no known credential shape. This emits exactly the
+/// idempotent `[REDACTED:…]` marker the scalar masker uses (the token scanner then preserves it),
+/// so a real basic-auth secret cannot reach the durable record and a second scrub is a no-op.
+fn mask_url_credentials(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(scheme_sep) = rest.find("://") {
+        let after = scheme_sep + 3;
+        out.push_str(&rest[..after]);
+        let tail = &rest[after..];
+        // Userinfo ends at the first '@'. Hitting a path/query/fragment/whitespace/quote first
+        // means this authority carries no `user:pass@` credential (e.g. a bare `host:port/path`).
+        let mut at = None;
+        for (offset, ch) in tail.char_indices() {
+            match ch {
+                '@' => {
+                    at = Some(offset);
+                    break;
+                }
+                '/' | '?' | '#' | '\\' | '"' | '\'' | '<' | '>' | '`' | ',' | '(' | ')' | ';'
+                | ' ' | '\t' | '\r' | '\n' => break,
+                _ => {}
+            }
+        }
+        let Some(at) = at else {
+            // No credential in this authority; keep scanning after "://" for a later URL.
+            rest = tail;
+            continue;
+        };
+        let userinfo = &tail[..at];
+        match userinfo.find(':') {
+            // A non-empty password that is not already a generated marker (idempotence guard).
+            Some(colon)
+                if !userinfo[colon + 1..].is_empty()
+                    && !userinfo[colon + 1..].starts_with("[REDACTED:") =>
+            {
+                let password = &userinfo[colon + 1..];
+                let hint: String = password
+                    .chars()
+                    .take(4)
+                    .map(|ch| if is_redaction_hint_char(ch) { ch } else { '_' })
+                    .collect();
+                out.push_str(&userinfo[..colon]);
+                out.push(':');
+                out.push_str(&format!("[REDACTED:{hint}…]"));
+                out.push('@');
+            }
+            _ => {
+                out.push_str(userinfo);
+                out.push('@');
+            }
+        }
+        rest = &tail[at + 1..];
+    }
+    out.push_str(rest);
     out
 }
 

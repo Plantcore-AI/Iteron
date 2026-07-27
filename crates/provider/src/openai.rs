@@ -73,6 +73,17 @@ impl OpenAiCompat {
     }
 
     pub fn with_root(key: String, api_root: ApiRoot) -> Result<Self, ProviderError> {
+        Self::with_transport(key, api_root, &crate::catalog::DefaultHttpTransport)
+    }
+
+    /// Build against an exact API root, obtaining the HTTP client from an injected
+    /// network-I/O port rather than constructing it inline. `with_root` delegates
+    /// here with the default transport (D2-21).
+    pub fn with_transport(
+        key: String,
+        api_root: ApiRoot,
+        transport: &dyn crate::catalog::HttpTransport,
+    ) -> Result<Self, ProviderError> {
         Ok(OpenAiCompat {
             key,
             api_root: Some(api_root),
@@ -80,13 +91,7 @@ impl OpenAiCompat {
             error_profile: ErrorProfile::CustomConservative,
             route_scope: direct_chat_route_scope(),
             static_metadata: crate::StaticProviderMetadata::embedded(),
-            client: reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(30))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .map_err(|_| {
-                    ProviderError::Configuration("HTTP client could not be built".into())
-                })?,
+            client: transport.client()?,
         })
     }
 

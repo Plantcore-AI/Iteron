@@ -48,6 +48,10 @@ use std::time::{Duration, Instant};
 /// A failing strong oracle may return control to the model only this many times per run.
 /// Reaching the ceiling is a non-success terminal condition, never permission to accept `done`.
 const MAX_VERIFY_ATTEMPTS: u32 = 3;
+/// How often a mid-stream provider turn re-checks the cooperative interrupt flag. Matches the
+/// bounded cancellation-poll cadence used for child-agent and verification cancellation; it caps
+/// the latency between an operator interrupt and the in-flight stream being dropped.
+const PROVIDER_INTERRUPT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 /// Top-level agents may create one read-only child layer. The explicit counter is defense in depth
 /// beside the child registry's absence of `dispatch_agent`.
 const MAX_DELEGATION_DEPTH: u8 = 1;
@@ -2322,7 +2326,20 @@ impl Agent {
         if remaining.is_zero() {
             return Err(core_provider::ProviderError::DeadlineExceeded.into());
         }
-        tokio::time::timeout(remaining, self.provider.turn(request, on_item))
+        // A cooperative interrupt (Ctrl-C) must be able to abort a stream that is already in
+        // flight, not just at the between-turn safe points. Race the turn against the interrupt
+        // flag: when it flips true mid-stream, `turn_cancellable` drops the provider future —
+        // closing the transport — and returns `Interrupted`, which the turn loop converts into an
+        // `Outcome::Interrupted` at the next boundary. When no interrupt is installed this is a
+        // plain awaited turn. The run wall-clock deadline still bounds the whole race.
+        let turn = core_provider::turn_cancellable(
+            self.provider.as_ref(),
+            request,
+            on_item,
+            self.interrupt.as_deref(),
+            PROVIDER_INTERRUPT_POLL_INTERVAL,
+        );
+        tokio::time::timeout(remaining, turn)
             .await
             .map_err(|_| KernelError::Provider(core_provider::ProviderError::DeadlineExceeded))?
             .map_err(KernelError::Provider)

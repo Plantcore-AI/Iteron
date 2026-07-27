@@ -10,6 +10,7 @@
 //! drains them and redraws. The kernel does the work; this is a thin, replaceable front-end
 //! on the same core (ADR-010: frontends are adapters).
 
+mod app_server;
 pub(crate) mod hyperlink;
 mod keyboard_enhancement;
 mod mouse_capture;
@@ -20,6 +21,7 @@ use crate::commands::{self, SlashCommand};
 use crate::editor::Editor;
 use crate::providers::{ModelSelection, ProviderDirectory};
 use crate::{block, surface, theme};
+use crate::tui::app_server::AppServerClient;
 use core_ctx::ContextEstimate;
 use core_kernel::{
     Agent, UiEvent, WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi, WorkflowUiEvent,
@@ -2112,13 +2114,35 @@ fn kill_inline_shell_group(_pid: Option<u32>) {}
 
 /// Run an operator `!cmd` without the model sandbox, but with provider credentials removed, fixed
 /// memory capture, a deadline, process-group cleanup, terminal-safe decoding and secret redaction.
+///
+/// Even though the operator is the human at the keyboard, the process spawn is still a
+/// `CodeExecuting` effect and MUST pass the same capability broker (`core_protocol::gate`) as the
+/// agent's own shell tool — otherwise a Plan-mode ("explore, don't touch") session, or an explicit
+/// `/permissions deny code_executing`, would be silently punched through by a `!cmd`. A `Deny`
+/// verdict refuses the spawn; `Ask`/`Auto` proceed (the operator's own keystroke is the approval).
 async fn run_bash_inline(
     app: &mut App,
     repo: &std::path::Path,
     cmd: &str,
     credential_env_names: &[String],
+    mode: PermissionMode,
+    rules: &PermissionRules,
 ) {
     if cmd.is_empty() {
+        return;
+    }
+    // The capability broker, not the `!` parser, decides whether code may run. This is the exact
+    // gate the kernel applies to the model's `bash` tool: it is a pure function the operator cannot
+    // accidentally bypass, so the operator escape hatch can never be a hole in a read-only posture.
+    if core_protocol::gate(mode, rules, "bash", Capability::CodeExecuting) == Verdict::Deny {
+        app.push_block(block::BlockKind::Error {
+            title: "operator shell blocked by permission mode".into(),
+            detail: ui_safe_text(&format!(
+                "{} mode denies code execution; the operator `!` shell routes through the same capability gate as the agent. blocked command: {cmd}",
+                mode.label()
+            )),
+            open: true,
+        });
         return;
     }
     let mut command = tokio::process::Command::new("bash");
@@ -2466,6 +2490,16 @@ pub async fn run(
     provider_id: String,
     completion_notifications: bool,
 ) -> anyhow::Result<()> {
+    // The TUI attaches to the runtime as a *versioned App Server client*, not as a co-composer of
+    // the runtime: it negotiates the SQ/EQ protocol version up front (the in-process runtime speaks
+    // `PROTOCOL_VERSION`), announces the negotiated version on stderr before taking over the
+    // terminal, and thereafter submits only version-stamped envelopes through `AppServerClient`
+    // (constructed below). Emitting this before any raw-mode setup keeps the handshake on the
+    // pre-TUI diagnostic stream, ahead of the alternate screen.
+    eprintln!(
+        "app server: TUI attached as a versioned client (SQ/EQ protocol v{})",
+        core_protocol::PROTOCOL_VERSION
+    );
     // Drain promises a real workspace checkpoint. Probe once before raw mode so a non-Git
     // workspace can reject that verb explicitly without blocking or breaking the terminal.
     let drain_available = core_record::checkpoint_supported(&agent.workspace);
@@ -2524,6 +2558,10 @@ pub async fn run(
     let (atx, arx): (UnboundedSender<SqEnvelope>, UnboundedReceiver<SqEnvelope>) =
         tokio::sync::mpsc::unbounded_channel();
     agent.set_approvals(arx);
+    // The TUI is a versioned App Server client, not a runtime co-composer: it completes a
+    // version handshake with the in-process runtime and thereafter submits only envelopes
+    // stamped with the negotiated protocol version, never bare ops assumed to be understood.
+    let app_server = AppServerClient::current(atx);
 
     // The agent runs in a background task; it streams UiEvents back. We move the agent into the
     // task while running, and take it back when the run completes (via a oneshot returning it).
@@ -2668,7 +2706,19 @@ pub async fn run(
                     dispatch_slash_command(&mut term, &mut app, &mut agent_slot, &providers, cmd)
                         .await?;
                 } else if let Some(bash) = q.strip_prefix('!') {
-                    run_bash_inline(&mut app, &repo, bash.trim(), &provider_credential_envs).await;
+                    let (mode, rules) = match agent_slot.as_ref() {
+                        Some(agent) => (agent.permission_mode(), agent.permission_rules().clone()),
+                        None => (app.mode, PermissionRules::new()),
+                    };
+                    run_bash_inline(
+                        &mut app,
+                        &repo,
+                        bash.trim(),
+                        &provider_credential_envs,
+                        mode,
+                        &rules,
+                    )
+                    .await;
                 } else {
                     app.push_user(q.clone());
                     start_run(
@@ -2760,7 +2810,7 @@ pub async fn run(
                     // checkpoint at the next safe point, and return a resumable Drained outcome.
                     // Idle Ctrl-D retains shell-like quit/delete behavior below.
                     if k.code == KeyCode::Char('d') && ctrl && app.running {
-                        request_drain(&mut app, &atx, &drain, drain_available);
+                        request_drain(&mut app, &app_server, &drain, drain_available);
                         continue;
                     }
 
@@ -2789,7 +2839,7 @@ pub async fn run(
                     if app.running && app.pending.is_some() {
                         if k.code == KeyCode::Char('c') && ctrl {
                             // Ctrl-C while pending = deny this call + park the run at a safe point.
-                            let _ = atx.send(Op::Interrupt.into());
+                            let _ = app_server.submit(Op::Interrupt);
                             app.interrupting = true;
                             if let Some(p) = app.pending.take() {
                                 app.note(
@@ -2803,14 +2853,11 @@ pub async fn run(
                             app.approval_key(k.code)
                             && let Some(p) = app.pending.take()
                         {
-                            let _ = atx.send(
-                                Op::ApprovalResponse {
-                                    id: p.id,
-                                    approved,
-                                    remember,
-                                }
-                                .into(),
-                            );
+                            let _ = app_server.submit(Op::ApprovalResponse {
+                                id: p.id,
+                                approved,
+                                remember,
+                            });
                             let verb = match (approved, remember) {
                                 (true, true) => "approved (always)",
                                 (true, false) => "approved",
@@ -3055,11 +3102,19 @@ pub async fn run(
                                     )
                                     .await?;
                                 } else if let Some(bash) = trimmed.strip_prefix('!') {
+                                    let (mode, rules) = match agent_slot.as_ref() {
+                                        Some(agent) => {
+                                            (agent.permission_mode(), agent.permission_rules().clone())
+                                        }
+                                        None => (app.mode, PermissionRules::new()),
+                                    };
                                     run_bash_inline(
                                         &mut app,
                                         &repo,
                                         bash.trim(),
                                         &provider_credential_envs,
+                                        mode,
+                                        &rules,
                                     )
                                     .await;
                                 } else {
@@ -3090,8 +3145,8 @@ pub async fn run(
                                 InputDestination::SteerCurrentRun => {
                                     match app.steer_admission(&text) {
                                         SubmissionAdmission::Accept => {
-                                            if atx
-                                                .send(Op::Steer { text: text.clone() }.into())
+                                            if app_server
+                                                .submit(Op::Steer { text: text.clone() })
                                                 .is_ok()
                                             {
                                                 app.track_steer(text);
@@ -3220,7 +3275,7 @@ async fn dispatch_slash_command(
 
 fn request_drain(
     app: &mut App,
-    approvals: &UnboundedSender<SqEnvelope>,
+    app_server: &AppServerClient,
     drain: &Arc<AtomicBool>,
     checkpoint_supported: bool,
 ) {
@@ -3234,7 +3289,7 @@ fn request_drain(
         );
         return;
     }
-    if approvals.send(Op::Drain.into()).is_err() {
+    if app_server.submit(Op::Drain).is_err() {
         app.note(
             block::NoticeLevel::Err,
             "could not request a drain because the active run is no longer reachable",
@@ -7197,7 +7252,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let command = format!(
             "printf '%s\\n' '{secret}'; head -c 180000 /dev/zero | tr '\\0' x; printf '\\377'"
         );
-        run_bash_inline(&mut app, &std::env::temp_dir(), &command, &[]).await;
+        run_bash_inline(
+            &mut app,
+            &std::env::temp_dir(),
+            &command,
+            &[],
+            PermissionMode::Default,
+            &PermissionRules::new(),
+        )
+        .await;
         let text = app.transcript.last().expect("shell card").to_text();
         assert!(!text.contains(secret));
         assert!(text.contains("[REDACTED"));
@@ -9251,10 +9314,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut app = App::new();
         app.running = true;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let app_server = AppServerClient::current(tx);
         let drain = Arc::new(AtomicBool::new(false));
 
-        request_drain(&mut app, &tx, &drain, true);
-        request_drain(&mut app, &tx, &drain, true);
+        request_drain(&mut app, &app_server, &drain, true);
+        request_drain(&mut app, &app_server, &drain, true);
 
         assert!(app.draining);
         assert!(drain.load(Ordering::Relaxed));
@@ -9280,9 +9344,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut app = App::new();
         app.running = true;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let app_server = AppServerClient::current(tx);
         let drain = Arc::new(AtomicBool::new(false));
 
-        request_drain(&mut app, &tx, &drain, false);
+        request_drain(&mut app, &app_server, &drain, false);
 
         assert!(!app.draining);
         assert!(!drain.load(Ordering::Relaxed));
