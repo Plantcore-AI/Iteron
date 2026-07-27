@@ -21,3 +21,9 @@ runs/
 .DS_Store
 
 /target
+
+# Internal-only working area: business strategy, diligence replies, dev/impl plans,
+# recruitment material, and the fleet's gap-analysis state. Never belongs in the
+# public repository. This lives in the tracked .gitignore on purpose: .git/info/exclude
+# is per-clone and does not travel, so a fresh clone or worktree would otherwise stage it.
+.local-analysis/
