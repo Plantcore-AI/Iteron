@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod admission;
+mod base_model;
 mod dataset;
 mod dataset_registry;
 mod evidence;
@@ -42,6 +43,7 @@ pub use admission::{
     CapabilityAdmission, CapabilityAdmissionError, EffectiveCapabilities, ManifestAdmissionPolicy,
     ParentCapabilityCeiling,
 };
+pub use base_model::{BaseModelId, MAX_BASE_MODEL_PART_BYTES, UNSPECIFIED_FAMILY};
 pub use dataset::{
     GovernedDatasetError, GovernedTrainingDataset, MAX_GOVERNED_DATASET_BYTES,
     MAX_GOVERNED_DATASET_TRAJECTORIES,
@@ -178,6 +180,8 @@ pub enum ContractError {
     InvalidSlot,
     #[error("invalid content digest; expected 64 lowercase hexadecimal characters")]
     InvalidDigest,
+    #[error("invalid base model identity: {0}")]
+    InvalidBaseModel(&'static str),
     #[error("policy manifest schema {0} is not supported")]
     UnsupportedSchema(u16),
     #[error("policy id and version must be non-empty")]
