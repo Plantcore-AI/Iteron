@@ -1,9 +1,6 @@
 {
   "schema_version": 1,
-  "enforcement": {
-    "mode": "bootstrap",
-    "project_owner": "core-owner"
-  },
+  "enforcement": { "mode": "bootstrap", "project_owner": "core-owner" },
   "people": [
     {
       "id": "core-owner",
@@ -77,7 +74,8 @@
       "paths": [
         { "kind": "file", "path": "docs/architecture.md" },
         { "kind": "tree", "path": "docs/concepts" },
-        { "kind": "file", "path": "docs/roadmap.md" }
+        { "kind": "file", "path": "docs/roadmap.md" },
+        { "kind": "tree", "path": "docs/spec" }
       ],
       "contracts": ["current-implementation-truth", "microkernel-roadmap"],
       "checks": ["core-xtask boundaries check"]
@@ -143,11 +141,7 @@
         "verified-release-supply-chain",
         "atomic-no-sudo-install"
       ],
-      "checks": [
-        "cargo fmt --all -- --check",
-        "core-xtask boundaries check",
-        "release-tools/validate.sh"
-      ]
+      "checks": ["cargo fmt --all -- --check", "core-xtask boundaries check", "release-tools/validate.sh"]
     },
     {
       "id": "protocol-compat",
@@ -179,7 +173,8 @@
         { "kind": "file", "path": "crates/kernel/Cargo.toml" },
         { "kind": "file", "path": "crates/kernel/src/diagnostics.rs" },
         { "kind": "file", "path": "crates/kernel/src/lib.rs" },
-        { "kind": "file", "path": "crates/kernel/src/pricing.rs" }
+        { "kind": "file", "path": "crates/kernel/src/pricing.rs" },
+        { "kind": "file", "path": "crates/kernel/src/workflow_spawner.rs" }
       ],
       "contracts": ["turn-state-machine", "bounded-run", "single-writer"],
       "checks": ["cargo test -p core-kernel --locked"]
@@ -469,7 +464,8 @@
       "reviewers": [],
       "paths": [
         { "kind": "file", "path": "crates/tools/src/shell.rs" },
-        { "kind": "file", "path": "crates/tools/src/web.rs" }
+        { "kind": "file", "path": "crates/tools/src/web.rs" },
+        { "kind": "file", "path": "crates/tools/src/workflow_tool.rs" }
       ],
       "contracts": ["sandboxed-code-execution", "ssrf-boundary", "external-effect-classification"],
       "checks": ["cargo test -p core-tools --locked"]
@@ -504,6 +500,20 @@
       "checks": ["cargo test -p core-verify --locked"]
     },
     {
+      "id": "workflow-engine",
+      "title": "Workflow engine",
+      "summary": "Deterministic workflow script host: agent fan-out, journal, cache keys, and progress events.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "tree", "path": "crates/workflow" }
+      ],
+      "contracts": ["bounded-agent-fanout", "deterministic-replay", "journal-durability"],
+      "checks": ["cargo test -p core-workflow --locked"]
+    },
+    {
       "id": "evaluation",
       "title": "Evaluation",
       "summary": "Benchmark tasks, fixed-model component toggles, scoring, and reliability evidence.",
@@ -528,13 +538,14 @@
       "paths": [
         { "kind": "file", "path": "crates/cli/Cargo.toml" },
         { "kind": "file", "path": "crates/cli/src/commands.rs" },
-        { "kind": "file", "path": "crates/cli/src/config.rs" },
         { "kind": "tree", "path": "crates/cli/src/config" },
+        { "kind": "file", "path": "crates/cli/src/config.rs" },
         { "kind": "file", "path": "crates/cli/src/environment.rs" },
         { "kind": "file", "path": "crates/cli/src/main.rs" },
         { "kind": "file", "path": "crates/cli/src/mcp.rs" },
         { "kind": "file", "path": "crates/cli/src/pricing.rs" },
-        { "kind": "file", "path": "crates/cli/src/providers.rs" }
+        { "kind": "file", "path": "crates/cli/src/providers.rs" },
+        { "kind": "file", "path": "crates/cli/src/workflow.rs" }
       ],
       "contracts": ["trusted-config-precedence", "runtime-composition", "provider-selection"],
       "checks": ["cargo test -p core-cli --locked"]
@@ -625,7 +636,11 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
+        { "kind": "file", "path": "crates/cli/src/commands.rs" },
+        { "kind": "file", "path": "crates/cli/src/config.rs" },
+        { "kind": "file", "path": "crates/cli/src/output.rs" },
         { "kind": "tree", "path": "crates/agents" },
+        { "kind": "tree", "path": "crates/cli/src/config" },
         { "kind": "tree", "path": "crates/ctx" },
         { "kind": "tree", "path": "crates/evolve" },
         { "kind": "tree", "path": "crates/kernel" },
@@ -638,10 +653,7 @@
         { "kind": "tree", "path": "crates/sched" },
         { "kind": "tree", "path": "crates/tools" },
         { "kind": "tree", "path": "crates/verify" },
-        { "kind": "file", "path": "crates/cli/src/commands.rs" },
-        { "kind": "file", "path": "crates/cli/src/config.rs" },
-        { "kind": "tree", "path": "crates/cli/src/config" },
-        { "kind": "file", "path": "crates/cli/src/output.rs" }
+        { "kind": "tree", "path": "crates/workflow" }
       ]
     },
     {
@@ -922,26 +934,116 @@
   "cargo_policy": {
     "mode": "exact",
     "packages": {
-      "core-agents": { "normal": ["core-ctx", "core-protocol"], "dev": [], "build": [] },
-      "core-cli": { "normal": ["core-agents", "core-ctx", "core-kernel", "core-mcp", "core-obs", "core-protocol", "core-provider", "core-record", "core-sched", "core-tools"], "dev": [], "build": [] },
-      "core-ctx": { "normal": ["core-protocol"], "dev": [], "build": [] },
-      "core-eval": { "normal": ["core-sandbox", "core-verify"], "dev": [], "build": [] },
-      "core-evolve": { "normal": ["core-protocol"], "dev": [], "build": [] },
-      "core-kernel": { "normal": ["core-agents", "core-ctx", "core-obs", "core-protocol", "core-provider", "core-record", "core-sandbox", "core-sched", "core-tools", "core-verify"], "dev": [], "build": [] },
-      "core-mcp": { "normal": ["core-protocol", "core-sandbox"], "dev": [], "build": [] },
-      "core-obs": { "normal": ["core-protocol"], "dev": [], "build": [] },
-      "core-protocol": { "normal": [], "dev": [], "build": [] },
-      "core-provider": { "normal": ["core-protocol"], "dev": [], "build": [] },
-      "core-record": { "normal": ["core-obs", "core-protocol"], "dev": [], "build": [] },
-      "core-sandbox": { "normal": [], "dev": [], "build": [] },
-      "core-sched": { "normal": ["core-protocol", "core-provider"], "dev": [], "build": [] },
-      "core-tools": { "normal": ["core-ctx", "core-protocol", "core-sandbox"], "dev": [], "build": [] },
-      "core-verify": { "normal": ["core-protocol", "core-sandbox"], "dev": [], "build": [] },
-      "core-xtask": { "normal": ["core-agents", "core-tools"], "dev": [], "build": [] }
+      "core-agents": {
+        "normal": ["core-ctx", "core-protocol"],
+        "dev": [],
+        "build": []
+      },
+      "core-cli": {
+        "normal": [
+          "core-agents",
+          "core-ctx",
+          "core-kernel",
+          "core-mcp",
+          "core-obs",
+          "core-protocol",
+          "core-provider",
+          "core-record",
+          "core-sched",
+          "core-tools",
+          "core-workflow"
+        ],
+        "dev": [],
+        "build": []
+      },
+      "core-ctx": {
+        "normal": ["core-protocol"],
+        "dev": [],
+        "build": []
+      },
+      "core-eval": {
+        "normal": ["core-sandbox", "core-verify"],
+        "dev": [],
+        "build": []
+      },
+      "core-evolve": {
+        "normal": ["core-protocol"],
+        "dev": [],
+        "build": []
+      },
+      "core-kernel": {
+        "normal": [
+          "core-agents",
+          "core-ctx",
+          "core-obs",
+          "core-protocol",
+          "core-provider",
+          "core-record",
+          "core-sandbox",
+          "core-sched",
+          "core-tools",
+          "core-verify",
+          "core-workflow"
+        ],
+        "dev": [],
+        "build": []
+      },
+      "core-mcp": {
+        "normal": ["core-protocol", "core-sandbox"],
+        "dev": [],
+        "build": []
+      },
+      "core-obs": {
+        "normal": ["core-protocol"],
+        "dev": [],
+        "build": []
+      },
+      "core-protocol": {
+        "normal": [],
+        "dev": [],
+        "build": []
+      },
+      "core-provider": {
+        "normal": ["core-protocol"],
+        "dev": [],
+        "build": []
+      },
+      "core-record": {
+        "normal": ["core-obs", "core-protocol"],
+        "dev": [],
+        "build": []
+      },
+      "core-sandbox": {
+        "normal": [],
+        "dev": [],
+        "build": []
+      },
+      "core-sched": {
+        "normal": ["core-protocol", "core-provider"],
+        "dev": [],
+        "build": []
+      },
+      "core-tools": {
+        "normal": ["core-ctx", "core-protocol", "core-sandbox"],
+        "dev": [],
+        "build": []
+      },
+      "core-verify": {
+        "normal": ["core-protocol", "core-sandbox"],
+        "dev": [],
+        "build": []
+      },
+      "core-workflow": {
+        "normal": ["core-protocol", "core-sched"],
+        "dev": [],
+        "build": []
+      },
+      "core-xtask": {
+        "normal": ["core-agents", "core-tools"],
+        "dev": [],
+        "build": []
+      }
     }
   },
-  "generated": {
-    "ownership": "OWNERSHIP.md",
-    "codeowners": ".github/CODEOWNERS"
-  }
+  "generated": { "ownership": "OWNERSHIP.md", "codeowners": ".github/CODEOWNERS" }
 }

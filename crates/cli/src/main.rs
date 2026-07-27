@@ -1087,8 +1087,11 @@ async fn run_cli() -> anyhow::Result<u8> {
         anyhow::anyhow!("-p/--print requires a task; omit -p to open the interactive TUI")
     })?;
 
-    // Ctrl-C = graceful interrupt: the run stops at the next turn-atomic safe point (never
-    // mid-effect) and can be resumed with --resume <run>. A second Ctrl-C hard-exits.
+    // Ctrl-C = graceful interrupt: the in-flight provider turn is cancelled mid-stream (D1-16),
+    // then the run stops without committing a partial effect and can be resumed with
+    // --resume <run>. The turn is NOT atomic with respect to the interrupt: dropping the stream
+    // means the usage record never arrives, so a cancelled run reports its cost as unknown with
+    // reason `billing_evidence_missing`. A second Ctrl-C hard-exits.
     let interrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     agent.set_interrupt(interrupt.clone());
     {

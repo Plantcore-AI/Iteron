@@ -1520,7 +1520,7 @@ fn consecutive_real_tool_failures_exit_stuck_with_terminal_result() {
 
 #[cfg(unix)]
 #[test]
-fn one_sigint_finishes_current_provider_turn_then_exits_interrupted() {
+fn one_sigint_cancels_the_in_flight_provider_turn_then_exits_interrupted() {
     let (server, request_seen, release_provider) = MockProvider::spawn_paused_success();
     let scratch = Scratch::new("sigint", &server.api_root);
     // Keep cleanup armed across every coordination assertion below; if the provider handshake or
@@ -1533,6 +1533,11 @@ fn one_sigint_finishes_current_provider_turn_then_exits_interrupted() {
     send_sigint(child.child());
     // Let Tokio's installed signal listener set the graceful-interrupt flag while the current
     // provider turn is deliberately still in flight. This remains far inside the outer bound.
+    // CONTRACT (decided 2026-07-27, implemented by D1-16 / ac1e0c6): a cooperative interrupt
+    // cancels the provider turn MID-STREAM. The in-flight future is dropped and the transport is
+    // closed rather than the turn being allowed to finish. The turn is therefore no longer atomic
+    // with respect to Ctrl-C, and because the stream never completes, no usage record arrives -
+    // so cost reporting degrades to `billing_evidence_missing`, not `no_verified_rate_card`.
     thread::sleep(Duration::from_millis(100));
     release_provider
         .send(())
@@ -1552,10 +1557,13 @@ fn one_sigint_finishes_current_provider_turn_then_exits_interrupted() {
         130,
         "interrupted",
         "unknown",
-        Some("no_verified_rate_card"),
+        Some("billing_evidence_missing"),
     );
-    assert_eq!(lines[0]["assistant_text"], "golden reply");
-    assert_eq!(lines[0]["turns"], 1);
+    // The turn was cancelled before the provider finished streaming, so there is no assistant
+    // text and no completed turn to report. Under the previous finish-the-turn contract these
+    // were "golden reply" and 1; that difference IS the behaviour change.
+    assert_eq!(lines[0]["assistant_text"], "");
+    assert_eq!(lines[0]["turns"], 0);
     assert_diagnostics_on_stderr(&output, "Interrupted");
     assert!(
         std::str::from_utf8(&output.stderr)
