@@ -1533,7 +1533,7 @@ fn one_sigint_cancels_the_in_flight_provider_turn_then_exits_interrupted() {
     send_sigint(child.child());
     // Let Tokio's installed signal listener set the graceful-interrupt flag while the current
     // provider turn is deliberately still in flight. This remains far inside the outer bound.
-    // CONTRACT (decided 2026-07-27, implemented by D1-16 / ac1e0c6): a cooperative interrupt
+    // CONTRACT (decided 2026-07-27, implemented by gap D1-16): a cooperative interrupt
     // cancels the provider turn MID-STREAM. The in-flight future is dropped and the transport is
     // closed rather than the turn being allowed to finish. The turn is therefore no longer atomic
     // with respect to Ctrl-C, and because the stream never completes, no usage record arrives -

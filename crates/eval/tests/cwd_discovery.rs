@@ -132,7 +132,7 @@ async fn real_core_eval_from_non_workspace_cwd_discovers_core_or_errors_actionab
     assert!(!output.timed_out, "cwd discovery has a hard process bound");
     assert!(!output.stdout_truncated);
     assert!(!output.stderr_truncated);
-    // D12-02 (daf5dfb) graded this binary's exit codes: 0 = every cell ran clean, 1 = the
+    // Gap D12-02 graded this binary's exit codes: 0 = every cell ran clean, 1 = the
     // evaluation ran but some cells errored or timed out, 2 = the harness itself could not run
     // (EVAL_EXIT_HARNESS), which is what a cwd-discovery failure reports. This fixture corpus
     // points at a deliberately missing source repository, so a successful discovery necessarily
