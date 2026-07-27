@@ -145,7 +145,10 @@ return { a: a, b: b };
     let report2 = WorkflowEngine::execute(run2, spawner.clone(), Arc::new(NullSink))
         .await
         .expect("run 2 (resume)");
-    assert_eq!(report2.cache_hits, 2, "identical script+args => 100% cache hit");
+    assert_eq!(
+        report2.cache_hits, 2,
+        "identical script+args => 100% cache hit"
+    );
     assert_eq!(report2.cache_misses, 0);
     assert_eq!(
         spawns.load(Ordering::SeqCst),

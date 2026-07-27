@@ -20,8 +20,8 @@ mod terminal_input;
 use crate::commands::{self, SlashCommand};
 use crate::editor::Editor;
 use crate::providers::{ModelSelection, ProviderDirectory};
-use crate::{block, surface, theme};
 use crate::tui::app_server::AppServerClient;
+use crate::{block, surface, theme};
 use core_ctx::ContextEstimate;
 use core_kernel::{
     Agent, UiEvent, WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi, WorkflowUiEvent,
@@ -3103,9 +3103,10 @@ pub async fn run(
                                     .await?;
                                 } else if let Some(bash) = trimmed.strip_prefix('!') {
                                     let (mode, rules) = match agent_slot.as_ref() {
-                                        Some(agent) => {
-                                            (agent.permission_mode(), agent.permission_rules().clone())
-                                        }
+                                        Some(agent) => (
+                                            agent.permission_mode(),
+                                            agent.permission_rules().clone(),
+                                        ),
                                         None => (app.mode, PermissionRules::new()),
                                     };
                                     run_bash_inline(
@@ -4668,11 +4669,7 @@ async fn handle_registered_command(
                 let status = if card.finished { "finished" } else { "running" };
                 rows.push(block::PanelRow::Item {
                     label: format!("{} · {status}", card.name),
-                    hint: format!(
-                        "{} · {done}/{} agents",
-                        card.run_id,
-                        card.agents.len()
-                    ),
+                    hint: format!("{} · {done}/{} agents", card.run_id, card.agents.len()),
                 });
             }
             if rows.is_empty() {

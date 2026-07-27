@@ -803,7 +803,10 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
             })
             .await;
 
-        assert!(result.is_err(), "a failed intent append must fail the effect");
+        assert!(
+            result.is_err(),
+            "a failed intent append must fail the effect"
+        );
         assert_eq!(
             calls.load(Ordering::SeqCst),
             0,
@@ -841,7 +844,10 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
         }
 
         assert!(matches!(log.events[0].kind, EventKind::EffectIntent { .. }));
-        assert!(matches!(log.events[1].kind, EventKind::EffectUnknown { .. }));
+        assert!(matches!(
+            log.events[1].kind,
+            EventKind::EffectUnknown { .. }
+        ));
         assert!(
             !log.events
                 .iter()
@@ -876,8 +882,15 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
             })
             .await;
 
-        assert!(result.is_err(), "a failed terminal append must surface as an error");
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "the effect ran exactly once");
+        assert!(
+            result.is_err(),
+            "a failed terminal append must surface as an error"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the effect ran exactly once"
+        );
 
         // The durable log holds only the intent; replay reports one recoverable pending effect.
         let journal = EffectJournal::replay(&log.events).unwrap();

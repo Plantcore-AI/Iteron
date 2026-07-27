@@ -23,8 +23,7 @@ pub const SPINNER: [&str; 6] = ["·", "✢", "✳", "✶", "✻", "✽"];
 /// Claude Code's braille-dot activity spinner (WORKFLOW-REPLICATION-DESIGN.md §3.3), advanced every
 /// ~80ms. Drives the live phase→agent tree's running indicators (the QuickJS `core-workflow` runtime,
 /// distinct from the native ultracode `SPINNER` above). Every frame is a guaranteed width-1 glyph.
-pub const BRAILLE_SPINNER: [&str; 10] =
-    ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+pub const BRAILLE_SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// The primary machine-line marker (TUI v3 §1/§2). Claude Code ships `⏺` (U+23FA) on macOS and falls
 /// back to `●` (U+25CF) elsewhere — precisely because `⏺` has emoji-presentation (double-width) on
@@ -737,8 +736,14 @@ pub(crate) fn render_assistant_doc_with_hyperlinks(
 /// tighten to 0; a real conversational turn boundary (user or assistant after tool activity) breathes.
 pub fn gap_before(prev: &BlockKind, next: &BlockKind) -> u16 {
     use BlockKind::*;
-    let prev_toolish = matches!(prev, Tool(_) | Workflow(_) | WorkflowRun(_) | Diff(_) | Notice { .. });
-    let next_toolish = matches!(next, Tool(_) | Workflow(_) | WorkflowRun(_) | Diff(_) | Notice { .. });
+    let prev_toolish = matches!(
+        prev,
+        Tool(_) | Workflow(_) | WorkflowRun(_) | Diff(_) | Notice { .. }
+    );
+    let next_toolish = matches!(
+        next,
+        Tool(_) | Workflow(_) | WorkflowRun(_) | Diff(_) | Notice { .. }
+    );
     // consecutive tool activity / notices stay tight
     if prev_toolish && next_toolish {
         return 0;
@@ -1223,7 +1228,11 @@ fn agent_meta_string(agent: &WorkflowRunAgent) -> Option<String> {
         parts.push(format!("{} tok", events::fmt_count(agent.tokens)));
     }
     if agent.tool_calls > 0 {
-        let noun = if agent.tool_calls == 1 { "tool" } else { "tools" };
+        let noun = if agent.tool_calls == 1 {
+            "tool"
+        } else {
+            "tools"
+        };
         parts.push(format!("{} {noun}", agent.tool_calls));
     }
     if agent.finished() {
@@ -1279,7 +1288,11 @@ fn agent_row_lines(
     let n = visible.len();
     for (i, agent) in visible.iter().enumerate() {
         let last = i + 1 == n;
-        let branch = if last { "\u{2514}\u{2500} " } else { "\u{251c}\u{2500} " }; // └─ / ├─
+        let branch = if last {
+            "\u{2514}\u{2500} "
+        } else {
+            "\u{251c}\u{2500} "
+        }; // └─ / ├─
         let (glyph, gcolor) = run_state_glyph(agent.state, spin, theme);
         let glyph_style = Style::default().fg(gcolor.unwrap_or(theme.muted));
         // Active rows dim their label; a finished row brightens to the normal fg.
@@ -1457,7 +1470,9 @@ pub(crate) fn render_workflow_run(
         out.push(Line::from(vec![
             Span::styled(
                 "\u{276f} ", // ❯
-                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(newest.clone(), Style::default().fg(theme.fg)),
         ]));
@@ -1498,7 +1513,14 @@ pub(crate) fn render_workflow_run(
                 )));
             }
             first = false;
-            out.extend(render_phase_box(Some(phase), &agents, card, width, theme, spin));
+            out.extend(render_phase_box(
+                Some(phase),
+                &agents,
+                card,
+                width,
+                theme,
+                spin,
+            ));
         }
         let orphans: Vec<&WorkflowRunAgent> =
             card.agents.iter().filter(|a| a.phase_index == 0).collect();
@@ -3707,9 +3729,7 @@ mod tests {
             })
             .unwrap();
         let buf = terminal.backend().buffer();
-        let drawn: String = (0..buf.area.width)
-            .map(|x| buf[(x, 0)].symbol())
-            .collect();
+        let drawn: String = (0..buf.area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(drawn.contains('\u{276f}'), "narrator drew into the frame");
     }
 }

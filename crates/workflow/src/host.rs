@@ -115,13 +115,19 @@ pub async fn run_core(
     journal.flush();
     let stopped = report_cancel.is_cancelled();
     let value = match out {
-        Ok(json) => serde_json::from_str::<serde_json::Value>(&json).unwrap_or(serde_json::Value::Null),
+        Ok(json) => {
+            serde_json::from_str::<serde_json::Value>(&json).unwrap_or(serde_json::Value::Null)
+        }
         // A cancel-driven interrupt surfaces as an error; that is a `stopped` run, not a failure.
         Err(_) if stopped => serde_json::Value::Null,
         Err(error) => return Err(error),
     };
     // When stopped mid-flight, the partial JS value is meaningless — resolve as a stopped run.
-    let value = if stopped { serde_json::Value::Null } else { value };
+    let value = if stopped {
+        serde_json::Value::Null
+    } else {
+        value
+    };
 
     Ok(RunReport {
         run_id,

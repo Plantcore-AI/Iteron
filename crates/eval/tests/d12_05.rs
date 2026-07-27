@@ -98,7 +98,10 @@ fn resolved_rate_and_wilson_ci_bound_an_interior_proportion() {
     let [lo, hi] = config.resolved_rate_ci95;
     assert!(lo.is_finite() && hi.is_finite());
     assert!(lo <= hi, "the interval must be ordered");
-    assert!(lo > 0.0, "a real Wilson lower bound for 0.8 is strictly above 0");
+    assert!(
+        lo > 0.0,
+        "a real Wilson lower bound for 0.8 is strictly above 0"
+    );
     assert!(
         hi < 1.0,
         "a real Wilson upper bound for 0.8 is strictly below 1 (a Wald interval would clamp to 1.0)"
@@ -139,7 +142,10 @@ fn a_total_positive_separation_is_a_significant_increase() {
     push_arm(&mut cells, "verify_OFF", &[false; 8]);
     push_arm(&mut cells, "verify_ON", &[true; 8]);
     let stats = aggregate(&cells, 4);
-    assert!(!stats.underpowered, "8 seeds per arm clears minimum_seeds=4");
+    assert!(
+        !stats.underpowered,
+        "8 seeds per arm clears minimum_seeds=4"
+    );
 
     let cmp = compare(&stats, "verify_OFF", "verify_ON");
     assert_eq!(cmp.resolved_rate_delta, 1.0, "0/8 -> 8/8 is a +1.0 delta");
@@ -191,10 +197,16 @@ fn a_small_noisy_difference_is_not_significant() {
         &[vec![true; 6], vec![false; 4]].concat(),
     );
     let stats = aggregate(&cells, 4);
-    assert!(!stats.underpowered, "10 seeds per arm clears minimum_seeds=4");
+    assert!(
+        !stats.underpowered,
+        "10 seeds per arm clears minimum_seeds=4"
+    );
 
     let cmp = compare(&stats, "verify_OFF", "verify_ON");
-    assert!((cmp.resolved_rate_delta - 0.1).abs() < 1e-12, "point delta is +0.1");
+    assert!(
+        (cmp.resolved_rate_delta - 0.1).abs() < 1e-12,
+        "point delta is +0.1"
+    );
     assert_eq!(
         cmp.statistical_conclusion,
         StatisticalConclusion::NotSignificant
@@ -220,7 +232,10 @@ fn total_separation_below_minimum_seeds_is_withheld_as_insufficient_power() {
     assert!(stats.underpowered, "2 completed seeds < minimum_seeds=3");
 
     let cmp = compare(&stats, "verify_OFF", "verify_ON");
-    assert_eq!(cmp.resolved_rate_delta, 1.0, "the point delta is still computed");
+    assert_eq!(
+        cmp.resolved_rate_delta, 1.0,
+        "the point delta is still computed"
+    );
     assert_eq!(
         cmp.statistical_conclusion,
         StatisticalConclusion::InsufficientPower(InsufficientPowerReason::BelowMinimumSeeds),
@@ -242,8 +257,15 @@ fn a_missing_comparison_arm_yields_insufficient_power_not_a_zero_delta_verdict()
     let stats = aggregate(&cells, 1);
 
     let cmp = compare(&stats, "verify_OFF", "verify_ON");
-    assert_eq!(cmp.resolved_rate_delta, 0.0, "no treatment arm -> neutral zero delta");
-    assert_eq!(cmp.delta_ci95, [-1.0, 1.0], "the interval is maximally uninformative");
+    assert_eq!(
+        cmp.resolved_rate_delta, 0.0,
+        "no treatment arm -> neutral zero delta"
+    );
+    assert_eq!(
+        cmp.delta_ci95,
+        [-1.0, 1.0],
+        "the interval is maximally uninformative"
+    );
     assert_eq!(
         cmp.statistical_conclusion,
         StatisticalConclusion::InsufficientPower(InsufficientPowerReason::MissingComparisonArm)

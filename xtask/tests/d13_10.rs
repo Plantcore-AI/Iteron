@@ -52,7 +52,10 @@ impl Fixture {
             src = shell_quote(&src),
             dst = shell_quote(&root),
         );
-        run_ok(Command::new("sh").arg("-c").arg(&piped), "git archive | tar");
+        run_ok(
+            Command::new("sh").arg("-c").arg(&piped),
+            "git archive | tar",
+        );
 
         git(&root, &["init", "--quiet", "--initial-branch=main"]);
         git(&root, &["config", "user.name", "D13 Test"]);
@@ -70,12 +73,25 @@ impl Fixture {
         contents.push('\n');
         std::fs::write(&registry_path, contents).unwrap();
         git(&root, &["add", "--", "governance/boundaries.json"]);
-        git(&root, &["commit", "--quiet", "--no-gpg-sign", "-m", "registry change"]);
+        git(
+            &root,
+            &[
+                "commit",
+                "--quiet",
+                "--no-gpg-sign",
+                "-m",
+                "registry change",
+            ],
+        );
 
         let reviews = dir.join("reviews.json");
         std::fs::write(&reviews, "[]").unwrap();
 
-        Fixture { root, reviews, base }
+        Fixture {
+            root,
+            reviews,
+            base,
+        }
     }
 
     /// Invoke `core-xtask boundaries check-reviews` for the given PR author with empty reviews.

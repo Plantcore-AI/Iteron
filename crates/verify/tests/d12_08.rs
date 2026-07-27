@@ -5,8 +5,8 @@
 //! RED before the fix: `Selection::resolve_vs_ceiling_gap` and `ResolveCeilingMetric` do not
 //! exist on the base branch, so this file fails to compile there. GREEN after the fix.
 
-use core_verify::select::{select, Candidate, ResolveCeilingMetric};
 use core_verify::OracleStrength::{self, Strong, Weak};
+use core_verify::select::{Candidate, ResolveCeilingMetric, select};
 
 fn cand(content: &str, verdicts: Vec<(OracleStrength, bool)>, correct: Option<bool>) -> Candidate {
     Candidate {
@@ -32,7 +32,11 @@ fn per_selection_gap_is_exposed_by_the_selector() {
         "ceiling && !resolved must read as a gap"
     );
 
-    let closed = select(vec![cand("correct-and-picked", vec![(Strong, true)], Some(true))]);
+    let closed = select(vec![cand(
+        "correct-and-picked",
+        vec![(Strong, true)],
+        Some(true),
+    )]);
     assert!(
         !closed.resolve_vs_ceiling_gap(),
         "selecting the correct candidate closes the gap"
@@ -53,8 +57,16 @@ fn batch_metric_aggregates_and_emits_the_headline() {
         cand("correct-but-vetoed", vec![(Strong, false)], Some(true)),
         cand("wrong-but-passes", vec![(Strong, true)], Some(false)),
     ]);
-    let resolved = select(vec![cand("correct-and-picked", vec![(Strong, true)], Some(true))]);
-    let unsolvable = select(vec![cand("nothing-correct", vec![(Weak, true)], Some(false))]);
+    let resolved = select(vec![cand(
+        "correct-and-picked",
+        vec![(Strong, true)],
+        Some(true),
+    )]);
+    let unsolvable = select(vec![cand(
+        "nothing-correct",
+        vec![(Weak, true)],
+        Some(false),
+    )]);
 
     let metric = ResolveCeilingMetric::from_selections([&gapped, &resolved, &unsolvable]);
     assert_eq!(metric.total, 3, "three selections observed");
@@ -91,7 +103,11 @@ fn streaming_record_matches_a_batch_fold() {
         cand("correct-but-vetoed", vec![(Strong, false)], Some(true)),
         cand("wrong-but-passes", vec![(Strong, true)], Some(false)),
     ]);
-    let b = select(vec![cand("correct-and-picked", vec![(Strong, true)], Some(true))]);
+    let b = select(vec![cand(
+        "correct-and-picked",
+        vec![(Strong, true)],
+        Some(true),
+    )]);
 
     let mut streamed = ResolveCeilingMetric::default();
     streamed.record(&a);

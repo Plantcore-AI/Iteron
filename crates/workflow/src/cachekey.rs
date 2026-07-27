@@ -54,7 +54,9 @@ fn canonicalize(value: &Value, out: &mut String) {
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Number(n) => out.push_str(&n.to_string()),
         // serde_json string serialization applies the correct JSON escaping.
-        Value::String(s) => out.push_str(&serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())),
+        Value::String(s) => {
+            out.push_str(&serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into()))
+        }
         Value::Array(items) => {
             out.push('[');
             for (i, item) in items.iter().enumerate() {

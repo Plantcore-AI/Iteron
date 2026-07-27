@@ -1224,7 +1224,9 @@ fn build_workflow_spawner(
     workflow_id: &str,
 ) -> std::sync::Arc<dyn core_workflow::AgentSpawner> {
     if config::env_string("CORE_WORKFLOW_SPAWNER").as_deref() == Some("provider") {
-        eprintln!("spawner: ProviderSpawner (single-completion fallback via CORE_WORKFLOW_SPAWNER)");
+        eprintln!(
+            "spawner: ProviderSpawner (single-completion fallback via CORE_WORKFLOW_SPAWNER)"
+        );
         return std::sync::Arc::new(workflow::ProviderSpawner::new(provider_arc, model));
     }
     let mut cx = core_kernel::KernelSpawnerContext::new(
@@ -1286,56 +1288,58 @@ async fn run_workflow_command(
     // Resume/Watch continue a prior run IN PLACE (same run_id, resume_from == that id), so the run's
     // journal both seeds the resume cache and receives new outcomes; the persisted `script.js` means
     // no `--script` is required.
-    let (src, args_value, run_id, resume_from): (String, serde_json::Value, String, Option<String>) =
-        match action {
-            WorkflowAction::Run { script, args } => {
-                let src = std::fs::read_to_string(script).map_err(|error| {
-                    anyhow::anyhow!("cannot read workflow script {}: {error}", script.display())
-                })?;
-                let nanos = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0);
-                let run_id = format!("wf_{}_{:x}", std::process::id(), nanos);
-                (src, parse_workflow_args(args)?, run_id, None)
-            }
-            WorkflowAction::Resume {
-                run_id,
-                script,
-                args,
-            } => {
-                let src = match script {
-                    Some(path) => std::fs::read_to_string(path).map_err(|error| {
-                        anyhow::anyhow!("cannot read workflow script {}: {error}", path.display())
-                    })?,
-                    None => workflow::load_script(&workflows_dir, run_id).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "run `{run_id}` has no persisted script; pass --script <path>"
-                        )
-                    })?,
-                };
-                let args_value = match args {
-                    Some(_) => parse_workflow_args(args)?,
-                    None => workflow::load_manifest(&workflows_dir, run_id)
-                        .map(|m| m.args)
-                        .unwrap_or(serde_json::Value::Null),
-                };
-                (src, args_value, run_id.clone(), Some(run_id.clone()))
-            }
-            WorkflowAction::Watch { run_id, args } => {
-                let src = workflow::load_script(&workflows_dir, run_id).ok_or_else(|| {
-                    anyhow::anyhow!("run `{run_id}` has no persisted script to watch")
-                })?;
-                let args_value = match args {
-                    Some(_) => parse_workflow_args(args)?,
-                    None => workflow::load_manifest(&workflows_dir, run_id)
-                        .map(|m| m.args)
-                        .unwrap_or(serde_json::Value::Null),
-                };
-                (src, args_value, run_id.clone(), Some(run_id.clone()))
-            }
-            WorkflowAction::List => unreachable!("handled above"),
-        };
+    let (src, args_value, run_id, resume_from): (
+        String,
+        serde_json::Value,
+        String,
+        Option<String>,
+    ) = match action {
+        WorkflowAction::Run { script, args } => {
+            let src = std::fs::read_to_string(script).map_err(|error| {
+                anyhow::anyhow!("cannot read workflow script {}: {error}", script.display())
+            })?;
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let run_id = format!("wf_{}_{:x}", std::process::id(), nanos);
+            (src, parse_workflow_args(args)?, run_id, None)
+        }
+        WorkflowAction::Resume {
+            run_id,
+            script,
+            args,
+        } => {
+            let src = match script {
+                Some(path) => std::fs::read_to_string(path).map_err(|error| {
+                    anyhow::anyhow!("cannot read workflow script {}: {error}", path.display())
+                })?,
+                None => workflow::load_script(&workflows_dir, run_id).ok_or_else(|| {
+                    anyhow::anyhow!("run `{run_id}` has no persisted script; pass --script <path>")
+                })?,
+            };
+            let args_value = match args {
+                Some(_) => parse_workflow_args(args)?,
+                None => workflow::load_manifest(&workflows_dir, run_id)
+                    .map(|m| m.args)
+                    .unwrap_or(serde_json::Value::Null),
+            };
+            (src, args_value, run_id.clone(), Some(run_id.clone()))
+        }
+        WorkflowAction::Watch { run_id, args } => {
+            let src = workflow::load_script(&workflows_dir, run_id).ok_or_else(|| {
+                anyhow::anyhow!("run `{run_id}` has no persisted script to watch")
+            })?;
+            let args_value = match args {
+                Some(_) => parse_workflow_args(args)?,
+                None => workflow::load_manifest(&workflows_dir, run_id)
+                    .map(|m| m.args)
+                    .unwrap_or(serde_json::Value::Null),
+            };
+            (src, args_value, run_id.clone(), Some(run_id.clone()))
+        }
+        WorkflowAction::List => unreachable!("handled above"),
+    };
 
     // Provider selection with the same trusted precedence as a normal run (CLI > env > user config >
     // built-in). Routing never consults the project config (untrusted origin).

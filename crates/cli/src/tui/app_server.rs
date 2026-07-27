@@ -113,7 +113,9 @@ mod tests {
             .expect("the current server version accepts the handshake");
         assert_eq!(client.negotiated_version(), PROTOCOL_VERSION);
 
-        client.submit(Op::Interrupt).expect("submit reaches the queue");
+        client
+            .submit(Op::Interrupt)
+            .expect("submit reaches the queue");
         let envelope = rx.try_recv().expect("submission is queued");
         assert_eq!(envelope.protocol_version, PROTOCOL_VERSION);
         assert!(matches!(envelope.into_current(), Ok(Op::Interrupt)));

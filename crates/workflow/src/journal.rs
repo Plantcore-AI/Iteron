@@ -56,7 +56,12 @@ impl Record {
             last_tool_summary: None,
         }
     }
-    pub fn text(text: String, tokens: u64, tool_calls: u64, last_tool_summary: Option<String>) -> Self {
+    pub fn text(
+        text: String,
+        tokens: u64,
+        tool_calls: u64,
+        last_tool_summary: Option<String>,
+    ) -> Self {
         Record {
             outcome: Outcome::Text { text },
             tokens,
@@ -124,12 +129,7 @@ impl Journal {
                 if let Some(parent) = p.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                Some(
-                    OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&p)?,
-                )
+                Some(OpenOptions::new().create(true).append(true).open(&p)?)
             }
             None => None,
         };
@@ -236,11 +236,7 @@ mod tests {
 
         {
             let j = Journal::open(Some(path.clone()), None).expect("open");
-            j.record(
-                "v2:aaa",
-                "aaa",
-                Record::text("hello".into(), 3, 0, None),
-            );
+            j.record("v2:aaa", "aaa", Record::text("hello".into(), 3, 0, None));
             j.record("v2:bbb", "bbb", Record::null(Some("makenull".into())));
             j.flush();
         }
@@ -249,7 +245,9 @@ mod tests {
         let resumed = Journal::open(None, Some(path.clone())).expect("resume");
         assert_eq!(
             resumed.get("v2:aaa").unwrap().outcome,
-            Outcome::Text { text: "hello".into() }
+            Outcome::Text {
+                text: "hello".into()
+            }
         );
         assert_eq!(
             resumed.get("v2:bbb").unwrap().outcome,

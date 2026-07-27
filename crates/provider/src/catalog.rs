@@ -2729,7 +2729,10 @@ pub fn realize_cost_microusd(rates: &TokenRateCard, usage: &Usage) -> Option<u64
     let classes = [
         (usage.input, rates.input_microusd_per_million),
         (non_thinking_output, rates.output_microusd_per_million),
-        (usage.cache_creation, rates.cache_creation_microusd_per_million),
+        (
+            usage.cache_creation,
+            rates.cache_creation_microusd_per_million,
+        ),
         (usage.cache_read, rates.cache_read_microusd_per_million),
         (usage.thinking, rates.thinking_microusd_per_million),
     ];
@@ -2750,7 +2753,12 @@ impl ProviderInstance {
     /// and API root, so the returned card (and any [`PublishedRateCard::realize_cost_microusd`]
     /// amount) is attributable to precisely this configured provider instance.
     pub fn published_rate_card(&self, model: &str) -> Option<PublishedRateCard> {
-        published_rate_card(self.adapter, self.error_profile, self.api_root.as_str(), model)
+        published_rate_card(
+            self.adapter,
+            self.error_profile,
+            self.api_root.as_str(),
+            model,
+        )
     }
 }
 

@@ -96,7 +96,12 @@ fn d14_02_subprocess_failures_and_timeouts_drive_a_non_zero_exit() {
         cell("verify_ON", RunStatus::TimedOut, None, None),
         // A censored budget-exhausted terminal outcome is a legitimate model result, not a harness
         // failure — it must NOT be discarded into the failed-run bucket.
-        cell("verify_OFF", RunStatus::Censored, Some("budget_exhausted"), Some(3)),
+        cell(
+            "verify_OFF",
+            RunStatus::Censored,
+            Some("budget_exhausted"),
+            Some(3),
+        ),
         cell("verify_ON", RunStatus::Completed, Some("done"), Some(0)),
     ]);
 
@@ -118,7 +123,12 @@ fn d14_02_subprocess_failures_and_timeouts_drive_a_non_zero_exit() {
 fn d14_02_a_completed_or_only_censored_run_is_a_clean_success() {
     let m = manifest(vec![
         cell("verify_OFF", RunStatus::Completed, Some("done"), Some(0)),
-        cell("verify_ON", RunStatus::Censored, Some("budget_exhausted"), Some(3)),
+        cell(
+            "verify_ON",
+            RunStatus::Censored,
+            Some("budget_exhausted"),
+            Some(3),
+        ),
     ]);
 
     assert_eq!(

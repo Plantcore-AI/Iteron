@@ -258,7 +258,8 @@ fn recorded_run_failures_finalize_a_nonzero_exit_and_print_the_summary() {
 
     // (3) The artifact is still persisted despite the non-zero exit, and every cell is a typed
     // `errored` run — the harness censored the failures rather than scoring them as wrong patches.
-    let bytes = std::fs::read(&artifact).expect("the evaluation artifact must be persisted to disk");
+    let bytes =
+        std::fs::read(&artifact).expect("the evaluation artifact must be persisted to disk");
     let manifest: EvaluationManifest =
         serde_json::from_slice(&bytes).expect("artifact must round-trip through its schema");
     assert_eq!(manifest.cells.len(), 2, "1 task x 2 configs x 1 seed");

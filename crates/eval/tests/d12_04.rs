@@ -74,7 +74,10 @@ fn unknown_cost_from_core_contract_is_none_not_zero() {
     let result = parse_final_result(UNKNOWN_COST_RESULT, 0)
         .expect("a valid done result with an unknown cost is a well-formed contract");
     // The raw decoded field is null -> None, not a silent zero.
-    assert_eq!(result.cost_usd, None, "unknown cost_usd must decode to None");
+    assert_eq!(
+        result.cost_usd, None,
+        "unknown cost_usd must decode to None"
+    );
     assert_eq!(result.cost_status, "unknown");
 
     let observation: CostObservation = result.cost().expect("cost projection is valid");

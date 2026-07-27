@@ -154,7 +154,9 @@ impl HttpTransport for ProbeTransport {
     fn client(&self) -> Result<HttpClient, ProviderError> {
         self.built.fetch_add(1, Ordering::SeqCst);
         if self.fail {
-            Err(ProviderError::Configuration("probe refused transport".into()))
+            Err(ProviderError::Configuration(
+                "probe refused transport".into(),
+            ))
         } else {
             // Delegate to the default secure client so the adapter is otherwise real.
             DefaultHttpTransport.client()

@@ -19,7 +19,6 @@ pub mod effects;
 pub mod hooks;
 mod pricing;
 mod workflow_spawner;
-pub use workflow_spawner::{KernelSpawner, KernelSpawnerContext};
 use core_ctx::{CompactionPolicy, ContextEstimate, estimate_request_context};
 use core_obs::{
     CostState, Ledger, PhaseSpan, PricingPort, ProjectionAdmissionError, admit_verified_projection,
@@ -44,6 +43,7 @@ use pricing::{
 };
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
+pub use workflow_spawner::{KernelSpawner, KernelSpawnerContext};
 
 /// A failing strong oracle may return control to the model only this many times per run.
 /// Reaching the ceiling is a non-success terminal condition, never permission to accept `done`.
@@ -5433,7 +5433,11 @@ impl Agent {
 
         // Children re-record the parent's exact durable route byte-for-byte; a run before any route
         // selection cannot bind one.
-        let Some(route) = self.selected_route.as_ref().map(|selected| selected.route.clone()) else {
+        let Some(route) = self
+            .selected_route
+            .as_ref()
+            .map(|selected| selected.route.clone())
+        else {
             return Err("Workflow: no model route is selected yet".into());
         };
         let workflow_name = core_workflow::extract_meta(&script)
@@ -5474,7 +5478,9 @@ impl Agent {
         self.emit(
             turn_id,
             EventKind::Notice {
-                text: format!("Workflow `{workflow_name}` launched (run {run_id}); use /workflows to watch"),
+                text: format!(
+                    "Workflow `{workflow_name}` launched (run {run_id}); use /workflows to watch"
+                ),
             },
         );
 
@@ -5487,7 +5493,11 @@ impl Agent {
             .unwrap_or_else(|_| report.value.to_string());
         Ok(format!(
             "Workflow `{workflow_name}` (run {run_id}) {}: {} agent(s) replayed from cache, {} ran live.\n\nResult:\n{value}",
-            if report.stopped { "stopped" } else { "finished" },
+            if report.stopped {
+                "stopped"
+            } else {
+                "finished"
+            },
             report.cache_hits,
             report.cache_misses
         ))
@@ -6267,7 +6277,10 @@ impl Agent {
         // child's shared flags.
         let mut summaries: Vec<core_agents::Summary> = Vec::with_capacity(tasks.len());
         for (idx, report) in inline {
-            let question = tasks.get(idx).map(|t| t.objective.as_str()).unwrap_or_default();
+            let question = tasks
+                .get(idx)
+                .map(|t| t.objective.as_str())
+                .unwrap_or_default();
             summaries.push(self.record_worker_terminal(
                 workflow_run_id,
                 idx,
@@ -6295,11 +6308,12 @@ impl Agent {
                 elapsed_ms: 0,
                 sub_run: Some(sub_run),
                 error_code: Some("child_task_panic".into()),
-                error_detail: Some(
-                    "investigator task terminated before returning a report".into(),
-                ),
+                error_detail: Some("investigator task terminated before returning a report".into()),
             });
-            let question = tasks.get(idx).map(|t| t.objective.as_str()).unwrap_or_default();
+            let question = tasks
+                .get(idx)
+                .map(|t| t.objective.as_str())
+                .unwrap_or_default();
             summaries.push(self.record_worker_terminal(
                 workflow_run_id,
                 idx,

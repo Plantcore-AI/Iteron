@@ -29,8 +29,14 @@ fn terminal_metrics_come_from_the_stdout_json_contract() {
     // parameter, so a human ledger on stderr is structurally incapable of altering a metric.
     let result = parse_final_result(VALID_BUDGET_RESULT, 3).expect("valid stdout contract parses");
 
-    assert_eq!(result.turns, 2, "turns are read from the versioned stdout JSON");
-    assert_ne!(result.turns, 999_999, "no stderr ledger number can reach a metric");
+    assert_eq!(
+        result.turns, 2,
+        "turns are read from the versioned stdout JSON"
+    );
+    assert_ne!(
+        result.turns, 999_999,
+        "no stderr ledger number can reach a metric"
+    );
     assert_eq!(result.outcome, "budget_exhausted");
     assert_eq!(result.exit_code, 3);
     assert_eq!(result.run_status(), RunStatus::Censored);
@@ -44,8 +50,9 @@ fn terminal_metrics_come_from_the_stdout_json_contract() {
 fn a_human_ledger_line_is_rejected_and_never_scraped_as_a_result() {
     // This is exactly the kind of prose the CLI prints to stderr. Fed where the versioned JSON is
     // expected, it fails the contract closed — it is never re-interpreted into turns/cost.
-    let error: ContractError = parse_final_result(b"turns=999999 | cost=$9.99 | tokens in=1 out=2", 0)
-        .expect_err("a human ledger line is not a versioned result and must be rejected");
+    let error: ContractError =
+        parse_final_result(b"turns=999999 | cost=$9.99 | tokens in=1 out=2", 0)
+            .expect_err("a human ledger line is not a versioned result and must be rejected");
     assert!(
         matches!(error, ContractError::MalformedJson(_)),
         "a ledger line must fail as malformed JSON, not be scraped, got {error:?}"
@@ -173,7 +180,9 @@ case \"$*\" in\n\
     ;;\n\
 esac\n";
         std::fs::write(&path, script).expect("write fake core");
-        let mut permissions = std::fs::metadata(&path).expect("stat fake core").permissions();
+        let mut permissions = std::fs::metadata(&path)
+            .expect("stat fake core")
+            .permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&path, permissions).expect("make fake core executable");
         path
@@ -246,7 +255,10 @@ esac\n";
 
         // The stderr ledger shouted turns=999999 on EVERY invocation. It must never reach a metric.
         assert!(
-            manifest.cells.iter().all(|cell| cell.turns != Some(999_999)),
+            manifest
+                .cells
+                .iter()
+                .all(|cell| cell.turns != Some(999_999)),
             "the human stderr ledger number must never become a cell metric"
         );
 
@@ -258,8 +270,16 @@ esac\n";
             .collect();
         assert_eq!(valid.len(), 2);
         for cell in &valid {
-            assert_eq!(cell.run_status, RunStatus::Censored, "budget_exhausted is censored");
-            assert_eq!(cell.turns, Some(2), "turns come from the stdout JSON, not stderr");
+            assert_eq!(
+                cell.run_status,
+                RunStatus::Censored,
+                "budget_exhausted is censored"
+            );
+            assert_eq!(
+                cell.turns,
+                Some(2),
+                "turns come from the stdout JSON, not stderr"
+            );
             assert_eq!(cell.terminal_outcome.as_deref(), Some("budget_exhausted"));
             assert_eq!(cell.exit_code, Some(3));
         }
@@ -276,7 +296,10 @@ esac\n";
             assert_eq!(cell.run_status, RunStatus::Errored);
             assert_eq!(cell.failure_phase.as_deref(), Some("core_contract"));
             assert_eq!(cell.exit_code, Some(2));
-            assert_eq!(cell.turns, None, "a failed contract yields no scraped turn count");
+            assert_eq!(
+                cell.turns, None,
+                "a failed contract yields no scraped turn count"
+            );
         }
     }
 }

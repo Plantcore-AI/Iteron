@@ -157,7 +157,11 @@ fn emit_finished(env: &AgentEnv, idx: usize, label: String, record: &Record, dur
         Outcome::Null { reason } => (
             WorkflowState::Error,
             None,
-            Some(reason.clone().unwrap_or_else(|| "agent returned null".into())),
+            Some(
+                reason
+                    .clone()
+                    .unwrap_or_else(|| "agent returned null".into()),
+            ),
         ),
     };
     env.sink.emit(ProgressEvent::AgentFinished {
@@ -284,7 +288,10 @@ async fn run_with_schema(
         }
     }
 
-    let reason = format!("schema validation failed after {} attempts", schema::RETRY_MAX);
+    let reason = format!(
+        "schema validation failed after {} attempts",
+        schema::RETRY_MAX
+    );
     env.sink.emit(ProgressEvent::Log {
         message: format!("workflow: agent #{idx} {reason}"),
     });

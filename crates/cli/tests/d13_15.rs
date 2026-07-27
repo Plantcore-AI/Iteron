@@ -161,7 +161,10 @@ fn json_lines(stdout: &[u8]) -> Vec<Value> {
         .expect("final newline already checked")
         .split('\n')
         .map(|line| {
-            assert!(!line.is_empty(), "machine stdout has no blank JSONL records");
+            assert!(
+                !line.is_empty(),
+                "machine stdout has no blank JSONL records"
+            );
             serde_json::from_str(line).expect("every stdout line is one JSON object")
         })
         .collect()
@@ -213,7 +216,11 @@ fn d13_15_json_budget_terminal_is_a_process_level_golden() {
         "the provider-free budget path is a stable exit 3"
     );
     let lines = json_lines(&output.stdout);
-    assert_eq!(lines.len(), 1, "json mode emits exactly one terminal object");
+    assert_eq!(
+        lines.len(),
+        1,
+        "json mode emits exactly one terminal object"
+    );
     assert_eq!(
         normalized(lines[0].clone()),
         golden_terminal(),
@@ -237,8 +244,15 @@ fn d13_15_stream_json_shares_one_authoritative_terminal_with_json() {
     let lines = json_lines(&output.stdout);
     assert!(!lines.is_empty(), "stream-json emits at least the terminal");
 
-    let results: Vec<&Value> = lines.iter().filter(|value| value["type"] == "result").collect();
-    assert_eq!(results.len(), 1, "stream-json has exactly one terminal result");
+    let results: Vec<&Value> = lines
+        .iter()
+        .filter(|value| value["type"] == "result")
+        .collect();
+    assert_eq!(
+        results.len(),
+        1,
+        "stream-json has exactly one terminal result"
+    );
     assert_eq!(
         lines.last().expect("terminal record")["type"],
         "result",

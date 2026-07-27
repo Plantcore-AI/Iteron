@@ -30,9 +30,7 @@
 //!      from the stderr text.
 
 use core_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
-use core_eval::{
-    CorpusManifest, CorpusTask, CostStatus, EvaluationManifest, Partition, RunStatus,
-};
+use core_eval::{CorpusManifest, CorpusTask, CostStatus, EvaluationManifest, Partition, RunStatus};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -186,7 +184,8 @@ fn run_eval(root: &TempRoot, fake_core: &Path) -> (std::process::Output, Evaluat
         .arg(&artifact)
         .output()
         .expect("run core-eval binary");
-    let bytes = std::fs::read(&artifact).expect("the evaluation artifact must be persisted to disk");
+    let bytes =
+        std::fs::read(&artifact).expect("the evaluation artifact must be persisted to disk");
     let manifest: EvaluationManifest =
         serde_json::from_slice(&bytes).expect("artifact must round-trip through its schema");
     (output, manifest)
@@ -316,10 +315,7 @@ fn a_valid_result_on_stderr_is_not_scraped_and_leaves_a_hard_contract_error() {
             cell.turns, None,
             "no turn count may be scavenged from the stderr chrome"
         );
-        assert_eq!(
-            cell.resolved, None,
-            "a contract error resolves nothing"
-        );
+        assert_eq!(cell.resolved, None, "a contract error resolves nothing");
     }
 
     // Errored cells ARE harness failures, so the run finalizes non-zero — the exact opposite of the

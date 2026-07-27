@@ -125,14 +125,9 @@ async fn args_global_is_visible_to_the_script() {
 return await agent(args.who);
 "#;
 
-    let value = WorkflowEngine::run(
-        script,
-        serde_json::json!({ "who": "Neo" }),
-        spawner,
-        sink,
-    )
-    .await
-    .expect("workflow runs");
+    let value = WorkflowEngine::run(script, serde_json::json!({ "who": "Neo" }), spawner, sink)
+        .await
+        .expect("workflow runs");
 
     assert_eq!(value, serde_json::json!("result:Neo"));
 }

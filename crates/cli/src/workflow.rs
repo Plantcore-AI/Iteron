@@ -100,10 +100,15 @@ impl Default for StdoutProgressSink {
 impl ProgressSink for StdoutProgressSink {
     fn emit(&self, event: ProgressEvent) {
         let line = match event {
-            ProgressEvent::Phase { title, .. } => format!("\u{2500}\u{2500} {title} \u{2500}\u{2500}"),
+            ProgressEvent::Phase { title, .. } => {
+                format!("\u{2500}\u{2500} {title} \u{2500}\u{2500}")
+            }
             ProgressEvent::Log { message } => format!("\u{276f} {message}"),
             ProgressEvent::AgentStarted {
-                index, label, model, ..
+                index,
+                label,
+                model,
+                ..
             } => match model {
                 Some(model) => format!("[start] #{index} {label} ({model})"),
                 None => format!("[start] #{index} {label}"),
@@ -362,7 +367,11 @@ pub fn persist_inputs(
 }
 
 /// Persist the terminal outcome once the run settles (enables `list` status + shows the value later).
-pub fn persist_result(workflows_dir: &Path, run_id: &str, report: &RunReport) -> anyhow::Result<()> {
+pub fn persist_result(
+    workflows_dir: &Path,
+    run_id: &str,
+    report: &RunReport,
+) -> anyhow::Result<()> {
     let dir = run_dir(workflows_dir, run_id);
     std::fs::create_dir_all(&dir)?;
     let result = RunResult {
@@ -405,7 +414,10 @@ pub struct RunListing {
 fn journal_agent_count(workflows_dir: &Path, run_id: &str) -> usize {
     let path = run_dir(workflows_dir, run_id).join("journal.jsonl");
     match std::fs::read_to_string(path) {
-        Ok(text) => text.lines().filter(|l| l.contains("\"type\":\"result\"")).count(),
+        Ok(text) => text
+            .lines()
+            .filter(|l| l.contains("\"type\":\"result\""))
+            .count(),
         Err(_) => 0,
     }
 }
@@ -425,7 +437,9 @@ pub fn list_runs(workflows_dir: &Path) -> Vec<RunListing> {
         let run_id = entry.file_name().to_string_lossy().into_owned();
         let manifest = load_manifest(workflows_dir, &run_id);
         let result = load_result(workflows_dir, &run_id);
-        let has_journal = run_dir(workflows_dir, &run_id).join("journal.jsonl").exists();
+        let has_journal = run_dir(workflows_dir, &run_id)
+            .join("journal.jsonl")
+            .exists();
         let status = match &result {
             Some(r) if r.stopped => "stopped",
             Some(_) => "done",
@@ -435,13 +449,23 @@ pub fn list_runs(workflows_dir: &Path) -> Vec<RunListing> {
         let created_at = manifest.as_ref().map(|m| m.created_at).unwrap_or(0);
         out.push(RunListing {
             run_id: run_id.clone(),
-            name: manifest.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| "workflow".into()),
-            model: manifest.as_ref().map(|m| m.model.clone()).unwrap_or_default(),
+            name: manifest
+                .as_ref()
+                .map(|m| m.name.clone())
+                .unwrap_or_else(|| "workflow".into()),
+            model: manifest
+                .as_ref()
+                .map(|m| m.model.clone())
+                .unwrap_or_default(),
             status,
             agents: journal_agent_count(workflows_dir, &run_id),
             created_at,
         });
     }
-    out.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.run_id.cmp(&a.run_id)));
+    out.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then(b.run_id.cmp(&a.run_id))
+    });
     out
 }

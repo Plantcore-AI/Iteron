@@ -128,7 +128,10 @@ impl Pty {
         // lets the master reader observe EOF when the child exits.
         drop(pair.slave);
 
-        let mut reader = pair.master.try_clone_reader().expect("clone the PTY reader");
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .expect("clone the PTY reader");
         let writer = pair.master.take_writer().expect("take the PTY writer");
         let (tx, chunks) = mpsc::channel();
         let reader_thread = thread::spawn(move || {

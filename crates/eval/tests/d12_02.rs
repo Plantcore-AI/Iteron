@@ -223,7 +223,9 @@ mod pipeline {
         let path = root.join("fake-core");
         std::fs::write(&path, "#!/bin/sh\nprintf '%s' '{\"schema_version\":4'\n")
             .expect("write fake core");
-        let mut permissions = std::fs::metadata(&path).expect("stat fake core").permissions();
+        let mut permissions = std::fs::metadata(&path)
+            .expect("stat fake core")
+            .permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&path, permissions).expect("make fake core executable");
         path

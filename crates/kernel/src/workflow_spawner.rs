@@ -166,7 +166,10 @@ impl KernelSpawner {
             digest.update(value);
         }
         let digest = digest.finalize();
-        let namespace: String = digest[..12].iter().map(|byte| format!("{byte:02x}")).collect();
+        let namespace: String = digest[..12]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         RunId(format!("workflow-{namespace}-n{ordinal:08x}"))
     }
 
@@ -244,8 +247,12 @@ impl KernelSpawner {
             Effort::Ultracode => Effort::Max,
             other => other,
         };
-        sub.configure_initial_runtime_policy(effort, cx.permission_mode, cx.permission_rules.clone())
-            .map_err(|error| format!("child runtime policy rejected: {}", error.public_summary()))?;
+        sub.configure_initial_runtime_policy(
+            effort,
+            cx.permission_mode,
+            cx.permission_rules.clone(),
+        )
+        .map_err(|error| format!("child runtime policy rejected: {}", error.public_summary()))?;
 
         // --- Route + pricing. Public API; `record_model_selection` appends the first durable event
         //     (RouteSelected) to the child rollout. Pricing is optional and only load-bearing when a
@@ -261,13 +268,11 @@ impl KernelSpawner {
         )
         .map_err(|error| format!("child route selection failed: {}", error.public_summary()))?;
         if cx.pricing_port.is_some() {
-            let bound = sub
-                .bind_selected_rate_card()
-                .map_err(|error| format!("child pricing bind failed: {}", error.public_summary()))?;
+            let bound = sub.bind_selected_rate_card().map_err(|error| {
+                format!("child pricing bind failed: {}", error.public_summary())
+            })?;
             if cx.budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) && !bound {
-                return Err(
-                    "child could not bind a verified rate card for its USD ceiling".into(),
-                );
+                return Err("child could not bind a verified rate card for its USD ceiling".into());
             }
         }
 
@@ -281,7 +286,11 @@ impl AgentSpawner for KernelSpawner {
         let ordinal = self.next_ordinal.fetch_add(1, Ordering::Relaxed);
         let mut child = match self.build_child(&call, ordinal) {
             Ok(child) => child,
-            Err(reason) => return AgentOutcome::Null { reason: Some(reason) },
+            Err(reason) => {
+                return AgentOutcome::Null {
+                    reason: Some(reason),
+                };
+            }
         };
 
         // Cooperate with the run's cancellation token (trait §B3): bridge it onto the child's

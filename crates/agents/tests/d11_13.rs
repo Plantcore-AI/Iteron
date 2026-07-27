@@ -18,8 +18,8 @@
 //! `with_aggregate`), not by hand-constructing internal structs.
 
 use core_agents::{
-    BudgetedWorkflowPlan, Decomposer, RepoSignals, Stage, TaskClass, WorkflowPlan, FAN_CAP,
-    INVESTIGATOR_SCOPE,
+    BudgetedWorkflowPlan, Decomposer, FAN_CAP, INVESTIGATOR_SCOPE, RepoSignals, Stage, TaskClass,
+    WorkflowPlan,
 };
 use core_protocol::Budget;
 

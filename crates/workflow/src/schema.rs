@@ -155,7 +155,10 @@ mod tests {
         let errs = v
             .validate(&serde_json::json!({ "answer": "not-a-number" }))
             .expect_err("should reject");
-        assert!(!errs.is_empty(), "rejection carries at least one error message");
+        assert!(
+            !errs.is_empty(),
+            "rejection carries at least one error message"
+        );
     }
 
     #[test]

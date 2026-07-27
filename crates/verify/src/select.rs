@@ -298,7 +298,11 @@ mod tests {
             "a solvable task we left unselected is the gap"
         );
 
-        let closed = select(vec![cand("right-and-picked", vec![(Strong, true)], Some(true))]);
+        let closed = select(vec![cand(
+            "right-and-picked",
+            vec![(Strong, true)],
+            Some(true),
+        )]);
         assert!(!closed.resolve_vs_ceiling_gap(), "resolved -> no gap");
 
         let unsolvable = select(vec![cand("wrong", vec![(Strong, true)], Some(false))]);
@@ -314,7 +318,11 @@ mod tests {
             cand("correct-but-vetoed", vec![(Strong, false)], Some(true)),
             cand("wrong-but-passes", vec![(Strong, true)], Some(false)),
         ]);
-        let resolved = select(vec![cand("right-and-picked", vec![(Strong, true)], Some(true))]);
+        let resolved = select(vec![cand(
+            "right-and-picked",
+            vec![(Strong, true)],
+            Some(true),
+        )]);
         let unsolvable = select(vec![cand("all-wrong", vec![(Weak, true)], Some(false))]);
 
         let metric = ResolveCeilingMetric::from_selections([&gapped, &resolved, &unsolvable]);
@@ -335,7 +343,11 @@ mod tests {
         let unsolvable = select(vec![cand("wrong", vec![(Strong, true)], Some(false))]);
         let metric = ResolveCeilingMetric::from_selections([&unsolvable]);
         assert_eq!(metric.ceiling, 0);
-        assert_eq!(metric.gap_rate(), None, "no solvable task -> undefined, never 0.0");
+        assert_eq!(
+            metric.gap_rate(),
+            None,
+            "no solvable task -> undefined, never 0.0"
+        );
         assert_eq!(metric.resolved_rate(), None);
         assert!(metric.to_string().contains("no solvable task"));
     }

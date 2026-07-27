@@ -80,7 +80,11 @@ fn core_cli_unknown_cost_is_never_coerced_to_zero_dollars() {
         .cost()
         .expect("known cost with a finite amount is admitted");
     assert_eq!(known.status, CostStatus::Known);
-    assert_eq!(known.usd, Some(0.125), "a priced cell keeps its real dollar amount");
+    assert_eq!(
+        known.usd,
+        Some(0.125),
+        "a priced cell keeps its real dollar amount"
+    );
 
     // An `unknown` cost decodes WITHOUT a dollar value — the whole point of the gap. If it were
     // silently coerced to `$0`, `usd` would be `Some(0.0)` and this would fail.

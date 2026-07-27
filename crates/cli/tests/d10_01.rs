@@ -36,8 +36,7 @@ struct Scratch {
 impl Scratch {
     fn new() -> Self {
         let id = SCRATCH_ID.fetch_add(1, Ordering::Relaxed);
-        let root =
-            std::env::temp_dir().join(format!("core-d10-01-{}-{id}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("core-d10-01-{}-{id}", std::process::id()));
         std::fs::create_dir_all(root.join("home")).expect("create isolated HOME");
         std::fs::create_dir_all(root.join("repo")).expect("create isolated repository");
         Self { root }
@@ -65,7 +64,9 @@ impl Drop for Scratch {
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty()
         && haystack.len() >= needle.len()
-        && haystack.windows(needle.len()).any(|window| window == needle)
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 #[test]
@@ -105,7 +106,10 @@ fn tui_announces_a_versioned_app_server_client_handshake() {
     command.arg("--effort");
     command.arg("low");
 
-    let mut child = pair.slave.spawn_command(command).expect("spawn core in PTY");
+    let mut child = pair
+        .slave
+        .spawn_command(command)
+        .expect("spawn core in PTY");
     let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
     // Dropping the parent's slave lets the reader see EOF once the child exits.
     drop(pair.slave);
