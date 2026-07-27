@@ -1211,6 +1211,10 @@ fn parse_workflow_args(args: &Option<String>) -> anyhow::Result<serde_json::Valu
 /// repo as workspace, and `<runs_dir>` as the runtime-state root (child rollouts land under
 /// `<runs_dir>/subagents/`). No USD ceiling is set, so `pricing_port` stays `None` (per #2's report:
 /// pricing is load-bearing only for a positive `budget.max_usd`).
+// Ten parameters because this is the composition root wiring a spawner out of the provider,
+// selection digests, capability caps and run paths. Grouping them into a struct would just move
+// the same fields behind a name that exists only for this one call site.
+#[allow(clippy::too_many_arguments)]
 fn build_workflow_spawner(
     provider_arc: std::sync::Arc<dyn core_provider::Provider>,
     model: String,

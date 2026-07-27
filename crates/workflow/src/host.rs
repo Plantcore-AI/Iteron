@@ -20,7 +20,7 @@ fn concurrency_cap() -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    cores.saturating_sub(2).min(16).max(1)
+    cores.saturating_sub(2).clamp(1, 16)
 }
 
 /// Wrap the meta-stripped body so top-level `await`/`return` are legal (review B1), and marshal the

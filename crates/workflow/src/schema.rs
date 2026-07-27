@@ -52,10 +52,10 @@ pub fn parse_json(text: &str) -> Result<Value, String> {
     if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
         return Ok(value);
     }
-    if let Some(slice) = first_json_block(trimmed) {
-        if let Ok(value) = serde_json::from_str::<Value>(slice) {
-            return Ok(value);
-        }
+    if let Some(slice) = first_json_block(trimmed)
+        && let Ok(value) = serde_json::from_str::<Value>(slice)
+    {
+        return Ok(value);
     }
     Err(format!(
         "output is not valid JSON: {}",

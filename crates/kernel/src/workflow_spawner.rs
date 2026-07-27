@@ -180,7 +180,7 @@ impl KernelSpawner {
     ///   * inherited route + pricing (public `record_model_selection` / `bind_selected_rate_card`),
     ///   * the same non-durable inherited context (workspace, model window, hooks, sensitive env,
     ///     cost attribution, bounded delegation depth),
-    /// minus the parent's durable `SubagentSpawned` + UI emission (no parent transcript exists).
+    ///     minus the parent's durable `SubagentSpawned` + UI emission (no parent transcript exists).
     fn build_child(&self, call: &AgentCall, ordinal: u64) -> Result<Agent, String> {
         let cx = &self.cx;
 

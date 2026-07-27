@@ -10,10 +10,10 @@
 //! Three checks, one per contract facet the gap spans:
 //!   1. `cli-output`  — the `json` terminal equals a frozen schema-v4 golden object.
 //!   2. `cli-tui`     — `stream-json` shares one authoritative terminal with `json` and every
-//!                      streamed record is a versioned machine record.
+//!      streamed record is a versioned machine record.
 //!   3. `evaluation`  — the terminal `exit_code` equals the real OS exit status and
-//!                      `success == (outcome in {done, drained})`: the exact coherence the
-//!                      `core-eval` consumer (`parse_final_result`) enforces at the process seam.
+//!      `success == (outcome in {done, drained})`: the exact coherence the
+//!      `core-eval` consumer (`parse_final_result`) enforces at the process seam.
 
 use serde_json::{Value, json};
 use std::fs;

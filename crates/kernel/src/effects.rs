@@ -134,6 +134,12 @@ pub struct BrokeredEffect {
 /// What an executor proves back to the boundary. `Definite` carries the exact durable terminal event
 /// to append after a proven outcome; `Unknown` means the executor dispatched the operation but could
 /// not observe an authoritative terminal, so the boundary journals `EffectUnknown` and never retries.
+// `Definite` carries a whole `EventKind` (~384 bytes) while `Unknown` carries a String (~24), so
+// clippy asks for a Box. Not taken: this type sits on the kernel-effects boundary (risk: critical)
+// and inside the public-compatibility review overlay, so boxing it is an ABI change, not a lint fix
+// — and issue #16 (universal effect broker) rewrites this file with the frozen `EffectProposal`
+// contract anyway. Revisit the layout there rather than churning the contract twice.
+#[allow(clippy::large_enum_variant)]
 pub enum EffectDisposition<T> {
     Definite { terminal: EventKind, value: T },
     Unknown { reason: String, value: T },

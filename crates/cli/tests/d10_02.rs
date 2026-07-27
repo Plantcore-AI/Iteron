@@ -12,7 +12,7 @@
 //!
 //!   * base (bug): the `!` parser spawns `bash` directly, bypassing the gate — `BROKER-42` appears.
 //!   * fixed:      `run_bash_inline` consults the capability broker, gets a `Deny` verdict for Plan
-//!                 mode, refuses the spawn, and shows "operator shell blocked by permission mode".
+//!     mode, refuses the spawn, and shows "operator shell blocked by permission mode".
 //!
 //! A brand-new session must never let a read-only posture be punched through by the operator escape
 //! hatch, so this asserts BOTH the leak is absent AND the broker's denial is visible.
@@ -21,7 +21,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -177,11 +177,8 @@ impl Pty {
     }
 
     fn drain_ready(&mut self) {
-        loop {
-            match self.chunks.try_recv() {
-                Ok(chunk) => self.ingest(chunk),
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-            }
+        while let Ok(chunk) = self.chunks.try_recv() {
+            self.ingest(chunk);
         }
     }
 
