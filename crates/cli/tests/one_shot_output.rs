@@ -603,13 +603,28 @@ fn write_reply(stream: &mut TcpStream, reply: Reply) {
             index = index,
         ),
     };
-    write!(
+    // A client that honours the mid-stream interrupt contract drops the provider future and
+    // closes this transport while the reply is still being written. On Linux that surfaces here
+    // as EPIPE/ECONNRESET; on macOS the bytes usually land in the socket buffer first and the
+    // close is never observed. Either way the client hanging up is it exercising its contract,
+    // not a fault in this stub, so those two kinds are tolerated and every other error still fails.
+    fn client_hung_up(error: &std::io::Error) -> bool {
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+        )
+    }
+    if let Err(error) = write!(
         stream,
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
-    )
-    .expect("write provider response");
-    stream.flush().expect("flush provider response");
+    ) {
+        assert!(client_hung_up(&error), "write provider response: {error}");
+        return;
+    }
+    if let Err(error) = stream.flush() {
+        assert!(client_hung_up(&error), "flush provider response: {error}");
+    }
 }
 
 fn core_command(scratch: &Scratch, format: &str, max_turns: u32, extra_args: &[&str]) -> Command {
