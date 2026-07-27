@@ -237,6 +237,7 @@ impl OfflineRuleSearchProducer {
                 digest: artifact_digest.clone(),
             },
             artifact_kind: ArtifactKind::Rules,
+            base_model: crate::BaseModelId::unspecified(),
             artifact_locator: format!("inert:sha256:{artifact_digest}"),
             parent: spec.parent.clone(),
             method: EvolutionMethod::Search,

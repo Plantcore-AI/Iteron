@@ -100,7 +100,7 @@ pub use verifier_eval::{EvaluationSuite, EvaluationTask, MAX_EVALUATION_TASKS};
 #[cfg(test)]
 mod promotion_tests;
 
-pub const EVOLUTION_SCHEMA_VERSION: u16 = 2;
+pub const EVOLUTION_SCHEMA_VERSION: u16 = 3;
 
 /// Contract bounds are defense in depth after a bounded transport/deserializer. They do not make
 /// it safe to deserialize an arbitrarily large request into memory first.
@@ -430,6 +430,12 @@ pub struct PolicyManifest {
     pub required_capabilities: BTreeSet<Capability>,
     pub training_dataset_digest: Option<String>,
     pub evaluation_suite_digest: String,
+    /// Which frozen base model this policy was learned against.
+    ///
+    /// Required since schema 3. Documents migrated from schema 2 carry
+    /// [`BaseModelId::unspecified`], which is well-formed but never admissible for an authority
+    /// decision - schema 2 did not record the field, so there is nothing to recover.
+    pub base_model: BaseModelId,
 }
 
 impl PolicyManifest {
@@ -438,6 +444,7 @@ impl PolicyManifest {
             return Err(ContractError::UnsupportedSchema(self.schema_version));
         }
         self.policy.validate()?;
+        self.base_model.validate()?;
         if self.artifact_locator.trim().is_empty() {
             return Err(ContractError::MissingArtifactLocator);
         }
@@ -1193,6 +1200,7 @@ mod tests {
             required_capabilities: BTreeSet::new(),
             training_dataset_digest: None,
             evaluation_suite_digest: D.into(),
+            base_model: crate::BaseModelId::unspecified(),
         };
         assert!(matches!(
             manifest.validate(),

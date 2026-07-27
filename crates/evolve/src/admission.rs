@@ -260,6 +260,7 @@ mod tests {
             required_capabilities: capabilities(required),
             training_dataset_digest: None,
             evaluation_suite_digest: D.into(),
+            base_model: crate::BaseModelId::unspecified(),
         }
     }
 

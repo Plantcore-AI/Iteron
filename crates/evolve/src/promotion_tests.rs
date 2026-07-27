@@ -219,6 +219,7 @@ fn manifest(
         required_capabilities: BTreeSet::new(),
         training_dataset_digest: Some(training_digest.into()),
         evaluation_suite_digest: evaluation_digest.into(),
+        base_model: crate::BaseModelId::unspecified(),
     }
 }
 

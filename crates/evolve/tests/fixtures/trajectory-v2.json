@@ -1,0 +1,40 @@
+{
+  "schema_version": 2,
+  "run_id": "run-legacy-v1",
+  "tenant_id": "default",
+  "task_id": "task-legacy-v1",
+  "domain": "coding",
+  "environment_digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "bundle": {
+    "bundle_id": "bundle-legacy-v1",
+    "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "policies": [
+      {
+        "slot": "core/router",
+        "policy_id": "legacy-router",
+        "version": "1.0.0",
+        "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    ],
+    "rollback_to": null
+  },
+  "decisions": [],
+  "terminal_outcome": "completed",
+  "reward": {
+    "task_score": 1.0,
+    "correctness": 1.0,
+    "safety_violations": 0,
+    "policy_violations": 0,
+    "cost_usd": 0.01,
+    "wall_time_ms": 10,
+    "human_acceptance": null,
+    "domain": {}
+  },
+  "governance": {
+    "class": "public",
+    "consent": "allowed",
+    "content_license": "apache-2.0",
+    "contains_secret_material": false,
+    "retention_policy": "legacy-training-v1"
+  }
+}

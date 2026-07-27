@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeSet;
 
-pub const EVOLUTION_PREVIOUS_SCHEMA_VERSION: u16 = 1;
+pub const EVOLUTION_PREVIOUS_SCHEMA_VERSION: u16 = 2;
 pub const MAX_POLICY_MANIFEST_JSON_BYTES: usize = 256 * 1024;
 pub const MAX_TRAJECTORY_JSON_BYTES: usize = 16 * 1024 * 1024;
 
@@ -129,8 +129,8 @@ impl PolicyManifest {
         match schema_version(bytes, document, MAX_POLICY_MANIFEST_JSON_BYTES)? {
             EVOLUTION_SCHEMA_VERSION => validate_manifest(decode_json(bytes, document)?),
             EVOLUTION_PREVIOUS_SCHEMA_VERSION => {
-                let legacy: PolicyManifestV1 = decode_json(bytes, document)?;
-                validate_manifest(migrate_policy_manifest_v1(legacy))
+                let legacy: PolicyManifestV2 = decode_json(bytes, document)?;
+                validate_manifest(migrate_policy_manifest_v2(legacy))
             }
             found if found > EVOLUTION_SCHEMA_VERSION => Err(EvolutionLoadError::FutureSchema {
                 document,
@@ -171,7 +171,7 @@ impl TrajectoryEnvelope {
 }
 
 #[derive(Deserialize)]
-struct PolicyManifestV1 {
+struct PolicyManifestV2 {
     schema_version: u16,
     policy: PolicyRef,
     artifact_kind: ArtifactKind,
@@ -184,7 +184,10 @@ struct PolicyManifestV1 {
     evaluation_suite_digest: String,
 }
 
-fn migrate_policy_manifest_v1(legacy: PolicyManifestV1) -> PolicyManifest {
+/// Schema 2 documents carry no base model. The migration mints the reserved sentinel rather
+/// than guessing one: the resulting manifest loads and validates, and is permanently
+/// inadmissible for promotion, transfer, or held-out evidence.
+fn migrate_policy_manifest_v2(legacy: PolicyManifestV2) -> PolicyManifest {
     debug_assert_eq!(legacy.schema_version, EVOLUTION_PREVIOUS_SCHEMA_VERSION);
     PolicyManifest {
         schema_version: EVOLUTION_SCHEMA_VERSION,
@@ -197,6 +200,7 @@ fn migrate_policy_manifest_v1(legacy: PolicyManifestV1) -> PolicyManifest {
         required_capabilities: legacy.required_capabilities,
         training_dataset_digest: legacy.training_dataset_digest,
         evaluation_suite_digest: legacy.evaluation_suite_digest,
+        base_model: crate::BaseModelId::unspecified(),
     }
 }
 
@@ -238,24 +242,60 @@ mod tests {
 
     const MANIFEST_V1: &[u8] = include_bytes!("../tests/fixtures/policy-manifest-v1.json");
     const TRAJECTORY_V1: &[u8] = include_bytes!("../tests/fixtures/trajectory-v1.json");
+    const MANIFEST_V2: &[u8] = include_bytes!("../tests/fixtures/policy-manifest-v2.json");
+    const TRAJECTORY_V2: &[u8] = include_bytes!("../tests/fixtures/trajectory-v2.json");
 
     #[test]
-    fn schema_v1_fixtures_migrate_and_round_trip_as_current() {
-        let manifest = PolicyManifest::load_json(MANIFEST_V1).unwrap();
+    fn schema_v2_fixtures_migrate_and_round_trip_as_current() {
+        let manifest = PolicyManifest::load_json(MANIFEST_V2).unwrap();
         assert_eq!(manifest.schema_version, EVOLUTION_SCHEMA_VERSION);
+        assert!(
+            manifest.base_model.is_unspecified(),
+            "schema 2 recorded no base model, so the migration must mint the sentinel"
+        );
+        assert!(
+            !manifest.base_model.is_admissible(),
+            "and a migrated manifest must never carry authority it cannot substantiate"
+        );
+        assert!(
+            manifest.validate().is_ok(),
+            "yet it is still a well-formed document that loads"
+        );
         let manifest_current = serde_json::to_vec(&manifest).unwrap();
         assert_eq!(
             PolicyManifest::load_json(&manifest_current).unwrap(),
             manifest
         );
 
-        let trajectory = TrajectoryEnvelope::load_json(TRAJECTORY_V1).unwrap();
+        let trajectory = TrajectoryEnvelope::load_json(TRAJECTORY_V2).unwrap();
         assert_eq!(trajectory.schema_version, EVOLUTION_SCHEMA_VERSION);
         let trajectory_current = serde_json::to_vec(&trajectory).unwrap();
         assert_eq!(
             TrajectoryEnvelope::load_json(&trajectory_current).unwrap(),
             trajectory
         );
+    }
+
+    #[test]
+    fn schema_v1_left_support_when_the_window_moved_and_says_so_rather_than_guessing() {
+        // The loader migrates exactly N-1. Moving current to 3 moved N-1 to 2, so schema 1 is
+        // now outside the window. That is a real consequence of this freeze and it is asserted
+        // here rather than left to be discovered by whoever still holds a v1 document: the
+        // failure is typed and names the oldest supported version.
+        assert!(matches!(
+            PolicyManifest::load_json(MANIFEST_V1),
+            Err(EvolutionLoadError::UnsupportedSchema {
+                oldest_supported: EVOLUTION_PREVIOUS_SCHEMA_VERSION,
+                ..
+            })
+        ));
+        assert!(matches!(
+            TrajectoryEnvelope::load_json(TRAJECTORY_V1),
+            Err(EvolutionLoadError::UnsupportedSchema {
+                oldest_supported: EVOLUTION_PREVIOUS_SCHEMA_VERSION,
+                ..
+            })
+        ));
     }
 
     #[test]

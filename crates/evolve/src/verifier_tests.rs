@@ -123,6 +123,7 @@ fn manifest(artifact: &[u8], training_digest: &str, evaluation_digest: &str) -> 
             digest: sha256_hex(artifact),
         },
         artifact_kind: ArtifactKind::Rules,
+        base_model: crate::BaseModelId::unspecified(),
         artifact_locator: "registry://candidate-a@2.0.0".into(),
         parent: None,
         method: EvolutionMethod::Search,
