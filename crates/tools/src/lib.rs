@@ -25,6 +25,7 @@ mod schema_error;
 mod shell;
 mod skill;
 mod web;
+mod workflow_tool;
 mod write_file;
 
 pub use edit::apply_unique_edit;
@@ -168,6 +169,9 @@ impl Registry {
         // never auto-approves them (ADR-007 §3) and they are absent from the read_only subagent set.
         web::register(&mut r)?;
         register_dispatch_agent(&mut r)?;
+        // The Workflow launch tool is a WRITER-only surface: it fans out real sub-agents, so it is
+        // registered here and deliberately absent from `read_only` (design §4.1).
+        workflow_tool::register(&mut r)?;
         Ok(r)
     }
 
@@ -469,6 +473,11 @@ impl Registry {
 /// The name the kernel intercepts to spawn a read-only subagent (ADR-001 fan-out). Registered
 /// here only so the model sees the spec; its executor is never run (the kernel handles it).
 pub const DISPATCH_AGENT: &str = "dispatch_agent";
+
+/// The name the kernel intercepts to launch an in-turn ultracode workflow (parallels
+/// [`DISPATCH_AGENT`]). Registered only in the writer registry; the kernel handles it by name so the
+/// registered executor's fallback message is only reached by a non-kernel caller.
+pub use workflow_tool::WORKFLOW_TOOL;
 
 fn register_dispatch_agent(r: &mut Registry) -> Result<(), ToolError> {
     r.push_tool(

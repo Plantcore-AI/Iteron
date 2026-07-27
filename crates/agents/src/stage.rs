@@ -72,9 +72,10 @@ impl AgentTask {
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
     /// Fan topology with a join barrier: N read-only investigators, `Governor`-capped at
-    /// `FAN_CAP`, whose results are read in DECLARATION order. The current kernel executes workers
-    /// sequentially; `Fan` describes isolation and synthesis topology, not a latency claim. Reduce
-    /// waits for every admitted worker — never the first finisher.
+    /// `min(FAN_CAP, cores-2, admitted)`, whose results are read in DECLARATION order. The kernel
+    /// runs the workers bounded-concurrent (owned tasks under the permit cap); `Fan` describes
+    /// isolation and synthesis topology, and Reduce waits for every admitted worker — never the
+    /// first finisher, so completion order never leaks into the writer decision.
     Fan { tasks: Vec<AgentTask> },
     /// The single writer consumes the ordered fan bundle. In core this IS the parent writer, not
     /// a separate agent — one synthesizer, and it is the one writer (ADR-001).

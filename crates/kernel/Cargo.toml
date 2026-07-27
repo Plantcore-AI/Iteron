@@ -16,11 +16,13 @@ core-agents = { path = "../agents" }
 core-ctx = { path = "../ctx" }
 core-verify = { path = "../verify" }
 core-sandbox = { path = "../sandbox" }
+core-workflow = { path = "../workflow" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 sha2 = { workspace = true }
+async-trait = "0.1"
 
 [dev-dependencies]
 async-trait = "0.1"

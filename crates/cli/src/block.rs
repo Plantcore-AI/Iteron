@@ -10,6 +10,7 @@ use crate::render::{RenderedLines, line_width, wrap_spans};
 use crate::theme::Theme;
 use crate::tui::hyperlink::Policy as HyperlinkPolicy;
 use core_protocol::{DiffTag, FileDiff};
+use core_workflow::events::{self, ProgressEvent, WorkflowState};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::{Duration, Instant};
@@ -18,6 +19,12 @@ use std::time::{Duration, Instant};
 /// frame counts against the same counter, a latent drift bug). These are Claude Code's OWN macOS
 /// frames (`· ✢ ✳ ✶ ✻ ✽`) — every glyph is a guaranteed width-1 dingbat (TUI v3 §2).
 pub const SPINNER: [&str; 6] = ["·", "✢", "✳", "✶", "✻", "✽"];
+
+/// Claude Code's braille-dot activity spinner (WORKFLOW-REPLICATION-DESIGN.md §3.3), advanced every
+/// ~80ms. Drives the live phase→agent tree's running indicators (the QuickJS `core-workflow` runtime,
+/// distinct from the native ultracode `SPINNER` above). Every frame is a guaranteed width-1 glyph.
+pub const BRAILLE_SPINNER: [&str; 10] =
+    ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// The primary machine-line marker (TUI v3 §1/§2). Claude Code ships `⏺` (U+23FA) on macOS and falls
 /// back to `●` (U+25CF) elsewhere — precisely because `⏺` has emoji-presentation (double-width) on
@@ -189,6 +196,187 @@ pub struct WorkflowCard {
     pub open: bool,
 }
 
+// ---------------------------------------------------------------------------------------------
+// QuickJS `core-workflow` live tree (WORKFLOW-REPLICATION-DESIGN.md §3.3)
+//
+// This is a SEPARATE projection from the native-ultracode `WorkflowCard` above: it consumes the
+// `core_workflow::events::ProgressEvent` stream (`agent()`/`parallel()`/`phase()`/`log()` runtime)
+// and renders Claude Code's phase-box tree. The native card keeps its own flat connector tree.
+// ---------------------------------------------------------------------------------------------
+
+/// One `phase(title)` group, in 1-based first-seen order (`ProgressEvent::Phase`).
+#[derive(Debug, Clone)]
+pub struct WorkflowRunPhase {
+    pub index: usize,
+    pub title: String,
+}
+
+/// One `agent()` row. State is the engine's own 5-state semantic model (reused, not duplicated).
+#[derive(Debug, Clone)]
+pub struct WorkflowRunAgent {
+    pub index: usize,
+    pub label: String,
+    /// 1-based phase group; `0` = ungrouped (renders in the flat-list fallback).
+    pub phase_index: usize,
+    pub state: WorkflowState,
+    pub agent_type: Option<String>,
+    pub model: Option<String>,
+    pub tokens: u64,
+    pub tool_calls: u64,
+    /// The live tool line for a running child (`last_tool_summary`, ≤60 chars at the emitter).
+    pub last_tool_summary: Option<String>,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+}
+
+impl WorkflowRunAgent {
+    fn finished(&self) -> bool {
+        matches!(
+            self.state,
+            WorkflowState::Done | WorkflowState::Error | WorkflowState::Skipped
+        )
+    }
+}
+
+/// The live QuickJS-workflow phase→agent tree, keyed by run id and mutated in place by
+/// [`Self::ingest`] (the upsert-by-index the design §3.2 store performs). One card per run.
+pub struct WorkflowRunCard {
+    pub run_id: String,
+    pub name: String,
+    pub phases: Vec<WorkflowRunPhase>,
+    pub agents: Vec<WorkflowRunAgent>,
+    pub logs: Vec<String>,
+    pub finished: bool,
+    /// Verbose toggle: false collapses finished agents to a dim `✔ n done` line (design §3.3).
+    pub verbose: bool,
+    /// Last `phase()` seen — the group an `agent()` without an explicit `opts.phase` falls into.
+    current_phase: usize,
+}
+
+impl WorkflowRunCard {
+    pub fn new(run_id: impl Into<String>, name: impl Into<String>) -> Self {
+        WorkflowRunCard {
+            run_id: run_id.into(),
+            name: name.into(),
+            phases: Vec::new(),
+            agents: Vec::new(),
+            logs: Vec::new(),
+            finished: false,
+            verbose: false,
+            current_phase: 0,
+        }
+    }
+
+    /// Resolve an agent's group: an explicit `opts.phase` title binds to (or registers) a phase;
+    /// otherwise the agent falls into the phase active when it started.
+    fn resolve_phase(&mut self, phase: Option<String>) -> usize {
+        match phase {
+            Some(title) if !title.is_empty() => {
+                if let Some(existing) = self.phases.iter().find(|p| p.title == title) {
+                    existing.index
+                } else {
+                    let index = self.phases.iter().map(|p| p.index).max().unwrap_or(0) + 1;
+                    self.phases.push(WorkflowRunPhase { index, title });
+                    index
+                }
+            }
+            _ => self.current_phase,
+        }
+    }
+
+    /// Find (or insert, keeping index order) the row for `index`.
+    fn agent_mut(&mut self, index: usize) -> &mut WorkflowRunAgent {
+        if let Some(pos) = self.agents.iter().position(|a| a.index == index) {
+            return &mut self.agents[pos];
+        }
+        let row = WorkflowRunAgent {
+            index,
+            label: String::new(),
+            phase_index: self.current_phase,
+            state: WorkflowState::Queued,
+            agent_type: None,
+            model: None,
+            tokens: 0,
+            tool_calls: 0,
+            last_tool_summary: None,
+            duration_ms: 0,
+            error: None,
+        };
+        let pos = self
+            .agents
+            .iter()
+            .position(|a| a.index > index)
+            .unwrap_or(self.agents.len());
+        self.agents.insert(pos, row);
+        &mut self.agents[pos]
+    }
+
+    /// Upsert one engine progress event into the live tree (the design §3.2 store step). `ingest`
+    /// alone never marks the run finished — the run driver flips `finished` when the engine future
+    /// resolves.
+    pub fn ingest(&mut self, event: ProgressEvent) {
+        match event {
+            ProgressEvent::Phase { index, title } => {
+                if !self.phases.iter().any(|p| p.index == index) {
+                    self.phases.push(WorkflowRunPhase { index, title });
+                }
+                self.current_phase = index;
+            }
+            ProgressEvent::Log { message } => self.logs.push(message),
+            ProgressEvent::AgentStarted {
+                index,
+                label,
+                phase,
+                model,
+            } => {
+                let phase_index = self.resolve_phase(phase);
+                let agent = self.agent_mut(index);
+                agent.label = label;
+                agent.model = model;
+                agent.phase_index = phase_index;
+                agent.state = WorkflowState::Running;
+            }
+            ProgressEvent::AgentActivity {
+                index,
+                tokens,
+                tool_calls,
+                last_tool_summary,
+            } => {
+                let agent = self.agent_mut(index);
+                agent.tokens = tokens;
+                agent.tool_calls = tool_calls;
+                if last_tool_summary.is_some() {
+                    agent.last_tool_summary = last_tool_summary;
+                }
+            }
+            ProgressEvent::AgentFinished {
+                index,
+                label,
+                state,
+                tokens,
+                tool_calls,
+                duration_ms,
+                result_preview: _,
+                last_tool_summary,
+                error,
+            } => {
+                let agent = self.agent_mut(index);
+                if !label.is_empty() {
+                    agent.label = label;
+                }
+                agent.state = state;
+                agent.tokens = tokens;
+                agent.tool_calls = tool_calls;
+                agent.duration_ms = duration_ms;
+                agent.error = error;
+                if last_tool_summary.is_some() {
+                    agent.last_tool_summary = last_tool_summary;
+                }
+            }
+        }
+    }
+}
+
 /// A typed row inside a `Panel` (structured command output). NO free-styled-text row — that would be
 /// `Log` in disguise (C7). Command output uses these three shapes only.
 pub enum PanelRow {
@@ -211,6 +399,11 @@ pub enum BlockKind {
     Tool(ToolCard),
     /// A live, id-correlated workflow/agent tree (ultracode today; generic workflow vocabulary).
     Workflow(WorkflowCard),
+    /// The live QuickJS `core-workflow` phase→agent tree (design §3.3), fed by `ProgressEvent`s.
+    /// Constructed by the interactive-REPL seam (`App::workflow_run_event`) once an M9 launch path
+    /// exists; the one-shot `core workflow run` live loop renders its `WorkflowRunCard` directly.
+    #[allow(dead_code)]
+    WorkflowRun(WorkflowRunCard),
     /// A one-line harness hint / confirmation (its level sets color + glyph).
     Notice {
         level: NoticeLevel,
@@ -263,6 +456,7 @@ impl Block {
         match &self.kind {
             BlockKind::Tool(card) => card.status != ToolStatus::Running,
             BlockKind::Workflow(card) => card.status.is_terminal(),
+            BlockKind::WorkflowRun(card) => card.finished,
             _ => true,
         }
     }
@@ -316,6 +510,34 @@ impl Block {
                         "- {} tasks omitted by the fan limit\n",
                         card.dropped
                     ));
+                }
+                s
+            }
+            BlockKind::WorkflowRun(card) => {
+                let mut s = format!("## workflow \"{}\" ({})\n", card.name, card.run_id);
+                for phase in &card.phases {
+                    s.push_str(&format!("### {} ({})\n", phase.title, phase.index));
+                }
+                for agent in &card.agents {
+                    let state = match agent.state {
+                        WorkflowState::Queued => "queued",
+                        WorkflowState::Running => "running",
+                        WorkflowState::Done => "done",
+                        WorkflowState::Error => "error",
+                        WorkflowState::Skipped => "skipped",
+                    };
+                    s.push_str(&format!(
+                        "- #{} {} — {} ({} tok, {} tools, {})\n",
+                        agent.index,
+                        agent.label,
+                        state,
+                        events::fmt_count(agent.tokens),
+                        agent.tool_calls,
+                        events::fmt_duration(agent.duration_ms)
+                    ));
+                    if let Some(error) = &agent.error {
+                        s.push_str(&format!("  reason: {error}\n"));
+                    }
                 }
                 s
             }
@@ -423,6 +645,7 @@ impl Block {
             BlockKind::Thinking { text, open } => render_thinking(text, *open, width, theme),
             BlockKind::Tool(card) => render_tool(card, width, theme, spin),
             BlockKind::Workflow(card) => render_workflow(card, width, theme, spin),
+            BlockKind::WorkflowRun(card) => render_workflow_run(card, width, theme, spin),
             BlockKind::Notice { level, text } => render_notice(*level, text, width, theme),
             BlockKind::Error {
                 title,
@@ -514,8 +737,8 @@ pub(crate) fn render_assistant_doc_with_hyperlinks(
 /// tighten to 0; a real conversational turn boundary (user or assistant after tool activity) breathes.
 pub fn gap_before(prev: &BlockKind, next: &BlockKind) -> u16 {
     use BlockKind::*;
-    let prev_toolish = matches!(prev, Tool(_) | Workflow(_) | Diff(_) | Notice { .. });
-    let next_toolish = matches!(next, Tool(_) | Workflow(_) | Diff(_) | Notice { .. });
+    let prev_toolish = matches!(prev, Tool(_) | Workflow(_) | WorkflowRun(_) | Diff(_) | Notice { .. });
+    let next_toolish = matches!(next, Tool(_) | Workflow(_) | WorkflowRun(_) | Diff(_) | Notice { .. });
     // consecutive tool activity / notices stay tight
     if prev_toolish && next_toolish {
         return 0;
@@ -826,14 +1049,18 @@ fn render_workflow(
 
         if width >= 80
             && running
-            && card.execution_mode == core_kernel::WorkflowExecutionModeUi::Sequential
+            && card.execution_mode != core_kernel::WorkflowExecutionModeUi::Direct
         {
+            let posture = match card.execution_mode {
+                core_kernel::WorkflowExecutionModeUi::Concurrent => "concurrent",
+                _ => "sequential",
+            };
             rows.push(vec![
                 Span::styled("│  ", Style::default().fg(theme.faint)),
                 Span::styled("RESERVE  ", Style::default().fg(theme.faint)),
                 Span::styled(
                     format!(
-                        "{} fan / {} writer turns · sequential",
+                        "{} fan / {} writer turns · {posture}",
                         card.fan_turn_budget, card.writer_turn_reserve
                     ),
                     Style::default().fg(theme.muted),
@@ -960,6 +1187,345 @@ fn render_workflow(
         ]);
     }
     out.extend(connector_lines(&rows, width, theme));
+    out
+}
+
+/// The current braille spinner frame (advanced ~80ms by the caller).
+fn braille_frame(spin: usize) -> &'static str {
+    BRAILLE_SPINNER[spin % BRAILLE_SPINNER.len()]
+}
+
+/// A row's state glyph + its optional color. Per design §3.3 glyphs are colored ONLY when finished;
+/// a running row shows the animated braille frame (the §3.3 spinner), a queued row a static `⟳` —
+/// both uncolored. `None` color means "render in the passive muted hue".
+fn run_state_glyph(state: WorkflowState, spin: usize, theme: &Theme) -> (String, Option<Color>) {
+    match state {
+        WorkflowState::Done => ("\u{2714}".into(), Some(theme.success)), // ✔
+        WorkflowState::Error => ("\u{2718}".into(), Some(theme.error)),  // ✘
+        WorkflowState::Skipped => ("\u{2298}".into(), Some(theme.warn)), // ⊘
+        WorkflowState::Running => (braille_frame(spin).into(), None),
+        WorkflowState::Queued => ("\u{27f3}".into(), None), // ⟳
+    }
+}
+
+/// The dim `·`-joined meta trailer (design §3.3): `[agentType, model, "<Na> tok", "<n> tool(s)",
+/// duration]`, plus a running child's live tool line. `None` for a finished row with nothing to show;
+/// `Some("…running")` for an active row that has not reported any metric yet.
+fn agent_meta_string(agent: &WorkflowRunAgent) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(t) = &agent.agent_type {
+        parts.push(t.clone());
+    }
+    if let Some(m) = &agent.model {
+        parts.push(m.clone());
+    }
+    if agent.tokens > 0 {
+        parts.push(format!("{} tok", events::fmt_count(agent.tokens)));
+    }
+    if agent.tool_calls > 0 {
+        let noun = if agent.tool_calls == 1 { "tool" } else { "tools" };
+        parts.push(format!("{} {noun}", agent.tool_calls));
+    }
+    if agent.finished() {
+        parts.push(events::fmt_duration(agent.duration_ms));
+    } else if let Some(tool) = &agent.last_tool_summary {
+        // The live tool line — the running child's most recent tool_use, summarized (≤60 chars).
+        parts.push(tool.clone());
+    }
+    if parts.is_empty() {
+        if agent.finished() {
+            None
+        } else {
+            Some("\u{2026}running".into()) // …running
+        }
+    } else {
+        Some(parts.join(" \u{b7} "))
+    }
+}
+
+/// Build the branch rows for one group of agents (design §3.3 collapse + row grammar). Non-verbose
+/// collapses finished (`Done`) agents into one dim `✔ n done` line; everything not-yet-done stays
+/// visible so failures/liveness never disappear. Verbose shows every row.
+fn agent_row_lines(
+    agents: &[&WorkflowRunAgent],
+    theme: &Theme,
+    spin: usize,
+    verbose: bool,
+) -> Vec<Vec<Span<'static>>> {
+    let done_count = agents
+        .iter()
+        .filter(|a| a.state == WorkflowState::Done)
+        .count();
+    let visible: Vec<&&WorkflowRunAgent> = if verbose {
+        agents.iter().collect()
+    } else {
+        agents
+            .iter()
+            .filter(|a| a.state != WorkflowState::Done)
+            .collect()
+    };
+
+    let mut lines: Vec<Vec<Span<'static>>> = Vec::new();
+    if !verbose && done_count > 0 {
+        lines.push(vec![
+            Span::styled("\u{2714} ", Style::default().fg(theme.success)),
+            Span::styled(
+                format!("{done_count} done"),
+                Style::default().fg(theme.faint).add_modifier(Modifier::DIM),
+            ),
+        ]);
+    }
+
+    let n = visible.len();
+    for (i, agent) in visible.iter().enumerate() {
+        let last = i + 1 == n;
+        let branch = if last { "\u{2514}\u{2500} " } else { "\u{251c}\u{2500} " }; // └─ / ├─
+        let (glyph, gcolor) = run_state_glyph(agent.state, spin, theme);
+        let glyph_style = Style::default().fg(gcolor.unwrap_or(theme.muted));
+        // Active rows dim their label; a finished row brightens to the normal fg.
+        let label_style = if agent.finished() {
+            Style::default().fg(theme.fg)
+        } else {
+            Style::default().fg(theme.muted).add_modifier(Modifier::DIM)
+        };
+        let mut row = vec![
+            Span::styled(branch.to_string(), Style::default().fg(theme.faint)),
+            Span::styled(format!("{glyph} "), glyph_style),
+            Span::styled(agent.label.clone(), label_style),
+        ];
+        if let Some(meta) = agent_meta_string(agent) {
+            row.push(Span::styled(
+                format!(" \u{b7} {meta}"),
+                Style::default().fg(theme.faint).add_modifier(Modifier::DIM),
+            ));
+        }
+        if agent.state == WorkflowState::Error
+            && let Some(err) = &agent.error
+        {
+            row.push(Span::styled(
+                format!(" \u{2014} {err}"), // — <error>
+                Style::default().fg(theme.error),
+            ));
+        }
+        lines.push(row);
+    }
+    lines
+}
+
+/// Truncate `spans` to exactly `width` display columns, padding with spaces — so a bordered box's
+/// right edge stays aligned regardless of styled/variable-width content.
+fn fit_spans(spans: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut used: u16 = 0;
+    for span in spans {
+        if used >= width {
+            break;
+        }
+        let mut piece = String::new();
+        for ch in span.content.chars() {
+            let cw = crate::tui::char_width(ch);
+            if used + cw > width {
+                break;
+            }
+            piece.push(ch);
+            used += cw;
+        }
+        if !piece.is_empty() {
+            out.push(Span::styled(piece, span.style));
+        }
+    }
+    if used < width {
+        out.push(Span::raw(" ".repeat((width - used) as usize)));
+    }
+    out
+}
+
+/// Wrap a header line + body rows in a single-border box (design §3.3 phase box). Content is fit to
+/// the inner width so the `╭─╮ │ … │ ╰─╯` frame stays rectangular.
+fn phase_box(
+    header: Vec<Span<'static>>,
+    rows: Vec<Vec<Span<'static>>>,
+    width: u16,
+    border: Color,
+) -> Vec<Line<'static>> {
+    let inner = width.saturating_sub(4).max(1); // "│ " + content + " │"
+    let bs = Style::default().fg(border);
+    let bar = "\u{2500}".repeat((inner + 2) as usize);
+    let mut out = Vec::new();
+    out.push(Line::from(Span::styled(
+        format!("\u{256d}{bar}\u{256e}"),
+        bs,
+    ))); // ╭─╮
+    let mut line = vec![Span::styled("\u{2502} ".to_string(), bs)];
+    line.extend(fit_spans(header, inner));
+    line.push(Span::styled(" \u{2502}".to_string(), bs));
+    out.push(Line::from(line));
+    for row in rows {
+        let mut line = vec![Span::styled("\u{2502} ".to_string(), bs)];
+        line.extend(fit_spans(row, inner));
+        line.push(Span::styled(" \u{2502}".to_string(), bs));
+        out.push(Line::from(line));
+    }
+    out.push(Line::from(Span::styled(
+        format!("\u{2570}{bar}\u{256f}"),
+        bs,
+    ))); // ╰─╯
+    out
+}
+
+/// Render one phase box: `<bold title>  <glyph> <done>/<total>[ · <sharedModel>][ · <n> failed]`
+/// header + the agent branch rows (design §3.3).
+fn render_phase_box(
+    phase: Option<&WorkflowRunPhase>,
+    agents: &[&WorkflowRunAgent],
+    card: &WorkflowRunCard,
+    width: u16,
+    theme: &Theme,
+    spin: usize,
+) -> Vec<Line<'static>> {
+    let total = agents.len();
+    let done = agents
+        .iter()
+        .filter(|a| a.state == WorkflowState::Done)
+        .count();
+    let error = agents
+        .iter()
+        .filter(|a| a.state == WorkflowState::Error)
+        .count();
+    let complete = total > 0 && agents.iter().all(|a| a.finished());
+    let (hglyph, hcolor) = if complete {
+        if error > 0 {
+            ("\u{2718}".to_string(), theme.error) // ✘
+        } else {
+            ("\u{2714}".to_string(), theme.success) // ✔
+        }
+    } else {
+        (braille_frame(spin).to_string(), theme.muted) // running spinner, uncolored
+    };
+    // sharedModel: only when every agent reports the same model.
+    let shared_model = agents.first().and_then(|a| a.model.clone()).filter(|m| {
+        agents
+            .iter()
+            .all(|a| a.model.as_deref() == Some(m.as_str()))
+    });
+
+    let title = phase
+        .map(|p| p.title.clone())
+        .unwrap_or_else(|| "agents".to_string());
+    let mut header = vec![
+        Span::styled(
+            title,
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(format!("{hglyph} "), Style::default().fg(hcolor)),
+        Span::styled(format!("{done}/{total}"), Style::default().fg(theme.muted)),
+    ];
+    if let Some(model) = &shared_model {
+        header.push(Span::styled(
+            format!(" \u{b7} {model}"),
+            Style::default().fg(theme.muted),
+        ));
+    }
+    if error > 0 {
+        header.push(Span::styled(
+            format!(" \u{b7} {error} failed"),
+            Style::default().fg(theme.error),
+        ));
+    }
+
+    let rows = agent_row_lines(agents, theme, spin, card.verbose);
+    // Border is `subtle` (grey) — the `permission`/blue child-phase variant needs a phase `kind`
+    // the current ProgressEvent set does not carry (design §6 fidelity note).
+    phase_box(header, rows, width, theme.border)
+}
+
+/// The live QuickJS `core-workflow` phase→agent tree (design §3.3). Consumes the accumulated
+/// `ProgressEvent`s already folded into `card` and renders Claude Code's look: a narrator line,
+/// per-phase single-border boxes (or a flat list when no phase indices exist), branch rows with
+/// state glyphs + dim meta, collapsed finished agents, and dim `↓` separators.
+pub(crate) fn render_workflow_run(
+    card: &WorkflowRunCard,
+    width: u16,
+    theme: &Theme,
+    spin: usize,
+) -> Vec<Line<'static>> {
+    let mut out: Vec<Line<'static>> = Vec::new();
+
+    // Narrator: newest log as `❯ <msg>`, up to two prior logs dim below, then a blank margin row.
+    if let Some(newest) = card.logs.last() {
+        out.push(Line::from(vec![
+            Span::styled(
+                "\u{276f} ", // ❯
+                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(newest.clone(), Style::default().fg(theme.fg)),
+        ]));
+        let end = card.logs.len().saturating_sub(1);
+        let start = card.logs.len().saturating_sub(3);
+        for msg in &card.logs[start..end] {
+            out.push(Line::from(vec![
+                Span::raw("   "),
+                Span::styled(
+                    msg.clone(),
+                    Style::default().fg(theme.faint).add_modifier(Modifier::DIM),
+                ),
+            ]));
+        }
+        out.push(Line::default());
+    }
+
+    let use_boxes =
+        width >= 24 && !card.phases.is_empty() && card.agents.iter().any(|a| a.phase_index > 0);
+
+    if use_boxes {
+        let mut ordered: Vec<&WorkflowRunPhase> = card.phases.iter().collect();
+        ordered.sort_by_key(|p| p.index);
+        let mut first = true;
+        for phase in ordered {
+            let agents: Vec<&WorkflowRunAgent> = card
+                .agents
+                .iter()
+                .filter(|a| a.phase_index == phase.index)
+                .collect();
+            if agents.is_empty() {
+                continue;
+            }
+            if !first {
+                out.push(Line::from(Span::styled(
+                    " \u{2193}", // ↓
+                    Style::default().fg(theme.faint),
+                )));
+            }
+            first = false;
+            out.extend(render_phase_box(Some(phase), &agents, card, width, theme, spin));
+        }
+        let orphans: Vec<&WorkflowRunAgent> =
+            card.agents.iter().filter(|a| a.phase_index == 0).collect();
+        if !orphans.is_empty() {
+            if !first {
+                out.push(Line::from(Span::styled(
+                    " \u{2193}",
+                    Style::default().fg(theme.faint),
+                )));
+            }
+            out.extend(render_phase_box(None, &orphans, card, width, theme, spin));
+        }
+    } else {
+        // Flat-list fallback: no boxes, just the branch rows (design §3.3 "falls back to a flat list
+        // when no agent has a phase index").
+        let agents: Vec<&WorkflowRunAgent> = card.agents.iter().collect();
+        for row in agent_row_lines(&agents, theme, spin, card.verbose) {
+            out.push(Line::from(row));
+        }
+        if card.agents.is_empty() {
+            out.push(Line::from(Span::styled(
+                "\u{2026}starting workflow", // …starting workflow
+                Style::default().fg(theme.faint).add_modifier(Modifier::DIM),
+            )));
+        }
+    }
+
     out
 }
 
@@ -3024,5 +3590,126 @@ mod tests {
         let narrow = plain(workflow.render(40, &theme, 0));
         assert!(narrow.contains("Ultracode · partial"));
         assert!(narrow.contains("failed"));
+    }
+
+    /// Drive a scripted `ProgressEvent` stream (2 phases, 3 agents, mixed running/done/error + a log
+    /// line) through the QuickJS-workflow card and assert the design §3.3 phase-box tree renders.
+    /// Prints the captured ASCII (run with `--nocapture` to see the actual look).
+    #[test]
+    fn workflow_run_tree_renders_phase_boxes() {
+        use core_workflow::events::WorkflowState;
+
+        let theme = Theme::dark();
+        let mut c = WorkflowRunCard::new("wf_demo", "audit");
+        c.ingest(ProgressEvent::Phase {
+            index: 1,
+            title: "Explore".into(),
+        });
+        c.ingest(ProgressEvent::Log {
+            message: "mapping the repository".into(),
+        });
+        c.ingest(ProgressEvent::AgentStarted {
+            index: 0,
+            label: "scan modules".into(),
+            phase: Some("Explore".into()),
+            model: Some("haiku".into()),
+        });
+        c.ingest(ProgressEvent::AgentActivity {
+            index: 0,
+            tokens: 1_234,
+            tool_calls: 3,
+            last_tool_summary: Some("rg \"fn main\"".into()),
+        });
+        c.ingest(ProgressEvent::AgentFinished {
+            index: 0,
+            label: "scan modules".into(),
+            state: WorkflowState::Done,
+            tokens: 1_234,
+            tool_calls: 3,
+            duration_ms: 3_200,
+            result_preview: None,
+            last_tool_summary: Some("rg \"fn main\"".into()),
+            error: None,
+        });
+        c.ingest(ProgressEvent::AgentStarted {
+            index: 1,
+            label: "probe API".into(),
+            phase: Some("Explore".into()),
+            model: Some("haiku".into()),
+        });
+        c.ingest(ProgressEvent::Log {
+            message: "synthesizing findings".into(),
+        });
+        c.ingest(ProgressEvent::Phase {
+            index: 2,
+            title: "Synthesize".into(),
+        });
+        c.ingest(ProgressEvent::AgentStarted {
+            index: 2,
+            label: "merge report".into(),
+            phase: Some("Synthesize".into()),
+            model: Some("sonnet".into()),
+        });
+        c.ingest(ProgressEvent::AgentFinished {
+            index: 2,
+            label: "merge report".into(),
+            state: WorkflowState::Error,
+            tokens: 800,
+            tool_calls: 0,
+            duration_ms: 5_000,
+            result_preview: None,
+            last_tool_summary: None,
+            error: Some("provider timeout".into()),
+        });
+
+        let width = 78u16;
+        let lines = render_workflow_run(&c, width, &theme, 0);
+        // Every rendered row fits the width (padded box lines land exactly at the border).
+        for line in &lines {
+            assert!(
+                line_width(line) <= width,
+                "workflow-run row exceeded width: {line:?}"
+            );
+        }
+        let text = plain(lines);
+        println!("\n===== workflow-run tree (width {width}) =====\n{text}\n=====");
+
+        // Narrator + phase boxes + rows + collapse + meta + error tail.
+        assert!(text.contains("\u{276f} synthesizing findings")); // ❯ newest log
+        assert!(text.contains("mapping the repository")); // prior log, dim
+        assert!(text.contains("\u{256d}") && text.contains("\u{256f}")); // box corners
+        assert!(text.contains("Explore") && text.contains("Synthesize"));
+        assert!(text.contains("1/2") && text.contains("0/1"));
+        assert!(text.contains("\u{b7} haiku")); // shared model in the Explore header
+        assert!(text.contains("1 failed"));
+        assert!(text.contains("\u{2714} 1 done")); // collapsed finished agent
+        assert!(text.contains("probe API"));
+        assert!(text.contains("merge report"));
+        assert!(text.contains("800 tok") && text.contains("5s"));
+        assert!(text.contains("\u{2014} provider timeout")); // — <error> tail
+        assert!(text.contains("\u{2193}")); // ↓ phase separator
+
+        // Verbose toggle reveals the collapsed done agent as a real row.
+        c.verbose = true;
+        let verbose = plain(render_workflow_run(&c, width, &theme, 0));
+        assert!(verbose.contains("scan modules"));
+        assert!(verbose.contains("1.2k tok")); // fmt_count k-suffix
+
+        // Prove it draws into a real ratatui frame (TestBackend), through the Block seam.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let block = Block::new(1, BlockKind::WorkflowRun(c));
+        let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                let para = ratatui::widgets::Paragraph::new(block.render(width, &theme, 0));
+                frame.render_widget(para, frame.area());
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let drawn: String = (0..buf.area.width)
+            .map(|x| buf[(x, 0)].symbol())
+            .collect();
+        assert!(drawn.contains('\u{276f}'), "narrator drew into the frame");
     }
 }

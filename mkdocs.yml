@@ -96,6 +96,17 @@ nav:
       - Effects and authority: concepts/effects-and-authority.md
       - Context, usage, and cost: concepts/context-usage-cost.md
       - Evolution boundary: concepts/evolution-boundary.md
+  - Specification:
+      - Overview: spec/index.md
+      - Conventions & terminology: spec/conventions.md
+      - Motivation & positioning: spec/positioning.md
+      - Architecture overview: spec/architecture-overview.md
+      - Microkernel (TCB): spec/microkernel.md
+      - Stable typed ABI: spec/abi.md
+      - Strategy modules & slots: spec/strategy-modules.md
+      - Evolution & PolicyManifest: spec/evolution.md
+      - Capability mapping: spec/capability-mapping.md
+      - Conformance & security: spec/conformance-and-security.md
   - Reference:
       - CLI: reference/cli.md
       - Slash commands: reference/slash-commands.md

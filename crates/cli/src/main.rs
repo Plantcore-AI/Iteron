@@ -19,6 +19,7 @@ mod render;
 mod surface;
 mod theme;
 mod tui;
+mod workflow;
 
 use clap::{Parser, Subcommand};
 use config::FileConfig;
@@ -65,10 +66,48 @@ impl Drop for StderrDiagnosticDrain {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 enum LocalCommand {
     /// Rebuild session metadata and the sessions index from hash-chained rollout truth.
     Reindex,
+    /// Run an ultracode workflow (.js) end-to-end, streaming progress to stdout.
+    Workflow {
+        #[command(subcommand)]
+        action: WorkflowAction,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+enum WorkflowAction {
+    /// Execute a workflow script now (agent()/parallel()/pipeline()/phase()/log()).
+    Run {
+        /// Path to the `.js` workflow script.
+        script: PathBuf,
+        /// JSON passed to the script as the ambient `args` (e.g. --args '{"n":3}').
+        #[arg(long)]
+        args: Option<String>,
+    },
+    /// List persisted workflow runs (id, status, agents, model) under the workflows dir.
+    List,
+    /// Resume a prior run by id, replaying its journaled agent outcomes and continuing (blocking).
+    Resume {
+        /// The prior run id (see `core workflow list`).
+        run_id: String,
+        /// Override the script source; defaults to the run's persisted `script.js`.
+        #[arg(long)]
+        script: Option<PathBuf>,
+        /// Override the ambient `args`; defaults to the run's persisted args.
+        #[arg(long)]
+        args: Option<String>,
+    },
+    /// Re-launch a prior run in the BACKGROUND (RunHandle) and attach the live tree to it.
+    Watch {
+        /// The prior run id (see `core workflow list`).
+        run_id: String,
+        /// Override the ambient `args`; defaults to the run's persisted args.
+        #[arg(long)]
+        args: Option<String>,
+    },
 }
 
 const SYSTEM_PROMPT: &str = "\
@@ -293,6 +332,13 @@ async fn run_cli() -> anyhow::Result<u8> {
             cli.runs_dir.display()
         );
         return Ok(output::EXIT_SUCCESS);
+    }
+
+    // `core workflow run <script.js>` — runs the ultracode-workflow engine directly. It needs a
+    // provider but none of the rollout/agent/genesis machinery, so it branches out before that setup.
+    if let Some(LocalCommand::Workflow { action }) = &cli.command {
+        let user_file = FileConfig::load_user()?;
+        return run_workflow_command(&cli, &repo, &user_file, action).await;
     }
 
     let mut registry = Registry::coding_agent(&repo)?;
@@ -1142,6 +1188,279 @@ async fn run_cli() -> anyhow::Result<u8> {
         return Err(anyhow::anyhow!("writing machine output: {error}"));
     }
     Ok(output::outcome_exit_code(&outcome))
+}
+
+fn parse_workflow_args(args: &Option<String>) -> anyhow::Result<serde_json::Value> {
+    match args {
+        Some(text) => serde_json::from_str(text)
+            .map_err(|error| anyhow::anyhow!("--args is not valid JSON: {error}")),
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+/// Build the DEFAULT workflow spawner: the real [`core_kernel::KernelSpawner`], so every `agent()`
+/// call runs a genuine child `Agent` (own context + read-only tool loop) via `run_leaf`. Set
+/// `CORE_WORKFLOW_SPAWNER=provider` to fall back to the first-slice single-completion `ProviderSpawner`.
+///
+/// The context is filled from the SAME resolved values the main agent path records
+/// (`record_model_selection` inputs): provider handle + model + `provider_id` + the catalog/capability
+/// digests from `ProviderDirectory::selection_digests`, the documented model window/output caps, the
+/// repo as workspace, and `<runs_dir>` as the runtime-state root (child rollouts land under
+/// `<runs_dir>/subagents/`). No USD ceiling is set, so `pricing_port` stays `None` (per #2's report:
+/// pricing is load-bearing only for a positive `budget.max_usd`).
+fn build_workflow_spawner(
+    provider_arc: std::sync::Arc<dyn core_provider::Provider>,
+    model: String,
+    selection: &providers::ModelSelection,
+    catalog_digest: String,
+    capability_digest: String,
+    caps: &providers::ModelCapabilities,
+    repo: &std::path::Path,
+    runs_dir: &std::path::Path,
+    parent_run_id: &str,
+    workflow_id: &str,
+) -> std::sync::Arc<dyn core_workflow::AgentSpawner> {
+    if config::env_string("CORE_WORKFLOW_SPAWNER").as_deref() == Some("provider") {
+        eprintln!("spawner: ProviderSpawner (single-completion fallback via CORE_WORKFLOW_SPAWNER)");
+        return std::sync::Arc::new(workflow::ProviderSpawner::new(provider_arc, model));
+    }
+    let mut cx = core_kernel::KernelSpawnerContext::new(
+        provider_arc,
+        model,
+        selection.provider_id.clone(),
+        catalog_digest,
+        capability_digest,
+        repo.to_path_buf(),
+        runs_dir.to_path_buf(),
+        TenantId::default(),
+        parent_run_id.to_string(),
+        workflow_id.to_string(),
+    );
+    cx.model_context_window = caps.context_window_tokens;
+    cx.model_max_output_tokens = caps.max_output_tokens;
+    std::sync::Arc::new(core_kernel::KernelSpawner::new(cx))
+}
+
+/// `core workflow <run|list|resume|watch>` — the ultracode-workflow surface. `run`/`resume`/`watch`
+/// resolve a provider (trusted precedence, no rollout/pricing machinery) and drive
+/// `core_workflow::WorkflowEngine` with the real [`core_kernel::KernelSpawner`]; `list` is pure
+/// enumeration. Journals + re-launch sidecars (`script.js`, `run.json`, `result.json`) persist under
+/// `<runs_dir>/subagents/workflows/<run_id>/`, so a run is listable + resumable by a later process.
+async fn run_workflow_command(
+    cli: &Cli,
+    repo: &std::path::Path,
+    user_file: &FileConfig,
+    action: &WorkflowAction,
+) -> anyhow::Result<u8> {
+    use std::io::IsTerminal;
+
+    // A relative `--runs-dir` resolves under the canonicalized repo so runs land in the project
+    // regardless of the invoking cwd. `<workflows_dir>` holds one directory per run.
+    let runs_dir = if cli.runs_dir.is_absolute() {
+        cli.runs_dir.clone()
+    } else {
+        repo.join(&cli.runs_dir)
+    };
+    let workflows_dir = runs_dir.join("subagents").join("workflows");
+
+    // `list` — enumerate persisted runs; needs no provider or API key.
+    if matches!(action, WorkflowAction::List) {
+        let runs = workflow::list_runs(&workflows_dir);
+        if runs.is_empty() {
+            eprintln!("no workflow runs in {}", workflows_dir.display());
+        } else {
+            for run in &runs {
+                println!(
+                    "{}  {:<8} agents={:<3} model={:<24} {}",
+                    run.run_id, run.status, run.agents, run.model, run.name
+                );
+            }
+        }
+        return Ok(output::EXIT_SUCCESS);
+    }
+
+    // Resolve script source + ambient args + this run's identity + resume source, per action.
+    // Resume/Watch continue a prior run IN PLACE (same run_id, resume_from == that id), so the run's
+    // journal both seeds the resume cache and receives new outcomes; the persisted `script.js` means
+    // no `--script` is required.
+    let (src, args_value, run_id, resume_from): (String, serde_json::Value, String, Option<String>) =
+        match action {
+            WorkflowAction::Run { script, args } => {
+                let src = std::fs::read_to_string(script).map_err(|error| {
+                    anyhow::anyhow!("cannot read workflow script {}: {error}", script.display())
+                })?;
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                let run_id = format!("wf_{}_{:x}", std::process::id(), nanos);
+                (src, parse_workflow_args(args)?, run_id, None)
+            }
+            WorkflowAction::Resume {
+                run_id,
+                script,
+                args,
+            } => {
+                let src = match script {
+                    Some(path) => std::fs::read_to_string(path).map_err(|error| {
+                        anyhow::anyhow!("cannot read workflow script {}: {error}", path.display())
+                    })?,
+                    None => workflow::load_script(&workflows_dir, run_id).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "run `{run_id}` has no persisted script; pass --script <path>"
+                        )
+                    })?,
+                };
+                let args_value = match args {
+                    Some(_) => parse_workflow_args(args)?,
+                    None => workflow::load_manifest(&workflows_dir, run_id)
+                        .map(|m| m.args)
+                        .unwrap_or(serde_json::Value::Null),
+                };
+                (src, args_value, run_id.clone(), Some(run_id.clone()))
+            }
+            WorkflowAction::Watch { run_id, args } => {
+                let src = workflow::load_script(&workflows_dir, run_id).ok_or_else(|| {
+                    anyhow::anyhow!("run `{run_id}` has no persisted script to watch")
+                })?;
+                let args_value = match args {
+                    Some(_) => parse_workflow_args(args)?,
+                    None => workflow::load_manifest(&workflows_dir, run_id)
+                        .map(|m| m.args)
+                        .unwrap_or(serde_json::Value::Null),
+                };
+                (src, args_value, run_id.clone(), Some(run_id.clone()))
+            }
+            WorkflowAction::List => unreachable!("handled above"),
+        };
+
+    // Provider selection with the same trusted precedence as a normal run (CLI > env > user config >
+    // built-in). Routing never consults the project config (untrusted origin).
+    let configured_providers = user_file.providers.clone().unwrap_or_default();
+    let (provider_name, _origin) = config::pick_trusted_string(
+        cli.provider.clone(),
+        config::env_string("CORE_PROVIDER"),
+        user_file.provider.clone(),
+        BUILTIN_DEFAULT_PROVIDER,
+    );
+    let provider_directory = providers::ProviderDirectory::discover(&configured_providers).await?;
+    let requested_model = cli
+        .model
+        .clone()
+        .or_else(|| config::env_string("CORE_MODEL"))
+        .or_else(|| user_file.model.clone());
+    let selection = match requested_model.as_deref() {
+        Some(model_id) => provider_directory
+            .resolve_model(model_id, Some(&provider_name))
+            .map_err(|error| anyhow::anyhow!("cannot resolve model: {error}"))?,
+        None => provider_directory
+            .default_selection(&provider_name)
+            .ok_or_else(|| anyhow::anyhow!("provider `{provider_name}` has no selectable model"))?,
+    };
+    let provider_arc = provider_directory
+        .build(&selection)
+        .map_err(|error| anyhow::anyhow!("selected provider/model is unavailable: {error}"))?;
+    let model = selection.model_id.clone();
+    // The exact route the children re-record (byte-for-byte the main path's `record_model_selection`
+    // inputs), plus the documented window/output caps the children inherit.
+    let (catalog_digest, capability_digest) = provider_directory.selection_digests(&selection);
+    let caps = provider_directory.selection_capabilities(&selection);
+
+    let meta = core_workflow::extract_meta(&src);
+    let name = meta
+        .as_ref()
+        .and_then(|meta| meta.name.clone())
+        .unwrap_or_else(|| "workflow".into());
+    eprintln!(
+        "workflow \u{b7} repo={} \u{b7} provider={} \u{b7} model={} \u{b7} run={run_id}",
+        repo.display(),
+        selection.provider_id,
+        model
+    );
+    if let Some(meta) = &meta {
+        match meta.description.as_deref() {
+            Some(desc) if !desc.is_empty() => eprintln!("summary: {name} - {desc}"),
+            _ => eprintln!("summary: {name}"),
+        }
+    }
+    eprintln!("{}", "-".repeat(72));
+
+    let spawner = build_workflow_spawner(
+        provider_arc,
+        model.clone(),
+        &selection,
+        catalog_digest,
+        capability_digest,
+        &caps,
+        repo,
+        &runs_dir,
+        &run_id,
+        &name,
+    );
+
+    // Persist the re-launchable inputs for a FRESH run BEFORE it starts (a crash still leaves a
+    // resumable record). Resume/Watch reuse the existing sidecars.
+    if resume_from.is_none() {
+        let manifest = workflow::RunManifest {
+            run_id: run_id.clone(),
+            name: name.clone(),
+            args: args_value.clone(),
+            provider_id: selection.provider_id.clone(),
+            model: model.clone(),
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        };
+        workflow::persist_inputs(&workflows_dir, &manifest, &src)?;
+    }
+
+    // Assemble the persisted RunSpec (journal under `<workflows_dir>/<run_id>/journal.jsonl`).
+    let mut spec = core_workflow::RunSpec::new(src.clone())
+        .with_args(args_value.clone())
+        .with_run_id(core_workflow::RunId::new(run_id.clone()))
+        .with_workflows_dir(workflows_dir.clone());
+    if let Some(prior) = &resume_from {
+        spec = spec.with_resume_from(core_workflow::RunId::new(prior.clone()));
+    }
+
+    let is_watch = matches!(action, WorkflowAction::Watch { .. });
+    let tty = std::io::stdout().is_terminal();
+
+    // TTY → the live phase→agent tree (design §3.3); pipe/CI → the plain per-line renderer (§3.5).
+    // `watch` uses the background `launch`→`RunHandle` path; `run`/`resume` use the blocking `execute`.
+    let report = if tty {
+        let environment = theme::capabilities::Environment::capture();
+        let detected = theme::Theme::detect_with(environment, None);
+        if is_watch {
+            workflow::watch_live(spec, spawner, &name, &detected.theme).await?
+        } else {
+            workflow::run_live(spec, spawner, &name, &detected.theme).await?
+        }
+    } else {
+        let sink: std::sync::Arc<dyn core_workflow::ProgressSink> =
+            std::sync::Arc::new(workflow::StdoutProgressSink::new());
+        let report = if is_watch {
+            let handle = core_workflow::WorkflowEngine::launch(spec, spawner, sink);
+            handle.join().await?
+        } else {
+            core_workflow::WorkflowEngine::execute(spec, spawner, sink).await?
+        };
+        eprintln!("{}", "-".repeat(72));
+        report
+    };
+
+    // Record the terminal outcome (enables `list` status + shows the value to a later reader).
+    workflow::persist_result(&workflows_dir, &run_id, &report)?;
+    eprintln!(
+        "run {run_id} \u{b7} {} \u{b7} cache {} hit / {} miss",
+        if report.stopped { "stopped" } else { "done" },
+        report.cache_hits,
+        report.cache_misses
+    );
+
+    println!("{}", serde_json::to_string_pretty(&report.value)?);
+    Ok(output::EXIT_SUCCESS)
 }
 
 #[cfg(test)]

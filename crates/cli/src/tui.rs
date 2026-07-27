@@ -628,6 +628,10 @@ struct App {
     pending_tools: VecDeque<PendingToolProjection>,
     /// workflow run id -> its one live card. Lifecycle events mutate this block in place.
     workflow_index: std::collections::HashMap<String, u64>,
+    /// QuickJS `core-workflow` run id -> its one live phase→agent tree card (design §3.2 store).
+    /// The interactive-REPL seam; live once an M9 launch path drives `workflow_run_event`.
+    #[allow(dead_code)]
+    workflow_run_index: std::collections::HashMap<String, u64>,
     /// The active color theme (ADR-015 §4).
     theme: theme::Theme,
     /// Captured once at startup; runtime `/theme` previews are projected to the same terminal depth.
@@ -753,6 +757,7 @@ impl App {
             tool_index: std::collections::HashMap::new(),
             pending_tools: VecDeque::new(),
             workflow_index: std::collections::HashMap::new(),
+            workflow_run_index: std::collections::HashMap::new(),
             theme,
             color_depth,
             theme_epoch: 0,
@@ -1496,6 +1501,52 @@ impl App {
         }
     }
 
+    #[allow(dead_code)] // REPL seam (see workflow_run_index); exercised by tests, live at M9.
+    fn workflow_run_card_mut(&mut self, run_id: &str) -> Option<&mut block::WorkflowRunCard> {
+        let block_id = *self.workflow_run_index.get(run_id)?;
+        self.transcript
+            .iter_mut()
+            .find(|block| block.id == block_id)
+            .and_then(|block| match &mut block.kind {
+                block::BlockKind::WorkflowRun(card) => Some(card),
+                _ => None,
+            })
+    }
+
+    /// Upsert one QuickJS `core-workflow` progress event into its one live phase→agent tree card
+    /// (design §3.2), creating the card on first sight of a run id. This is the interactive-TUI seam
+    /// for a workflow launched from the REPL; the one-shot `core workflow run` command drives an
+    /// equivalent card through its own live loop (`workflow::run_live`).
+    #[allow(dead_code)]
+    fn workflow_run_event(
+        &mut self,
+        run_id: &str,
+        name: &str,
+        event: core_workflow::events::ProgressEvent,
+    ) {
+        if self.workflow_run_card_mut(run_id).is_none() {
+            self.flush_text();
+            let card = block::WorkflowRunCard::new(ui_safe_text(run_id), ui_safe_text(name));
+            let block_id = self.push_block(block::BlockKind::WorkflowRun(card));
+            self.workflow_run_index.insert(run_id.to_string(), block_id);
+        }
+        if let Some(card) = self.workflow_run_card_mut(run_id) {
+            card.ingest(event);
+        }
+        self.autoscroll();
+    }
+
+    /// Mark a QuickJS workflow run terminal (its engine future resolved). The card collapses finished
+    /// agents but stays in the transcript.
+    #[allow(dead_code)]
+    fn workflow_run_finished(&mut self, run_id: &str) {
+        if let Some(card) = self.workflow_run_card_mut(run_id) {
+            card.finished = true;
+        }
+        self.workflow_run_index.remove(run_id);
+        self.autoscroll();
+    }
+
     /// Toggle the fold of a collapsible block at transcript index `i`.
     fn toggle_fold(&mut self, i: usize) {
         if let Some(b) = self.transcript.get_mut(i) {
@@ -1506,6 +1557,11 @@ impl App {
                 }
                 block::BlockKind::Workflow(c) => {
                     c.open = !c.open;
+                    true
+                }
+                block::BlockKind::WorkflowRun(c) => {
+                    // The verbose toggle (design §3.3): reveal every finished agent, or collapse them.
+                    c.verbose = !c.verbose;
                     true
                 }
                 block::BlockKind::Thinking { open, .. } => {
@@ -4539,6 +4595,29 @@ async fn handle_registered_command(
                         block::workflow_status_label(card.status)
                     ),
                     hint: format!("{} · {}", card.run_id, progress),
+                });
+            }
+            // QuickJS `core-workflow` phase→agent trees (design §3.3), newest first.
+            for card in app.transcript.iter().rev().filter_map(|entry| {
+                if let block::BlockKind::WorkflowRun(card) = &entry.kind {
+                    Some(card)
+                } else {
+                    None
+                }
+            }) {
+                let done = card
+                    .agents
+                    .iter()
+                    .filter(|a| a.state == core_workflow::events::WorkflowState::Done)
+                    .count();
+                let status = if card.finished { "finished" } else { "running" };
+                rows.push(block::PanelRow::Item {
+                    label: format!("{} · {status}", card.name),
+                    hint: format!(
+                        "{} · {done}/{} agents",
+                        card.run_id,
+                        card.agents.len()
+                    ),
                 });
             }
             if rows.is_empty() {
@@ -8579,6 +8658,105 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 ..
             }))
         ));
+    }
+
+    #[test]
+    fn quickjs_workflow_run_events_upsert_one_live_tree() {
+        use core_workflow::events::{ProgressEvent, WorkflowState};
+
+        let mut app = App::new();
+        app.theme = theme::Theme::dark();
+        let run_id = "wf_run_1";
+
+        // First event mints the card; subsequent events upsert into the SAME block by run id.
+        app.workflow_run_event(
+            run_id,
+            "audit",
+            ProgressEvent::Phase {
+                index: 1,
+                title: "Explore".into(),
+            },
+        );
+        let block_id = *app
+            .workflow_run_index
+            .get(run_id)
+            .expect("indexed run card");
+        app.workflow_run_event(
+            run_id,
+            "audit",
+            ProgressEvent::Log {
+                message: "scanning".into(),
+            },
+        );
+        app.workflow_run_event(
+            run_id,
+            "audit",
+            ProgressEvent::AgentStarted {
+                index: 0,
+                label: "scan modules".into(),
+                phase: Some("Explore".into()),
+                model: Some("haiku".into()),
+            },
+        );
+        app.workflow_run_event(
+            run_id,
+            "audit",
+            ProgressEvent::AgentFinished {
+                index: 0,
+                label: "scan modules".into(),
+                state: WorkflowState::Done,
+                tokens: 1_200,
+                tool_calls: 2,
+                duration_ms: 3_200,
+                result_preview: None,
+                last_tool_summary: None,
+                error: None,
+            },
+        );
+
+        // Exactly one WorkflowRun block, still keyed by run id, mutated in place.
+        let run_blocks = app
+            .transcript
+            .iter()
+            .filter(|b| matches!(b.kind, block::BlockKind::WorkflowRun(_)))
+            .count();
+        assert_eq!(run_blocks, 1, "one live tree, not a line-per-event log");
+        assert_eq!(*app.workflow_run_index.get(run_id).unwrap(), block_id);
+        let card = match &app
+            .transcript
+            .iter()
+            .find(|b| b.id == block_id)
+            .unwrap()
+            .kind
+        {
+            block::BlockKind::WorkflowRun(card) => card,
+            _ => unreachable!(),
+        };
+        assert_eq!(card.agents.len(), 1);
+        assert_eq!(card.agents[0].state, WorkflowState::Done);
+        assert_eq!(card.phases.len(), 1);
+        assert_eq!(card.logs, vec!["scanning".to_string()]);
+        assert!(!card.finished);
+
+        // It renders through the transcript draw path.
+        let screen = render_text(&mut app, 80, 20);
+        assert!(screen.contains("Explore"));
+        assert!(screen.contains("scanning"));
+
+        // Terminal transition flips `finished` and drops the live index.
+        app.workflow_run_finished(run_id);
+        assert!(!app.workflow_run_index.contains_key(run_id));
+        let finished = match &app
+            .transcript
+            .iter()
+            .find(|b| b.id == block_id)
+            .unwrap()
+            .kind
+        {
+            block::BlockKind::WorkflowRun(card) => card.finished,
+            _ => unreachable!(),
+        };
+        assert!(finished);
     }
 
     #[test]
