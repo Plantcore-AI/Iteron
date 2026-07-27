@@ -182,3 +182,113 @@ mod tests {
         }
     }
 }
+
+/// The other half of #26's fail-closed sweep: an open vocabulary that degrades on read but is
+/// refused on use. These live here rather than beside the enums because the two halves are one
+/// argument — a document may be *readable* by a build that does not understand it, and must still
+/// never be *runnable* by that build.
+#[cfg(test)]
+mod vocabulary_tests {
+    use crate::{
+        ArtifactKind, BaseModelId, ContractError, EVOLUTION_SCHEMA_VERSION, EvolutionMethod,
+        PolicyManifest, PolicyRef, ProtocolRange, StrategySlot,
+    };
+    use std::collections::BTreeSet;
+
+    fn manifest() -> PolicyManifest {
+        let digest = "d".repeat(64);
+        PolicyManifest {
+            schema_version: EVOLUTION_SCHEMA_VERSION,
+            policy: PolicyRef {
+                slot: StrategySlot::router(),
+                policy_id: "candidate".into(),
+                version: "1.0.0".into(),
+                digest: digest.clone(),
+            },
+            artifact_kind: ArtifactKind::Rules,
+            artifact_locator: "registry://candidate@1.0.0".into(),
+            parent: None,
+            method: EvolutionMethod::HandAuthored,
+            protocol: ProtocolRange { min: 1, max: 1 },
+            required_capabilities: BTreeSet::new(),
+            training_dataset_digest: None,
+            evaluation_suite_digest: digest,
+            base_model: BaseModelId {
+                model_family: "anthropic/claude".into(),
+                model_id: "claude-opus-5".into(),
+                model_digest: "e".repeat(64),
+            },
+        }
+    }
+
+    #[test]
+    fn the_baseline_manifest_this_module_mutates_is_itself_valid() {
+        // Otherwise every assertion below could be passing for the wrong reason.
+        assert!(manifest().validate().is_ok());
+    }
+
+    #[test]
+    fn an_unrecognised_vocabulary_member_decodes_to_the_sentinel_rather_than_failing_the_parse() {
+        let kind: ArtifactKind =
+            serde_json::from_value(serde_json::json!("quantum_lattice")).expect("degrades");
+        assert_eq!(kind, ArtifactKind::Unknown);
+
+        let method: EvolutionMethod =
+            serde_json::from_value(serde_json::json!("telepathy")).expect("degrades");
+        assert_eq!(method, EvolutionMethod::Unknown);
+    }
+
+    #[test]
+    fn but_a_manifest_carrying_one_is_refused_rather_than_loaded_optimistically() {
+        // Degrading the parse is not the same as accepting the document. A newer producer's
+        // artifact kind is readable; it is not runnable, because this build has no idea what it
+        // is. That distinction is the whole point of fail-closed.
+        for mutate in [
+            (|m: &mut PolicyManifest| m.artifact_kind = ArtifactKind::Unknown)
+                as fn(&mut PolicyManifest),
+            |m: &mut PolicyManifest| m.method = EvolutionMethod::Unknown,
+        ] {
+            let mut candidate = manifest();
+            mutate(&mut candidate);
+            assert!(
+                matches!(
+                    candidate.validate(),
+                    Err(ContractError::UnrecognisedVocabulary(_))
+                ),
+                "an unknown vocabulary member must be refused, not silently accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn the_refusal_is_typed_rather_than_collapsed_into_a_generic_shape_error() {
+        // A caller has to be able to tell "this build is too old for this document" apart from
+        // "this document is malformed". Only the first is fixed by upgrading.
+        let mut candidate = manifest();
+        candidate.artifact_kind = ArtifactKind::Unknown;
+        match candidate.validate() {
+            Err(ContractError::UnrecognisedVocabulary(what)) => {
+                assert!(
+                    what.contains("artifact kind"),
+                    "the error must name the field"
+                );
+            }
+            other => panic!("expected UnrecognisedVocabulary, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deployment_stage_hard_fails_on_an_unrecognised_member_instead_of_degrading() {
+        // This pins the exemption recorded on `DeploymentStage`. The two enums above describe
+        // what a *producer* made and may legitimately be extended by a newer peer; a stage is
+        // this build's own promotion state, so an unrecognised one is a corrupt or forged
+        // record, not forward compatibility. If someone later gives `DeploymentStage` an
+        // `#[serde(other)]` variant, this test fails and they have to argue with the doc comment.
+        let decoded: Result<crate::DeploymentStage, _> =
+            serde_json::from_value(serde_json::json!("quantum_lattice"));
+        assert!(
+            decoded.is_err(),
+            "an unrecognised deployment stage must be a decode error, never a sentinel"
+        );
+    }
+}

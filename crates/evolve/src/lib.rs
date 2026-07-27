@@ -31,6 +31,7 @@ mod promotion_journal;
 mod promotion_state;
 mod registry;
 mod schema;
+mod seams;
 mod training;
 mod verifier;
 mod verifier_crypto;
@@ -84,6 +85,9 @@ pub use registry::{
 pub use schema::{
     EVOLUTION_PREVIOUS_SCHEMA_VERSION, EvolutionDocumentKind, EvolutionLoadError,
     MAX_POLICY_MANIFEST_JSON_BYTES, MAX_TRAJECTORY_JSON_BYTES,
+};
+pub use seams::{
+    HeldOutEvidence, HeldOutEvidenceBridge, PolicyBundleResolver, TrajectoryProjection,
 };
 pub use training::{
     MAX_RETENTION_POLICY_TABLE_ENTRIES, MAX_TRAINING_LICENSE_ALLOWLIST_ENTRIES,
@@ -182,6 +186,8 @@ pub enum ContractError {
     InvalidDigest,
     #[error("invalid base model identity: {0}")]
     InvalidBaseModel(&'static str),
+    #[error("{0}")]
+    UnrecognisedVocabulary(&'static str),
     #[error("policy manifest schema {0} is not supported")]
     UnsupportedSchema(u16),
     #[error("policy id and version must be non-empty")]
@@ -368,6 +374,11 @@ pub enum ArtifactKind {
     ExternalService,
     /// Statically linked Rust implementation shipped with this exact Core build.
     Builtin,
+    /// A kind this build does not recognise. Reached only by decoding a document written by a
+    /// newer producer. Fail-closed: `PolicyManifest::validate` refuses it, so an unrecognised
+    /// artifact is never loaded on the assumption that it resembles a known one.
+    #[serde(other)]
+    Unknown,
 }
 
 /// How the candidate was produced. Promotion semantics deliberately do not depend on this field.
@@ -383,6 +394,17 @@ pub enum EvolutionMethod {
     OfflineRl,
     OnlineRl,
     GeneratedCode,
+    /// A method this build does not recognise. Reached only by decoding a document written by a
+    /// newer producer. Fail-closed: `PolicyManifest::validate` refuses it, because a manifest
+    /// naming a method we cannot reason about has not been understood.
+    ///
+    /// Placed last because `serde` requires `#[serde(other)]` on the final variant.
+    ///
+    /// `DeploymentStage` is deliberately excluded from this sweep on different grounds - see its
+    /// docs for the producer-vocabulary vs owned-state distinction that decides which enums get
+    /// this treatment.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,6 +466,16 @@ impl PolicyManifest {
             return Err(ContractError::UnsupportedSchema(self.schema_version));
         }
         self.policy.validate()?;
+        if self.artifact_kind == ArtifactKind::Unknown {
+            return Err(ContractError::UnrecognisedVocabulary(
+                "artifact kind is unknown to this build",
+            ));
+        }
+        if self.method == EvolutionMethod::Unknown {
+            return Err(ContractError::UnrecognisedVocabulary(
+                "evolution method is unknown to this build",
+            ));
+        }
         self.base_model.validate()?;
         if self.artifact_locator.trim().is_empty() {
             return Err(ContractError::MissingArtifactLocator);
@@ -711,6 +743,26 @@ impl TrajectoryEnvelope {
     }
 }
 
+/// EXEMPT from the `#[serde(other)] Unknown` sweep #26 asks for, deliberately.
+///
+/// The test that decides which enums get an `Unknown` variant is **who is allowed to extend the
+/// vocabulary**, not whether the match sites happen to be safe:
+///
+/// - `ArtifactKind` and `EvolutionMethod` describe *what a producer made*. A newer producer is
+///   entitled to invent a kind this build has never heard of, so a document naming one is
+///   legitimately forward-compatible and must decode, then be refused on use.
+/// - `DeploymentStage` describes *where this build's own promotion state machine has put a
+///   candidate*. It is written and read by the same authority; there is no peer entitled to
+///   extend it. A stage this build does not recognise is therefore not forward compatibility,
+///   it is a corrupt or forged state record, and the correct response is a hard decode error
+///   rather than a degrade to a sentinel that then has to be caught downstream.
+///
+/// A secondary reason to leave it alone: `serde` requires `#[serde(other)]` on the LAST variant
+/// and this enum derives `Ord`, so an appended `Unknown` would sort above `Active`. Nothing
+/// compares stages today - every match site is exhaustive or fail-closed on its wildcard
+/// (`_ => true` meaning invalid, `_ => Err(StageMismatch)`, `_ => None`) - but that is a
+/// property of the current call sites, not of the type, and a later `stage >= Canary` would
+/// silently inherit the wrong answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentStage {
