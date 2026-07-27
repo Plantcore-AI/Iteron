@@ -31,8 +31,8 @@ Every piece of planned work on this repository is tracked as a GitHub issue that
 carries **exactly one owner and exactly one milestone**. This is not a convention,
 it is enforced:
 
-- **One owner per issue.** Ownership is declared by the `role:lead`,
-  `role:engineer-2` or `role:intern` label and restated in the issue's
+- **One owner per issue.** Ownership is declared by a `role:` label naming the
+  person (`role:jamal`, `role:xingyu`, `role:intern`) and restated in the issue's
   *Ownership & dependencies* block. Co-ownership is not allowed: if two people
   need to work on something, split it into two issues with one owner each.
 - **No unowned issue in a milestone, and no milestone work outside an issue.**
