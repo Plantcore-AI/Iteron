@@ -25,6 +25,29 @@ one responsibility area, and include acceptance evidence. `help wanted` may need
 more design work. Ask setup and usage questions in
 [GitHub Discussions](https://github.com/Plantcore-AI/core/discussions).
 
+## Planned work runs through issues and milestones
+
+Every piece of planned work on this repository is tracked as a GitHub issue that
+carries **exactly one owner and exactly one milestone**. This is not a convention,
+it is enforced:
+
+- **One owner per issue.** Ownership is declared by the `role:lead`,
+  `role:engineer-2` or `role:intern` label and restated in the issue's
+  *Ownership & dependencies* block. Co-ownership is not allowed: if two people
+  need to work on something, split it into two issues with one owner each.
+- **No unowned issue in a milestone, and no milestone work outside an issue.**
+  An issue with no owner or no milestone is not scheduled work; it is a note.
+  Close it or give it both.
+- **Dependencies are declared, not discovered.** Each issue states what hard-blocks
+  it, what it blocks, and what it consumes through a stub without waiting. If you
+  find yourself blocked by something the issue does not name, that is a plan defect
+  worth raising, not a queue to wait in.
+- **Milestones are targets, not gates.** Finishing early means starting the next
+  milestone's work, not waiting for the date.
+
+Before writing code, find your issue, confirm you are its owner, and check its
+blocked-by list. If the work you are about to do has no issue, open one first.
+
 ## Local setup
 
 Supported development hosts are macOS and Linux. You need:
