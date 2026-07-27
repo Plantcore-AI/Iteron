@@ -132,7 +132,13 @@ async fn real_core_eval_from_non_workspace_cwd_discovers_core_or_errors_actionab
     assert!(!output.timed_out, "cwd discovery has a hard process bound");
     assert!(!output.stdout_truncated);
     assert!(!output.stderr_truncated);
-    if output.exit_code == 0 {
+    // D12-02 (daf5dfb) graded this binary's exit codes: 0 = every cell ran clean, 1 = the
+    // evaluation ran but some cells errored or timed out, 2 = the harness itself could not run
+    // (EVAL_EXIT_HARNESS), which is what a cwd-discovery failure reports. This fixture corpus
+    // points at a deliberately missing source repository, so a successful discovery necessarily
+    // produces errored cells and therefore exit 1, not 0. This test predates D12-02 and still
+    // assumed the binary only ever returned 0 or 2.
+    if output.exit_code == 0 || output.exit_code == 1 {
         let manifest: EvaluationManifest = serde_json::from_slice(
             &std::fs::read(&artifact).expect("successful evaluator writes its artifact"),
         )
@@ -144,7 +150,8 @@ async fn real_core_eval_from_non_workspace_cwd_discovers_core_or_errors_actionab
         }));
     } else {
         assert_eq!(
-            output.exit_code, 2,
+            output.exit_code,
+            i32::from(core_eval::types::EVAL_EXIT_HARNESS),
             "discovery failures use the harness exit"
         );
         let stderr = output.stderr_lossy();

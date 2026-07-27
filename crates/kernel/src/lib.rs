@@ -1905,8 +1905,10 @@ pub struct Agent {
     /// Set if a durable record append failed. Checked at turn admission so the run halts at a
     /// safe point rather than proceeding with an audit gap / forked chain (code review).
     record_failed: bool,
-    /// Cooperative interrupt (operability): when set (e.g. by a Ctrl-C handler), the loop stops
-    /// at the next turn-atomic safe point — never mid-effect — and the run is resumable.
+    /// Cooperative interrupt (operability): when set (e.g. by a Ctrl-C handler), an in-flight
+    /// provider turn is cancelled MID-STREAM (D1-16) and the loop then stops. No effect is ever
+    /// left half-committed and the run stays resumable, but the turn itself is NOT atomic with
+    /// respect to the interrupt: a cancelled turn produces no assistant text and no usage record.
     interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Queue-owned interrupt request, for embedders that use SQ without an out-of-band atomic.
     interrupt_requested: bool,
@@ -3684,7 +3686,9 @@ impl Agent {
     }
 
     /// Install a cooperative interrupt flag. When it flips true (e.g. from a Ctrl-C handler),
-    /// the run stops at the next turn-atomic safe point (never mid-effect) and is resumable.
+    /// any in-flight provider turn is cancelled mid-stream (D1-16) and the run then stops. No
+    /// effect is left half-committed and the run is resumable; the turn is not atomic with
+    /// respect to the interrupt.
     pub fn set_interrupt(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
         self.interrupt = Some(flag);
     }
