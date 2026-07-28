@@ -3,6 +3,7 @@ mod model;
 mod render;
 mod rust_source;
 mod schema_compat;
+mod seams;
 mod validate;
 
 use anyhow::{Context, Result, bail};

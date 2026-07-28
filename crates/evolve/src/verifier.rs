@@ -7,7 +7,7 @@
 use crate::verifier_crypto::{constant_time_eq, digest_serialized, hmac_serialized, sha256_hex};
 use crate::verifier_eval::EvaluationSuite;
 use crate::{
-    ContractError, EvidenceRecordError, EvidenceRecorder, MAX_GOVERNED_DATASET_BYTES,
+    BaseModelId, ContractError, EvidenceRecordError, EvidenceRecorder, MAX_GOVERNED_DATASET_BYTES,
     MAX_GOVERNED_DATASET_TRAJECTORIES, MAX_SHORT_STRING_BYTES, MAX_TRAJECTORY_JSON_BYTES,
     PolicyManifest, TrainingAdmissionPolicy, TrainingEligibilityError, TrajectoryEnvelope,
     validate_nonempty_string,
@@ -245,6 +245,16 @@ pub struct VerifiedCandidateInputs {
     pub artifact_digest: String,
     pub training_dataset_digest: Option<String>,
     pub evaluation_suite_digest: String,
+    /// The base model these inputs were verified against, copied off the validated manifest.
+    ///
+    /// It is here rather than asserted downstream so that whatever ends up inside a signed
+    /// attestation is the identity **the verifier read**, not one the evaluator supplied. An
+    /// evaluation is only meaningful against one set of weights, and an evaluator that could name
+    /// the weights itself could name convenient ones.
+    ///
+    /// `verify_candidate_inputs` already refuses an inadmissible identity above, so anything
+    /// reaching this field is admissible.
+    pub base_model: BaseModelId,
 }
 
 #[derive(Debug, Clone)]
@@ -415,6 +425,7 @@ impl EvolutionVerifier {
             artifact_digest,
             training_dataset_digest,
             evaluation_suite_digest: evaluation.digest.clone(),
+            base_model: manifest.base_model.clone(),
         })
     }
 }

@@ -200,6 +200,12 @@ impl PromotionAuthority {
             || signed.report.artifact_digest != identity.artifact_digest
             || signed.report.training_dataset_digest != identity.training_dataset_digest
             || signed.report.evaluation_suite_digest != identity.evaluation_suite_digest
+            // Evidence gathered against one set of weights says nothing about another, so the base
+            // model inside the signed report must be the one the verifier read off the manifest.
+            // Without this the signature would attest a number while leaving the weights it was
+            // measured on free to differ, and a genuine evaluation of the candidate under a
+            // convenient base model could be replayed as evidence under the real one.
+            || signed.report.base_model != identity.base_model
             || signed.report.evidence.baseline != *baseline_policy
             || signed.report.evidence.candidate != identity.candidate_policy
         {

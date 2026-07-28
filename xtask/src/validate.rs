@@ -17,6 +17,7 @@ pub fn validate(root: &Path, registry: &Registry) -> Result<Report> {
     crate::conformance::validate(root)?;
     let files = public_files(root)?;
     validate_path_coverage(registry, &files)?;
+    crate::seams::validate(root, &files)?;
     let packages = validate_cargo_policy(root, registry)?;
     Ok(Report {
         files: files.len(),

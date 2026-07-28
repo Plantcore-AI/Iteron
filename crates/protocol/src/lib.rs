@@ -13,6 +13,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod artifact;
+pub mod bundle;
 pub mod capability_set;
 pub mod context;
 pub mod diff;

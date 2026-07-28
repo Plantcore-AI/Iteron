@@ -398,6 +398,105 @@ fn candidate_fixture<'a>(dataset_digest: &str, suite: &EvaluationSuite) -> Candi
 }
 
 #[test]
+fn held_out_evidence_gathered_against_another_base_model_is_refused() {
+    // The base model lives inside the signed report and is bound to the identity the authority
+    // built from the verified manifest. Without that binding a signature would attest a score while
+    // leaving the weights it was measured on free to differ, so a genuine evaluation of this
+    // candidate under a convenient base model could be replayed as evidence under the real one.
+    //
+    // Everything below is honestly signed by a registered evaluator. The ONLY thing wrong is the
+    // base model, which is what makes this a test of the binding rather than of the signature.
+    let root = scratch("held-out-base-model");
+    let policy = control_policy();
+    let authorizer = authorizer(&policy);
+    let verifier = evolution_verifier();
+    let signed_training = vec![training_trajectory("task-a")];
+    let mut datasets = ConsentAwareDatasetRegistry::new();
+    let dataset = datasets
+        .build_and_register(&verifier, &signed_training)
+        .unwrap();
+    let suite = evaluation("task-b");
+    let fixture = candidate_fixture(dataset.digest(), &suite);
+    let mut authority = open_authority(&root, &policy);
+    bootstrap(&mut authority, &authorizer, fixture.baseline.clone());
+
+    let mut verified = verifier
+        .verify_candidate_inputs(&fixture.manifest, fixture.artifact, Some(&dataset), &suite)
+        .unwrap();
+    assert!(
+        verified.base_model.is_admissible(),
+        "the honest fixture must carry a real identity, or this test proves nothing"
+    );
+    // A different, entirely well-formed and admissible base model.
+    verified.base_model = BaseModelId {
+        model_family: "anthropic/claude".into(),
+        model_id: "claude-opus-4".into(),
+        model_digest: "c".repeat(64),
+    };
+    assert_ne!(verified.base_model, fixture.manifest.base_model);
+
+    let report = HeldOutEvaluation::new(
+        fixture.manifest.policy.clone(),
+        &verified,
+        evidence(&fixture.baseline_policy, &fixture.manifest.policy, false),
+    )
+    .unwrap();
+    assert_eq!(
+        report.base_model(),
+        &verified.base_model,
+        "the report must carry the identity it was built with, not the manifest's"
+    );
+    let signed_report = evaluator().sign_held_out(report).unwrap();
+
+    let request =
+        PromotionRequest::admit_candidate("auth-base-model", &fixture.candidate.bundle().digest)
+            .unwrap();
+    let token = authorizer.authorize(&request).unwrap();
+    assert!(
+        matches!(
+            authority.admit_candidate(
+                &request,
+                &token,
+                &verifier,
+                &datasets,
+                &fixture.manifest,
+                fixture.artifact,
+                Some(&dataset),
+                &suite,
+                signed_report,
+                fixture.candidate.clone(),
+            ),
+            Err(PromotionAuthorityError::IndependentEvaluationRequired)
+        ),
+        "a validly signed report naming a different base model must still be refused"
+    );
+}
+
+#[test]
+fn a_held_out_report_cannot_be_built_on_the_migration_sentinel() {
+    // The other half: a manifest migrated from schema 2 records no base model at all. The verifier
+    // refuses it before this point, so this asserts the report type is independently fail-closed
+    // rather than relying on a check upstream of it.
+    let suite = evaluation("task-b");
+    let fixture = candidate_fixture(&"d".repeat(64), &suite);
+    let unusable = VerifiedCandidateInputs {
+        artifact_digest: sha256_hex(fixture.artifact),
+        training_dataset_digest: None,
+        evaluation_suite_digest: suite.digest().into(),
+        base_model: BaseModelId::unspecified(),
+    };
+    assert!(
+        HeldOutEvaluation::new(
+            fixture.manifest.policy.clone(),
+            &unusable,
+            evidence(&fixture.baseline_policy, &fixture.manifest.policy, false),
+        )
+        .is_err(),
+        "a held-out evaluation cannot attest anything about weights nobody recorded"
+    );
+}
+
+#[test]
 fn d14_13_g1_contaminated_candidate_is_blocked_before_shadow() {
     let root = scratch("held-out-overlap");
     let policy = control_policy();
@@ -419,6 +518,9 @@ fn d14_13_g1_contaminated_candidate_is_blocked_before_shadow() {
         artifact_digest: sha256_hex(fixture.artifact),
         training_dataset_digest: Some(dataset.digest().into()),
         evaluation_suite_digest: suite.digest().into(),
+        // The forgery under test is the contaminated dataset, not the base model, so this names the
+        // honest identity. A mismatched one would be refused earlier, by a different check.
+        base_model: fixture.manifest.base_model.clone(),
     };
     let report = HeldOutEvaluation::new(
         fixture.manifest.policy.clone(),

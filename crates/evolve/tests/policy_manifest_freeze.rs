@@ -43,10 +43,10 @@
 //! rejects everything else fail-closed (docs/spec/evolution.md §6.4).
 
 use core_evolve::{
-    ArtifactKind, BaseModelId, DataClass, DataGovernance, DeploymentStage,
+    ArtifactKind, BaseModelId, DataClass, DataGovernance, DatasetAuditKind, DeploymentStage,
     EVOLUTION_SCHEMA_VERSION, EvolutionMethod, PolicyBundle, PolicyManifest, PolicyRef,
-    ProtocolRange, RewardVector, StrategyDecision, StrategySlot, TrainingConsent,
-    TrajectoryEnvelope,
+    PromotionAssessment, PromotionAuditKind, PromotionOperation, PromotionRole, ProtocolRange,
+    RewardVector, StrategyDecision, StrategySlot, TrainingConsent, TrajectoryEnvelope,
 };
 use core_protocol::{Capability, RunId, TenantId};
 use serde::Serialize;
@@ -461,11 +461,18 @@ fn the_persisted_vocabularies_keep_their_exact_tags_and_the_schema_stamp_holds()
             (EvolutionMethod::Unknown, "unknown"),
         ],
     );
-    // `DeploymentStage` is a *closed* vocabulary under criterion 2, and the ninth one - the only
-    // one that does not live in `core-protocol`. The other eight are registered together in
+    // `DeploymentStage` is a *closed* vocabulary under criterion 2. It cannot be registered beside
+    // the `core-protocol` ones in
     // `crates/protocol/tests/abi_freeze.rs::the_closed_vocabularies_refuse_an_unrecognised_tag`,
-    // and this one cannot join them: `core-protocol` cannot depend on `core-evolve`, so the type
-    // is not nameable from that file. Its entry in the register is therefore here.
+    // because `core-protocol` cannot depend on `core-evolve` and the type is not nameable from that
+    // file. Its entry in the register is therefore here.
+    //
+    // This comment used to claim `DeploymentStage` was "the only one that does not live in
+    // `core-protocol`". That was false, and a review that enumerated the crate found it: this crate
+    // has ten serde-derived enums and seven of them were in no register at all. They are registered
+    // below, in `the_remaining_closed_vocabularies_are_recorded_and_refuse_an_unrecognised_tag`. A
+    // register that asserts its own completeness in prose is worth less than one that enumerates,
+    // because the prose stays confident while the crate grows.
     //
     // Closed deliberately, on the grounds argued at the declaration in crates/evolve/src/lib.rs:
     // the two vocabularies above describe what a *producer* made, and a newer peer is entitled to
@@ -505,5 +512,166 @@ fn the_persisted_vocabularies_keep_their_exact_tags_and_the_schema_stamp_holds()
         "this snapshot describes schema 3. Bumping the stamp means the field sets above changed, \
          and the bump belongs in the same commit as the new rows and the N-1 migration in \
          crates/evolve/src/schema.rs."
+    );
+}
+
+/// The seven serde-derived vocabularies this crate had recorded nowhere.
+///
+/// A review enumerated every `#[derive(Deserialize)] enum` in `core-evolve` and found ten. Three
+/// were registered — `ArtifactKind` and `EvolutionMethod` as open, `DeploymentStage` as closed. The
+/// other seven were in neither register and had no test feeding them an unrecognised tag, so nothing
+/// recorded whether their closure was a decision or an accident. `Errors.md` 2026-07-28c already
+/// names that as the defect which lets a later contributor "helpfully" open a closed vocabulary; the
+/// same gap had simply been reproduced one crate over.
+///
+/// All seven are **closed**, and each for the same reason `DeploymentStage` is: every one of them is
+/// this build's own state or its own authorization vocabulary, written and read by the same code. An
+/// unrecognised member is not a newer peer being forward-compatible — it is a corrupt or forged
+/// record, and a sentinel would launder it into a value the rest of the code then has to handle.
+///
+/// `PromotionRole` deserves its own note. It derives `Ord` and lives in a `BTreeSet` on
+/// `PromotionTrustAnchor`, which is exactly the shape of the `Trust::Unknown` regression recorded in
+/// `Errors.md` 2026-07-27e: appending an `#[serde(other)] Unknown` arm would take the top
+/// discriminant and silently reorder the set. This test is what goes red if anyone tries.
+#[test]
+fn the_remaining_closed_vocabularies_are_recorded_and_refuse_an_unrecognised_tag() {
+    // --- unit-variant vocabularies: a bare string is the whole wire form ---
+    assert_tags_are_frozen(
+        "DataClass",
+        &[
+            (DataClass::Public, "public"),
+            (DataClass::Internal, "internal"),
+            (DataClass::CustomerConfidential, "customer_confidential"),
+            (DataClass::Personal, "personal"),
+            (DataClass::Secret, "secret"),
+            (DataClass::Unknown, "unknown"),
+        ],
+    );
+    // `DataClass` carries an `Unknown` variant WITHOUT `#[serde(other)]`, so it wears the shape of
+    // an open vocabulary while behaving like a closed one: the literal tag "unknown" decodes, and a
+    // genuinely new class fails the whole envelope. Both halves are fail-closed and the asymmetry is
+    // deliberate — but it was undocumented, and a reader who saw the `Unknown` variant could
+    // reasonably have "fixed" it by adding the attribute, turning a hard refusal into a silent
+    // degrade with no test going red. This is that test.
+    assert!(
+        serde_json::from_value::<DataClass>(serde_json::json!("regulated_health")).is_err(),
+        "DataClass has an Unknown variant but no #[serde(other)]: a new class must fail the decode, \
+         not land in the sentinel"
+    );
+    assert_eq!(
+        serde_json::from_value::<DataClass>(serde_json::json!("unknown")).expect("the literal tag"),
+        DataClass::Unknown,
+        "the literal tag `unknown` is a member of the vocabulary and still decodes"
+    );
+
+    assert_tags_are_frozen(
+        "TrainingConsent",
+        &[
+            (TrainingConsent::Allowed, "allowed"),
+            (TrainingConsent::EvaluationOnly, "evaluation_only"),
+            (TrainingConsent::Denied, "denied"),
+        ],
+    );
+    assert_tags_are_frozen(
+        "PromotionRole",
+        &[
+            (PromotionRole::Bootstrap, "bootstrap"),
+            (PromotionRole::AdmitCandidate, "admit_candidate"),
+            (PromotionRole::AdvanceStage, "advance_stage"),
+            (PromotionRole::Rollback, "rollback"),
+        ],
+    );
+    assert_tags_are_frozen(
+        "PromotionOperation",
+        &[
+            (PromotionOperation::Bootstrap, "bootstrap"),
+            (PromotionOperation::AdmitCandidate, "admit_candidate"),
+            (PromotionOperation::EnterShadow, "enter_shadow"),
+            (PromotionOperation::CompleteShadow, "complete_shadow"),
+            (PromotionOperation::CompleteCanary, "complete_canary"),
+            (PromotionOperation::Rollback, "rollback"),
+        ],
+    );
+
+    // Each of these is closed. If one of these assertions goes red because someone added
+    // `#[serde(other)]`, read the note on this test before blessing it — for `PromotionRole` that
+    // attribute also silently reorders the `BTreeSet` it lives in.
+    assert!(
+        serde_json::from_value::<TrainingConsent>(json!("revoked_pending_review")).is_err(),
+        "TrainingConsent gates whether recorded data may be trained on; an unreadable consent value \
+         must refuse, never default"
+    );
+    assert!(
+        serde_json::from_value::<PromotionRole>(json!("superuser")).is_err(),
+        "PromotionRole is an authorization vocabulary: an unrecognised role must not decode"
+    );
+    assert!(
+        serde_json::from_value::<PromotionOperation>(json!("force_activate")).is_err(),
+        "PromotionOperation is the operation field of an HMAC-authorized request; an unrecognised \
+         operation must not decode"
+    );
+
+    // --- data-carrying vocabularies: swap ONLY the tag on a fully populated member ---
+    //
+    // A bare `{"kind":"whatever"}` would be refused for its missing body, so it would pass this test
+    // for the wrong reason and keep passing the day someone adds an `#[serde(other)]` arm. Each
+    // probe below therefore keeps a real body and changes nothing but the discriminant.
+    let audit = serde_json::to_value(PromotionAuditKind::StageTransition {
+        from: DeploymentStage::Candidate,
+        to: DeploymentStage::Shadow,
+        permit_digest: Some("a".repeat(64)),
+    })
+    .expect("serialises");
+    assert_eq!(
+        audit.get("kind").and_then(serde_json::Value::as_str),
+        Some("stage_transition"),
+        "PromotionAuditKind is internally tagged on `kind`"
+    );
+    let mut forged = audit.clone();
+    forged["kind"] = serde_json::json!("stage_teleported");
+    assert!(
+        serde_json::from_value::<PromotionAuditKind>(forged).is_err(),
+        "PromotionAuditKind is read back off a hash-chained journal; an unrecognised kind is a \
+         corrupt or forged record, never a newer peer"
+    );
+
+    let dataset_audit = serde_json::to_value(DatasetAuditKind::ConsentRevoked {
+        tenant_id: "acme".into(),
+        run_id: "run-1".into(),
+        reason: "subject request".into(),
+    })
+    .expect("serialises");
+    assert!(
+        dataset_audit.get("consent_revoked").is_some(),
+        "DatasetAuditKind is externally tagged"
+    );
+    let body = dataset_audit
+        .get("consent_revoked")
+        .expect("the populated body")
+        .clone();
+    assert!(
+        serde_json::from_value::<DatasetAuditKind>(
+            serde_json::json!({ "consent_withdrawn": body })
+        )
+        .is_err(),
+        "DatasetAuditKind is closed: an unrecognised member with a valid body must still fail"
+    );
+
+    let assessment = serde_json::to_value(PromotionAssessment::Reject {
+        reasons: vec!["insufficient paired tasks".into()],
+    })
+    .expect("serialises");
+    assert!(
+        assessment.get("reject").is_some(),
+        "PromotionAssessment is externally tagged"
+    );
+    let reject_body = assessment
+        .get("reject")
+        .expect("the populated body")
+        .clone();
+    assert!(
+        serde_json::from_value::<PromotionAssessment>(serde_json::json!({ "defer": reject_body }))
+            .is_err(),
+        "PromotionAssessment is closed: this build's own assessor output, not a peer's"
     );
 }

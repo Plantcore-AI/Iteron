@@ -6,7 +6,8 @@ use crate::promotion::{
 };
 use crate::verifier_crypto::{digest_serialized, hmac_serialized};
 use crate::{
-    DeploymentStage, PolicyRef, PromotionEvidence, VerifiedCandidateInputs, validate_digest,
+    BaseModelId, ContractError, DeploymentStage, PolicyRef, PromotionEvidence,
+    VerifiedCandidateInputs, validate_digest,
 };
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +20,17 @@ pub struct HeldOutEvaluation {
     pub(crate) artifact_digest: String,
     pub(crate) training_dataset_digest: Option<String>,
     pub(crate) evaluation_suite_digest: String,
+    /// The base model this score was gathered against.
+    ///
+    /// A held-out number means nothing without the weights it was measured on: the same candidate
+    /// scored against two base models yields two incomparable results, and the transfer operator
+    /// exists precisely to compare evaluations that differ only in this field. It lives inside the
+    /// signed report, so the base model is **attested** rather than asserted alongside it, and
+    /// `verify_held_out_without_suite` binds it to the candidate identity the authority holds.
+    ///
+    /// It is populated from [`VerifiedCandidateInputs`], which copies it off the validated
+    /// manifest, so an evaluator cannot name a base model of its own choosing.
+    pub(crate) base_model: BaseModelId,
     pub(crate) evidence: PromotionEvidence,
 }
 
@@ -33,10 +45,16 @@ impl HeldOutEvaluation {
             artifact_digest: verified.artifact_digest.clone(),
             training_dataset_digest: verified.training_dataset_digest.clone(),
             evaluation_suite_digest: verified.evaluation_suite_digest.clone(),
+            base_model: verified.base_model.clone(),
             evidence,
         };
         report.validate()?;
         Ok(report)
+    }
+
+    /// The base model this evaluation attests to.
+    pub fn base_model(&self) -> &BaseModelId {
+        &self.base_model
     }
 
     fn validate(&self) -> Result<(), PromotionAuthorityError> {
@@ -46,6 +64,17 @@ impl HeldOutEvaluation {
             validate_digest(digest)?;
         }
         validate_digest(&self.evaluation_suite_digest)?;
+        self.base_model.validate()?;
+        // The two live checks the deleted, unsigned `HeldOutEvidence::validate` used to perform are
+        // inherited here, where they now sit inside the signed payload rather than beside it. A
+        // document that never recorded its base model cannot attest anything about one, so the
+        // migration sentinel is refused rather than treated as a wildcard.
+        if !self.base_model.is_admissible() {
+            return Err(ContractError::InvalidBaseModel(
+                "a held-out evaluation cannot rest on an inadmissible base model identity",
+            )
+            .into());
+        }
         self.evidence.validate_contract()?;
         if self.evidence.candidate != self.candidate {
             return Err(PromotionAuthorityError::EvaluationIdentityMismatch);

@@ -109,7 +109,10 @@ pub enum Quantifier {
 - `trust` **MUST** 随值传播；一个 `TaskInput::Text` 里出现的祈使句 **MUST NOT** 被任何 module 当作 operator authority（untrusted-input 原则）。
 - 任何跨接缝的 authority **MUST** 以**集合**（`CapabilitySet`）承载，**MUST NOT** 表示为某个序上的一个点。`Capability` 的 `Ord` 只为 `BTreeSet` 存储而存在，是声明序而非授权序：以单个 class 作上限并用 `<=` 判定，会让一个只意在「可 egress」的上限静默放行 `CodeExecuting` 与 `TrustMutating`。合并运算**只有** intersection：widening 在类型上不可表达。
 - 冻结的 `Budget` 就是 `core_protocol::Budget`（`crates/protocol/src/lib.rs`），它已随 `EventKind::ChildStarted` 落在 durable 记录上，形状不可另铸；token 轴按 §4.3(b)3 以 `max_tokens: Option<u64>` + `skip_serializing_if` 追加，归属 #18，追加后两个载体的字节都逐字节不变。
-- `profile_ref` 是 §4.2.1 里唯一可以事后无损追加的字段：当第一个真实消费者出现时，按 §4.3(b)3 以 `#[serde(default, skip_serializing_if = "Option::is_none")] pub profile_ref: Option<ArtifactRef>` 追加，`None` 与今天的字节逐字节一致。今天的 bundle 解析走 #28 的 boot-time `PolicyBundleResolver`（`crates/agents`，进程级、只读），不经过 envelope。
+- `profile_ref` 是 §4.2.1 里唯一可以事后无损追加的字段：当第一个真实消费者出现时，按 §4.3(b)3 以 `#[serde(default, skip_serializing_if = "Option::is_none")] pub profile_ref: Option<ArtifactRef>` 追加，`None` 与今天的字节逐字节一致。今天的 bundle 解析走 boot-time `PolicyBundleResolver`（进程级、只读），不经过 envelope。
+
+  该 port 声明在 **`core_protocol::bundle`**，不在 `crates/evolve`。这一条是被一次合并后复审改正的：冻结时它被声明为 `core_evolve::PolicyBundleResolver`，签名里三个类型（`PolicyBundle` / `StrategySlot` / `ContractError`）全部来自 `core-evolve`，于是 #28 要在 `crates/agents` 里实现它就必须先引入 `core-evolve` —— 正是 #26 验收条目 5 用 grep 守着的那条禁止依赖。该 grep 当时为绿，只因为那个 trait 没有任何实现者与调用者：它测的是「没人用」，不是「不变式成立」。
+  port 落在 `core-protocol` 后，producing 侧（`crates/evolve`）与 consuming 侧（`crates/agents`）都已依赖它，**两侧零新增依赖**。跨接缝传的是 `ResolvedBundle` 这个只读投影（只带 slot 身份与 digest，不带 policy 本体、locator 或 lineage），由 `PolicyBundle::resolve()` 生成，并在 `SlotId` 无法表达某个 slot 时**整体拒绝**而非丢弃该条 —— 丢弃会让那个 slot 跑内置策略，而 promotion journal 记录它已被治理。
 
 `Acceptance` 是必带字段，不是 `Option`：一个 task 总要说清「怎么算做完」，哪怕答案是空集。v1 冻结形状里没有 `oracle` / `min_strength` / `objective_digest`：`AcceptanceCheck.id` 是 check 在 task 内的稳定句柄，由 verifier slot 解析到具体 oracle；oracle 引用类型、强度序数与 held-out digest 按 §4.3(b)3 以 `Option` + `skip_serializing_if` 追加，归属 #51（`crates/verify` 的所有权 issue）：今天的 `crates/verify/src/oracle.rs::OracleStrength` 不带 serde 且 `core-verify` 依赖 `core-protocol`，反向依赖会成环。
 

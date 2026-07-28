@@ -171,6 +171,7 @@ impl PromotionAuthority {
             artifact_digest: verified.artifact_digest.clone(),
             training_dataset_digest: verified.training_dataset_digest.clone(),
             evaluation_suite_digest: verified.evaluation_suite_digest.clone(),
+            base_model: verified.base_model.clone(),
             evaluation_owner_id: evaluation_suite.owner_id().to_owned(),
             evaluator_id: held_out.evaluator_id.clone(),
         };

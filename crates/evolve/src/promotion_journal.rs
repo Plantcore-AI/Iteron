@@ -4,7 +4,7 @@ use crate::promotion::{DeploymentBundle, MAX_PROMOTION_AUDIT_EVENTS, PromotionAu
 use crate::promotion_auth::PromotionRequest;
 use crate::promotion_evaluation::{SignedHeldOutEvaluation, SignedStageObservation, StagePermit};
 use crate::verifier_crypto::sha256_hex;
-use crate::{DeploymentStage, PolicyRef};
+use crate::{BaseModelId, DeploymentStage, PolicyRef};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -12,7 +12,17 @@ use std::path::{Path, PathBuf};
 
 pub(crate) const MAX_PROMOTION_JOURNAL_BYTES: u64 = 256 * 1024 * 1024;
 pub(crate) const MAX_PROMOTION_JOURNAL_RECORD_BYTES: usize = 2 * 1024 * 1024;
-const JOURNAL_SCHEMA_VERSION: u16 = 1;
+/// Bumped 1 -> 2 when `base_model` was threaded into `CandidateIdentity` and into the signed
+/// `HeldOutEvaluation` payload.
+///
+/// This is a hard break rather than a migration, and deliberately so. The new field is inside the
+/// HMAC preimage, so every held-out signature written under schema 1 recomputes to a different value
+/// and would be reported as forged rather than as old. A journal that cannot distinguish "this
+/// attestation predates a field" from "this attestation was tampered with" must refuse to read the
+/// old one, and the existing check below already does exactly that. There are no shipped journals,
+/// so the cost of breaking now is zero; after the first real promotion it would be a migration of
+/// hash-chained, signed records.
+const JOURNAL_SCHEMA_VERSION: u16 = 2;
 const JOURNAL_FILE_NAME: &str = "promotion-authority.jsonl";
 const ZERO_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -27,6 +37,10 @@ pub(crate) struct CandidateIdentity {
     pub(crate) artifact_digest: String,
     pub(crate) training_dataset_digest: Option<String>,
     pub(crate) evaluation_suite_digest: String,
+    /// Copied off the verified inputs, so the authority holds the base model the *verifier* read.
+    /// `verify_held_out_without_suite` refuses an attestation whose signed report names a different
+    /// one, which is what stops evidence gathered on one set of weights being replayed for another.
+    pub(crate) base_model: BaseModelId,
     pub(crate) evaluation_owner_id: String,
     pub(crate) evaluator_id: String,
 }

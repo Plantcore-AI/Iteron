@@ -250,6 +250,40 @@ mod tests {
     const TRAJECTORY_V2: &[u8] = include_bytes!("../tests/fixtures/trajectory-v2.json");
 
     #[test]
+    fn a_schema_3_manifest_omitting_base_model_is_refused_rather_than_defaulted() {
+        // `base_model` is a required field with no `#[serde(default)]`, so this is true by
+        // construction today - and that is exactly why it needs a test. "True by construction" is
+        // one `#[serde(default)]` away from false, and the attribute would be an easy, well-meaning
+        // fix for a decode failure on some older document. The whole point of schema 3 is that a
+        // manifest either names the weights it was learned against or is the migration sentinel;
+        // silently defaulting would create a third state that claims neither.
+        //
+        // The freeze snapshot cannot catch this: its delete-and-redecode probe deliberately skips
+        // fields already in the snapshot, and `base_model` is one.
+        let mut document: serde_json::Value =
+            serde_json::from_slice(MANIFEST_V2).expect("the v2 fixture parses");
+        document["schema_version"] = serde_json::json!(EVOLUTION_SCHEMA_VERSION);
+        assert!(
+            document.get("base_model").is_none(),
+            "the v2 fixture predates the field; this test would be vacuous if it had one"
+        );
+        let bytes = serde_json::to_vec(&document).expect("re-serialises");
+
+        let refused = PolicyManifest::load_json(&bytes);
+        assert!(
+            refused.is_err(),
+            "a document stamped schema 3 must carry `base_model`; it was accepted instead"
+        );
+        // And it must fail as a malformed schema-3 document, not be quietly routed through the
+        // N-1 migration that mints the sentinel - that path is for documents that honestly say
+        // they are schema 2.
+        assert!(
+            !matches!(refused, Err(EvolutionLoadError::UnsupportedSchema { .. })),
+            "the refusal must be about the missing field, not the version"
+        );
+    }
+
+    #[test]
     fn schema_v2_fixtures_migrate_and_round_trip_as_current() {
         let manifest = PolicyManifest::load_json(MANIFEST_V2).unwrap();
         assert_eq!(manifest.schema_version, EVOLUTION_SCHEMA_VERSION);

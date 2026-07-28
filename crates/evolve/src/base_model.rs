@@ -110,7 +110,22 @@ impl BaseModelId {
                     "base model component exceeds its declared bound",
                 ));
             }
+            // A control character or a newline in an identity is never legitimate and is how one
+            // identity gets rendered as another in a log line or an audit record.
+            if part.chars().any(char::is_control) {
+                return Err(ContractError::InvalidBaseModel(
+                    "base model component must not contain control characters",
+                ));
+            }
         }
+        // The digest is the whole reason this type is verifiable rather than declarative, and it was
+        // the one field never checked for shape: a review found `model_digest: "z"` satisfying both
+        // `validate` and `is_admissible`, which made a one-character label indistinguishable from a
+        // pinned set of weights. Every other digest in this crate crosses `validate_digest`; this one
+        // now does too.
+        crate::validate_digest(&self.model_digest).map_err(|_| {
+            ContractError::InvalidBaseModel("base model digest must be 64 lowercase hex characters")
+        })?;
         Ok(())
     }
 
@@ -125,7 +140,7 @@ impl BaseModelId {
 
 #[cfg(test)]
 mod tests {
-    use super::{BaseModelId, UNSPECIFIED_FAMILY};
+    use super::{BaseModelId, MAX_BASE_MODEL_PART_BYTES, UNSPECIFIED_FAMILY};
 
     fn real() -> BaseModelId {
         BaseModelId {
@@ -185,9 +200,56 @@ mod tests {
 
     #[test]
     fn components_are_bounded() {
-        let mut oversized = real();
-        oversized.model_id = "x".repeat(129);
-        assert!(oversized.validate().is_err());
+        // All three, not just `model_id`. An earlier version exercised one component and read as
+        // proof that the type was bounded.
+        for mutate in [
+            |m: &mut BaseModelId| m.model_family = "x".repeat(MAX_BASE_MODEL_PART_BYTES + 1),
+            |m: &mut BaseModelId| m.model_id = "x".repeat(MAX_BASE_MODEL_PART_BYTES + 1),
+            |m: &mut BaseModelId| m.model_digest = "a".repeat(MAX_BASE_MODEL_PART_BYTES + 1),
+        ] {
+            let mut oversized = real();
+            mutate(&mut oversized);
+            assert!(oversized.validate().is_err());
+            assert!(
+                !oversized.is_admissible(),
+                "an over-bound component must also be inadmissible, not merely invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn the_digest_must_actually_be_a_digest() {
+        // The field's own doc says it "pins the weights"; before this check a one-character string
+        // satisfied it. A label that cannot be checked is a declaration, not a pin.
+        for bad in [
+            "z",             // too short, and not hex
+            &"a".repeat(63), // right alphabet, wrong length
+            &"A".repeat(64), // uppercase hex is refused everywhere else in this crate
+            &"g".repeat(64), // right length, not hex
+        ] {
+            let mut candidate = real();
+            candidate.model_digest = bad.to_string();
+            assert!(
+                candidate.validate().is_err(),
+                "`{bad}` must not pass as a base-model digest"
+            );
+            assert!(!candidate.is_admissible());
+        }
+        // And the honest shape still passes.
+        assert!(real().validate().is_ok());
+    }
+
+    #[test]
+    fn a_control_character_cannot_hide_inside_an_identity() {
+        for mutate in [
+            |m: &mut BaseModelId| m.model_family = "anthropic\n/claude".into(),
+            |m: &mut BaseModelId| m.model_id = "claude\u{0}opus".into(),
+        ] {
+            let mut candidate = real();
+            mutate(&mut candidate);
+            assert!(candidate.validate().is_err());
+            assert!(!candidate.is_admissible());
+        }
     }
 
     #[test]

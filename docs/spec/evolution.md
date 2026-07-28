@@ -28,7 +28,7 @@ harness checkpoint 是对 `StrategySlot` ABI 上一条 policy 的**已训练状�
 | `required_capabilities` | `BTreeSet<Capability>` | 声明其运行需要的能力(5-tier lattice) | candidate 只能**声明**,不能**授予**(§6.6) |
 | `training_dataset_digest` | `Option<String>` | governed dataset 的 digest | 任何 data-derived method MUST 钉死;仅 `HandAuthored` 可为空 |
 | `evaluation_suite_digest` | `String` | 评估套件 digest | MUST 存在(64 位 hex) |
-| `base_model` | `BaseModelId` | 该 policy 所依据的冻结基座模型(family / id / digest) | schema 3 起 MUST 存在且有界;由 schema 2 迁移而来的文档携带 `BaseModelId::unspecified()` 哨兵,well-formed 但永不 admissible |
+| `base_model` | `BaseModelId` | 该 policy 所依据的冻结基座模型(family / id / digest) | schema 3 起 MUST 存在且有界;由 schema 2 迁移而来的文档携带 `BaseModelId::unspecified()` 哨兵,well-formed 但永不 admissible。**`model_digest` MUST 是规范 64 位小写 hex**,与本 crate 其他 digest 同规;三个分量均 MUST NOT 含控制字符。缺失该字段 MUST 拒收,MUST NOT 默认为哨兵 —— 哨兵只属于诚实声明自己是 schema 2 的文档 |
 
 字段类型约束定义了失败模式的完整集合。`slot` 违反命名规则触发 `InvalidSlot`;任一 digest 非规范 64 位小写 hex 触发 `MalformedDigest`;learned method 缺 `training_dataset_digest` 触发 `MissingTrainingDataset`。这些错误在反序列化边界即被拒,fail-closed;一个无法通过 `validate` 的 manifest 永远进不到 admission。
 
@@ -179,6 +179,12 @@ admission 是 candidate 进入流水线的第一道、也是最强的一道门�
 **分权(separation of duties)是被结构强制的,不是流程约定。** 打分 held-out 的 `IndependentEvaluator` 与产出 candidate 的 producer **MUST** 是不同的信任主体:evaluator 用**独立的 trust anchor**(`EvaluatorTrustAnchor`)对 `HeldOutEvaluation` 签名(`SignedHeldOutEvaluation`),而 producer 用另一套 anchor 对 candidate 签名。`PromotionAuthority` 分别持有 `promotion_anchors` 与 `evaluator_anchors`,并读取 tamper-evident 证据链。评估 fixture 与打分策略 MUST 由独立于"被期望改善该分数的策略"的一方评审。若一条 `HeldOutEvaluation` 的签名 anchor 落在 `promotion_anchors` 而非 `evaluator_anchors` 内(即 producer 试图给自己的产出打分),`PromotionAuthority` 拒绝采信该评估。
 
 由此得到一条硬结论,直接呼应"safety cannot be a fixed point of the self-improving operator":**producer 不能伪造自己的晋升。** 一个被优化的对象,其裁判结构性地坐在被优化对象**之外**;held-out 分数因此是 non-Goodhartable 的,promotion 决策与 slot 组合矩阵才可信。历史反例(某自进化系统伪造单测日志、删掉自己的幻觉检测器)正是缺少这条独立性时会发生的事;本设计以"evaluator 在 learning loop 之外,加 candidate 结构上不能扩张自身权限(§6.6)"来杜绝它。两条防线叠加:即使 candidate 想改评估结果,它既没有 evaluator 的 anchor(无法签),也没有能力去改 tamper-evident 证据链(§6.8)。
+
+**跨接缝携带的 MUST 是 `SignedHeldOutEvaluation`,不是别的形状。** eval→evolve 的 `HeldOutEvidenceBridge` 返回类型 **MUST** 是这个带 `evaluator_id` 与签名的类型。W1 冻结的第一版曾另造一个全 `pub` 字段、无签名、无 evaluator 身份的结构体跨这道接缝,并在文档里声称 evolution "cannot manufacture it" —— 那句话在实现上为假:写一个 struct literal 即可。**分权由密钥与验签路径强制,不由 trait 签名强制**;一个不携带署名者的类型,`verify_held_out` 连能engage的东西都没有。
+
+**`base_model` MUST 在签名载荷之内。** `HeldOutEvaluation` 携带它,并由 `PromotionAuthority` 与它自己从已校验 manifest 读出的身份比对;不一致即 `IndependentEvaluationRequired`。否则签名只证明了"某个分数",而没有钉死这个分数是在**哪套权重**上量出来的,于是一次针对同一 candidate、在便利 base model 上做的诚实评估,可以被重放为真实 base model 下的证据。该字段进入 HMAC 前像使得 journal schema 从 1 升到 2:旧签名会重算出不同值,而"这条证据早于某字段"与"这条证据被篡改"必须可区分,故 fail-closed 拒读旧版而非迁移。
+
+**一条诚实的残余缺口。** evaluator 与 promotion 方的不相交是按**身份字符串**检查的(`PromotionAuthority::open` 拒绝 evaluator_id 与 promotion party id 相同的配置),而不是按密钥材料。同一方以两个 id 注册同一把密钥可以绕过它,且目前没有任何机制能发现。记录在此,以免把一条部分保证读成完整保证。
 
 ---
 
