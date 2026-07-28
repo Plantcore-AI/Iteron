@@ -63,8 +63,7 @@ pub(crate) fn validate(root: &Path, files: &[String]) -> Result<()> {
             // "outside `#[cfg(test)]`" and needs no brace parsing to be correct: an in-`src` test
             // module is exactly where a real implementation would be easiest to hide, and the
             // satisfiability proof has no reason to live there anyway.
-            let implemented = source.contains(&format!("impl {seam} for"));
-            if implemented && !is_test_path(relative) {
+            if implements_seam(&source, seam) && !is_test_path(relative) {
                 bail!(
                     "`{relative}` implements the `{seam}` seam outside a test target.\n\
                      These seams are declared, not implemented; the frozen contract says no runtime \
@@ -95,6 +94,77 @@ pub(crate) fn validate(root: &Path, files: &[String]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Does this source implement `seam`, however the `impl` header is spelled?
+///
+/// A first version matched the literal `"impl {seam} for"`, and a self-review found the hole before
+/// a reviewer did: `impl<T> TrajectoryProjection for T` — a blanket impl, the single most dangerous
+/// shape here, since it implements the seam for *every* type at once — does not contain that
+/// substring. Neither does `impl  Seam  for` with any extra whitespace. A gate that a blanket impl
+/// walks through is worse than no gate, because it reports the property as held.
+///
+/// So this parses the header instead of pattern-matching it: find `impl` as a whole token, skip an
+/// optional balanced generic parameter list, then require the seam name (bare or the last segment of
+/// a path) followed by the `for` keyword.
+fn implements_seam(source: &str, seam: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut cursor = 0usize;
+    while let Some(found) = source[cursor..].find("impl") {
+        let start = cursor + found;
+        cursor = start + 4;
+        // `impl` must be a whole token, not the tail of `noimpl` or the head of `implements`.
+        let before_ok = start == 0 || !is_ident_byte(bytes[start - 1]);
+        let after_ok = cursor >= bytes.len() || !is_ident_byte(bytes[cursor]);
+        if !(before_ok && after_ok) {
+            continue;
+        }
+        let mut index = skip_space(bytes, cursor);
+        // An optional generic parameter list: `impl<T>`, `impl<'a, T: Bound<U>>`.
+        if index < bytes.len() && bytes[index] == b'<' {
+            let mut depth = 0usize;
+            while index < bytes.len() {
+                match bytes[index] {
+                    b'<' => depth += 1,
+                    b'>' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            index += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                index += 1;
+            }
+            index = skip_space(bytes, index);
+        }
+        // The trait path. Compare the last `::` segment, so `crate::seams::Foo` counts as `Foo`.
+        let path_start = index;
+        while index < bytes.len() && (is_ident_byte(bytes[index]) || bytes[index] == b':') {
+            index += 1;
+        }
+        let path = &source[path_start..index];
+        let named = path.rsplit("::").next().unwrap_or(path) == seam;
+        // `impl Type { .. }` is an inherent impl, not a trait impl; only `for` makes it one.
+        let rest = &source[skip_space(bytes, index)..];
+        let is_trait_impl = rest.starts_with("for") && rest[3..].starts_with(char::is_whitespace);
+        if named && is_trait_impl {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn skip_space(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    index
 }
 
 fn is_test_path(relative: &str) -> bool {
@@ -174,4 +244,67 @@ fn validate_single_dependency(relative: &str, source: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{implements_seam, strip_comments};
+
+    #[test]
+    fn a_blanket_impl_does_not_walk_past_the_gate() {
+        // The shape that motivated parsing the header rather than matching a literal: it implements
+        // the seam for EVERY type at once, and the old `contains("impl Seam for")` missed it.
+        assert!(implements_seam("impl<T> Seam for T {}", "Seam"));
+        assert!(implements_seam(
+            "impl<'a, T: Bound<U>> Seam for &'a T {}",
+            "Seam"
+        ));
+    }
+
+    #[test]
+    fn whitespace_and_paths_do_not_hide_an_impl() {
+        assert!(implements_seam("impl  Seam  for  X {}", "Seam"));
+        assert!(implements_seam("impl\n    Seam\n    for X {}", "Seam"));
+        assert!(implements_seam("impl crate::seams::Seam for X {}", "Seam"));
+    }
+
+    #[test]
+    fn the_things_that_are_not_a_trait_impl_are_not_reported() {
+        // An inherent impl on a type that happens to share the name.
+        assert!(!implements_seam("impl Seam { fn new() {} }", "Seam"));
+        // A different trait.
+        assert!(!implements_seam("impl OtherSeam for X {}", "Seam"));
+        // `impl` as part of a longer identifier, and the trait merely named.
+        assert!(!implements_seam("fn f(x: &dyn Seam) {}", "Seam"));
+        assert!(!implements_seam("let noimpl = Seam;", "Seam"));
+        // `impl Trait` in return position names the trait without implementing it.
+        assert!(!implements_seam("fn f() -> impl Seam { todo!() }", "Seam"));
+    }
+
+    #[test]
+    fn a_comment_is_never_read_as_code() {
+        assert_eq!(strip_comments("a // impl Seam for X\nb"), "a \nb");
+        assert_eq!(strip_comments("a /* impl Seam for X */ b"), "a  b");
+        assert!(!implements_seam(
+            &strip_comments("// impl Seam for X"),
+            "Seam"
+        ));
+    }
+
+    #[test]
+    fn a_string_literal_is_not_stripped_as_a_comment() {
+        // The stripper does not track string literals. That is a deliberate, bounded imprecision:
+        // it can only ever cause a `//` or `/*` INSIDE a string to eat the rest of a line, which
+        // makes the gate blinder, never louder. Record the real behaviour rather than claim
+        // otherwise - a stripper that is documented as exact and is not is the worse failure.
+        let source = r#"let url = "https://example.invalid"; impl Seam for X {}"#;
+        assert!(
+            !implements_seam(&strip_comments(source), "Seam"),
+            "the `//` in a URL swallows the rest of the line; this is the known blind spot"
+        );
+        // And the same code with the impl on its own line is caught, which is the shape that
+        // matters: an `impl` header does not share a line with a URL in practice.
+        let split = "let url = \"https://example.invalid\";\nimpl Seam for X {}";
+        assert!(implements_seam(&strip_comments(split), "Seam"));
+    }
 }
