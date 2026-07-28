@@ -517,7 +517,8 @@ fn the_persisted_vocabularies_keep_their_exact_tags_and_the_schema_stamp_holds()
 
 /// The seven serde-derived vocabularies this crate had recorded nowhere.
 ///
-/// A review enumerated every `#[derive(Deserialize)] enum` in `core-evolve` and found ten. Three
+/// A review enumerated every `#[derive(Deserialize)] enum` in `core-evolve` and found ten *public*
+/// ones. Three
 /// were registered — `ArtifactKind` and `EvolutionMethod` as open, `DeploymentStage` as closed. The
 /// other seven were in neither register and had no test feeding them an unrecognised tag, so nothing
 /// recorded whether their closure was a decision or an accident. `Errors.md` 2026-07-28c already
@@ -528,6 +529,14 @@ fn the_persisted_vocabularies_keep_their_exact_tags_and_the_schema_stamp_holds()
 /// this build's own state or its own authorization vocabulary, written and read by the same code. An
 /// unrecognised member is not a newer peer being forward-compatible — it is a corrupt or forged
 /// record, and a sentinel would launder it into a value the rest of the code then has to handle.
+///
+/// **Ten is the count of PUBLIC ones, and saying "ten" without that word was itself wrong.** The
+/// crate has **twelve**: `RefusalCode` and `JournalEvent` (crates/evolve/src/promotion_journal.rs)
+/// are `pub(crate)`, so this integration test cannot name them at all. They are registered where
+/// they can be — `promotion_journal::vocabulary_tests` — and they are the highest-stakes two, being
+/// the on-disk record format of the hash-chained promotion journal. A register that states its own
+/// completeness in prose is exactly what this test was written to replace; it managed to reproduce
+/// the fault while doing so.
 ///
 /// `PromotionRole` deserves its own note. It derives `Ord` and lives in a `BTreeSet` on
 /// `PromotionTrustAnchor`, which is exactly the shape of the `Trust::Unknown` regression recorded in

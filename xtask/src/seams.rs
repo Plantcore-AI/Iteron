@@ -12,6 +12,29 @@
 //! make the companion criterion, "referenced by no runtime path", permanently unenforceable. An
 //! absent implementation plus this gate gives the same guarantee and can actually be enforced.
 //!
+//! # What this gate does NOT catch
+//!
+//! Stated here rather than discovered later, because a gate whose limits are unwritten gets read as
+//! a guarantee it never made. An adversarial review found each of these; two were fixed, and these
+//! three are real and remain:
+//!
+//! - **A macro that takes the trait as a metavariable.** `macro_rules! wire { ($tr:path, $ty:ty) =>
+//!   { impl $tr for $ty { .. } } }` never spells the trait name next to `impl`, so nothing textual
+//!   can see it. (A macro that spells the trait literally *is* caught.) Closing this means expanding
+//!   macros, i.e. running the compiler, which is a different tool than a source scan. The honest
+//!   mitigation is that it takes deliberate indirection: nobody writes that shape by accident, so
+//!   this stops mistakes, not a determined author.
+//! - **Anything outside `crates/`.** The scan skips every path that does not start with `crates/`
+//!   (see [`validate`]), so a build script or a crate rooted elsewhere is unscanned. Nothing outside
+//!   `crates/` depends on `core-evolve` today; that is an assumption, and it is written down here so
+//!   it can be rechecked rather than assumed.
+//! - **Files git does not list.** The file list comes from `git ls-files --cached --others
+//!   --exclude-standard`, so a `.gitignore`d `.rs` that still compiles into a crate is invisible.
+//!
+//! An unterminated raw string or block comment also blinds the scanner from that point on — but such
+//! a file does not compile, so it cannot hide a live implementation. That one is a non-issue and is
+//! recorded only so the next reader does not spend an afternoon on it.
+//!
 //! # For whoever lands the first real implementation
 //!
 //! Issues #27 (`HeldOutEvidenceBridge`) and #28 (bundle resolution) delete the relevant entry from
@@ -56,7 +79,7 @@ pub(crate) fn validate(root: &Path, files: &[String]) -> Result<()> {
         };
         // Every check below reads code, never prose. A doc comment that discusses a seam by name -
         // and the specs and design notes do - is documentation, not a reference.
-        let source = strip_comments(&raw);
+        let source = code_only(&raw);
 
         for seam in SEAMS {
             // An implementation may exist only under `crates/*/tests/`. That is stricter than
@@ -173,24 +196,44 @@ fn is_test_path(relative: &str) -> bool {
         .any(|component| component == "tests" || component == "benches")
 }
 
-/// Strip `//` line comments and `/* */` block comments.
+/// Reduce a source file to the code a compiler would see: no comments, and no string contents.
 ///
-/// The gate below reads prose as code otherwise, and it did: the first run failed on the word
-/// `core_protocol` inside the very doc comment explaining why `core_protocol` must not be imported.
-/// A gate that fires on its own explanation is a gate someone disables, so it reads code only.
+/// # Two false results this exists to prevent, both of which happened
 ///
-/// String literals are not excluded. A crate name inside a string is not an import and cannot make
-/// anything compile, so treating one as a reference would be the same false positive in a new place.
-fn strip_comments(source: &str) -> String {
+/// **A false positive.** The first version of this gate read prose as code, and its very first run
+/// failed on the word `core_protocol` inside the doc comment explaining why `core_protocol` must not
+/// be imported. A gate that fires on its own explanation is a gate someone disables.
+///
+/// **A false negative, and it was the dangerous one.** The second version stripped comments but not
+/// string literals, on the reasoning that "a crate name inside a string is not an import and cannot
+/// make anything compile". That reasoning is sound for what a string can *add* and completely misses
+/// what a string can *hide*: an adversarial review put `const GLOB: &str = "/*";` at the top of a
+/// file, the stripper saw the `/*`, searched for a closing `*/` that never came, and swallowed the
+/// entire rest of the file. A textbook `impl TrajectoryProjection for Evil` underneath it was
+/// invisible — in `crates/kernel`, a crate not even allowed to *name* the seam. The same trick blinded
+/// the single-dependency check on the satisfiability proof. A `//` inside a string ate the rest of
+/// its line the same way.
+///
+/// The asymmetry is the lesson: **including strings costs false positives, ignoring them costs false
+/// negatives, and only one of those two failures is silent.** So strings are lexed and blanked rather
+/// than left in, which fixes both directions at once — the `/*` can no longer start a comment, and a
+/// seam name written inside a string is no longer mistaken for an implementation.
+///
+/// Quotes and delimiters are preserved so token structure survives; only the contents go.
+fn code_only(source: &str) -> String {
     let bytes = source.as_bytes();
     let mut out = String::with_capacity(source.len());
-    let mut index = 0;
+    let mut index = 0usize;
     while index < bytes.len() {
+        // `//` line comment
         if bytes[index..].starts_with(b"//") {
             while index < bytes.len() && bytes[index] != b'\n' {
                 index += 1;
             }
-        } else if bytes[index..].starts_with(b"/*") {
+            continue;
+        }
+        // `/* */` block comment, nested
+        if bytes[index..].starts_with(b"/*") {
             index += 2;
             let mut depth = 1usize;
             while index < bytes.len() && depth > 0 {
@@ -204,12 +247,65 @@ fn strip_comments(source: &str) -> String {
                     index += 1;
                 }
             }
-        } else {
-            // Push whole chars so a multi-byte character is never split.
-            let ch = source[index..].chars().next().expect("in bounds");
-            out.push(ch);
-            index += ch.len_utf8();
+            continue;
         }
+        // Raw string: r"..", r#".."#, r##".."##
+        if bytes[index] == b'r' {
+            let mut probe = index + 1;
+            let mut hashes = 0usize;
+            while probe < bytes.len() && bytes[probe] == b'#' {
+                hashes += 1;
+                probe += 1;
+            }
+            if probe < bytes.len() && bytes[probe] == b'"' {
+                out.push('"');
+                index = probe + 1;
+                let close: Vec<u8> = std::iter::once(b'"')
+                    .chain(std::iter::repeat_n(b'#', hashes))
+                    .collect();
+                while index < bytes.len() && !bytes[index..].starts_with(&close) {
+                    index += 1;
+                }
+                index = (index + close.len()).min(bytes.len());
+                out.push('"');
+                continue;
+            }
+        }
+        // Ordinary string, with escapes
+        if bytes[index] == b'"' {
+            out.push('"');
+            index += 1;
+            while index < bytes.len() {
+                if bytes[index] == b'\\' {
+                    index += 2;
+                } else if bytes[index] == b'"' {
+                    index += 1;
+                    break;
+                } else {
+                    index += 1;
+                }
+            }
+            out.push('"');
+            continue;
+        }
+        // A `'` is a char literal only if it closes; otherwise it is a lifetime and must survive,
+        // because `impl<'a, T> Seam for &'a T` has to stay parseable by `implements_seam`.
+        if bytes[index] == b'\'' {
+            let mut probe = index + 1;
+            if probe < bytes.len() && bytes[probe] == b'\\' {
+                probe += 2;
+            } else if probe < bytes.len() {
+                probe += source[probe..].chars().next().map_or(1, char::len_utf8);
+            }
+            if probe < bytes.len() && bytes[probe] == b'\'' {
+                out.push_str("''");
+                index = probe + 1;
+                continue;
+            }
+        }
+        let ch = source[index..].chars().next().expect("in bounds");
+        out.push(ch);
+        index += ch.len_utf8();
     }
     out
 }
@@ -248,7 +344,7 @@ fn validate_single_dependency(relative: &str, source: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{implements_seam, strip_comments};
+    use super::{code_only, implements_seam};
 
     #[test]
     fn a_blanket_impl_does_not_walk_past_the_gate() {
@@ -283,28 +379,70 @@ mod tests {
 
     #[test]
     fn a_comment_is_never_read_as_code() {
-        assert_eq!(strip_comments("a // impl Seam for X\nb"), "a \nb");
-        assert_eq!(strip_comments("a /* impl Seam for X */ b"), "a  b");
-        assert!(!implements_seam(
-            &strip_comments("// impl Seam for X"),
-            "Seam"
-        ));
+        assert_eq!(code_only("a // impl Seam for X\nb"), "a \nb");
+        assert_eq!(code_only("a /* impl Seam for X */ b"), "a  b");
+        assert!(!implements_seam(&code_only("// impl Seam for X"), "Seam"));
     }
 
     #[test]
-    fn a_string_literal_is_not_stripped_as_a_comment() {
-        // The stripper does not track string literals. That is a deliberate, bounded imprecision:
-        // it can only ever cause a `//` or `/*` INSIDE a string to eat the rest of a line, which
-        // makes the gate blinder, never louder. Record the real behaviour rather than claim
-        // otherwise - a stripper that is documented as exact and is not is the worse failure.
-        let source = r#"let url = "https://example.invalid"; impl Seam for X {}"#;
+    fn a_string_containing_a_block_comment_opener_cannot_blind_the_scanner() {
+        // The finding that mattered most from the adversarial review. The old stripper saw the `/*`
+        // inside the string, hunted for a closing `*/` that never came, and ate the entire rest of
+        // the file - so an impl underneath it was invisible, in ANY crate.
+        let source = "const GLOB: &str = \"/*\";\nimpl Seam for Evil {}";
         assert!(
-            !implements_seam(&strip_comments(source), "Seam"),
-            "the `//` in a URL swallows the rest of the line; this is the known blind spot"
+            implements_seam(&code_only(source), "Seam"),
+            "a `/*` inside a string must not swallow the code after it"
         );
-        // And the same code with the impl on its own line is caught, which is the shape that
-        // matters: an `impl` header does not share a line with a URL in practice.
-        let split = "let url = \"https://example.invalid\";\nimpl Seam for X {}";
-        assert!(implements_seam(&strip_comments(split), "Seam"));
+    }
+
+    #[test]
+    fn a_line_comment_marker_inside_a_string_cannot_hide_the_rest_of_its_line() {
+        let source = r#"let u = "https://example.invalid"; impl Seam for Evil {}"#;
+        assert!(
+            implements_seam(&code_only(source), "Seam"),
+            "the `//` in a URL must not eat the impl that follows it on the same line"
+        );
+    }
+
+    #[test]
+    fn a_seam_name_inside_a_string_is_not_an_implementation() {
+        // The other direction of the same bug: a string constant that merely mentions the seam was
+        // reported as implementing it, with a diagnostic that actively misdescribed the file.
+        let source = r#"const MSG: &str = "impl Seam for X is forbidden";"#;
+        assert!(!implements_seam(&code_only(source), "Seam"));
+        assert!(!code_only(source).contains("Seam"));
+    }
+
+    #[test]
+    fn raw_strings_and_escapes_are_handled_rather_than_guessed_at() {
+        assert!(!code_only(r##"let a = r#"impl Seam for X"#;"##).contains("Seam"));
+        assert!(!code_only(r#"let a = "impl Seam \" for X";"#).contains("Seam"));
+        // An UNTERMINATED raw string does still swallow the rest of the file, and that is recorded
+        // here as the real behaviour rather than asserted away. It is not exploitable: an
+        // unterminated raw string is not valid Rust, so nothing after it compiles either, and code
+        // the compiler never sees cannot be an implementation. The exploitable case was a
+        // *terminated* string whose contents merely contained `/*`, which is perfectly valid Rust —
+        // and that one is closed, above.
+        assert!(
+            !implements_seam(
+                &code_only("let a = r#\"oops;\nimpl Seam for Evil {}"),
+                "Seam"
+            ),
+            "documented limit: an unterminated raw string blinds the scanner, but such a file does \
+             not compile, so it cannot hide a live implementation"
+        );
+    }
+
+    #[test]
+    fn a_lifetime_is_not_a_char_literal() {
+        // `'a` must survive, or `impl<'a, T> Seam for &'a T` stops parsing and the blanket-impl
+        // check silently goes blind again.
+        assert!(implements_seam(
+            &code_only("impl<'a, T> Seam for &'a T {}"),
+            "Seam"
+        ));
+        // And a real char literal is still blanked.
+        assert!(!code_only(r#"let c = '"'; let s = "Seam";"#).contains("Seam"));
     }
 }

@@ -94,6 +94,36 @@ pub struct SignedHeldOutEvaluation {
     pub(crate) signature: String,
 }
 
+impl SignedHeldOutEvaluation {
+    /// Who signed this attestation.
+    ///
+    /// Readable, and deliberately so: an implementor of the eval -> evolve seam has to be able to
+    /// say which evaluator produced what it is handing back. Reading it proves nothing about
+    /// authenticity — only `PromotionAuthority` can, by resolving this id against its configured
+    /// anchors and recomputing the HMAC.
+    pub fn evaluator_id(&self) -> &str {
+        &self.evaluator_id
+    }
+
+    /// The attested report.
+    ///
+    /// These two accessors exist because an adversarial review proved the type was completely opaque
+    /// outside this crate — `pub(crate)` fields, no accessor of any kind — while
+    /// [`crate::HeldOutEvidenceBridge`]'s own doc told an implementor that the `base_model` argument
+    /// was "checkable against the returned report". It was not: a probe crate holding only
+    /// `core-evolve` got `E0616: field report is private`. And out-of-crate is the *only* place an
+    /// implementor may live, because `core-xtask boundaries check` forbids implementing that seam
+    /// inside this crate outside a test target. A doc that states a property only the one forbidden
+    /// crate can use is the same defect this seam was already corrected for once.
+    ///
+    /// Read-only by construction: the fields stay `pub(crate)`, so nothing outside can mint or mutate
+    /// an attestation. Only a key-holder can produce one whose signature verifies, which is the
+    /// separation of duties this type exists to carry.
+    pub fn report(&self) -> &HeldOutEvaluation {
+        &self.report
+    }
+}
+
 impl std::fmt::Debug for SignedHeldOutEvaluation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter

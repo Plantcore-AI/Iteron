@@ -27,8 +27,10 @@
 
 use core_evolve::{
     BaseModelId, ContractError, DataClass, DataGovernance, EVOLUTION_SCHEMA_VERSION,
-    HeldOutEvidenceBridge, PolicyBundle, PolicyRef, RewardVector, RunId, SignedHeldOutEvaluation,
-    StrategySlot, TenantId, TrainingConsent, TrajectoryEnvelope, TrajectoryProjection,
+    HeldOutEvaluation, HeldOutEvidenceBridge, IndependentEvaluator, Interval, PolicyBundle,
+    PolicyRef, PromotionAuthorityKey, PromotionEvidence, RewardVector, RunId,
+    SignedHeldOutEvaluation, StrategySlot, TenantId, TrainingConsent, TrajectoryEnvelope,
+    TrajectoryProjection, VerifiedCandidateInputs,
 };
 
 fn digest(seed: char) -> String {
@@ -144,6 +146,83 @@ impl HeldOutEvidenceBridge for UnreachableEvidence {
     }
 }
 
+/// Returns a REAL, HMAC-signed attestation. This is the double that proves the signature.
+///
+/// It exists because an adversarial review caught the first version of this file returning only
+/// `Ok(None)` and `Err` for this seam — the exact proof-of-nothing the whole exercise was written to
+/// eliminate — while the module doc above claimed a non-empty payload for every seam. `Ok(None)`
+/// touches no payload type, so it certified nothing about whether `SignedHeldOutEvaluation` could be
+/// obtained at all from outside this crate.
+///
+/// Minting one here is not a hole in the separation of duties. The type cannot be struct-literalled
+/// from outside (its fields are `pub(crate)`), and this goes through the only honest path: hold a
+/// key, be an `IndependentEvaluator`, sign. What that proves is that a real evaluator crate can do
+/// its job through the public surface — and what it does NOT prove is authenticity, which only
+/// `PromotionAuthority` can decide by resolving the evaluator id against its configured anchors.
+struct RealEvidence;
+
+impl RealEvidence {
+    fn sign(base_model: &BaseModelId) -> SignedHeldOutEvaluation {
+        let candidate = PolicyRef {
+            slot: StrategySlot::new("core/router").expect("a valid slot"),
+            policy_id: "acme.router".into(),
+            version: "2.0.0".into(),
+            digest: digest('e'),
+        };
+        let baseline = PolicyRef {
+            policy_id: "acme.router".into(),
+            version: "1.0.0".into(),
+            ..candidate.clone()
+        };
+        let verified = VerifiedCandidateInputs {
+            artifact_digest: digest('e'),
+            training_dataset_digest: None,
+            evaluation_suite_digest: digest('f'),
+            base_model: base_model.clone(),
+        };
+        let flat = Interval {
+            estimate: 0.0,
+            lower: 0.0,
+            upper: 0.0,
+        };
+        let evidence = PromotionEvidence {
+            baseline,
+            candidate: candidate.clone(),
+            paired_tasks: 128,
+            task_score_delta: Interval {
+                estimate: 0.04,
+                lower: 0.01,
+                upper: 0.07,
+            },
+            cost_delta_usd: flat,
+            latency_delta_ms: flat,
+            candidate_safety_violations: 0,
+            candidate_policy_violations: 0,
+            train_eval_overlap: false,
+            replay_equivalence_passed: true,
+            sandbox_suite_passed: true,
+            invariant_suites: Default::default(),
+        };
+        let report = HeldOutEvaluation::new(candidate, &verified, evidence)
+            .expect("a well-formed held-out evaluation");
+        let key = PromotionAuthorityKey::new(vec![7u8; 32]).expect("a valid key");
+        IndependentEvaluator::new("acme-evaluator", key)
+            .expect("a valid evaluator")
+            .sign_held_out(report)
+            .expect("signs")
+    }
+}
+
+impl HeldOutEvidenceBridge for RealEvidence {
+    fn evidence_for(
+        &self,
+        _policy_digest: &str,
+        base_model: &BaseModelId,
+    ) -> Result<Option<SignedHeldOutEvaluation>, ContractError> {
+        Ok(Some(Self::sign(base_model)))
+    }
+}
+
 /// Refuses the migration sentinel rather than treating it as a wildcard.
 ///
 /// This is the behaviour the seam's doc comment requires of an implementor, written here as an
@@ -209,6 +288,23 @@ fn a_non_empty_payload_is_constructible_from_outside_this_crate() {
     projected
         .validate()
         .expect("a trajectory built through the public surface must be valid");
+
+    // The second seam, which the first version of this file never exercised with a payload at all.
+    // This also checks the property `HeldOutEvidenceBridge`'s doc comment promises an implementor:
+    // that the `base_model` argument is checkable against the returned report. It was NOT, until an
+    // accessor was added — the type was fully opaque outside this crate, so the doc described
+    // something only the one crate forbidden from implementing the seam could do.
+    let asked = real_base_model();
+    let attested = RealEvidence
+        .evidence_for(&digest('a'), &asked)
+        .expect("bridge ok")
+        .expect("a real attestation");
+    assert_eq!(attested.evaluator_id(), "acme-evaluator");
+    assert_eq!(
+        attested.report().base_model(),
+        &asked,
+        "an implementor must be able to check the argument against the signed report"
+    );
 }
 
 #[test]

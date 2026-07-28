@@ -446,3 +446,73 @@ fn sync_directory(directory: &Path) -> std::io::Result<()> {
 fn sync_directory(_directory: &Path) -> std::io::Result<()> {
     Ok(())
 }
+
+#[cfg(test)]
+mod vocabulary_tests {
+    use super::{DeploymentStage, JournalEvent, RefusalCode};
+
+    /// The two closed vocabularies that live on disk and are `pub(crate)`.
+    ///
+    /// They were missed by the register in `crates/evolve/tests/policy_manifest_freeze.rs`, which is
+    /// an integration test and therefore cannot see them, under a comment asserting that this crate
+    /// had ten serde-derived enums. It has twelve. These two are the ones where an accidentally
+    /// opened vocabulary does the most damage: they are the record format of
+    /// `promotion-authority.jsonl`, a hash-chained file that `PromotionAuthority::refresh` replays
+    /// and re-verifies on every open, so an unrecognised member is a corrupt or forged record and
+    /// never a newer peer being forward-compatible.
+    ///
+    /// A sentinel here would be worse than a decode error twice over: it would launder a tampered
+    /// record into a value the replay then has to interpret, and — because `RefusalCode` derives
+    /// `Ord` and is stored in a `Vec` that is compared — an appended `#[serde(other)]` arm would take
+    /// the top discriminant, the same shape as the `Trust::Unknown` regression in Errors.md
+    /// 2026-07-27e.
+    #[test]
+    fn the_on_disk_journal_vocabularies_are_closed_and_stay_closed() {
+        // Tags are frozen by value: these strings are what is already written to disk.
+        for (code, tag) in [
+            (RefusalCode::StageBounds, "stage_bounds"),
+            (RefusalCode::InvariantSuite, "invariant_suite"),
+            (RefusalCode::BudgetPolicy, "budget_policy"),
+            (RefusalCode::SecurityPolicy, "security_policy"),
+            (RefusalCode::DurabilityPolicy, "durability_policy"),
+            (RefusalCode::PromotionThreshold, "promotion_threshold"),
+        ] {
+            let encoded = serde_json::to_value(&code).expect("serialises");
+            assert_eq!(encoded, serde_json::json!(tag));
+            assert_eq!(
+                serde_json::from_value::<RefusalCode>(encoded).expect("round-trips"),
+                code
+            );
+        }
+        assert!(
+            serde_json::from_value::<RefusalCode>(serde_json::json!("quota_exceeded")).is_err(),
+            "an unrecognised refusal code in a replayed journal is corruption, not forward \
+             compatibility"
+        );
+
+        // `JournalEvent` is internally tagged. Swap ONLY the tag on a fully populated member: a bare
+        // `{\"kind\":\"x\"}` would be refused for its missing body and would keep passing the day
+        // someone adds an `#[serde(other)]` arm.
+        let event = JournalEvent::RolledBack {
+            candidate_bundle_digest: "a".repeat(64),
+            from: DeploymentStage::Canary,
+            restored_bundle_id: "acme-2026-06".into(),
+            restored_bundle_digest: "b".repeat(64),
+        };
+        let mut encoded = serde_json::to_value(&event).expect("serialises");
+        assert_eq!(
+            encoded.get("kind").and_then(serde_json::Value::as_str),
+            Some("rolled_back")
+        );
+        assert_eq!(
+            serde_json::from_value::<JournalEvent>(encoded.clone()).expect("round-trips"),
+            event
+        );
+        encoded["kind"] = serde_json::json!("rolled_forward");
+        assert!(
+            serde_json::from_value::<JournalEvent>(encoded).is_err(),
+            "an unrecognised journal event kind must fail the decode; the record is hash-chained and \
+             signed, so the only ways to get one are corruption and forgery"
+        );
+    }
+}

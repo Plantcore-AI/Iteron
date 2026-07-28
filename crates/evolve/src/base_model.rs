@@ -35,8 +35,12 @@
 //!   candidate crosses it before any promotion decision, so that is the chokepoint.
 //! - `OfflineRuleSearchSpec::new` refuses one at production time. A candidate minted now knows
 //!   what it searched against; only a document recovered from schema 2 has an excuse.
-//! - `HeldOutEvidence::validate` refuses one, because evidence gathered against unknown weights
-//!   attests nothing about any particular model.
+//! - `HeldOutEvaluation::validate` refuses one, because evidence gathered against unknown weights
+//!   attests nothing about any particular model. (This line said `HeldOutEvidence::validate` until
+//!   an adversarial review caught it: that type was deleted when the eval seam was corrected to
+//!   carry the *signed* attestation, so the list naming it was pointing at nothing. A list whose
+//!   stated purpose is to keep a claim checkable is worth less than nothing when one of its entries
+//!   does not exist — and no gate catches it, because the seam gate strips comments by design.)
 
 use crate::ContractError;
 use serde::{Deserialize, Serialize};
