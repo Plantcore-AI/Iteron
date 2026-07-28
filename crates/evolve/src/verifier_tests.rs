@@ -123,7 +123,11 @@ fn manifest(artifact: &[u8], training_digest: &str, evaluation_digest: &str) -> 
             digest: sha256_hex(artifact),
         },
         artifact_kind: ArtifactKind::Rules,
-        base_model: crate::BaseModelId::unspecified(),
+        base_model: crate::BaseModelId {
+            model_family: "anthropic/claude".into(),
+            model_id: "claude-opus-5".into(),
+            model_digest: "b".repeat(64),
+        },
         artifact_locator: "registry://candidate-a@2.0.0".into(),
         parent: None,
         method: EvolutionMethod::Search,
@@ -132,6 +136,40 @@ fn manifest(artifact: &[u8], training_digest: &str, evaluation_digest: &str) -> 
         training_dataset_digest: Some(training_digest.into()),
         evaluation_suite_digest: evaluation_digest.into(),
     }
+}
+
+#[test]
+fn a_candidate_naming_no_admissible_base_model_is_refused_before_any_promotion_decision() {
+    // `BaseModelId::is_admissible` existed with no enforcement anywhere on the promotion path: its
+    // only non-test caller was inside a trait with no implementations, and the offline producer
+    // hard-coded the migration sentinel onto every candidate it emitted. The module doc claimed a
+    // sentinel-carrying document "cannot be promoted ... enforced by the type rather than
+    // remembered by a caller"; it was enforced by neither. This is that enforcement.
+    let verifier = verifier();
+    let signed = vec![signed("train-1", json!({"route":"safe"}))];
+    let dataset = verifier.build_training_dataset(&signed).unwrap();
+    let evaluation = evaluation("held-out-1");
+    let artifact = br#"{"rule":"bounded"}"#;
+
+    let valid = manifest(artifact, dataset.digest(), evaluation.digest());
+    assert!(
+        verifier
+            .verify_candidate_inputs(&valid, artifact, Some(&dataset), &evaluation)
+            .is_ok(),
+        "control: the same candidate with a real base model verifies"
+    );
+
+    let mut sentinel = valid.clone();
+    sentinel.base_model = crate::BaseModelId::unspecified();
+    // Still well-formed - a migrated schema-2 document must keep loading.
+    assert!(
+        sentinel.validate().is_ok(),
+        "well-formedness and admissibility are two predicates, deliberately"
+    );
+    assert!(matches!(
+        verifier.verify_candidate_inputs(&sentinel, artifact, Some(&dataset), &evaluation),
+        Err(VerifierError::InadmissibleBaseModel)
+    ));
 }
 
 #[test]

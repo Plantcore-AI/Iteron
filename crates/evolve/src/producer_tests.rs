@@ -75,9 +75,20 @@ fn candidates() -> Vec<OfflineRuleCandidate> {
     ]
 }
 
+/// A real, admissible base model. The producer refuses the migration sentinel: a candidate being
+/// minted now knows what it searched against, unlike a document recovered from schema 2.
+fn base_model() -> BaseModelId {
+    BaseModelId {
+        model_family: "anthropic/claude".into(),
+        model_id: "claude-opus-5".into(),
+        model_digest: "b".repeat(64),
+    }
+}
+
 fn spec(required: &[Capability], evaluation_digest: &str) -> OfflineRuleSearchSpec {
     OfflineRuleSearchSpec::new(
         "searched-router",
+        base_model(),
         "1.0.0",
         None,
         ProtocolRange { min: 1, max: 1 },

@@ -359,6 +359,14 @@ impl EvolutionVerifier {
         manifest
             .validate()
             .map_err(VerifierError::InvalidContract)?;
+        // `validate` answers "is this well-formed", and a document migrated from schema 2 is
+        // well-formed while carrying the inadmissible base-model sentinel - that is deliberate, so
+        // old documents still load. This is the second predicate, and it belongs here: every
+        // candidate crosses this function before it can be promoted, so this is where "no
+        // authority decision may rest on an unknown base model" stops being a comment.
+        if !manifest.base_model.is_admissible() {
+            return Err(VerifierError::InadmissibleBaseModel);
+        }
         if artifact_bytes.len() > MAX_VERIFIED_ARTIFACT_BYTES {
             return Err(VerifierError::ArtifactTooLarge {
                 max: MAX_VERIFIED_ARTIFACT_BYTES,
@@ -438,6 +446,10 @@ fn action_contains_secret(value: &serde_json::Value) -> bool {
 pub enum VerifierError {
     #[error("evolution contract is invalid: {0}")]
     InvalidContract(#[from] ContractError),
+    #[error(
+        "candidate names no admissible base model, so no promotion decision can rest on it; a          document migrated from schema 2 carries the reserved sentinel and must be re-produced          against known weights rather than promoted"
+    )]
+    InadmissibleBaseModel,
     #[error("evolution action evidence is invalid: {0}")]
     InvalidActionEvidence(#[from] EvidenceRecordError),
     #[error("trajectory is not eligible for governed training: {0}")]

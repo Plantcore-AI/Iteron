@@ -6,10 +6,27 @@
 //! *identity* of a slot inside a policy bundle. It answers "which slot is this artefact for".
 //!
 //! This trait answers "what does the kernel call". They are deliberately separate types with
-//! separate jobs, and [`SlotId`] is the shared identity between them — the same open
-//! `<domain>/<role>` string, so a vertical pack can introduce a slot with no kernel change. An
-//! adversarial review flagged the name collision as permanent if frozen carelessly; naming the
-//! identity type explicitly is the resolution.
+//! separate jobs, and [`SlotId`] is the identity that crosses between them, so a vertical pack can
+//! introduce a slot with no kernel change. An adversarial review flagged the name collision as
+//! permanent if frozen carelessly; naming the identity type explicitly is the resolution.
+//!
+//! # The two grammars are not equal, and the inequality has a direction
+//!
+//! A first cut of this module claimed the two types accept "the same string". They did not: this
+//! side accepted `[A-Za-z0-9_-]` with exactly one `/`, while `core_evolve::StrategySlot` accepts
+//! lowercase with `.` and any number of `/`. Each accepted identities the other rejected, in both
+//! directions - `Acme/Router` here and `db/query.planner` there - so a pack could register a slot
+//! the kernel honoured but no policy bundle could ever name. That slot would silently fall back to
+//! the built-in strategy with nothing reporting it.
+//!
+//! The freeze therefore fixes a direction rather than a claim of equality. [`SlotId`] is a **strict
+//! subset** of the evolve grammar, so:
+//!
+//! > every valid [`SlotId`] is a valid `core_evolve::StrategySlot`.
+//!
+//! That is the direction that has to hold. A bundle naming a slot the kernel does not have is
+//! inert and harmless; a kernel slot no bundle can name is an ungovernable hole. The conversion is
+//! therefore total in the direction that matters and is proved so by test.
 //!
 //! # Why `decide` is not `async`
 //!
@@ -34,12 +51,20 @@ pub const MAX_SLOT_ID_BYTES: usize = 128;
 ///
 /// The vocabulary is intentionally open. `core/tool_policy` and `acme-verticals/triage_router`
 /// are equally valid; the kernel does not enumerate them, so adding a slot is not a kernel change.
+///
+/// The *grammar* is not open. It is deliberately the strict subset of `core_evolve::StrategySlot`
+/// described in the module docs: lowercase only, so no pack can mint a kernel slot that no policy
+/// bundle is able to name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SlotId(pub String);
 
 impl SlotId {
     /// Validate the `<domain>/<role>` grammar without enumerating either half.
+    ///
+    /// Uppercase is rejected rather than normalised. Normalising would mean two distinct
+    /// `SlotId`s comparing unequal here but colliding once persisted on the evolve side, which
+    /// turns an identity into a near-identity. Better to refuse it at the boundary.
     pub fn validate(&self) -> Result<(), &'static str> {
         let raw = &self.0;
         if raw.is_empty() || raw.len() > MAX_SLOT_ID_BYTES {
@@ -51,11 +76,12 @@ impl SlotId {
             (Some(d), Some(r), None) if !d.is_empty() && !r.is_empty() => {}
             _ => return Err("slot id must be exactly <domain>/<role>"),
         }
-        if !raw
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'/')
-        {
-            return Err("slot id may only contain [A-Za-z0-9_-] and one /");
+        // Lowercase only, and no `.`: both are what keep this a subset of the evolve grammar.
+        // See the module docs for why the subset direction is the one that must hold.
+        if !raw.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-' | b'/')
+        }) {
+            return Err("slot id may only contain [a-z0-9_-] and one /");
         }
         Ok(())
     }
@@ -63,6 +89,17 @@ impl SlotId {
     /// The `<domain>` half.
     pub fn domain(&self) -> &str {
         self.0.split('/').next().unwrap_or("")
+    }
+
+    /// The identity as the evolve side persists it.
+    ///
+    /// `core-protocol` cannot depend on `core-evolve` (the dependency runs the other way), so this
+    /// hands back the borrowed string rather than constructing the evolve newtype. The guarantee
+    /// is the one the module docs state: for any `SlotId` that passes [`SlotId::validate`], this
+    /// string is accepted by `core_evolve::StrategySlot::new`. `crates/evolve` owns the test that
+    /// proves it, because only that side can call both validators.
+    pub fn as_persisted_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -187,6 +224,34 @@ mod tests {
             );
         }
         assert_eq!(SlotId("acme/x".into()).domain(), "acme");
+    }
+
+    #[test]
+    fn uppercase_is_refused_so_this_grammar_stays_a_subset_of_the_evolve_one() {
+        // `core_evolve::StrategySlot::new` accepts lowercase only. While this side accepted
+        // uppercase, a pack could register `Acme/Router`, have the kernel honour it, and leave it
+        // ungovernable: no policy bundle could name it, so it would silently fall back to the
+        // built-in strategy. `crates/evolve` owns the test that runs both validators together.
+        for rejected in ["Acme/Router", "core/toolPolicy", "CORE/CONTEXT"] {
+            assert!(
+                SlotId(rejected.into()).validate().is_err(),
+                "{rejected:?} is valid on neither side of the seam and must be refused here"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dot_is_refused_for_the_same_reason_from_the_other_direction() {
+        // The evolve grammar allows `.` and multiple `/`; this one does not. That asymmetry is
+        // fine - a bundle naming a slot the kernel lacks is inert - but it must not be mistaken
+        // for the types accepting the same language, which is what the first cut of this module
+        // claimed.
+        for rejected in ["db/query.planner", "acme/billing/router"] {
+            assert!(
+                SlotId(rejected.into()).validate().is_err(),
+                "{rejected:?} is valid on the evolve side only; this side must not accept it"
+            );
+        }
     }
 
     #[test]

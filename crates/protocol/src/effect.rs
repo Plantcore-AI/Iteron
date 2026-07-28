@@ -41,8 +41,12 @@ pub const MAX_EFFECT_WORKSPACE_BYTES: usize = 4_096;
 pub struct EffectProposal {
     /// Harness-minted, durable identity of this effect.
     pub id: EffectId,
-    /// Provider/model correlation id. Empty for the first experimental WAL format and for
-    /// effect classes that have no model tool-use behind them.
+    /// Provider/model correlation id.
+    ///
+    /// **Empty is a read-only legacy affordance and must never be minted by a new proposal.**
+    /// See [`EffectProposal::validate`] - an earlier draft of this field documented empty as
+    /// legitimate for "effect classes that have no model tool-use behind them", which would have
+    /// handed a live meaning to a value the WAL already uses for something else.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tool_use_id: String,
     /// The registry tool name. Empty for effect classes that are not registry tool calls.
@@ -77,6 +81,48 @@ impl EffectProposal {
             arguments,
             workspace,
         }
+    }
+
+    /// Is this proposal safe to mint as a NEW durable record?
+    ///
+    /// # Why an empty `tool_use_id` is refused
+    ///
+    /// `crates/kernel/src/effects.rs` recognises the first experimental WAL format by
+    /// `tool_use_id.is_empty()`, and for such a record it sets `legacy_tool_use_id` to the
+    /// **effect id string**. A later `ToolDone` carrying no `effect_id` is then correlated by
+    /// matching `result.tool_use_id` against that value.
+    ///
+    /// Effect ids are `fx1-{turn:08x}-{ordinal:04x}` - fully predictable - and
+    /// `ToolCallAdmission::admit` does not reject a model-supplied `ToolUse.id` of that shape. So
+    /// any *new* record written with an empty `tool_use_id` becomes completable by a tool id the
+    /// model chose, which is exactly what `ids.rs` forbids: "provider/model tool-call ids remain
+    /// untrusted correlation metadata and must never be used as the durable effect identity".
+    ///
+    /// No live path writes such a record today - every current effect carries a real model
+    /// tool-use id - so this is a hole that opens the moment #16 puts checkpoints, memory writes
+    /// and subagents on the same WAL. Those are precisely the "effect classes that have no model
+    /// tool-use behind them" the field's first draft invited. They must carry a harness-scoped
+    /// correlation id instead; empty stays reserved for reading records already on disk.
+    ///
+    /// Decoding is deliberately still permissive: old records must remain readable. This is the
+    /// mint-time gate, not the parse-time one.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.id.0.is_empty() {
+            return Err("an effect proposal must carry a harness-minted identity");
+        }
+        if self.tool_use_id.is_empty() {
+            return Err(
+                "empty tool_use_id is reserved for reading the first experimental WAL format; a \
+                 new effect must carry a correlation id, harness-scoped if there is no model call",
+            );
+        }
+        if self.workspace.is_empty() || self.workspace.len() > MAX_EFFECT_WORKSPACE_BYTES {
+            return Err("effect workspace must be 1..=4096 bytes");
+        }
+        if self.admitted.is_empty() {
+            return Err("an effect proposal must carry at least one admitted capability");
+        }
+        Ok(())
     }
 
     /// The single `Capability` this proposal writes into the durable event.
@@ -114,17 +160,6 @@ impl EffectProposal {
             _ => None,
         }
     }
-
-    /// Validate what the type system cannot. Pure: no I/O, no admission, no behaviour.
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if self.admitted.is_empty() {
-            return Err("an effect proposal must carry at least one admitted capability");
-        }
-        if self.workspace.is_empty() || self.workspace.len() > MAX_EFFECT_WORKSPACE_BYTES {
-            return Err("effect workspace must be 1..=4096 bytes");
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -161,6 +196,45 @@ mod tests {
             serde_json::to_string(&event).expect("re-serialises"),
             before,
             "promoting the proposal must not perturb the write-ahead log format"
+        );
+    }
+
+    #[test]
+    fn a_new_proposal_may_not_mint_the_empty_tool_use_id_the_wal_reserves() {
+        // The kernel reads an empty tool_use_id as "first experimental WAL format" and correlates
+        // such a record by its *effect id string* - which is `fx1-{turn:08x}-{ordinal:04x}`, fully
+        // predictable, and not rejected by tool-call admission. So a new record with an empty
+        // correlation id would be completable by an id the model chose. Legacy records must still
+        // DECODE; they must not be re-minted.
+        let mut proposal = EffectProposal::try_from_event(&intent()).expect("proposal");
+        assert!(proposal.validate().is_ok());
+
+        proposal.tool_use_id = String::new();
+        let refused = proposal
+            .validate()
+            .expect_err("empty must be refused at mint time");
+        assert!(
+            refused.contains("experimental WAL format"),
+            "the refusal must say why, or someone will delete the check: {refused}"
+        );
+
+        // Decoding is untouched: a record already on disk still reads back.
+        let legacy = EventKind::EffectIntent {
+            id: EffectId("fx1-00000003-0001".into()),
+            tool_use_id: String::new(),
+            tool: "write_file".into(),
+            capability: Capability::ReversibleLocal,
+            arguments: json!({}),
+            workspace: "/repo".into(),
+        };
+        let decoded = EffectProposal::try_from_event(&legacy);
+        assert!(
+            decoded.is_some(),
+            "old records must stay readable; this is a mint-time gate, not a parse-time one"
+        );
+        assert!(
+            decoded.expect("decoded").validate().is_err(),
+            "readable is not the same as re-writable"
         );
     }
 

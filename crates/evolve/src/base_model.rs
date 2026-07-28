@@ -18,7 +18,25 @@
 //! So a v2 manifest still loads, still validates, and still round-trips; it simply cannot be
 //! promoted, transferred across models, or used as held-out evidence, because nothing about it
 //! records what it was trained against. That is the honest reading of a document that never
-//! carried the field, and it is enforced by the type rather than remembered by a caller.
+//! carried the field.
+//!
+//! # Where the second predicate is actually enforced
+//!
+//! An adversarial review of this freeze found the first draft of this paragraph claiming the split
+//! was "enforced by the type rather than remembered by a caller". It was not: `is_admissible` had
+//! a single non-test caller, inside a trait with no implementations, while the offline producer
+//! hard-coded [`BaseModelId::unspecified`] onto every candidate it emitted. A predicate nothing
+//! calls is a comment.
+//!
+//! It is now called in the two places that matter, and the list is kept here so the claim stays
+//! checkable:
+//!
+//! - `EvolutionVerifier::verify_candidate_inputs` refuses an inadmissible identity. Every
+//!   candidate crosses it before any promotion decision, so that is the chokepoint.
+//! - `OfflineRuleSearchSpec::new` refuses one at production time. A candidate minted now knows
+//!   what it searched against; only a document recovered from schema 2 has an excuse.
+//! - `HeldOutEvidence::validate` refuses one, because evidence gathered against unknown weights
+//!   attests nothing about any particular model.
 
 use crate::ContractError;
 use serde::{Deserialize, Serialize};

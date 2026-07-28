@@ -4,6 +4,7 @@
 //! bounded search space, and returns bytes plus a manifest. It has no filesystem, loader, registry,
 //! runtime, or activation handle.
 
+use crate::BaseModelId;
 use crate::dataset::sha256_hex;
 use crate::{
     ArtifactKind, CapabilityAdmission, CapabilityAdmissionError, ContractError, EvolutionMethod,
@@ -75,6 +76,7 @@ impl OfflineRuleCandidate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OfflineRuleSearchSpec {
     policy_id: String,
+    base_model: BaseModelId,
     version: String,
     parent: Option<PolicyRef>,
     protocol: ProtocolRange,
@@ -90,6 +92,7 @@ impl OfflineRuleSearchSpec {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         policy_id: impl Into<String>,
+        base_model: BaseModelId,
         version: impl Into<String>,
         parent: Option<PolicyRef>,
         protocol: ProtocolRange,
@@ -106,6 +109,13 @@ impl OfflineRuleSearchSpec {
             MAX_SHORT_STRING_BYTES,
         )?;
         validate_nonempty_string("offline_search.version", &version, MAX_SHORT_STRING_BYTES)?;
+        // A producer must name the weights it searched against. The migration sentinel is
+        // well-formed but inadmissible, and a candidate minted now has no excuse for carrying it:
+        // it is being produced, not recovered from a schema-2 document.
+        base_model.validate()?;
+        if !base_model.is_admissible() {
+            return Err(OfflineProducerError::InadmissibleBaseModel);
+        }
         if protocol.min > protocol.max {
             return Err(ContractError::InvertedProtocolRange.into());
         }
@@ -140,6 +150,7 @@ impl OfflineRuleSearchSpec {
 
         Ok(Self {
             policy_id,
+            base_model,
             version,
             parent,
             protocol,
@@ -178,6 +189,10 @@ pub enum OfflineProducerError {
     Encoding(#[source] serde_json::Error),
     #[error("candidate capability admission failed: {0}")]
     CapabilityAdmission(#[from] CapabilityAdmissionError),
+    #[error(
+        "a produced candidate must name an admissible base model; the migration sentinel is for          documents recovered from schema 2, not for candidates minted now"
+    )]
+    InadmissibleBaseModel,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -237,7 +252,7 @@ impl OfflineRuleSearchProducer {
                 digest: artifact_digest.clone(),
             },
             artifact_kind: ArtifactKind::Rules,
-            base_model: crate::BaseModelId::unspecified(),
+            base_model: spec.base_model.clone(),
             artifact_locator: format!("inert:sha256:{artifact_digest}"),
             parent: spec.parent.clone(),
             method: EvolutionMethod::Search,

@@ -219,7 +219,11 @@ fn manifest(
         required_capabilities: BTreeSet::new(),
         training_dataset_digest: Some(training_digest.into()),
         evaluation_suite_digest: evaluation_digest.into(),
-        base_model: crate::BaseModelId::unspecified(),
+        base_model: crate::BaseModelId {
+            model_family: "anthropic/claude".into(),
+            model_id: "claude-opus-5".into(),
+            model_digest: "b".repeat(64),
+        },
     }
 }
 
