@@ -277,6 +277,14 @@ impl PromotionAuthority {
         let evidence = &observation.evidence;
         if evidence.baseline != self.baseline_policy_for(state, &candidate.identity)?
             || evidence.candidate != candidate.identity.candidate_policy
+            // The same binding the held-out path performs eight functions up, and for the same
+            // reason. Without it the stage path accepts an observation measured on a DIFFERENT base
+            // model and advances the candidate — a review reproduced exactly that, all the way to
+            // Canary. `StageObservation::new` only calls `validate_contract`, which asks whether the
+            // identity is well-formed and admissible, never whether it is the RIGHT one. The
+            // signature is honest either way; only the authority holds what the verifier read off
+            // the validated manifest.
+            || evidence.base_model != candidate.identity.base_model
         {
             codes.insert(RefusalCode::InvariantSuite);
         }

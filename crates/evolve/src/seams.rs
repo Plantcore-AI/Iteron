@@ -77,9 +77,14 @@ pub trait TrajectoryProjection {
 ///
 /// # What this seam guarantees, and what it does not
 ///
-/// It carries a [`SignedHeldOutEvaluation`]: an attestation only a holder of an
-/// [`crate::EvaluatorTrustAnchor`] key can mint, and one that [`crate::PromotionAuthority`]
-/// re-verifies before admitting any candidate and again on every journal replay.
+/// It carries a [`SignedHeldOutEvaluation`]: an attestation that [`crate::PromotionAuthority`]
+/// re-verifies before admitting any candidate, and again on every journal replay.
+///
+/// Note the precise claim, because the loose version of it was wrong: **anyone can mint one.**
+/// `PromotionAuthorityKey::new` and `IndependentEvaluator::new` are public, so a crate holding only
+/// `core-evolve` can produce a well-formed `SignedHeldOutEvaluation` with a key of its own choosing —
+/// a review did exactly that. What only a key-holder can produce is an attestation whose HMAC
+/// *verifies against an anchor the authority configured*. The distinction is the whole guarantee.
 ///
 /// **This trait authenticates nothing on its own.** An implementor may return whatever it likes, and
 /// anyone can construct the *bytes* of a `SignedHeldOutEvaluation`; only a key-holder can construct

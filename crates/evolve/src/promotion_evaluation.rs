@@ -195,6 +195,28 @@ pub struct SignedStageObservation {
     pub(crate) signature: String,
 }
 
+impl SignedStageObservation {
+    /// Who signed this observation.
+    pub fn evaluator_id(&self) -> &str {
+        &self.evaluator_id
+    }
+
+    /// The attested observation.
+    ///
+    /// `complete_shadow` and `complete_canary` take one of these by value from a public caller, so
+    /// an outside orchestrator holds one — and until this existed it could inspect nothing on it, not
+    /// even which evaluator signed it. `StageObservation::base_model` was public and unreachable
+    /// through the wrapper, which made its own doc comment ("what a third party actually holds, so it
+    /// has to be able to say what it was measured on") describe something no third party could do.
+    /// The sibling type was given the same pair of accessors one commit earlier for the same reason;
+    /// this one was missed.
+    ///
+    /// Read-only: the fields stay `pub(crate)`, so nothing outside can mint or mutate an observation.
+    pub fn observation(&self) -> &StageObservation {
+        &self.observation
+    }
+}
+
 impl std::fmt::Debug for SignedStageObservation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter

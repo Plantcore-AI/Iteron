@@ -128,6 +128,13 @@ impl AuthorityState {
                     || held_out_attestation.report.evaluation_suite_digest
                         != identity.evaluation_suite_digest
                     || held_out_attestation.evaluator_id != identity.evaluator_id
+                    // Added when `base_model` joined `CandidateIdentity`. Not a live hole before —
+                    // `refresh` calls `verify_held_out_without_suite`, which checks it, in the same
+                    // loop just above this — but this is a parallel copy of the identity check, and
+                    // the next reader will reasonably take the list for the whole of it. An
+                    // incomplete copy of a list that grew is how a check quietly stops covering what
+                    // its name says.
+                    || held_out_attestation.report.base_model() != &identity.base_model
                 {
                     return Err(PromotionAuthorityError::EvaluationIdentityMismatch);
                 }

@@ -15,8 +15,15 @@
 //! # What this gate does NOT catch
 //!
 //! Stated here rather than discovered later, because a gate whose limits are unwritten gets read as
-//! a guarantee it never made. An adversarial review found each of these; two were fixed, and these
-//! three are real and remain:
+//! a guarantee it never made.
+//!
+//! A previous version of this section listed three limits and said "these three are real and
+//! remain" — and a later review then walked through four more ways, all of which compiled as live
+//! implementations in the very file this gate polices. So the sentence itself had become the defect
+//! it was written to prevent: a completeness claim in prose. Those four (a renamed import, `->`
+//! inside the impl generic list, `for` with no following whitespace, and non-ASCII Rust whitespace)
+//! are now closed and unit-tested. **This list is what is known to be uncovered, not a proof that
+//! nothing else is.**
 //!
 //! - **A macro that takes the trait as a metavariable.** `macro_rules! wire { ($tr:path, $ty:ty) =>
 //!   { impl $tr for $ty { .. } } }` never spells the trait name next to `impl`, so nothing textual
@@ -37,10 +44,14 @@
 //!
 //! # For whoever lands the first real implementation
 //!
-//! Issues #27 (`HeldOutEvidenceBridge`) and #28 (bundle resolution) delete the relevant entry from
-//! [`SEAMS`] **in the same commit** that lands the implementation. That deletion is the point at
-//! which the seam stops being a promise and starts being code, and it should be visible in the diff
-//! rather than discovered later.
+//! Issue #27 (`HeldOutEvidenceBridge`) deletes its entry from [`SEAMS`] **in the same commit** that
+//! lands the implementation. That deletion is the point at which the seam stops being a promise and
+//! starts being code, and it should be visible in the diff rather than discovered later.
+//!
+//! Issue #28 has nothing to delete: bundle resolution is not policed here at all, because the port
+//! moved to `core_protocol::bundle` where both sides of the seam already depend on it. (This
+//! paragraph used to name #28 alongside #27, which would have sent that implementor looking for an
+//! entry that was deliberately never added.)
 
 use anyhow::{Result, bail};
 use std::path::Path;
@@ -86,7 +97,13 @@ pub(crate) fn validate(root: &Path, files: &[String]) -> Result<()> {
             // "outside `#[cfg(test)]`" and needs no brace parsing to be correct: an in-`src` test
             // module is exactly where a real implementation would be easiest to hide, and the
             // satisfiability proof has no reason to live there anyway.
-            if implements_seam(&source, seam) && !is_test_path(relative) {
+            // A renamed import is the one shape with no backstop inside the owning crate: the
+            // `contains(seam)` rule below is deliberately skipped there, so `use ...::Seam as P;
+            // impl P for Evil {}` had nothing looking at it at all — in the very crate the gate
+            // calls "the one that must never implement it".
+            let names = seam_aliases(&source, seam);
+            let implemented = names.iter().any(|name| implements_seam(&source, name));
+            if implemented && !is_test_path(relative) {
                 bail!(
                     "`{relative}` implements the `{seam}` seam outside a test target.\n\
                      These seams are declared, not implemented; the frozen contract says no runtime \
@@ -119,6 +136,38 @@ pub(crate) fn validate(root: &Path, files: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Every local name that refers to `seam` in this file: the seam itself, plus any `use ... as X`
+/// alias for it.
+///
+/// Rust lets an import be renamed, and the gate compared the literal trait name, so
+/// `use crate::seams::TrajectoryProjection as Proj;` followed by `impl Proj for Evil {}` was
+/// invisible. It compiled, it passed `cargo fmt --check`, and inside the owning crate no other rule
+/// looks at it.
+fn seam_aliases(source: &str, seam: &str) -> Vec<String> {
+    let mut names = vec![seam.to_owned()];
+    for (offset, _) in source.match_indices(seam) {
+        // Only an occurrence that is a whole path segment, immediately followed by ` as `.
+        let after = offset + seam.len();
+        if after > 0 && source[after..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        let rest = source[after..].trim_start();
+        let Some(alias) = rest.strip_prefix("as ") else {
+            continue;
+        };
+        let alias: String = alias
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !alias.is_empty() && !names.contains(&alias) {
+            names.push(alias);
+        }
+    }
+    names
+}
+
 /// Does this source implement `seam`, however the `impl` header is spelled?
 ///
 /// A first version matched the literal `"impl {seam} for"`, and a self-review found the hole before
@@ -147,6 +196,16 @@ fn implements_seam(source: &str, seam: &str) -> bool {
         if index < bytes.len() && bytes[index] == b'<' {
             let mut depth = 0usize;
             while index < bytes.len() {
+                // `->` inside a bound is NOT a closing angle bracket. Treating it as one made
+                // `impl<T: Fn() -> u32 + Marker> Seam for T {}` close the list early, read `u32>` as
+                // the trait path, and walk through the gate — a blanket impl, in a shape someone
+                // could reach for by accident, while the `where`-clause spelling of the same bound
+                // was caught. A gate whose answer depends on where the author put a bound is worse
+                // than one that is uniformly strict.
+                if bytes[index..].starts_with(b"->") {
+                    index += 2;
+                    continue;
+                }
                 match bytes[index] {
                     b'<' => depth += 1,
                     b'>' => {
@@ -171,7 +230,11 @@ fn implements_seam(source: &str, seam: &str) -> bool {
         let named = path.rsplit("::").next().unwrap_or(path) == seam;
         // `impl Type { .. }` is an inherent impl, not a trait impl; only `for` makes it one.
         let rest = &source[skip_space(bytes, index)..];
-        let is_trait_impl = rest.starts_with("for") && rest[3..].starts_with(char::is_whitespace);
+        // `for` must be a whole keyword, but what follows it need not be whitespace:
+        // `impl Seam for(A, B) {}` and `impl Seam for&T {}` are both valid Rust. Requiring
+        // whitespace here let both through.
+        let is_trait_impl =
+            rest.starts_with("for") && rest[3..].chars().next().is_none_or(|c| !is_ident_char(c));
         if named && is_trait_impl {
             return true;
         }
@@ -183,9 +246,23 @@ fn is_ident_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
+fn is_ident_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+/// Skip whitespace as **Rust** defines it, not as ASCII defines it.
+///
+/// This used `is_ascii_whitespace`, which excludes U+000B and U+0085 that the Rust lexer accepts —
+/// so a vertical tab between `impl` and the trait name walked through, while the very next check in
+/// the same function already used the wider `char::is_whitespace`. An asymmetry inside one function
+/// is the kind of thing nobody notices until someone is looking for a way past.
 fn skip_space(bytes: &[u8], mut index: usize) -> usize {
-    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
-        index += 1;
+    let source = std::str::from_utf8(bytes).unwrap_or("");
+    while index < bytes.len() {
+        match source.get(index..).and_then(|rest| rest.chars().next()) {
+            Some(ch) if ch.is_whitespace() => index += ch.len_utf8(),
+            _ => break,
+        }
     }
     index
 }
@@ -344,7 +421,7 @@ fn validate_single_dependency(relative: &str, source: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{code_only, implements_seam};
+    use super::{code_only, implements_seam, seam_aliases};
 
     #[test]
     fn a_blanket_impl_does_not_walk_past_the_gate() {
@@ -355,6 +432,49 @@ mod tests {
             "impl<'a, T: Bound<U>> Seam for &'a T {}",
             "Seam"
         ));
+    }
+
+    #[test]
+    fn a_renamed_import_does_not_hide_an_impl() {
+        // The only shape with no backstop inside the owning crate, where the `contains(seam)` rule
+        // is deliberately skipped.
+        let source = "use crate::seams::Seam as Proj;\nimpl Proj for Evil {}";
+        assert!(implements_seam(source, &seam_aliases(source, "Seam")[1]));
+        assert_eq!(seam_aliases(source, "Seam"), vec!["Seam", "Proj"]);
+        // An unrelated `as` must not mint a bogus alias.
+        assert_eq!(seam_aliases("let x = y as u32; Seam", "Seam"), vec!["Seam"]);
+    }
+
+    #[test]
+    fn an_arrow_inside_the_generic_list_does_not_end_it_early() {
+        // `->` is not a closing angle bracket. Treating it as one closed the list early, read `u32>`
+        // as the trait path, and let a blanket impl through — in a shape someone could write by
+        // accident, while the `where`-clause spelling of the same bound was caught.
+        assert!(implements_seam(
+            "impl<T: Fn() -> u32 + Marker> Seam for T {}",
+            "Seam"
+        ));
+        assert!(implements_seam(
+            "impl<F> Seam for F where F: Fn() -> u32 {}",
+            "Seam"
+        ));
+    }
+
+    #[test]
+    fn for_need_not_be_followed_by_whitespace() {
+        // Both are valid Rust and both were missed.
+        assert!(implements_seam("impl Seam for(A, B) {}", "Seam"));
+        assert!(implements_seam("impl Seam for&T {}", "Seam"));
+        // But `format` must not be read as the `for` keyword.
+        assert!(!implements_seam("impl Seam format {}", "Seam"));
+    }
+
+    #[test]
+    fn rust_whitespace_is_not_only_ascii_whitespace() {
+        // U+000B is whitespace to the Rust lexer and not to `is_ascii_whitespace`, which is what
+        // the skipper used — while the check on the very next line already used the wider
+        // `char::is_whitespace`.
+        assert!(implements_seam("impl\u{0b}Seam\u{0b}for X {}", "Seam"));
     }
 
     #[test]

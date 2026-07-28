@@ -1054,27 +1054,163 @@ fn promotion_authority_rejects_unbounded_contracts_and_a_second_writer() {
 
 #[test]
 fn a_stage_observation_can_say_which_base_model_it_was_measured_on() {
-    // The half of #26's "thread base_model into HeldOutEvaluation and PromotionEvidence" that an
-    // adversarial review found unmet. A stage observation is signed under its own domain and is what
-    // a third party actually holds; before the identity moved onto `PromotionEvidence` it could be
-    // attributed only transitively, through a `pub(crate)` `CandidateIdentity` that nothing outside
-    // this crate can reach. A separately-signed artefact that cannot say what it measured is not
-    // evidence about any particular model.
-    let baseline = policy_ref("baseline-a", b"baseline-artifact");
-    let candidate = policy_ref("candidate-a", b"candidate-artifact");
-    let evidence = evidence(&baseline, &candidate, true);
-    assert_eq!(evidence.base_model, candidate_base_model());
+    // The first version of this test carried this name, argued at length in its own comment about
+    // what a stage observation must be able to say, and then never constructed one - it asserted on
+    // a `PromotionEvidence` and a `HeldOutEvaluation` instead. It would have passed with
+    // `StageObservation` carrying no base model at all. A proof that never touches the thing it is
+    // named for is the same defect as a doc comment describing a property the code does not have.
+    let root = scratch("stage-base-model-read");
+    let policy = control_policy();
+    let authorizer = authorizer(&policy);
+    let verifier = evolution_verifier();
+    let signed_training = vec![training_trajectory("task-a")];
+    let mut datasets = ConsentAwareDatasetRegistry::new();
+    let dataset = datasets
+        .build_and_register(&verifier, &signed_training)
+        .unwrap();
+    let suite = evaluation("task-b");
+    let fixture = candidate_fixture(dataset.digest(), &suite);
+    let mut authority = open_authority(&root, &policy);
+    bootstrap(&mut authority, &authorizer, fixture.baseline.clone());
+    let candidate_digest = fixture.candidate.bundle().digest.clone();
+    admit_clean(
+        &mut authority,
+        &authorizer,
+        &verifier,
+        &datasets,
+        &dataset,
+        &suite,
+        &fixture.manifest,
+        fixture.artifact,
+        &fixture.baseline_policy,
+        fixture.candidate.clone(),
+        "auth-admit-read",
+    );
+    let shadow_request =
+        PromotionRequest::enter_shadow("auth-shadow-read", &candidate_digest).unwrap();
+    let permit = authority
+        .enter_shadow(
+            &shadow_request,
+            &authorizer.authorize(&shadow_request).unwrap(),
+        )
+        .unwrap();
+    let signed = signed_stage(
+        &permit,
+        &fixture.baseline_policy,
+        &fixture.manifest.policy,
+        true,
+    );
 
-    // And the same identity is reachable through both carriers, because there is only one field.
-    let verified = VerifiedCandidateInputs {
-        artifact_digest: "a".repeat(64),
-        training_dataset_digest: None,
-        evaluation_suite_digest: "c".repeat(64),
-        base_model: candidate_base_model(),
+    // Through the SIGNED wrapper, which is what a caller of `complete_shadow` actually holds. Until
+    // these accessors existed the type was completely opaque outside this crate: no way to read the
+    // observation, and no way even to see which evaluator signed it.
+    assert_eq!(signed.evaluator_id(), "independent-evaluator");
+    assert_eq!(signed.observation().base_model(), &candidate_base_model());
+    assert_eq!(
+        signed.observation().evidence.base_model,
+        candidate_base_model(),
+        "one field, reachable through both the observation and the evidence it carries"
+    );
+}
+
+#[test]
+fn a_stage_observation_measured_on_another_base_model_cannot_advance_a_candidate() {
+    // The defect a review reproduced end to end: the stage path checked `evidence.baseline` and
+    // `evidence.candidate` against the identity and never `evidence.base_model`, so an observation
+    // honestly signed by a registered evaluator - but gathered on different weights - carried a
+    // candidate all the way to Canary. That is the same replay the held-out path refuses eight
+    // functions away, and it was open on the stage side alone.
+    let root = scratch("stage-base-model");
+    let policy = control_policy();
+    let authorizer = authorizer(&policy);
+    let verifier = evolution_verifier();
+    let signed_training = vec![training_trajectory("task-a")];
+    let mut datasets = ConsentAwareDatasetRegistry::new();
+    let dataset = datasets
+        .build_and_register(&verifier, &signed_training)
+        .unwrap();
+    let suite = evaluation("task-b");
+    let fixture = candidate_fixture(dataset.digest(), &suite);
+    let mut authority = open_authority(&root, &policy);
+    bootstrap(&mut authority, &authorizer, fixture.baseline.clone());
+    let candidate_digest = fixture.candidate.bundle().digest.clone();
+    admit_clean(
+        &mut authority,
+        &authorizer,
+        &verifier,
+        &datasets,
+        &dataset,
+        &suite,
+        &fixture.manifest,
+        fixture.artifact,
+        &fixture.baseline_policy,
+        fixture.candidate.clone(),
+        "auth-admit-bm",
+    );
+
+    let shadow_request =
+        PromotionRequest::enter_shadow("auth-shadow-bm", &candidate_digest).unwrap();
+    authority
+        .enter_shadow(
+            &shadow_request,
+            &authorizer.authorize(&shadow_request).unwrap(),
+        )
+        .unwrap();
+
+    // An executor that measures against a DIFFERENT, perfectly admissible base model and signs
+    // honestly with the registered evaluator key. Nothing here is forged.
+    struct WrongModelExecutor {
+        baseline: PolicyRef,
+        candidate: PolicyRef,
+    }
+    impl BoundedStageExecutor for WrongModelExecutor {
+        fn execute(
+            &mut self,
+            permit: &StagePermit,
+            _suite: &EvaluationSuite,
+        ) -> Result<SignedStageObservation, PromotionAuthorityError> {
+            let mut evidence = evidence(&self.baseline, &self.candidate, true);
+            evidence.base_model = crate::BaseModelId {
+                model_family: "anthropic/claude".into(),
+                model_id: "claude-opus-4".into(),
+                model_digest: "c".repeat(64),
+            };
+            let observation = StageObservation::new(
+                permit,
+                2,
+                1,
+                100,
+                0,
+                100,
+                SECURITY_DIGEST,
+                DURABILITY_DIGEST,
+                evidence,
+            )?;
+            evaluator().sign_stage(observation)
+        }
+    }
+
+    let canary_request =
+        PromotionRequest::complete_shadow("auth-canary-bm", &candidate_digest).unwrap();
+    let mut executor = WrongModelExecutor {
+        baseline: fixture.baseline_policy.clone(),
+        candidate: fixture.manifest.policy.clone(),
     };
-    let report = HeldOutEvaluation::new(candidate, &verified, evidence).unwrap();
-    assert_eq!(report.base_model(), &candidate_base_model());
-    assert_eq!(report.evidence().base_model, candidate_base_model());
+    let outcome = authority.execute_shadow(
+        &canary_request,
+        &authorizer.authorize(&canary_request).unwrap(),
+        &suite,
+        &mut executor,
+    );
+    assert!(
+        outcome.is_err(),
+        "a stage observation measured on a different base model must not advance the candidate"
+    );
+    assert_eq!(
+        authority.candidate_stage(&candidate_digest).unwrap(),
+        Some(DeploymentStage::Shadow),
+        "and the candidate must stay where it was"
+    );
 }
 
 #[test]
