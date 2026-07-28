@@ -1589,3 +1589,102 @@ fn a_journal_rewritten_with_a_relaxed_permit_cannot_widen_the_stage_bounds() {
         "and the candidate must not advance on a bound nobody authorised"
     );
 }
+
+#[test]
+fn the_permit_handed_to_the_executor_is_never_the_one_the_journal_installed() {
+    // The fifth held-out/stage asymmetry, and the half the previous fix missed. Re-deriving the
+    // permit that `stage_refusal_codes` READS closed the advance-the-candidate consequence; a review
+    // then measured the other one. `refresh()` re-verifies a `StageTransition` only when it carries a
+    // stage attestation, and the Candidate -> Shadow record carries none, so it falls through
+    // untouched; `apply_transition` compares the journalled permit's candidate digest and stage and
+    // nothing else. So a rewritten journal still set the bounds the executor was given: it ran 5,000
+    // work units against a real limit of 20 before the refusal fired.
+    //
+    // Bounding the work is the entire purpose of a permit. A permit that only bounds the verdict is
+    // not one.
+    let root = scratch("installed-permit");
+    let policy = control_policy();
+    let authorizer = authorizer(&policy);
+    let verifier = evolution_verifier();
+    let signed_training = vec![training_trajectory("task-a")];
+    let mut datasets = ConsentAwareDatasetRegistry::new();
+    let dataset = datasets
+        .build_and_register(&verifier, &signed_training)
+        .unwrap();
+    let suite = evaluation("task-b");
+    let fixture = candidate_fixture(dataset.digest(), &suite);
+    let candidate_digest = fixture.candidate.bundle().digest.clone();
+    {
+        let mut authority = open_authority(&root, &policy);
+        bootstrap(&mut authority, &authorizer, fixture.baseline.clone());
+        admit_clean(
+            &mut authority,
+            &authorizer,
+            &verifier,
+            &datasets,
+            &dataset,
+            &suite,
+            &fixture.manifest,
+            fixture.artifact,
+            &fixture.baseline_policy,
+            fixture.candidate.clone(),
+            "auth-admit-inst",
+        );
+        let shadow_request =
+            PromotionRequest::enter_shadow("auth-shadow-inst", &candidate_digest).unwrap();
+        authority
+            .enter_shadow(
+                &shadow_request,
+                &authorizer.authorize(&shadow_request).unwrap(),
+            )
+            .unwrap();
+    }
+    assert!(
+        crate::promotion_journal::rewrite_for_test(&root, |content| {
+            if let crate::promotion_journal::JournalEvent::StageTransition {
+                permit: Some(permit),
+                ..
+            } = &mut content.event
+            {
+                permit.limits = StageLimits::new(9_999, 64, 10_000_000, 0, 10_000).unwrap();
+                return true;
+            }
+            false
+        })
+        .unwrap()
+    );
+
+    // An executor that records what it was actually handed, then refuses to do any work.
+    struct PeekExecutor {
+        seen: Option<u32>,
+    }
+    impl BoundedStageExecutor for PeekExecutor {
+        fn execute(
+            &mut self,
+            permit: &StagePermit,
+            _suite: &EvaluationSuite,
+        ) -> Result<SignedStageObservation, PromotionAuthorityError> {
+            self.seen = Some(permit.limits().max_work_units());
+            Err(PromotionAuthorityError::InvalidRequestTransition)
+        }
+    }
+
+    let mut authority = open_authority(&root, &policy);
+    let canary_request =
+        PromotionRequest::complete_shadow("auth-canary-inst", &candidate_digest).unwrap();
+    let mut executor = PeekExecutor { seen: None };
+    let _ = authority.execute_shadow(
+        &canary_request,
+        &authorizer.authorize(&canary_request).unwrap(),
+        &suite,
+        &mut executor,
+    );
+    // Either the forged permit is refused before the executor runs, or the executor is handed this
+    // authority's real bounds. What must never happen is the executor being handed 9,999.
+    if let Some(seen) = executor.seen {
+        assert_eq!(
+            seen, 20,
+            "the executor was handed a bound nobody authorised"
+        );
+    }
+}

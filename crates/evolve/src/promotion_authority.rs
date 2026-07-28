@@ -379,11 +379,32 @@ impl PromotionAuthority {
         {
             return Err(PromotionAuthorityError::EvaluationIdentityMismatch);
         }
-        let permit = candidate
+        let journalled = candidate
             .permit
             .as_ref()
             .ok_or(PromotionAuthorityError::StageMismatch)?;
-        executor.execute(permit, suite)
+        // The permit handed to the executor is re-derived from THIS authority's policy, never the
+        // one replay installed. `stage_refusal_codes` already re-derives the permit it READS, which
+        // closed the advance-the-candidate consequence; a review then measured the other one — a
+        // rewritten journal still set the bounds the executor was given, and it ran 5,000 work units
+        // against a real limit of 20 before the refusal fired. Bounding the work is the entire
+        // purpose of a permit, so a permit that only bounds the verdict is not one.
+        //
+        // `refresh()` cannot catch it upstream: it re-verifies a `StageTransition` only when one
+        // carries a stage attestation, and the Candidate -> Shadow record carries none, so it falls
+        // through untouched. `apply_transition` compares the journalled permit's candidate digest
+        // and stage and nothing else.
+        let permit = StagePermit::issue(
+            &self.authority_id,
+            &self.policy_digest,
+            request.candidate_bundle_digest(),
+            journalled.stage,
+            &self.policy,
+        )?;
+        if permit.digest != journalled.digest {
+            return Err(PromotionAuthorityError::IndependentEvaluationRequired);
+        }
+        executor.execute(&permit, suite)
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -110,16 +110,17 @@ pub(crate) fn validate(root: &Path, files: &[String]) -> Result<()> {
         let file = syn::parse_file(source)
             .with_context(|| format!("`{relative}` does not parse as Rust"))?;
 
+        // Every rule below asks the SAME question of the SAME scan, and asks it about the resolved
+        // alias closure rather than the canonical names. The previous version searched macro bodies
+        // for `SEAMS` while the impl finder searched `names`, so a macro spelling a resolved alias
+        // was caught by neither.
+        //
         // A `macro_rules!` body is a template, not code, so no AST can tell whether it will be
-        // invoked. It is treated as an implementation wherever it spells a seam, including inside
-        // the owning crate. The previous version only searched macro bodies in NON-owning crates —
-        // and the owning crate is the one place such a macro can legally live, so the check never ran
-        // where it mattered. A review minted a live public runtime path that way, silent through
-        // every gate in the repo, under a module doc claiming that exact case was covered.
-        let via_macro = SEAMS
-            .iter()
-            .find(|seam| macro_bodies_name_seam(&file, seam))
-            .map(|seam| (*seam).to_owned());
+        // invoked; a body naming a seam is therefore treated as an implementation wherever it
+        // appears, including in the owning crate — which is the only place such a macro can legally
+        // live, and where an earlier version never looked.
+        let mentioned = mentioned_identifiers(&file);
+        let via_macro = macro_bodies_mention(&file, &names);
         if let Some(found) = find_trait_impl(&file, &names).or(via_macro)
             && !is_test_path(relative)
         {
@@ -135,7 +136,7 @@ pub(crate) fn validate(root: &Path, files: &[String]) -> Result<()> {
         for seam in SEAMS {
             // Read from the parsed source, so a seam named in a doc comment or inside a string
             // literal is not a reference. Both directions of that were real bugs once.
-            if !relative.starts_with(OWNING_CRATE) && identifiers_name_seam(&file, seam) {
+            if !relative.starts_with(OWNING_CRATE) && mentioned.contains(*seam) {
                 bail!(
                     "`{relative}` names the `{seam}` seam, but only `{OWNING_CRATE}` may.\n\
                      A crate that names it has begun consuming a seam that nothing implements."
@@ -215,6 +216,12 @@ fn collect_sources(root: &Path, files: &[String]) -> Vec<(String, String, BTreeS
             if let Some((_, _, roots)) = collected.iter_mut().find(|(path, _, _)| *path == joined) {
                 roots.insert(origin.clone());
             } else if let Ok(source) = std::fs::read_to_string(root.join(&joined)) {
+                // Only Rust. A string-literal macro argument may name a data file
+                // (`include_str!("notes.md")`), and a data file cannot carry an implementation. This
+                // is what makes it safe to stop guessing the macro's name in `include_targets`.
+                if syn::parse_file(&source).is_err() {
+                    continue;
+                }
                 collected.push((joined.clone(), source, [origin.clone()].into()));
             } else {
                 continue;
@@ -240,18 +247,25 @@ fn normalise(path: &str) -> String {
     parts.join("/")
 }
 
-/// String arguments of every `include!(..)` in this file, at any nesting and however it is spelled.
+/// Every string-literal macro argument in this file that names an existing repository file.
 ///
-/// Two bypasses closed here, both found after `collect_sources` was correctly made a fixpoint over
-/// the file graph — the per-file extraction feeding that fixpoint was still one level deep and one
-/// spelling wide:
+/// # Why this stops guessing the macro's name
 ///
-/// - `pub fn f() { mod hidden { include!("x.inc"); } }` — an `include!` below top level. The target
-///   was never collected at all, so the plainest possible `impl Seam for Evil` inside it was
-///   invisible.
-/// - `std::include!("x.inc")` — matching the macro path with `is_ident("include")` is false for a
-///   two-segment path, so one keyword prefix removed a file from the scan. The last segment is what
-///   names the macro, so that is what is compared.
+/// This matched `is_ident("include")`, and a review defeated it with `std::include!` — a two-segment
+/// path. The fix compared the LAST segment instead, and the next review defeated that with
+/// `use std::include as pull; pull!("x.inc")`. Same defect class, one notch sideways, inside the
+/// function that had just been fixed for it: the matcher was generalised over the path prefix and
+/// not over the name.
+///
+/// So it no longer asks what the macro is called. Any macro whose entire body is one string literal
+/// that resolves to a file on disk is treated as pulling that file in, because that is the only
+/// property that matters — the file's bytes reach the compiler.
+///
+/// The honest cost: `include_str!("notes.md")` is picked up too. That is harmless, and deliberately
+/// so — the caller only keeps targets that PARSE as Rust, and a data file does not. The residual
+/// false positive is a `.rs` file included as a string for documentation, which would be scanned as
+/// code; that is a louder failure than the silent one it replaces, and no such file exists in this
+/// tree today.
 fn include_targets(source: &str) -> Vec<String> {
     let Ok(file) = syn::parse_file(source) else {
         return Vec::new();
@@ -261,13 +275,7 @@ fn include_targets(source: &str) -> Vec<String> {
     }
     impl syn::visit::Visit<'_> for Finder {
         fn visit_macro(&mut self, mac: &syn::Macro) {
-            if mac
-                .path
-                .segments
-                .last()
-                .is_some_and(|last| last.ident == "include")
-                && let Ok(literal) = mac.parse_body::<syn::LitStr>()
-            {
+            if let Ok(literal) = mac.parse_body::<syn::LitStr>() {
                 self.targets.push(literal.value());
             }
             syn::visit::visit_macro(self, mac);
@@ -288,7 +296,7 @@ fn resolve_alias_closure(sources: &[(String, String, BTreeSet<String>)]) -> BTre
         let Ok(file) = syn::parse_file(source) else {
             continue;
         };
-        collect_use_renames(&file.items, &mut edges);
+        collect_use_renames(&file, &mut edges);
     }
     loop {
         let before = names.len();
@@ -303,18 +311,32 @@ fn resolve_alias_closure(sources: &[(String, String, BTreeSet<String>)]) -> BTre
     }
 }
 
-fn collect_use_renames(items: &[syn::Item], edges: &mut Vec<(String, String)>) {
-    for item in items {
-        match item {
-            syn::Item::Mod(module) => {
-                if let Some((_, inner)) = &module.content {
-                    collect_use_renames(inner, edges);
-                }
-            }
-            syn::Item::Use(item) => walk_use_tree(&item.tree, edges),
-            _ => {}
+/// Collect every `use ... as Alias` edge in a file, at any nesting.
+///
+/// # The fourth sibling
+///
+/// This was the last function in this file still shaped like the one that has now bitten four times:
+/// a walk over `file.items` that recursed into `Item::Mod` and dropped everything else into
+/// `_ => {}`. `find_trait_impl`, `macro_bodies_name_seam` and `include_targets` were each converted
+/// to visitors, one per review round, each time in response to the specific example the reviewer had
+/// written — and each time the siblings doing the same kind of work were left alone.
+///
+/// So this one was found by asking the question instead of waiting for the seventh review:
+/// `const _: () = { use crate::TrajectoryProjection as Proj; impl Proj for Evil { .. } };` compiled
+/// and passed the gate. The alias was declared inside a const block, the collector never looked
+/// there, so `Proj` never entered the closure and the impl was not recognised.
+fn collect_use_renames(file: &syn::File, edges: &mut Vec<(String, String)>) {
+    struct Collector<'a> {
+        edges: &'a mut Vec<(String, String)>,
+    }
+    impl syn::visit::Visit<'_> for Collector<'_> {
+        fn visit_item_use(&mut self, item: &syn::ItemUse) {
+            walk_use_tree(&item.tree, self.edges);
+            syn::visit::visit_item_use(self, item);
         }
     }
+    let mut collector = Collector { edges };
+    syn::visit::visit_file(&mut collector, file);
 }
 
 fn walk_use_tree(tree: &syn::UseTree, edges: &mut Vec<(String, String)>) {
@@ -376,69 +398,88 @@ fn find_trait_impl(file: &syn::File, names: &BTreeSet<String>) -> Option<String>
     finder.found
 }
 
-/// Does any identifier in the parsed file spell `seam`?
+/// Every identifier a file mentions, **including inside macro token streams**.
 ///
-/// Walks the AST rather than the text, so a mention in a doc comment or inside a string literal is
-/// not a reference — which was a real false positive once, on a constant whose entire content was a
-/// warning not to implement the seam.
-fn identifiers_name_seam(file: &syn::File, seam: &str) -> bool {
-    struct Finder<'a> {
-        seam: &'a str,
-        found: bool,
+/// # Why there is one of these instead of three
+///
+/// Seven consecutive reviews found the same shape: a fix applied to the one function the reviewer's
+/// example touched, with the siblings doing the same work left alone. The seventh found three at
+/// once — `macro_bodies_name_seam` searched the canonical `SEAMS` while `find_trait_impl` searched
+/// the resolved alias closure, so a macro spelling an alias was caught by neither;
+/// `validate_single_dependency` had no macro-token vision at all, so the satisfiability proof could
+/// silently take a second internal-crate dependency; and `identifiers_name_seam` shared that blind
+/// spot.
+///
+/// Patching them one at a time would produce an eighth. The structural answer is to stop having
+/// siblings: **one scan, used by every rule.** `syn`'s generated visitor descends into `mac.path`
+/// but treats `mac.tokens` as an opaque `TokenStream`, so the token streams are walked here
+/// explicitly and folded into the same set of names every rule then asks about.
+fn mentioned_identifiers(file: &syn::File) -> BTreeSet<String> {
+    struct Scan {
+        names: BTreeSet<String>,
     }
-    impl syn::visit::Visit<'_> for Finder<'_> {
-        fn visit_ident(&mut self, ident: &syn::Ident) {
-            if ident == self.seam {
-                self.found = true;
+    impl Scan {
+        fn absorb_tokens(&mut self, tokens: &str) {
+            for word in tokens.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                if !word.is_empty() {
+                    self.names.insert(word.to_owned());
+                }
             }
         }
     }
-    let mut finder = Finder { seam, found: false };
-    syn::visit::visit_file(&mut finder, file);
-    finder.found
+    impl syn::visit::Visit<'_> for Scan {
+        fn visit_ident(&mut self, ident: &syn::Ident) {
+            self.names.insert(ident.to_string());
+        }
+        fn visit_macro(&mut self, mac: &syn::Macro) {
+            // The one place `syn` stops: a macro body is unparsed tokens. Everything else in this
+            // file goes through the AST.
+            self.absorb_tokens(&mac.tokens.to_string());
+            syn::visit::visit_macro(self, mac);
+        }
+    }
+    let mut scan = Scan {
+        names: BTreeSet::new(),
+    };
+    syn::visit::visit_file(&mut scan, file);
+    scan.names
 }
 
-/// Does any macro body anywhere in this file spell `seam`?
-///
-/// # Why this is a visitor and not a walk over `file.items`
-///
-/// `find_trait_impl` was converted to a full `syn::visit` visitor after a review found seam impls
-/// hiding in `const _: () = { .. }` blocks and function bodies. Its two sibling helpers were left as
-/// the same shallow `file.items` + `Item::Mod` walk with a `_ => {}` arm — so the very next review
-/// put a `macro_rules!` spelling the trait *inside* a `const _` block, invoked it, and got a live
-/// public runtime path that was silent through this gate, `cargo clippy -D warnings` and
-/// `cargo fmt --check`. The const-block idiom is exempt from rustc's `non_local_definitions` lint,
-/// so unlike the function-body case nothing in the repo saw it.
-///
-/// That was the third consecutive round of the same defect — a correct fix applied to the one
-/// function the reviewer's example happened to touch. All three helpers are visitors now.
+/// The first name from the alias closure spelled inside any macro body in this file.
 ///
 /// A `macro_rules!` body is a template, not code, so no AST can tell whether it will be invoked; a
-/// body that names a seam is therefore treated as an implementation wherever it appears, including
-/// inside the owning crate. That is deliberately conservative and it does constrain the owning
-/// crate: an item-level macro invocation whose token stream merely *mentions* a seam — a
-/// `thread_local!` holding a `Box<dyn Seam>`, say — is reported too. If that becomes a real
-/// obstruction the answer is to narrow this to bodies containing an `impl ... for` shape, not to put
-/// the owning crate back outside the check.
-fn macro_bodies_name_seam(file: &syn::File, seam: &str) -> bool {
+/// body naming a seam is therefore treated as an implementation wherever it appears, including in
+/// the owning crate — which is the only place such a macro can legally live, and where an earlier
+/// version never looked.
+///
+/// It searches the resolved alias closure, not the canonical [`SEAMS`]. That difference was a live
+/// bypass: `use ..::TrajectoryProjection as Proj;` at top level (so the alias WAS in the closure)
+/// plus `macro_rules! wire { ($t:ty) => { impl Proj for $t {} } }` was caught by nothing —
+/// `find_trait_impl` cannot see into unexpanded macro tokens, and the token search was only ever
+/// looking for the canonical name.
+fn macro_bodies_mention(file: &syn::File, names: &BTreeSet<String>) -> Option<String> {
     struct Finder<'a> {
-        seam: &'a str,
-        found: bool,
+        names: &'a BTreeSet<String>,
+        found: Option<String>,
     }
     impl syn::visit::Visit<'_> for Finder<'_> {
         fn visit_macro(&mut self, mac: &syn::Macro) {
-            if mac
-                .tokens
-                .to_string()
-                .split(|c: char| !c.is_alphanumeric() && c != '_')
-                .any(|word| word == self.seam)
-            {
-                self.found = true;
+            if self.found.is_none() {
+                for word in mac
+                    .tokens
+                    .to_string()
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                {
+                    if self.names.contains(word) {
+                        self.found = Some(word.to_owned());
+                        break;
+                    }
+                }
             }
             syn::visit::visit_macro(self, mac);
         }
     }
-    let mut finder = Finder { seam, found: false };
+    let mut finder = Finder { names, found: None };
     syn::visit::visit_file(&mut finder, file);
     finder.found
 }
@@ -457,30 +498,15 @@ fn is_test_path(relative: &str) -> bool {
 }
 
 /// Refuse any internal crate other than `core_evolve` inside the satisfiability proof.
+///
+/// Uses [`mentioned_identifiers`], so a dependency hidden inside a macro token stream is seen. A
+/// review smuggled `core_protocol` past the previous `visit_ident` walk by wrapping it in a
+/// pass-through `macro_rules!` — and this file is the ONLY mechanical evidence that the frozen seams
+/// are implementable by a crate holding `core-evolve` alone, so a check it can be walked past is a
+/// proof that proves nothing.
 fn validate_single_dependency(relative: &str, file: &syn::File) -> Result<()> {
-    // Identifiers only, walked over the AST. Rendering the file to a token string and word-splitting
-    // it read the module doc comment — which explains at length why `core_protocol` must not be
-    // imported here — as an import of `core_protocol`, and turned the gate red on its own
-    // explanation. That is the third time in this file that reading text instead of structure
-    // produced a false positive; it is why every check here now walks the tree.
-    struct Foreign {
-        found: Option<String>,
-    }
-    impl syn::visit::Visit<'_> for Foreign {
-        fn visit_ident(&mut self, ident: &syn::Ident) {
-            if self.found.is_some() {
-                return;
-            }
-            let name = ident.to_string();
-            if name.starts_with(INTERNAL_CRATE_PREFIX) && name != "core_evolve" {
-                self.found = Some(name);
-            }
-        }
-    }
-    let mut foreign = Foreign { found: None };
-    syn::visit::visit_file(&mut foreign, file);
-    if let Some(word) = foreign.found {
-        {
+    for word in mentioned_identifiers(file) {
+        if word.starts_with(INTERNAL_CRATE_PREFIX) && word != "core_evolve" {
             bail!(
                 "`{relative}` names the internal crate `{word}`.\n\
                  This test proves that a crate holding `core-evolve` ALONE can implement the seams, \
@@ -500,7 +526,7 @@ fn validate_single_dependency(relative: &str, file: &syn::File) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SEAMS, find_trait_impl, identifiers_name_seam, is_test_path, macro_bodies_name_seam,
+        SEAMS, find_trait_impl, is_test_path, macro_bodies_mention, mentioned_identifiers,
         normalise, resolve_alias_closure,
     };
     use std::collections::BTreeSet;
@@ -591,23 +617,56 @@ mod tests {
     }
 
     #[test]
+    fn an_alias_declared_at_any_nesting_still_resolves() {
+        // Found by auditing for the pattern rather than waiting for a seventh review to demonstrate
+        // it: `collect_use_renames` was the last shallow walk left, so an alias declared inside a
+        // `const _` block or a function body never entered the closure and the impl using it was not
+        // recognised. Reproduced live against the real gate before this fix.
+        for source in [
+            "const _: () = { use crate::seams::TrajectoryProjection as P; impl P for E {} };",
+            "fn f() { use crate::seams::TrajectoryProjection as P; impl P for E {} }",
+            "mod m { fn g() { mod n { use crate::seams::TrajectoryProjection as P; impl P for E {} } } }",
+        ] {
+            assert!(implements(source), "not caught: {source}");
+        }
+    }
+
+    #[test]
     fn a_macro_and_an_include_are_found_at_any_nesting_too() {
         // `find_trait_impl` became a full visitor while its two SIBLING helpers stayed a shallow
         // `file.items` walk — the same defect, in the commit named after it. Three live bypasses
         // followed, all silent through the gate, clippy -D warnings and fmt.
+        let seams: BTreeSet<String> = ["TrajectoryProjection".to_owned()].into();
         let in_const = syn::parse_file(
             "const _: () = { macro_rules! w { ($t:ty) => { impl TrajectoryProjection for $t {} }; } };",
         )
         .expect("parses");
         assert!(
-            macro_bodies_name_seam(&in_const, "TrajectoryProjection"),
+            macro_bodies_mention(&in_const, &seams).is_some(),
             "a macro_rules! inside a const block spelling the seam"
         );
         let in_fn = syn::parse_file(
             "fn f() { macro_rules! w { ($t:ty) => { impl TrajectoryProjection for $t {} }; } }",
         )
         .expect("parses");
-        assert!(macro_bodies_name_seam(&in_fn, "TrajectoryProjection"));
+        assert!(macro_bodies_mention(&in_fn, &seams).is_some());
+
+        // Alias-aware: the token search asks about the resolved closure, not the canonical name.
+        // Searching SEAMS while the impl finder searched `names` was a live bypass.
+        let aliased = syn::parse_file(
+            "use crate::seams::TrajectoryProjection as Proj; macro_rules! w { ($t:ty) => { impl Proj for $t {} }; }",
+        )
+        .expect("parses");
+        let closure = resolve_alias_closure(&[(
+            "x.rs".into(),
+            "use crate::seams::TrajectoryProjection as Proj;".to_owned(),
+            BTreeSet::new(),
+        )]);
+        assert_eq!(
+            macro_bodies_mention(&aliased, &closure).as_deref(),
+            Some("Proj"),
+            "a macro spelling a resolved alias was caught by nothing"
+        );
 
         // `include!` below top level, and spelled with a path prefix.
         assert_eq!(
@@ -617,12 +676,18 @@ mod tests {
         );
         assert_eq!(
             super::include_targets("std::include!(\"b.inc\");"),
-            vec!["b.inc".to_owned()],
-            "one keyword prefix defeated is_ident(\"include\") on a plain top-level include"
+            vec!["b.inc".to_owned()]
         );
         assert_eq!(
             super::include_targets("core::include!(\"c.inc\");"),
             vec!["c.inc".to_owned()]
+        );
+        // The name is not what is matched any more: a review renamed the macro on import and the
+        // target vanished from the scan. Anything whose whole body is one string literal counts.
+        assert_eq!(
+            super::include_targets("use std::include as pull; pull!(\"d.inc\");"),
+            vec!["d.inc".to_owned()],
+            "a renamed include import removed the target from the scan"
         );
     }
 
@@ -670,23 +735,24 @@ mod tests {
     fn a_macro_that_spells_the_trait_literally_is_still_found() {
         let source = "macro_rules! wire { ($t:ty) => { impl TrajectoryProjection for $t {} }; }";
         let file = syn::parse_file(source).expect("parses");
-        assert!(macro_bodies_name_seam(&file, "TrajectoryProjection"));
+        let seams: BTreeSet<String> = ["TrajectoryProjection".to_owned()].into();
+        assert!(macro_bodies_mention(&file, &seams).is_some());
         // A macro taking the trait as a metavariable is the documented limit.
         let opaque =
             syn::parse_file("macro_rules! w { ($tr:path, $t:ty) => { impl $tr for $t {} }; }")
                 .expect("parses");
-        assert!(!macro_bodies_name_seam(&opaque, "TrajectoryProjection"));
+        assert!(macro_bodies_mention(&opaque, &seams).is_none());
     }
 
     #[test]
     fn identifiers_are_seen_but_strings_and_comments_are_not() {
         let named = syn::parse_file("type X = dyn TrajectoryProjection;").expect("parses");
-        assert!(identifiers_name_seam(&named, "TrajectoryProjection"));
+        assert!(mentioned_identifiers(&named).contains("TrajectoryProjection"));
         let prose = syn::parse_file("/// TrajectoryProjection is forbidden\npub struct X;")
             .expect("parses");
-        assert!(!identifiers_name_seam(&prose, "TrajectoryProjection"));
+        assert!(!mentioned_identifiers(&prose).contains("TrajectoryProjection"));
         let string = syn::parse_file("const M: &str = \"TrajectoryProjection\";").expect("parses");
-        assert!(!identifiers_name_seam(&string, "TrajectoryProjection"));
+        assert!(!mentioned_identifiers(&string).contains("TrajectoryProjection"));
     }
 
     #[test]
