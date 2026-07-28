@@ -182,7 +182,8 @@ admission 是 candidate 进入流水线的第一道、也是最强的一道门�
 
 **跨接缝携带的 MUST 是 `SignedHeldOutEvaluation`,不是别的形状。** eval→evolve 的 `HeldOutEvidenceBridge` 返回类型 **MUST** 是这个带 `evaluator_id` 与签名的类型。W1 冻结的第一版曾另造一个全 `pub` 字段、无签名、无 evaluator 身份的结构体跨这道接缝,并在文档里声称 evolution "cannot manufacture it" —— 那句话在实现上为假:写一个 struct literal 即可。**分权由密钥与验签路径强制,不由 trait 签名强制**;一个不携带署名者的类型,`verify_held_out` 连能engage的东西都没有。
 
-**`base_model` MUST 在签名载荷之内。** `HeldOutEvaluation` 携带它,并由 `PromotionAuthority` 与它自己从已校验 manifest 读出的身份比对;不一致即 `IndependentEvaluationRequired`。否则签名只证明了"某个分数",而没有钉死这个分数是在**哪套权重**上量出来的,于是一次针对同一 candidate、在便利 base model 上做的诚实评估,可以被重放为真实 base model 下的证据。该字段进入 HMAC 前像使得 journal schema 从 1 升到 2:旧签名会重算出不同值,而"这条证据早于某字段"与"这条证据被篡改"必须可区分,故 fail-closed 拒读旧版而非迁移。
+**`base_model` MUST 在 `PromotionEvidence` 上,因而在两种签名载荷之内。** 该字段属于 `PromotionEvidence` —— `HeldOutEvaluation` 与 `StageObservation` 共同携带的那个类型 —— 而不是只挂在前者上。stage observation 由 `STAGE_RESULT_DOMAIN` 独立签名,且是第三方**真正拿到**的东西;若身份只挂在 held-out 一侧,一份独立签名的 stage observation 就说不出自己在哪套权重上量的,归属只能靠一条 `pub(crate)` 的 `CandidateIdentity` 间接推,crate 外完全够不着。一个说不出自己量了什么的独立签名物,不是关于任何特定模型的证据。
+`HeldOutEvaluation::new` MUST 拒绝 evidence 上的身份与验证器从已校验 manifest 读出的身份不一致的情况 —— 否则签名会忠实地为评估方随口指定的任何权重背书。 `HeldOutEvaluation` 携带它,并由 `PromotionAuthority` 与它自己从已校验 manifest 读出的身份比对;不一致即 `IndependentEvaluationRequired`。否则签名只证明了"某个分数",而没有钉死这个分数是在**哪套权重**上量出来的,于是一次针对同一 candidate、在便利 base model 上做的诚实评估,可以被重放为真实 base model 下的证据。该字段进入 HMAC 前像使得 journal schema 从 1 升到 2:旧签名会重算出不同值,而"这条证据早于某字段"与"这条证据被篡改"必须可区分,故 fail-closed 拒读旧版而非迁移。
 
 **一条诚实的残余缺口。** evaluator 与 promotion 方的不相交是按**身份字符串**检查的(`PromotionAuthority::open` 拒绝 evaluator_id 与 promotion party id 相同的配置),而不是按密钥材料。同一方以两个 id 注册同一把密钥可以绕过它,且目前没有任何机制能发现。记录在此,以免把一条部分保证读成完整保证。
 

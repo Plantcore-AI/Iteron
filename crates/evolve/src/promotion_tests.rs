@@ -227,12 +227,22 @@ fn manifest(
     }
 }
 
+/// The base model every fixture in this file is measured against.
+fn candidate_base_model() -> crate::BaseModelId {
+    crate::BaseModelId {
+        model_family: "anthropic/claude".into(),
+        model_id: "claude-opus-5".into(),
+        model_digest: "b".repeat(64),
+    }
+}
+
 fn evidence(
     baseline: &PolicyRef,
     candidate: &PolicyRef,
     all_invariants_pass: bool,
 ) -> PromotionEvidence {
     PromotionEvidence {
+        base_model: candidate_base_model(),
         baseline: baseline.clone(),
         candidate: candidate.clone(),
         paired_tasks: 100,
@@ -420,32 +430,35 @@ fn held_out_evidence_gathered_against_another_base_model_is_refused() {
     let mut authority = open_authority(&root, &policy);
     bootstrap(&mut authority, &authorizer, fixture.baseline.clone());
 
-    let mut verified = verifier
-        .verify_candidate_inputs(&fixture.manifest, fixture.artifact, Some(&dataset), &suite)
-        .unwrap();
-    assert!(
-        verified.base_model.is_admissible(),
-        "the honest fixture must carry a real identity, or this test proves nothing"
-    );
-    // A different, entirely well-formed and admissible base model.
-    verified.base_model = BaseModelId {
+    // The attack, stated precisely: the evaluator honestly evaluated this candidate against base
+    // model X and signs a fully self-consistent report saying so. It then submits that report for a
+    // candidate whose manifest names base model Y. Nothing about the signature is forged, and
+    // `HeldOutEvaluation::new` has nothing to object to, because the report agrees with itself. Only
+    // the authority holds Y — read off the validated manifest by the verifier — and only the
+    // verification-path binding can catch the mismatch.
+    let honest_but_wrong_model = BaseModelId {
         model_family: "anthropic/claude".into(),
         model_id: "claude-opus-4".into(),
         model_digest: "c".repeat(64),
     };
-    assert_ne!(verified.base_model, fixture.manifest.base_model);
+    assert_ne!(honest_but_wrong_model, fixture.manifest.base_model);
+    let verified = VerifiedCandidateInputs {
+        artifact_digest: sha256_hex(fixture.artifact),
+        training_dataset_digest: Some(dataset.digest().into()),
+        evaluation_suite_digest: suite.digest().into(),
+        base_model: honest_but_wrong_model.clone(),
+    };
+    let mut consistent_evidence =
+        evidence(&fixture.baseline_policy, &fixture.manifest.policy, false);
+    consistent_evidence.base_model = honest_but_wrong_model.clone();
 
     let report = HeldOutEvaluation::new(
         fixture.manifest.policy.clone(),
         &verified,
-        evidence(&fixture.baseline_policy, &fixture.manifest.policy, false),
+        consistent_evidence,
     )
-    .unwrap();
-    assert_eq!(
-        report.base_model(),
-        &verified.base_model,
-        "the report must carry the identity it was built with, not the manifest's"
-    );
+    .expect("the report is internally consistent; only the authority disagrees with it");
+    assert_eq!(report.base_model(), &honest_but_wrong_model);
     let signed_report = evaluator().sign_held_out(report).unwrap();
 
     let request =
@@ -1037,4 +1050,63 @@ fn promotion_authority_rejects_unbounded_contracts_and_a_second_writer() {
     ));
     drop(first);
     std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn a_stage_observation_can_say_which_base_model_it_was_measured_on() {
+    // The half of #26's "thread base_model into HeldOutEvaluation and PromotionEvidence" that an
+    // adversarial review found unmet. A stage observation is signed under its own domain and is what
+    // a third party actually holds; before the identity moved onto `PromotionEvidence` it could be
+    // attributed only transitively, through a `pub(crate)` `CandidateIdentity` that nothing outside
+    // this crate can reach. A separately-signed artefact that cannot say what it measured is not
+    // evidence about any particular model.
+    let baseline = policy_ref("baseline-a", b"baseline-artifact");
+    let candidate = policy_ref("candidate-a", b"candidate-artifact");
+    let evidence = evidence(&baseline, &candidate, true);
+    assert_eq!(evidence.base_model, candidate_base_model());
+
+    // And the same identity is reachable through both carriers, because there is only one field.
+    let verified = VerifiedCandidateInputs {
+        artifact_digest: "a".repeat(64),
+        training_dataset_digest: None,
+        evaluation_suite_digest: "c".repeat(64),
+        base_model: candidate_base_model(),
+    };
+    let report = HeldOutEvaluation::new(candidate, &verified, evidence).unwrap();
+    assert_eq!(report.base_model(), &candidate_base_model());
+    assert_eq!(report.evidence().base_model, candidate_base_model());
+}
+
+#[test]
+fn evidence_naming_a_different_base_model_than_the_verifier_read_is_refused() {
+    // The evidence carries the identity, so an evaluator could try to name a convenient one. The
+    // verifier read the real one off the validated manifest; the two must agree before anything is
+    // signed, or the signature would faithfully attest whatever the evaluator felt like.
+    let baseline = policy_ref("baseline-a", b"baseline-artifact");
+    let candidate = policy_ref("candidate-a", b"candidate-artifact");
+    let mut evidence = evidence(&baseline, &candidate, true);
+    evidence.base_model = crate::BaseModelId {
+        model_family: "anthropic/claude".into(),
+        model_id: "claude-opus-4".into(),
+        model_digest: "c".repeat(64),
+    };
+    let verified = VerifiedCandidateInputs {
+        artifact_digest: "a".repeat(64),
+        training_dataset_digest: None,
+        evaluation_suite_digest: "c".repeat(64),
+        base_model: candidate_base_model(),
+    };
+    assert!(HeldOutEvaluation::new(candidate, &verified, evidence).is_err());
+}
+
+#[test]
+fn evidence_resting_on_the_migration_sentinel_is_refused_by_both_carriers() {
+    let baseline = policy_ref("baseline-a", b"baseline-artifact");
+    let candidate = policy_ref("candidate-a", b"candidate-artifact");
+    let mut sentinel_evidence = evidence(&baseline, &candidate, true);
+    sentinel_evidence.base_model = crate::BaseModelId::unspecified();
+    assert!(
+        sentinel_evidence.validate_contract().is_err(),
+        "a document that never recorded its base model attests nothing about one"
+    );
 }

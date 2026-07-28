@@ -848,6 +848,19 @@ impl Interval {
 pub struct PromotionEvidence {
     pub baseline: PolicyRef,
     pub candidate: PolicyRef,
+    /// The frozen base model both sides of this comparison were measured on.
+    ///
+    /// A delta between a baseline and a candidate means nothing unless both were measured against
+    /// the same weights, and this type is the *only* thing a reader of a stage observation gets:
+    /// `StageObservation` carries a `PromotionEvidence` and nothing else that could name a model. An
+    /// earlier version put the identity on `HeldOutEvaluation` alone, which attributed candidate
+    /// admission correctly and left every separately-signed stage observation unable to say what it
+    /// had been measured on. Issue #26 asked for both carriers; this is the shared field that gives
+    /// them both one, rather than two fields that can disagree.
+    ///
+    /// `validate_contract` refuses the migration sentinel here, because evidence gathered against
+    /// weights nobody recorded attests nothing about any particular model.
+    pub base_model: BaseModelId,
     pub paired_tasks: u64,
     pub task_score_delta: Interval,
     pub cost_delta_usd: Interval,
@@ -866,6 +879,12 @@ impl PromotionEvidence {
     pub fn validate_contract(&self) -> Result<(), ContractError> {
         self.baseline.validate()?;
         self.candidate.validate()?;
+        self.base_model.validate()?;
+        if !self.base_model.is_admissible() {
+            return Err(ContractError::InvalidBaseModel(
+                "promotion evidence cannot rest on an inadmissible base model identity",
+            ));
+        }
         validate_collection(
             "promotion_evidence.invariant_suites",
             self.invariant_suites.len(),
@@ -1065,6 +1084,11 @@ mod tests {
 
     fn evidence() -> PromotionEvidence {
         PromotionEvidence {
+            base_model: BaseModelId {
+                model_family: "anthropic/claude".into(),
+                model_id: "claude-opus-5".into(),
+                model_digest: "b".repeat(64),
+            },
             baseline: policy(StrategySlot::router(), "baseline"),
             candidate: policy(StrategySlot::router(), "candidate"),
             paired_tasks: 200,

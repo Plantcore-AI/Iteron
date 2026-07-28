@@ -205,7 +205,7 @@ impl PromotionAuthority {
             // Without this the signature would attest a number while leaving the weights it was
             // measured on free to differ, and a genuine evaluation of the candidate under a
             // convenient base model could be replayed as evidence under the real one.
-            || signed.report.base_model != identity.base_model
+            || signed.report.base_model() != &identity.base_model
             || signed.report.evidence.baseline != *baseline_policy
             || signed.report.evidence.candidate != identity.candidate_policy
         {

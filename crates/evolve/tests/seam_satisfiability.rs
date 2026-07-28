@@ -186,6 +186,7 @@ impl RealEvidence {
             upper: 0.0,
         };
         let evidence = PromotionEvidence {
+            base_model: base_model.clone(),
             baseline,
             candidate: candidate.clone(),
             paired_tasks: 128,
