@@ -28,13 +28,17 @@
 //! hard-coded [`BaseModelId::unspecified`] onto every candidate it emitted. A predicate nothing
 //! calls is a comment.
 //!
-//! It is now called in the two places that matter, and the list is kept here so the claim stays
-//! checkable:
+//! It is now called in every place that matters, and the list is kept here so the claim stays
+//! checkable. It said "the two places" above three bullets and omitted a fourth; a list whose stated
+//! purpose is auditability has to be counted, not asserted:
 //!
 //! - `EvolutionVerifier::verify_candidate_inputs` refuses an inadmissible identity. Every
 //!   candidate crosses it before any promotion decision, so that is the chokepoint.
 //! - `OfflineRuleSearchSpec::new` refuses one at production time. A candidate minted now knows
 //!   what it searched against; only a document recovered from schema 2 has an excuse.
+//! - `PromotionEvidence::validate_contract` refuses one. This is the load-bearing addition and it
+//!   was missing from this list: it is the call site that covers `StageObservation`, which is the
+//!   entire reason `base_model` was moved onto the shared evidence type.
 //! - `HeldOutEvaluation::validate` refuses one, because evidence gathered against unknown weights
 //!   attests nothing about any particular model. (This line said `HeldOutEvidence::validate` until
 //!   an adversarial review caught it: that type was deleted when the eval seam was corrected to

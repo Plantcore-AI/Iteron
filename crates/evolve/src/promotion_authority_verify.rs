@@ -241,7 +241,19 @@ impl PromotionAuthority {
             &candidate.identity.evaluation_owner_id,
         )?;
         let expected = evaluation_signature(anchor, stage_result_domain(), &signed.observation)?;
-        if !constant_time_eq(expected.as_bytes(), signed.signature.as_bytes()) {
+        // The same self-evaluation refusal the held-out path performs, which this path did not.
+        // `PromotionAuthority::open` refuses an evaluator id that collides with a PROMOTION party
+        // id, never one that collides with a candidate, and nothing requires the stage signer to be
+        // the evaluator that admitted the candidate — so an anchor registered under the candidate's
+        // own policy id or bundle id could sign both of its stage observations. A review drove
+        // exactly that all the way to `Active`: the candidate signed its own promotion.
+        //
+        // docs/spec/evolution.md §6.7 states "producer 不能伪造自己的晋升" as a property of promotion
+        // as a whole, not of one of its two paths.
+        if signed.evaluator_id == candidate.identity.candidate_policy.policy_id
+            || signed.evaluator_id == candidate.identity.bundle_id
+            || !constant_time_eq(expected.as_bytes(), signed.signature.as_bytes())
+        {
             return Err(PromotionAuthorityError::IndependentEvaluationRequired);
         }
         let observation = &signed.observation;

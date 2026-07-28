@@ -111,9 +111,13 @@ impl SignedHeldOutEvaluation {
     /// inside this crate outside a test target. A doc that states a property only the one forbidden
     /// crate can use is the same defect this seam was already corrected for once.
     ///
-    /// Read-only by construction: the fields stay `pub(crate)`, so nothing outside can mint or mutate
-    /// an attestation. Only a key-holder can produce one whose signature verifies, which is the
-    /// separation of duties this type exists to carry.
+    /// **The barrier is the key, not the field visibility.** `pub(crate)` stops a struct literal
+    /// from outside and nothing more: this type derives `Deserialize`, and serde's generated impl
+    /// lives inside this crate, so `serde_json::from_value` reconstitutes one from a crate holding
+    /// only `core-evolve` — a review did exactly that, with an attacker-chosen evaluator id and
+    /// signature, and mutated the contents on the way through. What that forgery cannot do is make
+    /// the HMAC verify against an anchor the authority configured, which is the whole guarantee and
+    /// the only one worth stating.
     pub fn report(&self) -> &HeldOutEvaluation {
         &self.report
     }
@@ -211,7 +215,11 @@ impl SignedStageObservation {
     /// The sibling type was given the same pair of accessors one commit earlier for the same reason;
     /// this one was missed.
     ///
-    /// Read-only: the fields stay `pub(crate)`, so nothing outside can mint or mutate an observation.
+    /// As with the held-out attestation, `pub(crate)` blocks a struct literal and nothing else — the
+    /// derived `Deserialize` is generated inside this crate, so one can be reconstituted and altered
+    /// from outside. The guarantee lives in `stage_refusal_codes`, which resolves the evaluator id
+    /// against the configured anchors, recomputes the HMAC, and refuses an id equal to the
+    /// candidate's own policy id or bundle id.
     pub fn observation(&self) -> &StageObservation {
         &self.observation
     }

@@ -1246,3 +1246,112 @@ fn evidence_resting_on_the_migration_sentinel_is_refused_by_both_carriers() {
         "a document that never recorded its base model attests nothing about one"
     );
 }
+
+#[test]
+fn a_candidate_cannot_sign_its_own_stage_observations() {
+    // The stage half of "producer 不能伪造自己的晋升" (docs/spec/evolution.md §6.7), which the
+    // held-out path enforced and this one did not. `PromotionAuthority::open` refuses an evaluator
+    // id colliding with a PROMOTION party id, never one colliding with a candidate, and nothing
+    // requires the stage signer to be the evaluator that admitted the candidate — so an anchor
+    // registered under the candidate's own bundle id could sign both of its stage observations. A
+    // review drove exactly that all the way to `Active`: the candidate promoted itself.
+    let root = scratch("stage-self-evaluation");
+    let policy = control_policy();
+    let authorizer = authorizer(&policy);
+    let verifier = evolution_verifier();
+    let signed_training = vec![training_trajectory("task-a")];
+    let mut datasets = ConsentAwareDatasetRegistry::new();
+    let dataset = datasets
+        .build_and_register(&verifier, &signed_training)
+        .unwrap();
+    let suite = evaluation("task-b");
+    let fixture = candidate_fixture(dataset.digest(), &suite);
+
+    // Two evaluator anchors under the same suite owner: the honest one, and one named for the
+    // candidate's own bundle. Registering it is legal today — nothing refuses the roster.
+    let self_named = EvaluatorTrustAnchor::new("candidate-bundle", "held-out-owner", key(0x33))
+        .expect("a self-named anchor is a legal configuration; that is the point");
+    let mut authority = PromotionAuthority::open(
+        &root,
+        "release-registry-a",
+        policy.clone(),
+        vec![promotion_anchor()],
+        vec![evaluator_anchor(), self_named],
+    )
+    .unwrap();
+    bootstrap(&mut authority, &authorizer, fixture.baseline.clone());
+    let candidate_digest = fixture.candidate.bundle().digest.clone();
+    admit_clean(
+        &mut authority,
+        &authorizer,
+        &verifier,
+        &datasets,
+        &dataset,
+        &suite,
+        &fixture.manifest,
+        fixture.artifact,
+        &fixture.baseline_policy,
+        fixture.candidate.clone(),
+        "auth-admit-self",
+    );
+    let shadow_request =
+        PromotionRequest::enter_shadow("auth-shadow-self", &candidate_digest).unwrap();
+    authority
+        .enter_shadow(
+            &shadow_request,
+            &authorizer.authorize(&shadow_request).unwrap(),
+        )
+        .unwrap();
+
+    // The candidate signs its own stage observation, with its own key, under its own bundle id.
+    struct SelfSigningExecutor {
+        baseline: PolicyRef,
+        candidate: PolicyRef,
+    }
+    impl BoundedStageExecutor for SelfSigningExecutor {
+        fn execute(
+            &mut self,
+            permit: &StagePermit,
+            _suite: &EvaluationSuite,
+        ) -> Result<SignedStageObservation, PromotionAuthorityError> {
+            let observation = StageObservation::new(
+                permit,
+                2,
+                1,
+                100,
+                0,
+                100,
+                SECURITY_DIGEST,
+                DURABILITY_DIGEST,
+                evidence(&self.baseline, &self.candidate, true),
+            )?;
+            IndependentEvaluator::new("candidate-bundle", key(0x33))
+                .unwrap()
+                .sign_stage(observation)
+        }
+    }
+
+    let canary_request =
+        PromotionRequest::complete_shadow("auth-canary-self", &candidate_digest).unwrap();
+    let mut executor = SelfSigningExecutor {
+        baseline: fixture.baseline_policy.clone(),
+        candidate: fixture.manifest.policy.clone(),
+    };
+    assert!(
+        matches!(
+            authority.execute_shadow(
+                &canary_request,
+                &authorizer.authorize(&canary_request).unwrap(),
+                &suite,
+                &mut executor,
+            ),
+            Err(PromotionAuthorityError::IndependentEvaluationRequired)
+        ),
+        "a candidate signing its own stage observation must be refused, not advanced"
+    );
+    assert_eq!(
+        authority.candidate_stage(&candidate_digest).unwrap(),
+        Some(DeploymentStage::Shadow),
+        "and it must stay where it was, never reaching Canary or Active"
+    );
+}

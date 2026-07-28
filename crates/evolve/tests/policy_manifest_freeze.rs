@@ -517,8 +517,9 @@ fn the_persisted_vocabularies_keep_their_exact_tags_and_the_schema_stamp_holds()
 
 /// The seven serde-derived vocabularies this crate had recorded nowhere.
 ///
-/// A review enumerated every `#[derive(Deserialize)] enum` in `core-evolve` and found ten *public*
-/// ones. Three
+/// A review enumerated every `#[derive(Deserialize)] enum` in `core-evolve` and found twelve, ten
+/// of them *public*
+/// . Three
 /// were registered — `ArtifactKind` and `EvolutionMethod` as open, `DeploymentStage` as closed. The
 /// other seven were in neither register and had no test feeding them an unrecognised tag, so nothing
 /// recorded whether their closure was a decision or an accident. `Errors.md` 2026-07-28c already

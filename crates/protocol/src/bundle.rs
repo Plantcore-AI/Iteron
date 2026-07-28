@@ -68,10 +68,14 @@ pub struct ResolvedPolicy {
     pub digest: String,
 }
 
-/// The immutable, read-only view of the bundle in force for this process.
+/// The read-only view of the bundle in force for this process.
 ///
-/// Obtained once, at boot, through [`PolicyBundleResolver`]. Nothing downstream can swap it, which
-/// is what makes a run's strategy set reproducible from its record.
+/// Obtained once, at boot, through [`PolicyBundleResolver`]. "Read-only" describes what the seam
+/// hands over — no policy bodies, no way to *set* the active bundle — and **not** the mutability of
+/// this struct: every field is `pub`, so a holder can reassign them. An earlier version of this
+/// comment called it "immutable" and said "nothing downstream can swap it", which were conventions
+/// stated as properties. Whoever wires the composition root is the one who makes it immutable in
+/// fact, by holding it behind a `OnceLock` or an `Arc` and never handing out a mutable borrow.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedBundle {
     pub bundle_id: String,

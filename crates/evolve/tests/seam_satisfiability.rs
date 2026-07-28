@@ -154,9 +154,13 @@ impl HeldOutEvidenceBridge for UnreachableEvidence {
 /// touches no payload type, so it certified nothing about whether `SignedHeldOutEvaluation` could be
 /// obtained at all from outside this crate.
 ///
-/// Minting one here is not a hole in the separation of duties. The type cannot be struct-literalled
-/// from outside (its fields are `pub(crate)`), and this goes through the only honest path: hold a
-/// key, be an `IndependentEvaluator`, sign. What that proves is that a real evaluator crate can do
+/// Minting one here is not a hole in the separation of duties, but the reason is narrower than it
+/// first looks. `pub(crate)` blocks a struct literal; it does NOT block `serde_json::from_value`,
+/// because the derived `Deserialize` is generated inside `core-evolve` — a review reconstituted one
+/// from outside with an attacker-chosen evaluator id and signature. This double goes through the
+/// key-holder path because that is what an honest evaluator crate does, and what it proves is that
+/// the public surface is sufficient for one. It proves nothing about authenticity, which only
+/// `PromotionAuthority` decides. What that proves is that a real evaluator crate can do
 /// its job through the public surface — and what it does NOT prove is authenticity, which only
 /// `PromotionAuthority` can decide by resolving the evaluator id against its configured anchors.
 struct RealEvidence;

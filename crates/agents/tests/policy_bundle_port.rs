@@ -19,7 +19,9 @@
 //! moved back onto evolution-crate types, this file stops compiling, and the criterion goes from
 //! vacuously green to honestly red.
 //!
-//! Read `crates/agents/Cargo.toml` alongside this: `core-ctx` and `core-protocol`, nothing else.
+//! Read `crates/agents/Cargo.toml` alongside this: its only workspace-internal dependencies are
+//! `core-ctx` and `core-protocol` (plus serde and serde_json). The earlier wording said "nothing
+//! else", which was false as literally stated even though the invariant it defends does hold.
 //!
 //! # A warning about that grep, for whoever runs it next
 //!
