@@ -36,10 +36,28 @@
 //!
 //! - **A macro that takes the trait as a metavariable.** `macro_rules! wire { ($tr:path, $ty:ty) =>
 //!   { impl $tr for $ty {} } }` never names the trait at its definition, so no source-level analysis
-//!   can see it; closing it means expanding macros, i.e. being the compiler. A macro that spells the
-//!   trait *literally* is caught, because macro token streams are searched.
+//!   can see it; closing it means expanding macros, i.e. being the compiler.
+//!
+//!   A macro that spells the trait *literally* IS caught, at any nesting and in any crate. That
+//!   sentence shipped FALSE in three consecutive rounds, each time for a different reason: first the
+//!   search did not exist; then it ran only on non-owning crates, i.e. never where such a macro can
+//!   legally live; then it walked only `file.items`, so a `macro_rules!` inside `const _ = { .. }`
+//!   was invisible. It is true now because [`macro_bodies_name_seam`] is a `syn::visit` visitor, and
+//!   there is a test per spelling. The history is attached deliberately — a claim this file has been
+//!   wrong about three times should not read as settled.
 //! - **Files git does not list.** The file list comes from `git ls-files --cached --others
 //!   --exclude-standard`, so a `.gitignore`d source file that still compiles is invisible.
+//! - **Anything rooted outside `crates/`.** [`collect_sources`] starts only from paths under
+//!   `crates/`, so a workspace member elsewhere — `xtask/`, `release-tools/` — is never a starting
+//!   point. It reaches OUT of `crates/` through `include!`, but never IN. Nothing outside `crates/`
+//!   depends on `core-evolve` today; that is an assumption, recorded so it can be rechecked rather
+//!   than assumed. This is NOT covered by the `#[path]` bullet below: those crates have owning
+//!   boundaries, so `validate_path_coverage` is satisfied by them and never fires.
+//!
+//!   This limit was written down once, dropped in a rewrite, and then a commit message claimed to
+//!   have restored it while the diff showed the module doc byte-identical to its parent — the edit
+//!   lived in a script that aborted on an earlier assertion and nobody checked the result. It is
+//!   here now.
 //! - **Source pulled in from outside `crates/`** via `#[path]`. That is backstopped by a different
 //!   rule — `boundaries check`'s file-coverage check refuses any repository file with no owning
 //!   boundary — so a new file at the repo root fails there before reaching this gate. Recorded
@@ -222,29 +240,44 @@ fn normalise(path: &str) -> String {
     parts.join("/")
 }
 
-/// String arguments of `include!(..)`, taken from the token stream rather than by text search.
+/// String arguments of every `include!(..)` in this file, at any nesting and however it is spelled.
+///
+/// Two bypasses closed here, both found after `collect_sources` was correctly made a fixpoint over
+/// the file graph — the per-file extraction feeding that fixpoint was still one level deep and one
+/// spelling wide:
+///
+/// - `pub fn f() { mod hidden { include!("x.inc"); } }` — an `include!` below top level. The target
+///   was never collected at all, so the plainest possible `impl Seam for Evil` inside it was
+///   invisible.
+/// - `std::include!("x.inc")` — matching the macro path with `is_ident("include")` is false for a
+///   two-segment path, so one keyword prefix removed a file from the scan. The last segment is what
+///   names the macro, so that is what is compared.
 fn include_targets(source: &str) -> Vec<String> {
     let Ok(file) = syn::parse_file(source) else {
         return Vec::new();
     };
-    let mut targets = Vec::new();
-    let mut stack: Vec<&syn::Item> = file.items.iter().collect();
-    while let Some(item) = stack.pop() {
-        match item {
-            syn::Item::Mod(module) => {
-                if let Some((_, items)) = &module.content {
-                    stack.extend(items.iter());
-                }
+    struct Finder {
+        targets: Vec<String>,
+    }
+    impl syn::visit::Visit<'_> for Finder {
+        fn visit_macro(&mut self, mac: &syn::Macro) {
+            if mac
+                .path
+                .segments
+                .last()
+                .is_some_and(|last| last.ident == "include")
+                && let Ok(literal) = mac.parse_body::<syn::LitStr>()
+            {
+                self.targets.push(literal.value());
             }
-            syn::Item::Macro(item) if item.mac.path.is_ident("include") => {
-                if let Ok(literal) = item.mac.parse_body::<syn::LitStr>() {
-                    targets.push(literal.value());
-                }
-            }
-            _ => {}
+            syn::visit::visit_macro(self, mac);
         }
     }
-    targets
+    let mut finder = Finder {
+        targets: Vec::new(),
+    };
+    syn::visit::visit_file(&mut finder, &file);
+    finder.targets
 }
 
 /// Every name that resolves to a seam anywhere in the tree, to a fixpoint.
@@ -316,7 +349,10 @@ fn walk_use_tree(tree: &syn::UseTree, edges: &mut Vec<(String, String)>) {
 /// `cargo fmt --check`, `cargo clippy -D warnings` AND the whole test suite. rustc registers a trait
 /// impl crate-globally no matter how deeply it is nested, so anything less than a full traversal is
 /// asking a shallower question than the contract does. `syn::visit` descends into expressions and
-/// blocks, so this now sees every `impl` the compiler does.
+/// blocks, so this sees every `impl` present in the parsed AST — which is strictly more than a walk
+/// over `file.items` saw, and strictly less than "every `impl` the compiler sees". Two things arrive
+/// after parsing and are handled by separate mechanisms rather than by this one:
+/// [`macro_bodies_name_seam`] for macro-generated impls and [`collect_sources`] for `include!`.
 fn find_trait_impl(file: &syn::File, names: &BTreeSet<String>) -> Option<String> {
     struct Finder<'a> {
         names: &'a BTreeSet<String>,
@@ -362,29 +398,49 @@ fn identifiers_name_seam(file: &syn::File, seam: &str) -> bool {
     finder.found
 }
 
-/// Macro bodies are token streams, not items, so they are searched separately.
+/// Does any macro body anywhere in this file spell `seam`?
 ///
-/// A `macro_rules!` body is unparsed by definition — it is a template, not code — so this is the one
-/// place the gate reads tokens rather than an AST. It splits the rendered token stream on
-/// non-identifier characters, which is exact for identifiers: `syn` renders tokens space-separated,
-/// so a name cannot be fused with its neighbour the way raw source text allowed.
+/// # Why this is a visitor and not a walk over `file.items`
+///
+/// `find_trait_impl` was converted to a full `syn::visit` visitor after a review found seam impls
+/// hiding in `const _: () = { .. }` blocks and function bodies. Its two sibling helpers were left as
+/// the same shallow `file.items` + `Item::Mod` walk with a `_ => {}` arm — so the very next review
+/// put a `macro_rules!` spelling the trait *inside* a `const _` block, invoked it, and got a live
+/// public runtime path that was silent through this gate, `cargo clippy -D warnings` and
+/// `cargo fmt --check`. The const-block idiom is exempt from rustc's `non_local_definitions` lint,
+/// so unlike the function-body case nothing in the repo saw it.
+///
+/// That was the third consecutive round of the same defect — a correct fix applied to the one
+/// function the reviewer's example happened to touch. All three helpers are visitors now.
+///
+/// A `macro_rules!` body is a template, not code, so no AST can tell whether it will be invoked; a
+/// body that names a seam is therefore treated as an implementation wherever it appears, including
+/// inside the owning crate. That is deliberately conservative and it does constrain the owning
+/// crate: an item-level macro invocation whose token stream merely *mentions* a seam — a
+/// `thread_local!` holding a `Box<dyn Seam>`, say — is reported too. If that becomes a real
+/// obstruction the answer is to narrow this to bodies containing an `impl ... for` shape, not to put
+/// the owning crate back outside the check.
 fn macro_bodies_name_seam(file: &syn::File, seam: &str) -> bool {
-    fn walk(items: &[syn::Item], seam: &str) -> bool {
-        items.iter().any(|item| match item {
-            syn::Item::Mod(module) => module
-                .content
-                .as_ref()
-                .is_some_and(|(_, inner)| walk(inner, seam)),
-            syn::Item::Macro(item) => item
-                .mac
+    struct Finder<'a> {
+        seam: &'a str,
+        found: bool,
+    }
+    impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_macro(&mut self, mac: &syn::Macro) {
+            if mac
                 .tokens
                 .to_string()
                 .split(|c: char| !c.is_alphanumeric() && c != '_')
-                .any(|word| word == seam),
-            _ => false,
-        })
+                .any(|word| word == self.seam)
+            {
+                self.found = true;
+            }
+            syn::visit::visit_macro(self, mac);
+        }
     }
-    walk(&file.items, seam)
+    let mut finder = Finder { seam, found: false };
+    syn::visit::visit_file(&mut finder, file);
+    finder.found
 }
 
 /// A test target is `crates/<crate>/tests/**` or `crates/<crate>/benches/**` — nothing else.
@@ -456,9 +512,13 @@ mod tests {
     }
 
     #[test]
-    fn the_thirteen_shapes_that_defeated_the_byte_scanner_are_all_answered() {
-        // Each of these walked past a hand-rolled scanner in one of four adversarial reviews. A
-        // parser answers all of them without a single special case.
+    fn the_shapes_that_defeated_the_byte_scanner_are_all_answered() {
+        // Most of these walked past a hand-rolled scanner in one of four adversarial reviews; the
+        // exceptions are labelled. A parser answers all of them without a single special case.
+        //
+        // The name used to say "thirteen", which was wrong twice over: the four alias shapes the
+        // module docs count among the bypasses are asserted in the next test, not this one, and one
+        // entry here never defeated anything. A number in a test name is a claim like any other.
         for source in [
             "impl<T> TrajectoryProjection for T {}",
             "impl  TrajectoryProjection  for  X {}",
@@ -467,6 +527,9 @@ mod tests {
             "impl<T: Fn() -> u32> TrajectoryProjection for T {}",
             "impl<T: M<{ 1 > 0 }>> TrajectoryProjection for T {}",
             "impl<T: M<{ 1 << 2 }>> TrajectoryProjection for T {}",
+            // Not a historical bypass — it contains the literal substring the v1 scanner matched.
+            // Kept as ordinary regression coverage, labelled honestly: a review pointed out that the
+            // array was padded with shapes presented as defeats when they were not.
             "impl TrajectoryProjection for (A, B) {}",
             "impl<'a, T> TrajectoryProjection for &'a T {}",
             "impl\u{0b}TrajectoryProjection\u{0b}for X {}",
@@ -525,6 +588,42 @@ mod tests {
         ] {
             assert!(!implements(source), "false positive: {source}");
         }
+    }
+
+    #[test]
+    fn a_macro_and_an_include_are_found_at_any_nesting_too() {
+        // `find_trait_impl` became a full visitor while its two SIBLING helpers stayed a shallow
+        // `file.items` walk — the same defect, in the commit named after it. Three live bypasses
+        // followed, all silent through the gate, clippy -D warnings and fmt.
+        let in_const = syn::parse_file(
+            "const _: () = { macro_rules! w { ($t:ty) => { impl TrajectoryProjection for $t {} }; } };",
+        )
+        .expect("parses");
+        assert!(
+            macro_bodies_name_seam(&in_const, "TrajectoryProjection"),
+            "a macro_rules! inside a const block spelling the seam"
+        );
+        let in_fn = syn::parse_file(
+            "fn f() { macro_rules! w { ($t:ty) => { impl TrajectoryProjection for $t {} }; } }",
+        )
+        .expect("parses");
+        assert!(macro_bodies_name_seam(&in_fn, "TrajectoryProjection"));
+
+        // `include!` below top level, and spelled with a path prefix.
+        assert_eq!(
+            super::include_targets("fn f() { mod m { include!(\"a.inc\"); } }"),
+            vec!["a.inc".to_owned()],
+            "an include! nested in a fn body removed the target from the scan entirely"
+        );
+        assert_eq!(
+            super::include_targets("std::include!(\"b.inc\");"),
+            vec!["b.inc".to_owned()],
+            "one keyword prefix defeated is_ident(\"include\") on a plain top-level include"
+        );
+        assert_eq!(
+            super::include_targets("core::include!(\"c.inc\");"),
+            vec!["c.inc".to_owned()]
+        );
     }
 
     #[test]

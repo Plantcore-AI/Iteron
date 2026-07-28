@@ -272,6 +272,34 @@ impl PromotionAuthority {
         {
             return Err(PromotionAuthorityError::IndependentEvaluationRequired);
         }
+        // The permit is re-derived from THIS authority's own policy rather than trusted as it
+        // arrives. A review found that `StagePermit::issue` is called only on the two live
+        // transitions and never on replay, that `apply_transition` checks a journalled permit for
+        // nothing but its candidate digest and stage, and that `permit.digest` was compared only
+        // against the observation's copy of the same journalled value — a circle. Four of the six
+        // refusal codes below (`StageBounds`, `BudgetPolicy`, `SecurityPolicy`, `DurabilityPolicy`)
+        // are computed entirely against this struct, and nothing keyed covers it: the authorization
+        // signature is over the `PromotionRequest`, not the journal event body, and the record chain
+        // is unkeyed SHA-256. So a rewritten journal could hand the replay a permit with relaxed
+        // limits and every bound would be enforced against the attacker's numbers.
+        //
+        // `issue` is a pure function of (authority id, policy digest, candidate bundle digest, stage,
+        // policy), all of which this authority holds, so re-deriving costs nothing and makes the
+        // journalled copy non-authoritative. This is the fourth check the held-out path had in
+        // substance — every reference value there is either re-derived or pinned by the evaluator's
+        // HMAC — and the stage path did not.
+        let expected_permit = StagePermit::issue(
+            &self.authority_id,
+            &self.policy_digest,
+            &candidate.identity.bundle_digest,
+            permit.stage,
+            &self.policy,
+        )?;
+        if expected_permit.digest != permit.digest {
+            return Err(PromotionAuthorityError::IndependentEvaluationRequired);
+        }
+        let permit = &expected_permit;
+
         let observation = &signed.observation;
         let mut codes = BTreeSet::new();
         let stage_traffic_invalid = match permit.stage {

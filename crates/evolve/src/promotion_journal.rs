@@ -447,6 +447,48 @@ fn sync_directory(_directory: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Rewrite a journal in place, applying `mutate` to every record's content and recomputing the whole
+/// hash chain — exactly what someone with write access to the file can do.
+///
+/// This exists because the tamper test that predates it flips bytes WITHOUT recomputing, so it only
+/// ever exercised the corruption detector. The interesting question is the other one: when the chain
+/// is internally consistent, does anything downstream still refuse content the chain cannot vouch
+/// for? The chain is unkeyed SHA-256 and the per-record authorization signature covers only the
+/// `PromotionRequest`, never the event body, so the honest answer has to come from the consumers.
+#[cfg(test)]
+pub(crate) fn rewrite_for_test(
+    directory: &Path,
+    mut mutate: impl FnMut(&mut JournalContent) -> bool,
+) -> Result<bool, PromotionAuthorityError> {
+    let path = directory.join(JOURNAL_FILE_NAME);
+    let original = std::fs::read_to_string(&path)?;
+    let mut previous_hash = ZERO_HASH.to_owned();
+    let mut out = String::new();
+    let mut mutated = false;
+    for (sequence, line) in original.lines().enumerate() {
+        let record: JournalRecord = serde_json::from_str(line)?;
+        let mut content = record.content;
+        mutated |= mutate(&mut content);
+        let content_bytes = bounded_json(&content, MAX_PROMOTION_JOURNAL_RECORD_BYTES)?;
+        let content_digest = sha256_hex(&content_bytes);
+        let sequence = sequence as u64;
+        let record_hash = chained_hash(&previous_hash, sequence, &content_digest);
+        let rebuilt = JournalRecord {
+            journal_schema_version: JOURNAL_SCHEMA_VERSION,
+            sequence,
+            previous_hash: previous_hash.clone(),
+            record_hash: record_hash.clone(),
+            content_digest,
+            content,
+        };
+        out.push_str(&serde_json::to_string(&rebuilt)?);
+        out.push('\n');
+        previous_hash = record_hash;
+    }
+    std::fs::write(&path, out)?;
+    Ok(mutated)
+}
+
 #[cfg(test)]
 mod vocabulary_tests {
     use super::{DeploymentStage, JournalEvent, RefusalCode};

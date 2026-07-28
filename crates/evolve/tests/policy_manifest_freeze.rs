@@ -470,8 +470,13 @@ fn the_persisted_vocabularies_keep_their_exact_tags_and_the_schema_stamp_holds()
     // This comment used to claim `DeploymentStage` was "the only one that does not live in
     // `core-protocol`". That was false, and a review that enumerated the crate found it: this crate
     // has twelve serde-derived enums — ten public, plus the `pub(crate)` `RefusalCode` and
-    // `JournalEvent` — and nine of them were in no register at all. They are registered
-    // below, in `the_remaining_closed_vocabularies_are_recorded_and_refuse_an_unrecognised_tag`. A
+    // `JournalEvent` — and nine of them were in no register at all. SEVEN of those nine are
+    // registered
+    // below, in `the_remaining_closed_vocabularies_are_recorded_and_refuse_an_unrecognised_tag`;
+    // the other two, `RefusalCode` and `JournalEvent`, are `pub(crate)` and therefore unnameable
+    // from an integration test, so they are registered in `promotion_journal::vocabulary_tests`.
+    // (A review found this clause still saying all nine were registered "below" — the count had
+    // been corrected and the sentence hanging off it had not.) A
     // register that asserts its own completeness in prose is worth less than one that enumerates,
     // because the prose stays confident while the crate grows.
     //
@@ -516,7 +521,11 @@ fn the_persisted_vocabularies_keep_their_exact_tags_and_the_schema_stamp_holds()
     );
 }
 
-/// The seven serde-derived vocabularies this crate had recorded nowhere.
+/// The seven PUBLIC serde-derived vocabularies this test can reach that had been recorded nowhere.
+///
+/// Nine were unregistered; the other two are `pub(crate)` and live in
+/// `promotion_journal::vocabulary_tests`. Seven is what this test covers, not what was missing —
+/// naming it otherwise is how the count in this file went wrong twice already.
 ///
 /// A review enumerated every `#[derive(Deserialize)] enum` in `core-evolve` and found twelve — ten
 /// public, plus `RefusalCode` and `JournalEvent`, which are `pub(crate)` and are registered in

@@ -1462,3 +1462,130 @@ fn a_stage_observation_signed_by_a_different_evaluator_is_refused() {
         Some(DeploymentStage::Shadow)
     );
 }
+
+#[test]
+fn a_journal_rewritten_with_a_relaxed_permit_cannot_widen_the_stage_bounds() {
+    // The fourth held-out/stage asymmetry. On the held-out path every reference value is either
+    // re-derived from `self.policy` or pinned by the evaluator's HMAC. On the stage path the
+    // `StagePermit` arrived from the journal event body and was believed: `StagePermit::issue` runs
+    // only on the two live transitions and never on replay, `apply_transition` checked a journalled
+    // permit for nothing but its candidate digest and stage, and `permit.digest` was compared only
+    // against the observation's copy of the same journalled value — a circle.
+    //
+    // Four of the six refusal codes are computed entirely against that struct, and nothing keyed
+    // covers it: the authorization signature is over the `PromotionRequest`, never the event body,
+    // and the record chain is unkeyed SHA-256. So an attacker with journal write access can rewrite
+    // the permit AND recompute the chain. The tamper test above flips bytes WITHOUT recomputing, so
+    // it only ever exercised the corruption detector; this one produces an internally consistent
+    // journal, which is the case that matters.
+    //
+    // Note what the attack looks like when it fails: not an error, but no effect. The forged bounds
+    // are simply not the ones enforced. So the observation below is deliberately OUT of the real
+    // bounds and inside the forged ones — otherwise the test would pass for the wrong reason.
+    let root = scratch("forged-permit");
+    let policy = control_policy();
+    let authorizer = authorizer(&policy);
+    let verifier = evolution_verifier();
+    let signed_training = vec![training_trajectory("task-a")];
+    let mut datasets = ConsentAwareDatasetRegistry::new();
+    let dataset = datasets
+        .build_and_register(&verifier, &signed_training)
+        .unwrap();
+    let suite = evaluation("task-b");
+    let fixture = candidate_fixture(dataset.digest(), &suite);
+    let candidate_digest = fixture.candidate.bundle().digest.clone();
+    {
+        let mut authority = open_authority(&root, &policy);
+        bootstrap(&mut authority, &authorizer, fixture.baseline.clone());
+        admit_clean(
+            &mut authority,
+            &authorizer,
+            &verifier,
+            &datasets,
+            &dataset,
+            &suite,
+            &fixture.manifest,
+            fixture.artifact,
+            &fixture.baseline_policy,
+            fixture.candidate.clone(),
+            "auth-admit-forge",
+        );
+        let shadow_request =
+            PromotionRequest::enter_shadow("auth-shadow-forge", &candidate_digest).unwrap();
+        authority
+            .enter_shadow(
+                &shadow_request,
+                &authorizer.authorize(&shadow_request).unwrap(),
+            )
+            .unwrap();
+    }
+
+    // Rewrite the journalled permit's limits and recompute the whole chain. Going through the real
+    // types matters: a round trip via `serde_json::Value` sorts the keys, the digest stops matching,
+    // and the journal is rejected as corrupt — which detects the wrong thing entirely.
+    let tampered = crate::promotion_journal::rewrite_for_test(&root, |content| {
+        if let crate::promotion_journal::JournalEvent::StageTransition {
+            permit: Some(permit),
+            ..
+        } = &mut content.event
+        {
+            permit.limits = StageLimits::new(10_000, 64, 10_000_000, 0, 10_000).unwrap();
+            return true;
+        }
+        false
+    })
+    .unwrap();
+    assert!(
+        tampered,
+        "the fixture must contain a journalled permit, or this test proves nothing"
+    );
+
+    struct OverBudgetExecutor {
+        baseline: PolicyRef,
+        candidate: PolicyRef,
+    }
+    impl BoundedStageExecutor for OverBudgetExecutor {
+        fn execute(
+            &mut self,
+            permit: &StagePermit,
+            _suite: &EvaluationSuite,
+        ) -> Result<SignedStageObservation, PromotionAuthorityError> {
+            let observation = StageObservation::new(
+                permit,
+                5_000, // the real shadow limit is 20; the forged permit says 10_000
+                1,
+                100,
+                0,
+                100,
+                SECURITY_DIGEST,
+                DURABILITY_DIGEST,
+                evidence(&self.baseline, &self.candidate, true),
+            )?;
+            evaluator().sign_stage(observation)
+        }
+    }
+
+    let mut authority = open_authority(&root, &policy);
+    let canary_request =
+        PromotionRequest::complete_shadow("auth-canary-forge", &candidate_digest).unwrap();
+    let mut executor = OverBudgetExecutor {
+        baseline: fixture.baseline_policy.clone(),
+        candidate: fixture.manifest.policy.clone(),
+    };
+    assert!(
+        authority
+            .execute_shadow(
+                &canary_request,
+                &authorizer.authorize(&canary_request).unwrap(),
+                &suite,
+                &mut executor,
+            )
+            .is_err(),
+        "a permit rewritten in the journal must not become the bound the authority enforces"
+    );
+    assert_eq!(
+        authority.candidate_stage(&candidate_digest).unwrap(),
+        Some(DeploymentStage::Shadow),
+        "and the candidate must not advance on a bound nobody authorised"
+    );
+}
