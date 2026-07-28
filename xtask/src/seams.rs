@@ -88,11 +88,21 @@ pub(crate) fn validate(root: &Path, files: &[String]) -> Result<()> {
     let names = resolve_alias_closure(&sources);
 
     let mut satisfiability_test_seen = false;
-    for (relative, source) in &sources {
+    for (relative, source, roots) in &sources {
         let file = syn::parse_file(source)
             .with_context(|| format!("`{relative}` does not parse as Rust"))?;
 
-        if let Some(found) = find_trait_impl(&file.items, &names)
+        // A `macro_rules!` body is a template, not code, so no AST can tell whether it will be
+        // invoked. It is treated as an implementation wherever it spells a seam, including inside
+        // the owning crate. The previous version only searched macro bodies in NON-owning crates —
+        // and the owning crate is the one place such a macro can legally live, so the check never ran
+        // where it mattered. A review minted a live public runtime path that way, silent through
+        // every gate in the repo, under a module doc claiming that exact case was covered.
+        let via_macro = SEAMS
+            .iter()
+            .find(|seam| macro_bodies_name_seam(&file, seam))
+            .map(|seam| (*seam).to_owned());
+        if let Some(found) = find_trait_impl(&file, &names).or(via_macro)
             && !is_test_path(relative)
         {
             bail!(
@@ -107,9 +117,7 @@ pub(crate) fn validate(root: &Path, files: &[String]) -> Result<()> {
         for seam in SEAMS {
             // Read from the parsed source, so a seam named in a doc comment or inside a string
             // literal is not a reference. Both directions of that were real bugs once.
-            if !relative.starts_with(OWNING_CRATE)
-                && (identifiers_name_seam(&file, seam) || macro_bodies_name_seam(&file, seam))
-            {
+            if !relative.starts_with(OWNING_CRATE) && identifiers_name_seam(&file, seam) {
                 bail!(
                     "`{relative}` names the `{seam}` seam, but only `{OWNING_CRATE}` may.\n\
                      A crate that names it has begun consuming a seam that nothing implements."
@@ -117,8 +125,13 @@ pub(crate) fn validate(root: &Path, files: &[String]) -> Result<()> {
             }
         }
 
-        if relative == SATISFIABILITY_TEST {
-            satisfiability_test_seen = true;
+        // Applied to the proof AND to everything it includes: a review moved a `core_protocol`
+        // import into a sibling `.inc` the test pulled in, and the check — keyed on the file's own
+        // path — never saw it. Content a proof includes is part of the proof.
+        if roots.contains(SATISFIABILITY_TEST) {
+            if relative == SATISFIABILITY_TEST {
+                satisfiability_test_seen = true;
+            }
             validate_single_dependency(relative, &file)?;
         }
     }
@@ -133,43 +146,65 @@ pub(crate) fn validate(root: &Path, files: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Every Rust source file under `crates/`, including files pulled in by `include!`.
+/// Every Rust source file under `crates/`, and everything reachable from one through `include!`.
 ///
-/// The extension filter used to be `ends_with(".rs")` alone, and a review put the plainest possible
-/// `impl TrajectoryProjection for Evil` in `crates/evolve/src/zz.inc` and `include!`d it. The file
-/// was inside `crates/`, was listed by git, and was covered by none of the documented limits — the
-/// gate simply never looked at it. An `include!` target is Rust source regardless of what it is
-/// called, so it is collected as such.
-fn collect_sources(root: &Path, files: &[String]) -> Vec<(String, String)> {
-    let mut sources: Vec<(String, String)> = Vec::new();
-    let mut included: BTreeSet<String> = BTreeSet::new();
+/// # Why this runs to a fixpoint
+///
+/// The extension filter used to be `ends_with(".rs")` alone, and a review put a plain
+/// `impl TrajectoryProjection for Evil` in `crates/evolve/src/zz.inc` and `include!`d it: inside
+/// `crates/`, listed by git, covered by no documented limit, and never looked at. That was fixed by
+/// collecting `include!` targets — but only from files that passed the same `.rs` filter, so the
+/// next review chained one more hop (`a.rs -> b.inc -> c.inc`) and the leaf was invisible again.
+///
+/// A one-level fix to a reachability problem is not a fix, so this is a worklist with a visited set:
+/// every collected source is itself searched for `include!`, to a fixpoint, and a cycle terminates
+/// rather than looping.
+///
+/// Returned as `(path, source, roots)` where `roots` is the set of `.rs` files this source was
+/// reached from, so [`validate_single_dependency`] can be applied to everything the satisfiability
+/// proof pulls in, not only to the file that bears its name.
+fn collect_sources(root: &Path, files: &[String]) -> Vec<(String, String, BTreeSet<String>)> {
+    let mut collected: Vec<(String, String, BTreeSet<String>)> = Vec::new();
+    let mut queue: Vec<(String, String)> = Vec::new();
 
     for relative in files {
         if !relative.starts_with("crates/") || !relative.ends_with(".rs") {
             continue;
         }
-        let Ok(source) = std::fs::read_to_string(root.join(relative)) else {
-            continue;
-        };
-        for target in include_targets(&source) {
-            if let Some(directory) = Path::new(relative).parent()
-                && let Some(joined) = directory.join(&target).to_str()
-            {
-                included.insert(normalise(joined));
-            }
+        if let Ok(source) = std::fs::read_to_string(root.join(relative)) {
+            queue.push((relative.clone(), relative.clone()));
+            collected.push((relative.clone(), source, [relative.clone()].into()));
         }
-        sources.push((relative.clone(), source));
     }
 
-    for relative in included {
-        if sources.iter().any(|(seen, _)| *seen == relative) {
+    // Worklist: (path to expand, the `.rs` root it was reached from).
+    let mut visited: BTreeSet<(String, String)> = queue.iter().cloned().collect();
+    while let Some((relative, origin)) = queue.pop() {
+        let Some((_, source, _)) = collected.iter().find(|(path, _, _)| *path == relative) else {
             continue;
-        }
-        if let Ok(source) = std::fs::read_to_string(root.join(&relative)) {
-            sources.push((relative, source));
+        };
+        let targets = include_targets(source);
+        for target in targets {
+            let Some(directory) = Path::new(&relative).parent() else {
+                continue;
+            };
+            let Some(joined) = directory.join(&target).to_str().map(normalise) else {
+                continue;
+            };
+            if !visited.insert((joined.clone(), origin.clone())) {
+                continue;
+            }
+            if let Some((_, _, roots)) = collected.iter_mut().find(|(path, _, _)| *path == joined) {
+                roots.insert(origin.clone());
+            } else if let Ok(source) = std::fs::read_to_string(root.join(&joined)) {
+                collected.push((joined.clone(), source, [origin.clone()].into()));
+            } else {
+                continue;
+            }
+            queue.push((joined, origin.clone()));
         }
     }
-    sources
+    collected
 }
 
 /// Collapse `a/./b` and `a/b/../c`, so an `include!("../x.inc")` matches the path git reports.
@@ -213,10 +248,10 @@ fn include_targets(source: &str) -> Vec<String> {
 }
 
 /// Every name that resolves to a seam anywhere in the tree, to a fixpoint.
-fn resolve_alias_closure(sources: &[(String, String)]) -> BTreeSet<String> {
+fn resolve_alias_closure(sources: &[(String, String, BTreeSet<String>)]) -> BTreeSet<String> {
     let mut names: BTreeSet<String> = SEAMS.iter().map(|seam| (*seam).to_owned()).collect();
     let mut edges: Vec<(String, String)> = Vec::new();
-    for (_, source) in sources {
+    for (_, source, _) in sources {
         let Ok(file) = syn::parse_file(source) else {
             continue;
         };
@@ -264,35 +299,45 @@ fn walk_use_tree(tree: &syn::UseTree, edges: &mut Vec<(String, String)>) {
     }
 }
 
-/// The first trait impl in this file whose trait resolves to a seam, if any.
+/// The first trait impl anywhere in this file whose trait resolves to a seam.
 ///
-/// `syn` answers every spelling that defeated the byte scanner at once: blanket impls, generic
-/// parameter lists containing `->` or `{ 1 << 2 }`, comments used as token separators, `for` with no
-/// following whitespace, non-ASCII whitespace, and qualified paths.
-fn find_trait_impl(items: &[syn::Item], names: &BTreeSet<String>) -> Option<String> {
-    for item in items {
-        match item {
-            syn::Item::Mod(module) => {
-                if let Some((_, inner)) = &module.content
-                    && let Some(found) = find_trait_impl(inner, names)
-                {
-                    return Some(found);
+/// # Why this is a full visitor and not a walk over `file.items`
+///
+/// The previous version recursed only into `syn::Item::Mod`, and a review put a seam implementation
+/// in three places it therefore never looked:
+///
+/// - `const _: () = { impl Seam for Evil { .. } };` — the anonymous const block, which is the exact
+///   idiom every derive macro emits, so it reads as ordinary code in review, and which rustc's
+///   `non_local_definitions` lint deliberately exempts.
+/// - a function body — caught only by that same lint, i.e. by an adjacent tool.
+/// - a `static`, an associated function, anywhere else an item may be declared.
+///
+/// All three compiled, were reachable through a public function, and were silent through this gate,
+/// `cargo fmt --check`, `cargo clippy -D warnings` AND the whole test suite. rustc registers a trait
+/// impl crate-globally no matter how deeply it is nested, so anything less than a full traversal is
+/// asking a shallower question than the contract does. `syn::visit` descends into expressions and
+/// blocks, so this now sees every `impl` the compiler does.
+fn find_trait_impl(file: &syn::File, names: &BTreeSet<String>) -> Option<String> {
+    struct Finder<'a> {
+        names: &'a BTreeSet<String>,
+        found: Option<String>,
+    }
+    impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_item_impl(&mut self, item: &syn::ItemImpl) {
+            if let Some((_, path, _)) = &item.trait_
+                && let Some(last) = path.segments.last()
+            {
+                let name = last.ident.to_string();
+                if self.names.contains(&name) && self.found.is_none() {
+                    self.found = Some(name);
                 }
             }
-            syn::Item::Impl(item) => {
-                if let Some((_, path, _)) = &item.trait_
-                    && let Some(last) = path.segments.last()
-                {
-                    let name = last.ident.to_string();
-                    if names.contains(&name) {
-                        return Some(name);
-                    }
-                }
-            }
-            _ => {}
+            syn::visit::visit_item_impl(self, item);
         }
     }
-    None
+    let mut finder = Finder { names, found: None };
+    syn::visit::visit_file(&mut finder, file);
+    finder.found
 }
 
 /// Does any identifier in the parsed file spell `seam`?
@@ -402,11 +447,12 @@ mod tests {
         SEAMS, find_trait_impl, identifiers_name_seam, is_test_path, macro_bodies_name_seam,
         normalise, resolve_alias_closure,
     };
+    use std::collections::BTreeSet;
 
     fn implements(source: &str) -> bool {
-        let names = resolve_alias_closure(&[("x.rs".into(), source.to_owned())]);
+        let names = resolve_alias_closure(&[("x.rs".into(), source.to_owned(), BTreeSet::new())]);
         let file = syn::parse_file(source).expect("parses");
-        find_trait_impl(&file.items, &names).is_some()
+        find_trait_impl(&file, &names).is_some()
     }
 
     #[test]
@@ -439,18 +485,17 @@ mod tests {
             (
                 "a.rs".to_owned(),
                 "pub(crate) use crate::seams::TrajectoryProjection as Proj;".to_owned(),
+                BTreeSet::new(),
             ),
             (
                 "b.rs".to_owned(),
                 "use crate::a::Proj; impl Proj for Evil {}".to_owned(),
+                BTreeSet::new(),
             ),
         ];
         let names = resolve_alias_closure(&cross_file);
         let file = syn::parse_file(&cross_file[1].1).expect("parses");
-        assert!(
-            find_trait_impl(&file.items, &names).is_some(),
-            "cross-file alias"
-        );
+        assert!(find_trait_impl(&file, &names).is_some(), "cross-file alias");
 
         assert!(
             implements(
@@ -479,6 +524,21 @@ mod tests {
             "// impl TrajectoryProjection for X\npub struct X;",
         ] {
             assert!(!implements(source), "false positive: {source}");
+        }
+    }
+
+    #[test]
+    fn an_impl_nested_inside_any_item_is_still_an_impl() {
+        // rustc registers a trait impl crate-globally however deeply it is nested. A walk over
+        // `file.items` saw none of these; all three were live public runtime paths, silent through
+        // the gate, fmt, clippy -D warnings and the whole test suite.
+        for source in [
+            "const _: () = { impl TrajectoryProjection for Evil {} };",
+            "pub fn wire() { impl TrajectoryProjection for Evil {} }",
+            "static _X: () = { impl TrajectoryProjection for Evil {} };",
+            "impl Other { fn f() { impl TrajectoryProjection for Evil {} } }",
+        ] {
+            assert!(implements(source), "not caught: {source}");
         }
     }
 

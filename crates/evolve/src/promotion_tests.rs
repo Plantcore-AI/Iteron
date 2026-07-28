@@ -1355,3 +1355,110 @@ fn a_candidate_cannot_sign_its_own_stage_observations() {
         "and it must stay where it was, never reaching Canary or Active"
     );
 }
+
+#[test]
+fn a_stage_observation_signed_by_a_different_evaluator_is_refused() {
+    // The third stage-path asymmetry a review found, after the base-model binding and the
+    // self-evaluation refusal. Both previous ones were "the held-out path checks it, the stage path
+    // does not"; so is this. `AuthorityState::apply` binds the held-out attestation's signer to
+    // `identity.evaluator_id`; the stage path bound nothing, and `require_evaluator` checks only the
+    // suite OWNER. A second honest anchor could therefore advance a candidate — and the audit event
+    // recorded `PromotionLineage::from(&identity)`, naming the ADMITTING evaluator as the signer,
+    // with the real one nowhere in the record.
+    let root = scratch("stage-other-evaluator");
+    let policy = control_policy();
+    let authorizer = authorizer(&policy);
+    let verifier = evolution_verifier();
+    let signed_training = vec![training_trajectory("task-a")];
+    let mut datasets = ConsentAwareDatasetRegistry::new();
+    let dataset = datasets
+        .build_and_register(&verifier, &signed_training)
+        .unwrap();
+    let suite = evaluation("task-b");
+    let fixture = candidate_fixture(dataset.digest(), &suite);
+
+    // Two entirely honest anchors under the same suite owner. Neither is named for the candidate.
+    let other = EvaluatorTrustAnchor::new("other-evaluator", "held-out-owner", key(0x44)).unwrap();
+    let mut authority = PromotionAuthority::open(
+        &root,
+        "release-registry-a",
+        policy.clone(),
+        vec![promotion_anchor()],
+        vec![evaluator_anchor(), other],
+    )
+    .unwrap();
+    bootstrap(&mut authority, &authorizer, fixture.baseline.clone());
+    let candidate_digest = fixture.candidate.bundle().digest.clone();
+    admit_clean(
+        &mut authority,
+        &authorizer,
+        &verifier,
+        &datasets,
+        &dataset,
+        &suite,
+        &fixture.manifest,
+        fixture.artifact,
+        &fixture.baseline_policy,
+        fixture.candidate.clone(),
+        "auth-admit-other",
+    );
+    let shadow_request =
+        PromotionRequest::enter_shadow("auth-shadow-other", &candidate_digest).unwrap();
+    authority
+        .enter_shadow(
+            &shadow_request,
+            &authorizer.authorize(&shadow_request).unwrap(),
+        )
+        .unwrap();
+
+    struct OtherEvaluatorExecutor {
+        baseline: PolicyRef,
+        candidate: PolicyRef,
+    }
+    impl BoundedStageExecutor for OtherEvaluatorExecutor {
+        fn execute(
+            &mut self,
+            permit: &StagePermit,
+            _suite: &EvaluationSuite,
+        ) -> Result<SignedStageObservation, PromotionAuthorityError> {
+            let observation = StageObservation::new(
+                permit,
+                2,
+                1,
+                100,
+                0,
+                100,
+                SECURITY_DIGEST,
+                DURABILITY_DIGEST,
+                evidence(&self.baseline, &self.candidate, true),
+            )?;
+            IndependentEvaluator::new("other-evaluator", key(0x44))
+                .unwrap()
+                .sign_stage(observation)
+        }
+    }
+
+    let canary_request =
+        PromotionRequest::complete_shadow("auth-canary-other", &candidate_digest).unwrap();
+    let mut executor = OtherEvaluatorExecutor {
+        baseline: fixture.baseline_policy.clone(),
+        candidate: fixture.manifest.policy.clone(),
+    };
+    assert!(
+        matches!(
+            authority.execute_shadow(
+                &canary_request,
+                &authorizer.authorize(&canary_request).unwrap(),
+                &suite,
+                &mut executor,
+            ),
+            Err(PromotionAuthorityError::IndependentEvaluationRequired)
+        ),
+        "a stage observation signed by an evaluator other than the admitting one must be refused, \
+         because the audit record can only name one of them"
+    );
+    assert_eq!(
+        authority.candidate_stage(&candidate_digest).unwrap(),
+        Some(DeploymentStage::Shadow)
+    );
+}

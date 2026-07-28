@@ -469,7 +469,8 @@ fn the_persisted_vocabularies_keep_their_exact_tags_and_the_schema_stamp_holds()
     //
     // This comment used to claim `DeploymentStage` was "the only one that does not live in
     // `core-protocol`". That was false, and a review that enumerated the crate found it: this crate
-    // has ten serde-derived enums and seven of them were in no register at all. They are registered
+    // has twelve serde-derived enums — ten public, plus the `pub(crate)` `RefusalCode` and
+    // `JournalEvent` — and nine of them were in no register at all. They are registered
     // below, in `the_remaining_closed_vocabularies_are_recorded_and_refuse_an_unrecognised_tag`. A
     // register that asserts its own completeness in prose is worth less than one that enumerates,
     // because the prose stays confident while the crate grows.
@@ -517,9 +518,9 @@ fn the_persisted_vocabularies_keep_their_exact_tags_and_the_schema_stamp_holds()
 
 /// The seven serde-derived vocabularies this crate had recorded nowhere.
 ///
-/// A review enumerated every `#[derive(Deserialize)] enum` in `core-evolve` and found twelve, ten
-/// of them *public*
-/// . Three
+/// A review enumerated every `#[derive(Deserialize)] enum` in `core-evolve` and found twelve — ten
+/// public, plus `RefusalCode` and `JournalEvent`, which are `pub(crate)` and are registered in
+/// `promotion_journal::vocabulary_tests` because an integration test cannot name them. Three
 /// were registered — `ArtifactKind` and `EvolutionMethod` as open, `DeploymentStage` as closed. The
 /// other seven were in neither register and had no test feeding them an unrecognised tag, so nothing
 /// recorded whether their closure was a decision or an accident. `Errors.md` 2026-07-28c already

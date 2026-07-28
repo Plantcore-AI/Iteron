@@ -252,6 +252,22 @@ impl PromotionAuthority {
         // as a whole, not of one of its two paths.
         if signed.evaluator_id == candidate.identity.candidate_policy.policy_id
             || signed.evaluator_id == candidate.identity.bundle_id
+            // The stage signer must be the evaluator that admitted the candidate. `AuthorityState::
+            // apply` binds exactly this for the held-out attestation
+            // (`held_out_attestation.evaluator_id != identity.evaluator_id` ->
+            // `EvaluationIdentityMismatch`); the stage path bound nothing, and `require_evaluator`
+            // checks only the suite OWNER. So any second registered anchor could sign a transition —
+            // and the audit event then stamped `PromotionLineage::from(&identity)`, recording the
+            // ADMITTING evaluator as the signer while the real one appeared nowhere. A review drove
+            // that live: admitted under one evaluator, advanced to Canary under another, audit
+            // reporting the first. For a journal whose stated purpose is that a third party can check
+            // the claim afterwards, a record naming the wrong signer is a defect whether or not both
+            // anchors are trusted.
+            //
+            // This subsumes the two self-evaluation refusals above, which are kept because they state
+            // the intent that admission already enforces, and because a later change to the lineage
+            // could reintroduce exactly what they refuse.
+            || signed.evaluator_id != candidate.identity.evaluator_id
             || !constant_time_eq(expected.as_bytes(), signed.signature.as_bytes())
         {
             return Err(PromotionAuthorityError::IndependentEvaluationRequired);
