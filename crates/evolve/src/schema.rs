@@ -153,8 +153,8 @@ impl TrajectoryEnvelope {
         match schema_version(bytes, document, MAX_TRAJECTORY_JSON_BYTES)? {
             EVOLUTION_SCHEMA_VERSION => validate_trajectory(decode_json(bytes, document)?),
             EVOLUTION_PREVIOUS_SCHEMA_VERSION => {
-                let legacy: TrajectoryEnvelopeV1 = decode_json(bytes, document)?;
-                validate_trajectory(migrate_trajectory_v1(legacy))
+                let legacy: TrajectoryEnvelopeV2 = decode_json(bytes, document)?;
+                validate_trajectory(migrate_trajectory_v2(legacy))
             }
             found if found > EVOLUTION_SCHEMA_VERSION => Err(EvolutionLoadError::FutureSchema {
                 document,
@@ -204,8 +204,12 @@ fn migrate_policy_manifest_v2(legacy: PolicyManifestV2) -> PolicyManifest {
     }
 }
 
+/// The N-1 decoder is named for the schema it decodes, not for the schema it was written against.
+/// Schema 3 added `base_model` to `PolicyManifest` only, so a trajectory is field-identical across
+/// 2 and 3 and this struct is a pure version stamp - which is exactly why the name has to be
+/// right: nothing in its body would look wrong if it were still decoding schema 1.
 #[derive(Deserialize)]
-struct TrajectoryEnvelopeV1 {
+struct TrajectoryEnvelopeV2 {
     schema_version: u16,
     run_id: RunId,
     tenant_id: TenantId,
@@ -219,7 +223,7 @@ struct TrajectoryEnvelopeV1 {
     governance: DataGovernance,
 }
 
-fn migrate_trajectory_v1(legacy: TrajectoryEnvelopeV1) -> TrajectoryEnvelope {
+fn migrate_trajectory_v2(legacy: TrajectoryEnvelopeV2) -> TrajectoryEnvelope {
     debug_assert_eq!(legacy.schema_version, EVOLUTION_PREVIOUS_SCHEMA_VERSION);
     TrajectoryEnvelope {
         schema_version: EVOLUTION_SCHEMA_VERSION,

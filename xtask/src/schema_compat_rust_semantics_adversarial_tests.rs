@@ -24,6 +24,9 @@ fn trusted_base_rejects_type_serde_and_runtime_dataflow_bypasses() {
         "crates/cli/src/output.rs",
         "crates/cli/src/main.rs",
         "crates/eval/src/contract.rs",
+        // Without this the fixture is missing a source `compare` insists on, every assertion below
+        // fails on the absence rather than on the mutation, and the whole test passes vacuously.
+        "crates/eval/src/main.rs",
         "crates/eval/src/runner.rs",
         "crates/eval/src/strict_json.rs",
         "crates/obs/src/lib.rs",
@@ -78,8 +81,75 @@ fn trusted_base_rejects_type_serde_and_runtime_dataflow_bypasses() {
         1,
     );
     assert_ne!(eval, bypass);
-    std::fs::write(eval_path, bypass).unwrap();
+    std::fs::write(&eval_path, bypass).unwrap();
     assert!(compare(&temp, "HEAD", &contract, &contract).is_err());
+    std::fs::write(&eval_path, eval).unwrap();
+
+    // The freeze adds `pub mod artifact;` / `pub mod context;` to the protocol root, and the gate
+    // that guards the ABI must not be what rejects the commit that establishes it. A declaration
+    // the base never had cannot redirect a binding the base did have, so it is admitted.
+    let lib_path = temp.join("crates/protocol/src/lib.rs");
+    let lib = std::fs::read_to_string(&lib_path).unwrap();
+    let probe_path = temp.join("crates/protocol/src/probe.rs");
+    std::fs::write(&probe_path, "pub struct SemanticsProbeOnly;\n").unwrap();
+    std::fs::write(&lib_path, format!("{lib}\npub mod probe;\n")).unwrap();
+    compare(&temp, "HEAD", &contract, &contract)
+        .expect("a purely additive module declaration must not fail the trusted-base gate");
+    std::fs::write(&lib_path, &lib).unwrap();
+    std::fs::remove_file(&probe_path).unwrap();
+
+    // Narrowing an existing declaration still moves the binding: `wire` stops being reachable from
+    // outside the crate, so the subset check must stay fatal in that direction.
+    let narrowed = lib.replacen("pub mod wire;", "pub(crate) mod wire;", 1);
+    assert_ne!(lib, narrowed);
+    std::fs::write(&lib_path, narrowed).unwrap();
+    assert!(compare(&temp, "HEAD", &contract, &contract).is_err());
+    std::fs::write(&lib_path, &lib).unwrap();
+
+    // The same asymmetry, for the manual serde authority the freeze must introduce: `artifact.rs`
+    // hand-writes Serialize/Deserialize because `#[serde(other)]` cannot retain an unrecognised tag
+    // verbatim, so a new file's impls have to be admitted or the freeze cannot land at all.
+    std::fs::write(
+        &probe_path,
+        "pub struct SemanticsProbeOnly;\n\
+         impl Serialize for SemanticsProbeOnly {\n    fn serialize(&self) {}\n}\n\
+         impl SemanticsProbeOnly {\n    pub fn probe(&self) {}\n}\n",
+    )
+    .unwrap();
+    std::fs::write(&lib_path, format!("{lib}\npub mod probe;\n")).unwrap();
+    compare(&temp, "HEAD", &contract, &contract)
+        .expect("manual serde authority on a type the base never declared must be admitted");
+
+    // The bound on that admission, asserted by reason and not merely by failure: a type the base
+    // DID publish may not take over its own serde authority, however new the file holding the impl.
+    std::fs::write(
+        &probe_path,
+        "impl Serialize for Budget {\n    fn serialize(&self) {}\n}\n",
+    )
+    .unwrap();
+    assert!(
+        compare(&temp, "HEAD", &contract, &contract)
+            .unwrap_err()
+            .to_string()
+            .contains("'Budget' took over its own serde authority"),
+        "a base-declared type seizing manual serde authority must fail for that reason"
+    );
+
+    // And a support method may not appear behind an authority the base already published.
+    std::fs::write(
+        &probe_path,
+        "impl StopReasonCode {\n    pub fn probe(&self) {}\n}\n",
+    )
+    .unwrap();
+    assert!(
+        compare(&temp, "HEAD", &contract, &contract)
+            .unwrap_err()
+            .to_string()
+            .contains("manual serde support methods changed"),
+        "a new support method behind a published authority must fail for that reason"
+    );
+    std::fs::write(&lib_path, lib).unwrap();
+    std::fs::remove_file(&probe_path).unwrap();
 
     std::fs::remove_dir_all(temp).unwrap();
 }

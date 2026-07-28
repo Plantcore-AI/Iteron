@@ -1120,3 +1120,48 @@ fn d13_14_repository_corpus_contract_is_self_consistent() {
         .expect("xtask is directly below the repository root");
     validate_current(root).unwrap();
 }
+
+#[test]
+fn d1_02_only_a_moved_published_shape_obliges_a_protocol_version_bump() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let bytes = std::fs::read(root.join(super::CONTRACT_PATH)).unwrap();
+    let base = super::manifest::parse_contract(&bytes, "base").unwrap();
+
+    // A brand-new top-level tag is a new surface: §4.3(b) rule 2 keeps the line identical.
+    let mut added = base.clone();
+    let mut fresh = base.surfaces[0].clone();
+    fresh.id = "abi.newly-published".to_owned();
+    added.surfaces.push(fresh);
+    assert!(!super::line_format_moved(&base, &added));
+
+    // An appended Option + skip_serializing_if field: §4.3(b) rule 3, byte-identical when None.
+    let mut appended = base.clone();
+    appended.surfaces[0].fields.push(super::manifest::Field {
+        name: "appended_optional".to_owned(),
+        introduced_release: 2,
+        deprecated_release: None,
+    });
+    assert!(!super::line_format_moved(&base, &appended));
+
+    // Dropping a field from ANY published surface moves bytes. record.event-envelope is `Event`,
+    // the whole EqEnvelope payload, and the five abi.* contracts are published from the freeze on;
+    // no surface may be silently exempt.
+    for index in 0..base.surfaces.len() {
+        let mut shrunk = base.clone();
+        if shrunk.surfaces[index].fields.is_empty() {
+            continue;
+        }
+        shrunk.surfaces[index].fields.pop();
+        assert!(
+            super::line_format_moved(&base, &shrunk),
+            "surface '{}' escaped the bump trigger",
+            base.surfaces[index].id
+        );
+    }
+
+    let mut dropped = base.clone();
+    dropped.surfaces.remove(0);
+    assert!(super::line_format_moved(&base, &dropped));
+}

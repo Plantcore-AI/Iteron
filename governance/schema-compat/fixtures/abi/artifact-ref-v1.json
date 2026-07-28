@@ -1,0 +1,1 @@
+{"hash":"9f2c1b4a5d6e7f80912a3b4c5d6e7f80912a3b4c5d6e7f80912a3b4c5d6e7f80","schema":"file_diff","producer":{"kind":"tool","tool":"edit_file"},"provenance":{"run_id":"run-1","parent_hashes":[],"effect_id":"fx1-00000003-0001"},"permissions":["read_only"],"locator":"artifacts/9f2c.patch"}

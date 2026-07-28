@@ -18,7 +18,7 @@ harness checkpoint 是对 `StrategySlot` ABI 上一条 policy 的**已训练状�
 
 | 字段 | 类型 | 含义 | 规范性 |
 |---|---|---|---|
-| `schema_version` | `u16` | 契约版本,当前为 2 | MUST 等于运行时支持版本;加载器只迁移 N-1,拒绝其余(§6.4 载入语义) |
+| `schema_version` | `u16` | 契约版本,当前为 3 | MUST 等于运行时支持版本;加载器只迁移 N-1,拒绝其余(§6.4 载入语义) |
 | `policy` | `PolicyRef` | 不可变身份 = `{slot, policy_id, version, digest}` | `digest` MUST 为 artifact 字节的 SHA-256(64 位小写 hex),**不是** mutable URL |
 | `artifact_kind` | `ArtifactKind` | 实现形态:`Rules`/`Prompt`/`WasmComponent`/`ModelAdapter`/`ModelWeights`/`ExternalService`/`Builtin`/`GeneratedCode` | manifest **绝不是**把任意 native code 载入 kernel 的许可 |
 | `artifact_locator` | `String`(<=2048B) | artifact 字节的定位符 | MUST 非空;超长触发 `LocatorTooLong` |
@@ -28,6 +28,7 @@ harness checkpoint 是对 `StrategySlot` ABI 上一条 policy 的**已训练状�
 | `required_capabilities` | `BTreeSet<Capability>` | 声明其运行需要的能力(5-tier lattice) | candidate 只能**声明**,不能**授予**(§6.6) |
 | `training_dataset_digest` | `Option<String>` | governed dataset 的 digest | 任何 data-derived method MUST 钉死;仅 `HandAuthored` 可为空 |
 | `evaluation_suite_digest` | `String` | 评估套件 digest | MUST 存在(64 位 hex) |
+| `base_model` | `BaseModelId` | 该 policy 所依据的冻结基座模型(family / id / digest) | schema 3 起 MUST 存在且有界;由 schema 2 迁移而来的文档携带 `BaseModelId::unspecified()` 哨兵,well-formed 但永不 admissible |
 
 字段类型约束定义了失败模式的完整集合。`slot` 违反命名规则触发 `InvalidSlot`;任一 digest 非规范 64 位小写 hex 触发 `MalformedDigest`;learned method 缺 `training_dataset_digest` 触发 `MissingTrainingDataset`。这些错误在反序列化边界即被拒,fail-closed;一个无法通过 `validate` 的 manifest 永远进不到 admission。
 
@@ -35,7 +36,7 @@ harness checkpoint 是对 `StrategySlot` ABI 上一条 policy 的**已训练状�
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "policy": { "slot": "core/planner", "policy_id": "planner-grpo",
               "version": "1.4.0", "digest": "3f9a…(64 hex)" },
   "artifact_kind": "model_adapter",
@@ -45,7 +46,8 @@ harness checkpoint 是对 `StrategySlot` ABI 上一条 policy 的**已训练状�
   "protocol": { "min": 1, "max": 1 },
   "required_capabilities": ["read_only"],
   "training_dataset_digest": "a17c…(64 hex)",
-  "evaluation_suite_digest": "b820…(64 hex)"
+  "evaluation_suite_digest": "b820…(64 hex)",
+  "base_model": { "model_family": "example-family", "model_id": "example-base-1", "model_digest": "c04e…(64 hex)" }
 }
 ```
 
@@ -123,7 +125,7 @@ harness checkpoint 之所以是"参数空间里的点",还因为它支持一套�
 
 **worked example: transfer 的 portable fraction。** 一条在 model A 上取得 +8 分 held-out 的 `core/tool_policy` checkpoint,transfer 到冻结的 model B 后重测得 +6 分,则 portable fraction = 6/8 = 0.75。该数字本身是一个被报告的度量,不参与晋升门槛的自动抵偿;晋升仍由 §6.5 的门控独立裁决。
 
-**载入与版本语义。** 持久化的 `PolicyManifest`/`TrajectoryEnvelope` MUST 经由 `load_json` 载入:先读 `schema_version`,只迁移**恰好 N-1**,拒绝一切未知或未来版本(fail-closed)。一个 `schema_version = 4` 的 manifest 在只支持到 2 的运行时上被直接拒绝,不做尽力而为的解析。这保证 checkpoint 的"坐标系"随协议演进仍可解释,而演进本身走人控 registry,不受进化流水线影响(呼应 §6.3(d))。
+**载入与版本语义。** 持久化的 `PolicyManifest`/`TrajectoryEnvelope` MUST 经由 `load_json` 载入:先读 `schema_version`,只迁移**恰好 N-1**,拒绝一切未知或未来版本(fail-closed)。一个 `schema_version = 5` 的 manifest 在只支持到 3 的运行时上被直接拒绝,不做尽力而为的解析。这保证 checkpoint 的"坐标系"随协议演进仍可解释,而演进本身走人控 registry,不受进化流水线影响(呼应 §6.3(d))。
 
 ---
 

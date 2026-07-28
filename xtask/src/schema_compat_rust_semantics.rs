@@ -88,15 +88,54 @@ fn compare_protocol_bindings(
         if &old_imports != new_imports {
             bail!("protocol module '{path}' changed its import/re-export bindings");
         }
-        if base_modules.get(&path) != current_modules.get(&path) {
-            bail!("protocol module '{path}' changed its module declarations");
+        // A new `pub mod` cannot redirect an existing binding: index_items already rejects a
+        // repeated Rust type name and compare_reachable_protocol_types already rejects shadowing,
+        // so addition is safe. Removal, rename, visibility and #[path] changes stay fatal.
+        let base_declarations = base_modules.get(&path).cloned().unwrap_or_default();
+        let current_declarations: BTreeSet<String> = current_modules
+            .get(&path)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        if !base_declarations
+            .iter()
+            .all(|declaration| current_declarations.contains(declaration))
+        {
+            bail!("protocol module '{path}' removed or changed a module declaration");
         }
     }
-    if base.manual_serde_impls != candidate.manual_serde_impls {
-        bail!("protocol manual Serialize/Deserialize authority changed from the trusted base");
+    // Same asymmetry as the module declarations above, for the same reason: a type the base never
+    // declared cannot be a type the base put on the wire. Rewriting or dropping an authority the
+    // base did publish stays fatal, and so does moving an existing type off `derive` onto a hand
+    // written impl, which is how a shape would change while its fingerprint stood still.
+    for (key, body) in &base.manual_serde_impls {
+        if candidate.manual_serde_impls.get(key) != Some(body) {
+            bail!("protocol manual Serialize/Deserialize authority changed from the trusted base");
+        }
     }
-    if base.manual_serde_support != candidate.manual_serde_support {
-        bail!("protocol manual serde support methods changed from the trusted base");
+    for key in candidate.manual_serde_impls.keys() {
+        if base.manual_serde_impls.contains_key(key) {
+            continue;
+        }
+        let Some(target) = key.rsplit(':').nth(1) else {
+            continue;
+        };
+        if base.types.contains_key(target) {
+            bail!(
+                "protocol type '{target}' took over its own serde authority from the trusted base"
+            );
+        }
+    }
+    for (target, support) in &base.manual_serde_support {
+        if candidate.manual_serde_support.get(target) != Some(support) {
+            bail!("protocol manual serde support methods changed from the trusted base");
+        }
+    }
+    for target in candidate.manual_serde_support.keys() {
+        if !base.manual_serde_support.contains_key(target) && base.types.contains_key(target) {
+            bail!("protocol type '{target}' gained manual serde support methods");
+        }
     }
     Ok(())
 }

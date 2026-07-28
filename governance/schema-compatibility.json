@@ -2211,6 +2211,80 @@
         { "name": "version", "introduced_release": 1 }
       ],
       "compatibility_shims": []
+    },
+    {
+      "id": "abi.task-envelope",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/abi/task-envelope-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "acceptance", "introduced_release": 1 },
+        { "name": "budget", "introduced_release": 1 },
+        { "name": "ceiling", "introduced_release": 1 },
+        { "name": "input", "introduced_release": 1 },
+        { "name": "protocol_version", "introduced_release": 1 },
+        { "name": "task_id", "introduced_release": 1 },
+        { "name": "trust", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "abi.context-request",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/abi/context-request-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "max_bytes", "introduced_release": 1 },
+        { "name": "request_id", "introduced_release": 1 },
+        { "name": "selectors", "introduced_release": 1 },
+        { "name": "slot", "introduced_release": 1 },
+        { "name": "trust_ceiling", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "abi.tool-intent",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/abi/tool-intent-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "admitted", "introduced_release": 1 },
+        { "name": "argument_trust", "introduced_release": 1 },
+        { "name": "call", "introduced_release": 1 },
+        { "name": "proposed_by", "introduced_release": 1 },
+        { "name": "purity", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "abi.effect-proposal",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/abi/effect-proposal-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "admitted", "introduced_release": 1 },
+        { "name": "arguments", "introduced_release": 1 },
+        { "name": "id", "introduced_release": 1 },
+        { "name": "tool", "introduced_release": 1 },
+        { "name": "tool_use_id", "introduced_release": 1 },
+        { "name": "workspace", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "abi.artifact-ref",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [{ "path": "governance/schema-compat/fixtures/abi/artifact-ref-v1.json", "format": "json", "schema_version": 1 }],
+      "fields": [
+        { "name": "hash", "introduced_release": 1 },
+        { "name": "locator", "introduced_release": 1 },
+        { "name": "permissions", "introduced_release": 1 },
+        { "name": "producer", "introduced_release": 1 },
+        { "name": "provenance", "introduced_release": 1 },
+        { "name": "schema", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
     }
   ]
 }

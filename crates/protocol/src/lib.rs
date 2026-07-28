@@ -12,7 +12,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod artifact;
 pub mod capability_set;
+pub mod context;
 pub mod diff;
 pub mod effect;
 pub mod event;
@@ -232,7 +234,8 @@ pub enum OrchestrationMode {
 /// The bounded-loop ceilings (invariant #1: everything has a declared ceiling).
 /// A run that hits any of these stops deterministically at a turn-atomic safe-point
 /// (ADR-008 budget hard-stop), never mid-effect.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// No `Eq`: `max_usd` is an f64. `PartialEq` is what `TaskEnvelope` needs to derive its own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Budget {
     pub max_turns: u32,
     /// Optional operator-requested USD ceiling. `None` is honest absence of a monetary guarantee;

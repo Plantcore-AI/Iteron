@@ -173,6 +173,34 @@ fn a_candidate_naming_no_admissible_base_model_is_refused_before_any_promotion_d
 }
 
 #[test]
+fn a_manifest_migrated_from_schema_2_loads_and_is_permanently_unpromotable() {
+    // The test above hand-builds the sentinel, which proves the refusal but not that anything
+    // reaches it. This one walks the path an operator actually walks - a document written under
+    // schema 2, off disk, through the loader and its migration, into the verifier - because the
+    // consequence the other workstreams have to plan around is not "a sentinel is refused" but
+    // "every manifest you already hold is now unpromotable until it is re-minted against a named
+    // base model". That is a deliberate cost of schema 3, so it is asserted rather than discovered.
+    let migrated =
+        PolicyManifest::load_json(include_bytes!("../tests/fixtures/policy-manifest-v2.json"))
+            .unwrap();
+    assert!(
+        migrated.validate().is_ok(),
+        "a migrated document must keep loading; refusing to read it would strand it"
+    );
+    assert!(
+        migrated.base_model.is_unspecified(),
+        "schema 2 recorded no base model, so the migration mints the sentinel rather than guessing"
+    );
+
+    let verifier = verifier();
+    let evaluation = evaluation("held-out-migrated");
+    assert!(matches!(
+        verifier.verify_candidate_inputs(&migrated, br#"{"rule":"legacy"}"#, None, &evaluation),
+        Err(VerifierError::InadmissibleBaseModel)
+    ));
+}
+
+#[test]
 fn d14_09_g1_recomputes_artifact_dataset_and_evaluation_digests() {
     let verifier = verifier();
     let signed = vec![signed("train-1", json!({"route":"safe"}))];

@@ -68,6 +68,42 @@ pub(crate) fn validate_against_base(root: &Path, base: &str) -> Result<()> {
     compare_contracts(root, base, &previous, &candidate, HistoryBase::Provisional)
 }
 
+/// True when a shape the trusted base already published has moved.
+///
+/// `PROTOCOL_VERSION` stamps the transport and the generation of contracts pinned to it
+/// (docs/spec/abi.md §4.3(a) and (c)). §4.3(b) rules 2 and 3 make exactly two evolutions
+/// byte-identical on the line: a brand-new top-level tag, and an appended `Option` field carrying
+/// `skip_serializing_if`. Neither may oblige a bump, or the hard version-skew refusal in `wire.rs`
+/// would fire between peers that write identical bytes. Everything else moves a published shape,
+/// including any later change to the five `abi.*` contracts, which are published from the freeze on.
+pub(crate) fn wire_line_format_changed(root: &Path, base: &str) -> Result<bool> {
+    let Some(base_bytes) = git_object(root, base, CONTRACT_PATH, MAX_CONTRACT_BYTES)? else {
+        return Ok(true);
+    };
+    let previous = parse_contract(&base_bytes, "base schema-compatibility contract")?;
+    let candidate = load_candidate(root)?;
+    Ok(line_format_moved(&previous, &candidate))
+}
+
+fn line_format_moved(previous: &Contract, candidate: &Contract) -> bool {
+    let current: BTreeMap<&str, &Surface> = candidate
+        .surfaces
+        .iter()
+        .map(|surface| (surface.id.as_str(), surface))
+        .collect();
+    previous.surfaces.iter().any(|old| {
+        let Some(new) = current.get(old.id.as_str()) else {
+            return true;
+        };
+        old.current_version != new.current_version
+            || old.version_field != new.version_field
+            || old.selector != new.selector
+            || old.fixtures != new.fixtures
+            || old.compatibility_shims != new.compatibility_shims
+            || !old.fields.iter().all(|field| new.fields.contains(field))
+    })
+}
+
 pub(crate) fn validate_bootstrap_release(root: &Path) -> Result<()> {
     let candidate = load_candidate(root)?;
     validate_candidate(root, &candidate)?;

@@ -210,11 +210,9 @@ pub fn check_base(root: &Path, registry: &Registry, base: &str) -> Result<()> {
 
 fn validate_candidate_against_base(root: &Path, registry: &Registry, base: &str) -> Result<Impact> {
     let impact = calculate_impact(root, registry, base)?;
-    validate_protocol_version_bump(
-        root,
-        base,
-        impact.boundaries.contains_key("protocol-compat"),
-    )?;
+    let wire_changed = impact.boundaries.contains_key("protocol-compat")
+        && crate::schema_compat::wire_line_format_changed(root, base)?;
+    validate_protocol_version_bump(root, base, wire_changed)?;
     crate::schema_compat::validate_against_base(root, base)?;
     Ok(impact)
 }

@@ -21,6 +21,18 @@
 //! below it, so an egress ceiling silently admits code execution. A proposal therefore carries a
 //! [`CapabilitySet`]; [`EffectProposal::from_event_fields`] lifts the legacy single class into a
 //! one-element set, which is exactly what the old value meant and nothing more.
+//!
+//! # Why `tool_use_id` and `tool` print even when empty
+//!
+//! Both carry `#[serde(default)]` and deliberately no `skip_serializing_if`. The freeze reserves
+//! that attribute for fields *appended after* it, where absent and default genuinely have to be
+//! indistinguishable (`crate::artifact` states the same rule for the same reason, and `abi.md`
+//! §4.3(b) scopes it to appended `Option` fields). These two are part of the original shape, and
+//! erasing them is not free: the kernel's back-compat branch recognises the first experimental WAL
+//! format by `tool_use_id.is_empty()`, so a wire form where the field can be *missing* rather than
+//! empty gives that branch a third state to guess at. The durable seed already prints both
+//! unconditionally (`EventKind::EffectIntent`, `crate::event`); the struct that claims lossless
+//! conversion with it has to as well.
 
 use crate::capability_set::CapabilitySet;
 use crate::event::EventKind;
@@ -31,6 +43,11 @@ use serde_json::Value;
 
 /// Upper bound on the workspace path carried with a proposal.
 pub const MAX_EFFECT_WORKSPACE_BYTES: usize = 4_096;
+
+/// Upper bound on the serialised argument projection. Deliberately the same value as
+/// `core_kernel::effects::MAX_TOOL_ARGUMENT_BYTES` (crates/kernel/src/effects.rs), which already
+/// bounds these bytes at admission; the two MUST NOT diverge.
+pub const MAX_EFFECT_ARGUMENTS_BYTES: usize = 1_048_576;
 
 /// One effect an executor proposes to perform, as admitted by the boundary.
 ///
@@ -47,10 +64,10 @@ pub struct EffectProposal {
     /// See [`EffectProposal::validate`] - an earlier draft of this field documented empty as
     /// legitimate for "effect classes that have no model tool-use behind them", which would have
     /// handed a live meaning to a value the WAL already uses for something else.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(default)]
     pub tool_use_id: String,
     /// The registry tool name. Empty for effect classes that are not registry tool calls.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(default)]
     pub tool: String,
     /// The authority this proposal was admitted under. A set, never a point on an order.
     pub admitted: CapabilitySet,
@@ -119,8 +136,22 @@ impl EffectProposal {
         if self.workspace.is_empty() || self.workspace.len() > MAX_EFFECT_WORKSPACE_BYTES {
             return Err("effect workspace must be 1..=4096 bytes");
         }
+        if serde_json::to_vec(&self.arguments)
+            .map(|bytes| bytes.len())
+            .unwrap_or(usize::MAX)
+            > MAX_EFFECT_ARGUMENTS_BYTES
+        {
+            return Err("effect arguments projection exceeds its declared bound");
+        }
         if self.admitted.is_empty() {
             return Err("an effect proposal must carry at least one admitted capability");
+        }
+        if self.admitted.iter().count() > 1 {
+            return Err(
+                "the durable EffectIntent carries a single `capability`, so a proposal admitting \
+                 more than one class cannot be recorded; widening needs a new top-level event tag \
+                 first (abi.md 4.3(b)2, issue #16)",
+            );
         }
         Ok(())
     }
@@ -131,6 +162,10 @@ impl EffectProposal {
     /// to record) or when it holds more than one class, which the current durable shape cannot
     /// express. A caller that hits `None` must NOT silently pick one; the durable format has to
     /// grow first. Refusing here is what keeps the WAL honest.
+    ///
+    /// [`EffectProposal::validate`] now refuses a multi-class admission outright, so for anything
+    /// that passed it the second arm is unreachable. It stays as defence in depth for values that
+    /// never went through the mint-time gate — a decoded record, or a set widened after validation.
     pub fn to_event_capability(&self) -> Option<Capability> {
         let mut present = self.admitted.iter();
         match (present.next(), present.next()) {
@@ -164,12 +199,24 @@ impl EffectProposal {
 
 #[cfg(test)]
 mod tests {
-    use super::EffectProposal;
+    use super::{EffectProposal, MAX_EFFECT_ARGUMENTS_BYTES};
     use crate::capability_set::CapabilitySet;
     use crate::event::EventKind;
     use crate::ids::EffectId;
     use crate::tool::Capability;
-    use serde_json::json;
+    use serde_json::{Value, json};
+
+    /// Arguments whose serialised form is exactly `len` bytes. `{"text":"…"}` costs 11 bytes
+    /// around the payload; the assertion keeps that arithmetic from silently rotting.
+    fn arguments_of_serialised_len(len: usize) -> Value {
+        let value = json!({ "text": "a".repeat(len - 11) });
+        assert_eq!(
+            serde_json::to_vec(&value).expect("serialises").len(),
+            len,
+            "the test's own framing bytes moved"
+        );
+        value
+    }
 
     fn intent() -> EventKind {
         EventKind::EffectIntent {
@@ -262,6 +309,44 @@ mod tests {
             None,
             "silently narrowing a two-class admission to one would forge the audit record"
         );
+
+        // Refusing only at conversion time left the contradiction live: `validate()` called such a
+        // proposal safe to mint, and the record it authorised could not be written.
+        let refused = proposal
+            .validate()
+            .expect_err("a proposal that cannot be recorded is not valid to mint");
+        assert!(
+            refused.contains("single `capability`"),
+            "the refusal must name the durable field that cannot hold two classes: {refused}"
+        );
+    }
+
+    #[test]
+    fn the_argument_projection_is_bounded_at_the_declared_ceiling() {
+        let mut proposal = EffectProposal::try_from_event(&intent()).expect("proposal");
+
+        proposal.arguments = arguments_of_serialised_len(MAX_EFFECT_ARGUMENTS_BYTES);
+        assert!(
+            proposal.validate().is_ok(),
+            "the bound is inclusive; a producer sending exactly it must keep working"
+        );
+
+        proposal.arguments = arguments_of_serialised_len(MAX_EFFECT_ARGUMENTS_BYTES + 1);
+        assert_eq!(
+            proposal.validate(),
+            Err("effect arguments projection exceeds its declared bound")
+        );
+
+        // Mint-time only: an oversized record already on disk still decodes.
+        let oversized = EventKind::EffectIntent {
+            id: EffectId("fx1-00000004-0001".into()),
+            tool_use_id: "toolu_2".into(),
+            tool: "write_file".into(),
+            capability: Capability::ReversibleLocal,
+            arguments: arguments_of_serialised_len(MAX_EFFECT_ARGUMENTS_BYTES + 1),
+            workspace: "/repo".into(),
+        };
+        assert!(EffectProposal::try_from_event(&oversized).is_some());
     }
 
     #[test]
