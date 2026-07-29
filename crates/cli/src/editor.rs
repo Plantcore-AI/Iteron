@@ -9,6 +9,9 @@
 //! (Ctrl-A/Ctrl-E), word-left/right, Ctrl-W (delete word), Ctrl-U (kill to start), Ctrl-K (kill to
 //! end), multi-line newline insertion, and ↑/↓ input history with a stash of the in-progress line.
 
+use crate::image_input::{ImageAttachment, ImageAttachments, ImageInputError};
+use std::path::Path;
+
 /// A cleared draft is a convenience, not another unbounded transcript. Count source UTF-8 bytes
 /// so the retained allocation has a hard, portable ceiling while the editor remains char-based.
 const MAX_RECOVERABLE_DRAFT_BYTES: usize = 64 * 1024;
@@ -42,6 +45,9 @@ pub struct Editor {
     /// The most recent explicitly recoverable clear. Independent from history's live-line stash;
     /// bounded so repeated clears cannot accumulate an unbounded side buffer.
     recently_cleared: Option<String>,
+    /// Bounded, already-sniffed image chips attached to the current draft. They are deliberately
+    /// not copied into text history or the recoverable-text slot.
+    attachments: ImageAttachments,
 }
 
 impl Editor {
@@ -61,6 +67,34 @@ impl Editor {
 
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
+    }
+
+    pub fn has_submission(&self) -> bool {
+        !self.buf.is_empty() || !self.attachments.is_empty()
+    }
+
+    pub fn attachments(&self) -> &ImageAttachments {
+        &self.attachments
+    }
+
+    pub fn attach_image_path(&mut self, path: &Path) -> Result<&ImageAttachment, ImageInputError> {
+        self.attachments.attach_path(path)
+    }
+
+    pub fn attach_image_bytes(
+        &mut self,
+        display_label: &str,
+        bytes: &[u8],
+    ) -> Result<&ImageAttachment, ImageInputError> {
+        self.attachments.attach_bytes(display_label, bytes)
+    }
+
+    pub fn remove_last_attachment(&mut self) -> bool {
+        self.attachments
+            .len()
+            .checked_sub(1)
+            .and_then(|index| self.attachments.remove(index))
+            .is_some()
     }
 
     /// Cursor position as a (row, col) within the possibly multi-line buffer — for rendering.
@@ -159,6 +193,17 @@ impl Editor {
         self.cursor = self.buf.len();
     }
 
+    /// Place the cursor at an explicit character boundary.
+    ///
+    /// Mouse hit-testing lives in the terminal adapter, which converts a screen cell back into a
+    /// character index before calling this method. Clamp here as the final invariant so a stale
+    /// layout (for example, a resize arriving beside a click) can never manufacture an invalid
+    /// slice boundary.
+    pub fn set_cursor(&mut self, char_index: usize) {
+        self.cursor = char_index.min(self.buf.len());
+        self.hist_pos = None;
+    }
+
     /// A "word" char for word-motion: alphanumeric or `_`. Punctuation is a boundary (standard
     /// readline) so Alt-B/Alt-F/Ctrl-W stop at `.`/`/`/`-` etc. rather than swallowing them.
     fn is_word(c: char) -> bool {
@@ -242,6 +287,7 @@ impl Editor {
         self.cursor = 0;
         self.hist_pos = None;
         self.stash = None;
+        self.attachments.clear();
     }
 
     /// Clear the input (e.g. /clear or Ctrl-C on an empty-ish line) without touching history.
@@ -358,6 +404,28 @@ mod tests {
     }
 
     #[test]
+    fn explicit_cursor_placement_clamps_and_leaves_history_browsing() {
+        let mut e = ed("abc");
+        e.set_cursor(1);
+        e.insert('X');
+        assert_eq!(e.text(), "aXbc");
+        e.set_cursor(usize::MAX);
+        assert_eq!(e.cursor(), e.text().chars().count());
+
+        e.take_submit();
+        e.insert_str("draft");
+        e.history_prev();
+        e.set_cursor(0);
+        e.insert('!');
+        e.history_prev();
+        assert_eq!(
+            e.text(),
+            "aXbc",
+            "editing after a mouse-style placement exits history browsing"
+        );
+    }
+
+    #[test]
     fn home_end_and_word_moves() {
         let mut e = ed("the quick brown");
         e.home();
@@ -398,6 +466,37 @@ mod tests {
         e.right(); // cursor after 'é'
         e.insert('X');
         assert_eq!(e.text(), "héXllo");
+    }
+
+    #[test]
+    fn attachment_chips_are_bounded_draft_state_not_text_history() {
+        let mut editor = ed("describe");
+        editor
+            .attach_image_bytes(
+                "clipboard",
+                b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;",
+            )
+            .unwrap();
+        assert!(editor.has_submission());
+        assert_eq!(editor.attachments().len(), 1);
+        assert_eq!(editor.text(), "describe");
+
+        assert!(editor.remove_last_attachment());
+        assert!(editor.attachments().is_empty());
+        editor
+            .attach_image_bytes(
+                "clipboard",
+                b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;",
+            )
+            .unwrap();
+        assert_eq!(editor.take_submit(), "describe");
+        assert!(
+            editor.attachments().is_empty(),
+            "a submitted attachment cannot leak into the next draft"
+        );
+        editor.history_prev();
+        assert_eq!(editor.text(), "describe");
+        assert!(editor.attachments().is_empty());
     }
 
     #[test]

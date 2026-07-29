@@ -39,6 +39,24 @@
       "compatibility_shims": []
     },
     {
+      "id": "protocol.op.user-input-v2",
+      "current_version": 1,
+      "version_field": null,
+      "selector": { "field": "op", "value": "user_input_v2" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-user-input-v2-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "op", "introduced_release": 1 },
+        { "name": "segments", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
       "id": "protocol.op.approval-response",
       "current_version": 1,
       "version_field": null,
@@ -299,6 +317,27 @@
       ],
       "fields": [
         { "name": "delta", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.input-attachment",
+      "current_version": 5,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "input_attachment" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/input_attachment_stream_v5.jsonl",
+          "format": "jsonl",
+          "schema_version": 5
+        }
+      ],
+      "fields": [
+        { "name": "encoded_bytes", "introduced_release": 1 },
+        { "name": "media_type", "introduced_release": 1 },
+        { "name": "ordinal", "introduced_release": 1 },
         { "name": "schema_version", "introduced_release": 1 },
         { "name": "type", "introduced_release": 1 }
       ],
@@ -2162,6 +2201,23 @@
         { "name": "sub_run", "introduced_release": 1 },
         { "name": "task_id", "introduced_release": 1 },
         { "name": "workflow_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.image-content",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/protocol/image-content-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "data", "introduced_release": 1 },
+        { "name": "media_type", "introduced_release": 1 }
       ],
       "compatibility_shims": []
     },

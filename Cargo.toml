@@ -59,6 +59,13 @@ regex = "1"
 ratatui = "0.29"
 crossterm = "0.28"
 getrandom = "0.4"
+base64 = "0.22"
+# Raster decoders are admitted only for bounded frontend validation. Keep encoder,
+# SIMD, and unrelated image-processing features out of the CLI dependency graph.
+png = { version = "0.18", default-features = false }
+gif = { version = "0.14", default-features = false, features = ["std"] }
+image-webp = { version = "0.2", default-features = false }
+zune-jpeg = { version = "0.5", default-features = false, features = ["std"] }
 
 [profile.release]
 lto = "thin"

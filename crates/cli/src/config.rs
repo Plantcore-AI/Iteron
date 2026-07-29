@@ -45,8 +45,8 @@ pub struct FileConfig {
     /// Bounded provider retry policy. It is parsed for both origins so typos fail loudly, but the
     /// composition root accepts values only from trusted operator layers.
     pub retry: Option<RetryConfig>,
-    /// Out-of-band terminal bells for completed provider turns and approval requests. This
-    /// presentation preference is consumed only from operator-owned user configuration.
+    /// Bounded out-of-band attention notifications for completed runs, approval requests, and
+    /// long-idle periods. This preference is consumed only from operator-owned user configuration.
     pub completion_notifications: Option<bool>,
     /// Session effort. The shared schema accepts it for trusted user config; a repository value is
     /// deliberately ignored because effort changes cost and orchestration authority.

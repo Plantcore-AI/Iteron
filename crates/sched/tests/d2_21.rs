@@ -30,6 +30,7 @@ fn req() -> TurnRequest {
         model: "m".into(),
         system: "s".into(),
         messages: vec![],
+        input_images: Vec::new(),
         tools: vec![],
         max_tokens: 10,
         cache_system: false,

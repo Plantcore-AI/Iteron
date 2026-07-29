@@ -1,7 +1,7 @@
 use core_protocol::{
     Block, Budget, CostAttribution, CostProjection, CostProjectionIdentity,
-    DurableEnvironmentContext, DurableInstructionContext, Event, EventKind, Message,
-    PermissionRules, PricingRoute, ProviderState, RateCard, SignedRateCard, TokenRateCard,
+    DurableEnvironmentContext, DurableInstructionContext, Event, EventKind, ImageContent, Message,
+    Op, PermissionRules, PricingRoute, ProviderState, RateCard, SignedRateCard, TokenRateCard,
     ToolResult, ToolUse, Usage, WorkflowCostEvidence, WorkflowEvent, WorkflowMetrics,
     WorkflowTaskEvidence,
 };
@@ -74,12 +74,13 @@ const WORKFLOW_EVENT_TAGS: [&str; 7] = [
 
 const COST_ATTRIBUTION_TAGS: [&str; 2] = ["direct_subagent", "workflow_child"];
 
-const NAMED_SURFACE_IDS: [&str; 18] = [
+const NAMED_SURFACE_IDS: [&str; 19] = [
     "record.named.budget",
     "record.named.cost-projection",
     "record.named.cost-projection-identity",
     "record.named.durable-environment-context",
     "record.named.durable-instruction-context",
+    "record.named.image-content",
     "record.named.message",
     "record.named.permission-rules",
     "record.named.pricing-route",
@@ -511,16 +512,19 @@ fn assert_named_surface_corpus(
     let expected = NAMED_SURFACE_IDS.iter().copied().collect::<BTreeSet<_>>();
     assert_eq!(
         declared, expected,
-        "record.named surface inventory must equal the reachable exported named-object closure"
+        "record.named surface inventory must equal the exported named-object closure"
     );
     assert_eq!(
         reachable.keys().copied().collect::<BTreeSet<_>>(),
         expected,
-        "typed EventKind traversal must reach every declared named-object type, and no undeclared type"
+        "typed Op/EventKind traversal must reach every declared named-object type, and no undeclared type"
     );
 
     for surface in surfaces {
         let direct = match surface.id.as_str() {
+            "record.named.image-content" => {
+                typed_named_fixture_wires::<ImageContent>(root, surface)
+            }
             "record.named.message" => typed_named_fixture_wires::<Message>(root, surface),
             "record.named.provider-state" => {
                 typed_named_fixture_wires::<ProviderState>(root, surface)
@@ -565,13 +569,13 @@ fn assert_named_surface_corpus(
             }
             unknown => panic!("named surface `{unknown}` lacks a typed dispatch"),
         };
-        let reachable = reachable
-            .get(surface.id.as_str())
-            .unwrap_or_else(|| panic!("{} is absent from typed EventKind traversal", surface.id));
+        let reachable = reachable.get(surface.id.as_str()).unwrap_or_else(|| {
+            panic!("{} is absent from typed Op/EventKind traversal", surface.id)
+        });
         for wire in direct {
             assert!(
                 reachable.contains(&wire),
-                "direct fixture for {} is not an exact canonical value reachable from typed EventKind: {wire}",
+                "direct fixture for {} is not an exact canonical value reachable from typed Op/EventKind: {wire}",
                 surface.id
             );
         }
@@ -905,6 +909,26 @@ fn record_blocks(
     }
 }
 
+fn record_op_named_values(op: &Op, named: &mut NamedWires) {
+    match op {
+        Op::UserInputV2 { segments } => {
+            for image in segments.images() {
+                record_named(named, "record.named.image-content", image);
+            }
+        }
+        Op::UserInput { text: _ }
+        | Op::ApprovalResponse {
+            id: _,
+            approved: _,
+            remember: _,
+        }
+        | Op::Steer { text: _ }
+        | Op::Interrupt
+        | Op::Drain
+        | Op::Unknown => {}
+    }
+}
+
 fn workflow_event_tag(event: &WorkflowEvent) -> &'static str {
     match event {
         WorkflowEvent::Started { name: _, class: _ } => "started",
@@ -1089,6 +1113,34 @@ fn d13_14_event_schema_corpora_are_exact_exhaustive_and_replayable() {
     let mut nested_workflow_wires = BTreeSet::new();
     let mut nested_attribution_wires = BTreeSet::new();
     let mut named_wires = NamedWires::new();
+
+    for surface in contract
+        .surfaces
+        .iter()
+        .filter(|surface| surface.id.starts_with("protocol.op."))
+    {
+        let selector = surface
+            .selector
+            .as_ref()
+            .expect("every protocol.op surface has a selector");
+        assert_eq!(selector.field, "op", "{} selector field", surface.id);
+        for fixture in &surface.fixtures {
+            for (index, raw) in selected_fixture_values(&root, surface, fixture)
+                .into_iter()
+                .enumerate()
+            {
+                let label = format!(
+                    "{} fixture {} schema {} object {}",
+                    surface.id,
+                    fixture.path,
+                    fixture.schema_version,
+                    index + 1
+                );
+                let (op, _) = typed_stable::<Op>(&raw, surface, fixture, &label);
+                record_op_named_values(&op, &mut named_wires);
+            }
+        }
+    }
 
     for surface in kind_surfaces {
         let selector = surface

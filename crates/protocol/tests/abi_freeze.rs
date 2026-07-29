@@ -123,6 +123,10 @@ use core_protocol::context::{
 use core_protocol::effect::{
     EffectProposal, MAX_EFFECT_ARGUMENTS_BYTES, MAX_EFFECT_WORKSPACE_BYTES,
 };
+use core_protocol::input::{
+    ContentSegment, ContentSegments, ImageBase64, ImageContent, ImageMediaType,
+    MAX_IMAGE_BASE64_BYTES, MAX_INPUT_IMAGES, MAX_INPUT_SEGMENTS, MAX_TOTAL_IMAGE_BASE64_BYTES,
+};
 use core_protocol::intent::ToolIntent;
 use core_protocol::slot::{MAX_SLOT_ID_BYTES, SlotId, SlotObservation, SlotOutcome};
 use core_protocol::task::{
@@ -237,6 +241,28 @@ fn acceptance() -> Acceptance {
 fn task_input() -> TaskInput {
     TaskInput::Text {
         text: "fix the parser panic on empty input".into(),
+    }
+}
+
+fn content_segments() -> ContentSegments {
+    ContentSegments::new(vec![
+        ContentSegment::Text {
+            text: "describe the screenshot".into(),
+        },
+        ContentSegment::Image {
+            image: ImageContent {
+                media_type: ImageMediaType::Png,
+                data: ImageBase64::new("iVBORw0KGgo=").expect("canonical base64"),
+            },
+        },
+    ])
+    .expect("valid multimodal content")
+}
+
+fn image_content() -> ImageContent {
+    ImageContent {
+        media_type: ImageMediaType::Png,
+        data: ImageBase64::new("iVBORw0KGgo=").expect("canonical base64"),
     }
 }
 
@@ -412,6 +438,30 @@ fn frozen() -> Vec<Shape> {
         shape!(
             "TaskInput::Unknown", TaskInput, "crates/protocol/src/task.rs", TaskInput::Unknown,
             { "kind": String }
+        ),
+        shape!(
+            "TaskInput::ContentSegments", TaskInput, "crates/protocol/src/task.rs",
+            TaskInput::ContentSegments { segments: content_segments() },
+            { "kind": String, "segments": Array }
+        ),
+        shape!(
+            "ContentSegment::Text", ContentSegment, "crates/protocol/src/lib.rs",
+            ContentSegment::Text { text: "describe the screenshot".into() },
+            { "type": String, "text": String }
+        ),
+        shape!(
+            "ContentSegment::Image", ContentSegment, "crates/protocol/src/lib.rs",
+            ContentSegment::Image { image: image_content() },
+            { "type": String, "image": Object }
+        ),
+        shape!(
+            "ContentSegment::Unknown", ContentSegment, "crates/protocol/src/lib.rs",
+            ContentSegment::Unknown,
+            { "type": String }
+        ),
+        shape!(
+            "ImageContent", ImageContent, "crates/protocol/src/lib.rs", image_content(),
+            { "media_type": String, "data": String }
         ),
         shape!("Budget", Budget, "crates/protocol/src/lib.rs", budget(), {
             "max_turns": Number,
@@ -1281,9 +1331,21 @@ fn the_declared_ceilings_are_part_of_the_frozen_contract() {
     // bounds the wire: lowering one refuses a value an older producer legally sent, and raising
     // one lets a newer producer emit a value an older reader refuses. Both are wire changes, so
     // the snapshot pins them exactly rather than one-sidedly.
-    let pinned: [(&str, usize, usize); 17] = [
+    let pinned: [(&str, usize, usize); 21] = [
         ("PROTOCOL_VERSION", PROTOCOL_VERSION as usize, 1),
         ("MAX_TASK_TEXT_BYTES", MAX_TASK_TEXT_BYTES, 1_048_576),
+        ("MAX_INPUT_SEGMENTS", MAX_INPUT_SEGMENTS, 9),
+        ("MAX_INPUT_IMAGES", MAX_INPUT_IMAGES, 8),
+        (
+            "MAX_IMAGE_BASE64_BYTES",
+            MAX_IMAGE_BASE64_BYTES,
+            8 * 1024 * 1024,
+        ),
+        (
+            "MAX_TOTAL_IMAGE_BASE64_BYTES",
+            MAX_TOTAL_IMAGE_BASE64_BYTES,
+            32 * 1024 * 1024,
+        ),
         ("MAX_ACCEPTANCE_CHECKS", MAX_ACCEPTANCE_CHECKS, 256),
         ("MAX_SLOT_ID_BYTES", MAX_SLOT_ID_BYTES, 128),
         ("MAX_SELECTORS", MAX_SELECTORS, 32),

@@ -3260,6 +3260,7 @@ mod tests {
             model: selection.model_id,
             system: "stable prefix".into(),
             messages: Vec::new(),
+            input_images: Vec::new(),
             tools: Vec::new(),
             max_tokens: 1_024,
             cache_system: true,

@@ -31,6 +31,7 @@ pub mod trust;
 pub mod wire;
 
 pub mod home;
+pub mod input;
 pub mod text;
 
 pub use diff::{DiffLine, DiffTag, FileDiff, Hunk};
@@ -55,6 +56,62 @@ pub use tool::{Capability, Purity, ToolResult, ToolSpec, ToolUse};
 pub use trust::Trust;
 pub use wire::{EqEnvelope, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope};
 
+/// The image media types the neutral SQ contract admits.
+///
+/// SVG is intentionally absent: it is active document content rather than a raster image block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImageMediaType {
+    #[serde(rename = "image/png")]
+    Png,
+    #[serde(rename = "image/jpeg")]
+    Jpeg,
+    #[serde(rename = "image/gif")]
+    Gif,
+    #[serde(rename = "image/webp")]
+    Webp,
+}
+
+/// A bounded, canonical, padded RFC 4648 base64 payload.
+///
+/// The inner string is private so callers cannot construct an unchecked payload. Its `Debug`
+/// implementation is intentionally content-free: image bytes must not leak through diagnostics.
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct ImageBase64(String);
+
+/// One admitted raster image, still neutral with respect to model providers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageContent {
+    pub media_type: ImageMediaType,
+    pub data: ImageBase64,
+}
+
+/// One provider-neutral user-input segment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentSegment {
+    Text {
+        text: String,
+    },
+    Image {
+        image: ImageContent,
+    },
+    /// An unknown nested segment is safe to decode and inspect, but
+    /// [`input::ContentSegments::validate`] refuses to admit it. The foreign payload is discarded
+    /// by serde.
+    #[serde(other)]
+    Unknown,
+}
+
+/// A validated text-plus-image segment list.
+///
+/// The wrapper keeps the vector private and validates deserialized values immediately, so an
+/// `Op::UserInputV2` cannot carry an unchecked segment list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct ContentSegments(Vec<ContentSegment>);
+
 /// A submission on the SQ. The core consumes these; every frontend (CLI first) produces
 /// them. Approvals, interrupts, and steering are all submissions on the same queue, which
 /// preserves caller order for free — exactly what the ADR-006 determinism boundary needs.
@@ -63,6 +120,11 @@ pub use wire::{EqEnvelope, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope};
 pub enum Op {
     /// Start a turn from operator input.
     UserInput { text: String },
+    /// Start a turn from one text prompt plus bounded, provider-neutral image segments.
+    ///
+    /// This is a new top-level tag rather than a field added to `UserInput`, so readers predating
+    /// multimodal input degrade it to [`Op::Unknown`] without changing legacy text-only bytes.
+    UserInputV2 { segments: ContentSegments },
     /// Operator answer to an approval request (ADR-007 capability gate). `remember` = "always
     /// allow this capability for the session" (the `a` answer), which the kernel records as a
     /// session rule so the gate auto-approves the class thereafter.
@@ -306,6 +368,29 @@ pub enum Outcome {
 #[cfg(test)]
 mod op_tests {
     use super::{Op, SubmissionId};
+    use crate::input::{ContentSegment, ContentSegments, ImageContent, ImageMediaType};
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(tag = "op", rename_all = "snake_case")]
+    enum LegacyOp {
+        UserInput {
+            text: String,
+        },
+        ApprovalResponse {
+            id: SubmissionId,
+            approved: bool,
+            #[serde(default)]
+            remember: bool,
+        },
+        Steer {
+            text: String,
+        },
+        Interrupt,
+        Drain,
+        #[serde(other)]
+        Unknown,
+    }
 
     #[test]
     fn d1_01_g1_unknown_op_round_trips_as_an_opaque_typed_sentinel() {
@@ -354,6 +439,52 @@ mod op_tests {
         }))
         .unwrap();
         assert!(matches!(extended, Op::UserInput { text } if text == "hello"));
+    }
+
+    #[test]
+    fn text_only_bytes_are_frozen_and_old_readers_drop_multimodal_payloads() {
+        let legacy = Op::UserInput {
+            text: "Retain every public SQ field.".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&legacy).unwrap(),
+            r#"{"op":"user_input","text":"Retain every public SQ field."}"#
+        );
+
+        let marker = "c2VjcmV0LWltYWdlLWJ5dGVz";
+        let multimodal = Op::UserInputV2 {
+            segments: ContentSegments::new(vec![
+                ContentSegment::Text {
+                    text: "describe".into(),
+                },
+                ContentSegment::Image {
+                    image: ImageContent::new(ImageMediaType::Png, marker).unwrap(),
+                },
+            ])
+            .unwrap(),
+        };
+        assert_eq!(
+            serde_json::to_value(&multimodal).unwrap(),
+            serde_json::json!({
+                "op": "user_input_v2",
+                "segments": [
+                    {"type": "text", "text": "describe"},
+                    {
+                        "type": "image",
+                        "image": {"media_type": "image/png", "data": marker}
+                    }
+                ]
+            })
+        );
+
+        let old: LegacyOp =
+            serde_json::from_value(serde_json::to_value(&multimodal).unwrap()).unwrap();
+        assert!(matches!(old, LegacyOp::Unknown));
+        assert!(!format!("{old:?}").contains(marker));
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            serde_json::json!({"op": "unknown"})
+        );
     }
 }
 

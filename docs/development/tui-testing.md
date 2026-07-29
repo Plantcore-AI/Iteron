@@ -8,8 +8,12 @@ distinction between prompts, model output, tools, permissions, and status.
 
 - Reducer/state tests for every new interaction state.
 - Rendering tests across narrow, standard, and wide terminal widths.
+- Exact in-memory vt100 cell grids for Markdown tables/lists/fences, plus
+  delimiter-split streaming and resize convergence against the single-shot grid.
 - CJK, emoji, combining-mark, paste, and control-character coverage.
 - One-enter acceptance and deterministic focus for pickers and permissions.
+- Capable/incapable OSC 8 projections and single-writer notification prefix
+  repair/poison behavior at every short-write boundary.
 - Resize round trips without stale layout caches.
 - PTY evidence for raw mode, alternate screen, signal handling, and exact terminal
   restoration.

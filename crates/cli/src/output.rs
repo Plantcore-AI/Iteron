@@ -418,6 +418,52 @@ pub fn stream_event(event: UiEvent, turn: &mut u32) -> Value {
     }
 }
 
+/// Build the metadata-only record emitted immediately before a multimodal SQ submission.
+///
+/// Bounds are enforced by [`input_attachment_record`] before this producer is reached. Keeping
+/// the producer separate from [`stream_event`] avoids pretending that local input metadata is a
+/// kernel `UiEvent`.
+fn input_attachment_event(
+    ordinal: usize,
+    media_type: core_protocol::ImageMediaType,
+    encoded_bytes: usize,
+) -> Value {
+    json!({
+        "schema_version": SCHEMA_VERSION,
+        "type": "input_attachment",
+        "ordinal": ordinal,
+        "media_type": media_type.as_str(),
+        "encoded_bytes": encoded_bytes,
+    })
+}
+
+fn input_attachment_record(
+    format: OutputFormat,
+    ordinal: usize,
+    media_type: core_protocol::ImageMediaType,
+    encoded_bytes: usize,
+) -> io::Result<Option<Value>> {
+    if format != OutputFormat::StreamJson {
+        return Ok(None);
+    }
+    if ordinal == 0
+        || ordinal > core_protocol::input::MAX_INPUT_IMAGES
+        || encoded_bytes == 0
+        || encoded_bytes > core_protocol::input::MAX_IMAGE_BASE64_BYTES
+        || !encoded_bytes.is_multiple_of(4)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid bounded input attachment metadata",
+        ));
+    }
+    Ok(Some(input_attachment_event(
+        ordinal,
+        media_type,
+        encoded_bytes,
+    )))
+}
+
 /// Build the authoritative terminal object shared by `json` and `stream-json`.
 pub fn final_result(
     outcome: &Outcome,
@@ -511,6 +557,24 @@ impl Emitter {
         }
         if let Some(delta) = self.thinking_scrubber.finish() {
             self.write_stream_event(UiEvent::Thinking(delta))?;
+        }
+        Ok(())
+    }
+
+    /// Emit metadata for one validated input image before its SQ submission.
+    ///
+    /// `ordinal` is one-based. Human `text` and terminal-only `json` formats intentionally do
+    /// nothing, preserving their existing bytes. The API cannot receive image data or a path.
+    pub fn input_attachment(
+        &mut self,
+        ordinal: usize,
+        media_type: core_protocol::ImageMediaType,
+        encoded_bytes: usize,
+    ) -> io::Result<()> {
+        if let Some(value) =
+            input_attachment_record(self.format, ordinal, media_type, encoded_bytes)?
+        {
+            write_json_line(std::io::stdout().lock(), &value)?;
         }
         Ok(())
     }
@@ -922,6 +986,7 @@ mod tests {
 
         let mut turn = 0;
         let records = vec![
+            input_attachment_event(1, core_protocol::ImageMediaType::Png, 12),
             stream_event(UiEvent::Text("answer".into()), &mut turn),
             stream_event(UiEvent::Thinking("plan".into()), &mut turn),
             stream_event(
@@ -1100,8 +1165,9 @@ mod tests {
                 None,
             ),
         ];
-        let frozen = include_str!("../tests/golden/machine_stream_all_v5.jsonl")
+        let frozen = include_str!("../tests/golden/input_attachment_stream_v5.jsonl")
             .lines()
+            .chain(include_str!("../tests/golden/machine_stream_all_v5.jsonl").lines())
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
             .collect::<Vec<_>>();
@@ -1110,7 +1176,7 @@ mod tests {
             .iter()
             .map(|record| record["type"].as_str().unwrap())
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(kinds.len(), 18, "every machine stream type is frozen once");
+        assert_eq!(kinds.len(), 19, "every machine stream type is frozen once");
         let tool_end_diff = records
             .iter()
             .find(|record| record["type"] == "tool_end")
@@ -1246,5 +1312,98 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(lines.len(), 1);
         let parsed: Value = serde_json::from_slice(lines[0]).unwrap();
         assert_eq!(parsed["type"], "result");
+    }
+
+    #[test]
+    fn input_attachment_is_bounded_metadata_only_and_stream_json_only() {
+        let frozen: Value = serde_json::from_str(include_str!(
+            "../tests/golden/input_attachment_stream_v5.jsonl"
+        ))
+        .unwrap();
+        assert_eq!(
+            input_attachment_record(
+                OutputFormat::StreamJson,
+                1,
+                core_protocol::ImageMediaType::Png,
+                12,
+            )
+            .unwrap(),
+            Some(frozen.clone())
+        );
+        assert_eq!(frozen["schema_version"], SCHEMA_VERSION);
+        assert_eq!(frozen["type"], "input_attachment");
+        assert_eq!(frozen["ordinal"], 1);
+        assert_eq!(frozen["media_type"], "image/png");
+        assert_eq!(frozen["encoded_bytes"], 12);
+        assert_eq!(frozen.as_object().unwrap().len(), 5);
+        assert!(frozen.get("path").is_none());
+        assert!(frozen.get("data").is_none());
+
+        for format in [OutputFormat::Text, OutputFormat::Json] {
+            assert_eq!(
+                input_attachment_record(format, usize::MAX, core_protocol::ImageMediaType::Png, 1)
+                    .unwrap(),
+                None,
+                "{format:?} must retain its existing bytes"
+            );
+        }
+        for (ordinal, encoded_bytes) in [
+            (0, 4),
+            (core_protocol::input::MAX_INPUT_IMAGES + 1, 4),
+            (1, 0),
+            (1, 3),
+            (1, core_protocol::input::MAX_IMAGE_BASE64_BYTES + 4),
+        ] {
+            assert_eq!(
+                input_attachment_record(
+                    OutputFormat::StreamJson,
+                    ordinal,
+                    core_protocol::ImageMediaType::Png,
+                    encoded_bytes,
+                )
+                .unwrap_err()
+                .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_stream_reader_skips_v5_input_attachment_without_changing_v4_bytes() {
+        let legacy = include_bytes!("../tests/golden/one_shot_stream_json_success_v4.jsonl");
+        let attachment = include_bytes!("../tests/golden/input_attachment_stream_v5.jsonl");
+        let first_line_end = legacy
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .expect("legacy JSONL has a first line");
+        let mut interleaved = Vec::with_capacity(legacy.len() + attachment.len());
+        interleaved.extend_from_slice(&legacy[..first_line_end]);
+        interleaved.extend_from_slice(attachment);
+        interleaved.extend_from_slice(&legacy[first_line_end..]);
+
+        let known_legacy_types = legacy
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                serde_json::from_slice::<Value>(line).unwrap()["type"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(!known_legacy_types.contains("input_attachment"));
+
+        let mut retained = Vec::with_capacity(legacy.len());
+        for line in interleaved.split_inclusive(|byte| *byte == b'\n') {
+            let record: Value = serde_json::from_slice(line).unwrap();
+            if known_legacy_types.contains(record["type"].as_str().unwrap()) {
+                retained.extend_from_slice(line);
+            }
+        }
+        assert_eq!(
+            retained, legacy,
+            "an old unknown-tag-skipping reader must recover the frozen v4 stream byte-for-byte"
+        );
     }
 }

@@ -9,14 +9,23 @@ use crate::rust_source::{
     SerdeAuthority, enum_variant_names, require_serde_authority, require_serde_container_flag,
 };
 use anyhow::{Context, Result, bail};
+use quote::ToTokens;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 const PROVIDER_SOURCE: &str = "crates/provider/src/lib.rs";
+const OBS_SOURCE: &str = "crates/obs/src/lib.rs";
+const OBS_KERNEL_TAX_SIGNATURE: &str = "pub struct KernelTax {";
 const EFFORT_APPLICATION_SIGNATURE: &str = "pub enum EffortApplication {";
 const EVAL_CONTRACT_SOURCE: &str = "crates/eval/src/contract.rs";
+const EVAL_KERNEL_TAX_SIGNATURE: &str = "pub struct CliKernelTax {";
 const CLI_EFFORT_APPLICATION_SIGNATURE: &str = "enum CliEffortApplication {";
 const RUNTIME_SOURCE: &str = "crates/cli/src/runtime.rs";
+
+#[derive(Debug, PartialEq, Eq)]
+struct KernelTaxRustShape {
+    fields: BTreeMap<String, String>,
+}
 
 fn decimal_slice_constant(source: &[u8], name: &str, ty: &str) -> Result<Vec<u32>> {
     crate::rust_source::public_decimal_slice_const(source, name, ty)
@@ -100,6 +109,120 @@ fn cli_manifest_fixture_type_versions(contract: &Contract) -> Result<BTreeSet<(S
     Ok(pairs)
 }
 
+fn kernel_tax_rust_shape(
+    source: &str,
+    signature: &str,
+    struct_name: &str,
+    authority: SerdeAuthority,
+) -> Result<KernelTaxRustShape> {
+    require_serde_authority(source, signature, authority)?;
+    require_serde_container_flag(source, signature, "deny_unknown_fields")?;
+    let wire_fields = named_struct_fields(source, signature)?;
+    let file =
+        syn::parse_file(source).context("kernel-tax schema source does not parse as Rust")?;
+    let mut structs = file.items.iter().filter_map(|item| match item {
+        syn::Item::Struct(item) if item.ident == struct_name => Some(item),
+        _ => None,
+    });
+    let item = structs
+        .next()
+        .with_context(|| format!("kernel-tax schema source lacks `{struct_name}`"))?;
+    if structs.next().is_some() {
+        bail!("kernel-tax schema source repeats `{struct_name}`");
+    }
+
+    let mut deny_unknown_fields = 0usize;
+    for attribute in item
+        .attrs
+        .iter()
+        .filter(|attribute| attribute.path().is_ident("serde"))
+    {
+        attribute.parse_nested_meta(|meta| {
+            if meta.path.is_ident("deny_unknown_fields") && meta.input.is_empty() {
+                deny_unknown_fields = deny_unknown_fields.saturating_add(1);
+                Ok(())
+            } else {
+                Err(meta.error("kernel-tax container allows only `deny_unknown_fields`"))
+            }
+        })?;
+    }
+    if deny_unknown_fields != 1 {
+        bail!("kernel-tax schema `{struct_name}` must have exactly one `deny_unknown_fields` flag");
+    }
+
+    let syn::Fields::Named(named) = &item.fields else {
+        bail!("kernel-tax schema `{struct_name}` must remain a named struct");
+    };
+    let mut fields = BTreeMap::new();
+    for field in &named.named {
+        if !matches!(field.vis, syn::Visibility::Public(_)) {
+            bail!("kernel-tax schema `{struct_name}` fields must remain public");
+        }
+        if field
+            .attrs
+            .iter()
+            .any(|attribute| attribute.path().is_ident("serde"))
+        {
+            bail!("kernel-tax schema `{struct_name}` fields cannot transform serde semantics");
+        }
+        let name = field
+            .ident
+            .as_ref()
+            .context("kernel-tax named struct contains an unnamed field")?
+            .to_string();
+        if fields
+            .insert(name.clone(), field.ty.to_token_stream().to_string())
+            .is_some()
+        {
+            bail!("kernel-tax schema `{struct_name}` repeats field `{name}`");
+        }
+    }
+    if fields.keys().cloned().collect::<BTreeSet<_>>() != wire_fields {
+        bail!("kernel-tax schema `{struct_name}` Rust and serde field names differ");
+    }
+    Ok(KernelTaxRustShape { fields })
+}
+
+fn validate_kernel_tax_bindings(
+    obs_text: &str,
+    eval_text: &str,
+    golden_fields: Option<&BTreeSet<String>>,
+) -> Result<()> {
+    let producer = kernel_tax_rust_shape(
+        obs_text,
+        OBS_KERNEL_TAX_SIGNATURE,
+        "KernelTax",
+        SerdeAuthority::Both,
+    )?;
+    let consumer = kernel_tax_rust_shape(
+        eval_text,
+        EVAL_KERNEL_TAX_SIGNATURE,
+        "CliKernelTax",
+        SerdeAuthority::Deserialize,
+    )?;
+    if producer != consumer {
+        bail!(
+            "kernel-tax Rust fields/types differ between core_obs producer {:?} and strict eval consumer {:?}",
+            producer.fields,
+            consumer.fields
+        );
+    }
+    for (field, ty) in &producer.fields {
+        if ty != "u64" {
+            bail!("kernel-tax producer/consumer field `{field}` must remain u64, found `{ty}`");
+        }
+    }
+    if let Some(golden_fields) = golden_fields
+        && producer.fields.keys().cloned().collect::<BTreeSet<_>>() != *golden_fields
+    {
+        bail!(
+            "kernel-tax Rust fields differ from canonical current result fixtures: Rust {:?}, fixtures {golden_fields:?}",
+            producer.fields.keys().collect::<BTreeSet<_>>()
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn validate_cli_source_bindings(
     root: &Path,
     contract: &Contract,
@@ -167,6 +290,11 @@ pub(super) fn validate_cli_source_bindings(
             "CLI final-result producer shape differs from strict eval consumer: producer {producer_result:?}, eval {eval_result:?}"
         );
     }
+    let obs_source = read_bounded(root, OBS_SOURCE, MAX_SOURCE_BYTES)?;
+    let obs_text = std::str::from_utf8(&obs_source)
+        .with_context(|| format!("schema source '{OBS_SOURCE}' is not UTF-8"))?;
+    let golden_kernel_tax = super::super::current_cli_result_kernel_tax_fields(root, contract)?;
+    validate_kernel_tax_bindings(obs_text, eval_text, golden_kernel_tax.as_ref())?;
 
     let provider_source = read_bounded(root, PROVIDER_SOURCE, MAX_SOURCE_BYTES)?;
     let provider_source_text = std::str::from_utf8(&provider_source)
@@ -264,6 +392,151 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::path::Path;
+
+    #[test]
+    fn current_cli_machine_result_manifest_field_rename_fails_canonical_source_bound_gate() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask is directly below the repository root");
+        let contract = load_candidate(root).unwrap();
+        let current_results =
+            super::super::super::current_cli_result_values(root, &contract).unwrap();
+        let canonical_result = &current_results
+            .first()
+            .expect("canonical manifest has current result fixtures")
+            .1;
+        let snapshot = crate::schema_compat::validate_current(root).unwrap();
+        snapshot.validate(canonical_result).unwrap();
+
+        let mut open_kernel_tax = canonical_result.clone();
+        open_kernel_tax["kernel_tax"]["unexpected"] = serde_json::Value::from(0);
+        assert!(
+            snapshot.validate(&open_kernel_tax).is_err(),
+            "the canonical result validator must reject an open nested kernel_tax shape"
+        );
+
+        let mut renamed_contract = contract;
+        let result = renamed_contract
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.id == "cli.machine-result")
+            .expect("canonical manifest declares cli.machine-result");
+        let field = result
+            .fields
+            .iter_mut()
+            .find(|field| field.name == "assistant_text")
+            .expect("current result shape contains assistant_text");
+        field.name = "assistant_message".into();
+
+        let error = super::super::validate(root, &renamed_contract)
+            .expect_err("renaming a canonical result field must fail the Rust/source-bound gate")
+            .to_string();
+        assert!(
+            error.contains("CLI machine record shapes differ from the compatibility surfaces"),
+            "unexpected schema-gate error: {error}"
+        );
+    }
+
+    #[test]
+    fn kernel_tax_producer_u64_to_i64_drift_fails_canonical_schema_gate() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask is directly below the repository root");
+        let contract = load_candidate(root).unwrap();
+        let golden =
+            super::super::super::current_cli_result_kernel_tax_fields(root, &contract).unwrap();
+        let obs_source = read_bounded(root, OBS_SOURCE, MAX_SOURCE_BYTES).unwrap();
+        let obs_text = std::str::from_utf8(&obs_source).unwrap();
+        let eval_source = read_bounded(root, EVAL_CONTRACT_SOURCE, MAX_SOURCE_BYTES).unwrap();
+        let eval_text = std::str::from_utf8(&eval_source).unwrap();
+        validate_kernel_tax_bindings(obs_text, eval_text, golden.as_ref()).unwrap();
+
+        let drifted = obs_text.replacen(
+            "pub admission_latency_us: u64",
+            "pub admission_latency_us: i64",
+            1,
+        );
+        assert_ne!(drifted, obs_text, "the planted producer drift must apply");
+        let error = validate_kernel_tax_bindings(&drifted, eval_text, golden.as_ref())
+            .expect_err("u64-to-i64 producer drift must fail the canonical schema gate")
+            .to_string();
+        assert!(
+            error.contains("fields/types differ"),
+            "unexpected kernel-tax schema-gate error: {error}"
+        );
+    }
+
+    #[test]
+    fn current_cli_result_top_level_allows_only_declared_optional_omissions() {
+        let allowed = BTreeSet::from([
+            "kind".to_owned(),
+            "optional".to_owned(),
+            "version".to_owned(),
+        ]);
+        let required = BTreeSet::from(["kind".to_owned(), "version".to_owned()]);
+        let authority = super::super::super::CliResultTopLevelAuthority {
+            allowed_fields: &allowed,
+            required_fields: &required,
+            selector_field: "kind",
+            selector_value: "result",
+            version_field: "version",
+            current_version: 7,
+        };
+        let without_optional = serde_json::json!({"kind": "result", "version": 7});
+        super::super::super::validate_cli_result_top_level(
+            &without_optional,
+            "synthetic result",
+            &authority,
+        )
+        .unwrap();
+
+        let optional_kernel_tax_snapshot = crate::schema_compat::CurrentCliResultSnapshot {
+            available: true,
+            selector_field: "kind".to_owned(),
+            selector_value: "result".to_owned(),
+            version_field: "version".to_owned(),
+            current_version: 7,
+            allowed_fields: BTreeSet::from([
+                "kernel_tax".to_owned(),
+                "kind".to_owned(),
+                "version".to_owned(),
+            ]),
+            required_fields: required.clone(),
+            kernel_tax_fields: None,
+        };
+        optional_kernel_tax_snapshot
+            .validate(&without_optional)
+            .expect("an absent optional kernel_tax needs no nested shape");
+        assert!(
+            optional_kernel_tax_snapshot
+                .validate(&serde_json::json!({
+                    "kind": "result",
+                    "version": 7,
+                    "kernel_tax": {}
+                }))
+                .is_err(),
+            "a present kernel_tax cannot claim an ungrounded nested shape"
+        );
+
+        let with_unknown = serde_json::json!({"kind": "result", "version": 7, "unknown": true});
+        assert!(
+            super::super::super::validate_cli_result_top_level(
+                &with_unknown,
+                "synthetic result",
+                &authority,
+            )
+            .is_err()
+        );
+        let missing_required = serde_json::json!({"kind": "result"});
+        assert!(
+            super::super::super::validate_cli_result_top_level(
+                &missing_required,
+                "synthetic result",
+                &authority,
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn d13_14_effort_application_is_bound_across_all_four_sources() {

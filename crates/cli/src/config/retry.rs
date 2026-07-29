@@ -287,6 +287,7 @@ mod tests {
                 model: "fixture".into(),
                 system: "system".into(),
                 messages: Vec::new(),
+                input_images: Vec::new(),
                 tools: Vec::new(),
                 max_tokens: 16,
                 cache_system: false,

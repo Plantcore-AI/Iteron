@@ -14,6 +14,8 @@ use serde_json::Value;
 pub const SUPPORTED_CORE_CLI_SCHEMA_VERSIONS: &[u32] = &[3, 4, 5];
 /// Version currently emitted by `core --output-format json`.
 pub const CORE_CLI_SCHEMA_VERSION: u32 = 5;
+const MAX_CLI_INPUT_ATTACHMENTS: u8 = 8;
+const MAX_CLI_IMAGE_BASE64_BYTES: u64 = 8 * 1024 * 1024;
 /// Exact machine-record/version pairs admitted by the real evaluation consumer.
 pub const SUPPORTED_CORE_CLI_TYPE_VERSIONS: &[(&str, u32)] = &[
     ("approval_request", 4),
@@ -21,6 +23,7 @@ pub const SUPPORTED_CORE_CLI_TYPE_VERSIONS: &[(&str, u32)] = &[
     ("assistant_text", 3),
     ("assistant_text", 4),
     ("assistant_text", 5),
+    ("input_attachment", 5),
     ("notice", 4),
     ("notice", 5),
     ("phase", 3),
@@ -93,6 +96,7 @@ pub struct CliFinalResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CliMachineEventKind {
     AssistantText,
+    InputAttachment,
     Thinking,
     ToolStart,
     ToolEnd,
@@ -115,6 +119,7 @@ impl CliMachineEventKind {
     fn as_str(self) -> &'static str {
         match self {
             Self::AssistantText => "assistant_text",
+            Self::InputAttachment => "input_attachment",
             Self::Thinking => "thinking",
             Self::ToolStart => "tool_start",
             Self::ToolEnd => "tool_end",
@@ -154,6 +159,12 @@ enum CliStreamEvent {
     AssistantText {
         schema_version: u32,
         delta: String,
+    },
+    InputAttachment {
+        schema_version: u32,
+        ordinal: CliInputAttachmentOrdinal,
+        media_type: CliImageMediaType,
+        encoded_bytes: CliImageEncodedBytes,
     },
     Thinking {
         schema_version: u32,
@@ -303,11 +314,27 @@ enum CliDiffTag {
     Ctx,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+enum CliImageMediaType {
+    #[serde(rename = "image/png")]
+    Png,
+    #[serde(rename = "image/jpeg")]
+    Jpeg,
+    #[serde(rename = "image/gif")]
+    Gif,
+    #[serde(rename = "image/webp")]
+    Webp,
+}
+
 impl CliStreamEvent {
     fn schema_and_kind(&self) -> (u32, CliMachineEventKind) {
         match self {
             Self::AssistantText { schema_version, .. } => {
                 (*schema_version, CliMachineEventKind::AssistantText)
+            }
+            Self::InputAttachment { schema_version, .. } => {
+                (*schema_version, CliMachineEventKind::InputAttachment)
             }
             Self::Thinking { schema_version, .. } => {
                 (*schema_version, CliMachineEventKind::Thinking)
@@ -348,6 +375,47 @@ impl CliStreamEvent {
             }
             Self::RunDone { schema_version } => (*schema_version, CliMachineEventKind::RunDone),
         }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+struct CliInputAttachmentOrdinal(u8);
+
+impl<'de> Deserialize<'de> for CliInputAttachmentOrdinal {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let ordinal = u8::deserialize(deserializer)?;
+        if ordinal == 0 || ordinal > MAX_CLI_INPUT_ATTACHMENTS {
+            return Err(<D::Error as serde::de::Error>::custom(
+                "input attachment ordinal exceeds its frozen bound",
+            ));
+        }
+        Ok(Self(ordinal))
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+struct CliImageEncodedBytes(u64);
+
+impl<'de> Deserialize<'de> for CliImageEncodedBytes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let encoded_bytes = u64::deserialize(deserializer)?;
+        if encoded_bytes == 0
+            || encoded_bytes > MAX_CLI_IMAGE_BASE64_BYTES
+            || !encoded_bytes.is_multiple_of(4)
+        {
+            return Err(<D::Error as serde::de::Error>::custom(
+                "input attachment encoded size exceeds its frozen bound",
+            ));
+        }
+        Ok(Self(encoded_bytes))
     }
 }
 
@@ -627,6 +695,25 @@ mod tests {
                 kind: CliMachineEventKind::AssistantText,
             })
         ));
+        assert!(matches!(
+            parse_machine_record(
+                br#"{"encoded_bytes":12,"media_type":"image/png","ordinal":1,"schema_version":5,"type":"input_attachment"}"#
+            ),
+            Ok(CliMachineRecord::Event {
+                schema_version: 5,
+                kind: CliMachineEventKind::InputAttachment,
+            })
+        ));
+        for malformed in [
+            br#"{"encoded_bytes":12,"media_type":"image/png","ordinal":0,"schema_version":5,"type":"input_attachment"}"#.as_slice(),
+            br#"{"encoded_bytes":3,"media_type":"image/png","ordinal":1,"schema_version":5,"type":"input_attachment"}"#.as_slice(),
+            br#"{"encoded_bytes":12,"media_type":"image/svg+xml","ordinal":1,"schema_version":5,"type":"input_attachment"}"#.as_slice(),
+        ] {
+            assert!(
+                parse_machine_record(malformed).is_err(),
+                "invalid attachment metadata must fail closed"
+            );
+        }
     }
 
     #[test]
@@ -848,7 +935,7 @@ mod tests {
         );
         assert_eq!(
             observed_types.len(),
-            18,
+            19,
             "every stream/result type is decoded"
         );
     }

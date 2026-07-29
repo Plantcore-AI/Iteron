@@ -72,6 +72,10 @@ impl Provider for RetryProvider {
         }
     }
 
+    fn supports_image_input(&self) -> bool {
+        self.inner.supports_image_input()
+    }
+
     fn effort_application(&self, req: &TurnRequest) -> EffortApplication {
         self.inner.effort_application(req)
     }
@@ -268,6 +272,7 @@ mod tests {
                 model: "model".into(),
                 system: "system".into(),
                 messages: vec![],
+                input_images: Vec::new(),
                 tools: vec![],
                 max_tokens: 10,
                 cache_system: false,
@@ -354,6 +359,7 @@ mod tests {
                     model: format!("model-{turn}"),
                     system: "system".into(),
                     messages: vec![],
+                    input_images: Vec::new(),
                     tools: vec![],
                     max_tokens: 10,
                     cache_system: false,
@@ -412,6 +418,7 @@ mod tests {
             model: "m".into(),
             system: "s".into(),
             messages: vec![],
+            input_images: Vec::new(),
             tools: vec![],
             max_tokens: 10,
             cache_system: false,
@@ -446,6 +453,7 @@ mod tests {
             model: "m".into(),
             system: "s".into(),
             messages: vec![],
+            input_images: Vec::new(),
             tools: vec![],
             max_tokens: 10,
             cache_system: false,
@@ -480,6 +488,7 @@ mod tests {
             model: "m".into(),
             system: "s".into(),
             messages: vec![],
+            input_images: Vec::new(),
             tools: vec![],
             max_tokens: 10,
             cache_system: false,
@@ -554,6 +563,7 @@ mod tests {
                 model: "m".into(),
                 system: "s".into(),
                 messages: vec![],
+                input_images: Vec::new(),
                 tools: vec![],
                 max_tokens: 10,
                 cache_system: false,
@@ -625,6 +635,7 @@ mod tests {
             model: "m".into(),
             system: "s".into(),
             messages: vec![],
+            input_images: Vec::new(),
             tools: vec![],
             max_tokens: 10,
             cache_system: false,
@@ -702,6 +713,7 @@ mod tests {
             model: "m".into(),
             system: "s".into(),
             messages: vec![],
+            input_images: Vec::new(),
             tools: vec![],
             max_tokens: 10,
             cache_system: false,
@@ -723,6 +735,7 @@ mod tests {
             model: "m".into(),
             system: "s".into(),
             messages: vec![],
+            input_images: Vec::new(),
             tools: vec![],
             max_tokens: 10,
             cache_system: false,
@@ -785,6 +798,7 @@ mod tests {
             model: "m".into(),
             system: "s".into(),
             messages: vec![],
+            input_images: Vec::new(),
             tools: vec![],
             max_tokens: 10,
             cache_system: false,

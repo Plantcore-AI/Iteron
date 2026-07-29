@@ -1,8 +1,9 @@
-//! Terminal input demultiplexing for bounded OSC 11 background detection.
+//! Terminal input demultiplexing for bounded startup capability detection.
 //!
-//! Crossterm turns an unknown OSC response into ordinary key events. This adapter recognizes only
-//! the exact, bounded OSC 11 grammar, queues every unrelated event for normal TUI dispatch, and stays
-//! armed after a timeout so a late response cannot become synthetic operator input.
+//! Crossterm turns unknown terminal responses into ordinary key events. This adapter recognizes only
+//! the exact, bounded OSC 11 and keyboard-enhancement grammars, queues every unrelated event
+//! for normal TUI dispatch, and stays armed after a timeout so a late response cannot become
+//! synthetic operator input.
 
 use crate::theme::capabilities::{BackgroundTone, Environment, tone_from_osc11_body};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -14,14 +15,33 @@ const OSC11_TIMEOUT: Duration = Duration::from_millis(80);
 const MAX_OSC11_BODY_CHARS: usize = 48;
 const MAX_STARTUP_REPLAY_EVENTS: usize = 256;
 const CANDIDATE_TIMEOUT: Duration = Duration::from_millis(40);
+#[cfg(test)]
+const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
+#[cfg(test)]
+const KEYBOARD_QUERY_TIMEOUT: Duration = Duration::from_millis(200);
+const MAX_KEYBOARD_RESPONSE_CHARS: usize = 24;
+const MAX_KEYBOARD_RESPONSE_EVENTS: usize = 64;
 
 #[derive(Debug, Default)]
 pub(crate) struct TerminalInput {
     queued: VecDeque<Event>,
+    keyboard: KeyboardResponseDemux,
     osc11: Osc11Demux,
 }
 
 impl TerminalInput {
+    /// Probe progressive keyboard enhancement through the currently supported terminal backend.
+    pub(crate) fn supports_keyboard_enhancement(&mut self) -> bool {
+        #[cfg(unix)]
+        {
+            crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+
     /// Query only when automatic background selection is active. The write and reply wait share one
     /// deadline; normal events observed during the probe are replayed in exact event order.
     pub(crate) fn query_background(&mut self, environment: &Environment) -> Option<BackgroundTone> {
@@ -55,6 +75,7 @@ impl TerminalInput {
 
         let deadline = Instant::now() + timeout;
         loop {
+            self.expire_keyboard_candidate(Instant::now());
             self.osc11.expire(Instant::now(), &mut self.queued);
             if let Some(event) = self.queued.pop_front() {
                 return Ok(Some(event));
@@ -64,7 +85,9 @@ impl TerminalInput {
                 .checked_duration_since(Instant::now())
                 .unwrap_or_default();
             let wait = self.osc11.cap_wait(remaining, Instant::now());
+            let wait = self.keyboard.cap_wait(wait, Instant::now());
             if !event::poll(wait)? {
+                self.expire_keyboard_candidate(Instant::now());
                 self.osc11.expire(Instant::now(), &mut self.queued);
                 return Ok(self.queued.pop_front());
             }
@@ -73,14 +96,39 @@ impl TerminalInput {
             if let Some(event) = self.queued.pop_front() {
                 return Ok(Some(event));
             }
-            if Instant::now() >= deadline && !self.osc11.has_candidate() {
+            if Instant::now() >= deadline
+                && !self.keyboard.has_candidate()
+                && !self.osc11.has_candidate()
+            {
                 return Ok(None);
             }
         }
     }
 
     fn route(&mut self, event: Event) -> Option<BackgroundTone> {
-        self.osc11.route(event, &mut self.queued)
+        self.route_all(event).background
+    }
+
+    fn route_all(&mut self, event: Event) -> RoutedResponses {
+        let mut forwarded = VecDeque::new();
+        self.keyboard.expire(Instant::now(), &mut forwarded);
+        let keyboard = self.keyboard.route(event, &mut forwarded);
+        let mut background = None;
+        while let Some(event) = forwarded.pop_front() {
+            background = self.osc11.route(event, &mut self.queued).or(background);
+        }
+        RoutedResponses {
+            keyboard,
+            background,
+        }
+    }
+
+    fn expire_keyboard_candidate(&mut self, now: Instant) {
+        let mut forwarded = VecDeque::new();
+        self.keyboard.expire(now, &mut forwarded);
+        while let Some(event) = forwarded.pop_front() {
+            let _ = self.osc11.route(event, &mut self.queued);
+        }
     }
 
     fn begin_query(
@@ -93,6 +141,192 @@ impl TerminalInput {
         // that partial write can never become synthetic operator input.
         write(deadline).ok().map(|()| deadline)
     }
+
+    #[cfg(test)]
+    fn begin_keyboard_query(
+        &mut self,
+        write: impl FnOnce(Instant) -> std::io::Result<()>,
+    ) -> Option<Instant> {
+        self.keyboard.arm();
+        let deadline = Instant::now() + KEYBOARD_QUERY_TIMEOUT;
+        // A timeout or short write can still have emitted a query prefix. Keep the demux armed so
+        // every corresponding late response stays out of the operator input stream.
+        write(deadline).ok().map(|()| deadline)
+    }
+}
+
+#[derive(Debug, Default)]
+struct RoutedResponses {
+    #[cfg_attr(not(test), allow(dead_code))]
+    keyboard: Option<KeyboardResponse>,
+    background: Option<BackgroundTone>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyboardResponse {
+    Enhancement,
+    DeviceAttributes,
+}
+
+#[derive(Debug, Default)]
+struct KeyboardResponseDemux {
+    armed: bool,
+    candidate: Option<KeyboardCandidate>,
+}
+
+#[derive(Debug)]
+struct KeyboardCandidate {
+    started: Instant,
+    events: Vec<Event>,
+    text: String,
+}
+
+impl KeyboardResponseDemux {
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn arm(&mut self) {
+        self.armed = true;
+        self.candidate = None;
+    }
+
+    fn expire(&mut self, now: Instant, forwarded: &mut VecDeque<Event>) {
+        if self
+            .candidate
+            .as_ref()
+            .is_some_and(|candidate| now.duration_since(candidate.started) >= CANDIDATE_TIMEOUT)
+        {
+            self.replay_candidate(forwarded);
+        }
+    }
+
+    fn has_candidate(&self) -> bool {
+        self.candidate.is_some()
+    }
+
+    fn cap_wait(&self, requested: Duration, now: Instant) -> Duration {
+        self.candidate
+            .as_ref()
+            .and_then(|candidate| {
+                (candidate.started + CANDIDATE_TIMEOUT).checked_duration_since(now)
+            })
+            .map_or(requested, |candidate_wait| requested.min(candidate_wait))
+    }
+
+    fn route(&mut self, event: Event, forwarded: &mut VecDeque<Event>) -> Option<KeyboardResponse> {
+        if !self.armed {
+            forwarded.push_back(event);
+            return None;
+        }
+
+        let token = keyboard_response_token(&event);
+        if matches!(
+            token,
+            Some(KeyboardToken::Escape | KeyboardToken::EscapeBracket)
+        ) {
+            self.replay_candidate(forwarded);
+            self.candidate = Some(KeyboardCandidate {
+                started: Instant::now(),
+                events: vec![event],
+                text: match token {
+                    Some(KeyboardToken::Escape) => "\x1b".into(),
+                    Some(KeyboardToken::EscapeBracket) => "\x1b[".into(),
+                    _ => unreachable!("token matched above"),
+                },
+            });
+            return None;
+        }
+
+        let Some(candidate) = self.candidate.as_mut() else {
+            forwarded.push_back(event);
+            return None;
+        };
+        if is_key_release(&event) {
+            if candidate.events.len() >= MAX_KEYBOARD_RESPONSE_EVENTS {
+                self.replay_candidate(forwarded);
+                forwarded.push_back(event);
+            } else {
+                candidate.events.push(event);
+            }
+            return None;
+        }
+        let Some(KeyboardToken::Character(character)) = token else {
+            self.replay_candidate(forwarded);
+            forwarded.push_back(event);
+            return None;
+        };
+        candidate.events.push(event);
+        candidate.text.push(character);
+
+        const PREFIX: &str = "\x1b[?";
+        if candidate.events.len() > MAX_KEYBOARD_RESPONSE_EVENTS
+            || candidate.text.len() > PREFIX.len() + MAX_KEYBOARD_RESPONSE_CHARS
+            || (candidate.text.len() <= PREFIX.len() && !PREFIX.starts_with(&candidate.text))
+        {
+            self.replay_candidate(forwarded);
+            return None;
+        }
+        let body = candidate.text.strip_prefix(PREFIX)?;
+        let terminator = body.chars().last()?;
+        if matches!(terminator, 'u' | 'c') {
+            let parameters = &body[..body.len() - terminator.len_utf8()];
+            if valid_csi_parameters(parameters) {
+                self.candidate = None;
+                let response = if terminator == 'u' {
+                    KeyboardResponse::Enhancement
+                } else {
+                    self.armed = false;
+                    KeyboardResponse::DeviceAttributes
+                };
+                return Some(response);
+            }
+            self.replay_candidate(forwarded);
+            return None;
+        }
+        if !matches!(terminator, '0'..='9' | ';') {
+            self.replay_candidate(forwarded);
+        }
+        None
+    }
+
+    fn replay_candidate(&mut self, forwarded: &mut VecDeque<Event>) {
+        if let Some(candidate) = self.candidate.take() {
+            forwarded.extend(candidate.events);
+        }
+    }
+}
+
+fn valid_csi_parameters(parameters: &str) -> bool {
+    !parameters.is_empty()
+        && parameters.len() <= MAX_KEYBOARD_RESPONSE_CHARS
+        && parameters.split(';').all(|parameter| {
+            !parameter.is_empty() && parameter.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyboardToken {
+    Escape,
+    EscapeBracket,
+    Character(char),
+}
+
+fn keyboard_response_token(event: &Event) -> Option<KeyboardToken> {
+    let key = response_key(event)?;
+    match key.code {
+        KeyCode::Esc if key.modifiers.is_empty() => Some(KeyboardToken::Escape),
+        KeyCode::Char('[') if key.modifiers == KeyModifiers::ALT => {
+            Some(KeyboardToken::EscapeBracket)
+        }
+        KeyCode::Char(character)
+            if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+        {
+            Some(KeyboardToken::Character(character))
+        }
+        _ => None,
+    }
+}
+
+fn is_key_release(event: &Event) -> bool {
+    matches!(event, Event::Key(key) if key.kind == KeyEventKind::Release)
 }
 
 #[derive(Debug, Default)]
@@ -253,6 +487,45 @@ fn terminal_pair_is_supported() -> bool {
     false
 }
 
+#[cfg(test)]
+fn await_keyboard_query_write_until(
+    receiver: std::sync::mpsc::Receiver<std::io::Result<usize>>,
+    deadline: Instant,
+    on_timeout: impl FnOnce(),
+) -> std::io::Result<()> {
+    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+        on_timeout();
+        return Err(keyboard_query_timeout());
+    };
+    match receiver.recv_timeout(remaining) {
+        Ok(Ok(written)) if written == KEYBOARD_ENHANCEMENT_QUERY.len() => Ok(()),
+        Ok(Ok(written)) => Err(std::io::Error::new(
+            std::io::ErrorKind::WriteZero,
+            format!(
+                "keyboard capability query wrote {written} of {} bytes",
+                KEYBOARD_ENHANCEMENT_QUERY.len()
+            ),
+        )),
+        Ok(Err(error)) => Err(error),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            on_timeout();
+            Err(keyboard_query_timeout())
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "keyboard capability query writer stopped without a result",
+        )),
+    }
+}
+
+#[cfg(test)]
+fn keyboard_query_timeout() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "keyboard capability query write timed out",
+    )
+}
+
 #[cfg(unix)]
 fn write_query_until(deadline: Instant) -> std::io::Result<()> {
     let descriptor = libc::STDOUT_FILENO;
@@ -341,6 +614,14 @@ mod tests {
         Event::Key(KeyEvent::new(KeyCode::Char(character), modifiers))
     }
 
+    fn key_release(character: char) -> Event {
+        Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char(character),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        ))
+    }
+
     fn response(body: &str) -> Vec<Event> {
         let mut events = vec![key(']', KeyModifiers::ALT)];
         events.extend(
@@ -351,6 +632,221 @@ mod tests {
         );
         events.push(key('\\', KeyModifiers::ALT));
         events
+    }
+
+    fn csi_response(parameters: &str, terminator: char) -> Vec<Event> {
+        let mut events = vec![
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            key('[', KeyModifiers::NONE),
+        ];
+        events.extend(
+            std::iter::once('?')
+                .chain(parameters.chars())
+                .chain(std::iter::once(terminator))
+                .map(|character| key(character, KeyModifiers::NONE)),
+        );
+        events
+    }
+
+    fn folded_csi_response(parameters: &str, terminator: char) -> Vec<Event> {
+        let mut events = vec![key('[', KeyModifiers::ALT)];
+        events.extend(
+            std::iter::once('?')
+                .chain(parameters.chars())
+                .chain(std::iter::once(terminator))
+                .map(|character| key(character, KeyModifiers::NONE)),
+        );
+        events
+    }
+
+    #[test]
+    fn keyboard_probe_demuxes_positive_response_and_device_sentinel() {
+        let mut input = TerminalInput::default();
+        input.keyboard.arm();
+        let typed = key('x', KeyModifiers::NONE);
+        assert_eq!(input.route_all(typed.clone()).keyboard, None);
+
+        let mut responses = Vec::new();
+        for event in csi_response("1", 'u')
+            .into_iter()
+            .chain(folded_csi_response("1;2", 'c'))
+        {
+            if let Some(response) = input.route_all(event).keyboard {
+                responses.push(response);
+            }
+        }
+
+        assert_eq!(
+            responses,
+            [
+                KeyboardResponse::Enhancement,
+                KeyboardResponse::DeviceAttributes
+            ]
+        );
+        assert_eq!(input.queued.pop_front(), Some(typed));
+        assert!(input.queued.is_empty());
+        assert!(!input.keyboard.armed);
+    }
+
+    #[test]
+    fn keyboard_probe_unsupported_and_false_prefix_paths_are_exact() {
+        let mut input = TerminalInput::default();
+        input.keyboard.arm();
+        let false_prefix = [
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            key('[', KeyModifiers::NONE),
+            key('A', KeyModifiers::NONE),
+        ];
+        for event in false_prefix.clone() {
+            assert_eq!(input.route_all(event).keyboard, None);
+        }
+        for expected in false_prefix {
+            assert_eq!(input.queued.pop_front(), Some(expected));
+        }
+
+        let mut response = None;
+        for event in csi_response("1;2", 'c') {
+            response = input.route_all(event).keyboard.or(response);
+        }
+        assert_eq!(response, Some(KeyboardResponse::DeviceAttributes));
+        assert!(input.queued.is_empty());
+        assert!(!input.keyboard.armed);
+    }
+
+    #[test]
+    fn keyboard_probe_partial_candidate_expires_and_replays_exactly() {
+        let mut input = TerminalInput::default();
+        input.keyboard.arm();
+        let partial = [
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            key('[', KeyModifiers::NONE),
+            key('?', KeyModifiers::SHIFT),
+        ];
+        for event in partial.clone() {
+            assert_eq!(input.route_all(event).keyboard, None);
+        }
+        input.expire_keyboard_candidate(Instant::now() + CANDIDATE_TIMEOUT);
+        for expected in partial {
+            assert_eq!(input.queued.pop_front(), Some(expected));
+        }
+        assert!(input.queued.is_empty());
+        assert!(input.keyboard.armed);
+    }
+
+    #[test]
+    fn keyboard_probe_release_overflow_replays_candidate_and_current_event() {
+        let mut input = TerminalInput::default();
+        input.keyboard.arm();
+        let escape = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(input.route_all(escape.clone()).keyboard, None);
+
+        let retained_release = key_release('r');
+        for _ in 1..MAX_KEYBOARD_RESPONSE_EVENTS {
+            assert_eq!(input.route_all(retained_release.clone()).keyboard, None);
+        }
+        assert_eq!(
+            input
+                .keyboard
+                .candidate
+                .as_ref()
+                .map(|candidate| candidate.events.len()),
+            Some(MAX_KEYBOARD_RESPONSE_EVENTS)
+        );
+
+        let overflow_release = key_release('z');
+        assert_eq!(input.route_all(overflow_release.clone()).keyboard, None);
+        assert!(input.keyboard.candidate.is_none());
+        assert_eq!(input.queued.len(), MAX_KEYBOARD_RESPONSE_EVENTS + 1);
+        assert_eq!(input.queued.pop_front(), Some(escape));
+        for _ in 1..MAX_KEYBOARD_RESPONSE_EVENTS {
+            assert_eq!(input.queued.pop_front(), Some(retained_release.clone()));
+        }
+        assert_eq!(input.queued.pop_front(), Some(overflow_release));
+        assert!(input.queued.is_empty());
+    }
+
+    #[test]
+    fn keyboard_query_write_wait_is_exact_bounded_and_preserves_failures() {
+        let (success_sender, success_receiver) = std::sync::mpsc::sync_channel(1);
+        success_sender
+            .send(Ok(KEYBOARD_ENHANCEMENT_QUERY.len()))
+            .unwrap();
+        let mut cancelled = false;
+        assert!(
+            await_keyboard_query_write_until(
+                success_receiver,
+                Instant::now() + Duration::from_secs(1),
+                || cancelled = true,
+            )
+            .is_ok()
+        );
+        assert!(!cancelled);
+
+        let (partial_sender, partial_receiver) = std::sync::mpsc::sync_channel(1);
+        partial_sender
+            .send(Ok(KEYBOARD_ENHANCEMENT_QUERY.len() - 1))
+            .unwrap();
+        let partial = await_keyboard_query_write_until(
+            partial_receiver,
+            Instant::now() + Duration::from_secs(1),
+            || panic!("a ready partial write must not time out"),
+        )
+        .unwrap_err();
+        assert_eq!(partial.kind(), std::io::ErrorKind::WriteZero);
+
+        let (error_sender, error_receiver) = std::sync::mpsc::sync_channel(1);
+        error_sender
+            .send(Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected writer refusal",
+            )))
+            .unwrap();
+        let failure = await_keyboard_query_write_until(
+            error_receiver,
+            Instant::now() + Duration::from_secs(1),
+            || panic!("a ready writer error must not time out"),
+        )
+        .unwrap_err();
+        assert_eq!(failure.kind(), std::io::ErrorKind::PermissionDenied);
+
+        let (_pending_sender, pending_receiver) = std::sync::mpsc::sync_channel(1);
+        let mut timeout_cancelled = false;
+        let timeout = await_keyboard_query_write_until(
+            pending_receiver,
+            Instant::now()
+                .checked_sub(Duration::from_millis(1))
+                .unwrap(),
+            || timeout_cancelled = true,
+        )
+        .unwrap_err();
+        assert_eq!(timeout.kind(), std::io::ErrorKind::TimedOut);
+        assert!(timeout_cancelled);
+    }
+
+    #[test]
+    fn failed_keyboard_query_write_stays_armed_for_a_late_response() {
+        let mut input = TerminalInput::default();
+        let mut partial_write = Vec::new();
+        assert!(
+            input
+                .begin_keyboard_query(|deadline| {
+                    assert!(deadline > Instant::now());
+                    partial_write.extend_from_slice(&KEYBOARD_ENHANCEMENT_QUERY[..3]);
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "injected partial keyboard-query write",
+                    ))
+                })
+                .is_none()
+        );
+        assert_eq!(partial_write, &KEYBOARD_ENHANCEMENT_QUERY[..3]);
+        assert!(input.keyboard.armed);
+
+        for event in csi_response("1;2", 'c') {
+            let _ = input.route_all(event);
+        }
+        assert!(input.queued.is_empty());
+        assert!(!input.keyboard.armed);
     }
 
     #[test]

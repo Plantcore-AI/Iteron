@@ -19,19 +19,17 @@ mod terminal_input;
 pub(crate) mod app_server;
 use crate::commands::{self, SlashCommand};
 use crate::editor::Editor;
+use crate::image_input::{self, ImageAttachments};
 use crate::providers::{ModelSelection, ProviderDirectory};
+use crate::runtime::{
+    UiEvent, WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi, WorkflowUiEvent,
+};
 use crate::{block, surface, theme};
 use core_ctx::ContextEstimate;
-// `Agent` appears in exactly one place below: the parameter of `run`, which hands it straight to
-// `app_server::attach`. That is the invariant this lane establishes — past that statement the
-// frontend cannot reach the runtime, and everything it knows arrives through `app_server`.
-use crate::runtime::{
-    Agent, UiEvent, WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi, WorkflowUiEvent,
-};
 use core_obs::CostState;
 use core_protocol::{
-    Capability, Effort, Op, Outcome, PermissionMode, PermissionRules, ReasoningEffort,
-    SubmissionId, Usage, Verdict,
+    Capability, Effort, Op, PermissionMode, PermissionRules, ReasoningEffort, SubmissionId, Usage,
+    Verdict,
 };
 use core_provider::EffortApplication;
 use crossterm::event::{
@@ -47,11 +45,14 @@ use ratatui::widgets::{
 };
 use ratatui::{Frame, Terminal};
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use tokio::io::AsyncReadExt as _;
 
 /// A pending capability approval the operator must answer (mode produced an `Ask` verdict).
 struct Pending {
@@ -270,24 +271,6 @@ fn approval_operation_text(pending: &Pending) -> String {
     }
 }
 
-/// A human label for a run `Outcome`, for the status slot. NEVER the raw `{:?}` Debug (which leaks
-/// `BudgetExhausted("max_turns")` — escaped quotes and all — into the most-visible chrome; TUI v3 §7).
-/// Kept local to the TUI so the protocol enum is untouched.
-fn outcome_label(o: &Outcome) -> String {
-    match o {
-        Outcome::Done => "done".into(),
-        Outcome::Drained => "drained".into(),
-        Outcome::Interrupted => "interrupted".into(),
-        Outcome::Stuck => "stuck".into(),
-        Outcome::HarnessError => "harness error".into(),
-        Outcome::BudgetExhausted(kind) => match *kind {
-            "max_turns" => "hit the turn budget".into(),
-            "max_usd" | "max_cost" => "hit the cost budget".into(),
-            other => format!("hit the {other} budget"),
-        },
-    }
-}
-
 fn request_input_tokens(usage: Usage) -> u64 {
     usage
         .input
@@ -458,6 +441,13 @@ struct Completion {
     token_start: usize,
     /// The prefix char ('/' for slash, '@' for file) — kept for the accepted replacement.
     lead: char,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ComposerHitbox {
+    text_area: Rect,
+    scroll_x: u16,
+    scroll_y: u16,
 }
 
 /// What applying a picked item does. An enum (not a boxed closure) because the TUI is single-threaded
@@ -793,6 +783,12 @@ struct App {
     render_cache_theme_epoch: u64,
     editor: Editor,
     status: String,
+    /// The canonical result-v5 object from the most recently terminalized run.
+    ///
+    /// TUI chrome is presentation, but it consumes the same terminal authority as one-shot.
+    /// Keeping the object rather than a Debug-formatted completion string gives tests one typed
+    /// seam to inspect without scraping terminal cells.
+    last_result: Option<serde_json::Value>,
     running: bool,
     interrupting: bool,
     draining: bool,
@@ -867,6 +863,9 @@ struct App {
     view_top: u16,
     view_scroll: u16,
     view_h: u16,
+    /// Text-cell projection from the last rendered composer frame. A click is resolved against this
+    /// snapshot; every coordinate is re-clamped by the editor so a simultaneous resize is benign.
+    composer_hitbox: Option<ComposerHitbox>,
     /// Follow-ups composed WHILE the agent was running, each dispatched (in order) when the run
     /// finishes. A Vec (not a joined blob) so each item is classified separately — a queued
     /// `/compact` then a task run as two distinct actions (round-3 review).
@@ -912,6 +911,7 @@ impl App {
             render_cache_theme_epoch: 0,
             editor: Editor::new(),
             status: "idle".into(),
+            last_result: None,
             running: false,
             interrupting: false,
             draining: false,
@@ -953,6 +953,7 @@ impl App {
             view_top: 0,
             view_scroll: 0,
             view_h: 0,
+            composer_hitbox: None,
             queued: VecDeque::new(),
             steer_previews: VecDeque::new(),
             next_submission_seq: 0,
@@ -2417,6 +2418,61 @@ fn display_col(s: &str, n_chars: usize) -> u16 {
         .fold(0u16, |a, w| a.saturating_add(w))
 }
 
+/// Resolve a terminal-cell click into the editor's character-index coordinate system.
+///
+/// Wide characters deliberately divide their two cells: clicking the leading cell lands before the
+/// scalar and clicking the trailing cell lands after it. Combining marks remain attached to the
+/// previous printable character. Rows and columns past the current draft clamp to its final
+/// boundary, which is the only safe answer for a click racing a resize or edit.
+fn editor_char_index_at_cell(text: &str, wanted_row: usize, wanted_col: u16) -> usize {
+    let mut absolute = 0usize;
+    for (row, line) in text.split('\n').enumerate() {
+        if row != wanted_row {
+            absolute = absolute
+                .saturating_add(line.chars().count())
+                .saturating_add(1);
+            continue;
+        }
+
+        let mut cell = 0u16;
+        let mut chars = 0usize;
+        for character in line.chars() {
+            let width = char_width(character);
+            if width == 0 {
+                chars = chars.saturating_add(1);
+                continue;
+            }
+            if wanted_col < cell.saturating_add(width) {
+                let trailing_half = wanted_col.saturating_sub(cell) >= width.div_ceil(2);
+                return absolute
+                    .saturating_add(chars)
+                    .saturating_add(usize::from(trailing_half));
+            }
+            cell = cell.saturating_add(width);
+            chars = chars.saturating_add(1);
+        }
+        return absolute.saturating_add(chars);
+    }
+    text.chars().count()
+}
+
+fn place_editor_cursor_from_mouse(app: &mut App, column: u16, row: u16) -> bool {
+    let Some(hitbox) = app.composer_hitbox else {
+        return false;
+    };
+    let area = hitbox.text_area;
+    if column < area.x || column >= area.right() || row < area.y || row >= area.bottom() {
+        return false;
+    }
+    let logical_row = hitbox.scroll_y.saturating_add(row.saturating_sub(area.y)) as usize;
+    let logical_col = hitbox
+        .scroll_x
+        .saturating_add(column.saturating_sub(area.x));
+    let char_index = editor_char_index_at_cell(&app.editor.text(), logical_row, logical_col);
+    app.editor.set_cursor(char_index);
+    true
+}
+
 /// Convert a char index into a byte index within `s` (the editor counts chars; string slicing
 /// needs bytes). Clamps to the string length.
 fn byte_index(s: &str, char_idx: usize) -> usize {
@@ -2593,8 +2649,12 @@ impl TermGuard {
         self.keyboard.restorer()
     }
 
-    fn negotiate_keyboard(&self) -> std::io::Result<bool> {
-        self.keyboard.negotiate()
+    fn negotiate_keyboard(
+        &self,
+        terminal_input: &mut terminal_input::TerminalInput,
+    ) -> std::io::Result<bool> {
+        self.keyboard
+            .negotiate(terminal_input.supports_keyboard_enhancement())
     }
 
     fn toggle_mouse_capture(&mut self) -> std::io::Result<mouse_capture::State> {
@@ -2628,31 +2688,21 @@ const MAX_SUBMISSION_BYTES: usize = 64 * 1024;
 /// them and redraws. For follow-ups the same agent continues via `follow_up`.
 /// Enter the interactive frontend.
 ///
-/// The `Agent` arrives here and leaves in the next statement: `app_server::attach` is the single
-/// composition root, and everything below this line is a *client* holding queue endpoints, a
-/// negotiated protocol version and a set of session facts. This is the only place in the frontend
-/// that can name the runtime type at all.
+/// The composition root hands this frontend an already-attached client. Everything below this line
+/// holds queue endpoints, a negotiated protocol version and immutable session facts; the TUI cannot
+/// name or reclaim the runtime type.
 ///
 /// Both the handshake and its refusal happen before ANY terminal setup. A frontend that cannot
 /// speak the runtime's protocol has nothing useful to draw, and a diagnostic printed from inside
 /// the alternate screen is a diagnostic nobody reads: the terminal guard restores the screen on the
 /// way out and takes the message with it.
 pub async fn run(
-    agent: Agent,
+    attached: app_server::Attached,
     initial_task: Option<String>,
     providers: ProviderDirectory,
     provider_id: String,
     completion_notifications: bool,
 ) -> anyhow::Result<()> {
-    let attached = match app_server::attach(agent) {
-        Ok(attached) => attached,
-        Err(error) => {
-            eprintln!("app server: refusing to attach — {error}");
-            return Err(anyhow::anyhow!(
-                "the App Server refused the version handshake: {error}"
-            ));
-        }
-    };
     eprintln!(
         "app server: TUI attached as a versioned client (SQ/EQ protocol v{})",
         attached.handle.client.negotiated_version()
@@ -2687,20 +2737,20 @@ pub async fn run(
             }
         }
     }
+    let mut terminal_input = terminal_input::TerminalInput::default();
     // The query is fail-soft: terminals that do not implement the protocol keep the portable
     // Ctrl-J path and receive neither a push nor a pop. Signal/panic cleanup is installed before
     // negotiation so even an exit during startup can restore an already-pushed stack frame.
-    let _ = guard.negotiate_keyboard();
+    let _ = guard.negotiate_keyboard(&mut terminal_input);
     // OSC 11 runs after raw-mode entry. The input adapter demultiplexes the response from operator
     // events, replays unrelated startup input, and remains armed to swallow a late reply.
     let environment = theme::capabilities::Environment::capture();
-    let mut terminal_input = terminal_input::TerminalInput::default();
     let background = terminal_input.query_background(&environment);
     let detected_theme = theme::Theme::detect_with(environment, background);
-    let backend = ratatui::backend::CrosstermBackend::new(std::io::stdout());
+    let (terminal_writer, mut notification_writer) = notification::LiveTerminalWriter::stdout();
+    let backend = ratatui::backend::CrosstermBackend::new(terminal_writer);
     let mut term = Terminal::new(backend)?;
     let mut notifier = notification::TerminalNotifier::new(completion_notifications);
-    let mut notification_writer = notification::LiveTerminalWriter;
 
     let repo = facts.workspace.clone();
     let mut app = App::new_with_detected_theme(detected_theme);
@@ -2714,6 +2764,7 @@ pub async fn run(
 
     let mut session = Session::new(handle.client, handle.control, initial_state, facts);
     let mut events = handle.events;
+    let mut last_event_seq = 0;
     let mut first_task = initial_task;
     let mut redraw = true;
 
@@ -2722,7 +2773,7 @@ pub async fn run(
         if let Some(task) = first_task.take()
             && !task.trim().is_empty()
         {
-            submit_turn(&mut app, &session, task);
+            submit_turn(&mut app, &session, &mut notifier, task);
             redraw = true;
         }
 
@@ -2730,6 +2781,19 @@ pub async fn run(
         // frontend used to create and retire a receiver per run, which is why there was no event
         // stream at all while idle and why the join had to double as a drain barrier.
         while let Ok(envelope) = events.try_recv() {
+            let event_seq = envelope.sequence();
+            if event_seq <= last_event_seq {
+                app.note(
+                    block::NoticeLevel::Err,
+                    format!(
+                        "the runtime event stream reordered or duplicated live sequence \
+                         {event_seq} after {last_event_seq}; no further updates will be shown"
+                    ),
+                );
+                app.quit = true;
+                break;
+            }
+            last_event_seq = event_seq;
             let event = match envelope.into_current() {
                 Ok(event) => event,
                 Err(error) => {
@@ -2798,10 +2862,16 @@ pub async fn run(
                     .await;
                 } else {
                     app.push_user(q.clone());
-                    submit_turn(&mut app, &session, q);
+                    submit_turn(&mut app, &session, &mut notifier, q);
                     break; // a run started; remaining items dispatch after it finishes
                 }
             }
+        }
+
+        // Attention is a client concern: a quiet live run receives one fixed notification after
+        // the bounded idle interval, then rearms only when another typed EQ event arrives.
+        if let Some(trigger) = notifier.poll_idle(app.running) {
+            notifier.emit_transport(&mut notification_writer, trigger);
         }
 
         // Active animation targets a 100 ms cadence; input may request an additional immediate
@@ -2829,8 +2899,52 @@ pub async fn run(
                 // Bracketed paste: insert the WHOLE pasted text (incl. newlines) into the editor
                 // rather than letting each pasted newline submit a partial line (review HIGH).
                 CEvent::Paste(pasted) => {
-                    app.editor.insert_str(&pasted);
-                    app.refresh_completion(&repo);
+                    let pasted_image = if app.running {
+                        Ok(None)
+                    } else {
+                        image_input::parse_explicit_image_path(&pasted)
+                    };
+                    match pasted_image {
+                        Ok(Some(reference)) => {
+                            let image_path = if reference.path().is_absolute() {
+                                reference.path().to_path_buf()
+                            } else {
+                                repo.join(reference.path())
+                            };
+                            let attached =
+                                app.editor.attach_image_path(&image_path).map(|attachment| {
+                                    (
+                                        attachment.display_name().to_owned(),
+                                        attachment.media_type(),
+                                        attachment.file_bytes(),
+                                    )
+                                });
+                            match attached {
+                                Ok((name, media_type, file_bytes)) => app.note(
+                                    block::NoticeLevel::Ok,
+                                    format!(
+                                        "attached {} ({}, {} bytes)",
+                                        name,
+                                        media_type.as_str(),
+                                        file_bytes
+                                    ),
+                                ),
+                                Err(error) => app.note(
+                                    block::NoticeLevel::Warn,
+                                    format!("image attachment refused: {error}"),
+                                ),
+                            }
+                            app.completion = None;
+                        }
+                        Ok(None) => {
+                            app.editor.insert_str(&pasted);
+                            app.refresh_completion(&repo);
+                        }
+                        Err(error) => app.note(
+                            block::NoticeLevel::Warn,
+                            format!("image attachment refused: {error}"),
+                        ),
+                    }
                 }
                 // Mouse: wheel/trackpad scroll moves the CHAT transcript (prompt history stays on ↑/↓);
                 // a left-click on a card row folds/unfolds it.
@@ -2841,14 +2955,22 @@ pub async fn run(
                     MouseEventKind::ScrollDown => {
                         app.scroll_down(3);
                     }
-                    MouseEventKind::Down(MouseButton::Left)
-                        if m.row >= app.view_top && m.row < app.view_top + app.view_h =>
-                    {
-                        let idx = app.view_scroll as usize + (m.row - app.view_top) as usize;
-                        if let Some(&bi) = app.row_map.get(idx)
-                            && bi != usize::MAX
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        if m.row >= app.view_top && m.row < app.view_top.saturating_add(app.view_h)
                         {
-                            app.toggle_fold(bi);
+                            let idx = app.view_scroll as usize + (m.row - app.view_top) as usize;
+                            if let Some(&bi) = app.row_map.get(idx)
+                                && bi != usize::MAX
+                            {
+                                app.toggle_fold(bi);
+                            }
+                        } else if app.picker.is_none()
+                            && app.pending.is_none()
+                            && place_editor_cursor_from_mouse(&mut app, m.column, m.row)
+                        {
+                            // Mouse focus belongs to the composer now; update any cursor-relative
+                            // `@file` completion against the new boundary.
+                            app.refresh_completion(&repo);
                         }
                     }
                     _ => {}
@@ -2871,6 +2993,45 @@ pub async fn run(
                                 block::NoticeLevel::Err,
                                 format!("could not change terminal mouse capture: {error}"),
                             ),
+                        }
+                        continue;
+                    }
+
+                    // Ctrl-V asks a fixed platform clipboard adapter for image bytes. Ordinary text
+                    // paste continues to arrive as `CEvent::Paste`; this branch owns only bitmap
+                    // capture and is intentionally unavailable for mid-run steering.
+                    if k.code == KeyCode::Char('v') && ctrl && !app.running {
+                        match clipboard_image_bytes().await {
+                            Ok(Some(bytes)) => {
+                                let attached = app
+                                    .editor
+                                    .attach_image_bytes("clipboard.png", &bytes)
+                                    .map(|attachment| {
+                                        (
+                                            attachment.display_name().to_owned(),
+                                            attachment.media_type(),
+                                            attachment.file_bytes(),
+                                        )
+                                    });
+                                match attached {
+                                    Ok((name, media_type, file_bytes)) => app.note(
+                                        block::NoticeLevel::Ok,
+                                        format!(
+                                            "attached {name} ({}, {file_bytes} bytes)",
+                                            media_type.as_str()
+                                        ),
+                                    ),
+                                    Err(error) => app.note(
+                                        block::NoticeLevel::Warn,
+                                        format!("clipboard image refused: {error}"),
+                                    ),
+                                }
+                            }
+                            Ok(None) => app.note(
+                                block::NoticeLevel::Info,
+                                "no supported clipboard image adapter found; paste or drag an image path instead",
+                            ),
+                            Err(error) => app.note(block::NoticeLevel::Warn, error),
                         }
                         continue;
                     }
@@ -2982,7 +3143,7 @@ pub async fn run(
                                     app.interrupting = true;
                                     app.push(bold(Color::Yellow), "interrupting at the next safe point… (Ctrl-C again to hard-abort)");
                                 }
-                            } else if !app.editor.is_empty() {
+                            } else if app.editor.has_submission() {
                                 app.editor.clear_recoverable();
                                 app.completion = None;
                                 app.resume_handoff = None;
@@ -2999,8 +3160,10 @@ pub async fn run(
                             refresh = true;
                         }
                         KeyCode::Char('d') if ctrl && !app.running => {
-                            if app.editor.is_empty() {
+                            if !app.editor.has_submission() {
                                 app.quit = true;
+                            } else if app.editor.is_empty() {
+                                let _ = app.editor.remove_last_attachment();
                             } else {
                                 app.editor.delete();
                                 refresh = true;
@@ -3129,6 +3292,12 @@ pub async fn run(
                             app.editor.delete();
                             refresh = true;
                         }
+                        KeyCode::Backspace
+                            if alt && !app.running && !app.editor.attachments().is_empty() =>
+                        {
+                            let _ = app.editor.remove_last_attachment();
+                            refresh = true;
+                        }
                         KeyCode::Backspace => {
                             app.editor.backspace();
                             refresh = true;
@@ -3140,7 +3309,7 @@ pub async fn run(
                         }
                         // Esc clears a non-empty line first (like a shell / the leading agent); quits only
                         // on an already-empty line — so typed-but-unsent input is never silently discarded.
-                        KeyCode::Esc if !app.running && !app.editor.is_empty() => {
+                        KeyCode::Esc if !app.running && app.editor.has_submission() => {
                             app.editor.clear_recoverable();
                             app.resume_handoff = None;
                             refresh = true;
@@ -3159,12 +3328,16 @@ pub async fn run(
                                 app.editor.newline();
                             } else {
                                 app.resume_handoff = None;
-                                let line = app.editor.take_submit();
+                                let line = app.editor.text();
                                 let trimmed = line.trim().to_string();
+                                let has_attachments = !app.editor.attachments().is_empty();
                                 app.completion = None;
-                                if trimmed.is_empty() {
+                                if trimmed.is_empty() && !has_attachments {
                                     // nothing
-                                } else if let Some(cmd) = trimmed.strip_prefix('/') {
+                                } else if !has_attachments
+                                    && let Some(cmd) = trimmed.strip_prefix('/')
+                                {
+                                    let _ = app.editor.take_submit();
                                     dispatch_slash_command(
                                         &mut term,
                                         &mut app,
@@ -3173,7 +3346,10 @@ pub async fn run(
                                         cmd,
                                     )
                                     .await?;
-                                } else if let Some(bash) = trimmed.strip_prefix('!') {
+                                } else if !has_attachments
+                                    && let Some(bash) = trimmed.strip_prefix('!')
+                                {
+                                    let _ = app.editor.take_submit();
                                     let (mode, rules) = (
                                         session.permission_mode(),
                                         session.permission_rules().clone(),
@@ -3188,8 +3364,7 @@ pub async fn run(
                                     )
                                     .await;
                                 } else {
-                                    app.push_user(trimmed.to_string());
-                                    submit_turn(&mut app, &session, trimmed);
+                                    submit_composer(&mut app, &session, &mut notifier);
                                 }
                             }
                         }
@@ -3245,7 +3420,7 @@ pub async fn run(
                             app.push(bold(Color::Yellow), "interrupting at the next safe point…");
                         }
                         KeyCode::Char('?')
-                            if !app.running && app.editor.is_empty() && !menu_open =>
+                            if !app.running && !app.editor.has_submission() && !menu_open =>
                         {
                             handle_registered_command(
                                 &mut app,
@@ -3291,7 +3466,9 @@ pub async fn run(
 /// Execute one already-submitted slash command. Both ordinary Enter and Enter on a slash
 /// completion use this path, so completion activation cannot drift into a second dispatch path.
 async fn dispatch_slash_command(
-    term: &mut Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    term: &mut Terminal<
+        ratatui::backend::CrosstermBackend<notification::LiveTerminalWriter<std::io::Stdout>>,
+    >,
     app: &mut App,
     session: &mut Session,
     providers: &ProviderDirectory,
@@ -3401,20 +3578,39 @@ fn request_drain(
 ///
 /// A refusal is shown, never swallowed: `Busy` means the operator's input did not land, and the one
 /// thing worse than a full queue is a full queue that looks like acceptance.
-fn submit_turn(app: &mut App, session: &Session, task: String) {
-    match session.submit(Op::UserInput { text: task }) {
+fn submit_turn(
+    app: &mut App,
+    session: &Session,
+    notifier: &mut notification::TerminalNotifier,
+    task: String,
+) {
+    let _ = submit_operation(app, session, notifier, Op::UserInput { text: task });
+}
+
+fn submit_operation(
+    app: &mut App,
+    session: &Session,
+    notifier: &mut notification::TerminalNotifier,
+    op: Op,
+) -> bool {
+    match session.submit(op) {
         Ok(()) => {
+            notifier.begin_run();
             app.running = true;
             app.interrupting = false;
             app.draining = false;
             app.status = "running…".into();
             app.run_started = Some(Instant::now());
             app.completion = None;
+            true
         }
-        Err(app_server::SubmitError::Busy) => app.note(
-            block::NoticeLevel::Warn,
-            "the runtime is saturated; this submission was not accepted — try again",
-        ),
+        Err(app_server::SubmitError::Busy) => {
+            app.note(
+                block::NoticeLevel::Warn,
+                "the runtime is saturated; this submission was not accepted — try again",
+            );
+            false
+        }
         Err(app_server::SubmitError::Disconnected) => {
             app.push_block(block::BlockKind::Error {
                 title: "the runtime is no longer reachable".into(),
@@ -3424,8 +3620,224 @@ fn submit_turn(app: &mut App, session: &Session, task: String) {
                 open: true,
             });
             app.status = "error (no runtime) — Esc to quit".into();
+            false
         }
     }
+}
+
+/// Resolve explicit `@path.png` mentions into the same bounded attachment collection used by
+/// drag/drop, then submit one legacy or multimodal SQ operation. Work is staged against a clone:
+/// an invalid file or a saturated SQ leaves the operator's draft and chips intact.
+fn submit_composer(
+    app: &mut App,
+    session: &Session,
+    notifier: &mut notification::TerminalNotifier,
+) {
+    let raw = app.editor.text();
+    let mentions = match image_input::parse_image_mentions(&raw) {
+        Ok(mentions) => mentions,
+        Err(error) => {
+            app.note(
+                block::NoticeLevel::Warn,
+                format!("image attachment refused: {error}"),
+            );
+            return;
+        }
+    };
+    let mut staged: ImageAttachments = app.editor.attachments().clone();
+    for mention in &mentions {
+        let reference = mention.reference().path();
+        let path = if reference.is_absolute() {
+            reference.to_path_buf()
+        } else {
+            session.workspace().join(reference)
+        };
+        if let Err(error) = staged.attach_path(&path) {
+            app.note(
+                block::NoticeLevel::Warn,
+                format!("image attachment refused: {error}"),
+            );
+            return;
+        }
+    }
+    let mut text = raw;
+    for mention in mentions.iter().rev() {
+        text.replace_range(mention.byte_range.clone(), "");
+    }
+    let text = text.trim().to_owned();
+    if text.is_empty() && staged.is_empty() {
+        return;
+    }
+    let op = if staged.is_empty() {
+        Op::UserInput { text: text.clone() }
+    } else {
+        let segments = match staged.to_content_segments(text.clone()) {
+            Ok(segments) => segments,
+            Err(error) => {
+                app.note(
+                    block::NoticeLevel::Warn,
+                    format!("image attachment refused: {error}"),
+                );
+                return;
+            }
+        };
+        Op::UserInputV2 { segments }
+    };
+    if submit_operation(app, session, notifier, op) {
+        let image_count = staged.len();
+        let _ = app.editor.take_submit();
+        app.push_user(if text.is_empty() {
+            format!(
+                "[{} image attachment{}]",
+                image_count,
+                if image_count == 1 { "" } else { "s" }
+            )
+        } else {
+            text
+        });
+    }
+}
+
+#[derive(Clone)]
+struct ClipboardCommand {
+    program: OsString,
+    args: &'static [&'static str],
+}
+
+#[cfg(target_os = "macos")]
+fn clipboard_commands(_environment: &[(OsString, OsString)]) -> Vec<ClipboardCommand> {
+    vec![ClipboardCommand {
+        program: "pngpaste".into(),
+        args: &["-"],
+    }]
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn clipboard_commands(_environment: &[(OsString, OsString)]) -> Vec<ClipboardCommand> {
+    vec![
+        ClipboardCommand {
+            program: "wl-paste".into(),
+            args: &["--no-newline", "--type", "image/png"],
+        },
+        ClipboardCommand {
+            program: "xclip".into(),
+            args: &["-selection", "clipboard", "-t", "image/png", "-o"],
+        },
+    ]
+}
+
+#[cfg(not(unix))]
+fn clipboard_commands(_environment: &[(OsString, OsString)]) -> Vec<ClipboardCommand> {
+    Vec::new()
+}
+
+const MAX_CLIPBOARD_ENV_BYTES: usize = 4 * 1024;
+
+fn bounded_clipboard_environment_value(value: OsString) -> Option<OsString> {
+    if value.as_encoded_bytes().len() > MAX_CLIPBOARD_ENV_BYTES
+        || value
+            .to_str()
+            .is_some_and(|text| text.chars().any(char::is_control))
+    {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn clipboard_child_environment_with(
+    mut source: impl FnMut(&str) -> Option<OsString>,
+) -> Vec<(OsString, OsString)> {
+    let mut environment = Vec::new();
+    #[cfg(target_os = "macos")]
+    environment.push((
+        "PATH".into(),
+        "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin".into(),
+    ));
+    #[cfg(all(unix, not(target_os = "macos")))]
+    environment.push(("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into()));
+    #[cfg(unix)]
+    {
+        environment.push(("LANG".into(), "C.UTF-8".into()));
+        environment.push(("LC_ALL".into(), "C.UTF-8".into()));
+        for name in [
+            "WAYLAND_DISPLAY",
+            "XDG_RUNTIME_DIR",
+            "DISPLAY",
+            "XAUTHORITY",
+        ] {
+            if let Some(value) = source(name).and_then(bounded_clipboard_environment_value) {
+                environment.push((name.into(), value));
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = &mut source;
+    environment
+}
+
+/// Read a clipboard image through a fixed platform adapter. The subprocess has no shell, stderr is
+/// discarded, stdout is capped before retention, the environment is an explicit display-only
+/// allowlist, and the whole operation has a short timeout.
+async fn clipboard_image_bytes() -> Result<Option<Vec<u8>>, &'static str> {
+    let environment = clipboard_child_environment_with(|name| std::env::var_os(name));
+    for specification in clipboard_commands(&environment) {
+        let mut command = tokio::process::Command::new(&specification.program);
+        command
+            .env_clear()
+            .envs(environment.iter().cloned())
+            .args(specification.args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => continue,
+        };
+        let Some(mut stdout) = child.stdout.take() else {
+            let _ = child.kill().await;
+            continue;
+        };
+        let capture = async {
+            let mut bytes = Vec::new();
+            let mut chunk = [0_u8; 16 * 1024];
+            loop {
+                let read = stdout
+                    .read(&mut chunk)
+                    .await
+                    .map_err(|_| "could not read the clipboard image")?;
+                if read == 0 {
+                    break;
+                }
+                if bytes.len().saturating_add(read) > image_input::MAX_IMAGE_FILE_BYTES {
+                    return Err("clipboard image exceeds the per-file limit");
+                }
+                bytes.extend_from_slice(&chunk[..read]);
+            }
+            let status = child
+                .wait()
+                .await
+                .map_err(|_| "could not finish clipboard image capture")?;
+            Ok::<_, &'static str>((status.success(), bytes))
+        };
+        match tokio::time::timeout(Duration::from_secs(3), capture).await {
+            Ok(Ok((true, bytes))) if !bytes.is_empty() => return Ok(Some(bytes)),
+            Ok(Ok(_)) => continue,
+            Ok(Err(error)) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err(error);
+            }
+            Err(_) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err("clipboard image capture timed out");
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Apply one EQ envelope.
@@ -3434,12 +3846,12 @@ fn submit_turn(app: &mut App, session: &Session, task: String) {
 /// `handle.await` reclaim used to read straight off the `Agent`; there is no join any more, so the
 /// terminal event is also the refresh point.
 #[allow(clippy::too_many_arguments)]
-fn apply_server_event(
+fn apply_server_event<T: notification::NotificationTransport + ?Sized>(
     app: &mut App,
     session: &mut Session,
     event: app_server::ServerEvent,
     notifier: &mut notification::TerminalNotifier,
-    writer: &mut notification::LiveTerminalWriter,
+    writer: &mut T,
     interrupt: &Arc<AtomicBool>,
     drain: &Arc<AtomicBool>,
 ) {
@@ -3453,10 +3865,8 @@ fn apply_server_event(
                  transcript above is incomplete at that point"
             ),
         ),
-        app_server::ServerEvent::RunEnded {
-            completion,
-            snapshot,
-        } => {
+        app_server::ServerEvent::RunEnded { snapshot, summary } => {
+            let completion_notification = notifier.run_completed();
             app.running = false;
             app.interrupting = false;
             app.draining = false;
@@ -3496,18 +3906,26 @@ fn apply_server_event(
             app.last_turn_usage = snapshot.last_turn_usage;
             session.adopt(*snapshot);
 
-            match completion {
-                app_server::RunEnded::Outcome(outcome) => {
-                    app.status = format!("idle · last: {}", outcome_label(&outcome));
-                }
-                app_server::RunEnded::Error(detail) => {
-                    app.push_block(block::BlockKind::Error {
-                        title: "run failed".into(),
-                        detail,
-                        open: true,
-                    });
-                    app.status = "idle · last: run failed".into();
-                }
+            let result = summary.result_v5();
+            let canonical_outcome = result
+                .get("outcome")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("harness_error");
+            if let Some(detail) = result
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+            {
+                app.push_block(block::BlockKind::Error {
+                    title: "run failed".into(),
+                    detail,
+                    open: true,
+                });
+            }
+            app.status = format!("idle · last: {canonical_outcome}");
+            app.last_result = Some(result);
+            if let Some(trigger) = completion_notification {
+                notifier.emit_transport(writer, trigger);
             }
         }
     }
@@ -5187,16 +5605,16 @@ async fn handle_registered_command(
 /// Project one live event into retained UI state, then send any fixed terminal notification
 /// directly through the backend. Keeping the writer outside `App` makes it impossible for an OSC
 /// payload to enter transcript blocks or ratatui's frame buffer.
-fn apply_live_event<W: Write>(
+fn apply_live_event<T: notification::NotificationTransport + ?Sized>(
     app: &mut App,
     ev: UiEvent,
     notifier: &mut notification::TerminalNotifier,
-    writer: &mut W,
+    writer: &mut T,
 ) {
     let trigger = notifier.trigger_for_event(&ev);
     apply_event(app, ev);
     if let Some(trigger) = trigger {
-        notifier.emit(writer, trigger);
+        notifier.emit_transport(writer, trigger);
     }
 }
 
@@ -5956,7 +6374,8 @@ fn approval_action_line(app: &App, pending: &Pending, width: u16) -> Line<'stati
     Line::from(spans)
 }
 
-fn render_composer(f: &mut Frame, area: Rect, app: &App) {
+fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
+    app.composer_hitbox = None;
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -5971,15 +6390,16 @@ fn render_composer(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
     let text = app.editor.text();
+    let attachment_count = app.editor.attachments().len();
     let is_bash = text.starts_with('!');
     let line_color = if app.pending.is_some() {
         app.theme.warn
-    } else if !text.is_empty() || app.running {
+    } else if !text.is_empty() || attachment_count > 0 || app.running {
         app.theme.accent
     } else {
         app.theme.border
     };
-    let title = if app.pending.is_some() {
+    let mut title = if app.pending.is_some() {
         "Permission required"
     } else if app.running {
         match input_destination(true, &text) {
@@ -5995,7 +6415,14 @@ fn render_composer(f: &mut Frame, area: Rect, app: &App) {
         "Local shell"
     } else {
         "Prompt"
-    };
+    }
+    .to_owned();
+    if app.pending.is_none() && attachment_count > 0 {
+        title.push_str(&format!(
+            " · {attachment_count} image{}",
+            if attachment_count == 1 { "" } else { "s" }
+        ));
+    }
     // One frame owns the complete input/approval surface. Tiny terminals cannot spare two border
     // rows, so they deliberately fall back to the unframed fail-closed control above/below.
     let body = if area.width >= 3 && area.height >= 3 {
@@ -6005,7 +6432,7 @@ fn render_composer(f: &mut Frame, area: Rect, app: &App) {
             .border_style(Style::default().fg(line_color))
             .title(format!(
                 " {} ",
-                clip_text(title, area.width.saturating_sub(4))
+                clip_text(&title, area.width.saturating_sub(4))
             ));
         let inner = composer.inner(area);
         f.render_widget(composer, area);
@@ -6087,13 +6514,58 @@ fn render_composer(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    let input_body = if attachment_count > 0 && body.height > 0 {
+        let chip_area = Rect::new(body.x, body.y, body.width, 1);
+        let mut chips = String::new();
+        for (index, attachment) in app.editor.attachments().as_slice().iter().enumerate() {
+            if index > 0 {
+                chips.push_str("  ");
+            }
+            chips.push_str("▧ ");
+            chips.push_str(attachment.display_name());
+            chips.push_str(" · ");
+            chips.push_str(&format_attachment_size(attachment.file_bytes()));
+        }
+        let suffix = if body.width >= 36 {
+            "  alt+backspace removes last"
+        } else {
+            ""
+        };
+        chips.push_str(suffix);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                clip_text(&chips, chip_area.width),
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            chip_area,
+        );
+        Rect::new(
+            body.x,
+            body.y.saturating_add(1),
+            body.width,
+            body.height.saturating_sub(1),
+        )
+    } else {
+        body
+    };
+    if input_body.height == 0 {
+        return;
+    }
+
     let marker_color = if is_bash {
         app.theme.warn
     } else {
         app.theme.accent
     };
     let marker = if is_bash { "! " } else { "› " };
-    let marker_area = Rect::new(body.x, body.y, body.width.min(2), body.height);
+    let marker_area = Rect::new(
+        input_body.x,
+        input_body.y,
+        input_body.width.min(2),
+        input_body.height,
+    );
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             marker,
@@ -6104,10 +6576,10 @@ fn render_composer(f: &mut Frame, area: Rect, app: &App) {
         marker_area,
     );
     let text_area = Rect::new(
-        body.x.saturating_add(2),
-        body.y,
-        body.width.saturating_sub(2),
-        body.height,
+        input_body.x.saturating_add(2),
+        input_body.y,
+        input_body.width.saturating_sub(2),
+        input_body.height,
     );
     let (crow, ccol) = app.editor.cursor_row_col();
     let cur_line = text.split('\n').nth(crow).unwrap_or("");
@@ -6115,6 +6587,11 @@ fn render_composer(f: &mut Frame, area: Rect, app: &App) {
     let scroll_x = cur_disp.saturating_sub(text_area.width.saturating_sub(1));
     let crow_u16 = u16::try_from(crow).unwrap_or(u16::MAX);
     let scroll_y = crow_u16.saturating_sub(text_area.height.saturating_sub(1));
+    app.composer_hitbox = Some(ComposerHitbox {
+        text_area,
+        scroll_x,
+        scroll_y,
+    });
 
     if text.is_empty() {
         let placeholder = if app.running {
@@ -6165,6 +6642,14 @@ fn render_composer(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+fn format_attachment_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    }
+}
+
 fn route_label(app: &App) -> String {
     if app.model.is_empty() {
         return String::new();
@@ -6183,8 +6668,24 @@ fn route_label(app: &App) -> String {
 
 fn footer_spans(text: &str, theme: &theme::Theme) -> Vec<Span<'static>> {
     const KEYS: &[&str] = &[
-        "enter", "tab", "esc", "ctrl+j", "ctrl+t", "ctrl+z", "alt+↑", "ctrl+end", "y", "a", "n",
-        "n/esc", "/", "@", "!", "?",
+        "enter",
+        "tab",
+        "esc",
+        "ctrl+j",
+        "ctrl+t",
+        "ctrl+v",
+        "ctrl+z",
+        "alt+↑",
+        "alt+backspace",
+        "ctrl+end",
+        "y",
+        "a",
+        "n",
+        "n/esc",
+        "/",
+        "@",
+        "!",
+        "?",
     ];
     let mut spans = Vec::new();
     for (index, item) in text.split(" · ").enumerate() {
@@ -6261,12 +6762,12 @@ fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, app: &App) 
         } else {
             "type to steer · tab queues · ctrl+j newline · esc interrupt"
         }
-    } else if !text.is_empty() {
-        "enter send · ctrl+j newline · esc clear"
+    } else if !text.is_empty() || !app.editor.attachments().is_empty() {
+        "enter send · ctrl+j newline · alt+backspace remove image · esc clear"
     } else if density == surface::Density::Compact {
-        "/ commands · @ files · ? help"
+        "/ commands · @ image/file · ctrl+v image · ? help"
     } else {
-        "/ commands · @ files · ! shell · ? shortcuts"
+        "/ commands · @ image/file · ctrl+v image · ! shell · ? help"
     };
     let left = if !app.running && text.is_empty() && app.editor.has_recently_cleared() {
         format!("{left} · ctrl+z restore")
@@ -6294,7 +6795,9 @@ fn ensure_stream_doc(app: &mut App) -> bool {
 fn draw(f: &mut Frame, app: &mut App) {
     // The dock grows for multiline input, bounded to six editable rows. A blocking approval asks
     // for the full six-row decision surface; short terminals degrade through Surface::resolve.
-    let n_input_rows = app.editor.text().split('\n').count().clamp(1, 6) as u16;
+    let n_input_rows = (app.editor.text().split('\n').count().clamp(1, 6) as u16)
+        .saturating_add(u16::from(!app.editor.attachments().is_empty()))
+        .min(6);
     let lane_rows = if app.pending.is_some() {
         0
     } else {
@@ -7724,7 +8227,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.theme = theme::Theme::dark();
         let mut terminal = Terminal::new(TestBackend::new(40, 3)).unwrap();
         terminal
-            .draw(|frame| render_composer(frame, frame.area(), &app))
+            .draw(|frame| render_composer(frame, frame.area(), &mut app))
             .unwrap();
         let buf = terminal.backend().buffer();
         for y in 0..3 {
@@ -7743,6 +8246,65 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(buf[(39, 0)].symbol(), "╮");
         assert_eq!(buf[(0, 2)].symbol(), "╰");
         assert_eq!(buf[(39, 2)].symbol(), "╯");
+    }
+
+    #[test]
+    fn composer_renders_attachment_chips_and_submit_preview_without_payload_bytes() {
+        let mut app = App::new();
+        app.editor.insert_str("inspect");
+        app.editor
+            .attach_image_bytes(
+                "clipboard.png",
+                b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;",
+            )
+            .unwrap();
+
+        let screen = render_text(&mut app, 80, 14);
+        assert!(screen.contains("1 image"));
+        assert!(screen.contains("clipboard.png"));
+        assert!(screen.contains("alt+backspace"));
+        assert!(screen.contains("inspect"));
+        assert!(!screen.contains("R0lGOD"));
+    }
+
+    #[test]
+    fn captured_mouse_click_focuses_the_composer_at_a_terminal_cell_boundary() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        assert_eq!(editor_char_index_at_cell("ab\n写z", 0, 1), 1);
+        assert_eq!(editor_char_index_at_cell("ab\n写z", 1, 0), 3);
+        assert_eq!(
+            editor_char_index_at_cell("ab\n写z", 1, 1),
+            4,
+            "the trailing cell of a wide character lands after it"
+        );
+        assert_eq!(editor_char_index_at_cell("ab\n写z", 9, 9), 5);
+
+        let mut app = App::new();
+        app.editor.insert_str("ab写d");
+        let mut terminal = Terminal::new(TestBackend::new(24, 3)).unwrap();
+        terminal
+            .draw(|frame| render_composer(frame, frame.area(), &mut app))
+            .unwrap();
+        let hitbox = app
+            .composer_hitbox
+            .expect("composer published a hit-test map");
+        assert!(place_editor_cursor_from_mouse(
+            &mut app,
+            hitbox.text_area.x.saturating_add(3),
+            hitbox.text_area.y,
+        ));
+        app.editor.insert('X');
+        assert_eq!(
+            app.editor.text(),
+            "ab写Xd",
+            "clicking the wide glyph's trailing cell focuses after it"
+        );
+        assert!(
+            !place_editor_cursor_from_mouse(&mut app, u16::MAX, u16::MAX),
+            "off-composer clicks are ignored"
+        );
     }
 
     #[test]
@@ -8419,19 +8981,65 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn outcome_label_is_human_not_debug() {
-        // TUI v3 §7: the status slot never shows `BudgetExhausted("max_turns")` Debug.
-        assert_eq!(outcome_label(&Outcome::Done), "done");
-        assert_eq!(outcome_label(&Outcome::Drained), "drained");
-        assert_eq!(outcome_label(&Outcome::Stuck), "stuck");
-        assert_eq!(
-            outcome_label(&Outcome::BudgetExhausted("max_turns")),
-            "hit the turn budget"
+    fn run_terminal_chrome_is_derived_from_the_canonical_result_v5_object() {
+        let mut app = App::new();
+        app.running = true;
+        let (sq, _rx) = tokio::sync::mpsc::channel(1);
+        let mut session = Session::for_test(sq);
+        let summary = app_server::TerminalSummary {
+            outcome: core_protocol::Outcome::Done,
+            assistant_text: "the typed answer".into(),
+            run_id: "run-tui-parity".into(),
+            cost: CostState::default(),
+            turns: 3,
+            kernel_tax: core_obs::KernelTax::default(),
+            error: None,
+            memo_hits: 0,
+            memo_misses: 0,
+        };
+        let expected = crate::output::final_result(
+            &summary.outcome,
+            &summary.assistant_text,
+            &summary.run_id,
+            &summary.cost,
+            summary.turns,
+            summary.kernel_tax,
+            summary.error.as_deref(),
         );
-        let l = outcome_label(&Outcome::BudgetExhausted("max_usd"));
-        assert!(
-            !l.contains('"') && !l.contains("BudgetExhausted"),
-            "no Debug tuple leak: {l}"
+        let event = app_server::ServerEvent::RunEnded {
+            snapshot: Box::new(app_server::SessionSnapshot {
+                mode: PermissionMode::default(),
+                effort: Effort::default(),
+                model: "test-model".into(),
+                cost: CostState::default(),
+                last_turn_usage: None,
+                unadmitted_steers: Vec::new(),
+                permission_rules: PermissionRules::new(),
+                ledger_summary: String::new(),
+            }),
+            summary: Box::new(summary),
+        };
+        let mut notifier = notification::TerminalNotifier::new(true);
+        notifier.begin_run();
+        let mut notification_bytes = Vec::new();
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let drain = Arc::new(AtomicBool::new(false));
+
+        apply_server_event(
+            &mut app,
+            &mut session,
+            event,
+            &mut notifier,
+            &mut notification_bytes,
+            &interrupt,
+            &drain,
+        );
+
+        assert_eq!(app.last_result.as_ref(), Some(&expected));
+        assert_eq!(app.status, "idle · last: done");
+        assert_eq!(
+            notification_bytes, b"\x07",
+            "the authoritative RunEnded boundary emits one run-complete notification"
         );
     }
 
@@ -9264,10 +9872,157 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
+    fn only_an_accepted_submission_arms_run_completion_notification() {
+        let (accepted_tx, mut accepted_rx) = tokio::sync::mpsc::channel(1);
+        let accepted_session = Session::for_test(accepted_tx);
+        let mut accepted_app = App::new();
+        let mut accepted_notifier = notification::TerminalNotifier::new(true);
+
+        submit_turn(
+            &mut accepted_app,
+            &accepted_session,
+            &mut accepted_notifier,
+            "accepted".into(),
+        );
+
+        assert!(accepted_app.running);
+        assert!(matches!(
+            accepted_rx
+                .try_recv()
+                .expect("accepted task reaches the SQ")
+                .into_current()
+                .expect("current protocol envelope"),
+            Op::UserInput { text } if text == "accepted"
+        ));
+        assert_eq!(
+            accepted_notifier.run_completed(),
+            Some(notification::Trigger::RunComplete)
+        );
+
+        let (busy_tx, _busy_rx) = tokio::sync::mpsc::channel(1);
+        busy_tx
+            .try_send(core_protocol::SqEnvelope::current(Op::Interrupt))
+            .expect("fixture fills the bounded SQ");
+        let busy_session = Session::for_test(busy_tx);
+        let mut busy_app = App::new();
+        let mut busy_notifier = notification::TerminalNotifier::new(true);
+
+        submit_turn(
+            &mut busy_app,
+            &busy_session,
+            &mut busy_notifier,
+            "refused".into(),
+        );
+
+        assert!(!busy_app.running);
+        assert_eq!(busy_notifier.run_completed(), None);
+        assert!(
+            busy_app
+                .transcript
+                .iter()
+                .any(|block| block.to_text().contains("submission was not accepted"))
+        );
+    }
+
+    #[test]
+    fn composer_attachment_submits_one_multimodal_sq_envelope() {
+        let image_bytes = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;";
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let session = Session::for_test(tx);
+        let mut app = App::new();
+        app.editor.insert_str("describe this");
+        app.editor
+            .attach_image_bytes("clipboard.png", image_bytes)
+            .unwrap();
+        let mut notifier = notification::TerminalNotifier::new(false);
+
+        submit_composer(&mut app, &session, &mut notifier);
+
+        assert!(app.running);
+        assert!(!app.editor.has_submission());
+        let op = rx
+            .try_recv()
+            .expect("composer submits through the bounded SQ")
+            .into_current()
+            .expect("current protocol envelope");
+        let Op::UserInputV2 { segments } = op else {
+            panic!("image composer must use the additive multimodal operation");
+        };
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, image_bytes);
+        assert_eq!(
+            serde_json::to_value(&segments).expect("serialize composer segments"),
+            serde_json::json!([
+                {"type": "text", "text": "describe this"},
+                {
+                    "type": "image",
+                    "image": {
+                        "media_type": "image/gif",
+                        "data": encoded,
+                    },
+                },
+            ]),
+            "the composer must preserve ordered text and the exact attached bytes"
+        );
+        assert_eq!(segments.text(), "describe this");
+        let images = segments.images().collect::<Vec<_>>();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].media_type, core_protocol::ImageMediaType::Gif);
+        assert_eq!(
+            app.transcript
+                .iter()
+                .filter(|block| block.to_text().contains("describe this"))
+                .count(),
+            1,
+            "the submit preview is projected once without image bytes"
+        );
+    }
+
+    #[test]
+    fn clipboard_helper_environment_cannot_inherit_provider_credentials_or_proxies() {
+        let environment = clipboard_child_environment_with(|name| {
+            Some(
+                match name {
+                    "WAYLAND_DISPLAY" => "wayland-1",
+                    "XDG_RUNTIME_DIR" => "/tmp/core-runtime",
+                    "DISPLAY" => ":1",
+                    "XAUTHORITY" => "/tmp/core-xauthority",
+                    _ => "must-not-cross",
+                }
+                .into(),
+            )
+        });
+        let keys = environment
+            .iter()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect::<std::collections::BTreeSet<_>>();
+        for forbidden in [
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "CORE_RELEASE_SMOKE_KEY",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "HOME",
+        ] {
+            assert!(
+                !keys.contains(forbidden),
+                "{forbidden} crossed the allowlist"
+            );
+        }
+        assert!(
+            environment
+                .iter()
+                .all(|(_, value)| value != "must-not-cross"),
+            "an unrecognized parent value crossed the clipboard helper boundary"
+        );
+    }
+
+    #[test]
     fn notifications_use_only_the_out_of_band_writer_and_never_stream_deltas() {
         let mut app = App::new();
         let mut output = Vec::new();
         let mut notifier = notification::TerminalNotifier::new(true);
+        notifier.begin_run();
 
         apply_live_event(
             &mut app,
@@ -9286,8 +10041,22 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notifier,
             &mut output,
         );
-        let after_turn = output.len();
-        assert_eq!(output, b"\x07", "one turn boundary emits one terminal bell");
+        apply_live_event(
+            &mut app,
+            UiEvent::Phase(core_protocol::Phase::Model),
+            &mut notifier,
+            &mut output,
+        );
+        apply_live_event(
+            &mut app,
+            turn_end(0.02, Usage::default()),
+            &mut notifier,
+            &mut output,
+        );
+        assert!(
+            output.is_empty(),
+            "a provider TurnEnd is not the authoritative run-complete boundary"
+        );
 
         let approval = UiEvent::ApprovalRequest {
             id: SubmissionId(41),
@@ -9300,9 +10069,18 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         apply_live_event(&mut app, approval.clone(), &mut notifier, &mut output);
         apply_live_event(&mut app, approval, &mut notifier, &mut output);
         assert_eq!(
-            &output[after_turn..],
-            b"\x07",
+            output, b"\x07",
             "a repeated approval id is notified only once"
+        );
+        apply_live_event(
+            &mut app,
+            UiEvent::Done("legacy presentation".into()),
+            &mut notifier,
+            &mut output,
+        );
+        assert_eq!(
+            output, b"\x07",
+            "UiEvent::Done cannot masquerade as App Server run completion"
         );
         assert!(
             !String::from_utf8_lossy(&output).contains("injected"),
@@ -9318,10 +10096,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn done_notifies_a_successful_model_turn_when_usage_and_turn_end_are_missing() {
+    fn provider_turns_and_done_wait_for_the_authoritative_run_boundary() {
         let mut app = App::new();
         let mut output = Vec::new();
         let mut notifier = notification::TerminalNotifier::new(true);
+        notifier.begin_run();
 
         apply_live_event(
             &mut app,
@@ -9331,11 +10110,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
         apply_live_event(
             &mut app,
-            UiEvent::Text("valid response without usage".into()),
+            turn_end(0.01, Usage::default()),
             &mut notifier,
             &mut output,
         );
-        assert!(output.is_empty(), "model activity is not a completion");
         apply_live_event(
             &mut app,
             UiEvent::Done("Done".into()),
@@ -9349,34 +10127,19 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut output,
         );
         assert_eq!(
-            output, b"\x07",
-            "Done supplies exactly one fallback when truthful missing usage omits TurnEnd"
+            output, b"",
+            "model phases, provider turns, and Done are all run-completion byte-silent"
         );
 
-        let mut normal_output = Vec::new();
-        let mut normal_notifier = notification::TerminalNotifier::new(true);
-        apply_live_event(
-            &mut app,
-            UiEvent::Phase(core_protocol::Phase::Model),
-            &mut normal_notifier,
-            &mut normal_output,
-        );
-        apply_live_event(
-            &mut app,
-            turn_end(0.01, Usage::default()),
-            &mut normal_notifier,
-            &mut normal_output,
-        );
-        apply_live_event(
-            &mut app,
-            UiEvent::Done("Done".into()),
-            &mut normal_notifier,
-            &mut normal_output,
-        );
+        let trigger = notifier
+            .run_completed()
+            .expect("the accepted run owns one terminal boundary");
+        notifier.emit(&mut output, trigger);
         assert_eq!(
-            normal_output, b"\x07",
-            "a normal TurnEnd plus Done must not double-notify"
+            output, b"\x07",
+            "the authoritative run boundary emits exactly one notification"
         );
+        assert_eq!(notifier.run_completed(), None);
     }
 
     #[test]

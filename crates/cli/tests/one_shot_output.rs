@@ -31,6 +31,7 @@ const PROVIDER_ID: &str = "golden";
 const MODEL_ID: &str = "golden-model";
 const TEST_KEY_ENV: &str = "CORE_GOLDEN_TEST_KEY";
 const TEST_KEY: &str = "integration-test-placeholder";
+const DEFAULT_TASK: &str = "return the deterministic fixture response";
 
 static NEXT_SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -640,7 +641,7 @@ fn core_command(scratch: &Scratch, format: &str, max_turns: u32, extra_args: &[&
         .env(TEST_KEY_ENV, TEST_KEY)
         .current_dir(scratch.repo())
         .arg("-p")
-        .arg("return the deterministic fixture response")
+        .arg(DEFAULT_TASK)
         .arg("--output-format")
         .arg(format)
         .arg("--repo")
@@ -659,7 +660,6 @@ fn core_command(scratch: &Scratch, format: &str, max_turns: u32, extra_args: &[&
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-
     #[cfg(unix)]
     command.process_group(0);
 
@@ -682,7 +682,6 @@ fn sessions_command(scratch: &Scratch) -> Command {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-
     #[cfg(unix)]
     command.process_group(0);
 
@@ -1022,7 +1021,7 @@ fn d9_01_g1_g2_real_cli_sessions_and_continue_use_the_runtime_cache() {
     assert_eq!(sessions.status.code(), Some(0));
     let sessions_stdout = String::from_utf8(sessions.stdout).unwrap();
     assert!(sessions_stdout.contains(&run_id));
-    assert!(sessions_stdout.contains("return the deterministic fixture response"));
+    assert!(sessions_stdout.contains(DEFAULT_TASK));
 
     let continued = collect_core(spawn_core(&scratch, "json", 2, &["--continue"]));
     server.finish();
@@ -1082,6 +1081,30 @@ fn json_one_shot_process_contract_matches_golden() {
 }
 
 #[test]
+fn one_shot_refuses_app_server_version_skew_before_provider_dispatch() {
+    let scratch = Scratch::new("one-shot-version-skew", "http://127.0.0.1:9/v1");
+    let skewed = core_protocol::PROTOCOL_VERSION + 1;
+    let mut command = core_command(&scratch, "json", 1, &[]);
+    command.env("CORE_APP_SERVER_PROTOCOL_VERSION", skewed.to_string());
+    let output = collect_core(command.spawn().expect("spawn skewed one-shot client"));
+
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "a refused one-shot handshake must not fabricate a result object"
+    );
+    let stderr = std::str::from_utf8(&output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains(&format!(
+        "unsupported SQ/EQ protocol version {skewed}; expected {}",
+        core_protocol::PROTOCOL_VERSION
+    )));
+    assert!(
+        !stderr.contains("provider response"),
+        "version skew must fail before provider dispatch"
+    );
+}
+
+#[test]
 fn stream_json_one_shot_process_contract_matches_golden() {
     let server = MockProvider::spawn(Reply::Success);
     let scratch = Scratch::new("stream-json-success", &server.api_root);
@@ -1108,6 +1131,59 @@ fn stream_json_one_shot_process_contract_matches_golden() {
             "one_shot_stream_json_success_v5.jsonl",
             include_str!("golden/one_shot_stream_json_success_v5.jsonl")
         )
+    );
+}
+
+#[test]
+fn image_one_shot_emits_metadata_then_degrades_cleanly_for_a_text_only_provider() {
+    let (server, requests) = MockProvider::spawn_capturing_script(vec![Reply::Success]);
+    let scratch = Scratch::new("image-stream-json", &server.api_root);
+    let image_path = scratch.repo().join("fixture.gif");
+    let image_bytes = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;";
+    fs::write(&image_path, image_bytes).expect("write valid bounded GIF fixture");
+    let image_arg = image_path.to_str().expect("fixture path is UTF-8");
+
+    let output = run_core(&scratch, "stream-json", &["--image", image_arg]);
+    let request = requests
+        .recv_timeout(SERVER_TIMEOUT)
+        .expect("capture the text-only provider request");
+    server.finish();
+
+    assert_eq!(output.status.code(), Some(0));
+    let records = json_lines(&output.stdout);
+    assert_eq!(
+        records.first(),
+        Some(&json!({
+            "schema_version": 5,
+            "type": "input_attachment",
+            "ordinal": 1,
+            "media_type": "image/gif",
+            "encoded_bytes": 60,
+        })),
+        "attachment metadata precedes every runtime event"
+    );
+    assert!(
+        records.iter().any(|record| {
+            record["type"] == "notice"
+                && record["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("image"))
+        }),
+        "a text-only provider exposes one clear degradation notice"
+    );
+    assert_terminal_result(records.last().expect("terminal result"), 0, "done");
+
+    let request_text = serde_json::to_string(&request).unwrap();
+    assert!(request_text.contains("return the deterministic fixture response"));
+    assert!(!request_text.contains(image_arg));
+    assert!(!request_text.contains("R0lGODlh"));
+    assert!(
+        request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|message| message["content"].is_string()),
+        "the stubbed text-only adapter receives no provider-specific image block"
     );
 }
 

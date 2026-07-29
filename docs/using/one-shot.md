@@ -17,6 +17,8 @@ selects one-shot operation, but explicit `-p` is clearer in automation.
 core -p --output-format text "Explain the repository"
 core -p --output-format json "Explain the repository"
 core -p --output-format stream-json "Explain the repository"
+core -p --image screenshot.png --image trace.webp \
+  "Compare these screenshots"
 ```
 
 | Format | Stdout contract |
@@ -26,8 +28,20 @@ core -p --output-format stream-json "Explain the repository"
 | `stream-json` | One JSON object per UI event, followed by the same final result object |
 
 Diagnostics remain on stderr for machine formats. The current machine schema
-version is `4`; consumers must inspect `schema_version` rather than Rust enum or
+version is `5`; consumers must inspect `schema_version` rather than Rust enum or
 debug text.
+
+`--image PATH` is repeatable for up to eight PNG, JPEG, GIF, or WebP files. Core
+streams each file through a hard limit, checks its magic bytes and container
+minimums, and refuses extension spoofing before constructing the SQ submission.
+The limits are 6 MiB raw / 8 MiB base64 per image and 24 MiB raw / 32 MiB base64
+in aggregate. A text-only provider receives the unchanged prompt, emits one clear
+degradation notice, and still completes; image bytes and paths never enter that
+provider request.
+
+In `stream-json`, each accepted image produces one metadata-only
+`input_attachment` record immediately before SQ submission. The record contains
+only its one-based ordinal, media type, and encoded byte count.
 
 ## Exit codes
 
