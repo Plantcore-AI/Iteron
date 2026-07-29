@@ -10,26 +10,28 @@
 //! drains them and redraws. The kernel does the work; this is a thin, replaceable front-end
 //! on the same core (ADR-010: frontends are adapters).
 
-mod app_server;
 pub(crate) mod hyperlink;
 mod keyboard_enhancement;
 mod mouse_capture;
 mod notification;
 mod terminal_input;
 
+pub(crate) mod app_server;
 use crate::commands::{self, SlashCommand};
 use crate::editor::Editor;
 use crate::providers::{ModelSelection, ProviderDirectory};
-use crate::tui::app_server::AppServerClient;
 use crate::{block, surface, theme};
 use core_ctx::ContextEstimate;
+// `Agent` appears in exactly one place below: the parameter of `run`, which hands it straight to
+// `app_server::attach`. That is the invariant this lane establishes — past that statement the
+// frontend cannot reach the runtime, and everything it knows arrives through `app_server`.
 use core_kernel::{
     Agent, UiEvent, WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi, WorkflowUiEvent,
 };
 use core_obs::CostState;
 use core_protocol::{
     Capability, Effort, Op, Outcome, PermissionMode, PermissionRules, ReasoningEffort,
-    RuntimePolicySource, SqEnvelope, SubmissionId, Usage, Verdict,
+    SubmissionId, Usage, Verdict,
 };
 use core_provider::EffortApplication;
 use crossterm::event::{
@@ -50,7 +52,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 /// A pending capability approval the operator must answer (mode produced an `Ask` verdict).
 struct Pending {
@@ -75,9 +76,151 @@ enum ApprovalInput {
     Answer { approved: bool, remember: bool },
 }
 
-enum RunCompletion {
-    Outcome(Outcome),
-    Error(String),
+/// Everything the frontend holds of the runtime: queue endpoints, a negotiated version, and the
+/// facts that cannot change for the life of the session.
+///
+/// This replaces `Option<Agent>`. The frontend used to own the runtime outright and encode "a run is
+/// in flight" as "the slot is empty" — which is why `/model`, `/effort` and `/compact` were
+/// unreachable mid-turn: the borrow checker, not the design, was enforcing it. The `Agent` now lives
+/// in the App Server task and the frontend reaches it only through the wire.
+pub(crate) struct Session {
+    /// The versioned SQ client. Every `Op` the frontend sends goes through this and nothing else.
+    client: app_server::AppServerClient,
+    /// The control plane. See `app_server::Control` for why these are not `Op`s.
+    control: tokio::sync::mpsc::Sender<app_server::ControlRequest>,
+    /// Runtime state the status line mirrors. Refreshed from every control reply and from the
+    /// terminal event of every turn — the frontend never reads it off an `Agent` again.
+    state: app_server::SessionSnapshot,
+    /// Facts fixed for the session, captured once at composition. Reading these used to require the
+    /// `Agent` to be idle in the frontend's hands.
+    facts: app_server::SessionFacts,
+}
+
+impl Session {
+    fn new(
+        handle_client: app_server::AppServerClient,
+        control: tokio::sync::mpsc::Sender<app_server::ControlRequest>,
+        state: app_server::SessionSnapshot,
+        facts: app_server::SessionFacts,
+    ) -> Self {
+        Self {
+            client: handle_client,
+            control,
+            state,
+            facts,
+        }
+    }
+
+    // Accessors mirroring the shapes the frontend used to read straight off the `Agent`. Keeping
+    // the names lets the call sites stay readable; what changed is where the value comes from —
+    // a snapshot the server published, or a fact captured once at composition.
+    pub(crate) fn workspace(&self) -> &std::path::Path {
+        &self.facts.workspace
+    }
+
+    pub(crate) fn memory_workspace(&self) -> Option<&std::path::Path> {
+        self.facts.memory_workspace.as_deref()
+    }
+
+    pub(crate) fn rollout_path(&self) -> &std::path::Path {
+        &self.facts.rollout_path
+    }
+
+    pub(crate) fn model(&self) -> &str {
+        &self.state.model
+    }
+
+    pub(crate) fn effort(&self) -> Effort {
+        self.state.effort
+    }
+
+    pub(crate) fn permission_mode(&self) -> PermissionMode {
+        self.state.mode
+    }
+
+    pub(crate) fn permission_rules(&self) -> &PermissionRules {
+        &self.state.permission_rules
+    }
+
+    pub(crate) fn ledger_summary(&self) -> &str {
+        &self.state.ledger_summary
+    }
+
+    pub(crate) fn compaction_trigger_tokens(&self) -> usize {
+        self.facts.compaction_trigger_tokens
+    }
+
+    /// A session wired to a bare SQ, for tests that assert on what the frontend submits. Test-only
+    /// so that production code has exactly one way to obtain a `Session`: `app_server::wire`.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        submissions: tokio::sync::mpsc::Sender<core_protocol::SqEnvelope>,
+    ) -> Self {
+        let (control, _control_rx) = tokio::sync::mpsc::channel(1);
+        Self {
+            client: app_server::AppServerClient::connect(
+                core_protocol::PROTOCOL_VERSION,
+                submissions,
+            )
+            .expect("the in-process server speaks the current protocol"),
+            control,
+            state: app_server::SessionSnapshot {
+                mode: core_protocol::PermissionMode::default(),
+                effort: core_protocol::Effort::default(),
+                model: "test-model".into(),
+                cost: core_obs::CostState::default(),
+                last_turn_usage: None,
+                unadmitted_steers: Vec::new(),
+                permission_rules: PermissionRules::new(),
+                ledger_summary: String::new(),
+            },
+            facts: app_server::SessionFacts {
+                workspace: std::path::PathBuf::new(),
+                memory_workspace: None,
+                rollout_path: std::path::PathBuf::new(),
+                compaction_trigger_tokens: 0,
+                initial_model_context_window: None,
+                registry_tools: Vec::new(),
+            },
+        }
+    }
+
+    pub(crate) fn registry_tools(&self) -> &[app_server::ToolFact] {
+        &self.facts.registry_tools
+    }
+
+    /// Adopt the runtime state carried by a terminal event.
+    pub(crate) fn adopt(&mut self, snapshot: app_server::SessionSnapshot) {
+        self.state = snapshot;
+    }
+
+    /// Submit one operation on the SQ.
+    pub(crate) fn submit(&self, op: Op) -> Result<(), app_server::SubmitError> {
+        self.client.submit(op)
+    }
+
+    /// Make one control request and wait for its answer.
+    ///
+    /// Returns `None` when the server is gone. The round trip is what makes the answer trustworthy:
+    /// the frontend renders the state the runtime actually reached, not the state it asked for.
+    pub(crate) async fn control(
+        &mut self,
+        control: app_server::Control,
+    ) -> Option<app_server::ControlReply> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.control
+            .send(app_server::ControlRequest {
+                control,
+                reply: reply_tx,
+            })
+            .await
+            .ok()?;
+        let reply = reply_rx.await.ok()?;
+        if let app_server::ControlReply::State(snapshot) = &reply {
+            self.state = (**snapshot).clone();
+        }
+        Some(reply)
+    }
 }
 
 /// A human label for a capability class, for a security prompt. NEVER the raw `{:?}` Debug (which
@@ -2483,26 +2626,48 @@ const MAX_SUBMISSION_BYTES: usize = 64 * 1024;
 
 /// Run the TUI. The agent runs in a background task streaming `UiEvent`s; the render loop drains
 /// them and redraws. For follow-ups the same agent continues via `follow_up`.
+/// Enter the interactive frontend.
+///
+/// The `Agent` arrives here and leaves in the next statement: `app_server::attach` is the single
+/// composition root, and everything below this line is a *client* holding queue endpoints, a
+/// negotiated protocol version and a set of session facts. This is the only place in the frontend
+/// that can name the runtime type at all.
+///
+/// Both the handshake and its refusal happen before ANY terminal setup. A frontend that cannot
+/// speak the runtime's protocol has nothing useful to draw, and a diagnostic printed from inside
+/// the alternate screen is a diagnostic nobody reads: the terminal guard restores the screen on the
+/// way out and takes the message with it.
 pub async fn run(
-    mut agent: Agent,
+    agent: Agent,
     initial_task: Option<String>,
     providers: ProviderDirectory,
     provider_id: String,
     completion_notifications: bool,
 ) -> anyhow::Result<()> {
-    // The TUI attaches to the runtime as a *versioned App Server client*, not as a co-composer of
-    // the runtime: it negotiates the SQ/EQ protocol version up front (the in-process runtime speaks
-    // `PROTOCOL_VERSION`), announces the negotiated version on stderr before taking over the
-    // terminal, and thereafter submits only version-stamped envelopes through `AppServerClient`
-    // (constructed below). Emitting this before any raw-mode setup keeps the handshake on the
-    // pre-TUI diagnostic stream, ahead of the alternate screen.
+    let attached = match app_server::attach(agent) {
+        Ok(attached) => attached,
+        Err(error) => {
+            eprintln!("app server: refusing to attach — {error}");
+            return Err(anyhow::anyhow!(
+                "the App Server refused the version handshake: {error}"
+            ));
+        }
+    };
     eprintln!(
         "app server: TUI attached as a versioned client (SQ/EQ protocol v{})",
-        core_protocol::PROTOCOL_VERSION
+        attached.handle.client.negotiated_version()
     );
+    let app_server::Attached {
+        handle,
+        task: server_task,
+        facts,
+        initial_state,
+        interrupt,
+        drain,
+    } = attached;
     // Drain promises a real workspace checkpoint. Probe once before raw mode so a non-Git
     // workspace can reject that verb explicitly without blocking or breaking the terminal.
-    let drain_available = core_record::checkpoint_supported(&agent.workspace);
+    let drain_available = core_record::checkpoint_supported(&facts.workspace);
     // RAII: the terminal is restored on ANY exit path (error/panic/normal).
     let mut guard = TermGuard::new()?;
     // Catchable termination signals (kill <pid> = SIGTERM, terminal close = SIGHUP) bypass Drop via
@@ -2537,37 +2702,18 @@ pub async fn run(
     let mut notifier = notification::TerminalNotifier::new(completion_notifications);
     let mut notification_writer = notification::LiveTerminalWriter;
 
-    let repo = agent.workspace.clone();
+    let repo = facts.workspace.clone();
     let mut app = App::new_with_detected_theme(detected_theme);
     app.hyperlink_policy = hyperlink::Policy::detect(&repo);
-    app.mode = agent.permission_mode();
-    app.effort = agent.effort();
-    app.model = agent.model.clone();
-    app.model_context_window = agent.model_context_window;
+    app.mode = initial_state.mode;
+    app.effort = initial_state.effort;
+    app.model = initial_state.model.clone();
+    app.model_context_window = facts.initial_model_context_window;
     app.provider_id = provider_id;
     let provider_credential_envs = providers.credential_env_names();
-    let interrupt = Arc::new(AtomicBool::new(false));
-    agent.set_interrupt(interrupt.clone());
-    let drain = Arc::new(AtomicBool::new(false));
-    agent.set_drain(drain.clone());
 
-    // The approvals channel back into the running kernel (the one genuinely-new runtime path,
-    // R5 §4): an `Ask` verdict makes the kernel emit UiEvent::ApprovalRequest and block on this
-    // receiver for an `Op::ApprovalResponse`. One channel for the whole session; the receiver
-    // travels with the agent in/out of the run task, the sender stays here to answer.
-    let (atx, arx): (UnboundedSender<SqEnvelope>, UnboundedReceiver<SqEnvelope>) =
-        tokio::sync::mpsc::unbounded_channel();
-    agent.set_approvals(arx);
-    // The TUI is a versioned App Server client, not a runtime co-composer: it completes a
-    // version handshake with the in-process runtime and thereafter submits only envelopes
-    // stamped with the negotiated protocol version, never bare ops assumed to be understood.
-    let app_server = AppServerClient::current(atx);
-
-    // The agent runs in a background task; it streams UiEvents back. We move the agent into the
-    // task while running, and take it back when the run completes (via a oneshot returning it).
-    let mut agent_slot: Option<Agent> = Some(agent);
-    let mut run_handle: Option<tokio::task::JoinHandle<(Agent, RunCompletion)>> = None;
-    let mut rx: Option<UnboundedReceiver<UiEvent>> = None;
+    let mut session = Session::new(handle.client, handle.control, initial_state, facts);
+    let mut events = handle.events;
     let mut first_task = initial_task;
     let mut redraw = true;
 
@@ -2576,124 +2722,51 @@ pub async fn run(
         if let Some(task) = first_task.take()
             && !task.trim().is_empty()
         {
-            start_run(
-                &mut agent_slot,
-                &mut run_handle,
-                &mut rx,
-                &interrupt,
-                &mut app,
-                task,
-                true,
-            );
+            submit_turn(&mut app, &session, task);
             redraw = true;
         }
 
-        // Drain any pending UI events (non-blocking).
-        if let Some(r) = rx.as_mut() {
-            while let Ok(ev) = r.try_recv() {
-                apply_live_event(&mut app, ev, &mut notifier, &mut notification_writer);
-                redraw = true;
-            }
+        // Drain the EQ (non-blocking). One long-lived subscription for the whole session: the
+        // frontend used to create and retire a receiver per run, which is why there was no event
+        // stream at all while idle and why the join had to double as a drain barrier.
+        while let Ok(envelope) = events.try_recv() {
+            let event = match envelope.into_current() {
+                Ok(event) => event,
+                Err(error) => {
+                    // Not recoverable by retrying: the runtime is emitting a shape this frontend
+                    // cannot render. Say so in the transcript and stop reading the queue.
+                    app.note(
+                        block::NoticeLevel::Err,
+                        format!("the runtime is speaking a protocol this frontend cannot read ({error}); no further updates will be shown"),
+                    );
+                    app.quit = true;
+                    break;
+                }
+            };
+            apply_server_event(
+                &mut app,
+                &mut session,
+                event,
+                &mut notifier,
+                &mut notification_writer,
+                &interrupt,
+                &drain,
+            );
+            redraw = true;
         }
         if app.advance_tool_presentations(Instant::now()) {
             redraw = true;
         }
 
-        // Has the run finished? Reclaim the agent. If the run task PANICKED, the agent is lost;
-        // we surface the error and stay idle (the user can quit) rather than hanging forever.
-        if let Some(h) = run_handle.as_mut()
-            && h.is_finished()
-        {
-            redraw = true;
-            let handle = run_handle.take().unwrap();
-            let joined = handle.await;
-            // Completion is the synchronization barrier for the producer. Drain once more after
-            // joining so the tail Text/ToolEnd/SteerApplied events sent between the earlier Empty
-            // observation and task completion cannot be discarded with the receiver.
-            if let Some(r) = rx.as_mut() {
-                while let Ok(ev) = r.try_recv() {
-                    apply_live_event(&mut app, ev, &mut notifier, &mut notification_writer);
-                }
-            }
-            app.running = false;
-            app.interrupting = false;
-            app.draining = false;
-            app.run_started = None;
-            app.flush_text();
-            app.pending = None; // a pending approval cannot outlive its run
-            app.settle_unfinished_tools();
-            interrupt.store(false, Ordering::Relaxed);
-            drain.store(false, Ordering::Relaxed);
-            match joined {
-                Ok((mut agent_back, completion)) => {
-                    // A channel send is not delivery. Atomically drain the reclaimed Agent's
-                    // unadmitted operations, then move those exact raw texts (not the display
-                    // previews) into the global submission order. This prevents loss, duplicate
-                    // injection, and cross-lane reordering on the next run.
-                    let unadmitted = agent_back.take_unadmitted_steers();
-                    let (count, unmatched_previews) = app.requeue_unadmitted(unadmitted);
-                    if count > 0 {
-                        app.note(
-                            block::NoticeLevel::Warn,
-                            format!(
-                                "{count} steering submission(s) missed the safe point; queued after the turn"
-                            ),
-                        );
-                    }
-                    if unmatched_previews > 0 {
-                        app.note(
-                            block::NoticeLevel::Warn,
-                            format!(
-                                "delivery could not be confirmed for {unmatched_previews} steering submission(s); preserved after the turn"
-                            ),
-                        );
-                    }
-                    // refresh the status-line mirrors from the reclaimed agent.
-                    app.mode = agent_back.permission_mode();
-                    app.effort = agent_back.effort();
-                    app.model = agent_back.model.clone();
-                    app.cost = agent_back.ledger.cost_state();
-                    app.last_turn_usage = agent_back.ledger.last_turn_usage;
-                    agent_slot = Some(agent_back);
-                    match completion {
-                        RunCompletion::Outcome(outcome) => {
-                            app.status = format!("idle · last: {}", outcome_label(&outcome));
-                        }
-                        RunCompletion::Error(detail) => {
-                            app.push_block(block::BlockKind::Error {
-                                title: "run failed".into(),
-                                detail,
-                                open: true,
-                            });
-                            app.status = "idle · last: run failed".into();
-                        }
-                    }
-                }
-                Err(e) => {
-                    let unconfirmed = app.steer_previews.len();
-                    app.steer_previews.clear();
-                    if unconfirmed > 0 {
-                        app.note(
-                            block::NoticeLevel::Warn,
-                            format!(
-                                "delivery is unknown for {unconfirmed} steering submission(s); the run task was lost"
-                            ),
-                        );
-                    }
-                    app.push_block(block::BlockKind::Error {
-                            title: format!("run task failed: {e}"),
-                            detail: "the session cannot continue — press Esc to quit (resume later with --resume).".into(),
-                            open: true,
-                        });
-                    app.status = "error (no agent) — Esc to quit".into();
-                }
-            }
-            rx = None;
-            // Dispatch queued follow-ups IN ORDER, each classified separately (round-3 review:
+        // A turn ends when the server says so, on the EQ, not when a handle the frontend owned
+        // finishes. `apply_server_event` handles `RunEnded`; the only thing left here is the
+        // follow-up queue, which is now gated on the run state the server reports rather than on
+        // whether an `Option<Agent>` happens to be full.
+        if !app.running && !app.queued.is_empty() {
             // a joined blob mis-classified `/compact`+task). Commands execute inline; the first
             // PROSE item starts a run and we stop — the remaining items dispatch on the next
             // reclaim (a run is single-writer; we cannot start two at once).
-            while !app.queued.is_empty() && agent_slot.is_some() {
+            while !app.queued.is_empty() && !app.running {
                 let q = app
                     .queued
                     .pop_front()
@@ -2703,13 +2776,17 @@ pub async fn run(
                 if q.is_empty() {
                     continue;
                 } else if let Some(cmd) = q.strip_prefix('/') {
-                    dispatch_slash_command(&mut term, &mut app, &mut agent_slot, &providers, cmd)
+                    dispatch_slash_command(&mut term, &mut app, &mut session, &providers, cmd)
                         .await?;
                 } else if let Some(bash) = q.strip_prefix('!') {
-                    let (mode, rules) = match agent_slot.as_ref() {
-                        Some(agent) => (agent.permission_mode(), agent.permission_rules().clone()),
-                        None => (app.mode, PermissionRules::new()),
-                    };
+                    // The runtime is resident, so these are always the live values. The old fallback to
+                    // `(app.mode, PermissionRules::new())` ran `!bash` against DEFAULT-EMPTY rules
+                    // whenever the `Agent` was away in a run task — a real correctness gap that
+                    // inverting the ownership closes.
+                    let (mode, rules) = (
+                        session.permission_mode(),
+                        session.permission_rules().clone(),
+                    );
                     run_bash_inline(
                         &mut app,
                         &repo,
@@ -2721,15 +2798,7 @@ pub async fn run(
                     .await;
                 } else {
                     app.push_user(q.clone());
-                    start_run(
-                        &mut agent_slot,
-                        &mut run_handle,
-                        &mut rx,
-                        &interrupt,
-                        &mut app,
-                        q,
-                        false,
-                    );
+                    submit_turn(&mut app, &session, q);
                     break; // a run started; remaining items dispatch after it finishes
                 }
             }
@@ -2810,7 +2879,7 @@ pub async fn run(
                     // checkpoint at the next safe point, and return a resumable Drained outcome.
                     // Idle Ctrl-D retains shell-like quit/delete behavior below.
                     if k.code == KeyCode::Char('d') && ctrl && app.running {
-                        request_drain(&mut app, &app_server, &drain, drain_available);
+                        request_drain(&mut app, &session, &drain, drain_available);
                         continue;
                     }
 
@@ -2826,7 +2895,7 @@ pub async fn run(
                     if app.picker.is_some() {
                         match app.picker_key_with_modifiers(k.code, k.modifiers) {
                             Some(PickerEvent::Accept(action)) => {
-                                apply_action(&mut app, &mut agent_slot, &providers, action)
+                                apply_action(&mut app, &mut session, &providers, action).await
                             }
                             Some(PickerEvent::Cancel) | Some(PickerEvent::Consumed) | None => {}
                         }
@@ -2839,7 +2908,7 @@ pub async fn run(
                     if app.running && app.pending.is_some() {
                         if k.code == KeyCode::Char('c') && ctrl {
                             // Ctrl-C while pending = deny this call + park the run at a safe point.
-                            let _ = app_server.submit(Op::Interrupt);
+                            let _ = session.submit(Op::Interrupt);
                             app.interrupting = true;
                             if let Some(p) = app.pending.take() {
                                 app.note(
@@ -2853,7 +2922,7 @@ pub async fn run(
                             app.approval_key(k.code)
                             && let Some(p) = app.pending.take()
                         {
-                            let _ = app_server.submit(Op::ApprovalResponse {
+                            let _ = session.submit(Op::ApprovalResponse {
                                 id: p.id,
                                 approved,
                                 remember,
@@ -2883,10 +2952,15 @@ pub async fn run(
                         KeyCode::Char('c') if ctrl => {
                             if app.running {
                                 if interrupt.load(Ordering::Relaxed) {
-                                    // Second Ctrl-C: the cooperative interrupt did not land. Hard-abort.
-                                    if let Some(h) = run_handle.take() {
-                                        h.abort();
-                                    }
+                                    // Second Ctrl-C: the cooperative interrupt did not land.
+                                    //
+                                    // This used to `abort()` the task that held the `Agent`,
+                                    // destroying the runtime and leaving the session in an
+                                    // unrecoverable "no agent — Esc to quit" state. The runtime is
+                                    // resident now, so there is nothing to kill: escalate to
+                                    // `Drain`, which the kernel honours at its next safe point, and
+                                    // the session survives.
+                                    let _ = session.submit(Op::Drain);
                                     app.running = false;
                                     app.interrupting = false;
                                     app.draining = false;
@@ -2896,13 +2970,13 @@ pub async fn run(
                                     app.active_tools.clear();
                                     app.run_started = None;
                                     interrupt.store(false, Ordering::Relaxed);
-                                    rx = None;
                                     app.push_block(block::BlockKind::Error {
-                                    title: "hard-aborted".into(),
-                                    detail: "the agent is gone; resume this session with `core --resume <run>`. Press Esc to quit.".into(),
-                                    open: true,
-                                });
-                                    app.status = "aborted (no agent) — Esc to quit".into();
+                                        title: "interrupt escalated to drain".into(),
+                                        detail: "the cooperative interrupt did not land; the runtime will stop at its next safe point."
+                                            .into(),
+                                        open: true,
+                                    });
+                                    app.status = "draining…".into();
                                 } else {
                                     interrupt.store(true, Ordering::Relaxed);
                                     app.interrupting = true;
@@ -2933,11 +3007,9 @@ pub async fn run(
                             }
                         }
                         KeyCode::BackTab if !app.running => {
-                            if let Some(ag) = agent_slot.as_mut() {
-                                let next = ag.permission_mode().next();
-                                if commit_permission_mode(&mut app, ag, next) {
-                                    app.push(fg(Color::Cyan), format!("mode: {}", next.label()));
-                                }
+                            let next = session.permission_mode().next();
+                            if commit_permission_mode(&mut app, &mut session, next).await {
+                                app.push(fg(Color::Cyan), format!("mode: {}", next.label()));
                             }
                         }
                         // ---- completion menu navigation (menu open) ----
@@ -2988,7 +3060,7 @@ pub async fn run(
                                     dispatch_slash_command(
                                         &mut term,
                                         &mut app,
-                                        &mut agent_slot,
+                                        &mut session,
                                         &providers,
                                         cmd,
                                     )
@@ -3096,19 +3168,16 @@ pub async fn run(
                                     dispatch_slash_command(
                                         &mut term,
                                         &mut app,
-                                        &mut agent_slot,
+                                        &mut session,
                                         &providers,
                                         cmd,
                                     )
                                     .await?;
                                 } else if let Some(bash) = trimmed.strip_prefix('!') {
-                                    let (mode, rules) = match agent_slot.as_ref() {
-                                        Some(agent) => (
-                                            agent.permission_mode(),
-                                            agent.permission_rules().clone(),
-                                        ),
-                                        None => (app.mode, PermissionRules::new()),
-                                    };
+                                    let (mode, rules) = (
+                                        session.permission_mode(),
+                                        session.permission_rules().clone(),
+                                    );
                                     run_bash_inline(
                                         &mut app,
                                         &repo,
@@ -3120,15 +3189,7 @@ pub async fn run(
                                     .await;
                                 } else {
                                     app.push_user(trimmed.to_string());
-                                    start_run(
-                                        &mut agent_slot,
-                                        &mut run_handle,
-                                        &mut rx,
-                                        &interrupt,
-                                        &mut app,
-                                        trimmed,
-                                        false,
-                                    );
+                                    submit_turn(&mut app, &session, trimmed);
                                 }
                             }
                         }
@@ -3146,7 +3207,7 @@ pub async fn run(
                                 InputDestination::SteerCurrentRun => {
                                     match app.steer_admission(&text) {
                                         SubmissionAdmission::Accept => {
-                                            if app_server
+                                            if session
                                                 .submit(Op::Steer { text: text.clone() })
                                                 .is_ok()
                                             {
@@ -3188,7 +3249,7 @@ pub async fn run(
                         {
                             handle_registered_command(
                                 &mut app,
-                                &mut agent_slot,
+                                &mut session,
                                 &providers,
                                 SlashCommand::Help,
                                 "",
@@ -3219,6 +3280,11 @@ pub async fn run(
 
     // teardown (the guard also restores on drop; show_cursor is the only extra step).
     let _ = term.show_cursor();
+    // Dropping the last SQ sender is how the server learns the session is over. Wait for it to run
+    // out — the runtime's own shutdown (the final rollout flush) happens in there, and returning
+    // before it completes would race the process exit against the record on disk.
+    drop(session);
+    let _ = server_task.await;
     Ok(())
 }
 
@@ -3227,7 +3293,7 @@ pub async fn run(
 async fn dispatch_slash_command(
     term: &mut Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
-    agent_slot: &mut Option<Agent>,
+    session: &mut Session,
     providers: &ProviderDirectory,
     cmd: &str,
 ) -> anyhow::Result<()> {
@@ -3248,26 +3314,38 @@ async fn dispatch_slash_command(
 
     match routed.route {
         commands::DispatchRoute::InProcess(command) => {
-            handle_registered_command(app, agent_slot, providers, command, &routed.invocation.args)
+            handle_registered_command(app, session, providers, command, &routed.invocation.args)
                 .await;
         }
         commands::DispatchRoute::NotHere(commands::TerminalIntercept::Compact) => {
             let focus = routed.invocation.args;
-            if let Some(agent) = agent_slot.as_mut() {
-                app.push(dim(), "compacting…");
-                term.draw(|frame| draw(frame, app))?;
-                match agent
-                    .compact_now((!focus.is_empty()).then_some(focus))
-                    .await
-                {
-                    Ok(result) => app.push(
+            app.push(dim(), "compacting…");
+            term.draw(|frame| draw(frame, app))?;
+            // A control request, not a `&mut Agent` held across an `.await` in the event loop.
+            // The old shape blocked input, redraw and the whole event stream for the duration of
+            // the compaction; this one yields, and if a turn is running the request is applied at
+            // its boundary instead of racing it.
+            match session
+                .control(app_server::Control::Compact {
+                    focus: (!focus.is_empty()).then_some(focus),
+                })
+                .await
+            {
+                Some(app_server::ControlReply::Compacted { report, snapshot }) => {
+                    // Compaction moves the ledger; the status line must not keep showing the
+                    // pre-compaction figures.
+                    app.cost = snapshot.cost.clone();
+                    app.last_turn_usage = snapshot.last_turn_usage;
+                    session.adopt(*snapshot);
+                    app.push(
                         fg(Color::Green),
-                        format!("compacted {} -> {} messages", result.before, result.after),
-                    ),
-                    Err(error) => app.push(fg(Color::Red), format!("compact failed: {error}")),
+                        format!("compacted {} -> {} messages", report.before, report.after),
+                    );
                 }
-            } else {
-                app.push(fg(Color::Red), "no agent available");
+                Some(app_server::ControlReply::Refused(reason)) => {
+                    app.push(fg(Color::Red), format!("compact failed: {reason}"))
+                }
+                _ => app.push(fg(Color::Red), "the runtime is no longer reachable"),
             }
         }
     }
@@ -3276,7 +3354,7 @@ async fn dispatch_slash_command(
 
 fn request_drain(
     app: &mut App,
-    app_server: &AppServerClient,
+    session: &Session,
     drain: &Arc<AtomicBool>,
     checkpoint_supported: bool,
 ) {
@@ -3290,7 +3368,7 @@ fn request_drain(
         );
         return;
     }
-    if app_server.submit(Op::Drain).is_err() {
+    if session.submit(Op::Drain).is_err() {
         app.note(
             block::NoticeLevel::Err,
             "could not request a drain because the active run is no longer reachable",
@@ -3315,48 +3393,132 @@ fn request_drain(
     }
 }
 
+/// Submit a turn on the SQ.
+///
+/// This replaces `start_run`, which took the `Agent` out of the frontend's slot, moved it into a
+/// task, and handed back a `JoinHandle`. The frontend no longer decides `run` versus `follow_up`
+/// either — that is session state and it belongs to the server.
+///
+/// A refusal is shown, never swallowed: `Busy` means the operator's input did not land, and the one
+/// thing worse than a full queue is a full queue that looks like acceptance.
+fn submit_turn(app: &mut App, session: &Session, task: String) {
+    match session.submit(Op::UserInput { text: task }) {
+        Ok(()) => {
+            app.running = true;
+            app.interrupting = false;
+            app.draining = false;
+            app.status = "running…".into();
+            app.run_started = Some(Instant::now());
+            app.completion = None;
+        }
+        Err(app_server::SubmitError::Busy) => app.note(
+            block::NoticeLevel::Warn,
+            "the runtime is saturated; this submission was not accepted — try again",
+        ),
+        Err(app_server::SubmitError::Disconnected) => {
+            app.push_block(block::BlockKind::Error {
+                title: "the runtime is no longer reachable".into(),
+                detail:
+                    "the App Server has stopped — press Esc to quit (resume later with --resume)."
+                        .into(),
+                open: true,
+            });
+            app.status = "error (no runtime) — Esc to quit".into();
+        }
+    }
+}
+
+/// Apply one EQ envelope.
+///
+/// The frontend's whole view of the runtime arrives through here. `RunEnded` carries what the
+/// `handle.await` reclaim used to read straight off the `Agent`; there is no join any more, so the
+/// terminal event is also the refresh point.
 #[allow(clippy::too_many_arguments)]
-fn start_run(
-    agent_slot: &mut Option<Agent>,
-    run_handle: &mut Option<tokio::task::JoinHandle<(Agent, RunCompletion)>>,
-    rx: &mut Option<UnboundedReceiver<UiEvent>>,
-    _interrupt: &Arc<AtomicBool>,
+fn apply_server_event(
     app: &mut App,
-    task: String,
-    is_first: bool,
+    session: &mut Session,
+    event: app_server::ServerEvent,
+    notifier: &mut notification::TerminalNotifier,
+    writer: &mut notification::LiveTerminalWriter,
+    interrupt: &Arc<AtomicBool>,
+    drain: &Arc<AtomicBool>,
 ) {
-    let Some(mut agent) = agent_slot.take() else {
-        return;
-    };
-    let (tx, new_rx) = tokio::sync::mpsc::unbounded_channel();
-    agent.set_ui(tx);
-    *rx = Some(new_rx);
-    app.running = true;
-    app.interrupting = false;
-    app.draining = false;
-    app.status = "running…".into();
-    app.run_started = Some(Instant::now());
-    app.completion = None;
-    *run_handle = Some(tokio::spawn(async move {
-        let outcome = if is_first {
-            agent.run(&task).await
-        } else {
-            agent.follow_up(&task).await
-        };
-        let completion = match outcome {
-            Ok(outcome) => RunCompletion::Outcome(outcome),
-            Err(error) => RunCompletion::Error(error.public_summary()),
-        };
-        (agent, completion)
-    }));
+    match event {
+        app_server::ServerEvent::Ui(event) => apply_live_event(app, event, notifier, writer),
+        app_server::ServerEvent::Notice(text) => app.note(block::NoticeLevel::Warn, text),
+        app_server::ServerEvent::Lagged { dropped } => app.note(
+            block::NoticeLevel::Warn,
+            format!(
+                "{dropped} streamed update(s) were dropped to keep the event queue bounded; the \
+                 transcript above is incomplete at that point"
+            ),
+        ),
+        app_server::ServerEvent::RunEnded {
+            completion,
+            snapshot,
+        } => {
+            app.running = false;
+            app.interrupting = false;
+            app.draining = false;
+            app.run_started = None;
+            app.flush_text();
+            app.pending = None; // a pending approval cannot outlive its run
+            app.settle_unfinished_tools();
+            interrupt.store(false, Ordering::Relaxed);
+            drain.store(false, Ordering::Relaxed);
+
+            // A channel send is not delivery. The exact raw texts the kernel did not admit come
+            // back on the snapshot and go into the frontend's own submission order, so nothing is
+            // lost, duplicated, or reordered across the turn boundary.
+            let (count, unmatched_previews) =
+                app.requeue_unadmitted(snapshot.unadmitted_steers.clone());
+            if count > 0 {
+                app.note(
+                    block::NoticeLevel::Warn,
+                    format!(
+                        "{count} steering submission(s) missed the safe point; queued after the turn"
+                    ),
+                );
+            }
+            if unmatched_previews > 0 {
+                app.note(
+                    block::NoticeLevel::Warn,
+                    format!(
+                        "delivery could not be confirmed for {unmatched_previews} steering submission(s); preserved after the turn"
+                    ),
+                );
+            }
+
+            app.mode = snapshot.mode;
+            app.effort = snapshot.effort;
+            app.model = snapshot.model.clone();
+            app.cost = snapshot.cost.clone();
+            app.last_turn_usage = snapshot.last_turn_usage;
+            session.adopt(*snapshot);
+
+            match completion {
+                app_server::RunEnded::Outcome(outcome) => {
+                    app.status = format!("idle · last: {}", outcome_label(&outcome));
+                }
+                app_server::RunEnded::Error(detail) => {
+                    app.push_block(block::BlockKind::Error {
+                        title: "run failed".into(),
+                        detail,
+                        open: true,
+                    });
+                    app.status = "idle · last: run failed".into();
+                }
+            }
+        }
+    }
 }
 
 /// Instantiate and validate the new `(provider, model)` pair before mutating either field. A
 /// failed construction leaves the old provider and old model together, avoiding cross-provider
 /// requests with a model id from a different account.
-fn apply_model_selection(
+async fn apply_model_selection(
     app: &mut App,
-    agent: &mut Agent,
+    session: &mut Session,
     directory: &ProviderDirectory,
     selection: ModelSelection,
 ) {
@@ -3371,50 +3533,51 @@ fn apply_model_selection(
         }
     };
 
-    let changed = agent.model != selection.model_id || app.provider_id != selection.provider_id;
+    let changed = session.model() != selection.model_id || app.provider_id != selection.provider_id;
     let provider_name = directory
         .entry(&selection.provider_id)
         .map(|entry| entry.display_name().to_owned())
         .unwrap_or_else(|| selection.provider_id.clone());
 
-    // Write-ahead audit: if the hash-chained record cannot durably accept the route, keep the old
-    // provider/model pair. The frontend never sends a turn through an unrecorded destination.
+    // One transaction, applied by the runtime. The write-ahead audit, the capability fields and the
+    // rate-card rebind used to be four separate statements here, each able to fail after the
+    // previous one had already taken effect; the server now applies them in the kernel's required
+    // order and answers with the state it actually reached.
     let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
-    if let Err(error) = agent.record_provider_model_selection(
-        provider,
-        selection.provider_id.clone(),
-        selection.model_id.clone(),
-        catalog_digest,
-        capability_digest,
-    ) {
-        app.note(
-            block::NoticeLevel::Err,
-            format!("cannot record model switch; old selection retained: {error}"),
-        );
-        return;
-    }
-
-    // Commit point: adapter construction, availability validation, and durable recording have
-    // all succeeded.
     let capabilities = directory.selection_capabilities(&selection);
-    agent.model_context_window = capabilities.context_window_tokens;
-    agent.model_max_output_tokens = capabilities.max_output_tokens;
-    app.model = selection.model_id.clone();
+    let reply = session
+        .control(app_server::Control::SelectModel(Box::new(
+            app_server::ModelSelection {
+                provider,
+                provider_id: selection.provider_id.clone(),
+                model_id: selection.model_id.clone(),
+                catalog_digest,
+                capability_digest,
+                context_window_tokens: capabilities.context_window_tokens,
+                max_output_tokens: capabilities.max_output_tokens,
+            },
+        )))
+        .await;
+    let state = match reply {
+        Some(app_server::ControlReply::State(state)) => state,
+        Some(app_server::ControlReply::Refused(reason)) => {
+            app.note(block::NoticeLevel::Err, reason);
+            return;
+        }
+        _ => {
+            app.note(
+                block::NoticeLevel::Err,
+                "the runtime is no longer reachable",
+            );
+            return;
+        }
+    };
+
+    app.model = state.model.clone();
     app.provider_id = selection.provider_id.clone();
+    app.model_context_window = capabilities.context_window_tokens;
     if changed {
-        clear_last_turn_telemetry(app, &mut agent.ledger);
-    }
-    app.model_context_window = agent.model_context_window;
-    match agent.bind_selected_rate_card() {
-        Ok(false) if agent.budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) => app.note(
-            block::NoticeLevel::Err,
-            "selected route has no active verified rate card; the USD ceiling will block provider calls",
-        ),
-        Err(error) => app.note(
-            block::NoticeLevel::Err,
-            format!("cannot authenticate pricing for the selected route: {error}"),
-        ),
-        Ok(_) => {}
+        clear_last_turn_telemetry_from(app, &state);
     }
     app.note(
         block::NoticeLevel::Ok,
@@ -3431,11 +3594,13 @@ fn apply_model_selection(
     }
 }
 
-fn clear_last_turn_telemetry(app: &mut App, ledger: &mut core_obs::Ledger) {
-    // These fields describe one exact provider/model/effort request. Until snapshots carry an
-    // explicit route identity, clearing on a route/effort change is the only truthful projection.
-    ledger.last_turn_usage = None;
-    app.last_turn_usage = None;
+/// Clear the per-request telemetry after a route or effort change, from a server snapshot.
+///
+/// The ledger half of the old function reached into `agent.ledger` to reset it; the resident runtime
+/// does that on its own side when it applies the transition, so the frontend only has to stop
+/// displaying values that no longer describe anything.
+fn clear_last_turn_telemetry_from(app: &mut App, state: &app_server::SessionSnapshot) {
+    app.last_turn_usage = state.last_turn_usage;
     app.last_context = None;
     app.reserved_output_tokens = None;
     app.effort_application = None;
@@ -3484,66 +3649,91 @@ fn model_retry_selection(
 /// Commit one runtime setting through the kernel's durable policy transaction. Frontend mirrors
 /// change only after the record append + fsync succeeds, so a visible control can never claim a
 /// state that resume/fork would lose.
-fn commit_effort(app: &mut App, agent: &mut Agent, next: Effort) -> bool {
-    match agent.transition_effort(next, RuntimePolicySource::Operator) {
-        Ok(changed) => {
-            if changed {
-                clear_last_turn_telemetry(app, &mut agent.ledger);
-            }
-            app.effort = agent.effort();
+async fn commit_effort(app: &mut App, session: &mut Session, next: Effort) -> bool {
+    // A control round trip, not a method call on an `Agent` the frontend happens to hold. The
+    // answer is the state the runtime actually reached: `app.effort` is set from the reply, so a
+    // refusal leaves the display showing what is true rather than what was asked for.
+    match session.control(app_server::Control::SetEffort(next)).await {
+        Some(app_server::ControlReply::State(state)) => {
+            app.effort = state.effort;
+            clear_last_turn_telemetry_from(app, &state);
             true
         }
-        Err(error) => {
+        Some(app_server::ControlReply::Refused(reason)) => {
             app.note(
                 block::NoticeLevel::Err,
-                format!("effort was not changed: {}", error.public_summary()),
+                format!("effort was not changed: {reason}"),
+            );
+            false
+        }
+        _ => {
+            app.note(
+                block::NoticeLevel::Err,
+                "the runtime is no longer reachable",
             );
             false
         }
     }
 }
 
-fn commit_permission_mode(app: &mut App, agent: &mut Agent, next: PermissionMode) -> bool {
-    match agent.transition_permission_mode(next, RuntimePolicySource::Operator) {
-        Ok(_) => {
-            app.mode = agent.permission_mode();
-            true
-        }
-        Err(error) => {
-            app.note(
-                block::NoticeLevel::Err,
-                format!(
-                    "permission mode was not changed: {}",
-                    error.public_summary()
-                ),
-            );
-            false
-        }
-    }
-}
-
-fn commit_permission_capability(
+async fn commit_permission_mode(
     app: &mut App,
-    agent: &mut Agent,
+    session: &mut Session,
+    next: PermissionMode,
+) -> bool {
+    match session
+        .control(app_server::Control::SetPermissionMode(next))
+        .await
+    {
+        Some(app_server::ControlReply::State(state)) => {
+            app.mode = state.mode;
+            true
+        }
+        Some(app_server::ControlReply::Refused(reason)) => {
+            app.note(
+                block::NoticeLevel::Err,
+                format!("permission mode was not changed: {reason}"),
+            );
+            false
+        }
+        _ => {
+            app.note(
+                block::NoticeLevel::Err,
+                "the runtime is no longer reachable",
+            );
+            false
+        }
+    }
+}
+
+async fn commit_permission_capability(
+    app: &mut App,
+    session: &mut Session,
     capability: Capability,
     verdict: Verdict,
 ) -> bool {
-    match agent.transition_permission_capability_rule(
-        capability,
-        verdict,
-        RuntimePolicySource::Operator,
-    ) {
-        Ok(_) => {
-            app.mode = agent.permission_mode();
+    match session
+        .control(app_server::Control::SetCapabilityRule {
+            capability,
+            verdict,
+        })
+        .await
+    {
+        Some(app_server::ControlReply::State(state)) => {
+            app.mode = state.mode;
             true
         }
-        Err(error) => {
+        Some(app_server::ControlReply::Refused(reason)) => {
             app.note(
                 block::NoticeLevel::Err,
-                format!(
-                    "permission rule was not changed: {}",
-                    error.public_summary()
-                ),
+                format!("the permission rule was not changed: {reason}"),
+            );
+            false
+        }
+        _ => {
+            app.note(
+                block::NoticeLevel::Err,
+                "the runtime is no longer reachable",
             );
             false
         }
@@ -3552,9 +3742,9 @@ fn commit_permission_capability(
 
 /// Apply a picked action to the idle agent + UI state (C5 take-then-apply calls this after dropping
 /// the picker borrow). Surfaces a Notice if the agent is gone rather than silently no-op'ing (C6).
-fn apply_action(
+async fn apply_action(
     app: &mut App,
-    agent: &mut Option<Agent>,
+    session: &mut Session,
     directory: &ProviderDirectory,
     action: PickAction,
 ) {
@@ -3565,17 +3755,12 @@ fn apply_action(
     if matches!(&action, PickAction::Info) {
         return;
     }
-    let Some(ag) = agent.as_mut() else {
-        app.note(
-            block::NoticeLevel::Err,
-            "no active agent — selection not applied",
-        );
-        return;
-    };
     match action {
-        PickAction::SetModel(selection) => apply_model_selection(app, ag, directory, selection),
+        PickAction::SetModel(selection) => {
+            apply_model_selection(app, session, directory, selection).await
+        }
         PickAction::SetEffort(e) => {
-            if commit_effort(app, ag, e) {
+            if commit_effort(app, session, e).await {
                 let lvl = if e == Effort::Ultracode {
                     block::NoticeLevel::Warn
                 } else {
@@ -3585,7 +3770,7 @@ fn apply_action(
             }
         }
         PickAction::SetMode(m) => {
-            if commit_permission_mode(app, ag, m) {
+            if commit_permission_mode(app, session, m).await {
                 app.note(block::NoticeLevel::Ok, format!("mode set to {}", m.label()));
             }
         }
@@ -3595,7 +3780,7 @@ fn apply_action(
                 Verdict::Ask => "ask",
                 Verdict::Deny => "deny",
             };
-            if commit_permission_capability(app, ag, c, v) {
+            if commit_permission_capability(app, session, c, v).await {
                 app.note(
                     block::NoticeLevel::Ok,
                     format!("permission rule: {} → {vl}", cap_label(c)),
@@ -3603,7 +3788,9 @@ fn apply_action(
             }
         }
         PickAction::SetTheme(theme) => apply_theme_selection(app, theme),
-        PickAction::PrepareResume(_) | PickAction::Info => unreachable!("handled before agent"),
+        PickAction::PrepareResume(_) | PickAction::Info => {
+            unreachable!("handled before the control round-trip")
+        }
     }
 }
 
@@ -3911,7 +4098,7 @@ fn session_picker_items(
         .collect()
 }
 
-fn open_session_picker(app: &mut App, ag: &Agent) {
+fn open_session_picker(app: &mut App, session: &Session) {
     if app.running || app.pending.is_some() {
         app.note(
             block::NoticeLevel::Warn,
@@ -3919,15 +4106,13 @@ fn open_session_picker(app: &mut App, ag: &Agent) {
         );
         return;
     }
-    let runs = ag
-        .rollout
-        .path()
+    let runs = session
+        .rollout_path()
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_default();
-    let current_run = ag
-        .rollout
-        .path()
+    let current_run = session
+        .rollout_path()
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or_default();
@@ -3951,7 +4136,7 @@ fn open_session_picker(app: &mut App, ag: &Agent) {
 
 /// Build a picker's items, pre-selecting the current value, and open it — refusing (with a Notice)
 /// when a run/approval is in flight so accepting can never hit a taken agent (C6).
-fn open_picker(app: &mut App, ag: &Agent, directory: &ProviderDirectory, kind: &str) {
+fn open_picker(app: &mut App, session: &Session, directory: &ProviderDirectory, kind: &str) {
     if app.running || app.pending.is_some() {
         app.note(
             block::NoticeLevel::Warn,
@@ -3961,14 +4146,14 @@ fn open_picker(app: &mut App, ag: &Agent, directory: &ProviderDirectory, kind: &
     }
     let (title, mut items): (&str, Vec<PickItem>) = match kind {
         "model" => {
-            let cur = ag.model.clone();
+            let cur = session.model().to_string();
             (
                 "Model",
                 model_picker_items(directory, &app.provider_id, &cur),
             )
         }
         "effort" => {
-            let cur = ag.effort();
+            let cur = session.effort();
             let items = Effort::ALL
                 .iter()
                 .map(|e| PickItem::flat(e.label(), e.hint(), *e == cur, PickAction::SetEffort(*e)))
@@ -3976,7 +4161,7 @@ fn open_picker(app: &mut App, ag: &Agent, directory: &ProviderDirectory, kind: &
             ("Effort", items)
         }
         "mode" => {
-            let cur = ag.permission_mode();
+            let cur = session.permission_mode();
             let modes = [
                 (PermissionMode::Default, "edits prompt live"),
                 (PermissionMode::AcceptEdits, "edits auto; code still gated"),
@@ -3994,7 +4179,7 @@ fn open_picker(app: &mut App, ag: &Agent, directory: &ProviderDirectory, kind: &
         }
         "permissions" => (
             "Permissions",
-            permission_picker_items(ag.permission_rules()),
+            permission_picker_items(session.permission_rules()),
         ),
         "theme" => {
             let items = theme::Theme::presets()
@@ -4207,15 +4392,11 @@ fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
 /// identity exhaustively makes a newly registered variant a compile error until it has a handler.
 async fn handle_registered_command(
     app: &mut App,
-    agent: &mut Option<Agent>,
+    session: &mut Session,
     directory: &ProviderDirectory,
     command: SlashCommand,
     arg: &str,
 ) {
-    let Some(ag) = agent.as_mut() else {
-        app.push(fg(Color::Red), "no agent available");
-        return;
-    };
     match command {
         SlashCommand::Help => {
             let mut rows: Vec<block::PanelRow> = commands::COMMANDS
@@ -4242,9 +4423,9 @@ async fn handle_registered_command(
         }
         SlashCommand::Effort => {
             if arg.is_empty() {
-                open_picker(app, ag, directory, "effort"); // interactive picker (R7.a)
+                open_picker(app, session, directory, "effort"); // interactive picker (R7.a)
             } else if let Some(e) = core_protocol::Effort::parse(arg) {
-                if commit_effort(app, ag, e) {
+                if commit_effort(app, session, e).await {
                     app.push(fg(Color::Green), format!("effort set to {}", e.label()));
                 }
             } else {
@@ -4256,22 +4437,26 @@ async fn handle_registered_command(
         }
         SlashCommand::Model => {
             if arg.is_empty() {
-                open_picker(app, ag, directory, "model"); // interactive picker (R7.a)
+                open_picker(app, session, directory, "model"); // interactive picker (R7.a)
             } else if arg == "retry" || arg.starts_with("retry ") {
                 let value = arg.strip_prefix("retry").unwrap_or_default().trim();
-                let selection =
-                    match model_retry_selection(directory, &app.provider_id, &ag.model, value) {
-                        Ok(selection) => selection,
-                        Err(error) => {
-                            app.note(
-                                block::NoticeLevel::Err,
-                                format!("cannot retry model: {error}"),
-                            );
-                            return;
-                        }
-                    };
+                let selection = match model_retry_selection(
+                    directory,
+                    &app.provider_id,
+                    session.model(),
+                    value,
+                ) {
+                    Ok(selection) => selection,
+                    Err(error) => {
+                        app.note(
+                            block::NoticeLevel::Err,
+                            format!("cannot retry model: {error}"),
+                        );
+                        return;
+                    }
+                };
                 match directory.clear_model_unavailable_for_retry(&selection) {
-                    Ok(true) => apply_model_selection(app, ag, directory, selection),
+                    Ok(true) => apply_model_selection(app, session, directory, selection).await,
                     Ok(false) => app.note(
                         block::NoticeLevel::Warn,
                         "that model is not blocked; normal /model selection is unchanged",
@@ -4283,7 +4468,9 @@ async fn handle_registered_command(
                 }
             } else {
                 match directory.resolve_model(arg, Some(&app.provider_id)) {
-                    Ok(selection) => apply_model_selection(app, ag, directory, selection),
+                    Ok(selection) => {
+                        apply_model_selection(app, session, directory, selection).await
+                    }
                     Err(error) => app.note(
                         block::NoticeLevel::Err,
                         format!("cannot select model: {error}"),
@@ -4292,20 +4479,19 @@ async fn handle_registered_command(
             }
         }
         SlashCommand::Theme => {
-            open_picker(app, ag, directory, "theme");
+            open_picker(app, session, directory, "theme");
         }
         SlashCommand::Status => {
-            let run = ag
-                .rollout
-                .path()
+            let run = session
+                .rollout_path()
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("?")
                 .to_string();
             let mut rows = vec![
                 kv("provider", &app.provider_id),
-                kv("model", &ag.model),
-                kv("effort requested", ag.effort().label()),
+                kv("model", session.model()),
+                kv("effort requested", session.effort().label()),
             ];
             if let Some(application) = app.effort_application {
                 rows.push(kv(
@@ -4316,10 +4502,10 @@ async fn handle_registered_command(
                 rows.push(kv("effort applied", "not observed yet"));
             }
             rows.extend([
-                kv("mode", ag.permission_mode().label()),
-                kv("cwd", &ag.workspace.display().to_string()),
+                kv("mode", session.permission_mode().label()),
+                kv("cwd", &session.workspace().display().to_string()),
                 kv("run", &run),
-                block::PanelRow::Note(ag.ledger.summary()),
+                block::PanelRow::Note(session.ledger_summary().to_string()),
             ]);
             app.panel("≡", "status", rows);
         }
@@ -4327,7 +4513,7 @@ async fn handle_registered_command(
             app.panel(
                 "$",
                 "cost",
-                vec![block::PanelRow::Note(ag.ledger.summary())],
+                vec![block::PanelRow::Note(session.ledger_summary().to_string())],
             );
         }
         SlashCommand::Context => {
@@ -4427,7 +4613,7 @@ async fn handle_registered_command(
                 "compaction trigger",
                 &format!(
                     "{} tokens (policy threshold, not the model window)",
-                    fmt_token_count(ag.compaction.trigger_tokens as u64)
+                    fmt_token_count(session.compaction_trigger_tokens() as u64)
                 ),
             ));
             if let Some(application) = app.effort_application {
@@ -4440,9 +4626,9 @@ async fn handle_registered_command(
         }
         SlashCommand::Mode => {
             if arg.is_empty() {
-                open_picker(app, ag, directory, "mode"); // interactive picker (Shift+Tab still cycles)
+                open_picker(app, session, directory, "mode"); // interactive picker (Shift+Tab still cycles)
             } else if let Some(m) = PermissionMode::parse(arg) {
-                if commit_permission_mode(app, ag, m) {
+                if commit_permission_mode(app, session, m).await {
                     app.push(fg(Color::Green), format!("mode set to {}", m.label()));
                 }
             } else {
@@ -4455,10 +4641,10 @@ async fn handle_registered_command(
         SlashCommand::Permissions => {
             let mut sub = arg.split_whitespace();
             match sub.next() {
-                None => open_picker(app, ag, directory, "permissions"),
+                None => open_picker(app, session, directory, "permissions"),
                 Some("show" | "list") => {
-                    let mut rows = vec![kv("mode", ag.permission_mode().label())];
-                    let rules = ag.permission_rules().describe();
+                    let mut rows = vec![kv("mode", session.permission_mode().label())];
+                    let rules = session.permission_rules().describe();
                     if rules.is_empty() {
                         rows.push(block::PanelRow::Note(
                             "no session rules (mode defaults apply)".into(),
@@ -4485,7 +4671,7 @@ async fn handle_registered_command(
                                 Verdict::Ask => "ask",
                                 Verdict::Deny => "deny",
                             };
-                            if commit_permission_capability(app, ag, c, v) {
+                            if commit_permission_capability(app, session, c, v).await {
                                 app.note(
                                     block::NoticeLevel::Ok,
                                     format!(
@@ -4502,7 +4688,14 @@ async fn handle_registered_command(
         }
         SlashCommand::AllowCode => match arg {
             "on" | "true" | "" => {
-                if commit_permission_capability(app, ag, Capability::CodeExecuting, Verdict::Auto) {
+                if commit_permission_capability(
+                    app,
+                    session,
+                    Capability::CodeExecuting,
+                    Verdict::Auto,
+                )
+                .await
+                {
                     app.push(
                         fg(Color::Yellow),
                         "code execution ALLOWED (egress-off sandbox)",
@@ -4510,19 +4703,26 @@ async fn handle_registered_command(
                 }
             }
             "off" | "false" => {
-                if commit_permission_capability(app, ag, Capability::CodeExecuting, Verdict::Ask) {
+                if commit_permission_capability(
+                    app,
+                    session,
+                    Capability::CodeExecuting,
+                    Verdict::Ask,
+                )
+                .await
+                {
                     app.push(fg(Color::Yellow), "code execution now asks per call");
                 }
             }
             _ => app.push(fg(Color::Red), "usage: /allow-code on|off"),
         },
         SlashCommand::Memory => {
-            let ws = ag.memory_workspace.clone();
+            let ws = session.memory_workspace();
             let Some(ws) = ws else {
                 app.push(fg(Color::Red), "memory not available");
                 return;
             };
-            let store = core_ctx::MemoryStore::at(&ws);
+            let store = core_ctx::MemoryStore::at(ws);
             let mut sub = arg.split_whitespace();
             match sub.next() {
                 Some("add") => {
@@ -4578,7 +4778,7 @@ async fn handle_registered_command(
             // Reuse the same absolute-executable, filter-disabled, process-group-bounded runner as
             // the registry tool. This operator command is still awaiting the universal effect WAL.
             let stat = arg.trim() == "stat";
-            match core_tools::git_diff_observation(&ag.workspace, stat, None).await {
+            match core_tools::git_diff_observation(session.workspace(), stat, None).await {
                 Ok(output) => {
                     // Scrub before semantic parsing/rendering; newlines are preserved.
                     let text = core_record::redact::scrub(&output);
@@ -4613,7 +4813,7 @@ async fn handle_registered_command(
             }
         }
         SlashCommand::Sessions => {
-            open_session_picker(app, ag);
+            open_session_picker(app, session);
         }
         SlashCommand::Workflows => {
             let mut rows = Vec::new();
@@ -4681,7 +4881,7 @@ async fn handle_registered_command(
         }
         SlashCommand::Fork => {
             // Fork the CURRENT session at its tail into a new branch (shared past, divergent future).
-            let path = ag.rollout.path().to_path_buf();
+            let path = session.rollout_path().to_path_buf();
             let runs = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
             let stem = path
                 .file_stem()
@@ -4712,7 +4912,7 @@ async fn handle_registered_command(
             let user = std::env::var_os("HOME")
                 .map(|h| std::path::PathBuf::from(h).join(".core").join("agents"))
                 .unwrap_or_default();
-            let catalog = core_agents::AgentCatalog::discover(&user, &ag.workspace);
+            let catalog = core_agents::AgentCatalog::discover(&user, session.workspace());
             let defs = catalog.defs();
             let mut rows: Vec<block::PanelRow> = defs
                 .iter()
@@ -4733,7 +4933,7 @@ async fn handle_registered_command(
         }
         SlashCommand::Skills => {
             let user = core_ctx::skills::user_skills_dir().unwrap_or_default();
-            let cat = core_ctx::skills::SkillCatalog::discover(&user, &ag.workspace);
+            let cat = core_ctx::skills::SkillCatalog::discover(&user, session.workspace());
             let mut rows: Vec<block::PanelRow> = cat
                 .defs()
                 .iter()
@@ -4762,11 +4962,11 @@ async fn handle_registered_command(
                         &app.provider_id
                     },
                 ),
-                kv("model", &ag.model),
-                kv("effort", ag.effort().label()),
-                kv("mode", ag.permission_mode().label()),
+                kv("model", session.model()),
+                kv("effort", session.effort().label()),
+                kv("mode", session.permission_mode().label()),
             ];
-            match crate::config::FileConfig::load(&ag.workspace) {
+            match crate::config::FileConfig::load(session.workspace()) {
                 Ok(f) => {
                     // human values, never raw Option Debug (`Some(5.0)`/`None` in a panel is a toy tell)
                     let mt = f
@@ -4793,23 +4993,22 @@ async fn handle_registered_command(
                 Capability::TrustMutating => "trust-mutating",
                 Capability::IrreversibleExternal => "external/egress",
             };
-            let mut specs = ag.registry.specs();
-            specs.sort_by(|a, b| a.name.cmp(&b.name));
-            let rows: Vec<block::PanelRow> = specs
+            let mut tools: Vec<&app_server::ToolFact> = session.registry_tools().iter().collect();
+            tools.sort_by(|a, b| a.name.cmp(&b.name));
+            let rows: Vec<block::PanelRow> = tools
                 .iter()
-                .map(|s| block::PanelRow::Item {
-                    label: format!("{}  [{}]", s.name, cap_glyph(s.capability)),
-                    hint: core_protocol::text::head(&s.description, 70),
+                .map(|tool| block::PanelRow::Item {
+                    label: format!("{}  [{}]", tool.name, cap_glyph(tool.capability)),
+                    hint: core_protocol::text::head(&tool.description, 70),
                 })
                 .collect();
             app.panel("⚙", &format!("{} tools available", rows.len()), rows);
         }
         SlashCommand::Mcp => {
-            let mcp: Vec<_> = ag
-                .registry
-                .specs()
-                .into_iter()
-                .filter(|s| s.name.contains("__"))
+            let mcp: Vec<_> = session
+                .registry_tools()
+                .iter()
+                .filter(|tool| tool.name.contains("__"))
                 .collect();
             if mcp.is_empty() {
                 app.note(
@@ -4819,7 +5018,13 @@ async fn handle_registered_command(
             } else {
                 let rows = mcp
                     .iter()
-                    .map(|s| item("◈", &s.name, &core_protocol::text::head(&s.description, 80)))
+                    .map(|tool| {
+                        item(
+                            "◈",
+                            &tool.name,
+                            &core_protocol::text::head(&tool.description, 80),
+                        )
+                    })
                     .collect();
                 app.panel("◈", "MCP tools", rows);
             }
@@ -4847,7 +5052,7 @@ async fn handle_registered_command(
             } else {
                 arg.trim()
             };
-            let path = match confined_workspace_output(&ag.workspace, requested) {
+            let path = match confined_workspace_output(session.workspace(), requested) {
                 Ok(path) => path,
                 Err(error) => {
                     app.push(fg(Color::Red), format!("export refused: {error}"));
@@ -4868,7 +5073,7 @@ async fn handle_registered_command(
             }
         }
         SlashCommand::Init => {
-            let dir = match ensure_real_workspace_dir(&ag.workspace, ".core") {
+            let dir = match ensure_real_workspace_dir(session.workspace(), ".core") {
                 Ok(dir) => dir,
                 Err(error) => {
                     app.push(fg(Color::Red), format!("init refused: {error}"));
@@ -4890,7 +5095,7 @@ async fn handle_registered_command(
                     Err(e) => app.push(fg(Color::Red), format!("init failed: {e}")),
                 }
             }
-            let agents_md = ag.workspace.join("AGENTS.md");
+            let agents_md = session.workspace().join("AGENTS.md");
             if !agents_md.exists() {
                 match write_new_synced(
                     &agents_md,
@@ -4910,7 +5115,7 @@ async fn handle_registered_command(
             // Conversation rewind: branch at an EARLIER seq (shared past, divergent future). With no
             // arg it lists the turn boundaries; `/rewind <seq>` forks at that point. (Workspace-file
             // rewind needs recorded checkpoints, which normal runs don't yet emit — honest gap.)
-            let path = ag.rollout.path().to_path_buf();
+            let path = session.rollout_path().to_path_buf();
             let runs = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
             let stem = path
                 .file_stem()
@@ -4951,11 +5156,10 @@ async fn handle_registered_command(
         }
         SlashCommand::Resume => {
             if arg.is_empty() {
-                open_session_picker(app, ag);
+                open_session_picker(app, session);
             } else {
-                let runs = ag
-                    .rollout
-                    .path()
+                let runs = session
+                    .rollout_path()
                     .parent()
                     .map(Path::to_path_buf)
                     .unwrap_or_default();
@@ -9196,12 +9400,22 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.effort_application = Some(EffortApplication::Unsupported {
             requested: core_protocol::ReasoningEffort::High,
         });
-        let mut ledger = core_obs::Ledger::new();
-        ledger.last_turn_usage = Some(usage);
+        // The runtime clears the ledger's last-turn usage on a model change (see
+        // `app_server::apply_control`) and reports the result on the snapshot; the frontend adopts
+        // whatever the snapshot says rather than deciding for itself.
+        let state = app_server::SessionSnapshot {
+            mode: core_protocol::PermissionMode::default(),
+            effort: core_protocol::Effort::default(),
+            model: "claude-opus-5".into(),
+            cost: core_obs::CostState::default(),
+            last_turn_usage: None,
+            unadmitted_steers: Vec::new(),
+            permission_rules: PermissionRules::new(),
+            ledger_summary: String::new(),
+        };
 
-        clear_last_turn_telemetry(&mut app, &mut ledger);
+        clear_last_turn_telemetry_from(&mut app, &state);
 
-        assert!(ledger.last_turn_usage.is_none());
         assert!(app.last_turn_usage.is_none());
         assert!(app.last_context.is_none());
         assert_eq!(app.model_context_window, Some(200_000));
@@ -9310,12 +9524,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn running_ctrl_d_requests_exactly_one_drain_and_surfaces_checkpointing() {
         let mut app = App::new();
         app.running = true;
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let app_server = AppServerClient::current(tx);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let session = Session::for_test(tx);
         let drain = Arc::new(AtomicBool::new(false));
 
-        request_drain(&mut app, &app_server, &drain, true);
-        request_drain(&mut app, &app_server, &drain, true);
+        request_drain(&mut app, &session, &drain, true);
+        request_drain(&mut app, &session, &drain, true);
 
         assert!(app.draining);
         assert!(drain.load(Ordering::Relaxed));
@@ -9340,11 +9554,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn running_ctrl_d_refuses_cleanly_when_workspace_cannot_be_checkpointed() {
         let mut app = App::new();
         app.running = true;
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let app_server = AppServerClient::current(tx);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let session = Session::for_test(tx);
         let drain = Arc::new(AtomicBool::new(false));
 
-        request_drain(&mut app, &app_server, &drain, false);
+        request_drain(&mut app, &session, &drain, false);
 
         assert!(!app.draining);
         assert!(!drain.load(Ordering::Relaxed));

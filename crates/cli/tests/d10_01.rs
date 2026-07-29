@@ -69,10 +69,9 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
             .any(|window| window == needle)
 }
 
-#[test]
-fn tui_announces_a_versioned_app_server_client_handshake() {
-    let scratch = Scratch::new();
-
+/// Launch the real binary in TUI mode inside a PTY and collect terminal bytes until `needle`
+/// appears or the deadline passes. Returns everything captured plus whether the needle was seen.
+fn capture_until(scratch: &Scratch, server_version: Option<u32>, needle: &str) -> (Vec<u8>, bool) {
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 40,
@@ -87,6 +86,9 @@ fn tui_announces_a_versioned_app_server_client_handshake() {
     // TUI (rather than refuse for lack of a terminal), so `tui::run` — and its handshake — runs.
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_core"));
     command.env_clear();
+    if let Some(version) = server_version {
+        command.env("CORE_APP_SERVER_PROTOCOL_VERSION", version.to_string());
+    }
     command.env("HOME", scratch.home().as_os_str());
     command.env("PATH", "/usr/bin:/bin");
     command.env("TERM", "xterm");
@@ -131,10 +133,6 @@ fn tui_announces_a_versioned_app_server_client_handshake() {
         }
     });
 
-    let expected = format!(
-        "app server: TUI attached as a versioned client (SQ/EQ protocol v{PROTOCOL_VERSION})"
-    );
-
     let mut capture: Vec<u8> = Vec::new();
     let mut found = false;
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
@@ -144,7 +142,7 @@ fn tui_announces_a_versioned_app_server_client_handshake() {
                 if capture.len() < MAX_CAPTURE_BYTES {
                     capture.extend_from_slice(&chunk);
                 }
-                if contains(&capture, expected.as_bytes()) {
+                if contains(&capture, needle.as_bytes()) {
                     found = true;
                     break;
                 }
@@ -159,10 +157,66 @@ fn tui_announces_a_versioned_app_server_client_handshake() {
     let _ = child.wait();
     drop(pair.master);
     let _ = reader_thread.join();
+    (capture, found)
+}
+
+#[test]
+fn tui_announces_a_versioned_app_server_client_handshake() {
+    let scratch = Scratch::new();
+    let expected = format!(
+        "app server: TUI attached as a versioned client (SQ/EQ protocol v{PROTOCOL_VERSION})"
+    );
+    let (capture, found) = capture_until(&scratch, None, &expected);
 
     assert!(
         found,
         "the TUI must announce a versioned App Server client handshake; expected:\n  {expected}\ngot terminal bytes:\n{}",
+        String::from_utf8_lossy(&capture)
+    );
+}
+
+/// A versioned client is only a client if it can *refuse*. Pointed at a runtime that advertises a
+/// protocol it does not speak, the frontend must decline to attach, say so in plain text, and never
+/// take over the terminal — a diagnostic printed from inside the alternate screen is a diagnostic
+/// the operator never sees, because the terminal guard restores the screen on the way out and takes
+/// the message with it.
+///
+/// A frontend that co-composes the runtime cannot fail this way at all: there is no handshake to
+/// refuse, so it would enter the TUI regardless of what version the runtime speaks.
+#[test]
+fn tui_refuses_to_attach_on_version_skew_before_touching_the_terminal() {
+    let scratch = Scratch::new();
+    let skewed = PROTOCOL_VERSION + 1;
+    let expected = format!(
+        "app server: refusing to attach — unsupported SQ/EQ protocol version {skewed}; expected {PROTOCOL_VERSION}"
+    );
+    let (capture, found) = capture_until(&scratch, Some(skewed), &expected);
+
+    assert!(
+        found,
+        "a frontend that cannot speak the runtime's protocol must refuse to attach and say why; expected:\n  {expected}\ngot terminal bytes:\n{}",
+        String::from_utf8_lossy(&capture)
+    );
+
+    // Ordering is the other half of the criterion: the refusal must reach the operator on the
+    // pre-TUI diagnostic stream. Nothing may have switched to the alternate screen (CSI ?1049h)
+    // or enabled mouse reporting (CSI ?1000h) before it.
+    for (sequence, what) in [
+        (b"\x1b[?1049h".as_slice(), "the alternate screen"),
+        (b"\x1b[?1000h".as_slice(), "mouse reporting"),
+    ] {
+        assert!(
+            !contains(&capture, sequence),
+            "the refusal must precede terminal takeover, but {what} was entered; terminal bytes:\n{}",
+            String::from_utf8_lossy(&capture)
+        );
+    }
+
+    // And the announcement of a *successful* attachment must not appear: refusing and attaching are
+    // mutually exclusive outcomes.
+    assert!(
+        !contains(&capture, b"app server: TUI attached as a versioned client"),
+        "a refused handshake must not also announce a successful attachment; terminal bytes:\n{}",
         String::from_utf8_lossy(&capture)
     );
 }
