@@ -2,10 +2,11 @@
 
 ## Prerequisites
 
-Core Code development is supported on macOS, Linux, and 64-bit Windows. Install
-Git, a Rust toolchain at version 1.90 or newer, and the native compiler/linker
-required by Rust. Windows builds use the MSVC toolchain and require the Visual
-Studio Build Tools C++ workload. The repository does not use a JavaScript build
+The Core Code source tree targets macOS, Linux, and 64-bit Windows. Install Git,
+a Rust toolchain at version 1.90 or newer, and the compiler/linker required by
+the target. Windows source paths use the MSVC toolchain and require the Visual
+Studio Build Tools C++ workload, but native `windows-2022` qualification and its
+release receipt remain pending. The repository does not use a JavaScript build
 for the product runtime.
 
 ```sh
@@ -28,10 +29,10 @@ to make a test pass.
 
 macOS uses the system `sandbox-exec`/Seatbelt boundary and needs no extra package.
 
-Windows uses the `x86_64-pc-windows-msvc` target. The client, ConPTY TUI, and
-loopback App Server build natively, but code-execution operations whose WS5
-Confinement backend is not yet available fail closed rather than running
-unconfined.
+The Windows source uses the `x86_64-pc-windows-msvc` target and contains client,
+ConPTY TUI, and loopback App Server paths. Those paths still require native
+`windows-2022` qualification. Code-execution operations whose WS5 Confinement
+backend is not yet available fail closed rather than running unconfined.
 
 ## Fork and clone
 

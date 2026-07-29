@@ -28,11 +28,12 @@ security control.
 
 At source level, the interactive client shares the crossterm composition root
 with Unix and is designed to run in a ConPTY terminal; there is no Windows copy
-of the SQ/EQ protocol or result-v5 wire. The Windows terminal path creates and
-resizes the ConPTY through `portable-pty`. One-shot mode and `core serve` share
-the same App Server client. Headless clients use bounded JSONL over loopback TCP
-rather than a Unix-domain socket and perform the same admission handshake.
-These paths have not yet earned a native Windows release receipt.
+of the SQ/EQ protocol or result-v5 wire. The native Windows oracle creates and
+resizes a ConPTY around the production TUI through `portable-pty`; Core itself
+uses the console supplied by its terminal host. One-shot mode and `core serve`
+share the same App Server client. Headless clients use bounded JSONL over
+loopback TCP rather than a Unix-domain socket and perform the same admission
+handshake. These paths have not yet earned a native Windows release receipt.
 
 The source implementation capability-probes terminal features. A non-empty
 `WT_SESSION` is positive evidence for Windows Terminal OSC 8 links and OSC 9
