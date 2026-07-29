@@ -114,6 +114,10 @@ pub fn wrap_spans(spans: &[Span], width: u16) -> Vec<Line<'static>> {
     let mut cur_w = 0u16;
     let mut last_space: Option<usize> = None; // index in `cur` just after a space
     for (c, st) in chars {
+        // A double-width glyph cannot physically fit in a one-cell terminal row. Keep the
+        // renderer's hard width contract by using a visible, single-cell replacement at that
+        // degenerate width instead of handing Ratatui an overflowing glyph.
+        let c = if char_width(c) > width { '?' } else { c };
         let cw = char_width(c);
         if cur_w.saturating_add(cw) > width && !cur.is_empty() {
             if let Some(sp) = last_space.filter(|&sp| sp > 0 && sp < cur.len()) {
@@ -173,7 +177,15 @@ pub(crate) fn wrap_annotated_spans(spans: &[AnnotatedSpan], width: u16) -> Rende
     let mut current: Vec<(char, Style, Option<usize>)> = Vec::new();
     let mut current_width = 0u16;
     let mut last_space: Option<usize> = None;
-    for entry @ (character, _, _) in chars {
+    for (character, style, target) in chars {
+        // Match `wrap_spans`: at a one-cell viewport an over-wide glyph has no valid placement.
+        // Retain its style and hyperlink identity on a visible one-cell replacement.
+        let character = if char_width(character) > width {
+            '?'
+        } else {
+            character
+        };
+        let entry = (character, style, target);
         let character_width = char_width(character);
         if current_width.saturating_add(character_width) > width && !current.is_empty() {
             if let Some(space) = last_space.filter(|&space| space > 0 && space < current.len()) {
@@ -362,6 +374,31 @@ mod tests {
                 "gutter pushed the row over width"
             );
         }
+    }
+
+    #[test]
+    fn one_cell_rows_replace_physically_unrenderable_wide_glyphs() {
+        let spans = vec![styled("界a", Color::White)];
+        let rows = wrap_spans(&spans, 1);
+        assert!(rows.iter().all(|row| line_width(row) <= 1));
+        assert_eq!(
+            rows.iter()
+                .flat_map(|row| row.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "?a"
+        );
+
+        let annotated = wrap_annotated_spans(
+            &[AnnotatedSpan {
+                span: styled("界", Color::Blue),
+                hyperlink: Some("https://example.com/wide".into()),
+            }],
+            1,
+        );
+        assert!(annotated.lines.iter().all(|row| line_width(row) <= 1));
+        assert_eq!(annotated.hyperlinks.len(), 1);
+        assert_eq!(annotated.hyperlinks[0].width, 1);
     }
 
     #[test]

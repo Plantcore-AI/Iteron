@@ -1479,6 +1479,7 @@ mod tests {
                     })],
                 },
             ],
+            input_images: Vec::new(),
             tools: vec![ToolSpec {
                 name: "read_file".into(),
                 description: "Read a workspace file".into(),

@@ -29,6 +29,351 @@ const CLI_INPUT_ATTACHMENT_SURFACE: &str = "cli.machine-stream.input-attachment"
 const CLI_INPUT_ATTACHMENT_FIXTURE: &str =
     "crates/cli/tests/golden/input_attachment_stream_v5.jsonl";
 
+pub(crate) fn parse_json_no_duplicates(bytes: &[u8], label: &str) -> Result<serde_json::Value> {
+    fixtures::parse_json_no_duplicates(bytes).with_context(|| format!("{label} is invalid JSON"))
+}
+
+/// An opaque, reusable view of the fully validated current CLI result authority.
+#[derive(Debug, Clone)]
+pub(crate) struct CurrentCliResultSnapshot {
+    available: bool,
+    selector_field: String,
+    selector_value: String,
+    version_field: String,
+    current_version: u32,
+    allowed_fields: BTreeSet<String>,
+    required_fields: BTreeSet<String>,
+    kernel_tax_fields: Option<BTreeSet<String>>,
+}
+
+struct CliResultTopLevelAuthority<'a> {
+    allowed_fields: &'a BTreeSet<String>,
+    required_fields: &'a BTreeSet<String>,
+    selector_field: &'a str,
+    selector_value: &'a str,
+    version_field: &'a str,
+    current_version: u32,
+}
+
+impl CurrentCliResultSnapshot {
+    pub(crate) fn validate(&self, value: &serde_json::Value) -> Result<()> {
+        if !self.available {
+            bail!("validated schema contract has no CLI machine-result authority");
+        }
+        validate_cli_result_top_level(
+            value,
+            "CLI result consumer record",
+            &CliResultTopLevelAuthority {
+                allowed_fields: &self.allowed_fields,
+                required_fields: &self.required_fields,
+                selector_field: &self.selector_field,
+                selector_value: &self.selector_value,
+                version_field: &self.version_field,
+                current_version: self.current_version,
+            },
+        )?;
+
+        let Some(kernel_tax_value) = value.get("kernel_tax") else {
+            return Ok(());
+        };
+        let kernel_tax = kernel_tax_value
+            .as_object()
+            .context("CLI result consumer record `kernel_tax` is not an object")?;
+        let expected_kernel_tax = self.kernel_tax_fields.as_ref().context(
+            "CLI result consumer record carries `kernel_tax`, but canonical current fixtures do not",
+        )?;
+        let actual_kernel_tax = kernel_tax.keys().cloned().collect::<BTreeSet<_>>();
+        if actual_kernel_tax != *expected_kernel_tax {
+            bail!(
+                "CLI result consumer record `kernel_tax` fields differ from canonical current fixtures: expected {:?}, found {actual_kernel_tax:?}",
+                expected_kernel_tax
+            );
+        }
+        for field in expected_kernel_tax {
+            if kernel_tax
+                .get(field)
+                .and_then(serde_json::Value::as_u64)
+                .is_none()
+            {
+                bail!("CLI result consumer record `kernel_tax.{field}` is not a u64");
+            }
+        }
+        Ok(())
+    }
+}
+
+fn current_cli_result_snapshot_from_validated(
+    root: &Path,
+    contract: &Contract,
+) -> Result<CurrentCliResultSnapshot> {
+    let Some(result) = contract
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "cli.machine-result")
+    else {
+        return Ok(CurrentCliResultSnapshot {
+            available: false,
+            selector_field: String::new(),
+            selector_value: String::new(),
+            version_field: String::new(),
+            current_version: 0,
+            allowed_fields: BTreeSet::new(),
+            required_fields: BTreeSet::new(),
+            kernel_tax_fields: None,
+        });
+    };
+    let selector = result
+        .selector
+        .as_ref()
+        .context("canonical `cli.machine-result` lacks a selector")?;
+    let version_field = result
+        .version_field
+        .as_ref()
+        .context("canonical `cli.machine-result` lacks a version field")?;
+    let allowed_fields = result
+        .fields
+        .iter()
+        .map(|field| field.name.clone())
+        .collect::<BTreeSet<_>>();
+    let required_fields = result
+        .fields
+        .iter()
+        .filter(|field| !field.optional)
+        .map(|field| field.name.clone())
+        .collect::<BTreeSet<_>>();
+    let kernel_tax_fields = current_cli_result_kernel_tax_fields(root, contract)?;
+
+    Ok(CurrentCliResultSnapshot {
+        available: true,
+        selector_field: selector.field.clone(),
+        selector_value: selector.value.clone(),
+        version_field: version_field.clone(),
+        current_version: result.current_version,
+        allowed_fields,
+        required_fields,
+        kernel_tax_fields,
+    })
+}
+
+fn current_cli_result_surface(contract: &Contract) -> Result<&Surface> {
+    contract
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "cli.machine-result")
+        .context("canonical schema-compatibility manifest lacks `cli.machine-result`")
+}
+
+fn validate_current_cli_result_top_level(
+    value: &serde_json::Value,
+    result: &Surface,
+    label: &str,
+) -> Result<()> {
+    let allowed_fields = result
+        .fields
+        .iter()
+        .map(|field| field.name.clone())
+        .collect::<BTreeSet<_>>();
+    let required_fields = result
+        .fields
+        .iter()
+        .filter(|field| !field.optional)
+        .map(|field| field.name.clone())
+        .collect::<BTreeSet<_>>();
+    let selector = result
+        .selector
+        .as_ref()
+        .context("canonical `cli.machine-result` lacks a selector")?;
+    let version_field = result
+        .version_field
+        .as_deref()
+        .context("canonical `cli.machine-result` lacks a version field")?;
+    validate_cli_result_top_level(
+        value,
+        label,
+        &CliResultTopLevelAuthority {
+            allowed_fields: &allowed_fields,
+            required_fields: &required_fields,
+            selector_field: &selector.field,
+            selector_value: &selector.value,
+            version_field,
+            current_version: result.current_version,
+        },
+    )
+}
+
+fn validate_cli_result_top_level(
+    value: &serde_json::Value,
+    label: &str,
+    authority: &CliResultTopLevelAuthority<'_>,
+) -> Result<()> {
+    let object = value
+        .as_object()
+        .with_context(|| format!("{label} is not an object"))?;
+    let actual_fields = object.keys().cloned().collect::<BTreeSet<_>>();
+    if !actual_fields.is_subset(authority.allowed_fields) {
+        bail!(
+            "{label} has fields outside canonical `cli.machine-result`: allowed {:?}, found {actual_fields:?}",
+            authority.allowed_fields
+        );
+    }
+    if !authority.required_fields.is_subset(&actual_fields) {
+        bail!(
+            "{label} lacks required canonical `cli.machine-result` fields: required {:?}, found {actual_fields:?}",
+            authority.required_fields
+        );
+    }
+    if value
+        .get(authority.selector_field)
+        .and_then(serde_json::Value::as_str)
+        != Some(authority.selector_value)
+    {
+        bail!(
+            "{label} does not match canonical selector {}={}",
+            authority.selector_field,
+            authority.selector_value
+        );
+    }
+    if value
+        .get(authority.version_field)
+        .and_then(serde_json::Value::as_u64)
+        != Some(u64::from(authority.current_version))
+    {
+        bail!(
+            "{label} does not carry canonical {}={}",
+            authority.version_field,
+            authority.current_version
+        );
+    }
+    Ok(())
+}
+
+fn current_cli_result_values(
+    root: &Path,
+    contract: &Contract,
+) -> Result<Vec<(String, serde_json::Value)>> {
+    let result = current_cli_result_surface(contract)?;
+    let selector = result
+        .selector
+        .as_ref()
+        .context("canonical `cli.machine-result` lacks a selector")?;
+    let current_fixtures = result
+        .fixtures
+        .iter()
+        .filter(|fixture| fixture.schema_version == result.current_version)
+        .collect::<Vec<_>>();
+    if current_fixtures.is_empty() {
+        bail!(
+            "canonical `cli.machine-result` lacks a fixture for current version {}",
+            result.current_version
+        );
+    }
+
+    let mut current_results = Vec::new();
+    for fixture in current_fixtures {
+        let source = read_bounded(root, &fixture.path, MAX_FIXTURE_BYTES)?;
+        let values = match fixture.format {
+            manifest::FixtureFormat::Json => vec![parse_json_no_duplicates(
+                &source,
+                &format!("canonical result fixture `{}`", fixture.path),
+            )?],
+            manifest::FixtureFormat::Jsonl => {
+                let mut values = Vec::new();
+                for (index, line) in source
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .enumerate()
+                {
+                    values.push(parse_json_no_duplicates(
+                        line,
+                        &format!(
+                            "canonical result fixture `{}` line {}",
+                            fixture.path,
+                            index + 1
+                        ),
+                    )?);
+                }
+                if values.is_empty() {
+                    bail!("canonical result fixture `{}` is empty", fixture.path);
+                }
+                values
+            }
+        };
+        let mut found = false;
+        for (index, value) in values.into_iter().enumerate() {
+            if value
+                .get(&selector.field)
+                .and_then(serde_json::Value::as_str)
+                != Some(selector.value.as_str())
+            {
+                continue;
+            }
+            found = true;
+            let label = format!(
+                "canonical result fixture `{}` record {}",
+                fixture.path,
+                index + 1
+            );
+            validate_current_cli_result_top_level(&value, result, &label)?;
+            current_results.push((label, value));
+        }
+        if !found {
+            bail!(
+                "canonical result fixture `{}` lacks a record matching {}={}",
+                fixture.path,
+                selector.field,
+                selector.value
+            );
+        }
+    }
+    Ok(current_results)
+}
+
+fn current_cli_result_kernel_tax_fields(
+    root: &Path,
+    contract: &Contract,
+) -> Result<Option<BTreeSet<String>>> {
+    let result_surface = current_cli_result_surface(contract)?;
+    let kernel_tax_optional = result_surface
+        .fields
+        .iter()
+        .find(|field| field.name == "kernel_tax")
+        .context("canonical `cli.machine-result` lacks `kernel_tax`")?
+        .optional;
+    let mut expected = None;
+    for (label, result) in current_cli_result_values(root, contract)? {
+        let Some(kernel_tax_value) = result.get("kernel_tax") else {
+            if kernel_tax_optional {
+                continue;
+            }
+            bail!("{label} lacks required `kernel_tax`");
+        };
+        let kernel_tax = kernel_tax_value
+            .as_object()
+            .with_context(|| format!("{label} `kernel_tax` is not an object"))?;
+        let fields = kernel_tax.keys().cloned().collect::<BTreeSet<_>>();
+        if fields.is_empty()
+            || kernel_tax
+                .values()
+                .any(|value| serde_json::Value::as_u64(value).is_none())
+        {
+            bail!("{label} `kernel_tax` must contain only named u64 fields");
+        }
+        if let Some(expected) = &expected {
+            if fields != *expected {
+                bail!(
+                    "canonical current result fixtures disagree on `kernel_tax` fields: expected {expected:?}, found {fields:?} in {label}"
+                );
+            }
+        } else {
+            expected = Some(fields);
+        }
+    }
+    if expected.is_none() && !kernel_tax_optional {
+        bail!("canonical current result fixtures contain no `kernel_tax` shape");
+    }
+    Ok(expected)
+}
+
 pub(crate) fn read_candidate_file_bounded(
     root: &Path,
     relative: &str,
@@ -52,9 +397,16 @@ enum HistoryBase {
     Published,
 }
 
-pub(crate) fn validate_current(root: &Path) -> Result<()> {
+pub(crate) fn validate_current(root: &Path) -> Result<CurrentCliResultSnapshot> {
     let contract = load_candidate(root)?;
-    validate_candidate(root, &contract)
+    validate_candidate(root, &contract)?;
+    let snapshot = current_cli_result_snapshot_from_validated(root, &contract)?;
+    if snapshot.available {
+        for (_, value) in current_cli_result_values(root, &contract)? {
+            snapshot.validate(&value)?;
+        }
+    }
+    Ok(snapshot)
 }
 
 pub(crate) fn validate_against_base(root: &Path, base: &str) -> Result<()> {

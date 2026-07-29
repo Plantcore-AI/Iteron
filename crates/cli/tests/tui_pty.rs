@@ -21,6 +21,7 @@ const LINK_TEST_KEY_ENV: &str = "CORE_TUI_LINK_TEST_KEY";
 const LINK_TEST_KEY: &str = "integration-test-placeholder";
 const LINK_TARGET: &str = "https://example.com/core-guide";
 const TERMINAL_BELL: u8 = b'\x07';
+const OSC9_RUN_COMPLETE: &[u8] = b"\x1b]9;Core Code: run complete\x07";
 const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
 const KEYBOARD_ENHANCEMENT_PUSH: &[u8] = b"\x1b[>1u";
 const KEYBOARD_ENHANCEMENT_POP: &[u8] = b"\x1b[<1u";
@@ -632,10 +633,13 @@ impl PtyHarness {
             })
             .expect("resize PTY and deliver SIGWINCH");
         self.wait_until(&format!("redraw at {cols}x{rows}"), |pty| {
+            let (cursor_row, cursor_col) = pty.parser.screen().cursor_position();
             pty.capture.len() > before
                 && pty.parser.screen().size() == (rows, cols)
                 && pty.screen_text().contains("请检查")
                 && !pty.screen_text().contains('�')
+                && cursor_row < rows
+                && cursor_col < cols
         });
         let (cursor_row, cursor_col) = self.parser.screen().cursor_position();
         assert!(cursor_row < rows, "cursor row escaped {cols}x{rows}");
@@ -960,17 +964,17 @@ fn capable_terminal_receives_clickable_markdown_link_with_unchanged_visible_text
 }
 
 #[test]
-fn user_enabled_completion_notification_is_one_out_of_band_bell_per_turn() {
+fn capable_terminal_receives_one_bounded_osc9_notification_per_run() {
     let provider = LinkProvider::spawn_notification_fixture();
     let scratch = Scratch::new("completion-notification-enabled");
     scratch.configure_link_provider_with_notifications(&provider.api_root, Some(true));
     let mut pty = PtyHarness::spawn_link_fixture(&scratch, 80, 24);
 
-    pty.wait_until("completed turn and its terminal bell", |pty| {
+    pty.wait_until("completed run and its OSC 9 notification", |pty| {
         pty.screen_text()
             .contains("Notification fixture row remains intact.")
             && pty.screen_text().contains("done")
-            && pty.capture.contains(&TERMINAL_BELL)
+            && sequence_count(&pty.capture, OSC9_RUN_COMPLETE) > 0
     });
     pty.drain_ready();
     let notifications = pty
@@ -980,7 +984,12 @@ fn user_enabled_completion_notification_is_one_out_of_band_bell_per_turn() {
         .count();
     assert_eq!(
         notifications, 1,
-        "one streamed response must notify at its single semantic turn boundary, not per delta"
+        "one streamed run must carry one terminated OSC frame at its authoritative boundary"
+    );
+    assert_eq!(
+        sequence_count(&pty.capture, OSC9_RUN_COMPLETE),
+        1,
+        "the capable production transport must emit exactly one complete OSC 9 frame"
     );
     let screen = pty.screen_text();
     assert!(
@@ -1004,17 +1013,17 @@ fn user_enabled_completion_notification_is_one_out_of_band_bell_per_turn() {
 }
 
 #[test]
-fn missing_usage_completion_uses_done_fallback_without_double_belling() {
+fn missing_usage_completion_uses_the_server_run_boundary_without_double_notification() {
     let provider = LinkProvider::spawn_missing_usage_notification_fixture();
     let scratch = Scratch::new("completion-notification-missing-usage");
     scratch.configure_link_provider_with_notifications(&provider.api_root, Some(true));
     let mut pty = PtyHarness::spawn_link_fixture(&scratch, 80, 24);
 
-    pty.wait_until("missing-usage completion and fallback bell", |pty| {
+    pty.wait_until("missing-usage run completion and OSC 9 frame", |pty| {
         pty.screen_text()
             .contains("Missing-usage completion still notifies.")
             && pty.screen_text().contains("done")
-            && pty.capture.contains(&TERMINAL_BELL)
+            && sequence_count(&pty.capture, OSC9_RUN_COMPLETE) > 0
     });
     pty.drain_ready();
     assert_eq!(
@@ -1023,12 +1032,13 @@ fn missing_usage_completion_uses_done_fallback_without_double_belling() {
             .filter(|byte| **byte == TERMINAL_BELL)
             .count(),
         1,
-        "Done fallback must cover the truthful no-TurnEnd path exactly once"
+        "the App Server RunEnded boundary must notify exactly once even without provider usage"
     );
+    assert_eq!(sequence_count(&pty.capture, OSC9_RUN_COMPLETE), 1);
     assert!(
         pty.screen_text()
             .contains("Missing-usage completion still notifies."),
-        "fallback notification corrupted the completed response row"
+        "run-complete notification corrupted the completed response row"
     );
 
     pty.send(b"\x1b");

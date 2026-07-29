@@ -1,16 +1,16 @@
 //! `TaskEnvelope` — a task entering the runtime, with its acceptance contract and authority.
 //!
-//! # Why this is constructed from `Op`, not added to it
+//! # Why this is constructed from a user-input `Op`
 //!
 //! `Op` is an internally-tagged enum on the submission queue, matched exhaustively in three places
-//! in `crates/kernel`. A blast-radius review found that adding an `Op::Task` variant would not only
-//! break those matches but do something worse: the natural arm for a new variant pushes into
-//! `pending_steers`, which would reclassify a whole envelope — acceptance contract, budget,
+//! in `crates/kernel`. A blast-radius review found that adding a whole `Op::Task` envelope would
+//! not only break those matches but do something worse: the natural arm for a new variant pushes
+//! into `pending_steers`, which would reclassify a whole envelope — acceptance contract, budget,
 //! authority ceiling — as steering *text*.
 //!
-//! So the envelope is a separate type built **from** `Op::UserInput`. The submission queue keeps
-//! its exact shape and bytes; the envelope is what the runtime carries once a submission has been
-//! admitted.
+//! So the envelope is a separate type built **from** a user-input tag. Legacy `Op::UserInput`
+//! keeps its exact shape and bytes; multimodal input uses a new top-level tag that older readers
+//! safely degrade to `Op::Unknown`.
 //!
 //! # What is deliberately not here
 //!
@@ -33,13 +33,16 @@ pub const MAX_TASK_TEXT_BYTES: usize = 1_048_576;
 /// Upper bound on the number of acceptance checks one task may declare.
 pub const MAX_ACCEPTANCE_CHECKS: usize = 256;
 
-/// The structured task payload. `Text` is the only variant a v1 producer emits; a newer
-/// producer's kind degrades to `Unknown` rather than failing the envelope (§4.3(b)1).
+/// The structured task payload. A newer producer's kind degrades to `Unknown` rather than failing
+/// the envelope (§4.3(b)1); admission still refuses a kind this build cannot interpret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskInput {
     Text {
         text: String,
+    },
+    ContentSegments {
+        segments: crate::ContentSegments,
     },
     #[serde(other)]
     Unknown,
@@ -136,7 +139,7 @@ pub struct TaskEnvelope {
 }
 
 impl TaskEnvelope {
-    /// Build an envelope from an admitted `Op::UserInput`.
+    /// Build an envelope from an admitted text-only or multimodal user-input operation.
     ///
     /// Returns `None` for any other submission kind: approvals, steering and interrupts are not
     /// tasks, and quietly turning one into a task is the reclassification bug this type avoids.
@@ -149,16 +152,19 @@ impl TaskEnvelope {
         trust: Trust,
         ceiling: CapabilitySet,
     ) -> Option<Self> {
-        let text = match op {
-            Op::UserInput { text } => text,
+        let input = match op {
+            Op::UserInput { text } => TaskInput::Text {
+                text: text.to_owned(),
+            },
+            Op::UserInputV2 { segments } => TaskInput::ContentSegments {
+                segments: segments.clone(),
+            },
             _ => return None,
         };
         Some(Self {
             task_id,
             protocol_version: PROTOCOL_VERSION,
-            input: TaskInput::Text {
-                text: text.to_owned(),
-            },
+            input,
             trust,
             acceptance: Acceptance::default(),
             budget: Budget::default(),
@@ -183,6 +189,7 @@ impl TaskEnvelope {
     pub fn text(&self) -> Option<&str> {
         match &self.input {
             TaskInput::Text { text } => Some(text),
+            TaskInput::ContentSegments { segments } => Some(segments.text()),
             TaskInput::Unknown => None,
         }
     }
@@ -195,6 +202,7 @@ impl TaskEnvelope {
                     return Err("task text exceeds its declared bound");
                 }
             }
+            TaskInput::ContentSegments { segments } => segments.validate()?,
             // Degrading an unknown kind keeps the envelope decodable across the seam; running it
             // is a different question, and this build cannot honour a payload it cannot read.
             TaskInput::Unknown => return Err("unrecognised task input kind"),
@@ -213,11 +221,35 @@ mod tests {
     use crate::Op;
     use crate::capability_set::CapabilitySet;
     use crate::ids::SubmissionId;
+    use crate::input::{ContentSegment, ContentSegments, ImageContent, ImageMediaType};
     use crate::tool::Capability;
     use crate::trust::Trust;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    enum LegacyTaskInput {
+        Text {
+            text: String,
+        },
+        #[serde(other)]
+        Unknown,
+    }
 
     fn ceiling() -> CapabilitySet {
         CapabilitySet::from_iter_capabilities([Capability::ReadOnly, Capability::ReversibleLocal])
+    }
+
+    fn multimodal_segments() -> ContentSegments {
+        ContentSegments::new(vec![
+            ContentSegment::Text {
+                text: "describe".into(),
+            },
+            ContentSegment::Image {
+                image: ImageContent::new(ImageMediaType::Png, "iVBORw0KGgo=").unwrap(),
+            },
+        ])
+        .unwrap()
     }
 
     #[test]
@@ -252,6 +284,54 @@ mod tests {
             serde_json::to_string(&input).expect("re-serialises"),
             before,
             "Op is matched exhaustively in the kernel and pinned by fixtures; it must not move"
+        );
+        assert_eq!(
+            before, r#"{"op":"user_input","text":"fix the parser"}"#,
+            "the legacy SQ bytes are an explicit golden, not just self-consistent"
+        );
+    }
+
+    #[test]
+    fn multimodal_op_becomes_a_segment_task_without_changing_the_legacy_shape() {
+        let op = Op::UserInputV2 {
+            segments: multimodal_segments(),
+        };
+        let envelope =
+            TaskEnvelope::from_user_input(SubmissionId(9), &op, Trust::Trusted, ceiling())
+                .expect("multimodal user input is a task");
+        assert_eq!(envelope.text(), Some("describe"));
+        assert!(envelope.validate().is_ok());
+        assert_eq!(
+            serde_json::to_value(&envelope.input).unwrap(),
+            serde_json::json!({
+                "kind": "content_segments",
+                "segments": [
+                    {"type": "text", "text": "describe"},
+                    {
+                        "type": "image",
+                        "image": {
+                            "media_type": "image/png",
+                            "data": "iVBORw0KGgo="
+                        }
+                    }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_task_readers_degrade_new_input_kind_without_retaining_image_bytes() {
+        let marker = "iVBORw0KGgo=";
+        let input = TaskInput::ContentSegments {
+            segments: multimodal_segments(),
+        };
+        let old: LegacyTaskInput =
+            serde_json::from_value(serde_json::to_value(&input).unwrap()).unwrap();
+        assert_eq!(old, LegacyTaskInput::Unknown);
+        assert!(!format!("{old:?}").contains(marker));
+        assert_eq!(
+            serde_json::to_value(old).unwrap(),
+            serde_json::json!({"kind": "unknown"})
         );
     }
 

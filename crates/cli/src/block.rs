@@ -5,6 +5,8 @@
 //! `ToolEnd` mutates its ORIGINATING card by id, never by a `Vec` position that eviction would shift
 //! (R2).
 
+mod links;
+
 use crate::markdown::{MarkdownDoc, render_doc, render_doc_with_hyperlinks};
 use crate::render::{RenderedLines, line_width, wrap_spans};
 use crate::theme::Theme;
@@ -657,8 +659,9 @@ impl Block {
         }
     }
 
-    /// TUI rendering with OSC 8 regions kept as non-printing metadata. Non-assistant blocks cannot
-    /// currently carry Markdown links and therefore reuse their ordinary semantic renderer.
+    /// TUI rendering with OSC 8 regions kept as non-printing metadata. Assistant Markdown carries
+    /// its parsed link spans; typed tool/file/diff surfaces are annotated only after ordinary
+    /// rendering, so capability never changes their visible bytes or cell geometry.
     pub(crate) fn render_with_hyperlinks(
         &self,
         width: u16,
@@ -670,7 +673,7 @@ impl Block {
             BlockKind::Assistant(doc) => {
                 render_assistant_doc_with_hyperlinks(doc, width, theme, hyperlinks)
             }
-            _ => RenderedLines::plain(self.render(width, theme, spin)),
+            _ => links::annotate(&self.kind, self.render(width, theme, spin), hyperlinks),
         }
     }
 }

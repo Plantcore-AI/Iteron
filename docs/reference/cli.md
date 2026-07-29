@@ -16,6 +16,7 @@ have installed.
 | `[TASK]` | Optional task in the TUI; required with `--print` |
 | `--tui` | Force interactive TUI intent |
 | `-p`, `--print` | One-shot operation |
+| `--image PATH` | Attach a sniffed, bounded PNG/JPEG/GIF/WebP to a one-shot task; repeatable up to eight |
 | `--output-format text\|json\|stream-json` | One-shot stdout contract |
 | `-C`, `--repo PATH` | Target repository; default `.` |
 

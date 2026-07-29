@@ -67,6 +67,8 @@ const VERSION_MISMATCH_SUBMISSION_NOTICE: &str =
     "submission rejected: the frontend and Core use different SQ/EQ protocol versions";
 const INCOMPLETE_USAGE_NOTICE: &str =
     "provider completed the turn without an authoritative usage report; cost is unknown";
+const IMAGE_INPUT_UNSUPPORTED_NOTICE: &str = "image attachments were omitted because the selected \
+provider does not support image input; continuing with text only";
 const PROVIDER_RUN_NOTICE_LABEL: &str = "provider run notice";
 const PROVIDER_RUN_NOTICE_PREFIX: &str = "provider run notice [key=sha256:";
 const PROVIDER_RUN_NOTICE_KEY_BODY_LEN: usize = 71;
@@ -3139,7 +3141,7 @@ impl Agent {
                     }
                     // An approval response has meaning only while `await_approval` owns the queue.
                     Op::ApprovalResponse { .. } => {}
-                    Op::Unknown => unknown = unknown.saturating_add(1),
+                    Op::UserInputV2 { .. } | Op::Unknown => unknown = unknown.saturating_add(1),
                 }
             }
         }
@@ -3213,7 +3215,7 @@ impl Agent {
                     Op::Steer { text } | Op::UserInput { text } => {
                         self.pending_steers.push_back(text);
                     }
-                    Op::Unknown => unknown = unknown.saturating_add(1),
+                    Op::UserInputV2 { .. } | Op::Unknown => unknown = unknown.saturating_add(1),
                     Op::ApprovalResponse { .. } | Op::Interrupt | Op::Drain => {}
                 }
             }
@@ -4273,11 +4275,46 @@ impl Agent {
         self.run(text).await
     }
 
+    /// Continue an already-run agent with one validated text-plus-image operator submission.
+    ///
+    /// Attachments remain invocation-local: the durable transcript records the text, while the
+    /// typed image payload is passed only to the main writer requests derived from this call.
+    pub async fn follow_up_content(
+        &mut self,
+        content: &core_protocol::ContentSegments,
+    ) -> Result<Outcome, KernelError> {
+        let path = self.rollout.path().to_path_buf();
+        let prior = Self::messages_from_rollout(&path)?;
+        self.set_resume(prior)?;
+        self.verify_attempts = 0;
+        self.run_content(content).await
+    }
+
     /// Run the agent on a task until the model declares done or a budget ceiling trips.
     /// Bounded by construction (invariant #1). At `Ultracode` effort each non-empty top-level
     /// operator submission may engage the read-only fan-out first (ADR-013). An empty resume
     /// continuation and the orchestrator's internal writer path never recurse into another fan.
     pub async fn run(&mut self, task: &str) -> Result<Outcome, KernelError> {
+        self.run_with_images(task, Vec::new()).await
+    }
+
+    /// Run one validated text-plus-image submission.
+    ///
+    /// The protocol type owns all segment and payload bounds. The runtime never decodes image bytes
+    /// or infers media types; it only carries the typed images to an explicitly capable provider.
+    pub async fn run_content(
+        &mut self,
+        content: &core_protocol::ContentSegments,
+    ) -> Result<Outcome, KernelError> {
+        let input_images = content.images().cloned().collect();
+        self.run_with_images(content.text(), input_images).await
+    }
+
+    async fn run_with_images(
+        &mut self,
+        task: &str,
+        input_images: Vec<core_protocol::ImageContent>,
+    ) -> Result<Outcome, KernelError> {
         self.guard_unresolved_effects()?;
         if self.seq_turn == u32::MAX {
             return Err(KernelError::IdentityExhausted("turn"));
@@ -4323,9 +4360,9 @@ impl Agent {
             && !task.trim().is_empty()
             && !self.orchestrating;
         let outcome = if orchestrate {
-            self.run_orchestrated(task).await
+            self.run_orchestrated(task, &input_images).await
         } else {
-            self.drive(task).await
+            self.drive_with_images(task, &input_images).await
         };
         if orchestrate {
             // The guard is scoped to one top-level run. Leaving it set made every later follow-up
@@ -4454,8 +4491,36 @@ impl Agent {
     /// The single-agent bounded loop (the controller). `run` is the entry point that may first
     /// orchestrate; `drive` is the loop itself and never re-orchestrates.
     async fn drive(&mut self, task: &str) -> Result<Outcome, KernelError> {
+        self.drive_with_images(task, &[]).await
+    }
+
+    async fn drive_with_images(
+        &mut self,
+        task: &str,
+        input_images: &[core_protocol::ImageContent],
+    ) -> Result<Outcome, KernelError> {
         let messages = self.admit_submission(task)?;
-        self.drive_admitted(messages, task).await
+        let input_images = self.admit_input_images(input_images)?;
+        self.drive_admitted(messages, task, input_images).await
+    }
+
+    /// Bind attachments to one admitted top-level submission. Unsupported providers get one
+    /// durable, frontend-visible notice and the writer proceeds with the exact text transcript.
+    fn admit_input_images<'a>(
+        &mut self,
+        input_images: &'a [core_protocol::ImageContent],
+    ) -> Result<&'a [core_protocol::ImageContent], KernelError> {
+        if input_images.is_empty() || self.provider.supports_image_input() {
+            return Ok(input_images);
+        }
+        self.emit_durable(
+            TurnId(self.seq_turn),
+            EventKind::Notice {
+                text: IMAGE_INPUT_UNSUPPORTED_NOTICE.into(),
+            },
+        )?;
+        self.ui(UiEvent::Notice(IMAGE_INPUT_UNSUPPORTED_NOTICE.into()));
+        Ok(&[])
     }
 
     /// Resolve the complete durable context before any provider request, including Ultracode's
@@ -4486,6 +4551,7 @@ impl Agent {
         &mut self,
         mut messages: Vec<Message>,
         relevance_task: &str,
+        input_images: &[core_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
         let mut consecutive_errors: u32 = 0;
 
@@ -4594,6 +4660,7 @@ impl Agent {
                 model: self.model.clone(),
                 system: effective_system,
                 messages: messages.clone(),
+                input_images: input_images.to_vec(),
                 tools: tool_specs,
                 max_tokens: request_max_tokens,
                 cache_system: true, // stable prefix cached (ADR-002)
@@ -5997,7 +6064,7 @@ impl Agent {
                             // it is admitted immediately after the effect boundary, never dropped.
                             self.pending_steers.push_back(text);
                         }
-                        Op::Unknown => self.record_rejected_submissions(
+                        Op::UserInputV2 { .. } | Op::Unknown => self.record_rejected_submissions(
                             turn,
                             1,
                             SubmissionRejectionReason::UnsupportedOperation,
@@ -6527,9 +6594,14 @@ impl Agent {
     /// their summaries in DECLARATION order, and hand the ordered bundle to the single writer. A
     /// localized task (or an empty plan) falls back to the single-agent loop. The benefit is
     /// context-window management + investigation breadth, NOT a wall-clock speedup (R5 review).
-    async fn run_orchestrated(&mut self, task: &str) -> Result<Outcome, KernelError> {
+    async fn run_orchestrated(
+        &mut self,
+        task: &str,
+        input_images: &[core_protocol::ImageContent],
+    ) -> Result<Outcome, KernelError> {
         self.orchestrating = true; // the writer's inner run() must not re-orchestrate
         let messages = self.admit_submission(task)?;
+        let input_images = self.admit_input_images(input_images)?;
         // Context is WAL-authoritative for every request derived from this submission, including
         // decomposition and read-only fan calls that happen before the single writer starts.
         self.resolve_injection_before_provider(task)?;
@@ -6561,7 +6633,7 @@ impl Agent {
         self.workflow_phase(&run_id, core_protocol::WorkflowPhase::Planning)?;
 
         let outcome = self
-            .run_orchestrated_admitted(task, messages, &run_id, class, &mut state)
+            .run_orchestrated_admitted(task, messages, input_images, &run_id, class, &mut state)
             .await;
         let elapsed_ms = started.elapsed().as_millis() as u64;
         let (ui_outcome, durable_outcome, reason, error_code) = workflow_terminal(&outcome, &state);
@@ -6605,6 +6677,7 @@ impl Agent {
         &mut self,
         task: &str,
         mut messages: Vec<Message>,
+        input_images: &[core_protocol::ImageContent],
         run_id: &str,
         class: core_agents::TaskClass,
         state: &mut WorkflowRunState,
@@ -6614,14 +6687,14 @@ impl Agent {
                 text: format!("ultracode: task routed {class:?} — running single-agent (fan-out is net-negative here)"),
             });
             self.workflow_direct(run_id, 0)?;
-            return self.drive_admitted(messages, task).await;
+            return self.drive_admitted(messages, task, input_images).await;
         }
         // Decomposition is a real provider call, not free control-plane work. If the shared
         // operator ceiling is already closed, route through drive solely to durably record the
         // submission and terminal BudgetExhausted outcome; no provider call is admitted.
         if self.inference_budget_exhaustion()?.is_some() {
             self.workflow_direct(run_id, 0)?;
-            return self.drive_admitted(messages, task).await;
+            return self.drive_admitted(messages, task, input_images).await;
         }
         let leaves = self.decompose(task, class).await?;
         if let Some(outcome) = self.collect_and_finish_requested_control(TurnId(self.seq_turn))? {
@@ -6629,7 +6702,7 @@ impl Agent {
         }
         if self.inference_budget_exhaustion()?.is_some() {
             self.workflow_direct(run_id, 0)?;
-            return self.drive_admitted(messages, task).await;
+            return self.drive_admitted(messages, task, input_images).await;
         }
         let remaining_turns = self.remaining_inference_turns();
         let remaining_wall = self
@@ -6644,7 +6717,7 @@ impl Agent {
                 },
             );
             self.workflow_direct(run_id, 0)?;
-            return self.drive_admitted(messages, task).await;
+            return self.drive_admitted(messages, task, input_images).await;
         };
         let tasks = plan.fan_tasks().to_vec();
         let Some(allocation) = allocate_orchestration(remaining_turns, tasks.len(), remaining_wall)
@@ -6656,7 +6729,7 @@ impl Agent {
                 },
             );
             self.workflow_direct(run_id, tasks.len())?;
-            return self.drive_admitted(messages, task).await;
+            return self.drive_admitted(messages, task, input_images).await;
         };
         let fan_tokens = self
             .remaining_provider_tokens()
@@ -6669,7 +6742,7 @@ impl Agent {
                 },
             );
             self.workflow_direct(run_id, tasks.len())?;
-            return self.drive_admitted(messages, task).await;
+            return self.drive_admitted(messages, task, input_images).await;
         }
         let plan = plan
             .with_aggregate(Budget {
@@ -6796,7 +6869,7 @@ impl Agent {
             {
                 return Ok(outcome);
             }
-            return self.drive_admitted(messages, task).await;
+            return self.drive_admitted(messages, task, input_images).await;
         }
         // The single writer continues, consuming the fan as context (ADR-001: the fan IS a
         // context-management device; Reduce is the writer using it).
@@ -6832,7 +6905,7 @@ impl Agent {
         if let Some(outcome) = self.collect_and_finish_requested_control(TurnId(self.seq_turn))? {
             return Ok(outcome);
         }
-        self.drive_admitted(messages, task).await
+        self.drive_admitted(messages, task, input_images).await
     }
 
     /// One bounded, recorded model turn that emits up to `FAN_CAP` read-only investigation
@@ -6876,6 +6949,7 @@ impl Agent {
             model: self.model.clone(),
             system: sys.into(),
             messages: vec![Message::user_text(prompt)],
+            input_images: Vec::new(),
             tools: vec![],
             max_tokens: 1024,
             cache_system: false,
@@ -7555,6 +7629,7 @@ impl Agent {
             model: self.model.clone(),
             system: "You compress a coding-agent transcript into a terse hand-off note.".into(),
             messages: msgs,
+            input_images: Vec::new(),
             tools: vec![],
             max_tokens: 2048,
             cache_system: false,
@@ -7952,7 +8027,9 @@ mod gate_integration_tests {
     //! Integration tests for the permission-gate wiring: drive one turn with a scripted provider
     //! that requests an effecting `edit`, and assert the gate refuses it under the right posture.
     use super::*;
-    use core_protocol::{Block, Purity, StopReason, ToolSpec, ToolUse, Usage};
+    use core_protocol::{
+        Block, ContentSegment, ImageMediaType, Purity, StopReason, ToolSpec, ToolUse, Usage,
+    };
     use core_provider::{
         Provider, ProviderError, StreamItem, TurnRequest, TurnResult, UsageReport,
     };
@@ -7993,6 +8070,79 @@ mod gate_integration_tests {
                     usage: UsageReport::complete(Usage::default()),
                 })
             }
+        }
+    }
+
+    struct CaptureImageInput {
+        capable: bool,
+        requests: std::sync::Mutex<Vec<TurnRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for CaptureImageInput {
+        fn supports_image_input(&self) -> bool {
+            self.capable
+        }
+
+        async fn turn(
+            &self,
+            req: &TurnRequest,
+            _on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            self.requests.lock().unwrap().push(req.clone());
+            let text = if req.system.starts_with("You decompose") {
+                "Inspect the image-input boundary"
+            } else if req.system.contains("read-only investigation subagent") {
+                "Finding: the image input remains provider-neutral"
+            } else {
+                "done"
+            };
+            Ok(TurnResult {
+                blocks: vec![Block::Text { text: text.into() }],
+                stop_reason: StopReason::EndTurn,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct CaptureTwoTurnImages {
+        turn: AtomicUsize,
+        requests: std::sync::Mutex<Vec<TurnRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for CaptureTwoTurnImages {
+        fn supports_image_input(&self) -> bool {
+            true
+        }
+
+        async fn turn(
+            &self,
+            req: &TurnRequest,
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            self.requests.lock().unwrap().push(req.clone());
+            if self.turn.fetch_add(1, Ordering::SeqCst) == 0 {
+                let tool = ToolUse {
+                    id: "image-read-1".into(),
+                    name: "read_file".into(),
+                    input: serde_json::json!({"path":"fixture.txt"}),
+                };
+                on_item(StreamItem::ToolUseComplete(tool.clone()));
+                return Ok(TurnResult {
+                    blocks: vec![Block::ToolUse(tool)],
+                    stop_reason: StopReason::ToolUse,
+                    usage: UsageReport::complete(Usage::default()),
+                });
+            }
+            Ok(TurnResult {
+                blocks: vec![Block::Text {
+                    text: "done".into(),
+                }],
+                stop_reason: StopReason::EndTurn,
+                usage: UsageReport::complete(Usage::default()),
+            })
         }
     }
 
@@ -9067,6 +9217,21 @@ mod gate_integration_tests {
         dir
     }
 
+    fn test_multimodal_content(
+        text: &str,
+    ) -> (core_protocol::ContentSegments, core_protocol::ImageContent) {
+        let image = core_protocol::ImageContent::new(ImageMediaType::Png, "iVBORw0KGgo=")
+            .expect("canonical bounded PNG fixture");
+        let content = core_protocol::ContentSegments::new(vec![
+            ContentSegment::Text { text: text.into() },
+            ContentSegment::Image {
+                image: image.clone(),
+            },
+        ])
+        .expect("one text and one image are valid multimodal input");
+        (content, image)
+    }
+
     fn init_git_workspace(workspace: &std::path::Path) {
         let status = std::process::Command::new("git")
             .args(["init", "-q"])
@@ -9439,6 +9604,181 @@ mod gate_integration_tests {
         }
         assert!(saw_ui_notice, "the same bounded notice must reach the UI");
         std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
+    async fn capable_provider_receives_typed_images_for_each_writer_turn_then_they_clear() {
+        let ws = temp_ws("multimodal-capable-provider");
+        std::fs::write(ws.join("fixture.txt"), "workspace fixture").unwrap();
+        let provider = std::sync::Arc::new(CaptureTwoTurnImages::default());
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("multimodal-capable-provider".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 5,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 2,
+            },
+        );
+        agent.workspace = ws.clone();
+        let (content, image) = test_multimodal_content("inspect the attached screenshot");
+
+        assert_eq!(agent.run_content(&content).await.unwrap(), Outcome::Done);
+        assert_eq!(
+            agent.follow_up("plain text follow-up").await.unwrap(),
+            Outcome::Done
+        );
+
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].input_images, vec![image.clone()]);
+        assert_eq!(
+            requests[1].input_images,
+            vec![image],
+            "the same top-level attachment must remain available after a tool turn"
+        );
+        assert!(
+            requests[2].input_images.is_empty(),
+            "the next top-level text submission must not inherit prior attachments"
+        );
+        let physical = std::fs::read_to_string(agent.rollout.path()).unwrap();
+        assert!(
+            !physical.contains("iVBORw0KGgo="),
+            "invocation-local image bytes must not enter the durable text transcript"
+        );
+        drop(requests);
+        drop(agent);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn text_only_provider_omits_images_once_and_still_completes_on_exact_text() {
+        let ws = temp_ws("multimodal-text-only-provider");
+        let runs = ws.join(".core/runs");
+        let run = core_protocol::RunId("multimodal-text-only-provider".into());
+        let provider = std::sync::Arc::new(CaptureImageInput {
+            capable: false,
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let rollout = Rollout::open(&runs, &run, core_protocol::TenantId::default()).unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        agent.set_ui(ui_tx);
+        let text = "describe this screenshot without dropping my text";
+        let (content, _) = test_multimodal_content(text);
+
+        assert_eq!(agent.run_content(&content).await.unwrap(), Outcome::Done);
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].input_images.is_empty());
+        assert!(requests[0].messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|block| matches!(block, Block::Text { text: seen } if seen == text))
+        }));
+        drop(requests);
+
+        let events = core_record::replay(agent.rollout.path()).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    &event.kind,
+                    EventKind::Notice { text } if text == IMAGE_INPUT_UNSUPPORTED_NOTICE
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            std::iter::from_fn(|| ui_rx.try_recv().ok())
+                .filter(|event| matches!(
+                    event,
+                    UiEvent::Notice(text) if text == IMAGE_INPUT_UNSUPPORTED_NOTICE
+                ))
+                .count(),
+            1
+        );
+        let physical = std::fs::read_to_string(agent.rollout.path()).unwrap();
+        assert!(!physical.contains("iVBORw0KGgo="));
+        drop(agent);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn orchestrated_images_reach_only_the_single_writer() {
+        let ws = temp_ws("multimodal-orchestrated-scope");
+        let provider = std::sync::Arc::new(CaptureImageInput {
+            capable: true,
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("multimodal-orchestrated-scope".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 20,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 60,
+                max_consecutive_tool_errors: 5,
+            },
+        );
+        agent.workspace = ws.clone();
+        agent.effort = core_protocol::Effort::Ultracode;
+        let (content, image) =
+            test_multimodal_content("improve image handling across the whole project");
+
+        assert_eq!(agent.run_content(&content).await.unwrap(), Outcome::Done);
+        let requests = provider.requests.lock().unwrap();
+        let mut decomposition = 0;
+        let mut investigators = 0;
+        let mut writers = 0;
+        for request in requests.iter() {
+            if request.system.starts_with("You decompose") {
+                decomposition += 1;
+                assert!(request.input_images.is_empty());
+            } else if request.system.contains("read-only investigation subagent") {
+                investigators += 1;
+                assert!(request.input_images.is_empty());
+            } else {
+                writers += 1;
+                assert_eq!(request.input_images, vec![image.clone()]);
+            }
+        }
+        assert_eq!(decomposition, 1);
+        assert!(investigators >= 1);
+        assert_eq!(writers, 1);
+        drop(requests);
+        drop(agent);
+        let _ = std::fs::remove_dir_all(ws);
     }
 
     #[test]
@@ -13500,6 +13840,7 @@ ant-api03-SuperSecretModelToken12345"
             model: model.into(),
             system: "sys".into(),
             messages: Vec::new(),
+            input_images: Vec::new(),
             tools: Vec::new(),
             max_tokens: 1,
             cache_system: false,
@@ -14789,6 +15130,7 @@ ant-api03-SuperSecretModelToken12345"
             model: "model-a".into(),
             system: "sys".into(),
             messages: vec![Message::user_text("task")],
+            input_images: Vec::new(),
             tools: vec![],
             max_tokens: 16,
             cache_system: false,

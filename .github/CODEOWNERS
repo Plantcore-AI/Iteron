@@ -85,7 +85,9 @@
 /docs/project/governance.md @fr0m-scratch
 /docs/project/releases.md @fr0m-scratch
 /docs/reference/platforms.md @fr0m-scratch
+/crates/cli/src/block/** @fr0m-scratch
 /crates/cli/src/config/** @fr0m-scratch
+/crates/cli/src/image_input/** @fr0m-scratch
 /crates/cli/src/runtime/** @fr0m-scratch
 /crates/cli/src/theme/** @fr0m-scratch
 /crates/cli/src/tui/** @fr0m-scratch
@@ -101,6 +103,7 @@
 /crates/cli/src/editor.rs @fr0m-scratch
 /crates/cli/src/environment.rs @fr0m-scratch
 /crates/cli/src/highlight.rs @fr0m-scratch
+/crates/cli/src/image_input.rs @fr0m-scratch
 /crates/cli/src/main.rs @fr0m-scratch
 /crates/cli/src/markdown.rs @fr0m-scratch
 /crates/cli/src/mcp.rs @fr0m-scratch

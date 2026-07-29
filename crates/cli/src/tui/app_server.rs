@@ -51,10 +51,12 @@
 //!   the reader.
 
 use crate::runtime::{Agent, UiEvent};
-use core_protocol::{Op, Outcome, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope};
+use core_protocol::{
+    ContentSegments, Op, Outcome, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope,
+};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use tokio::sync::mpsc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
 /// Submission-queue depth.
 ///
@@ -62,20 +64,65 @@ use tokio::sync::mpsc;
 /// the honest answer is "busy", not a longer queue.
 pub(crate) const SQ_CAPACITY: usize = 256;
 
+/// Conservative heap charge for the envelope, enum/segment storage, channel node and allocator
+/// bookkeeping of one submission, before counting its variable-length strings.
+///
+/// Small control operations use only this charge. Keeping a full queue's worth in reserve means
+/// the byte budget never reduces the existing 256-item control burst bound.
+const SQ_ENTRY_OVERHEAD_BYTES: usize = 1024;
+
+/// Bytes reserved for a full [`SQ_CAPACITY`] burst of small control operations.
+const SQ_CONTROL_RESERVE_BYTES: usize = SQ_CAPACITY * SQ_ENTRY_OVERHEAD_BYTES;
+
+/// Total heap budget for submissions waiting on the in-process SQ.
+///
+/// This admits one maximum legal multimodal submission (1 MiB text plus 32 MiB of encoded image
+/// data), with a full control-queue reserve beside it. The item bound still applies, so a maximum
+/// payload plus controls can occupy at most 256 queue slots. Charging the actual text and encoded
+/// image lengths prevents 256 maximum payloads from multiplying into a multi-GiB queue.
+pub(crate) const SQ_BYTE_CAPACITY: usize = SQ_ENTRY_OVERHEAD_BYTES
+    + core_protocol::task::MAX_TASK_TEXT_BYTES
+    + core_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
+    + SQ_CONTROL_RESERVE_BYTES;
+
 /// Event-queue depth.
 ///
 /// Streamed text arrives far faster than a terminal repaints, so this is the elastic that absorbs a
 /// burst between frames. It is a bound, not a buffer to be filled: see the drop policy above.
 pub(crate) const EQ_CAPACITY: usize = 1024;
 
-/// How a run ended, as the server reports it.
+/// The authoritative terminal facts needed by every non-interactive client.
 ///
-/// The frontend used to learn this by `await`ing a `JoinHandle` it owned. With a resident runtime
-/// there is no join, so the terminal state has to arrive as an event like everything else.
-#[derive(Debug)]
-pub(crate) enum RunEnded {
-    Outcome(Outcome),
-    Error(String),
+/// Keeping this projection on the server side is what lets one-shot remain a client: it does not
+/// need to reclaim the [`Agent`] or parse `UiEvent::Done`'s debug string. The
+/// stable result-v5 object is still constructed by `output::final_result` at the client boundary.
+#[derive(Debug, Clone)]
+pub(crate) struct TerminalSummary {
+    pub(crate) outcome: Outcome,
+    pub(crate) assistant_text: String,
+    pub(crate) run_id: String,
+    pub(crate) cost: core_obs::CostState,
+    pub(crate) turns: u32,
+    pub(crate) kernel_tax: core_obs::KernelTax,
+    pub(crate) error: Option<String>,
+    pub(crate) memo_hits: u64,
+    pub(crate) memo_misses: u64,
+}
+
+impl TerminalSummary {
+    /// Project the one terminal authority into the versioned object consumed by every sibling
+    /// client. Presentation remains client-owned; outcome, exit status, and result fields do not.
+    pub(crate) fn result_v5(&self) -> serde_json::Value {
+        crate::output::final_result(
+            &self.outcome,
+            &self.assistant_text,
+            &self.run_id,
+            &self.cost,
+            self.turns,
+            self.kernel_tax,
+            self.error.as_deref(),
+        )
+    }
 }
 
 /// The runtime state the frontend mirrors in its status line.
@@ -103,7 +150,7 @@ pub(crate) struct SessionSnapshot {
 }
 
 /// The EQ payload.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum ServerEvent {
     /// A kernel UI event, verbatim.
     Ui(UiEvent),
@@ -112,8 +159,8 @@ pub(crate) enum ServerEvent {
     /// **Never dropped under backpressure** — this is the authoritative answer to "what happened",
     /// and it is also the only refresh point for the status line.
     RunEnded {
-        completion: RunEnded,
         snapshot: Box<SessionSnapshot>,
+        summary: Box<TerminalSummary>,
     },
     /// The server declined to act on something and is telling the operator so.
     ///
@@ -209,13 +256,21 @@ pub(crate) struct ControlRequest {
 ///
 /// Deliberately not `core_protocol::EqEnvelope` — see the module docs for the four losses that
 /// would force.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct EventEnvelope {
+    /// Monotonic live-delivery cursor. This is deliberately not `core_protocol::Seq`, which names
+    /// the durable hash-chained Rollout order. Reconnect code must never conflate the two.
+    pub(crate) seq: u64,
     pub(crate) protocol_version: u32,
     pub(crate) event: ServerEvent,
 }
 
 impl EventEnvelope {
+    /// The live-delivery cursor used to reject duplicate or reordered EQ frames.
+    pub(crate) fn sequence(&self) -> u64 {
+        self.seq
+    }
+
     /// Unwrap an event the frontend's negotiated protocol can render. Mirrors
     /// `SqEnvelope::into_current`: the version travels with the payload, so a server that started
     /// emitting a newer shape mid-session is caught at the point of use rather than assumed away by
@@ -261,8 +316,33 @@ impl std::error::Error for SubmitError {}
 /// never obtain a handle it would use to push envelopes the server rejects.
 #[derive(Debug, Clone)]
 pub(crate) struct AppServerClient {
-    submissions: mpsc::Sender<SqEnvelope>,
+    submissions: SubmissionSender,
     negotiated_version: u32,
+}
+
+#[derive(Debug, Clone)]
+enum SubmissionSender {
+    /// Test-only bare wires keep the existing constructor usable by frontend submission tests.
+    #[cfg(test)]
+    Bare(mpsc::Sender<SqEnvelope>),
+    /// Production wires charge every queued submission against the shared heap budget.
+    Weighted {
+        sender: mpsc::Sender<QueuedSubmission>,
+        budget: Arc<Semaphore>,
+    },
+}
+
+/// One weighted SQ entry. The permit is released when the server dequeues or drops the item.
+#[derive(Debug)]
+pub(crate) struct QueuedSubmission {
+    envelope: SqEnvelope,
+    _memory: OwnedSemaphorePermit,
+}
+
+impl QueuedSubmission {
+    fn into_envelope(self) -> SqEnvelope {
+        self.envelope
+    }
 }
 
 impl AppServerClient {
@@ -273,9 +353,31 @@ impl AppServerClient {
     /// "speaks the frontend's own version by construction" — true only for as long as the runtime
     /// stays in-process, which is precisely what this module ends. Skew is refused up front, not
     /// discovered one rejected submission at a time.
+    #[cfg(test)]
     pub(crate) fn connect(
         server_version: u32,
         submissions: mpsc::Sender<SqEnvelope>,
+    ) -> Result<Self, ProtocolVersionError> {
+        Self::connect_to(server_version, SubmissionSender::Bare(submissions))
+    }
+
+    fn connect_weighted(
+        server_version: u32,
+        submissions: mpsc::Sender<QueuedSubmission>,
+        budget: Arc<Semaphore>,
+    ) -> Result<Self, ProtocolVersionError> {
+        Self::connect_to(
+            server_version,
+            SubmissionSender::Weighted {
+                sender: submissions,
+                budget,
+            },
+        )
+    }
+
+    fn connect_to(
+        server_version: u32,
+        submissions: SubmissionSender,
     ) -> Result<Self, ProtocolVersionError> {
         if server_version != PROTOCOL_VERSION {
             return Err(ProtocolVersionError {
@@ -300,13 +402,63 @@ impl AppServerClient {
     /// running and the operator learns their input did not land.
     pub(crate) fn submit(&self, op: Op) -> Result<(), SubmitError> {
         use mpsc::error::TrySendError;
-        self.submissions
-            .try_send(SqEnvelope::with_version(self.negotiated_version, op))
-            .map_err(|error| match error {
-                TrySendError::Full(_) => SubmitError::Busy,
-                TrySendError::Closed(_) => SubmitError::Disconnected,
-            })
+        let envelope = SqEnvelope::with_version(self.negotiated_version, op);
+        match &self.submissions {
+            #[cfg(test)]
+            SubmissionSender::Bare(submissions) => {
+                submissions.try_send(envelope).map_err(|error| match error {
+                    TrySendError::Full(_) => SubmitError::Busy,
+                    TrySendError::Closed(_) => SubmitError::Disconnected,
+                })
+            }
+            SubmissionSender::Weighted { sender, budget } => {
+                if sender.is_closed() {
+                    return Err(SubmitError::Disconnected);
+                }
+                let weight = u32::try_from(submission_weight(&envelope.op))
+                    .map_err(|_| SubmitError::Busy)?;
+                let permit = budget
+                    .clone()
+                    .try_acquire_many_owned(weight)
+                    .map_err(|_| SubmitError::Busy)?;
+                sender
+                    .try_send(QueuedSubmission {
+                        envelope,
+                        _memory: permit,
+                    })
+                    .map_err(|error| match error {
+                        TrySendError::Full(_) => SubmitError::Busy,
+                        TrySendError::Closed(_) => SubmitError::Disconnected,
+                    })
+            }
+        }
     }
+}
+
+/// Heap bytes charged to a queued operation.
+///
+/// The fixed charge covers bounded container/allocation overhead. Every variable-size text and
+/// encoded-image allocation visible through `Op` is then charged at its actual byte length.
+fn submission_weight(op: &Op) -> usize {
+    let variable_bytes = match op {
+        Op::UserInput { text } | Op::Steer { text } => text.len(),
+        Op::UserInputV2 { segments } => {
+            segments
+                .as_slice()
+                .iter()
+                .fold(0usize, |bytes, segment| match segment {
+                    core_protocol::ContentSegment::Text { text } => {
+                        bytes.saturating_add(text.len())
+                    }
+                    core_protocol::ContentSegment::Image { image } => {
+                        bytes.saturating_add(image.data.encoded_len())
+                    }
+                    core_protocol::ContentSegment::Unknown => bytes,
+                })
+        }
+        Op::ApprovalResponse { .. } | Op::Interrupt | Op::Drain | Op::Unknown => 0,
+    };
+    SQ_ENTRY_OVERHEAD_BYTES.saturating_add(variable_bytes)
 }
 
 /// The frontend's end of the wire: a client to submit through and a queue to read.
@@ -351,18 +503,21 @@ pub(crate) struct Attached {
 /// **The composition root.** The one place an `Agent` is handed to an App Server, and the one place
 /// the wire's version, capacities and ownership are decided.
 ///
-/// The interactive TUI attaches here today; the one-shot path and the headless `core serve` (#44)
-/// attach to this same function rather than building a second wire of their own. That is the point
-/// of it being a function: a client that constructs its own transport is a client that can drift
-/// from the protocol the server speaks, which is the failure this lane exists to remove.
+/// The interactive TUI and one-shot path attach to this same function rather than building a second
+/// wire of their own. That is the point of it being a function: a client that constructs its own
+/// transport is a client that can drift from the protocol the server speaks.
 ///
 /// It is a function here rather than statements in `main.rs` because the schema-compatibility
 /// authority freezes `main` and `run_cli` token-for-token, along with `main.rs`'s module list
 /// (`xtask/src/schema_compat_rust_semantics_functions.rs`). Single-sourcing the wire does not
 /// require the call to be written in the composition root's file; it requires there to be exactly
 /// one of it, which is what this is.
-pub(crate) fn attach(mut agent: Agent) -> Result<Attached, ProtocolVersionError> {
-    let (handle, ends) = wire()?;
+pub(crate) fn attach(
+    mut agent: Agent,
+    interactive_approvals: bool,
+    lossless_events: bool,
+) -> Result<Attached, ProtocolVersionError> {
+    let (handle, ends) = wire_with_policy(lossless_events)?;
 
     let interrupt = Arc::new(AtomicBool::new(false));
     agent.set_interrupt(interrupt.clone());
@@ -390,7 +545,7 @@ pub(crate) fn attach(mut agent: Agent) -> Result<Attached, ProtocolVersionError>
 
     // The `Agent` moves in here and never comes back. "A run is in flight" becomes the server's
     // fact to report, not a slot a client can inspect.
-    let task = tokio::spawn(AppServer::new(agent, ends).serve());
+    let task = tokio::spawn(AppServer::new(agent, ends, interactive_approvals).serve());
 
     Ok(Attached {
         handle,
@@ -415,11 +570,31 @@ pub(crate) struct AppServerHandle {
 pub(crate) struct EventPublisher {
     events: mpsc::Sender<EventEnvelope>,
     dropped: usize,
+    next_seq: u64,
+    lossless: bool,
 }
 
 impl EventPublisher {
-    fn new(events: mpsc::Sender<EventEnvelope>) -> Self {
-        Self { events, dropped: 0 }
+    fn new(events: mpsc::Sender<EventEnvelope>, lossless: bool) -> Self {
+        Self {
+            events,
+            dropped: 0,
+            next_seq: 1,
+            lossless,
+        }
+    }
+
+    async fn send(&mut self, event: ServerEvent) -> Result<(), ()> {
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.checked_add(1).ok_or(())?;
+        self.events
+            .send(EventEnvelope {
+                seq,
+                protocol_version: PROTOCOL_VERSION,
+                event,
+            })
+            .await
+            .map_err(|_| ())
     }
 
     /// Publish one event, applying the bounded-queue policy.
@@ -429,7 +604,7 @@ impl EventPublisher {
     /// where it is incomplete instead of quietly being wrong.
     pub(crate) async fn publish(&mut self, event: ServerEvent) -> Result<(), ()> {
         let authoritative = event.is_authoritative();
-        if !authoritative && self.events.capacity() == 0 {
+        if !self.lossless && !authoritative && self.events.capacity() == 0 {
             self.dropped += 1;
             return Ok(());
         }
@@ -441,21 +616,9 @@ impl EventPublisher {
         // count silently past `RunEnded` and lose it.
         if self.dropped > 0 && (authoritative || self.events.capacity() > 1) {
             let dropped = std::mem::take(&mut self.dropped);
-            self.events
-                .send(EventEnvelope {
-                    protocol_version: PROTOCOL_VERSION,
-                    event: ServerEvent::Lagged { dropped },
-                })
-                .await
-                .map_err(|_| ())?;
+            self.send(ServerEvent::Lagged { dropped }).await?;
         }
-        self.events
-            .send(EventEnvelope {
-                protocol_version: PROTOCOL_VERSION,
-                event,
-            })
-            .await
-            .map_err(|_| ())
+        self.send(event).await
     }
 }
 
@@ -465,7 +628,7 @@ impl EventPublisher {
 /// publisher. Both sides are constructed here so the capacities and the negotiated version have a
 /// single source.
 pub(crate) struct ServerEnds {
-    pub(crate) submissions: mpsc::Receiver<SqEnvelope>,
+    pub(crate) submissions: mpsc::Receiver<QueuedSubmission>,
     pub(crate) control: mpsc::Receiver<ControlRequest>,
     pub(crate) events: EventPublisher,
 }
@@ -484,13 +647,21 @@ pub(crate) fn advertised_version() -> u32 {
         .unwrap_or(PROTOCOL_VERSION)
 }
 
+#[cfg(test)]
 pub(crate) fn wire() -> Result<(AppServerHandle, ServerEnds), ProtocolVersionError> {
-    let (sq_tx, sq_rx) = mpsc::channel::<SqEnvelope>(SQ_CAPACITY);
+    wire_with_policy(false)
+}
+
+fn wire_with_policy(
+    lossless_events: bool,
+) -> Result<(AppServerHandle, ServerEnds), ProtocolVersionError> {
+    let (sq_tx, sq_rx) = mpsc::channel::<QueuedSubmission>(SQ_CAPACITY);
+    let sq_budget = Arc::new(Semaphore::new(SQ_BYTE_CAPACITY));
     let (eq_tx, eq_rx) = mpsc::channel::<EventEnvelope>(EQ_CAPACITY);
     // The control plane is deliberately shallow: these are operator commands, one at a time, and a
     // backlog of them would mean the frontend is issuing config changes faster than a human can.
     let (control_tx, control_rx) = mpsc::channel::<ControlRequest>(8);
-    let client = AppServerClient::connect(advertised_version(), sq_tx)?;
+    let client = AppServerClient::connect_weighted(advertised_version(), sq_tx, sq_budget)?;
     Ok((
         AppServerHandle {
             client,
@@ -500,7 +671,7 @@ pub(crate) fn wire() -> Result<(AppServerHandle, ServerEnds), ProtocolVersionErr
         ServerEnds {
             submissions: sq_rx,
             control: control_rx,
-            events: EventPublisher::new(eq_tx),
+            events: EventPublisher::new(eq_tx, lossless_events),
         },
     ))
 }
@@ -510,10 +681,16 @@ pub(crate) fn wire() -> Result<(AppServerHandle, ServerEnds), ProtocolVersionErr
 /// Split out so the routing is testable without a live `Agent`: the classification is the part that
 /// decides whether an operation reaches the kernel at all, and it is the part an unknown `Op` must
 /// not slip through.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RunInput {
+    Text(String),
+    Content(ContentSegments),
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Routed {
     /// Start a turn. The server owns "is a run in flight", not the frontend.
-    StartTurn(String),
+    StartTurn(RunInput),
     /// Hand to the kernel's inbound queue: it consumes these at its own safe points.
     ToKernel,
     /// Refuse, and tell the operator why.
@@ -526,7 +703,8 @@ pub(crate) enum Routed {
 /// Classify one submission.
 pub(crate) fn route(op: &Op) -> Routed {
     match op {
-        Op::UserInput { text } => Routed::StartTurn(text.clone()),
+        Op::UserInput { text } => Routed::StartTurn(RunInput::Text(text.clone())),
+        Op::UserInputV2 { segments } => Routed::StartTurn(RunInput::Content(segments.clone())),
         Op::Steer { .. } | Op::Interrupt | Op::Drain | Op::ApprovalResponse { .. } => {
             Routed::ToKernel
         }
@@ -540,7 +718,7 @@ pub(crate) fn route(op: &Op) -> Routed {
 /// Everything the server needs to own a session.
 pub(crate) struct AppServer {
     agent: Agent,
-    submissions: mpsc::Receiver<SqEnvelope>,
+    submissions: mpsc::Receiver<QueuedSubmission>,
     control: mpsc::Receiver<ControlRequest>,
     events: EventPublisher,
     /// Forwarded to the kernel's inbound queue. The kernel drains it at its own safe points; the
@@ -555,9 +733,11 @@ impl AppServer {
     /// the queue outlives every turn. That is what removes `take_unadmitted_steers`: the reconcile
     /// path existed only because the receiver used to travel with the `Agent` in and out of a task
     /// the frontend owned.
-    pub(crate) fn new(mut agent: Agent, ends: ServerEnds) -> Self {
+    pub(crate) fn new(mut agent: Agent, ends: ServerEnds, interactive_approvals: bool) -> Self {
         let (to_kernel, kernel_rx) = mpsc::unbounded_channel::<SqEnvelope>();
-        agent.set_approvals(kernel_rx);
+        if interactive_approvals {
+            agent.set_approvals(kernel_rx);
+        }
         Self {
             agent,
             submissions: ends.submissions,
@@ -602,17 +782,18 @@ impl AppServer {
         let mut started = false;
 
         loop {
-            let envelope = tokio::select! {
+            let queued = tokio::select! {
                 request = control.recv() => {
                     match request {
                         Some(request) => { apply_control(&mut agent, &mut events, request).await; continue }
                         None => break,
                     }
                 }
-                envelope = submissions.recv() => {
-                    match envelope { Some(envelope) => envelope, None => break }
+                queued = submissions.recv() => {
+                    match queued { Some(queued) => queued, None => break }
                 }
             };
+            let envelope = queued.into_envelope();
             let version = envelope.protocol_version;
             let Ok(op) = envelope.into_current() else {
                 let _ = events
@@ -634,15 +815,20 @@ impl AppServer {
                         break;
                     }
                 }
-                Routed::StartTurn(task) => {
+                Routed::StartTurn(input) => {
                     // Control requests that arrive mid-turn wait here; see the `select!` arm below.
                     let mut deferred: Vec<ControlRequest> = Vec::new();
                     let completion = {
                         let running = async {
-                            if started {
-                                agent.follow_up(&task).await
-                            } else {
-                                agent.run(&task).await
+                            match (&input, started) {
+                                (RunInput::Text(task), false) => agent.run(task).await,
+                                (RunInput::Text(task), true) => agent.follow_up(task).await,
+                                (RunInput::Content(segments), false) => {
+                                    agent.run_content(segments).await
+                                }
+                                (RunInput::Content(segments), true) => {
+                                    agent.follow_up_content(segments).await
+                                }
                             }
                         };
                         tokio::pin!(running);
@@ -675,7 +861,8 @@ impl AppServer {
                                     // than when it was asked.
                                     deferred.push(request);
                                 }
-                                Some(envelope) = submissions.recv() => {
+                                Some(queued) = submissions.recv() => {
+                                    let envelope = queued.into_envelope();
                                     let version = envelope.protocol_version;
                                     if let Ok(op) = envelope.into_current() {
                                         match route(&op) {
@@ -718,14 +905,33 @@ impl AppServer {
                     }
 
                     let snapshot = snapshot_of(&mut agent);
-                    let completion = match completion {
-                        Ok(outcome) => RunEnded::Outcome(outcome),
-                        Err(error) => RunEnded::Error(error.public_summary()),
+                    let (outcome, error) = match completion {
+                        Ok(outcome) => (outcome, None),
+                        Err(error) => {
+                            let error = error.public_summary();
+                            (Outcome::HarnessError, Some(error))
+                        }
+                    };
+                    let (memo_hits, memo_misses) = agent.registry.memo_stats();
+                    let kernel_tax = agent
+                        .ledger
+                        .kernel_tax()
+                        .with_failed_run(!matches!(outcome, Outcome::Done | Outcome::Drained));
+                    let summary = TerminalSummary {
+                        outcome,
+                        assistant_text: agent.last_assistant_text().to_owned(),
+                        run_id: agent.rollout.run_id().to_string(),
+                        cost: agent.ledger.cost_state(),
+                        turns: agent.ledger.turns,
+                        kernel_tax,
+                        error,
+                        memo_hits,
+                        memo_misses,
                     };
                     if events
                         .publish(ServerEvent::RunEnded {
-                            completion,
                             snapshot: Box::new(snapshot),
+                            summary: Box::new(summary),
                         })
                         .await
                         .is_err()
@@ -873,6 +1079,20 @@ mod tests {
         })
     }
 
+    fn terminal_summary() -> Box<TerminalSummary> {
+        Box::new(TerminalSummary {
+            outcome: Outcome::HarnessError,
+            assistant_text: String::new(),
+            run_id: "test-run".into(),
+            cost: core_obs::CostState::Zero,
+            turns: 0,
+            kernel_tax: core_obs::KernelTax::default(),
+            error: Some("done".into()),
+            memo_hits: 0,
+            memo_misses: 0,
+        })
+    }
+
     #[test]
     fn matching_version_connects_and_stamps_every_submission() {
         let (tx, mut rx) = mpsc::channel::<SqEnvelope>(4);
@@ -915,8 +1135,13 @@ mod tests {
     fn a_saturated_sq_applies_backpressure_within_a_fixed_bound() {
         // The bound is the point: an unbounded queue answers every submission and grows until the
         // process dies. This one refuses, and the refusal is what the operator sees.
-        let (tx, _rx) = mpsc::channel::<SqEnvelope>(SQ_CAPACITY);
-        let client = AppServerClient::connect(PROTOCOL_VERSION, tx).expect("handshake");
+        let (tx, _rx) = mpsc::channel::<QueuedSubmission>(SQ_CAPACITY);
+        let client = AppServerClient::connect_weighted(
+            PROTOCOL_VERSION,
+            tx,
+            Arc::new(Semaphore::new(SQ_BYTE_CAPACITY)),
+        )
+        .expect("handshake");
         let mut accepted = 0usize;
         for _ in 0..(SQ_CAPACITY * 4) {
             match client.submit(Op::Interrupt) {
@@ -929,12 +1154,80 @@ mod tests {
         assert_eq!(client.submit(Op::Interrupt), Err(SubmitError::Busy));
     }
 
+    #[test]
+    fn sq_weight_counts_actual_text_and_encoded_image_bytes() {
+        let segments = core_protocol::ContentSegments::new(vec![
+            core_protocol::ContentSegment::Text {
+                text: "describe".into(),
+            },
+            core_protocol::ContentSegment::Image {
+                image: core_protocol::ImageContent::new(
+                    core_protocol::ImageMediaType::Png,
+                    "iVBORw0KGgo=",
+                )
+                .unwrap(),
+            },
+        ])
+        .unwrap();
+        let op = Op::UserInputV2 { segments };
+        assert_eq!(
+            submission_weight(&op),
+            SQ_ENTRY_OVERHEAD_BYTES + "describe".len() + "iVBORw0KGgo=".len()
+        );
+        assert_eq!(
+            SQ_BYTE_CAPACITY,
+            SQ_ENTRY_OVERHEAD_BYTES
+                + core_protocol::task::MAX_TASK_TEXT_BYTES
+                + core_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
+                + SQ_CONTROL_RESERVE_BYTES
+        );
+        assert!(
+            SQ_BYTE_CAPACITY <= u32::MAX as usize,
+            "tokio's weighted semaphore acquisition accepts a u32 permit count"
+        );
+    }
+
+    #[test]
+    fn sq_byte_budget_refuses_a_second_large_item_and_releases_on_dequeue() {
+        let op = Op::UserInput {
+            text: "x".repeat(4096),
+        };
+        let weight = submission_weight(&op);
+        let budget = Arc::new(Semaphore::new(weight));
+        let (tx, mut rx) = mpsc::channel::<QueuedSubmission>(4);
+        let client =
+            AppServerClient::connect_weighted(PROTOCOL_VERSION, tx, budget.clone()).unwrap();
+
+        client
+            .submit(op.clone())
+            .expect("first item consumes budget");
+        assert_eq!(budget.available_permits(), 0);
+        assert_eq!(
+            client.submit(op.clone()),
+            Err(SubmitError::Busy),
+            "the byte bound, not the four-item channel bound, refuses the second item"
+        );
+
+        let queued = rx.try_recv().expect("first item is queued");
+        let envelope = queued.into_envelope();
+        assert_eq!(
+            budget.available_permits(),
+            weight,
+            "dequeue releases the queue's memory charge"
+        );
+        assert!(matches!(envelope.op, Op::UserInput { .. }));
+
+        client
+            .submit(op)
+            .expect("released byte permits admit a later item");
+    }
+
     #[tokio::test]
     async fn a_saturated_eq_drops_only_cosmetic_deltas_and_never_the_terminal_event() {
         // The acceptance criterion: 0 authoritative drops. A reader that never reads must still be
         // able to learn how the run ended once it starts reading.
         let (tx, mut rx) = mpsc::channel::<EventEnvelope>(8);
-        let mut publisher = EventPublisher::new(tx);
+        let mut publisher = EventPublisher::new(tx, false);
         for i in 0..64 {
             publisher
                 .publish(ServerEvent::Ui(UiEvent::Text(format!("chunk {i}"))))
@@ -945,8 +1238,8 @@ mod tests {
         let publish = tokio::spawn(async move {
             publisher
                 .publish(ServerEvent::RunEnded {
-                    completion: RunEnded::Error("done".into()),
                     snapshot: snapshot(),
+                    summary: terminal_summary(),
                 })
                 .await
         });
@@ -980,7 +1273,7 @@ mod tests {
         const ROUNDS: usize = 256;
         const AUTHORITATIVE_EVERY: usize = 4;
         let (tx, mut rx) = mpsc::channel::<EventEnvelope>(CAPACITY);
-        let mut publisher = EventPublisher::new(tx);
+        let mut publisher = EventPublisher::new(tx, false);
 
         let flood = tokio::spawn(async move {
             for i in 0..ROUNDS {
@@ -997,8 +1290,8 @@ mod tests {
             }
             publisher
                 .publish(ServerEvent::RunEnded {
-                    completion: RunEnded::Error("done".into()),
                     snapshot: snapshot(),
+                    summary: terminal_summary(),
                 })
                 .await
                 .expect("the terminal event is delivered")
@@ -1012,10 +1305,17 @@ mod tests {
         let mut deltas = 0usize;
         let mut dropped = 0usize;
         let mut saw_terminal = false;
+        let mut last_seq = 0;
         while let Some(envelope) = rx.recv().await {
             // A reader slow enough that the queue stays saturated for the whole flood.
             tokio::task::yield_now().await;
             assert_eq!(envelope.protocol_version, PROTOCOL_VERSION);
+            assert_eq!(
+                envelope.seq,
+                last_seq + 1,
+                "live EQ cursors must be contiguous and never duplicate"
+            );
+            last_seq = envelope.seq;
             match envelope.event {
                 ServerEvent::Notice(text) => seen.push(text),
                 ServerEvent::Ui(_) => deltas += 1,
@@ -1041,12 +1341,46 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_lossless_client_backpressures_instead_of_dropping_cosmetic_events() {
+        let (tx, mut rx) = mpsc::channel::<EventEnvelope>(1);
+        let mut publisher = EventPublisher::new(tx, true);
+        let publish = tokio::spawn(async move {
+            publisher
+                .publish(ServerEvent::Ui(UiEvent::Text("first".into())))
+                .await
+                .unwrap();
+            publisher
+                .publish(ServerEvent::Ui(UiEvent::Text("second".into())))
+                .await
+                .unwrap();
+        });
+
+        let first = rx.recv().await.unwrap();
+        let second = rx.recv().await.unwrap();
+        publish.await.unwrap();
+        assert_eq!((first.seq, second.seq), (1, 2));
+        assert!(matches!(
+            first.event,
+            ServerEvent::Ui(UiEvent::Text(ref text)) if text == "first"
+        ));
+        assert!(matches!(
+            second.event,
+            ServerEvent::Ui(UiEvent::Text(ref text)) if text == "second"
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "lossless delivery must not synthesize a lag notice"
+        );
+    }
+
     #[test]
     fn an_event_from_a_newer_server_is_refused_at_the_point_of_use() {
         // The connect-time handshake covers the session's start. The version travels with each
         // event so a server that begins emitting a newer shape mid-session is caught too, rather
         // than being rendered as if it were the shape this build knows.
         let envelope = EventEnvelope {
+            seq: 1,
             protocol_version: PROTOCOL_VERSION + 1,
             event: ServerEvent::Notice("from the future".into()),
         };
@@ -1058,6 +1392,7 @@ mod tests {
             }
         );
         let current = EventEnvelope {
+            seq: 1,
             protocol_version: PROTOCOL_VERSION,
             event: ServerEvent::Notice("now".into()),
         };
@@ -1068,7 +1403,26 @@ mod tests {
     fn every_op_is_classified_and_an_unknown_one_is_refused() {
         assert_eq!(
             route(&Op::UserInput { text: "hi".into() }),
-            Routed::StartTurn("hi".into())
+            Routed::StartTurn(RunInput::Text("hi".into()))
+        );
+        let multimodal = core_protocol::ContentSegments::new(vec![
+            core_protocol::ContentSegment::Text {
+                text: "describe".into(),
+            },
+            core_protocol::ContentSegment::Image {
+                image: core_protocol::ImageContent::new(
+                    core_protocol::ImageMediaType::Png,
+                    "iVBORw0KGgo=",
+                )
+                .unwrap(),
+            },
+        ])
+        .unwrap();
+        assert_eq!(
+            route(&Op::UserInputV2 {
+                segments: multimodal.clone(),
+            }),
+            Routed::StartTurn(RunInput::Content(multimodal))
         );
         for op in [
             Op::Steer { text: "x".into() },

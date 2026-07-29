@@ -65,6 +65,12 @@ The policy is intentionally stricter than tolerant JSON parsing:
    or undeclared keys, and requires every traceable migrated value to survive current typed
    serialization. Later additive/default fields may appear without weakening that preservation
    check.
+   The sole same-version exception is the new top-level CLI stream tag `input_attachment` at schema
+   v5. It is allowlisted by exact selector, exact metadata-only field set, and its own immutable
+   fixture. This exception relies on the public stream-reader contract in
+   `docs/reference/output-formats.md` to ignore unneeded unknown event types and use `result` as the
+   authoritative terminal. Existing v5 fixtures and the v5 result remain byte-immutable; every
+   other new CLI stream tag still requires the shared CLI schema version to advance.
 7. Every writable SQ `Op` tag has one `protocol.op.*` direct-field surface selected by `op`, and
    the exhaustive typed operation corpus plus Rust-source inventory must agree exactly. Durable
    `EventKind` uses the same rule at its `kind` tag: every writable tag has a direct-field surface
@@ -88,9 +94,10 @@ The policy is intentionally stricter than tolerant JSON parsing:
    every envelope to a hash-verified replayed rollout; every `record.rollout` fixture is replayed.
    The record projection corpus also equals the exact nested `Block`, `WorkflowEvent`, and
    `CostAttribution` values serialized by those event kinds; each named fixture typed-round-trips
-   and is tied back to a value reachable from the event corpus. Shimmed independently-versioned
-   record fixtures additionally compose frozen migrations and compare every traceable value with
-   current typed output. Kernel tests typed-decode every diagnostic fixture. CLI source inventory
+   and is tied back to a value reachable from the operation or event corpus. Shimmed
+   independently-versioned record fixtures additionally compose frozen migrations and compare
+   every traceable value with current typed output. Kernel tests typed-decode every diagnostic
+   fixture. CLI source inventory
    binds every producer's literal top-level field set—not only its `type` tag—to the manifest and
    producer-generated goldens. Provider effort variants, emitted `enforcement` tags, the strict
    evaluation decoder, and the exhaustive golden must name the same set. The real evaluation

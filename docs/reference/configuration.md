@@ -33,7 +33,7 @@ their own user config, but its contents are still bounded and strictly parsed.
 | `effort` | string | allowed | ignored |
 | `compaction_trigger_tokens` | positive integer | allowed | ignored |
 | `retry` | object | operator-owned policy | parsed and ignored |
-| `completion_notifications` | boolean | emits terminal-bell turn/approval notifications; default `false` | parsed and ignored |
+| `completion_notifications` | boolean | bounded run/approval/long-idle attention notifications; default `false` | parsed and ignored |
 | `providers` | array | allowed, maximum 64 | ignored |
 | `rate_cards` | array | allowed, maximum 256 | ignored |
 | `mcp_servers` | array | allowed | ignored |
@@ -71,9 +71,12 @@ The example contains no credential. Provider keys are always indirect environmen
 references.
 
 `completion_notifications` is a TUI-only, operator-owned preference. It defaults to `false` and,
-when enabled, emits a single terminal bell only for completed provider turns and new approval
-requests. Repository configuration cannot enable or disable it, and streamed text is never copied
-into terminal output.
+when enabled, emits one bounded attention notification for a completed run, a new approval request,
+or a 30-second quiet period during live work. A positively identified terminal may select fixed OSC
+9 / OSC 777 desktop-notification bytes only through the same single writer that owns retained TUI
+frames; ordinary or nonterminal stdout falls back to one BEL byte. Repository configuration cannot
+enable or disable notifications, and streamed or untrusted text is never copied into terminal
+control output.
 
 `retry` contains only bounded numeric policy: `base_ms` is `1..=30000`, `cap_ms` is between
 `base_ms` and `60000`, and `max_attempts` (including the initial request) is `1..=10`. Numeric

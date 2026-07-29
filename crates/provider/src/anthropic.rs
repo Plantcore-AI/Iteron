@@ -655,6 +655,7 @@ mod tests {
             model: model.into(),
             system: "system".into(),
             messages: Vec::new(),
+            input_images: Vec::new(),
             tools: Vec::new(),
             max_tokens: 100,
             cache_system: true,

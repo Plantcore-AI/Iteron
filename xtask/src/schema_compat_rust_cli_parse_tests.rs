@@ -17,7 +17,17 @@ fn live_source() -> Vec<u8> {
 fn d13_14_cli_outer_json_source_binding_ignores_nested_fields_and_rejects_duplicates() {
     let source = live_source();
     let shapes = cli_machine_record_shapes(&source).unwrap();
-    assert_eq!(shapes.len(), 18);
+    assert_eq!(shapes.len(), 19);
+    assert_eq!(
+        shapes["input_attachment"],
+        BTreeSet::from([
+            "encoded_bytes".to_owned(),
+            "media_type".to_owned(),
+            "ordinal".to_owned(),
+            "schema_version".to_owned(),
+            "type".to_owned(),
+        ])
+    );
     assert_eq!(
         shapes["assistant_text"],
         BTreeSet::from([
@@ -84,15 +94,20 @@ fn input_attachment_event() -> Value {
 }
 
 "#;
-    let with_attachment = source.replacen(
-        "pub fn final_result(",
-        &format!("{producer}pub fn final_result("),
-        1,
-    );
-    assert_ne!(
-        with_attachment, source,
-        "the synthetic producer must be inserted"
-    );
+    let with_attachment = if source.contains("fn input_attachment_event(") {
+        source.to_owned()
+    } else {
+        let with_attachment = source.replacen(
+            "pub fn final_result(",
+            &format!("{producer}pub fn final_result("),
+            1,
+        );
+        assert_ne!(
+            with_attachment, source,
+            "the synthetic producer must be inserted"
+        );
+        with_attachment
+    };
     let shapes = cli_machine_record_shapes(with_attachment.as_bytes()).unwrap();
     assert_eq!(
         shapes["input_attachment"],
@@ -106,8 +121,8 @@ fn input_attachment_event() -> Value {
     );
 
     let public = with_attachment.replacen(
-        "fn input_attachment_event() -> Value",
-        "pub fn input_attachment_event() -> Value",
+        "fn input_attachment_event(",
+        "pub fn input_attachment_event(",
         1,
     );
     assert!(
@@ -115,20 +130,25 @@ fn input_attachment_event() -> Value {
         "the additive producer cannot broaden its source authority"
     );
     let crate_visible = with_attachment.replacen(
-        "fn input_attachment_event() -> Value",
-        "pub(crate) fn input_attachment_event() -> Value",
+        "fn input_attachment_event(",
+        "pub(crate) fn input_attachment_event(",
         1,
     );
     assert!(
         cli_machine_record_shapes(crate_visible.as_bytes()).is_err(),
         "the additive producer must remain module-private"
     );
-    let indirect = source.replacen(
+    let without_direct_producer = with_attachment.replacen(
+        "fn input_attachment_event(",
+        "fn ignored_attachment_event(",
+        1,
+    );
+    let indirect = without_direct_producer.replacen(
         "pub fn final_result(",
         "fn input_attachment_event() -> Value { evil_value() }\n\npub fn final_result(",
         1,
     );
-    assert_ne!(indirect, source);
+    assert_ne!(indirect, with_attachment);
     assert!(super::cli_parse::parse_cli_output_source(&indirect).is_ok());
     assert!(
         cli_machine_record_shapes(indirect.as_bytes()).is_err(),

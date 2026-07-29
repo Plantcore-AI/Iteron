@@ -11,6 +11,13 @@ use crate::tui::hyperlink::Policy as HyperlinkPolicy;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+/// Source indentation is normalized to two cells per level and clamped so hostile/model-generated
+/// whitespace cannot create unbounded presentation depth.
+const MAX_LIST_NESTING: u8 = 8;
+/// A single item cannot absorb an unbounded number of following source lines. Remaining lines are
+/// parsed as ordinary blocks instead of being discarded.
+const MAX_LIST_CONTINUATION_LINES: usize = 64;
+
 /// An inline run within a paragraph/heading/list item.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Inline {
@@ -27,11 +34,17 @@ pub enum MdBlock {
     Heading(u8, Vec<Inline>),
     Para(Vec<Inline>),
     Bullet {
+        depth: u8,
+        task: Option<bool>,
         spans: Vec<Inline>,
+        continuation: Vec<Vec<Inline>>,
     },
     Numbered {
+        depth: u8,
         n: u32,
+        task: Option<bool>,
         spans: Vec<Inline>,
+        continuation: Vec<Vec<Inline>>,
     },
     Quote(Vec<Inline>),
     Code {
@@ -67,9 +80,42 @@ impl MarkdownDoc {
                     out.push_str(&format!("{} {}\n", "#".repeat(*l as usize), inline_text(s)))
                 }
                 MdBlock::Para(s) => out.push_str(&format!("{}\n", inline_text(s))),
-                MdBlock::Bullet { spans } => out.push_str(&format!("- {}\n", inline_text(spans))),
-                MdBlock::Numbered { n, spans } => {
-                    out.push_str(&format!("{n}. {}\n", inline_text(spans)))
+                MdBlock::Bullet {
+                    depth,
+                    task,
+                    spans,
+                    continuation,
+                } => {
+                    let indent = "  ".repeat(usize::from(*depth));
+                    let task = task.map_or("", |checked| if checked { "[x] " } else { "[ ] " });
+                    let prefix = format!("{indent}- {task}");
+                    out.push_str(&format!("{prefix}{}\n", inline_text(spans)));
+                    for line in continuation {
+                        out.push_str(&format!(
+                            "{}{}\n",
+                            " ".repeat(prefix.chars().count()),
+                            inline_text(line)
+                        ));
+                    }
+                }
+                MdBlock::Numbered {
+                    depth,
+                    n,
+                    task,
+                    spans,
+                    continuation,
+                } => {
+                    let indent = "  ".repeat(usize::from(*depth));
+                    let task = task.map_or("", |checked| if checked { "[x] " } else { "[ ] " });
+                    let prefix = format!("{indent}{n}. {task}");
+                    out.push_str(&format!("{prefix}{}\n", inline_text(spans)));
+                    for line in continuation {
+                        out.push_str(&format!(
+                            "{}{}\n",
+                            " ".repeat(prefix.chars().count()),
+                            inline_text(line)
+                        ));
+                    }
                 }
                 MdBlock::Quote(s) => out.push_str(&format!("> {}\n", inline_text(s))),
                 MdBlock::Code { lang, lines } => {
@@ -138,6 +184,7 @@ fn parse_blocks(text: &str) -> Vec<MdBlock> {
 
     while i < lines.len() {
         let line = lines[i];
+        let indent = leading_indent_columns(line);
         let trimmed = line.trim_start();
         // fenced code block
         if let Some(rest) = trimmed.strip_prefix("```") {
@@ -200,20 +247,30 @@ fn parse_blocks(text: &str) -> Vec<MdBlock> {
         // bullet list
         if let Some(rest) = bullet_item(trimmed) {
             flush_para(&mut blocks, &mut para);
-            blocks.push(MdBlock::Bullet {
-                spans: parse_inline(rest),
-            });
+            let (task, rest) = task_item(rest);
             i += 1;
+            let continuation = collect_indented_continuations(&lines, &mut i, indent);
+            blocks.push(MdBlock::Bullet {
+                depth: list_depth(indent),
+                task,
+                spans: parse_inline(rest),
+                continuation,
+            });
             continue;
         }
         // numbered list
         if let Some((n, rest)) = numbered_item(trimmed) {
             flush_para(&mut blocks, &mut para);
-            blocks.push(MdBlock::Numbered {
-                n,
-                spans: parse_inline(rest),
-            });
+            let (task, rest) = task_item(rest);
             i += 1;
+            let continuation = collect_indented_continuations(&lines, &mut i, indent);
+            blocks.push(MdBlock::Numbered {
+                depth: list_depth(indent),
+                n,
+                task,
+                spans: parse_inline(rest),
+                continuation,
+            });
             continue;
         }
         // table: a pipe row immediately followed by a `|---|---|` separator row.
@@ -280,6 +337,19 @@ fn parse_heading(s: &str) -> Option<MdBlock> {
     None
 }
 
+fn leading_indent_columns(line: &str) -> usize {
+    line.chars()
+        .take_while(|character| matches!(character, ' ' | '\t'))
+        .map(|character| if character == '\t' { 2 } else { 1 })
+        .sum()
+}
+
+fn list_depth(indent_columns: usize) -> u8 {
+    u8::try_from(indent_columns / 2)
+        .unwrap_or(u8::MAX)
+        .min(MAX_LIST_NESTING)
+}
+
 fn bullet_item(s: &str) -> Option<&str> {
     for p in ["- ", "* ", "+ "] {
         if let Some(rest) = s.strip_prefix(p) {
@@ -287,6 +357,21 @@ fn bullet_item(s: &str) -> Option<&str> {
         }
     }
     None
+}
+
+fn task_item(item: &str) -> (Option<bool>, &str) {
+    for (marker, checked) in [("[ ]", false), ("[x]", true), ("[X]", true)] {
+        if item == marker {
+            return (Some(checked), "");
+        }
+        if let Some(rest) = item
+            .strip_prefix(marker)
+            .and_then(|rest| rest.strip_prefix(' '))
+        {
+            return (Some(checked), rest);
+        }
+    }
+    (None, item)
 }
 
 fn numbered_item(s: &str) -> Option<(u32, &str)> {
@@ -299,6 +384,28 @@ fn numbered_item(s: &str) -> Option<(u32, &str)> {
         .strip_prefix(". ")
         .or_else(|| after.strip_prefix(") "))?;
     Some((digits.parse().ok()?, rest))
+}
+
+fn collect_indented_continuations(
+    lines: &[&str],
+    next: &mut usize,
+    item_indent: usize,
+) -> Vec<Vec<Inline>> {
+    let mut continuation = Vec::new();
+    while *next < lines.len() && continuation.len() < MAX_LIST_CONTINUATION_LINES {
+        let candidate = lines[*next];
+        let trimmed = candidate.trim_start();
+        if trimmed.is_empty()
+            || leading_indent_columns(candidate) <= item_indent
+            || bullet_item(trimmed).is_some()
+            || numbered_item(trimmed).is_some()
+        {
+            break;
+        }
+        continuation.push(parse_inline(trimmed));
+        *next += 1;
+    }
+    continuation
 }
 
 /// Parse inline markdown into styled runs. Handles `` `code` ``, `**bold**`, `*italic*` / `_italic_`,
@@ -534,6 +641,7 @@ fn inline_annotated_spans(
     out
 }
 
+#[cfg(test)]
 fn inline_spans(spans: &[Inline], theme: &Theme, base: Style) -> Vec<Span<'static>> {
     inline_annotated_spans(spans, theme, base, &HyperlinkPolicy::disabled())
         .into_iter()
@@ -581,16 +689,39 @@ pub(crate) fn render_doc_with_hyperlinks(
                     inline_annotated_spans(spans, theme, Style::default().fg(theme.fg), hyperlinks);
                 out.append(wrap_annotated_spans(&spans, width));
             }
-            MdBlock::Bullet { spans } => {
+            MdBlock::Bullet {
+                depth,
+                task,
+                spans,
+                continuation,
+            } => {
                 // ONE bullet column (findings 4): the marker glyph sits at the open-voice left edge
                 // (col 0), the same edge as prose/headings — not indented 2 cells into its own column
                 // that made lists float away from the rest of the assistant document.
-                out.append(render_marked("• ", spans, width, theme, hyperlinks));
-            }
-            MdBlock::Numbered { n, spans } => {
+                let marker = task.map_or("• ", |checked| if checked { "☑ " } else { "☐ " });
                 out.append(render_marked(
-                    &format!("{n}. "),
+                    *depth,
+                    marker,
                     spans,
+                    continuation,
+                    width,
+                    theme,
+                    hyperlinks,
+                ));
+            }
+            MdBlock::Numbered {
+                depth,
+                n,
+                task,
+                spans,
+                continuation,
+            } => {
+                let task_marker = task.map_or("", |checked| if checked { "☑ " } else { "☐ " });
+                out.append(render_marked(
+                    *depth,
+                    &format!("{n}. {task_marker}"),
+                    spans,
+                    continuation,
                     width,
                     theme,
                     hyperlinks,
@@ -601,12 +732,15 @@ pub(crate) fn render_doc_with_hyperlinks(
                     .fg(theme.muted)
                     .add_modifier(Modifier::ITALIC);
                 let inner = inline_annotated_spans(spans, theme, base, hyperlinks);
-                let gutter_w = 2u16;
+                let gutter = (width >= 3).then_some("▎ ");
+                let gutter_w = gutter.map_or(0, |_| 2u16);
                 let mut wrapped =
                     wrap_annotated_spans(&inner, width.saturating_sub(gutter_w).max(1));
                 wrapped.shift_columns(gutter_w);
                 for row in &mut wrapped.lines {
-                    let mut sp = vec![Span::styled("▎ ", Style::default().fg(theme.muted))]; // unified rail glyph
+                    let mut sp = gutter
+                        .map(|text| vec![Span::styled(text, Style::default().fg(theme.muted))])
+                        .unwrap_or_default();
                     sp.append(&mut row.spans);
                     *row = Line::from(sp);
                 }
@@ -618,7 +752,9 @@ pub(crate) fn render_doc_with_hyperlinks(
                 // rectangle (no ragged-right stair-step); the language is a dim right-aligned tag on the
                 // first row.
                 let mut st = crate::highlight::LexState::new();
-                let inner_w = width.saturating_sub(2).max(1); // room for the "│ " gutter
+                let gutter = (width >= 3).then_some("│ ");
+                let gutter_w = gutter.map_or(0, |_| 2);
+                let inner_w = width.saturating_sub(gutter_w).max(1);
                 let tag = lang.as_deref().filter(|s| !s.is_empty());
                 let mut first = true;
                 for l in lines {
@@ -629,10 +765,14 @@ pub(crate) fn render_doc_with_hyperlinks(
                     }
                     for mut row in wrapped {
                         // frame gutter
-                        let mut sp = vec![Span::styled(
-                            "│ ".to_string(),
-                            Style::default().fg(theme.faint),
-                        )];
+                        let mut sp = gutter
+                            .map(|text| {
+                                vec![Span::styled(
+                                    text.to_string(),
+                                    Style::default().fg(theme.faint),
+                                )]
+                            })
+                            .unwrap_or_default();
                         sp.append(&mut row.spans);
                         let mut line = Line::from(sp);
                         // right-pad to full width; drop the dim language tag into the first row's padding
@@ -641,9 +781,14 @@ pub(crate) fn render_doc_with_hyperlinks(
                             let pad = (width - w) as usize;
                             let tag_str = if first { tag } else { None };
                             match tag_str {
-                                Some(lg) if pad > lg.chars().count() + 1 => {
-                                    line.spans
-                                        .push(Span::raw(" ".repeat(pad - lg.chars().count())));
+                                Some(lg)
+                                    if pad
+                                        > usize::from(line_width(&Line::from(lg.to_string())))
+                                            + 1 =>
+                                {
+                                    let tag_width =
+                                        usize::from(line_width(&Line::from(lg.to_string())));
+                                    line.spans.push(Span::raw(" ".repeat(pad - tag_width)));
                                     line.spans.push(Span::styled(
                                         lg.to_string(),
                                         Style::default()
@@ -673,7 +818,7 @@ pub(crate) fn render_doc_with_hyperlinks(
                 }
             }
             MdBlock::Table { headers, rows } => {
-                out.append(render_table(headers, rows, width, theme));
+                out.append(render_table(headers, rows, width, theme, hyperlinks));
             }
         }
     }
@@ -692,17 +837,48 @@ fn render_table(
     rows: &[Vec<Vec<Inline>>],
     width: u16,
     theme: &Theme,
+    hyperlinks: &HyperlinkPolicy,
 ) -> RenderedLines {
     use crate::tui::char_width;
     let mut out = RenderedLines::default();
     let ncols = headers.len();
-    if ncols == 0 {
+    if ncols == 0 || width == 0 {
+        return out;
+    }
+    // A box needs one cell per column plus `│ ` / ` │` framing. Below that physical minimum,
+    // retaining a malformed or over-wide grid is worse than losing the box. Render each logical row
+    // as a wrapped, styled sequence instead; content and hyperlink metadata remain intact.
+    let minimum_box_width = 4usize.saturating_mul(ncols).saturating_add(1);
+    if usize::from(width) < minimum_box_width {
+        let compact_row = |cells: &[Vec<Inline>], header: bool| {
+            let base = if header {
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.fg)
+            };
+            let mut spans = Vec::new();
+            for (column, cell) in cells.iter().enumerate().take(ncols) {
+                if column > 0 {
+                    spans.push(AnnotatedSpan {
+                        span: Span::styled(" · ", Style::default().fg(theme.faint)),
+                        hyperlink: None,
+                    });
+                }
+                spans.extend(inline_annotated_spans(cell, theme, base, hyperlinks));
+            }
+            wrap_annotated_spans(&spans, width)
+        };
+        out.append(compact_row(headers, true));
+        for row in rows {
+            out.append(compact_row(row, false));
+        }
         return out;
     }
     let cell_w = |cell: &[Inline]| -> usize {
-        inline_text(cell)
-            .chars()
-            .map(|c| char_width(c) as usize)
+        inline_annotated_spans(cell, theme, Style::default(), hyperlinks)
+            .iter()
+            .flat_map(|span| span.span.content.chars())
+            .map(|character| char_width(character) as usize)
             .sum()
     };
     // Natural column widths (max of header + body cell widths, at least 1).
@@ -751,51 +927,78 @@ fn render_table(
         s.push(right);
         Line::from(Span::styled(s, faint))
     };
-    let data_row = |cells: &[Vec<Inline>], header: bool| -> Line<'static> {
+    let data_row = |cells: &[Vec<Inline>], header: bool| -> RenderedLines {
         let base = if header {
             Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg)
         };
         let mut sp: Vec<Span<'static>> = Vec::new();
+        let mut regions = Vec::new();
+        let mut column = 0u16;
         for (c, &w) in col.iter().enumerate() {
-            sp.push(Span::styled(
-                if c == 0 { "│ " } else { " " }.to_string(),
-                faint,
-            ));
+            let prefix = if c == 0 { "│ " } else { " " };
+            sp.push(Span::styled(prefix.to_string(), faint));
+            column = column.saturating_add(
+                prefix
+                    .chars()
+                    .map(char_width)
+                    .fold(0u16, u16::saturating_add),
+            );
             let empty: Vec<Inline> = Vec::new();
             let cell = cells.get(c).unwrap_or(&empty);
-            sp.extend(fit_spans(inline_spans(cell, theme, base), w, base));
+            let mut fitted = fit_annotated_spans(
+                inline_annotated_spans(cell, theme, base, hyperlinks),
+                w,
+                base,
+            );
+            for region in &mut fitted.hyperlinks {
+                region.col = region.col.saturating_add(column);
+            }
+            regions.append(&mut fitted.hyperlinks);
+            if let Some(line) = fitted.lines.pop() {
+                sp.extend(line.spans);
+            }
+            column = column.saturating_add(u16::try_from(w).unwrap_or(u16::MAX));
             sp.push(Span::styled(" │".to_string(), faint));
+            column = column.saturating_add(2);
         }
-        Line::from(sp)
+        RenderedLines {
+            lines: vec![Line::from(sp)],
+            hyperlinks: regions,
+        }
     };
     out.push_plain(border('┌', '┬', '┐'));
-    out.push_plain(data_row(headers, true));
+    out.append(data_row(headers, true));
     out.push_plain(border('├', '┼', '┤'));
     for r in rows {
-        out.push_plain(data_row(r, false));
+        out.append(data_row(r, false));
     }
     out.push_plain(border('└', '┴', '┘'));
     out
 }
 
-/// Truncate a styled span list to exactly `w` display cells (CJK-aware), padding the tail with
-/// spaces. A wide char that would overflow the last cell is dropped rather than split.
-fn fit_spans(spans: Vec<Span<'static>>, w: usize, pad_style: Style) -> Vec<Span<'static>> {
+/// Truncate annotated spans to exactly `w` display cells (CJK-aware), padding the tail with spaces.
+/// A wide char that would overflow the last cell is dropped rather than split. Passing the fitted
+/// runs through the shared annotated wrapper produces the same hyperlink geometry as prose without
+/// putting OSC bytes into printable content.
+fn fit_annotated_spans(spans: Vec<AnnotatedSpan>, w: usize, pad_style: Style) -> RenderedLines {
     use crate::tui::char_width;
-    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut fitted = Vec::new();
     let mut used = 0usize;
     'outer: for sp in spans {
         if used >= w {
             break;
         }
         let mut taken = String::new();
-        for ch in sp.content.chars() {
+        for ch in sp.span.content.chars() {
             let cw = char_width(ch) as usize;
             if used + cw > w {
                 if !taken.is_empty() {
-                    out.push(Span::styled(std::mem::take(&mut taken), sp.style));
+                    fitted.push(AnnotatedSpan {
+                        span: Span::styled(std::mem::take(&mut taken), sp.span.style),
+                        hyperlink: sp.hyperlink.clone(),
+                    });
                 }
                 break 'outer;
             }
@@ -803,41 +1006,78 @@ fn fit_spans(spans: Vec<Span<'static>>, w: usize, pad_style: Style) -> Vec<Span<
             used += cw;
         }
         if !taken.is_empty() {
-            out.push(Span::styled(taken, sp.style));
+            fitted.push(AnnotatedSpan {
+                span: Span::styled(taken, sp.span.style),
+                hyperlink: sp.hyperlink,
+            });
         }
     }
     if used < w {
-        out.push(Span::styled(" ".repeat(w - used), pad_style));
+        fitted.push(AnnotatedSpan {
+            span: Span::styled(" ".repeat(w - used), pad_style),
+            hyperlink: None,
+        });
     }
-    out
+    wrap_annotated_spans(&fitted, u16::try_from(w).unwrap_or(u16::MAX))
 }
 
 /// Render a list item with a hanging indent: the marker on the first row, aligned spaces on
 /// continuation rows.
 fn render_marked(
+    depth: u8,
     marker: &str,
     spans: &[Inline],
+    continuation: &[Vec<Inline>],
     width: u16,
     theme: &Theme,
     hyperlinks: &HyperlinkPolicy,
 ) -> RenderedLines {
-    let marker_w = marker.chars().map(crate::tui::char_width).sum::<u16>();
-    let inner = inline_annotated_spans(spans, theme, Style::default().fg(theme.fg), hyperlinks);
-    // .max(1): wrap_spans at width 0 returns UNWRAPPED content, which would overflow the row on a
-    // terminal narrower than the marker (review LOW). At least 1 keeps it wrapping.
-    let mut wrapped = wrap_annotated_spans(&inner, width.saturating_sub(marker_w).max(1));
-    wrapped.shift_columns(marker_w);
-    for (ri, row) in wrapped.lines.iter_mut().enumerate() {
-        let lead = if ri == 0 {
-            Span::styled(marker.to_string(), Style::default().fg(theme.muted))
-        } else {
-            Span::raw(" ".repeat(marker_w as usize))
-        };
-        let mut sp = vec![lead];
-        sp.append(&mut row.spans);
-        *row = Line::from(sp);
+    let marker_width = marker
+        .chars()
+        .map(crate::tui::char_width)
+        .fold(0u16, u16::saturating_add);
+    let marker_fits = marker_width < width;
+    let requested_indent = u16::from(depth).saturating_mul(2);
+    let indent_width = if marker_fits {
+        requested_indent.min(width.saturating_sub(marker_width).saturating_sub(1))
+    } else {
+        0
+    };
+    let prefix = if marker_fits {
+        format!("{}{}", " ".repeat(usize::from(indent_width)), marker)
+    } else {
+        String::new()
+    };
+    let prefix_width = if marker_fits {
+        indent_width.saturating_add(marker_width)
+    } else {
+        0
+    };
+    let inner_width = width.saturating_sub(prefix_width).max(1);
+    let mut out = RenderedLines::default();
+
+    let mut append_source_line = |source: &[Inline], first: bool| {
+        let inner =
+            inline_annotated_spans(source, theme, Style::default().fg(theme.fg), hyperlinks);
+        let mut wrapped = wrap_annotated_spans(&inner, inner_width);
+        wrapped.shift_columns(prefix_width);
+        for (row_index, row) in wrapped.lines.iter_mut().enumerate() {
+            let lead = if first && row_index == 0 {
+                Span::styled(prefix.clone(), Style::default().fg(theme.muted))
+            } else {
+                Span::raw(" ".repeat(usize::from(prefix_width)))
+            };
+            let mut composed = vec![lead];
+            composed.append(&mut row.spans);
+            *row = Line::from(composed);
+        }
+        out.append(wrapped);
+    };
+    append_source_line(spans, true);
+    for line in continuation {
+        append_source_line(line, false);
     }
-    wrapped
+    out
 }
 
 #[cfg(test)]
@@ -855,6 +1095,150 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn repaint_vt100(parser: &mut vt100::Parser, lines: &[Line<'static>]) {
+        let (height, _) = parser.screen().size();
+        parser.process(b"\x1b[2J");
+        for (row, line) in lines.iter().enumerate().take(usize::from(height)) {
+            parser.process(format!("\x1b[{};1H", row + 1).as_bytes());
+            let visible = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            parser.process(visible.as_bytes());
+        }
+    }
+
+    fn repaint_retained_vt100(parser: &mut vt100::Parser, lines: &[Line<'static>]) {
+        let (height, _) = parser.screen().size();
+        for row in 0..height {
+            parser.process(format!("\x1b[{};1H", row + 1).as_bytes());
+            if let Some(line) = lines.get(usize::from(row)) {
+                let visible = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>();
+                parser.process(visible.as_bytes());
+            }
+            parser.process(b"\x1b[K");
+        }
+    }
+
+    fn paint_vt100(lines: &[Line<'static>], width: u16, height: u16) -> vt100::Parser {
+        let mut parser = vt100::Parser::new(height, width, 0);
+        repaint_vt100(&mut parser, lines);
+        parser
+    }
+
+    /// Serialize exact terminal cells. `·` is an empty cell and `»` is the second physical cell of a
+    /// wide glyph, so the golden catches both padding and CJK column drift.
+    fn vt100_screen_cell_grid(screen: &vt100::Screen, width: u16, height: u16) -> String {
+        (0..height)
+            .map(|row| {
+                (0..width)
+                    .map(|column| {
+                        let cell = screen.cell(row, column).expect("cell inside vt100 grid");
+                        if cell.is_wide_continuation() {
+                            "»".to_string()
+                        } else if cell.has_contents() {
+                            cell.contents()
+                        } else {
+                            "·".to_string()
+                        }
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn vt100_cell_grid(lines: &[Line<'static>], width: u16) -> String {
+        let height = u16::try_from(lines.len()).unwrap_or(u16::MAX).max(1);
+        let parser = paint_vt100(lines, width, height);
+        assert_eq!(parser.screen().errors(), 0, "vt100 accepted the render");
+        vt100_screen_cell_grid(parser.screen(), width, height)
+    }
+
+    #[test]
+    fn nested_task_lists_and_ordered_continuations_are_bounded_and_round_trip() {
+        let source = concat!(
+            "- [x] shipped\n",
+            "  - [ ] nested todo\n",
+            "    12. ordered item\n",
+            "        continuation one\n",
+            "        continuation two\n",
+            "                                        - depth is bounded\n",
+        );
+        let doc = MarkdownDoc::parse(source);
+        assert_eq!(doc.blocks.len(), 4);
+        assert!(matches!(
+            &doc.blocks[0],
+            MdBlock::Bullet {
+                depth: 0,
+                task: Some(true),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &doc.blocks[1],
+            MdBlock::Bullet {
+                depth: 1,
+                task: Some(false),
+                ..
+            }
+        ));
+        match &doc.blocks[2] {
+            MdBlock::Numbered {
+                depth,
+                n,
+                task,
+                spans,
+                continuation,
+            } => {
+                assert_eq!((*depth, *n, *task), (2, 12, None));
+                assert_eq!(inline_text(spans), "ordered item");
+                assert_eq!(continuation.len(), 2);
+                assert_eq!(inline_text(&continuation[0]), "continuation one");
+                assert_eq!(inline_text(&continuation[1]), "continuation two");
+            }
+            other => panic!("expected ordered list item, got {other:?}"),
+        }
+        assert!(matches!(
+            &doc.blocks[3],
+            MdBlock::Bullet {
+                depth: MAX_LIST_NESTING,
+                ..
+            }
+        ));
+
+        let reparsed = MarkdownDoc::parse(&doc.to_text());
+        assert_eq!(reparsed, doc, "export preserves list semantics");
+
+        let rendered = render_doc(&doc, 24, &Theme::dark());
+        let continuation_rows: Vec<String> = rendered
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .filter(|line: &String| line.contains("continuation"))
+            .collect();
+        assert_eq!(continuation_rows.len(), 2);
+        assert!(
+            continuation_rows
+                .iter()
+                .all(|line| line.starts_with("        ")),
+            "ordered continuations hang below the item content: {continuation_rows:?}"
+        );
+        assert!(
+            rendered.iter().all(|line| line_width(line) <= 24),
+            "bounded depth must remain inside the render width"
+        );
     }
 
     #[test]
@@ -890,6 +1274,157 @@ mod tests {
         // a not-a-table pipe line stays a paragraph (needs the separator row)
         let p = MarkdownDoc::parse("a | b | c");
         assert!(p.blocks.iter().all(|b| !matches!(b, MdBlock::Table { .. })));
+    }
+
+    #[test]
+    fn table_cells_preserve_osc8_metadata_without_printing_escape_bytes() {
+        let theme = Theme::dark();
+        let policy = HyperlinkPolicy::new(
+            crate::tui::hyperlink::Capability::Osc8,
+            &std::env::current_dir().unwrap(),
+        );
+        let doc = MarkdownDoc::parse(
+            "| Name | Resource |\n|---|---|\n| 核心 | [guide](https://example.com/guide) |",
+        );
+        let rendered = render_doc_with_hyperlinks(&doc, 40, &theme, &policy);
+        let visible = plain(&rendered.lines);
+        assert!(!visible.contains('\u{1b}'));
+        assert!(visible.contains("核心"));
+        assert!(visible.contains("guide"));
+        assert!(!visible.contains("https://"));
+        assert_eq!(rendered.hyperlinks.len(), 1);
+        let region = &rendered.hyperlinks[0];
+        assert_eq!(region.target, "https://example.com/guide");
+        assert_eq!(region.width, 5);
+        assert_eq!(region.row, 3);
+        assert!(region.col.saturating_add(region.width) <= 40);
+
+        let fallback = render_doc_with_hyperlinks(&doc, 80, &theme, &HyperlinkPolicy::disabled());
+        assert!(fallback.hyperlinks.is_empty());
+        let fallback_visible = plain(&fallback.lines);
+        assert!(fallback_visible.contains("guide (https://example.com/guide)"));
+        assert!(!fallback_visible.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn table_degrades_to_bounded_wrapped_rows_below_the_box_minimum() {
+        let doc = MarkdownDoc::parse("| A | B |\n|---|---|\n| [x](https://example.com/x) | 界 |");
+        let policy = HyperlinkPolicy::new(
+            crate::tui::hyperlink::Capability::Osc8,
+            &std::env::current_dir().unwrap(),
+        );
+        for width in 1..9 {
+            let rendered = render_doc_with_hyperlinks(&doc, width, &Theme::dark(), &policy);
+            assert!(
+                rendered.lines.iter().all(|line| line_width(line) <= width),
+                "compact table overflowed width {width}"
+            );
+            assert!(
+                rendered.hyperlinks.iter().all(|region| {
+                    region.col.saturating_add(region.width) <= width
+                        && region.row < rendered.lines.len()
+                }),
+                "compact table link geometry escaped width {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn vt100_cell_grid_golden_covers_rich_markdown_geometry() {
+        let source = concat!(
+            "| 名称 | 状态 |\n",
+            "|---|---|\n",
+            "| 核心 | 就绪 |\n",
+            "\n",
+            "- [x] shipped\n",
+            "  - [ ] nested\n",
+            "    7. ordered item\n",
+            "       continuation\n",
+            "\n",
+            "```rust\n",
+            "let 名称 = 1;\n",
+            "```\n",
+        );
+        let lines = render_doc(&MarkdownDoc::parse(source), 24, &Theme::dark());
+        let grid = vt100_cell_grid(&lines, 24);
+        assert_eq!(
+            grid,
+            concat!(
+                "┌──────┬──────┐·········\n",
+                "│ 名»称» │ 状»态» │·········\n",
+                "├──────┼──────┤·········\n",
+                "│ 核»心» │ 就»绪» │·········\n",
+                "└──────┴──────┘·········\n",
+                "························\n",
+                "☑ shipped···············\n",
+                "  ☐ nested··············\n",
+                "    7. ordered item·····\n",
+                "       continuation·····\n",
+                "························\n",
+                "│ let 名»称» = 1;     rust",
+            )
+        );
+    }
+
+    #[test]
+    fn delimiter_split_stream_and_width_resize_converge_to_single_shot_grid() {
+        let chunks = [
+            "| 名",
+            "称 | [文",
+            "档](https://example.com) |\n|--",
+            "-|---|\n| 核心 | ready |\n\n- [",
+            "x] **do",
+            "ne**\n  2. nested item\n     continued\n\n```ru",
+            "st\nlet x = 1;\n``",
+            "`\n",
+        ];
+        let widths = [36u16, 18, 27, 15, 31, 20, 24, 18];
+        let mut streamed = String::new();
+        let terminal_height = 64;
+        let mut terminal = vt100::Parser::new(terminal_height, widths[0], 0);
+        for (chunk, width) in chunks.iter().zip(widths) {
+            streamed.push_str(chunk);
+            let rows = render_doc(&MarkdownDoc::parse(&streamed), width, &Theme::dark());
+            assert!(
+                rows.iter().all(|line| line_width(line) <= width),
+                "partial delimiter render overflowed at width {width}"
+            );
+            terminal.set_size(terminal_height, width);
+            repaint_retained_vt100(&mut terminal, &rows);
+            assert_eq!(
+                terminal.screen().errors(),
+                0,
+                "resized vt100 accepted the partial render"
+            );
+        }
+
+        let final_width = 18;
+        let streamed_rows = render_doc(&MarkdownDoc::parse(&streamed), final_width, &Theme::dark());
+        let complete = chunks.concat();
+        let single_shot_rows =
+            render_doc(&MarkdownDoc::parse(&complete), final_width, &Theme::dark());
+        assert_eq!(
+            vt100_cell_grid(&streamed_rows, final_width),
+            vt100_cell_grid(&single_shot_rows, final_width),
+            "delimiter splits and intervening resizes cannot alter the final cell grid"
+        );
+        terminal.set_size(terminal_height, final_width);
+        repaint_retained_vt100(&mut terminal, &streamed_rows);
+        let final_height = u16::try_from(streamed_rows.len()).unwrap_or(u16::MAX);
+        assert_eq!(
+            vt100_screen_cell_grid(terminal.screen(), final_width, final_height),
+            vt100_cell_grid(&single_shot_rows, final_width),
+            "the same resized terminal converges to the fresh single-shot grid"
+        );
+
+        let wide_rows = render_doc(&MarkdownDoc::parse(&complete), 36, &Theme::dark());
+        let resized_back = render_doc(&MarkdownDoc::parse(&complete), 18, &Theme::dark());
+        assert!(!vt100_cell_grid(&wide_rows, 36).is_empty());
+        assert_eq!(
+            vt100_cell_grid(&resized_back, 18),
+            vt100_cell_grid(&single_shot_rows, 18),
+            "reflowing wide then narrow returns to the canonical narrow grid"
+        );
     }
 
     #[test]
@@ -1016,9 +1551,9 @@ mod tests {
         use crate::render::line_width;
         let theme = Theme::dark();
         let doc = MarkdownDoc::parse(
-            "# A longish heading that should wrap across the narrow width\n\n- a bullet item that is also quite long and wraps\n\n> a quoted line that wraps too\n\n```\nsome code line that is long enough to wrap around\n```",
+            "# A longish heading that should wrap across the narrow width\n\n- a bullet item that is also quite long and wraps\n\n> a quoted line that wraps too\n\n```语言😀\nsome code line that is long enough to wrap around\n```",
         );
-        for width in [10u16, 20, 40] {
+        for width in [1u16, 2, 3, 10, 20, 40] {
             for row in render_doc(&doc, width, &theme) {
                 assert!(
                     line_width(&row) <= width,

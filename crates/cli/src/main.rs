@@ -10,6 +10,7 @@ mod config;
 mod editor;
 mod environment;
 mod highlight;
+mod image_input;
 mod markdown;
 mod mcp;
 mod output;
@@ -203,6 +204,11 @@ struct Cli {
     /// task. Without -p, core opens the interactive TUI (the default).
     #[arg(short = 'p', long)]
     print: bool,
+
+    /// Attach a local PNG, JPEG, GIF, or WebP to a one-shot task. Repeat up to the bounded
+    /// attachment limit; bytes are sniffed before they enter the SQ.
+    #[arg(long = "image", value_name = "PATH")]
+    images: Vec<PathBuf>,
 
     /// One-shot stdout contract: text | json | stream-json. Machine formats keep stdout as valid
     /// JSON/JSONL; diagnostics continue on stderr. Only valid in one-shot mode.
@@ -661,6 +667,13 @@ async fn run_cli() -> anyhow::Result<u8> {
     if one_shot && cli.task.is_none() {
         anyhow::bail!("-p/--print requires a task; omit -p to open the interactive TUI");
     }
+    if !cli.images.is_empty() && !one_shot {
+        anyhow::bail!("--image is a one-shot option; pass -p/--print with a task");
+    }
+    let mut one_shot_images = image_input::ImageAttachments::default();
+    for path in &cli.images {
+        one_shot_images.attach_path(path)?;
+    }
 
     // Resolve continuation before provider/model selection so a resumed run inherits its last
     // durably recorded route. CLI/environment routing overrides remain authoritative; user/project
@@ -1101,8 +1114,17 @@ async fn run_cli() -> anyhow::Result<u8> {
     eprintln!("permission mode: {}", agent.permission_mode().label());
 
     if !one_shot {
+        let attached = match tui::app_server::attach(agent, true, false) {
+            Ok(attached) => attached,
+            Err(error) => {
+                eprintln!("app server: refusing to attach — {error}");
+                return Err(anyhow::anyhow!(
+                    "the App Server refused the version handshake: {error}"
+                ));
+            }
+        };
         tui::run(
-            agent,
+            attached,
             cli.task,
             provider_directory,
             provider_id,
@@ -1117,14 +1139,27 @@ async fn run_cli() -> anyhow::Result<u8> {
     let task = cli.task.clone().ok_or_else(|| {
         anyhow::anyhow!("-p/--print requires a task; omit -p to open the interactive TUI")
     })?;
+    // A one-shot invocation is a sibling client of the same resident App Server as the TUI. It
+    // deliberately leaves interactive approvals disabled, preserving the historical fail-closed
+    // behavior of non-interactive runs.
+    let attached = tui::app_server::attach(agent, false, true)?;
+    let tui::app_server::Attached {
+        handle,
+        task: server_task,
+        interrupt,
+        ..
+    } = attached;
+    let tui::app_server::AppServerHandle {
+        client,
+        mut events,
+        control,
+    } = handle;
 
     // Ctrl-C = graceful interrupt: the in-flight provider turn is cancelled mid-stream (D1-16),
     // then the run stops without committing a partial effect and can be resumed with
     // --resume <run>. The turn is NOT atomic with respect to the interrupt: dropping the stream
     // means the usage record never arrives, so a cancelled run reports its cost as unknown with
     // reason `billing_evidence_missing`. A second Ctrl-C hard-exits.
-    let interrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    agent.set_interrupt(interrupt.clone());
     {
         let interrupt = interrupt.clone();
         let run_id = run.to_string();
@@ -1148,59 +1183,89 @@ async fn run_cli() -> anyhow::Result<u8> {
     // stdout path and applies one stateful scrubber across arbitrary provider delta boundaries.
     // Keep draining after a pipe/write failure: dropping the run future mid-effect would violate
     // the turn-atomic shutdown invariant.
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    agent.set_ui(tx);
-    let run_result = {
-        let run = agent.run(&task);
-        tokio::pin!(run);
-        loop {
-            tokio::select! {
-                result = &mut run => break result,
-                event = rx.recv() => {
-                    if let Some(event) = event
-                        && output_error.is_none()
-                        && let Err(error) = emitter.event(event)
-                    {
-                        output_error = Some(error);
-                    }
-                }
-            }
+    let attachment_metadata = submit_one_shot(&client, task, one_shot_images)?;
+    for (index, (media_type, encoded_bytes)) in attachment_metadata.into_iter().enumerate() {
+        if output_error.is_none()
+            && let Err(error) = emitter.input_attachment(index + 1, media_type, encoded_bytes)
+        {
+            output_error = Some(error);
+        }
+    }
+    let mut last_event_seq = 0;
+    let (summary, ledger_summary) = loop {
+        let envelope = events
+            .recv()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("the App Server event queue closed before run end"))?;
+        let event_seq = envelope.sequence();
+        if event_seq <= last_event_seq {
+            anyhow::bail!(
+                "the App Server event queue reordered or duplicated live sequence {event_seq} after {last_event_seq}"
+            );
+        }
+        last_event_seq = event_seq;
+        let event = match envelope.into_current()? {
+            tui::app_server::ServerEvent::Ui(event) => event,
+            tui::app_server::ServerEvent::Notice(message) => runtime::UiEvent::Notice(message),
+            tui::app_server::ServerEvent::Lagged { dropped } => runtime::UiEvent::Notice(format!(
+                "{dropped} streamed update(s) were dropped by the bounded App Server event queue"
+            )),
+            tui::app_server::ServerEvent::RunEnded {
+                snapshot, summary, ..
+            } => break (*summary, snapshot.ledger_summary),
+        };
+        if output_error.is_none()
+            && let Err(error) = emitter.event(event)
+        {
+            output_error = Some(error);
         }
     };
-    // All kernel sends happen before `run` resolves, but the scheduler may select the result
-    // branch while a final event is already queued. Drain that deterministic tail.
-    while let Ok(event) = rx.try_recv() {
+    // `RunEnded` is the synchronisation barrier, but preserve a second nonblocking drain as a
+    // schema-guarded assertion that any already-queued UI tail still passes through Emitter.
+    while let Ok(envelope) = events.try_recv() {
+        let event_seq = envelope.sequence();
+        if event_seq <= last_event_seq {
+            anyhow::bail!(
+                "the App Server event queue reordered or duplicated live sequence {event_seq} after {last_event_seq}"
+            );
+        }
+        last_event_seq = event_seq;
+        let event = match envelope.into_current()? {
+            tui::app_server::ServerEvent::Ui(event) => event,
+            tui::app_server::ServerEvent::Notice(message) => runtime::UiEvent::Notice(message),
+            tui::app_server::ServerEvent::Lagged { dropped } => runtime::UiEvent::Notice(format!(
+                "{dropped} streamed update(s) were dropped by the bounded App Server event queue"
+            )),
+            tui::app_server::ServerEvent::RunEnded { .. } => continue,
+        };
         if output_error.is_none()
             && let Err(error) = emitter.event(event)
         {
             output_error = Some(error);
         }
     }
+    drop(events);
+    drop(control);
+    drop(client);
+    server_task.await?;
     diagnostic_drain.flush();
 
-    let (outcome, run_error) = match run_result {
-        Ok(outcome) => (outcome, None),
-        Err(error) => (
-            Outcome::HarnessError,
-            Some(core_record::redact::scrub(&error.public_summary())),
-        ),
-    };
-    let cost = agent.ledger.cost_state();
-    let turns = agent.ledger.turns;
+    let outcome: Outcome = summary.outcome;
+    let run_error = summary.error.as_deref().map(core_record::redact::scrub);
+    let cost = summary.cost;
+    let turns = summary.turns;
+    let kernel_tax = summary.kernel_tax;
     // UiEvent text is scrubbed at the live UI seam. Scrub the complete terminal text again so a
     // secret split across streaming deltas cannot bypass the machine-output contract.
-    let assistant_text = core_record::redact::scrub(agent.last_assistant_text());
-    let run_id = run.to_string();
+    let assistant_text = core_record::redact::scrub(&summary.assistant_text);
+    let run_id = summary.run_id;
     let result = output::final_result(
         &outcome,
         &assistant_text,
         &run_id,
         &cost,
         turns,
-        agent
-            .ledger
-            .kernel_tax()
-            .with_failed_run(!matches!(outcome, Outcome::Done | Outcome::Drained)),
+        kernel_tax,
         run_error.as_deref(),
     );
     if output_error.is_none()
@@ -1214,8 +1279,9 @@ async fn run_cli() -> anyhow::Result<u8> {
     if let Some(error) = &run_error {
         eprintln!("harness error: {error}");
     }
-    eprintln!("{}", agent.ledger.summary());
-    let (memo_hits, memo_misses) = agent.registry.memo_stats();
+    eprintln!("{ledger_summary}");
+    let memo_hits = summary.memo_hits;
+    let memo_misses = summary.memo_misses;
     if memo_hits + memo_misses > 0 {
         eprintln!(
             "memo: {memo_hits} hits / {} lookups (pure-tool results reused)",
@@ -1226,6 +1292,40 @@ async fn run_cli() -> anyhow::Result<u8> {
         return Err(anyhow::anyhow!("writing machine output: {error}"));
     }
     Ok(output::outcome_exit_code(&outcome))
+}
+
+fn build_one_shot_submission(
+    task: String,
+    images: image_input::ImageAttachments,
+) -> Result<core_protocol::Op, image_input::ImageInputError> {
+    if images.is_empty() {
+        // This exact legacy variant is a compatibility contract: adding an empty content-segment
+        // wrapper would change every text-only SQ byte.
+        Ok(core_protocol::Op::UserInput { text: task })
+    } else {
+        Ok(core_protocol::Op::UserInputV2 {
+            segments: images.into_content_segments(task)?,
+        })
+    }
+}
+
+/// Admit the complete one-shot SQ before exposing attachment metadata on machine stdout.
+///
+/// Returning metadata only after the bounded submission queue accepts the operation prevents a
+/// validation or backpressure refusal from leaving a plausible-looking partial machine stream.
+fn submit_one_shot(
+    client: &tui::app_server::AppServerClient,
+    task: String,
+    images: image_input::ImageAttachments,
+) -> anyhow::Result<Vec<(core_protocol::ImageMediaType, usize)>> {
+    let attachment_metadata = images
+        .as_slice()
+        .iter()
+        .map(|attachment| (attachment.media_type(), attachment.encoded().len()))
+        .collect();
+    let submission = build_one_shot_submission(task, images)?;
+    client.submit(submission)?;
+    Ok(attachment_metadata)
 }
 
 fn parse_workflow_args(args: &Option<String>) -> anyhow::Result<serde_json::Value> {
@@ -1513,6 +1613,99 @@ async fn run_workflow_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_shot_submission_builder_emits_exact_multimodal_sq_operation() {
+        let image_bytes = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;";
+        let mut images = image_input::ImageAttachments::default();
+        images
+            .attach_bytes("fixture.gif", image_bytes)
+            .expect("valid bounded GIF");
+
+        let operation =
+            build_one_shot_submission("compare exactly".into(), images).expect("submission");
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, image_bytes);
+        assert_eq!(
+            serde_json::to_value(&operation).expect("serialize SQ operation"),
+            serde_json::json!({
+                "op": "user_input_v2",
+                "segments": [
+                    {"type": "text", "text": "compare exactly"},
+                    {
+                        "type": "image",
+                        "image": {
+                            "media_type": "image/gif",
+                            "data": encoded,
+                        },
+                    },
+                ],
+            }),
+            "the one-shot builder must preserve the canonical ordered SQ bytes"
+        );
+        let core_protocol::Op::UserInputV2 { segments } = operation else {
+            panic!("an image one-shot must use the multimodal SQ operation");
+        };
+        assert_eq!(segments.text(), "compare exactly");
+        let attached = segments.images().collect::<Vec<_>>();
+        assert_eq!(attached.len(), 1);
+        assert_eq!(attached[0].media_type, core_protocol::ImageMediaType::Gif);
+        assert_eq!(
+            base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                attached[0].data.as_str()
+            )
+            .expect("canonical base64"),
+            image_bytes
+        );
+    }
+
+    #[test]
+    fn attachment_metadata_is_released_only_after_submission_admission() {
+        let image_bytes = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;";
+        let mut images = image_input::ImageAttachments::default();
+        images
+            .attach_bytes("fixture.gif", image_bytes)
+            .expect("valid bounded GIF");
+
+        let (closed_sender, closed_receiver) = tokio::sync::mpsc::channel(1);
+        drop(closed_receiver);
+        let closed_client = tui::app_server::AppServerClient::connect(
+            core_protocol::PROTOCOL_VERSION,
+            closed_sender,
+        )
+        .expect("matching protocol");
+        assert!(
+            submit_one_shot(&closed_client, "compare".into(), images.clone()).is_err(),
+            "a closed SQ must not release attachment metadata"
+        );
+
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let client =
+            tui::app_server::AppServerClient::connect(core_protocol::PROTOCOL_VERSION, sender)
+                .expect("matching protocol");
+        let oversized = "x".repeat(core_protocol::task::MAX_TASK_TEXT_BYTES + 1);
+        assert!(
+            submit_one_shot(&client, oversized, images.clone()).is_err(),
+            "a rejected multimodal operation must not release attachment metadata"
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "validation failure must happen before SQ admission"
+        );
+
+        let metadata =
+            submit_one_shot(&client, "compare".into(), images).expect("accepted submission");
+        assert_eq!(
+            metadata,
+            [(core_protocol::ImageMediaType::Gif, 60)],
+            "only accepted attachments become stream metadata"
+        );
+        assert!(
+            receiver.try_recv().is_ok(),
+            "metadata becomes available only after the matching SQ is queued"
+        );
+    }
 
     #[cfg(unix)]
     #[tokio::test]

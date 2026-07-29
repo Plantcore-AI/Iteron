@@ -54,6 +54,7 @@ impl AgentSpawner for ProviderSpawner {
             model,
             system: SUBAGENT_SYSTEM.to_string(),
             messages: vec![Message::user_text(call.prompt.clone())],
+            input_images: Vec::new(),
             tools: Vec::new(),
             max_tokens: self.max_tokens,
             cache_system: false,

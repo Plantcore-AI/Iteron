@@ -8,7 +8,7 @@ Both `json` and `stream-json` end with an authoritative result object:
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "type": "result",
   "outcome": "done",
   "reason": null,
@@ -19,23 +19,34 @@ Both `json` and `stream-json` end with an authoritative result object:
   "cost_status": "...",
   "cost_reason": null,
   "turns": 1,
+  "kernel_tax": {
+    "admission_latency_us": 0,
+    "broker_latency_us": 0,
+    "record_fsync_latency_us": 0,
+    "estimated_tokens": 0,
+    "failed_runs": 0
+  },
   "exit_code": 0,
   "error": null
 }
 ```
 
 The example shows shape, not guaranteed values. `cost_usd` can be null or unknown
-when no authoritative price evidence exists.
+when no authoritative price evidence exists. Schema v5 requires the typed
+`kernel_tax` object; its latency values are measured in microseconds and all five
+fields are non-negative integers.
 
-Schema v4 adds the terminal `outcome` value `drained`: it means the runtime stopped
-cleanly after quiescing admitted work and durably checkpointing the workspace. It
-has `success: true` and exit code `0`, but remains distinct from ordinary `done`.
+Schema v4 introduced the terminal `outcome` value `drained`, which schema v5
+retains: it means the runtime stopped cleanly after quiescing admitted work and
+durably checkpointing the workspace. It has `success: true` and exit code `0`,
+but remains distinct from ordinary `done`.
 
 ## Stream event vocabulary
 
 `stream-json` may emit:
 
 - `assistant_text` and `thinking` deltas;
+- `input_attachment` metadata before a multimodal SQ submission;
 - `phase` and `turn_end` lifecycle events;
 - `tool_start`, `tool_end`, and `approval_request`;
 - `notice`, `steer_applied`, and `run_done`;
@@ -46,6 +57,10 @@ has `success: true` and exit code `0`, but remains distinct from ordinary `done`
 
 Every event carries `schema_version`. Consumers should ignore unknown event types
 they do not need and use the final result as the authoritative terminal outcome.
+`input_attachment` carries only `ordinal`, `media_type`, and `encoded_bytes`; it
+never carries image bytes, a filename, or a path. Historical v4 event fixtures
+and their terminal result remain unchanged; consumers should skip this v5 tag
+when they do not need attachment metadata.
 
 ## Stdout and stderr
 

@@ -873,6 +873,12 @@ pub struct TurnRequest {
     pub model: String,
     pub system: String,
     pub messages: Vec<Message>,
+    /// Provider-neutral image attachments for this top-level submission.
+    ///
+    /// The kernel validates and scopes these before constructing the request; adapters that
+    /// advertise image support may serialize them without re-reading files or interpreting MIME
+    /// types. Text-only requests always carry an empty vector.
+    pub input_images: Vec<core_protocol::ImageContent>,
     pub tools: Vec<ToolSpec>,
     pub max_tokens: u32,
     /// Cache breakpoint after the system prompt + tools (the stable prefix). ADR-002:
@@ -993,6 +999,14 @@ pub trait Provider: Send + Sync {
 
     fn attempt_semantics(&self) -> ProviderAttemptSemantics {
         ProviderAttemptSemantics::Single
+    }
+
+    /// Whether this provider can faithfully serialize [`TurnRequest::input_images`].
+    ///
+    /// Unknown adapters and gateways must remain conservative. Wrappers around another provider
+    /// should forward the inner capability rather than infer it from a model name.
+    fn supports_image_input(&self) -> bool {
+        false
     }
 
     /// Report the adapter's actual control surface before the request is sent. Implementations
@@ -1151,6 +1165,10 @@ impl Provider for HealthReportingProvider {
         self.inner.attempt_semantics()
     }
 
+    fn supports_image_input(&self) -> bool {
+        self.inner.supports_image_input()
+    }
+
     fn effort_application(&self, request: &TurnRequest) -> EffortApplication {
         self.inner.effort_application(request)
     }
@@ -1266,6 +1284,7 @@ mod guard_tests {
             model: model.into(),
             system: "stable system".into(),
             messages: Vec::new(),
+            input_images: Vec::new(),
             tools: Vec::new(),
             max_tokens: 32,
             cache_system: false,

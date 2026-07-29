@@ -1,7 +1,7 @@
 use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
-use crossterm::{execute, terminal};
+use crossterm::execute;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
@@ -66,8 +66,7 @@ impl Controller {
     /// A missing/unsupported query is a normal fallback, not a TUI startup failure. Once support is
     /// known, however, a failed push is returned and permanently becomes indeterminate: issuing a
     /// Pop without proof that Push completed could corrupt an outer application's stack frame.
-    pub(crate) fn negotiate(&self) -> io::Result<bool> {
-        let supported = terminal::supports_keyboard_enhancement().unwrap_or(false);
+    pub(crate) fn negotiate(&self, supported: bool) -> io::Result<bool> {
         let mut stdout = io::stdout();
         self.negotiate_with(&mut stdout, supported)
     }

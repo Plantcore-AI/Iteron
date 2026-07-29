@@ -76,7 +76,7 @@ or replaced from live state.
 
 The TUI emits OSC 8 hyperlinks only when the inherited terminal environment gives
 positive evidence for a supported terminal (for example iTerm2, WezTerm, Kitty,
-Ghostty, VS Code, Windows Terminal, recent VTE, or recent Konsole). Unknown
+Ghostty, VS Code, recent VTE, or recent Konsole). Unknown
 terminals, `TERM=dumb`, tmux, and screen use the plain `text (url)` rendering; Core
 does not assume passthrough support through a multiplexer.
 
@@ -84,5 +84,22 @@ Clickable targets are limited to bounded HTTP(S) URLs without embedded
 credentials and existing local paths whose canonical location remains inside the
 active repository. Unsupported schemes, path traversal, symlink escapes, control
 characters, and oversized targets remain plain text and cannot inject terminal
-escape sequences. Link metadata does not participate in wrapping, so clickable
-and fallback rows obey the same display-width bounds.
+escape sequences. The same policy covers Markdown (including table cells), typed
+tool arguments and output documentation URLs, and file/diff paths. Link metadata
+does not participate in wrapping, so clickable and fallback rows obey the same
+display-width bounds.
+
+### Attention notifications
+
+Completion notifications are disabled unless the operator enables
+`completion_notifications` in the user configuration. Terminal capability
+evidence selects one of the bounded, fixed OSC 9 / OSC 777 desktop-notification
+vocabularies. The live TUI admits those sequences only to its sole terminal
+writer, which appends them after a complete retained frame. If a short write
+accepts a prefix, the writer completes or repairs that prefix before it rejects
+every later frame byte. Nonterminal or nonblocking stdout instead receives one
+BEL byte, and ordinary test/output writers never receive an OSC prefix.
+
+Notifications carry no model, tool, repository, or provider text. One run gets at
+most one completion notification, repeated approval IDs are deduplicated, and a
+live run gets at most one notification for each 30-second quiet period.
