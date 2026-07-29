@@ -524,15 +524,90 @@ fn terminal_pair_is_supported() -> bool {
 }
 
 #[cfg(any(windows, test))]
-fn wait_millis_until(now: Instant, deadline: Instant) -> u32 {
-    let remaining = deadline.saturating_duration_since(now);
-    if remaining.is_zero() {
-        return 0;
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyboardQueryState {
+    Fresh,
+    Running,
+    Complete,
+    Poisoned,
+}
+
+#[cfg(any(windows, test))]
+struct KeyboardQueryGate(std::sync::atomic::AtomicU8);
+
+#[cfg(any(windows, test))]
+impl KeyboardQueryGate {
+    const fn new() -> Self {
+        Self(std::sync::atomic::AtomicU8::new(
+            KeyboardQueryState::Fresh as u8,
+        ))
     }
-    remaining
-        .as_nanos()
-        .div_ceil(1_000_000)
-        .min(u128::from(u32::MAX)) as u32
+
+    fn try_start(&self) -> bool {
+        self.0
+            .compare_exchange(
+                KeyboardQueryState::Fresh as u8,
+                KeyboardQueryState::Running as u8,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn complete(&self) {
+        self.finish(KeyboardQueryState::Complete);
+    }
+
+    fn poison(&self) {
+        self.finish(KeyboardQueryState::Poisoned);
+    }
+
+    fn finish(&self, state: KeyboardQueryState) {
+        let _ = self.0.compare_exchange(
+            KeyboardQueryState::Running as u8,
+            state as u8,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
+
+    #[cfg(test)]
+    fn state(&self) -> KeyboardQueryState {
+        match self.0.load(std::sync::atomic::Ordering::Acquire) {
+            value if value == KeyboardQueryState::Fresh as u8 => KeyboardQueryState::Fresh,
+            value if value == KeyboardQueryState::Running as u8 => KeyboardQueryState::Running,
+            value if value == KeyboardQueryState::Complete as u8 => KeyboardQueryState::Complete,
+            value if value == KeyboardQueryState::Poisoned as u8 => KeyboardQueryState::Poisoned,
+            _ => unreachable!("keyboard query gate stores only declared states"),
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone)]
+struct KeyboardQueryRequest {
+    deadline: Instant,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(any(windows, test))]
+impl KeyboardQueryRequest {
+    fn new(deadline: Instant) -> Self {
+        Self {
+            deadline,
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn should_abort(&self, now: Instant) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::Acquire) || now >= self.deadline
+    }
 }
 
 #[cfg(any(windows, test))]
@@ -790,22 +865,40 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_query_wait_rounds_up_and_stays_finite() {
-        let now = Instant::now();
-        assert_eq!(wait_millis_until(now, now), 0);
-        assert_eq!(wait_millis_until(now, now + Duration::from_nanos(1)), 1);
-        assert_eq!(wait_millis_until(now, now + Duration::from_millis(1)), 1);
-        assert_eq!(
-            wait_millis_until(
-                now,
-                now + Duration::from_millis(1) + Duration::from_nanos(1)
-            ),
-            2
-        );
-        assert_eq!(
-            wait_millis_until(now, now + Duration::from_millis(u64::from(u32::MAX) + 1)),
-            u32::MAX
-        );
+    fn keyboard_query_gate_is_one_shot_after_completion() {
+        let gate = KeyboardQueryGate::new();
+        assert_eq!(gate.state(), KeyboardQueryState::Fresh);
+        assert!(gate.try_start());
+        assert_eq!(gate.state(), KeyboardQueryState::Running);
+        assert!(!gate.try_start());
+        gate.complete();
+        assert_eq!(gate.state(), KeyboardQueryState::Complete);
+        assert!(!gate.try_start());
+        gate.poison();
+        assert_eq!(gate.state(), KeyboardQueryState::Complete);
+    }
+
+    #[test]
+    fn keyboard_query_gate_poison_is_permanent() {
+        let gate = KeyboardQueryGate::new();
+        assert!(gate.try_start());
+        gate.poison();
+        assert_eq!(gate.state(), KeyboardQueryState::Poisoned);
+        assert!(!gate.try_start());
+        gate.complete();
+        assert_eq!(gate.state(), KeyboardQueryState::Poisoned);
+    }
+
+    #[test]
+    fn keyboard_query_request_stops_before_a_late_worker_can_start() {
+        let caller = KeyboardQueryRequest::new(Instant::now() + Duration::from_secs(1));
+        let delayed_worker = caller.clone();
+        assert!(!delayed_worker.should_abort(Instant::now()));
+        caller.cancel();
+        assert!(delayed_worker.should_abort(Instant::now()));
+
+        let expired = KeyboardQueryRequest::new(Instant::now());
+        assert!(expired.should_abort(Instant::now()));
     }
 
     #[test]
