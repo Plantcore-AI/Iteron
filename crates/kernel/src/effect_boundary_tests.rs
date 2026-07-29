@@ -442,6 +442,12 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
 /// Kernel source files that may contain production effect dispatch.
 const KERNEL_SOURCES: &[&str] = &[
     "src/lib.rs",
+    "src/driver.rs",
+    "src/reducer.rs",
+    "src/turn_action.rs",
+    "src/turn_command.rs",
+    "src/turn_protocol.rs",
+    "src/turn_state.rs",
     "src/effects.rs",
     "src/effect_admission.rs",
     "src/effect_class.rs",
