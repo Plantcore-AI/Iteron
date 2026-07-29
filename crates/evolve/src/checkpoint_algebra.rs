@@ -37,6 +37,28 @@ struct DeploymentContent {
     manifests: BTreeMap<StrategySlot, PolicyManifest>,
 }
 
+#[derive(Serialize)]
+struct CanonicalDeploymentContent<'a> {
+    schema_version: u16,
+    bundle_id: &'a str,
+    rollback_to: &'a Option<String>,
+    manifests: &'a BTreeMap<StrategySlot, PolicyManifest>,
+}
+
+fn canonical_deployment_bytes(
+    bundle_id: &str,
+    rollback_to: &Option<String>,
+    manifests: &BTreeMap<StrategySlot, PolicyManifest>,
+) -> Result<Vec<u8>, CheckpointAlgebraError> {
+    serde_json::to_vec(&CanonicalDeploymentContent {
+        schema_version: 1,
+        bundle_id,
+        rollback_to,
+        manifests,
+    })
+    .map_err(CheckpointAlgebraError::Encoding)
+}
+
 impl PolicyCheckpoint {
     pub fn build(
         bundle_id: impl Into<String>,
@@ -68,20 +90,7 @@ impl PolicyCheckpoint {
             .values()
             .map(|manifest| manifest.policy.clone())
             .collect();
-        #[derive(Serialize)]
-        struct DeploymentContent<'a> {
-            schema_version: u16,
-            bundle_id: &'a str,
-            rollback_to: &'a Option<String>,
-            manifests: &'a BTreeMap<StrategySlot, PolicyManifest>,
-        }
-        let deployment_bytes = serde_json::to_vec(&DeploymentContent {
-            schema_version: 1,
-            bundle_id: &bundle_id,
-            rollback_to: &rollback_to,
-            manifests: &manifests,
-        })
-        .map_err(CheckpointAlgebraError::Encoding)?;
+        let deployment_bytes = canonical_deployment_bytes(&bundle_id, &rollback_to, &manifests)?;
         let bundle = PolicyBundle {
             bundle_id,
             digest: sha256_hex(&deployment_bytes),
@@ -131,6 +140,15 @@ impl PolicyCheckpoint {
         if sha256_hex(&self.deployment_bytes) != self.bundle.digest {
             return Err(CheckpointAlgebraError::DeploymentDigestMismatch);
         }
+        if self.deployment_bytes
+            != canonical_deployment_bytes(
+                &self.bundle.bundle_id,
+                &self.bundle.rollback_to,
+                &self.manifests,
+            )?
+        {
+            return Err(CheckpointAlgebraError::DeploymentDigestMismatch);
+        }
         if self.manifests.len() != self.bundle.policies.len() {
             return Err(CheckpointAlgebraError::ManifestSetMismatch);
         }
@@ -145,6 +163,14 @@ impl PolicyCheckpoint {
                     policy.slot.clone(),
                 ));
             }
+        }
+        let canonical_policies: Vec<_> = self
+            .manifests
+            .values()
+            .map(|manifest| manifest.policy.clone())
+            .collect();
+        if self.bundle.policies != canonical_policies {
+            return Err(CheckpointAlgebraError::ManifestSetMismatch);
         }
         if !self
             .fresh_held_out_slots
@@ -173,6 +199,8 @@ impl PolicyCheckpoint {
     }
 
     pub fn deployment_bundle(&self) -> Result<DeploymentBundle, PromotionAuthorityError> {
+        self.validate()
+            .map_err(|_| PromotionAuthorityError::LineageMismatch)?;
         if !self.fresh_held_out_slots.is_empty() {
             return Err(PromotionAuthorityError::FreshHeldOutRequired);
         }
@@ -230,8 +258,9 @@ pub struct SlotDelta {
     /// `None` means the slot is no longer present in the later checkpoint.
     pub after: Option<PolicyRef>,
     /// Comparable before/after identities are required for a meaningful held-out delta. An added
-    /// or removed slot has no policy on one side, so the algebra reports the change without
-    /// fabricating an attribution from an unrelated policy.
+    /// or removed slot has no policy on one side. A manifest-only change retains the same
+    /// `PolicyRef`, so raw [`PromotionEvidence`] cannot bind both checkpoint manifests either. The
+    /// algebra reports those changes without fabricating an attribution.
     pub held_out_delta: Option<Interval>,
 }
 
@@ -255,18 +284,28 @@ pub fn diff(
         .cloned()
         .collect();
     for slot in slots {
-        let left = before.bundle.policy_for(&slot).cloned();
-        let right = after.bundle.policy_for(&slot).cloned();
-        if left == right {
+        let left_manifest = before.manifests.get(&slot);
+        let right_manifest = after.manifests.get(&slot);
+        if left_manifest == right_manifest {
             continue;
         }
-        let held_out_delta = match (&left, &right) {
-            (Some(left), Some(right)) => {
+        let left = left_manifest.map(|manifest| manifest.policy.clone());
+        let right = right_manifest.map(|manifest| manifest.policy.clone());
+        let held_out_delta = match (left_manifest, right_manifest) {
+            (Some(left_manifest), Some(right_manifest))
+                if left_manifest.policy == right_manifest.policy =>
+            {
+                None
+            }
+            (Some(left_manifest), Some(right_manifest)) => {
                 let evidence = evidence_by_slot
                     .get(&slot)
                     .ok_or_else(|| CheckpointAlgebraError::MissingHeldOutEvidence(slot.clone()))?;
                 evidence.validate_contract()?;
-                if &evidence.baseline != left || &evidence.candidate != right {
+                if evidence.baseline != left_manifest.policy
+                    || evidence.candidate != right_manifest.policy
+                    || evidence.base_model != right_manifest.base_model
+                {
                     return Err(CheckpointAlgebraError::EvidenceIdentityMismatch(slot));
                 }
                 Some(evidence.task_score_delta)
@@ -336,12 +375,19 @@ pub fn restrict(
     }
     manifest.required_capabilities = capabilities.clone();
     readmit_all(&manifests, admissions)?;
+    let mut fresh_held_out_slots = source.fresh_held_out_slots.clone();
+    fresh_held_out_slots.insert(slot.clone());
+    let rollback_to = if source.fresh_held_out_slots.is_empty() {
+        Some(source.bundle.bundle_id.clone())
+    } else {
+        source.bundle.rollback_to.clone()
+    };
     Ok(AlgebraOutput {
         checkpoint: PolicyCheckpoint::build_with_fresh_held_out(
             bundle_id,
-            source.bundle.rollback_to.clone(),
+            rollback_to,
             manifests,
-            [slot.clone()].into(),
+            fresh_held_out_slots,
         )?,
         events: vec![
             CheckpointEvent::CapabilitiesRestricted {
@@ -379,12 +425,14 @@ pub fn retire(
     let mut manifests = source.manifests.clone();
     manifests.insert(slot.clone(), restored_manifest);
     readmit_all(&manifests, admissions)?;
+    let mut fresh_held_out_slots = source.fresh_held_out_slots.clone();
+    fresh_held_out_slots.insert(slot.clone());
     Ok(AlgebraOutput {
         checkpoint: PolicyCheckpoint::build_with_fresh_held_out(
             bundle_id,
             source.bundle.rollback_to.clone(),
             manifests,
-            [slot.clone()].into(),
+            fresh_held_out_slots,
         )?,
         events: vec![
             CheckpointEvent::Retired {

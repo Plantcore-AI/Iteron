@@ -6,10 +6,12 @@ use crate::promotion::{
 };
 use crate::verifier_crypto::{digest_serialized, hmac_serialized};
 use crate::{
-    BaseModelId, ContractError, DeploymentStage, ManifestAdmissionPolicy, PolicyManifest,
-    PolicyRef, PromotionEvidence, VerifiedCandidateInputs, validate_digest,
+    BaseModelId, ContractError, DeploymentStage, MAX_POLICIES_PER_BUNDLE, ManifestAdmissionPolicy,
+    PolicyManifest, PolicyRef, PromotionEvidence, StrategySlot, VerifiedCandidateInputs,
+    validate_digest,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 const EVALUATION_DOMAIN: &str = "core-evolve/independent-evaluation/v1";
 const CHECKPOINT_EVALUATION_DOMAIN: &str = "core-evolve/checkpoint-evaluation/v1";
@@ -171,6 +173,7 @@ impl std::fmt::Debug for SignedHeldOutEvaluation {
 pub struct SignedCheckpointEvaluation {
     pub(crate) evaluator_id: String,
     pub(crate) checkpoint_digest: String,
+    pub(crate) evaluation_set_digest: String,
     pub(crate) manifest_digest: String,
     pub(crate) admission_policy_digest: String,
     pub(crate) report: HeldOutEvaluation,
@@ -197,6 +200,7 @@ impl std::fmt::Debug for SignedCheckpointEvaluation {
             .debug_struct("SignedCheckpointEvaluation")
             .field("evaluator_id", &self.evaluator_id)
             .field("checkpoint_digest", &self.checkpoint_digest)
+            .field("evaluation_set_digest", &self.evaluation_set_digest)
             .field("manifest_digest", &self.manifest_digest)
             .field("admission_policy_digest", &self.admission_policy_digest)
             .field("report", &self.report)
@@ -354,6 +358,7 @@ impl IndependentEvaluator {
     pub fn sign_checkpoint_evaluation(
         &self,
         checkpoint_digest: &str,
+        evaluation_slots: &BTreeSet<StrategySlot>,
         manifest: &PolicyManifest,
         admission_policy: &ManifestAdmissionPolicy,
         report: HeldOutEvaluation,
@@ -369,12 +374,17 @@ impl IndependentEvaluator {
         {
             return Err(PromotionAuthorityError::EvaluationIdentityMismatch);
         }
+        if !evaluation_slots.contains(&manifest.policy.slot) {
+            return Err(PromotionAuthorityError::EvaluationIdentityMismatch);
+        }
+        let evaluation_set_digest = checkpoint_evaluation_set_digest(evaluation_slots)?;
         let manifest_digest = checkpoint_manifest_digest(manifest)?;
         let admission_policy_digest = checkpoint_admission_policy_digest(admission_policy)?;
         let signature = checkpoint_evaluation_signature(
             self.key.bytes(),
             &self.evaluator_id,
             checkpoint_digest,
+            &evaluation_set_digest,
             &manifest_digest,
             &admission_policy_digest,
             &report,
@@ -382,6 +392,7 @@ impl IndependentEvaluator {
         Ok(SignedCheckpointEvaluation {
             evaluator_id: self.evaluator_id.clone(),
             checkpoint_digest: checkpoint_digest.to_owned(),
+            evaluation_set_digest,
             manifest_digest,
             admission_policy_digest,
             report,
@@ -509,6 +520,20 @@ pub(crate) fn checkpoint_admission_policy_digest(
     Ok(digest_serialized(policy, MAX_PROMOTION_AUTH_BYTES)?)
 }
 
+pub(crate) fn checkpoint_evaluation_set_digest(
+    slots: &BTreeSet<StrategySlot>,
+) -> Result<String, PromotionAuthorityError> {
+    if slots.is_empty()
+        || slots.len() > MAX_POLICIES_PER_BUNDLE
+        || slots
+            .iter()
+            .any(|slot| StrategySlot::new(slot.as_str()).is_err())
+    {
+        return Err(PromotionAuthorityError::LineageMismatch);
+    }
+    Ok(digest_serialized(slots, MAX_PROMOTION_AUTH_BYTES)?)
+}
+
 pub(crate) fn checkpoint_evaluation_signature_for_anchor(
     anchor: &EvaluatorTrustAnchor,
     signed: &SignedCheckpointEvaluation,
@@ -517,6 +542,7 @@ pub(crate) fn checkpoint_evaluation_signature_for_anchor(
         anchor.key.bytes(),
         &anchor.evaluator_id,
         &signed.checkpoint_digest,
+        &signed.evaluation_set_digest,
         &signed.manifest_digest,
         &signed.admission_policy_digest,
         &signed.report,
@@ -531,6 +557,7 @@ fn checkpoint_evaluation_signature(
     key: &[u8],
     evaluator_id: &str,
     checkpoint_digest: &str,
+    evaluation_set_digest: &str,
     manifest_digest: &str,
     admission_policy_digest: &str,
     report: &HeldOutEvaluation,
@@ -540,6 +567,7 @@ fn checkpoint_evaluation_signature(
         domain: &'static str,
         evaluator_id: &'a str,
         checkpoint_digest: &'a str,
+        evaluation_set_digest: &'a str,
         manifest_digest: &'a str,
         admission_policy_digest: &'a str,
         report: &'a HeldOutEvaluation,
@@ -550,6 +578,7 @@ fn checkpoint_evaluation_signature(
             domain: CHECKPOINT_EVALUATION_DOMAIN,
             evaluator_id,
             checkpoint_digest,
+            evaluation_set_digest,
             manifest_digest,
             admission_policy_digest,
             report,

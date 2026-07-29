@@ -422,10 +422,13 @@ impl AuthorityState {
             .map_err(|_| PromotionAuthorityError::LineageMismatch)?;
         let changed = active_checkpoint.changed_slots(checkpoint);
         if required.is_empty()
+            || changed.is_empty()
             || &evaluated != required
+            || !checkpoint_evaluations_are_canonical(identity, &changed, required)
+            || !checkpoint_evaluators_are_independent(identity, checkpoint.bundle())
             || &attested != required
             || admission_policies.keys().cloned().collect::<BTreeSet<_>>() != *required
-            || changed != *required
+            || !changed.is_subset(required)
             || identity.baseline_bundle_digest != *active_digest
             || identity.rollback_bundle_id != active.bundle().bundle_id
             || bundle.bundle().rollback_to.as_deref() != Some(identity.rollback_bundle_id.as_str())
@@ -632,6 +635,31 @@ pub(crate) fn evaluated_slots(
         }
     }
     Ok(slots)
+}
+
+pub(crate) fn checkpoint_evaluations_are_canonical(
+    identity: &CandidateIdentity,
+    changed: &BTreeSet<StrategySlot>,
+    required: &BTreeSet<StrategySlot>,
+) -> bool {
+    checkpoint_evaluations(identity)
+        .map(|evaluation| &evaluation.candidate_policy.slot)
+        .eq(changed.iter().chain(required.difference(changed)))
+}
+
+pub(crate) fn checkpoint_evaluators_are_independent(
+    identity: &CandidateIdentity,
+    bundle: &PolicyBundle,
+) -> bool {
+    let policy_ids: BTreeSet<_> = bundle
+        .policies
+        .iter()
+        .map(|policy| policy.policy_id.as_str())
+        .collect();
+    checkpoint_evaluations(identity).all(|evaluation| {
+        evaluation.evaluator_id != &identity.bundle_id
+            && !policy_ids.contains(evaluation.evaluator_id.as_str())
+    })
 }
 
 pub(crate) fn checkpoint_evaluations(

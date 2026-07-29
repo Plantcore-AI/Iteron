@@ -146,6 +146,72 @@ fn evaluation_set(
 }
 
 #[test]
+fn serde_checkpoint_cannot_detach_deployment_bytes_from_its_manifests() {
+    let slot = StrategySlot::router();
+    let candidate = policy(slot.clone(), "candidate", CANDIDATE_DIGEST);
+    let checkpoint = checkpoint(
+        "candidate",
+        Some("baseline"),
+        [manifest(candidate, model('a'), BTreeSet::new())],
+    );
+    let attacker_bytes = br#"{"deployment":"not-the-evaluated-manifest"}"#.to_vec();
+    let mut encoded = serde_json::to_value(checkpoint).unwrap();
+    encoded["deployment_bytes"] = serde_json::to_value(&attacker_bytes).unwrap();
+    encoded["bundle"]["digest"] = serde_json::json!(sha256_hex(&attacker_bytes));
+    let detached: PolicyCheckpoint = serde_json::from_value(encoded).unwrap();
+
+    assert!(matches!(
+        detached.validate(),
+        Err(CheckpointAlgebraError::DeploymentDigestMismatch)
+    ));
+    assert!(matches!(
+        detached.deployment_bundle(),
+        Err(PromotionAuthorityError::LineageMismatch)
+    ));
+}
+
+#[test]
+fn serde_checkpoint_cannot_reorder_bundle_policies_away_from_deployment_bytes() {
+    let router = StrategySlot::router();
+    let planner = StrategySlot::planner();
+    let checkpoint = checkpoint(
+        "candidate",
+        Some("baseline"),
+        [
+            manifest(
+                policy(router, "router-candidate", CANDIDATE_DIGEST),
+                model('a'),
+                BTreeSet::new(),
+            ),
+            manifest(
+                policy(
+                    planner,
+                    "planner-candidate",
+                    "4444444444444444444444444444444444444444444444444444444444444444",
+                ),
+                model('a'),
+                BTreeSet::new(),
+            ),
+        ],
+    );
+    let mut encoded = serde_json::to_value(checkpoint).unwrap();
+    encoded["bundle"]["policies"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    let reordered: PolicyCheckpoint = serde_json::from_value(encoded).unwrap();
+
+    assert!(matches!(
+        reordered.validate(),
+        Err(CheckpointAlgebraError::ManifestSetMismatch)
+    ));
+    assert!(matches!(
+        reordered.deployment_bundle(),
+        Err(PromotionAuthorityError::LineageMismatch)
+    ));
+}
+
+#[test]
 fn diff_is_slot_level_and_attributes_delta() {
     let slot = StrategySlot::router();
     let baseline = policy(slot.clone(), "baseline", BASELINE_DIGEST);
@@ -161,6 +227,12 @@ fn diff_is_slot_level_and_attributes_delta() {
         [manifest(candidate.clone(), model('a'), BTreeSet::new())],
     );
     let attribution = evidence(baseline, candidate, model('a'), 0.25);
+    let mut wrong_model = attribution.clone();
+    wrong_model.base_model = model('b');
+    assert!(matches!(
+        diff(&before, &after, &[(slot.clone(), wrong_model)].into()),
+        Err(CheckpointAlgebraError::EvidenceIdentityMismatch(_))
+    ));
     let result = diff(&before, &after, &[(slot.clone(), attribution)].into()).unwrap();
     assert_eq!(result.changed.len(), 1);
     assert_eq!(result.changed[0].slot, slot);
@@ -173,6 +245,35 @@ fn diff_is_slot_level_and_attributes_delta() {
             .estimate,
         0.25
     );
+}
+
+#[test]
+fn diff_reports_manifest_only_changes_without_fabricating_delta() {
+    let slot = StrategySlot::router();
+    let baseline = policy(slot.clone(), "baseline", BASELINE_DIGEST);
+    let candidate = policy(slot.clone(), "candidate", CANDIDATE_DIGEST);
+    let before = checkpoint(
+        "before",
+        None,
+        [manifest(
+            candidate.clone(),
+            model('a'),
+            [Capability::ReadOnly].into(),
+        )],
+    );
+    let after = checkpoint(
+        "after",
+        Some("before"),
+        [manifest(candidate.clone(), model('b'), BTreeSet::new())],
+    );
+
+    let target_evidence = evidence(baseline, candidate.clone(), model('b'), 0.25);
+    let result = diff(&before, &after, &[(slot.clone(), target_evidence)].into()).unwrap();
+    assert_eq!(result.changed.len(), 1);
+    assert_eq!(result.changed[0].slot, slot);
+    assert_eq!(result.changed[0].before, Some(candidate.clone()));
+    assert_eq!(result.changed[0].after, Some(candidate));
+    assert_eq!(result.changed[0].held_out_delta, None);
 }
 
 #[test]
@@ -271,6 +372,10 @@ fn restrict_is_monotone_cannot_widen() {
         Err(CheckpointAlgebraError::CapabilityWidening { .. })
     ));
     let restricted = restrict(&source, "restricted", &slot, BTreeSet::new(), &admissions).unwrap();
+    assert_eq!(
+        restricted.checkpoint.bundle().rollback_to.as_deref(),
+        Some("source")
+    );
     assert!(
         restricted
             .checkpoint
@@ -578,6 +683,22 @@ fn every_operator_output_validates_as_policy_bundle() {
         &admissions,
     )
     .unwrap();
+    let restricted_pending = restrict(
+        &merged.checkpoint,
+        "restricted-pending",
+        &router,
+        BTreeSet::new(),
+        &admissions,
+    )
+    .unwrap();
+    assert_eq!(
+        restricted_pending.checkpoint.fresh_held_out_slots(),
+        merged.checkpoint.fresh_held_out_slots()
+    );
+    assert_eq!(
+        restricted_pending.checkpoint.bundle().rollback_to,
+        merged.checkpoint.bundle().rollback_to
+    );
     let retired = retire(
         &restricted.checkpoint,
         &baseline,
@@ -586,6 +707,18 @@ fn every_operator_output_validates_as_policy_bundle() {
         &admissions,
     )
     .unwrap();
+    let retired_pending = retire(
+        &restricted_pending.checkpoint,
+        &baseline,
+        "retired-pending",
+        &router,
+        &admissions,
+    )
+    .unwrap();
+    assert_eq!(
+        retired_pending.checkpoint.fresh_held_out_slots(),
+        restricted_pending.checkpoint.fresh_held_out_slots()
+    );
     let transferred = transfer(
         &router_checkpoint,
         &model('a'),
@@ -611,6 +744,8 @@ fn every_operator_output_validates_as_policy_bundle() {
         &merged.checkpoint,
         &restricted.checkpoint,
         &retired.checkpoint,
+        &restricted_pending.checkpoint,
+        &retired_pending.checkpoint,
         &transferred.output.checkpoint,
     ] {
         output.validate().unwrap();
@@ -627,6 +762,8 @@ fn every_operator_output_validates_as_policy_bundle() {
         &merged.checkpoint,
         &restricted.checkpoint,
         &retired.checkpoint,
+        &restricted_pending.checkpoint,
+        &retired_pending.checkpoint,
     ] {
         assert!(matches!(
             pending.deployment_bundle(),

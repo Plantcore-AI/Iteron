@@ -448,6 +448,7 @@ impl MultiSlotCheckpointFixture {
                     .evaluator
                     .sign_checkpoint_evaluation(
                         checkpoint_digest,
+                        self.merged.checkpoint.fresh_held_out_slots(),
                         manifest,
                         self.admissions.get(slot).unwrap(),
                         report,
@@ -551,6 +552,383 @@ fn merged_checkpoint_requires_every_changed_slot_before_admission() {
         None
     );
     drop(authority);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn checkpoint_evaluator_cannot_alias_any_other_candidate_policy() {
+    let root = scratch("checkpoint-cross-slot-self-evaluator");
+    let fixture = MultiSlotCheckpointFixture::new();
+    let router = StrategySlot::router();
+    let planner = StrategySlot::planner();
+    let router_policy_id = fixture
+        .merged
+        .checkpoint
+        .manifest_for(&router)
+        .unwrap()
+        .policy
+        .policy_id
+        .clone();
+    let alias_evaluator = IndependentEvaluator::new(router_policy_id.clone(), key(0x33)).unwrap();
+    let independent_evaluator = evaluator();
+    let admissions: BTreeMap<_, _> = fixture
+        .merged
+        .checkpoint
+        .fresh_held_out_slots()
+        .iter()
+        .map(|slot| {
+            let manifest = fixture.merged.checkpoint.manifest_for(slot).unwrap();
+            let artifact = fixture.artifacts.get(slot).unwrap();
+            let verified = fixture
+                .verifier
+                .verify_candidate_inputs(manifest, artifact, None, &fixture.suite)
+                .unwrap();
+            let report = HeldOutEvaluation::new(
+                manifest.policy.clone(),
+                &verified,
+                evidence(manifest.parent.as_ref().unwrap(), &manifest.policy, true),
+            )
+            .unwrap();
+            let signer = if slot == &planner {
+                &alias_evaluator
+            } else {
+                &independent_evaluator
+            };
+            let admission_policy = fixture.admissions.get(slot).unwrap();
+            let signed = signer
+                .sign_checkpoint_evaluation(
+                    &fixture.merged.checkpoint.bundle().digest,
+                    fixture.merged.checkpoint.fresh_held_out_slots(),
+                    manifest,
+                    admission_policy,
+                    report,
+                )
+                .unwrap();
+            (
+                slot.clone(),
+                CheckpointCandidateAdmission::new(
+                    admission_policy,
+                    artifact,
+                    None,
+                    &fixture.suite,
+                    signed,
+                ),
+            )
+        })
+        .collect();
+    let control = control_policy();
+    let authorizer = authorizer(&control);
+    let mut authority = PromotionAuthority::open(
+        &root,
+        "release-registry-a",
+        control,
+        vec![promotion_anchor()],
+        vec![
+            evaluator_anchor(),
+            EvaluatorTrustAnchor::new(router_policy_id, "held-out-owner", key(0x33)).unwrap(),
+        ],
+    )
+    .unwrap();
+    bootstrap(
+        &mut authority,
+        &authorizer,
+        fixture.baseline.deployment_bundle().unwrap(),
+    );
+    let request = PromotionRequest::admit_candidate(
+        "checkpoint-cross-slot-self-evaluator-admit",
+        &fixture.merged.checkpoint.bundle().digest,
+    )
+    .unwrap();
+    assert!(matches!(
+        authority.admit_checkpoint_candidate(
+            &request,
+            &authorizer.authorize(&request).unwrap(),
+            &fixture.verifier,
+            &fixture.datasets,
+            &fixture.merged.checkpoint,
+            admissions,
+        ),
+        Err(PromotionAuthorityError::IndependentEvaluationRequired)
+    ));
+    drop(authority);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn restricted_checkpoint_can_enter_the_checkpoint_admission_path() {
+    let root = scratch("checkpoint-restrict-admission");
+    let slot = StrategySlot::router();
+    let suite = evaluation("held-out-task");
+    let artifact = b"restrict-source";
+    let source_policy = checkpoint_policy(slot.clone(), "restrict-source", artifact);
+    let mut source_manifest =
+        checkpoint_manifest(source_policy.clone(), None, &suite, candidate_base_model());
+    source_manifest
+        .required_capabilities
+        .insert(core_protocol::Capability::ReadOnly);
+    let source = PolicyCheckpoint::build(
+        "restrict-source",
+        None,
+        [(slot.clone(), source_manifest)].into(),
+    )
+    .unwrap();
+    let admission_policy =
+        ManifestAdmissionPolicy::new(slot.clone(), [core_protocol::Capability::ReadOnly].into());
+    let restricted = restrict(
+        &source,
+        "restrict-candidate",
+        &slot,
+        BTreeSet::new(),
+        &[(slot.clone(), admission_policy.clone())].into(),
+    )
+    .unwrap();
+    assert_eq!(
+        restricted.checkpoint.bundle().rollback_to.as_deref(),
+        Some(source.bundle().bundle_id.as_str())
+    );
+
+    let control = control_policy();
+    let authorizer = authorizer(&control);
+    let mut authority = bootstrap_checkpoint_authority(&root, &control, &authorizer, &source);
+    let verifier = evolution_verifier();
+    let datasets = ConsentAwareDatasetRegistry::new();
+    let manifest = restricted.checkpoint.manifest_for(&slot).unwrap();
+    let verified = verifier
+        .verify_candidate_inputs(manifest, artifact, None, &suite)
+        .unwrap();
+    let report = HeldOutEvaluation::new(
+        manifest.policy.clone(),
+        &verified,
+        evidence(&source_policy, &manifest.policy, true),
+    )
+    .unwrap();
+    let signed = evaluator()
+        .sign_checkpoint_evaluation(
+            &restricted.checkpoint.bundle().digest,
+            restricted.checkpoint.fresh_held_out_slots(),
+            manifest,
+            &admission_policy,
+            report,
+        )
+        .unwrap();
+    let admissions = [(
+        slot,
+        CheckpointCandidateAdmission::new(&admission_policy, artifact, None, &suite, signed),
+    )]
+    .into();
+    let request = PromotionRequest::admit_candidate(
+        "checkpoint-restrict-admit",
+        &restricted.checkpoint.bundle().digest,
+    )
+    .unwrap();
+    authority
+        .admit_checkpoint_candidate(
+            &request,
+            &authorizer.authorize(&request).unwrap(),
+            &verifier,
+            &datasets,
+            &restricted.checkpoint,
+            admissions,
+        )
+        .unwrap();
+    assert_eq!(
+        authority
+            .candidate_stage(&restricted.checkpoint.bundle().digest)
+            .unwrap(),
+        Some(DeploymentStage::Candidate)
+    );
+    drop(authority);
+
+    let mut reopened = open_authority(&root, &control);
+    assert_eq!(
+        reopened
+            .candidate_stage(&restricted.checkpoint.bundle().digest)
+            .unwrap(),
+        Some(DeploymentStage::Candidate)
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn merge_can_freshly_revalidate_unchanged_slots_without_hiding_changed_slots() {
+    let root = scratch("checkpoint-merge-fresh-superset");
+    let fixture = MultiSlotCheckpointFixture::new();
+    let router = StrategySlot::router();
+    let planner = StrategySlot::planner();
+    let router_source = PolicyCheckpoint::build(
+        "router-source",
+        None,
+        [(
+            router.clone(),
+            fixture
+                .merged
+                .checkpoint
+                .manifest_for(&router)
+                .unwrap()
+                .clone(),
+        )]
+        .into(),
+    )
+    .unwrap();
+    let planner_source = PolicyCheckpoint::build(
+        "planner-source",
+        None,
+        [(
+            planner.clone(),
+            fixture.baseline.manifest_for(&planner).unwrap().clone(),
+        )]
+        .into(),
+    )
+    .unwrap();
+    let admission_policies: BTreeMap<_, _> = [
+        (
+            router.clone(),
+            fixture.admissions.get(&router).unwrap().clone(),
+        ),
+        (
+            planner.clone(),
+            ManifestAdmissionPolicy::new(planner.clone(), BTreeSet::new()),
+        ),
+    ]
+    .into();
+    let merged = merge(
+        "merge-fresh-superset",
+        Some(fixture.baseline.bundle().bundle_id.clone()),
+        &[router_source, planner_source],
+        &admission_policies,
+    )
+    .unwrap();
+    assert_eq!(
+        merged.checkpoint.fresh_held_out_slots(),
+        &[router.clone(), planner.clone()].into()
+    );
+    assert_eq!(
+        fixture.baseline.changed_slots(&merged.checkpoint),
+        [router.clone()].into()
+    );
+
+    let artifacts: BTreeMap<_, &[u8]> = [
+        (
+            router.clone(),
+            fixture.artifacts.get(&router).unwrap().as_slice(),
+        ),
+        (planner.clone(), b"planner-base".as_slice()),
+    ]
+    .into();
+    let admissions: BTreeMap<_, _> = merged
+        .checkpoint
+        .fresh_held_out_slots()
+        .iter()
+        .map(|slot| {
+            let manifest = merged.checkpoint.manifest_for(slot).unwrap();
+            let artifact = artifacts.get(slot).copied().unwrap();
+            let verified = fixture
+                .verifier
+                .verify_candidate_inputs(manifest, artifact, None, &fixture.suite)
+                .unwrap();
+            let baseline_policy = fixture.baseline.bundle().policy_for(slot).unwrap();
+            let report = HeldOutEvaluation::new(
+                manifest.policy.clone(),
+                &verified,
+                evidence(baseline_policy, &manifest.policy, true),
+            )
+            .unwrap();
+            let admission_policy = admission_policies.get(slot).unwrap();
+            let signed = fixture
+                .evaluator
+                .sign_checkpoint_evaluation(
+                    &merged.checkpoint.bundle().digest,
+                    merged.checkpoint.fresh_held_out_slots(),
+                    manifest,
+                    admission_policy,
+                    report,
+                )
+                .unwrap();
+            (
+                slot.clone(),
+                CheckpointCandidateAdmission::new(
+                    admission_policy,
+                    artifact,
+                    None,
+                    &fixture.suite,
+                    signed,
+                ),
+            )
+        })
+        .collect();
+    let control = control_policy();
+    let authorizer = authorizer(&control);
+    let mut authority =
+        bootstrap_checkpoint_authority(&root, &control, &authorizer, &fixture.baseline);
+    let request = PromotionRequest::admit_candidate(
+        "checkpoint-merge-fresh-superset-admit",
+        &merged.checkpoint.bundle().digest,
+    )
+    .unwrap();
+    let lineage = authority
+        .admit_checkpoint_candidate(
+            &request,
+            &authorizer.authorize(&request).unwrap(),
+            &fixture.verifier,
+            &fixture.datasets,
+            &merged.checkpoint,
+            admissions,
+        )
+        .unwrap();
+    assert_eq!(
+        lineage.candidate_policy_id,
+        merged
+            .checkpoint
+            .manifest_for(&router)
+            .unwrap()
+            .policy
+            .policy_id
+    );
+    assert_eq!(lineage.additional_evaluations.len(), 1);
+    assert_eq!(lineage.additional_evaluations[0].slot, planner);
+    assert_eq!(
+        authority
+            .candidate_stage(&merged.checkpoint.bundle().digest)
+            .unwrap(),
+        Some(DeploymentStage::Candidate)
+    );
+    drop(authority);
+
+    let trimmed_required: BTreeSet<_> = [router].into();
+    assert!(
+        crate::promotion_journal::rewrite_for_test(&root, |content| {
+            let crate::promotion_journal::JournalEvent::CheckpointCandidateAdmitted {
+                checkpoint,
+                identity,
+                admission_policies,
+                attestations,
+            } = &mut content.event
+            else {
+                return false;
+            };
+            let mut encoded = serde_json::to_value(checkpoint.as_ref()).unwrap();
+            encoded["fresh_held_out_slots"] = serde_json::to_value(&trimmed_required).unwrap();
+            **checkpoint = serde_json::from_value(encoded).unwrap();
+            identity.additional_evaluations.clear();
+            admission_policies.retain(|slot, _| trimmed_required.contains(slot));
+            attestations.retain(|attestation| {
+                trimmed_required.contains(&attestation.report().candidate.slot)
+            });
+            true
+        })
+        .unwrap()
+    );
+    assert!(matches!(
+        PromotionAuthority::open(
+            &root,
+            "release-registry-a",
+            control,
+            vec![promotion_anchor()],
+            vec![evaluator_anchor()],
+        ),
+        Err(PromotionAuthorityError::IndependentEvaluationRequired)
+    ));
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -697,6 +1075,77 @@ fn exact_fresh_checkpoint_evidence_admits_and_replays_every_changed_slot() {
         candidate_base_model()
     );
     drop(reopened);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn rewritten_checkpoint_primary_evaluation_is_refused_on_replay() {
+    let root = scratch("checkpoint-rewritten-primary");
+    let fixture = MultiSlotCheckpointFixture::new();
+    let policy = control_policy();
+    let authorizer = authorizer(&policy);
+    let mut authority =
+        bootstrap_checkpoint_authority(&root, &policy, &authorizer, &fixture.baseline);
+    let request = PromotionRequest::admit_candidate(
+        "checkpoint-rewritten-primary-admit",
+        &fixture.merged.checkpoint.bundle().digest,
+    )
+    .unwrap();
+    authority
+        .admit_checkpoint_candidate(
+            &request,
+            &authorizer.authorize(&request).unwrap(),
+            &fixture.verifier,
+            &fixture.datasets,
+            &fixture.merged.checkpoint,
+            fixture.candidate_admissions(None),
+        )
+        .unwrap();
+    drop(authority);
+
+    assert!(
+        crate::promotion_journal::rewrite_for_test(&root, |content| {
+            let crate::promotion_journal::JournalEvent::CheckpointCandidateAdmitted {
+                identity,
+                ..
+            } = &mut content.event
+            else {
+                return false;
+            };
+            let original_primary = crate::promotion_journal::CheckpointEvaluationIdentity {
+                candidate_policy: identity.candidate_policy.clone(),
+                parent_policy: identity.parent_policy.clone(),
+                artifact_digest: identity.artifact_digest.clone(),
+                training_dataset_digest: identity.training_dataset_digest.clone(),
+                evaluation_suite_digest: identity.evaluation_suite_digest.clone(),
+                base_model: identity.base_model.clone(),
+                evaluation_owner_id: identity.evaluation_owner_id.clone(),
+                evaluator_id: identity.evaluator_id.clone(),
+            };
+            let promoted = identity.additional_evaluations[0].clone();
+            identity.candidate_policy = promoted.candidate_policy;
+            identity.parent_policy = promoted.parent_policy;
+            identity.artifact_digest = promoted.artifact_digest;
+            identity.training_dataset_digest = promoted.training_dataset_digest;
+            identity.evaluation_suite_digest = promoted.evaluation_suite_digest;
+            identity.base_model = promoted.base_model;
+            identity.evaluation_owner_id = promoted.evaluation_owner_id;
+            identity.evaluator_id = promoted.evaluator_id;
+            identity.additional_evaluations[0] = original_primary;
+            true
+        })
+        .unwrap()
+    );
+    assert!(matches!(
+        PromotionAuthority::open(
+            &root,
+            "release-registry-a",
+            policy,
+            vec![promotion_anchor()],
+            vec![evaluator_anchor()],
+        ),
+        Err(PromotionAuthorityError::LineageMismatch)
+    ));
     std::fs::remove_dir_all(root).ok();
 }
 

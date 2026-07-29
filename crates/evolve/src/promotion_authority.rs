@@ -17,7 +17,7 @@ use crate::promotion_journal::{
 };
 use crate::promotion_state::{
     AuthorityState, CheckpointEvaluationRef, PromotionAuditEvent, PromotionLineage,
-    changed_deployment_slots, changed_policy_slots,
+    changed_deployment_slots, changed_policy_slots, checkpoint_evaluators_are_independent,
 };
 use crate::verifier_crypto::constant_time_eq;
 use crate::{
@@ -265,8 +265,9 @@ impl PromotionAuthority {
         let supplied: std::collections::BTreeSet<_> = admissions.keys().cloned().collect();
         let changed = active_checkpoint.changed_slots(checkpoint);
         if required.is_empty()
+            || changed.is_empty()
             || supplied != *required
-            || changed != *required
+            || !changed.is_subset(required)
             || request.candidate_bundle_digest() != deployment.bundle().digest
             || deployment.bundle().rollback_to.as_deref()
                 != Some(active.bundle().bundle_id.as_str())
@@ -313,6 +314,7 @@ impl PromotionAuthority {
             };
             self.verify_checkpoint_held_out(
                 deployment.bundle(),
+                required,
                 CheckpointEvaluationRef {
                     candidate_policy: &identity.candidate_policy,
                     parent_policy: &identity.parent_policy,
@@ -334,6 +336,13 @@ impl PromotionAuthority {
             attestations.push(admission.held_out);
         }
 
+        identities.sort_by(|left, right| {
+            let left_changed = changed.contains(&left.candidate_policy.slot);
+            let right_changed = changed.contains(&right.candidate_policy.slot);
+            right_changed
+                .cmp(&left_changed)
+                .then_with(|| left.candidate_policy.slot.cmp(&right.candidate_policy.slot))
+        });
         let mut identities = identities.into_iter();
         let primary = identities
             .next()
@@ -353,6 +362,9 @@ impl PromotionAuthority {
             evaluator_id: primary.evaluator_id,
             additional_evaluations: identities.collect(),
         };
+        if !checkpoint_evaluators_are_independent(&identity, deployment.bundle()) {
+            return Err(PromotionAuthorityError::IndependentEvaluationRequired);
+        }
         let lineage = PromotionLineage::from(&identity);
         self.append(
             request,
