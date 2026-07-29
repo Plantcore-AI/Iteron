@@ -591,26 +591,27 @@ mod tests {
         assert!(error.contains("common-directory"));
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn hardened_command_disables_partial_clone_lazy_fetch() {
+    #[test]
+    fn hardened_command_disables_partial_clone_lazy_fetch() {
         let temp = TestDir::new("no-lazy-fetch");
         let workspace = temp.0.join("workspace");
         std::fs::create_dir_all(workspace.join(".git")).unwrap();
-        let executable = temp.0.join("git-env-probe");
-        script(&executable, "printf '%s' \"$GIT_NO_LAZY_FETCH\"");
         let git = ResolvedGit {
-            executable,
+            executable: std::env::current_exe().unwrap(),
             safe_path: None,
         };
         let repository = resolve_repository_layout(&workspace).unwrap();
 
-        let mut command = hardened_git_command(&git, &repository, &[]);
-        let captured = run_command_bounded(&mut command, Duration::from_secs(5), 128, 128)
-            .await
-            .unwrap();
-        assert!(captured.status.success());
-        assert_eq!(captured.stdout.render("probe stdout"), "1");
+        // Inspect the exact child environment instead of execing a just-written probe script:
+        // busy Linux CI filesystems can transiently reject that fixture with ETXTBSY.
+        let command = hardened_git_command(&git, &repository, &[]);
+        let lazy_fetch = command
+            .as_std()
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new("GIT_NO_LAZY_FETCH"))
+            .and_then(|(_, value)| value);
+
+        assert_eq!(lazy_fetch, Some(OsStr::new("1")));
     }
 
     #[cfg(unix)]
