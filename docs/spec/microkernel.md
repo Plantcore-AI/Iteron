@@ -4,7 +4,7 @@
 
 微内核是整个 harness 中**唯一不可训练、不可进化、不可替换**的部分。§2 的论点(即「专门化一个 agent 是训练 harness,而不是训练模型」)只有在存在一个固定的、可信的安全内核时才成立:自我改进算子 (self-improving operator) 的每一个输出都必须落在这个内核所界定的授权范围之内。**安全不能是自我改进算子的不动点 (Safety cannot be a fixed point of the self-improving operator)**;因此内核位于 ABI 之外、位于进化回路之外,由人类治理(晋升与回滚的权威见 §3.2-K8 与 §6)。
 
-> **口径 (R2)。** 本节描述的是微内核的**目标形态 (target form)** 的规格:一个成熟的、经过抽取 (extraction) 的 TCB。当前实现是一个**运行中的模块化单体 (running modular monolith)**,尚未达到微内核合规 (microkernel conformance);见 §3.7 的诚实状态陈述。规格是契约,不是已交付一致性的声明。
+> **口径 (R3)。** 本节同时是微内核的规范与当前实现的验收口径。TCB 已抽取到 `core-kernel`:其内部路径依赖恰为 `core-protocol` / `core-record` / `core-obs`,世界能力经版本化端口注入,产品级会话编排在 `core-cli` 组合。`cargo run --locked -p core-xtask -- conformance kernel` 对 W1 冻结点 `304027e` 执行 ABI、依赖负空间与逐条证据矩阵检查;§3.7 记录仍然存在的产品组合边界,而不是把目标契约冒充成未交付事实。
 
 ### 3.1 判据:五条不变量 (The Five Invariants)
 
@@ -12,7 +12,7 @@
 
 | 不变量 | 英文 | 含义 (normative) |
 |---|---|---|
-| **有界** | Bounded | 每个机制 MUST 在预先声明的上界内运行。v1 冻结的 `Budget` 有四条轴:`max_turns` / `max_wall_secs` / `max_usd`(`Option<f64>`,`None` 是诚实的"无货币保证")/ `max_consecutive_tool_errors`(`crates/protocol/src/lib.rs:240-248`)。**token 轴尚不存在**,按 abi.md §4.3(b)3 留待日后以 `Option<u64>` 无损追加;在它落地之前,任何"内核强制 token 预算"的表述都是目标形态,不是可验收的 MUST。无界队列、无界重试、无界递归 MUST NOT 存在于内核路径上。 |
+| **有界** | Bounded | 每个机制 MUST 在预先声明的上界内运行。`Budget` 有五条轴:`max_turns` / `max_wall_secs` / `max_usd: Option<f64>` / `max_tokens: Option<u64>` / `max_consecutive_tool_errors`(`crates/protocol/src/lib.rs`)。两个可选轴的 `None` 是诚实的「本次不作该维度保证」;一旦为 `Some`,运行时 MUST 强制该硬上界。`max_tokens` 是对冻结结构的尾部可选追加,缺省序列化逐字节兼容 W1。无界队列、无界重试、无界递归 MUST NOT 存在于内核路径上。 |
 | **可恢复** | Recoverable | 任何被观测到的效果 (effect) MUST 拥有持久身份与终态;崩溃后 MUST 能从规范记录重建到一个一致状态;不确定的效果 MUST 记为 unknown 而非自动重放。 |
 | **可复现** | Reproducible | 给定同一命令序列与同一被钉死的策略束 (pinned policy bundle),状态归约 MUST 产生逐字节相同的结果与相同的动作请求 (action requests)。 |
 | **可观测** | Observable | 每一次准入决策、每一次效果、每一次预算耗尽、每一次终止 MUST 作为一个带关联 id 的事件出现在事件队列与规范记录上。内核 MUST NOT 把诊断直接写到 stderr 而绕过事件面。 |
@@ -93,7 +93,7 @@ ReadOnly  <  ReversibleLocal  <  CodeExecuting  <  TrustMutating  <  Irreversibl
 
 #### K6 预算 / 截止 / 取消 (budgets/deadlines/cancellation)
 
-**契约。** 内核 MUST 强制 `Budget` 上冻结的四条硬上界(`max_turns` / `max_wall_secs` / `max_usd` / `max_consecutive_tool_errors`,`crates/protocol/src/lib.rs:240-248`)与截止时间 (deadline),它们 MUST NOT 被任何策略模块放松或优化掉 (Bounded)。token 上界是目标形态而非当前 MUST:`Budget` 上没有该轴,按 abi.md §4.3(b)3 留待日后追加。取消 MUST 是协作式的且在安全点生效,绝不在一次效果执行中途撕裂状态。`Op::Drain`(quiesce)MUST 拥有区别于 `Op::Interrupt` 的语义:停止接纳新 turn、静默收敛、做同步检查点、再退出。当某个上界无法被可信地计价时(例如缺少经核验的费率卡),美元上界 MUST **失败关闭 (fail closed)**,即宁可拒绝运行,也不在无价格真相时假装 $0。
+**契约。** 内核 MUST 强制 `Budget` 上声明的五条硬上界(`max_turns` / `max_wall_secs` / `max_usd` / `max_tokens` / `max_consecutive_tool_errors`,`crates/protocol/src/lib.rs`)与截止时间 (deadline),它们 MUST NOT 被任何策略模块放松或优化掉 (Bounded)。`max_tokens` 与 `max_usd` 仅在 `Some` 时声明上界;声明 token 上界而 provider 没有返回权威 usage 时 MUST 失败关闭,不能把缺失用量当作 0。直接子 agent、并行 fan 与 workflow agent 的 token 预算 MUST 只从父运行的剩余额度收窄,不得重新铸造。取消 MUST 是协作式的且在安全点生效,绝不在一次效果执行中途撕裂状态。`Op::Drain`(quiesce)MUST 拥有区别于 `Op::Interrupt` 的语义:停止接纳新 turn、静默收敛、做同步检查点、再退出。当某个上界无法被可信地计价时(例如缺少经核验的费率卡),美元上界 MUST **失败关闭 (fail closed)**,即宁可拒绝运行,也不在无价格真相时假装 $0。
 
 **上界耗尽的规范终态。** 每一类上界耗尽 MUST 转移到一个显式终态并以稳定退出码收束,而非被外部粗暴杀死:`max_turns` 耗尽 -> `BudgetExhausted("max_turns")`;`wall` 截止 -> `BudgetExhausted("max_wall_secs")`;`Op::Interrupt` 在安全点生效 -> `Interrupted`;`Op::Drain` 收敛完成 -> `Drained`。冻结的 `Outcome` 只有 `Done` / `Drained` / `BudgetExhausted(&'static str)` / `Interrupted` / `Stuck` / `HarnessError` 六臂(`crates/protocol/src/lib.rs:285-299`),其中**没有** `DeadlineExceeded` 这一臂:wall 截止以 `ProviderFailure::DeadlineExceeded`(`crates/kernel/src/turn_protocol.rs:73-75`)进入 reducer,再被折成 `Outcome::BudgetExhausted(BudgetCeiling::MaxWallSecs.reason())`(`crates/kernel/src/reducer.rs:286-288`),即哪一条上界被耗尽由那个 `&'static str` 承载,而不是各开一个终态臂。这些退出码 MUST 出现在规范记录上(Observable)。`Op::Interrupt` 与 `Op::Drain` 的区别是硬性的:前者尽快在下一个安全点停下 in-flight turn,后者要求先完成一次同步检查点再退出,MUST NOT 互相替代。
 
@@ -175,7 +175,7 @@ bash 的归属是一个必须被明确回答的边界问题:bash 是不是在微
 | `EffectProposal` | 内核 gate <-> broker | 一个带 durable id 与 `admitted: CapabilitySet` 的对外可见效果,由内核在放行后铸出 | K2, K3 |
 | `ArtifactRef` | 内核 -> 模块 | 效果的持久结果句柄,能力受限 | K3, K5 |
 
-**每个契约的冻结字段(权威定义见 §4.2,本节只作转述)。** `TaskEnvelope` 携带 `task_id`、`protocol_version`、`input`、`trust`、`acceptance`、`budget`、`ceiling`(`crates/protocol/src/task.rs:116-135`):冻结形状里**没有**「身份三元组」这样一个字段,身份由 `task_id` 与被钉死的 `protocol_version` / 策略束版本(K7)共同承载;`Budget` 也**没有** token 轴,它只有 `max_turns` / `max_usd: Option<f64>` / `max_wall_secs` / `max_consecutive_tool_errors`(`crates/protocol/src/lib.rs:240-248`),token 上界按 §4.3(b)3 日后以 `max_tokens: Option<u64>` 无损追加。因此 Bounded 的可机检判据是「`budget` 与 `ceiling` 被显式声明,且 `Budget::validate()` 通过」,而不是「缺任一上界字段 MUST 被拒」,后者按字面对冻结形状不可满足。`ContextRequest` 携带 `request_id`、`slot`、`selectors`、`max_bytes`、`trust_ceiling`(`crates/protocol/src/context.rs:185-204`),MUST NOT 携带任何文件系统句柄或环境权限,模块只能在 `max_bytes` 这个字节上界内**请求**上下文,不能直接触达世界。`ToolIntent` 是纯意图,MUST NOT 被内核当作授权:它的 `admitted` 是 gate 收窄后交回的集合,模块 MUST NOT 自行铸造,真正的授权只发生在 `EffectProposal` 过 broker 之时。`EffectProposal` MUST 携带 `admitted: CapabilitySet`(一个**集合**,不是能力序上的一个点)、`workspace` 与脱敏的 `arguments`。`ArtifactRef` 是能力受限的结果句柄,MUST NOT 携带可复用的原始权限。
+**每个契约的冻结字段(权威定义见 §4.2,本节只作转述)。** `TaskEnvelope` 携带 `task_id`、`protocol_version`、`input`、`trust`、`acceptance`、`budget`、`ceiling`(`crates/protocol/src/task.rs`):冻结形状里**没有**「身份三元组」这样一个字段,身份由 `task_id` 与被钉死的 `protocol_version` / 策略束版本(K7)共同承载。`Budget` 的 W1 字段为 `max_turns` / `max_usd: Option<f64>` / `max_wall_secs` / `max_consecutive_tool_errors`;`max_tokens: Option<u64>` 已按 §4.3(b)3 作为尾部可选字段无损追加,`None` 时旧有载体逐字节不变。因此 Bounded 的可机检判据是「`budget` 与 `ceiling` 被显式声明,且 `Budget::validate()` 通过」,而不是「每个可选上界均为 `Some`」。`ContextRequest` 携带 `request_id`、`slot`、`selectors`、`max_bytes`、`trust_ceiling`(`crates/protocol/src/context.rs`),MUST NOT 携带任何文件系统句柄或环境权限,模块只能在 `max_bytes` 这个字节上界内**请求**上下文,不能直接触达世界。`ToolIntent` 是纯意图,MUST NOT 被内核当作授权:它的 `admitted` 是 gate 收窄后交回的集合,模块 MUST NOT 自行铸造,真正的授权只发生在 `EffectProposal` 过 broker 之时。`EffectProposal` MUST 携带 `admitted: CapabilitySet`(一个**集合**,不是能力序上的一个点)、`workspace` 与脱敏的 `arguments`。`ArtifactRef` 是能力受限的结果句柄,MUST NOT 携带可复用的原始权限。
 
 关键规范陈述:**这五个 ABI 契约在进化过程中 MUST NOT 改变。** 进化改变的是**槽里的策略 (the policy in a slot)**,不是槽与内核之间的接口。`core/tool_policy` 可以从一个手写规则演进成一个 GRPO 训练出来的策略,但它与内核之间仍然只说 `ToolIntent`;`core/context` 无论怎样进化,与内核之间仍然只说 `ContextRequest` / `ArtifactRef`。正因为接口冻结,一个经训练的策略状态(PolicyManifest,即「harness checkpoint」)才能被 diff、merge、restrict、retire、transfer,并跨冻结的基座模型迁移:**权重学先验,harness 学具体情境 (weights learn the prior; the harness learns the situation)**。
 
@@ -197,7 +197,9 @@ bash 的归属是一个必须被明确回答的边界问题:bash 是不是在微
 
 ### 3.7 当前实现真相 (Current Implementation Truth)
 
-本规格描述目标形态。诚实的当前状态:Core Code 处于 **pre-alpha**,是一个**运行中的模块化单体 (running modular monolith)**,尚**未**声称微内核合规。具体而言:内核当前**硬依赖 (hard-depends on)** 一组具体的策略/世界 crate,而非注入的端口;**纯 reducer (K4) 与有界 driver (K9) 已存在并可对桩端口端到端运行**:`reduce(state, command) -> (state, action_requests)` 是一个全函数,每一种 turn 结束方式与恢复分支都是其中的显式转移;一道源码级门禁断言该模块不引用时钟 / RNG / 进程 / 哈希表迭代序 / 任何 world crate;逐字节复现由「同一 command 流两遍产出逐字节相同的 action-request 序列」的测试守住;SQ 与 EQ 均为有界队列,满时生产者要么阻塞(背压)要么收到显式拒绝并原样拿回提交,**绝不静默丢弃**。**尚未做的是改道**:活体 `Agent::run` 仍走那段命令式驱动函数,把它切到 reducer+driver 之上属于端口反转 (#17) 之后的工作 —— 在 10 条硬依赖仍未反转时同时替换 1,100 行控制流,会把两个独立的大改动合成一个不可复核的改动。尚无第一方基准数字。**单一 effect broker (K3) 已不再是缺口**:provider 请求、hook、subagent 派发、verify 预言机、workspace checkpoint 与 in-turn workflow 启动均已与注册表工具走同一条 fsync 的 `EffectIntent` 写前顺序,身份按类命名空间铸造以保证同一 turn 内不相撞,at-most-once 在写前日志之前由准入账本强制,且有一道源码级门禁断言内核里没有任何效果派发点绕过该边界。
+诚实的当前状态:Core Code 仍处于 **pre-alpha**,但 TCB 抽取与端口反转已经完成。`core-kernel` 的内部路径依赖恰为 `core-protocol` / `core-record` / `core-obs`;provider、sandbox、context、scheduler、diagnostics、verify、tool、workflow 与 record 能力均通过带版本常量的端口表达,具体策略/世界适配器在 `core-cli` 组合。内核内的 `reduce(state, command) -> (state, action_requests)` 是纯函数,有界 driver 只消费类型化动作;源码门禁禁止文件/环境/进程、provider、prompt、context selection、MCP parsing、UI、training/activation 进入 TCB。SQ 与 EQ 均为有界队列,满时生产者要么背压,要么收到显式拒绝并原样拿回提交,**绝不静默丢弃**。
+
+产品级 `Agent` 会话编排刻意保留在 `core-cli::runtime`,它通过内核端口、准入与 effect broker 使用 TCB,而不是重新进入 kernel crate。该组合层仍可扩展和替换;「微内核合规」的声明只覆盖由 `xtask conformance kernel` 列出的 K1-K9、五条不变量与八条负空间子句,不把整个 pre-alpha 产品的成熟度混同为 TCB 合规。尚无第一方基准数字。**单一 effect broker (K3)** 已覆盖 provider 请求、hook、subagent 派发、verify 预言机、workspace checkpoint、workflow 与注册表工具:每一类共享 fsync 的 `EffectIntent` 写前顺序、写前 at-most-once admission 与 terminal-or-unknown 词汇;崩溃/恢复/fork 的单个 E2E 证据证明悬空 intent 只会变为 `EffectUnknown`,不会被重放,分叉则钉住已提交的父哈希前缀并独立追加。
 
 已经**存在且经测试**的部分,恰是本节最难、最应前置的骨架:一个真实的五层能力格与一个模型无法影响的默认拒绝准入门 (K2);效果/授权分离与信任污点 (K1);一个 SHA-256 哈希链、fsync 写前、可崩溃重建的规范记录 (K5);以及一个机器可检查的边界注册表,用于保证路径责任唯一并侦测内部依赖漂移。抽取 (extraction) 路径已在架构文档中给出:版本化的规范命令/事件信封 -> 纯状态 reducer -> 单一能力与 effect broker -> 注入的 provider / world / context / verification / scheduler 端口 -> 长驻的、有界流控的会话运行时 -> 版本化的 App Server。
 

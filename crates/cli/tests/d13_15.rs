@@ -180,16 +180,26 @@ fn normalized(mut value: Value) -> Value {
         );
         *run_id = json!("<RUN_ID>");
     }
+    if let Some(kernel_tax) = value.get_mut("kernel_tax").and_then(Value::as_object_mut) {
+        for field in [
+            "admission_latency_us",
+            "broker_latency_us",
+            "record_fsync_latency_us",
+            "estimated_tokens",
+        ] {
+            kernel_tax.insert(field.into(), json!(0));
+        }
+    }
     value
 }
 
-/// The frozen schema-v4 machine terminal for the deterministic `--max-usd 0` budget path.
+/// The frozen schema-v5 machine terminal for the deterministic `--max-usd 0` budget path.
 ///
 /// Inlined (rather than a `golden/` file) so this test adds no entry to the CLI machine-golden
 /// inventory the compatibility manifest governs; the object below IS the golden.
 fn golden_terminal() -> Value {
     json!({
-        "schema_version": 4,
+        "schema_version": 5,
         "type": "result",
         "outcome": "budget_exhausted",
         "reason": "max_usd",
@@ -200,6 +210,13 @@ fn golden_terminal() -> Value {
         "cost_status": "zero",
         "cost_reason": null,
         "turns": 0,
+        "kernel_tax": {
+            "admission_latency_us": 0,
+            "broker_latency_us": 0,
+            "record_fsync_latency_us": 0,
+            "estimated_tokens": 0,
+            "failed_runs": 1,
+        },
         "exit_code": 3,
         "error": null,
     })
@@ -224,13 +241,13 @@ fn d13_15_json_budget_terminal_is_a_process_level_golden() {
     assert_eq!(
         normalized(lines[0].clone()),
         golden_terminal(),
-        "the real one-shot budget terminal is a frozen schema-v4 machine contract"
+        "the real one-shot budget terminal is a frozen schema-v5 machine contract"
     );
 
     // Machine records belong exclusively on stdout; stderr is human diagnostics only.
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
     assert!(
-        !stderr.contains("\"schema_version\":4"),
+        !stderr.contains("\"schema_version\":5"),
         "the machine result must never leak onto stderr"
     );
 }
@@ -262,8 +279,8 @@ fn d13_15_stream_json_shares_one_authoritative_terminal_with_json() {
     // Every streamed record is a versioned machine record with a stable string discriminant.
     for record in &lines {
         assert_eq!(
-            record["schema_version"], 4,
-            "every streamed record is frozen at schema v4: {record}"
+            record["schema_version"], 5,
+            "every streamed record is frozen at schema v5: {record}"
         );
         assert!(
             record["type"].as_str().is_some(),

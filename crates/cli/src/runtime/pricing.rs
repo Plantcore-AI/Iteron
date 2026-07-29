@@ -2,7 +2,7 @@ use core_obs::CostState;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// One monetary ceiling shared by a parent and every descendant agent. Projection commits update
+/// One monetary ceiling shared by a parent and every descendant runtime agent. Projection commits update
 /// it immediately, before a child ledger is merged, so no later provider admission can observe a
 /// stale parent total. Atomic saturation keeps concurrent future fan-out fail-closed as well.
 pub(super) struct SharedUsdBudget {

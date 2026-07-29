@@ -11,35 +11,63 @@ use serde_json::Value;
 ///
 /// Keep the current version last. The schema-compatibility corpus test below binds this list to
 /// every retained machine-output fixture, so a producer bump cannot silently strand evaluation.
-pub const SUPPORTED_CORE_CLI_SCHEMA_VERSIONS: &[u32] = &[3, 4];
+pub const SUPPORTED_CORE_CLI_SCHEMA_VERSIONS: &[u32] = &[3, 4, 5];
 /// Version currently emitted by `core --output-format json`.
-pub const CORE_CLI_SCHEMA_VERSION: u32 = 4;
+pub const CORE_CLI_SCHEMA_VERSION: u32 = 5;
 /// Exact machine-record/version pairs admitted by the real evaluation consumer.
 pub const SUPPORTED_CORE_CLI_TYPE_VERSIONS: &[(&str, u32)] = &[
     ("approval_request", 4),
+    ("approval_request", 5),
     ("assistant_text", 3),
     ("assistant_text", 4),
+    ("assistant_text", 5),
     ("notice", 4),
+    ("notice", 5),
     ("phase", 3),
     ("phase", 4),
+    ("phase", 5),
     ("result", 3),
     ("result", 4),
+    ("result", 5),
     ("run_done", 3),
     ("run_done", 4),
+    ("run_done", 5),
     ("steer_applied", 4),
+    ("steer_applied", 5),
     ("thinking", 4),
+    ("thinking", 5),
     ("tool_end", 4),
+    ("tool_end", 5),
     ("tool_start", 4),
+    ("tool_start", 5),
     ("turn_end", 3),
     ("turn_end", 4),
+    ("turn_end", 5),
     ("workflow_agent_activity", 4),
+    ("workflow_agent_activity", 5),
     ("workflow_agent_end", 4),
+    ("workflow_agent_end", 5),
     ("workflow_agent_start", 4),
+    ("workflow_agent_start", 5),
     ("workflow_end", 4),
+    ("workflow_end", 5),
     ("workflow_phase", 4),
+    ("workflow_phase", 5),
     ("workflow_plan", 4),
+    ("workflow_plan", 5),
     ("workflow_start", 4),
+    ("workflow_start", 5),
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CliKernelTax {
+    pub admission_latency_us: u64,
+    pub broker_latency_us: u64,
+    pub record_fsync_latency_us: u64,
+    pub estimated_tokens: u64,
+    pub failed_runs: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,6 +84,8 @@ pub struct CliFinalResult {
     pub cost_status: String,
     pub cost_reason: Option<String>,
     pub turns: u32,
+    #[serde(default)]
+    pub kernel_tax: Option<CliKernelTax>,
     pub exit_code: i32,
     pub error: Option<String>,
 }
@@ -476,6 +506,11 @@ pub fn parse_final_result(
             return Err(ContractError::WrongType(kind.as_str().into()));
         }
     };
+    if result.schema_version >= 5 && result.kernel_tax.is_none() {
+        return Err(ContractError::MalformedJson(
+            "schema v5 result lacks `kernel_tax`".into(),
+        ));
+    }
     if result.exit_code != process_exit {
         return Err(ContractError::ExitMismatch {
             process: process_exit,

@@ -382,6 +382,7 @@ mod tests {
         .expect("envelope")
         .with_budget(crate::Budget {
             max_usd: Some(f64::NAN),
+            max_tokens: None,
             ..crate::Budget::default()
         });
         // NaN makes every `cost >= max_usd` comparison false, so an unvalidated envelope would

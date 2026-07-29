@@ -178,7 +178,7 @@ pub struct WorkflowCard {
     pub dropped: usize,
     pub duplicates_removed: usize,
     pub invalid_removed: usize,
-    pub execution_mode: core_kernel::WorkflowExecutionModeUi,
+    pub execution_mode: crate::runtime::WorkflowExecutionModeUi,
     pub fan_turn_budget: u32,
     pub writer_turn_reserve: u32,
     pub fan_wall_secs: u64,
@@ -1054,10 +1054,10 @@ fn render_workflow(
 
         if width >= 80
             && running
-            && card.execution_mode != core_kernel::WorkflowExecutionModeUi::Direct
+            && card.execution_mode != crate::runtime::WorkflowExecutionModeUi::Direct
         {
             let posture = match card.execution_mode {
-                core_kernel::WorkflowExecutionModeUi::Concurrent => "concurrent",
+                crate::runtime::WorkflowExecutionModeUi::Concurrent => "concurrent",
                 _ => "sequential",
             };
             rows.push(vec![
@@ -3515,7 +3515,7 @@ mod tests {
                 dropped: 1,
                 duplicates_removed: 1,
                 invalid_removed: 0,
-                execution_mode: core_kernel::WorkflowExecutionModeUi::Sequential,
+                execution_mode: crate::runtime::WorkflowExecutionModeUi::Sequential,
                 fan_turn_budget: 10,
                 writer_turn_reserve: 39,
                 fan_wall_secs: 180,
@@ -3583,7 +3583,7 @@ mod tests {
                 dropped: 0,
                 duplicates_removed: 0,
                 invalid_removed: 0,
-                execution_mode: core_kernel::WorkflowExecutionModeUi::Sequential,
+                execution_mode: crate::runtime::WorkflowExecutionModeUi::Sequential,
                 fan_turn_budget: 8,
                 writer_turn_reserve: 24,
                 fan_wall_secs: 120,

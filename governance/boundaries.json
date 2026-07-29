@@ -195,10 +195,10 @@
       "reviewers": [],
       "paths": [
         { "kind": "file", "path": "crates/kernel/Cargo.toml" },
+        { "kind": "file", "path": "crates/kernel/src/admission.rs" },
         { "kind": "file", "path": "crates/kernel/src/diagnostics.rs" },
         { "kind": "file", "path": "crates/kernel/src/lib.rs" },
-        { "kind": "file", "path": "crates/kernel/src/pricing.rs" },
-        { "kind": "file", "path": "crates/kernel/src/workflow_spawner.rs" }
+        { "kind": "file", "path": "crates/kernel/src/ports.rs" }
       ],
       "contracts": ["turn-state-machine", "bounded-run", "single-writer"],
       "checks": ["cargo test -p core-kernel --locked"]
@@ -225,17 +225,17 @@
     },
     {
       "id": "kernel-hooks",
-      "title": "Kernel hooks",
-      "summary": "Lifecycle hook admission, bounded child processes, environment policy, and hook evidence.",
+      "title": "Runtime lifecycle hooks",
+      "summary": "CLI-hosted lifecycle hook admission, bounded child processes, environment policy, and hook evidence.",
       "status": "open",
       "risk": "critical",
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/kernel/src/hooks.rs" }
+        { "kind": "file", "path": "crates/cli/src/runtime/hooks.rs" }
       ],
       "contracts": ["trusted-hook-origin", "bounded-hook-process"],
-      "checks": ["cargo test -p core-kernel hooks --locked"]
+      "checks": ["cargo test -p core-cli hooks --locked"]
     },
     {
       "id": "record-core",
@@ -274,9 +274,9 @@
       "id": "observability",
       "title": "Observability",
       "summary": "Usage ledger, cost truth, runtime metrics, and mergeable child-run accounting.",
-      "status": "open",
+      "status": "active",
       "risk": "elevated",
-      "primary": null,
+      "primary": "core-owner",
       "reviewers": [],
       "paths": [
         { "kind": "tree", "path": "crates/obs" }
@@ -533,9 +533,9 @@
       "id": "workflow-engine",
       "title": "Workflow engine",
       "summary": "Deterministic workflow script host: agent fan-out, journal, cache keys, and progress events.",
-      "status": "open",
-      "risk": "critical",
-      "primary": null,
+      "status": "active",
+      "risk": "elevated",
+      "primary": "core-owner",
       "reviewers": [],
       "paths": [
         { "kind": "tree", "path": "crates/workflow" }
@@ -575,6 +575,9 @@
         { "kind": "file", "path": "crates/cli/src/mcp.rs" },
         { "kind": "file", "path": "crates/cli/src/pricing.rs" },
         { "kind": "file", "path": "crates/cli/src/providers.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime/pricing.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime/workflow_spawner.rs" },
         { "kind": "file", "path": "crates/cli/src/workflow.rs" }
       ],
       "contracts": ["trusted-config-precedence", "runtime-composition", "provider-selection"],
@@ -674,6 +677,8 @@
         { "kind": "tree", "path": "crates/ctx" },
         { "kind": "tree", "path": "crates/evolve" },
         { "kind": "tree", "path": "crates/kernel" },
+        { "kind": "tree", "path": "crates/cli/src/runtime" },
+        { "kind": "file", "path": "crates/cli/src/runtime.rs" },
         { "kind": "tree", "path": "crates/mcp" },
         { "kind": "tree", "path": "crates/obs" },
         { "kind": "tree", "path": "crates/protocol" },
@@ -708,6 +713,8 @@
         { "kind": "file", "path": "crates/cli/src/main.rs" },
         { "kind": "file", "path": "crates/cli/src/mcp.rs" },
         { "kind": "file", "path": "crates/cli/src/pricing.rs" },
+        { "kind": "tree", "path": "crates/cli/src/runtime" },
+        { "kind": "file", "path": "crates/cli/src/runtime.rs" },
         { "kind": "file", "path": "crates/cli/src/tui.rs" }
       ]
     },
@@ -731,7 +738,8 @@
         { "kind": "tree", "path": "crates/obs" },
         { "kind": "file", "path": "crates/cli/src/environment.rs" },
         { "kind": "file", "path": "crates/cli/src/main.rs" },
-        { "kind": "file", "path": "crates/cli/src/output.rs" }
+        { "kind": "file", "path": "crates/cli/src/output.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime.rs" }
       ]
     },
     {
@@ -761,7 +769,7 @@
         { "kind": "file", "path": "crates/record/src/session.rs" },
         { "kind": "tree", "path": "crates/sandbox" },
         { "kind": "tree", "path": "crates/mcp" },
-        { "kind": "file", "path": "crates/kernel/src/hooks.rs" }
+        { "kind": "file", "path": "crates/cli/src/runtime/hooks.rs" }
       ]
     },
     {
@@ -791,6 +799,8 @@
         { "kind": "file", "path": "crates/cli/src/mcp.rs" },
         { "kind": "file", "path": "crates/cli/src/output.rs" },
         { "kind": "file", "path": "crates/cli/src/render.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime.rs" },
+        { "kind": "tree", "path": "crates/cli/src/runtime" },
         { "kind": "file", "path": "crates/cli/src/surface.rs" },
         { "kind": "file", "path": "crates/cli/src/theme.rs" },
         { "kind": "file", "path": "crates/cli/src/tui.rs" }
@@ -815,8 +825,9 @@
         { "kind": "file", "path": "crates/cli/src/providers.rs" },
         { "kind": "file", "path": "crates/cli/src/output.rs" },
         { "kind": "file", "path": "crates/cli/src/tui.rs" },
-        { "kind": "file", "path": "crates/kernel/src/lib.rs" },
-        { "kind": "file", "path": "crates/kernel/src/pricing.rs" }
+        { "kind": "file", "path": "crates/cli/src/runtime.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime/pricing.rs" },
+        { "kind": "file", "path": "crates/kernel/src/lib.rs" }
       ]
     },
     {
@@ -829,6 +840,7 @@
       "paths": [
         { "kind": "tree", "path": "crates/protocol" },
         { "kind": "file", "path": "crates/kernel/src/lib.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime.rs" },
         { "kind": "tree", "path": "crates/provider" },
         { "kind": "tree", "path": "crates/obs" },
         { "kind": "file", "path": "crates/ctx/src/compact.rs" },
@@ -861,6 +873,8 @@
         { "kind": "tree", "path": "crates/provider" },
         { "kind": "tree", "path": "crates/sched" },
         { "kind": "file", "path": "crates/kernel/src/lib.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime/pricing.rs" },
         { "kind": "tree", "path": "crates/obs" },
         { "kind": "tree", "path": "crates/record" },
         { "kind": "file", "path": "crates/ctx/src/compact.rs" },
@@ -896,7 +910,8 @@
         { "kind": "tree", "path": "crates/eval" },
         { "kind": "tree", "path": "crates/verify" },
         { "kind": "file", "path": "crates/protocol/src/event.rs" },
-        { "kind": "file", "path": "crates/kernel/src/lib.rs" }
+        { "kind": "file", "path": "crates/kernel/src/lib.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime.rs" }
       ]
     },
     {
@@ -983,8 +998,10 @@
           "core-protocol",
           "core-provider",
           "core-record",
+          "core-sandbox",
           "core-sched",
           "core-tools",
+          "core-verify",
           "core-workflow"
         ],
         "dev": [],
@@ -1007,17 +1024,9 @@
       },
       "core-kernel": {
         "normal": [
-          "core-agents",
-          "core-ctx",
           "core-obs",
           "core-protocol",
-          "core-provider",
-          "core-record",
-          "core-sandbox",
-          "core-sched",
-          "core-tools",
-          "core-verify",
-          "core-workflow"
+          "core-record"
         ],
         "dev": [],
         "build": []

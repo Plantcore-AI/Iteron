@@ -16,7 +16,7 @@ const PROVIDER_SOURCE: &str = "crates/provider/src/lib.rs";
 const EFFORT_APPLICATION_SIGNATURE: &str = "pub enum EffortApplication {";
 const EVAL_CONTRACT_SOURCE: &str = "crates/eval/src/contract.rs";
 const CLI_EFFORT_APPLICATION_SIGNATURE: &str = "enum CliEffortApplication {";
-const KERNEL_SOURCE: &str = "crates/kernel/src/lib.rs";
+const RUNTIME_SOURCE: &str = "crates/cli/src/runtime.rs";
 
 fn decimal_slice_constant(source: &[u8], name: &str, ty: &str) -> Result<Vec<u32>> {
     crate::rust_source::public_decimal_slice_const(source, name, ty)
@@ -234,15 +234,15 @@ pub(super) fn validate_cli_source_bindings(
         );
     }
 
-    let kernel_source = read_bounded(root, KERNEL_SOURCE, MAX_SOURCE_BYTES)?;
-    let kernel_text = std::str::from_utf8(&kernel_source)
-        .with_context(|| format!("schema source '{KERNEL_SOURCE}' is not UTF-8"))?;
+    let runtime_source = read_bounded(root, RUNTIME_SOURCE, MAX_SOURCE_BYTES)?;
+    let runtime_text = std::str::from_utf8(&runtime_source)
+        .with_context(|| format!("schema source '{RUNTIME_SOURCE}' is not UTF-8"))?;
     require_serde_authority(
-        kernel_text,
+        runtime_text,
         "pub struct WorkflowTaskUi {",
         SerdeAuthority::Serialize,
     )?;
-    let producer_task = named_struct_fields(kernel_text, "pub struct WorkflowTaskUi {")?;
+    let producer_task = named_struct_fields(runtime_text, "pub struct WorkflowTaskUi {")?;
     require_strict_deserialize(eval_text, "struct CliWorkflowTask {")?;
     let eval_task = named_struct_fields(eval_text, "struct CliWorkflowTask {")?;
     if producer_task != eval_task || producer_task != golden.task {

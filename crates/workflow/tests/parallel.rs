@@ -2,12 +2,13 @@
 //! 2-agent `parallel()` runs through the QuickJS engine, streams progress, and returns a
 //! declaration-ordered array. This is the CI-safe twin of the CLI's real-model run.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use core_workflow::events::{ProgressEvent, ProgressSink};
-use core_workflow::{AgentCall, AgentOutcome, AgentSpawner, WorkflowEngine};
+use core_workflow::events::{NullSink, ProgressEvent, ProgressSink};
+use core_workflow::{AgentCall, AgentOutcome, AgentSpawner, RunLimits, RunSpec, WorkflowEngine};
 
 struct MockSpawner {
     delay_ms: u64,
@@ -130,4 +131,81 @@ return await agent(args.who);
         .expect("workflow runs");
 
     assert_eq!(value, serde_json::json!("result:Neo"));
+}
+
+struct BoundedSpawner {
+    calls: AtomicUsize,
+    inflight: AtomicUsize,
+    max_inflight: AtomicUsize,
+}
+
+#[async_trait]
+impl AgentSpawner for BoundedSpawner {
+    async fn spawn(&self, call: AgentCall) -> AgentOutcome {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let inflight = self.inflight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_inflight.fetch_max(inflight, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        self.inflight.fetch_sub(1, Ordering::SeqCst);
+        AgentOutcome::text(call.prompt, 1)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn aggregate_limits_bound_real_spawns_and_concurrency() {
+    let spawner = Arc::new(BoundedSpawner {
+        calls: AtomicUsize::new(0),
+        inflight: AtomicUsize::new(0),
+        max_inflight: AtomicUsize::new(0),
+    });
+    let script = r#"export const meta = { name: 'bounded', description: '', phases: [] };
+return await parallel([
+  () => agent('A'),
+  () => agent('B'),
+  () => agent('C'),
+  () => agent('D'),
+]);"#;
+    let spec = RunSpec::new(script).with_limits(RunLimits::new(2, 2).unwrap());
+    let report = WorkflowEngine::execute(spec, spawner.clone(), Arc::new(NullSink))
+        .await
+        .expect("bounded workflow runs");
+
+    assert_eq!(spawner.calls.load(Ordering::SeqCst), 2);
+    assert!(spawner.max_inflight.load(Ordering::SeqCst) <= 2);
+    assert_eq!(
+        report
+            .value
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|value| !value.is_null())
+            .count(),
+        2
+    );
+}
+
+struct WrongVersionSpawner;
+
+#[async_trait]
+impl AgentSpawner for WrongVersionSpawner {
+    fn port_version(&self) -> u32 {
+        99
+    }
+
+    async fn spawn(&self, _call: AgentCall) -> AgentOutcome {
+        panic!("an incompatible port must be rejected before dispatch")
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn incompatible_spawner_port_version_fails_before_the_script() {
+    let error = WorkflowEngine::run(
+        "return 'unreachable';",
+        serde_json::Value::Null,
+        Arc::new(WrongVersionSpawner),
+        Arc::new(NullSink),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("AgentSpawner port version"));
 }

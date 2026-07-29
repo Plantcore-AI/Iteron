@@ -17,8 +17,11 @@ use crate::effects::{
     BrokerError, BrokeredEffect, BrokeredOutcome, DurableEffectLog, EffectDisposition, Settlement,
     broker_effect, open_effect, settle_effect,
 };
-use core_protocol::{Capability, Event, EventKind, Seq, TurnId};
+use core_protocol::{
+    Block, Capability, Effort, Event, EventKind, Message, RunId, Seq, TenantId, TurnId,
+};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -313,6 +316,191 @@ fn a_dispatch_killed_between_intent_and_terminal_resumes_unknown_and_never_re_ex
     );
 }
 
+#[tokio::test]
+async fn fsynced_intent_crash_reconciles_unknown_without_replay_then_forks_a_divergent_chain() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("test clock is after the Unix epoch")
+        .as_nanos();
+    let runs_dir = std::env::temp_dir().join(format!(
+        "core-effect-reconcile-fork-{}-{nonce}",
+        std::process::id()
+    ));
+    let tenant = TenantId::default();
+    let parent = RunId("effect-crash-parent".into());
+    let turn = TurnId(1);
+    let effect = effect_for(turn, EffectClass::Verify, 0);
+    let id = effect.effect_id.clone();
+
+    // Process one: a real Rollout append crosses fsync before the ticket is returned. The process
+    // then disappears before it can append any terminal.
+    {
+        let mut rollout =
+            core_record::Rollout::open(&runs_dir, &parent, tenant.clone()).expect("open parent");
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::RunStart {
+                    cwd: "/repo".into(),
+                    model: "fixture-model".into(),
+                    effort: Effort::Medium,
+                    created_at: 0,
+                    environment: None,
+                    parent_run: None,
+                    forked_at: None,
+                    parent_hash_at_seq: None,
+                    config_digest: "fixture-config".into(),
+                    max_usd: None,
+                },
+            })
+            .expect("fsync genesis");
+        let mut admissions = EffectAdmissions::default();
+        let ticket =
+            open_effect(&mut rollout, &mut admissions, effect).expect("fsync effect intent");
+        drop(ticket);
+        // Dropping the writer models a hard process boundary: no in-memory admission state survives.
+    }
+
+    // Process two: replay is the only authority. It writes Unknown, seeds admission from that
+    // durable state, and proves that attempting the same identity never reaches the executor.
+    let parent_events;
+    {
+        let parent_path = runs_dir.join(format!("{}.jsonl", parent.0));
+        let before = core_record::replay(&parent_path).expect("replay the crashed journal");
+        let crashed = EffectJournal::replay(&before).expect("fold the crashed journal");
+        let pending = crashed.pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, id);
+
+        let mut rollout = core_record::Rollout::open_existing(&runs_dir, &parent, tenant.clone())
+            .expect("resume parent");
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn,
+                kind: EventKind::EffectUnknown {
+                    id: id.clone(),
+                    tool: "verify".into(),
+                    reason: "recovery found a durable intent without a durable terminal".into(),
+                },
+            })
+            .expect("fsync recovery marker");
+
+        parent_events = core_record::replay(&parent_path).expect("replay reconciled parent");
+        let reconciled =
+            EffectJournal::replay(&parent_events).expect("fold the reconciled journal");
+        assert!(reconciled.pending().is_empty());
+        assert_eq!(reconciled.unknown_count(), 1);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor_calls = calls.clone();
+        let mut resumed = EffectAdmissions::from_journal(&reconciled);
+        let duplicate = broker_effect(
+            &mut rollout,
+            &mut resumed,
+            effect_for(turn, EffectClass::Verify, 0),
+            move || {
+                let executor_calls = executor_calls.clone();
+                async move {
+                    executor_calls.fetch_add(1, Ordering::SeqCst);
+                    EffectDisposition::Unknown {
+                        reason: "unreachable replay".into(),
+                        value: (),
+                    }
+                }
+            },
+        )
+        .await;
+        assert!(matches!(
+            duplicate,
+            Err(BrokerError::Admission(EffectAdmissionError::Duplicate(_)))
+        ));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "reconciliation must never replay the effect"
+        );
+    }
+
+    // Fork the exact reconciled commit. Logical replay shares the immutable parent prefix, while
+    // the child's physical hash chain starts from zero and diverges with its own committed suffix.
+    let fork_at = parent_events
+        .last()
+        .expect("reconciled parent has a tail")
+        .seq;
+    let child =
+        core_record::fork(&runs_dir, &parent, fork_at, &tenant).expect("fork reconciled parent");
+    {
+        let mut rollout =
+            core_record::Rollout::open(&runs_dir, &child, tenant.clone()).expect("open child");
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(2),
+                kind: EventKind::Message {
+                    message: Message::user_text("fork-diverged"),
+                },
+            })
+            .expect("fsync child suffix");
+    }
+
+    let parent_lines = read_chain_values(&runs_dir, &parent);
+    let child_lines = read_chain_values(&runs_dir, &child);
+    let parent_commit = parent_lines
+        .last()
+        .and_then(|line| line.get("hash"))
+        .and_then(serde_json::Value::as_str)
+        .expect("parent commit hash");
+    let child_genesis = child_lines.first().expect("child genesis");
+    assert_eq!(
+        child_genesis
+            .get("prev")
+            .and_then(serde_json::Value::as_str),
+        Some("0000000000000000000000000000000000000000000000000000000000000000")
+    );
+    assert_ne!(
+        child_genesis
+            .get("hash")
+            .and_then(serde_json::Value::as_str),
+        Some(parent_commit),
+        "the child must have an independently committed physical chain"
+    );
+    let provenance = core_record::meta(&runs_dir, &child)
+        .expect("child metadata")
+        .parent
+        .expect("fork provenance");
+    assert_eq!(provenance.parent_hash_at_seq, parent_commit);
+
+    let logical = core_record::load_forked(&runs_dir, &child).expect("load logical fork");
+    assert_eq!(
+        serde_json::to_value(&logical[..parent_events.len()]).expect("serialize logical prefix"),
+        serde_json::to_value(&parent_events).expect("serialize parent prefix"),
+        "the fork must retain the exact reconciled committed prefix"
+    );
+    assert!(logical.iter().any(|event| {
+        matches!(
+            &event.kind,
+            EventKind::Message { message }
+                if matches!(
+                    message.content.as_slice(),
+                    [Block::Text { text }] if text == "fork-diverged"
+                )
+        )
+    }));
+
+    std::fs::remove_dir_all(&runs_dir).ok();
+}
+
+fn read_chain_values(runs_dir: &std::path::Path, run: &RunId) -> Vec<serde_json::Value> {
+    let path: PathBuf = runs_dir.join(format!("{}.jsonl", run.0));
+    std::fs::read_to_string(path)
+        .expect("read chain")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("parse chain line"))
+        .collect()
+}
+
 #[test]
 fn replay_reconstructs_pending_and_unknown_across_every_class() {
     let turn = TurnId(6);
@@ -441,21 +629,22 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
 
 /// Kernel source files that may contain production effect dispatch.
 const KERNEL_SOURCES: &[&str] = &[
-    "src/lib.rs",
-    "src/driver.rs",
-    "src/reducer.rs",
-    "src/turn_action.rs",
-    "src/turn_command.rs",
-    "src/turn_protocol.rs",
-    "src/turn_state.rs",
-    "src/effects.rs",
-    "src/effect_admission.rs",
-    "src/effect_class.rs",
-    "src/effect_journal.rs",
-    "src/hooks.rs",
-    "src/workflow_spawner.rs",
-    "src/diagnostics.rs",
-    "src/pricing.rs",
+    "crates/kernel/src/lib.rs",
+    "crates/kernel/src/driver.rs",
+    "crates/kernel/src/reducer.rs",
+    "crates/kernel/src/turn_action.rs",
+    "crates/kernel/src/turn_command.rs",
+    "crates/kernel/src/turn_protocol.rs",
+    "crates/kernel/src/turn_state.rs",
+    "crates/kernel/src/effects.rs",
+    "crates/kernel/src/effect_admission.rs",
+    "crates/kernel/src/effect_class.rs",
+    "crates/kernel/src/effect_journal.rs",
+    "crates/kernel/src/diagnostics.rs",
+    "crates/cli/src/runtime.rs",
+    "crates/cli/src/runtime/hooks.rs",
+    "crates/cli/src/runtime/workflow_spawner.rs",
+    "crates/cli/src/runtime/pricing.rs",
 ];
 
 /// Production lines only: every `#[cfg(test)]` item is removed, tracking brace depth from the
@@ -523,7 +712,10 @@ fn function_name(line: &str) -> Option<String> {
 
 #[test]
 fn no_effect_producing_call_site_bypasses_the_boundary() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("kernel is two directories below the repository root");
     let mut violations = Vec::new();
     let mut found: BTreeMap<&str, usize> = BTreeMap::new();
 
@@ -582,8 +774,12 @@ fn no_effect_producing_call_site_bypasses_the_boundary() {
 fn every_effect_class_is_reachable_from_a_dispatch_site() {
     // The vocabulary and the code must not drift: a class nobody dispatches is dead weight that
     // makes the boundary look wider than it is, and the source gate above cannot notice.
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let source = std::fs::read_to_string(root.join("src/lib.rs")).expect("kernel lib source");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("kernel is two directories below the repository root");
+    let source =
+        std::fs::read_to_string(root.join("crates/cli/src/runtime.rs")).expect("runtime source");
     let production: String = production_lines(&source)
         .into_iter()
         .map(|(_, line)| line)

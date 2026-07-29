@@ -16,6 +16,7 @@ mod output;
 mod pricing;
 mod providers;
 mod render;
+mod runtime;
 mod surface;
 mod theme;
 mod tui;
@@ -23,11 +24,11 @@ mod workflow;
 
 use clap::{Parser, Subcommand};
 use config::FileConfig;
-use core_kernel::Agent;
 use core_protocol::{Budget, Outcome, RunId, TenantId};
 use core_record::Rollout;
 use core_tools::Registry;
 use output::{Emitter, OutputFormat};
+use runtime::Agent;
 use std::path::PathBuf;
 
 /// Fresh sessions use GLM's built-in provider. The model is deliberately not duplicated here:
@@ -224,18 +225,16 @@ struct Cli {
     #[arg(long)]
     max_usd: Option<f64>,
 
+    /// Aggregate provider-token ceiling across this run and all descendants.
+    #[arg(long)]
+    max_tokens: Option<u64>,
+
     /// Force-enable code execution (bash/build/test). Code execution is already ON by default
     /// (Owner-directed lenient posture); a project `.core/config.json` "allow_code": false or
     /// `--mode plan` disables it. Code runs in an egress-off sandbox: network denied, writes
     /// confined to the workspace (ADR-007).
     #[arg(long)]
     allow_code: bool,
-
-    /// Keep the strict ADR-007 egress taint gate: refuse web_fetch/web_search whenever the governing
-    /// context is Workspace/untrusted-tainted. Off by default so the web tools work out of the box;
-    /// pass this to restore the prompt-injection exfiltration guard.
-    #[arg(long)]
-    strict_egress: bool,
 
     /// DANGEROUS: auto-approve EVERY tool so the agent never prompts (used by the internal team
     /// edition). Skips the whole capability gate; Plan mode still hard-denies and an explicit
@@ -595,6 +594,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         .or_else(|| config::env_f64("CORE_MAX_USD"))
         .or(user_file.max_usd);
     let max_usd = config::tighten_optional(file.max_usd, trusted_max_usd);
+    let max_tokens = cli.max_tokens;
     let trusted_max_wall_secs = user_file.max_wall_secs.unwrap_or(1800);
     let max_wall_secs = config::tighten(file.max_wall_secs, trusted_max_wall_secs);
     // Lenient default (Owner-directed 2026-07-21): code execution is ON by default so bash/build/
@@ -877,6 +877,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     let budget = Budget {
         max_turns,
         max_usd,
+        max_tokens,
         max_wall_secs,
         max_consecutive_tool_errors: 3,
     };
@@ -919,6 +920,31 @@ async fn run_cli() -> anyhow::Result<u8> {
     eprintln!("{}", "-".repeat(72));
 
     let mut agent = Agent::new(provider_arc, registry, rollout, model, base_system, budget);
+    let built_in_policy_capabilities =
+        core_protocol::capability_set::CapabilitySet::from_iter_capabilities([
+            core_protocol::Capability::ReadOnly,
+            core_protocol::Capability::ReversibleLocal,
+            core_protocol::Capability::CodeExecuting,
+            core_protocol::Capability::TrustMutating,
+            core_protocol::Capability::IrreversibleExternal,
+        ]);
+    // The built-in policy declares its complete static tool surface. This declaration never grants
+    // authority by itself: runtime admission intersects it with each admitted task envelope.
+    agent.narrow_policy_capabilities(built_in_policy_capabilities);
+    if let Some(task) = cli.task.as_deref() {
+        let op = core_protocol::Op::UserInput {
+            text: task.to_owned(),
+        };
+        let envelope = core_protocol::task::TaskEnvelope::from_user_input(
+            core_protocol::SubmissionId(0),
+            &op,
+            core_protocol::Trust::Trusted,
+            built_in_policy_capabilities,
+        )
+        .expect("a UserInput always constructs a task envelope")
+        .with_budget(agent.budget.clone());
+        agent.narrow_authority_ceiling(envelope.ceiling);
+    }
     agent.set_instruction_context(instruction_bytes, instruction_trust)?;
     if let Some(environment_context) = environment_context {
         agent.set_environment_context(environment_context, core_protocol::Trust::Workspace)?;
@@ -939,18 +965,12 @@ async fn run_cli() -> anyhow::Result<u8> {
     if allow_code {
         initial_rules.allow_cap(core_protocol::Capability::CodeExecuting);
     }
-    // Lenient egress default (Owner-directed 2026-07-21): the first-party web tools auto-approve by
-    // default. A rule on the EXACT tool name is honored inside the IrreversibleExternal carve-out
-    // (permission::gate), so this pre-approves web_fetch/web_search WITHOUT approving the class —
-    // git push / publish / arbitrary external effects still prompt. Tighten at runtime with
-    // `/permissions deny web_fetch` (a per-tool Deny wins), or `--mode plan` (hard read-only).
+    // The first-party web tools are pre-approved only at the final permission-gate dimension.
+    // Kernel admission still requires Trusted governing context; exact-tool allow never clears
+    // taint or the task/policy intersection. Git push / publish remain outside this exact allow.
     initial_rules.set_tool("web_fetch", core_protocol::Verdict::Auto);
     initial_rules.set_tool("web_search", core_protocol::Verdict::Auto);
     agent.workspace = repo.clone();
-    // Lenient egress default (Owner-directed 2026-07-21): let egress pass the ADR-007 taint gate so
-    // web_fetch/web_search work in a normal (Workspace-tainted) repo context; the capability gate
-    // still governs (web tools auto, other external effects prompt). `--strict-egress` restores it.
-    agent.allow_tainted_egress = !cli.strict_egress;
     agent.bypass_permissions = cli.dangerously_bypass_permissions;
     if agent.bypass_permissions {
         eprintln!(
@@ -1019,6 +1039,11 @@ async fn run_cli() -> anyhow::Result<u8> {
                 .max_usd
                 .map(|value| value.to_bits().to_string())
                 .unwrap_or_else(|| "none".into()),
+            agent
+                .budget
+                .max_tokens
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".into()),
             agent.budget.max_wall_secs.to_string(),
             agent.budget.max_consecutive_tool_errors.to_string(),
             serde_json::to_string(agent.permission_rules()).unwrap_or_default(),
@@ -1059,7 +1084,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     // Lifecycle hooks (R5) from the USER config ONLY (trust-by-origin: a project/cloned-repo config
     // must never run a command). Empty if there is no ~/.core/config.json hooks block.
     if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
-        let mut hooks = core_kernel::hooks::Hooks::load_user(&home);
+        let mut hooks = runtime::hooks::Hooks::load_user(&home);
         hooks.set_sensitive_env_names(credential_env_names);
         agent.hooks = hooks;
         if !agent.hooks.is_empty() {
@@ -1166,6 +1191,10 @@ async fn run_cli() -> anyhow::Result<u8> {
         &run_id,
         &cost,
         turns,
+        agent
+            .ledger
+            .kernel_tax()
+            .with_failed_run(!matches!(outcome, Outcome::Done | Outcome::Drained)),
         run_error.as_deref(),
     );
     if output_error.is_none()
@@ -1201,7 +1230,7 @@ fn parse_workflow_args(args: &Option<String>) -> anyhow::Result<serde_json::Valu
     }
 }
 
-/// Build the DEFAULT workflow spawner: the real [`core_kernel::KernelSpawner`], so every `agent()`
+/// Build the DEFAULT workflow spawner: the real [`runtime::KernelSpawner`], so every `agent()`
 /// call runs a genuine child `Agent` (own context + read-only tool loop) via `run_leaf`. Set
 /// `CORE_WORKFLOW_SPAWNER=provider` to fall back to the first-slice single-completion `ProviderSpawner`.
 ///
@@ -1233,7 +1262,7 @@ fn build_workflow_spawner(
         );
         return std::sync::Arc::new(workflow::ProviderSpawner::new(provider_arc, model));
     }
-    let mut cx = core_kernel::KernelSpawnerContext::new(
+    let mut cx = runtime::KernelSpawnerContext::new(
         provider_arc,
         model,
         selection.provider_id.clone(),
@@ -1247,12 +1276,12 @@ fn build_workflow_spawner(
     );
     cx.model_context_window = caps.context_window_tokens;
     cx.model_max_output_tokens = caps.max_output_tokens;
-    std::sync::Arc::new(core_kernel::KernelSpawner::new(cx))
+    std::sync::Arc::new(runtime::KernelSpawner::new(cx))
 }
 
 /// `core workflow <run|list|resume|watch>` — the ultracode-workflow surface. `run`/`resume`/`watch`
 /// resolve a provider (trusted precedence, no rollout/pricing machinery) and drive
-/// `core_workflow::WorkflowEngine` with the real [`core_kernel::KernelSpawner`]; `list` is pure
+/// `core_workflow::WorkflowEngine` with the real [`runtime::KernelSpawner`]; `list` is pure
 /// enumeration. Journals + re-launch sidecars (`script.js`, `run.json`, `result.json`) persist under
 /// `<runs_dir>/subagents/workflows/<run_id>/`, so a run is listable + resumable by a later process.
 async fn run_workflow_command(

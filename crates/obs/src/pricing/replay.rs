@@ -190,6 +190,7 @@ impl PricingReplay {
                 // Historical projections did not authenticate rollout identity. Keep them
                 // readable, but leave this completed turn honestly unpriced.
                 let Some(identity) = &projection.identity else {
+                    ledger.mark_legacy_unattributed();
                     return Ok(());
                 };
                 let pending = pending.expect("adjacent projection has a pending turn");

@@ -1,4 +1,4 @@
-//! Lifecycle hooks (Claude Code parity, R5). A hook is an operator-configured command run at a
+//! Lifecycle hooks for the CLI-composed concrete runtime (Claude Code parity, R5). A hook is an operator-configured command run at a
 //! harness lifecycle point: `PreToolUse` (can BLOCK a tool), `PostToolUse` (observe), `Stop`
 //! (run finished), `UserPromptSubmit`, `SessionStart`.
 //!
@@ -38,6 +38,7 @@ const HOOK_READ_CHUNK_BYTES: usize = 8 * 1024;
 
 /// A lifecycle event a hook can bind to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Config accepts the complete lifecycle vocabulary before every site emits it.
 pub enum HookEvent {
     PreToolUse,
     PostToolUse,

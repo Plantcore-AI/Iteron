@@ -84,6 +84,7 @@ fn budget_only_materializes_at_the_validated_finalization_boundary() {
     let budget = Budget {
         max_turns: 12,
         max_usd: Some(3.5),
+        max_tokens: Some(50_000),
         max_wall_secs: 90,
         max_consecutive_tool_errors: 2,
     };
@@ -93,6 +94,7 @@ fn budget_only_materializes_at_the_validated_finalization_boundary() {
         .expect("a valid ceiling finalizes");
     assert_eq!(budgeted.aggregate().max_turns, 12);
     assert_eq!(budgeted.aggregate().max_usd, Some(3.5));
+    assert_eq!(budgeted.aggregate().max_tokens, Some(50_000));
     assert_eq!(budgeted.aggregate().max_wall_secs, 90);
     assert_eq!(budgeted.aggregate().max_consecutive_tool_errors, 2);
 
@@ -100,6 +102,7 @@ fn budget_only_materializes_at_the_validated_finalization_boundary() {
     // ceiling — the boundary must reject it rather than store a lying placeholder.
     let nan = Budget {
         max_usd: Some(f64::NAN),
+        max_tokens: None,
         ..Budget::default()
     };
     assert_eq!(
@@ -110,6 +113,7 @@ fn budget_only_materializes_at_the_validated_finalization_boundary() {
     // A negative ceiling is likewise refused at the boundary.
     let negative = Budget {
         max_usd: Some(-1.0),
+        max_tokens: None,
         ..Budget::default()
     };
     assert_eq!(

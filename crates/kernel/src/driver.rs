@@ -24,12 +24,11 @@
 //! the SQ — which also gives the loop the right priority, since a reply to work already in flight
 //! must be handled before new work is admitted.
 
+use crate::ports::TurnPorts;
 use crate::reducer::reduce;
-use crate::turn_action::{ActionRequest, ContinueReason, NoticeKind};
+use crate::turn_action::ActionRequest;
 use crate::turn_command::Command;
-use crate::turn_protocol::{
-    BudgetCeiling, ControlSignal, ProviderFailure, ProviderTermination, VerifyOutcome,
-};
+use crate::turn_protocol::{ProviderFailure, ProviderTermination};
 use crate::turn_state::TurnState;
 use core_protocol::Outcome;
 use std::collections::VecDeque;
@@ -180,42 +179,6 @@ pub enum ProviderReply {
         tool_calls: u32,
     },
     Failed(ProviderFailure),
-}
-
-/// The world, as the driver is allowed to see it.
-///
-/// One trait rather than six because #17 owns the port inversion and will split it along the
-/// versioned seams it defines; splitting it here would mean designing that ABI twice. What matters
-/// for #15 is already true: the reducer cannot reach any of this, and every method is stubbed by an
-/// in-memory fake in the tests, so the loop is exercised end to end with no concrete world module.
-#[async_trait::async_trait]
-pub trait TurnPorts: Send {
-    /// Resolve the durable context, returning the grant.
-    ///
-    /// The W3 seam #17 consumes. Returning the grant rather than discarding it is what lets the
-    /// recorded command stream replay context without re-reading the workspace; a port that
-    /// answered only "done" would have made the replay invariant vacuous on this path.
-    async fn select_context(&mut self) -> Result<core_protocol::context::ContextGrant, PortFault>;
-    /// Sample the budget ceilings. A reading, taken here so the reducer never takes one.
-    async fn sample_budget(&mut self) -> Option<BudgetCeiling>;
-    /// Observe operator control at a safe point.
-    async fn observe_control(&mut self) -> ControlSignal;
-    /// Admit queued operator guidance, returning how much was admitted.
-    async fn admit_steers(&mut self, turn: u32) -> u32;
-    /// Dispatch one provider turn.
-    async fn call_provider(&mut self, turn: u32) -> ProviderReply;
-    /// Dispatch the turn's tool calls, returning whether any failed.
-    async fn dispatch_tools(&mut self, turn: u32, calls: u32) -> bool;
-    /// Run the verification oracle.
-    async fn run_verify(&mut self, turn: u32, attempt: u32) -> VerifyOutcome;
-    /// Commit a durable workspace checkpoint.
-    async fn checkpoint(&mut self, turn: u32) -> Result<(), PortFault>;
-    /// Append an operator-visible note. Wording lives here, at the seam, not in the reducer.
-    async fn notice(&mut self, kind: NoticeKind);
-    /// Append a user-role continuation so the transcript stays valid.
-    async fn continuation(&mut self, turn: u32, reason: ContinueReason);
-    /// Close the current turn durably.
-    async fn advance_turn(&mut self, turn: u32) -> Result<(), PortFault>;
 }
 
 /// The bounded agent loop.

@@ -21,11 +21,14 @@ core-kernel = { path = "../kernel" }
 core-ctx = { path = "../ctx" }
 core-agents = { path = "../agents" }
 core-mcp = { path = "../mcp" }
+core-verify = { path = "../verify" }
+core-sandbox = { path = "../sandbox" }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 futures-util = { workspace = true }

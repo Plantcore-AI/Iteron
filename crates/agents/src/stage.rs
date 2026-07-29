@@ -189,6 +189,7 @@ mod tests {
         let budget = Budget {
             max_turns: 12,
             max_usd: Some(3.5),
+            max_tokens: Some(50_000),
             max_wall_secs: 90,
             max_consecutive_tool_errors: 2,
         };
@@ -204,6 +205,7 @@ mod tests {
     fn finalization_rejects_an_invalid_monetary_ceiling() {
         let invalid = Budget {
             max_usd: Some(f64::NAN),
+            max_tokens: None,
             ..Budget::default()
         };
         assert_eq!(

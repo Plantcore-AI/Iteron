@@ -7,7 +7,10 @@
 
 use crate::driver::{
     DriverError, DriverEvent, MAX_PENDING_REPLIES, PortFault, ProviderReply, RejectReason,
-    TurnDriver, TurnPorts, bounded_queues,
+    TurnDriver, bounded_queues,
+};
+use crate::ports::{
+    ContextPort, DiagnosticsPort, ProviderPort, SandboxPort, SchedulerPort, ToolPort, VerifyPort,
 };
 use crate::turn_action::{ActionRequest, ContinueReason, NoticeKind};
 use crate::turn_command::Command;
@@ -71,7 +74,7 @@ impl StubPorts {
 }
 
 #[async_trait::async_trait]
-impl TurnPorts for StubPorts {
+impl ContextPort for StubPorts {
     async fn select_context(&mut self) -> Result<ContextGrant, PortFault> {
         self.contexts += 1;
         match &self.context_error {
@@ -79,6 +82,10 @@ impl TurnPorts for StubPorts {
             None => Ok(stub_grant()),
         }
     }
+}
+
+#[async_trait::async_trait]
+impl SchedulerPort for StubPorts {
     async fn sample_budget(&mut self) -> Option<BudgetCeiling> {
         self.ceiling
     }
@@ -88,6 +95,10 @@ impl TurnPorts for StubPorts {
     async fn admit_steers(&mut self, _turn: u32) -> u32 {
         std::mem::take(&mut self.steers)
     }
+}
+
+#[async_trait::async_trait]
+impl ProviderPort for StubPorts {
     async fn call_provider(&mut self, _turn: u32) -> ProviderReply {
         self.provider_calls += 1;
         if let Some(failure) = self.provider_failure {
@@ -105,10 +116,18 @@ impl TurnPorts for StubPorts {
             tool_calls,
         }
     }
+}
+
+#[async_trait::async_trait]
+impl ToolPort for StubPorts {
     async fn dispatch_tools(&mut self, _turn: u32, _calls: u32) -> bool {
         self.tool_dispatches += 1;
         false
     }
+}
+
+#[async_trait::async_trait]
+impl VerifyPort for StubPorts {
     async fn run_verify(&mut self, _turn: u32, _attempt: u32) -> VerifyOutcome {
         self.verify_runs += 1;
         let index = (self.verify_runs - 1).min(self.verify_script.len().saturating_sub(1));
@@ -117,6 +136,10 @@ impl TurnPorts for StubPorts {
             .copied()
             .unwrap_or(VerifyOutcome::Pass)
     }
+}
+
+#[async_trait::async_trait]
+impl SandboxPort for StubPorts {
     async fn checkpoint(&mut self, _turn: u32) -> Result<(), PortFault> {
         self.checkpoints += 1;
         match &self.checkpoint_error {
@@ -124,6 +147,10 @@ impl TurnPorts for StubPorts {
             None => Ok(()),
         }
     }
+}
+
+#[async_trait::async_trait]
+impl DiagnosticsPort for StubPorts {
     async fn notice(&mut self, kind: NoticeKind) {
         self.notices.push(kind);
     }

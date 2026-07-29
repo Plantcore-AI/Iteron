@@ -45,6 +45,7 @@ fn cell(outcome: &FixedOutcome) -> CellResult {
         cost_usd: None,
         cost_reason: None,
         turns: Some(1),
+        kernel_tax: None,
         oracle_status: OracleStatus::Passed,
         oracle_detail: None,
         sampling: SamplingControl {

@@ -165,6 +165,7 @@ fn print_summary(manifest: &core_eval::types::EvaluationManifest) {
                 .unwrap_or("unavailable")
         ),
     }
+    println!("{}", kernel_tax_line(manifest.kernel_tax));
     println!("artifact={}", manifest.result_path.display());
     println!(
         "failed_runs={} (errored+timed_out); exit_code={}",
@@ -176,6 +177,37 @@ fn print_summary(manifest: &core_eval::types::EvaluationManifest) {
     // failed cells must not be reported to CI as a clean success by unconditionally exiting zero.
     let _ = std::io::Write::flush(&mut std::io::stdout().lock());
     std::process::exit(i32::from(manifest.exit_code()));
+}
+
+fn kernel_tax_line(tax: core_eval::types::KernelTaxObservation) -> String {
+    format!(
+        "kernel-tax: admission_us={} broker_us={} record_fsync_us={} estimated_tokens={} failed_runs={}",
+        tax.admission_latency_us,
+        tax.broker_latency_us,
+        tax.record_fsync_latency_us,
+        tax.estimated_tokens,
+        tax.failed_runs
+    )
+}
+
+#[cfg(test)]
+mod kernel_tax_tests {
+    use super::*;
+
+    #[test]
+    fn kernel_tax_is_a_real_separate_eval_output_line() {
+        let line = kernel_tax_line(core_eval::types::KernelTaxObservation {
+            admission_latency_us: 11,
+            broker_latency_us: 13,
+            record_fsync_latency_us: 17,
+            estimated_tokens: 19,
+            failed_runs: 2,
+        });
+        assert_eq!(
+            line,
+            "kernel-tax: admission_us=11 broker_us=13 record_fsync_us=17 estimated_tokens=19 failed_runs=2"
+        );
+    }
 }
 
 #[cfg(test)]

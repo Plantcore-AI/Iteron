@@ -14,6 +14,15 @@ fn main() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let root = selected_root(&mut args)?;
     match args.as_slice() {
+        [group, command] if group == "conformance" && command == "kernel" => {
+            conformance::kernel(&root)?;
+            return Ok(());
+        }
+        [group, command] if group == "conformance" && command == "check" => {
+            conformance::validate(&root)?;
+            println!("kernel structural conformance contract valid");
+            return Ok(());
+        }
         [group, command] if group == "schema-compat" && command == "check-bootstrap" => {
             schema_compat::validate_bootstrap_release(&root)?;
             println!("bootstrap schema compatibility contract valid");
@@ -103,7 +112,7 @@ fn main() -> Result<()> {
         }
         _ => {
             bail!(
-                "usage: core-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
+                "usage: core-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
             )
         }
     }

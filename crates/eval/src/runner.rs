@@ -5,8 +5,8 @@ use crate::corpus::{CorpusManifest, CorpusTask};
 use crate::process::{ProcessOutput, ProcessSpec, find_core, run_process};
 use crate::report::{aggregate, compare, selection_summaries};
 use crate::types::{
-    CellKey, CellResult, EVAL_SCHEMA_VERSION, EvaluationManifest, EvaluationPurpose, OracleStatus,
-    RunStatus, SamplingControl,
+    CellKey, CellResult, EVAL_SCHEMA_VERSION, EvaluationManifest, EvaluationPurpose,
+    KernelTaxObservation, OracleStatus, RunStatus, SamplingControl,
 };
 use core_sandbox::Confinement;
 use sha2::{Digest, Sha256};
@@ -117,6 +117,7 @@ pub async fn run_evaluation(options: &EvalOptions) -> Result<EvaluationManifest,
     let summary = aggregate(&cells, options.minimum_seeds);
     let comparison = compare(&summary, "verify_OFF", "verify_ON");
     let selections = selection_summaries(&cells);
+    let kernel_tax = aggregate_kernel_tax(&cells);
     let manifest = EvaluationManifest {
         schema_version: EVAL_SCHEMA_VERSION,
         run_id,
@@ -133,6 +134,7 @@ pub async fn run_evaluation(options: &EvalOptions) -> Result<EvaluationManifest,
         aggregate: summary,
         comparison,
         selections,
+        kernel_tax,
     };
     write_artifact_atomic(&manifest, &options.output_path)?;
     Ok(manifest)
@@ -233,6 +235,13 @@ async fn run_cell(
         cost_usd: cost.usd,
         cost_reason: cost.reason,
         turns: Some(final_result.turns),
+        kernel_tax: final_result.kernel_tax.map(|tax| KernelTaxObservation {
+            admission_latency_us: tax.admission_latency_us,
+            broker_latency_us: tax.broker_latency_us,
+            record_fsync_latency_us: tax.record_fsync_latency_us,
+            estimated_tokens: tax.estimated_tokens,
+            failed_runs: tax.failed_runs,
+        }),
         oracle_status: OracleStatus::NotRun,
         oracle_detail: None,
         sampling: SamplingControl {
@@ -299,6 +308,18 @@ async fn run_cell(
     }
     cell.elapsed_ms = millis(started.elapsed());
     cell
+}
+
+fn aggregate_kernel_tax(cells: &[CellResult]) -> KernelTaxObservation {
+    let mut total = KernelTaxObservation::default();
+    for cell in cells {
+        if let Some(observation) = cell.kernel_tax {
+            total.add(observation);
+        } else if matches!(cell.run_status, RunStatus::Errored | RunStatus::TimedOut) {
+            total.failed_runs = total.failed_runs.saturating_add(1);
+        }
+    }
+    total
 }
 
 fn benchmark_reference(task: &CorpusTask) -> Option<crate::types::BenchmarkReference> {
@@ -887,6 +908,7 @@ mod tests {
             comparison: compare(&aggregate, "verify_OFF", "verify_ON"),
             aggregate,
             selections: Vec::new(),
+            kernel_tax: KernelTaxObservation::default(),
             cells: vec![cell],
         };
         let encoded = serde_json::to_vec(&manifest).unwrap();

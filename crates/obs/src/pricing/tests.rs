@@ -297,6 +297,54 @@ fn projection_is_fixed_point_ceil_rounded_and_hmac_verified() {
 }
 
 #[test]
+fn pricing_replay_matches_the_committed_golden() {
+    let key = [9; 32];
+    let (trusted, signed) = authority(key);
+    let usage = Usage {
+        input: 1,
+        output: 3,
+        cache_creation: 1,
+        cache_read: 1,
+        thinking: 1,
+    };
+    let projection = trusted
+        .project(&signed, local_identity(), usage, NOW)
+        .unwrap();
+    let events = [
+        event(EventKind::ModelSelected {
+            provider_id: route().provider_id,
+            model_id: route().model_id,
+            catalog_digest: route().catalog_digest,
+            capability_digest: route().capability_digest,
+        }),
+        event(EventKind::RateCardBound {
+            rate_card: signed.clone(),
+        }),
+        event(EventKind::TurnStart),
+        event(EventKind::TurnEnd { usage }),
+        event(EventKind::CostProjected {
+            projection: projection.clone(),
+        }),
+    ];
+    let mut replay = PricingReplay::trusted(trusted);
+    let mut ledger = Ledger::new();
+    for event in &events {
+        observe(&mut replay, event, &mut ledger).unwrap();
+    }
+    let actual = serde_json::json!({
+        "schema_version": 1,
+        "cost_state": ledger.cost_state(),
+        "projection_amount_microusd": projection.amount_microusd,
+        "rate_card_digest": projection.rate_card_digest,
+    });
+    let expected: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/pricing-replay-golden-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn projection_amount_overflow_is_typed_instead_of_clamped_known() {
     let key = [24; 32];
     let mut overflow_card = card();
@@ -890,7 +938,7 @@ fn legacy_identityless_projection_stays_readable_but_unknown() {
     assert_eq!(
         ledger.cost_state(),
         CostState::Unknown {
-            reason: CostUnknownReason::NoVerifiedRateCard,
+            reason: CostUnknownReason::LegacyUnattributed,
         }
     );
 }

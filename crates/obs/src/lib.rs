@@ -119,13 +119,31 @@ impl CostState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CostUnknownReason {
+    /// Precedence 3: completed turns exist, but no authenticated route-bound projection prices all
+    /// of them. This is weaker than missing billing evidence or a legacy unattributed projection.
     NoVerifiedRateCard,
+    /// Precedence 1: an admitted provider/child attempt has no terminal usage evidence. This
+    /// includes a deliberately dropped or cancelled stream; it does not accuse the provider.
     BillingEvidenceMissing,
+    /// Precedence 2: historical pricing bytes exist but predate rollout-bound projection identity.
+    /// They remain readable and must never be relabelled as authenticated current-run cost.
     LegacyUnattributed,
+    /// Precedence 0 (highest): fixed-point addition overflowed, so no lower-priority explanation
+    /// can make the amount representable.
     AmountOverflow,
 }
 
 impl CostUnknownReason {
+    /// Stable precedence rank; lower wins when several facts apply.
+    pub const fn precedence(self) -> u8 {
+        match self {
+            Self::AmountOverflow => 0,
+            Self::BillingEvidenceMissing => 1,
+            Self::LegacyUnattributed => 2,
+            Self::NoVerifiedRateCard => 3,
+        }
+    }
+
     pub fn code(self) -> &'static str {
         match self {
             Self::NoVerifiedRateCard => "no_verified_rate_card",
@@ -142,6 +160,42 @@ impl CostUnknownReason {
             Self::LegacyUnattributed => "legacy usage has no route/rate-card attribution",
             Self::AmountOverflow => "fixed-point amount exceeded its representable range",
         }
+    }
+}
+
+/// Harness overhead kept separate from model latency and billable model tokens.
+///
+/// Latencies are measured at the actual admission, effect-broker bookkeeping, and durable append
+/// boundaries. `estimated_tokens` is the deterministic system/tool/framing input estimate, never
+/// presented as provider-tokenizer truth. `failed_runs` is attached at the terminal output edge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelTax {
+    pub admission_latency_us: u64,
+    pub broker_latency_us: u64,
+    pub record_fsync_latency_us: u64,
+    pub estimated_tokens: u64,
+    pub failed_runs: u64,
+}
+
+impl KernelTax {
+    pub fn with_failed_run(mut self, failed: bool) -> Self {
+        self.failed_runs = u64::from(failed);
+        self
+    }
+
+    pub fn add(&mut self, other: Self) {
+        self.admission_latency_us = self
+            .admission_latency_us
+            .saturating_add(other.admission_latency_us);
+        self.broker_latency_us = self
+            .broker_latency_us
+            .saturating_add(other.broker_latency_us);
+        self.record_fsync_latency_us = self
+            .record_fsync_latency_us
+            .saturating_add(other.record_fsync_latency_us);
+        self.estimated_tokens = self.estimated_tokens.saturating_add(other.estimated_tokens);
+        self.failed_runs = self.failed_runs.saturating_add(other.failed_runs);
     }
 }
 
@@ -178,12 +232,14 @@ pub struct Ledger {
     priced_turns: u32,
     amount_microusd: u64,
     amount_overflowed: bool,
+    legacy_unattributed: bool,
     rate_card_digests: BTreeSet<String>,
     cost_projections: Vec<CostProjection>,
     /// Durable child admissions whose terminal accounting has not been observed. This is kept
     /// separate from provider attempts: a child may have crashed before dispatch, but it may also
     /// have spent money that the parent never received, so zero/Known is no longer provable.
     unresolved_child_attributions: u32,
+    kernel_tax: KernelTax,
 }
 
 impl Ledger {
@@ -206,6 +262,40 @@ impl Ledger {
             tool_calls: self.tool_calls,
             tool_errors: self.tool_errors,
         }
+    }
+
+    pub fn kernel_tax(&self) -> KernelTax {
+        self.kernel_tax
+    }
+
+    pub fn record_admission_latency_us(&mut self, elapsed_us: u64) {
+        self.kernel_tax.admission_latency_us = self
+            .kernel_tax
+            .admission_latency_us
+            .saturating_add(elapsed_us);
+    }
+
+    pub fn record_broker_latency_us(&mut self, elapsed_us: u64) {
+        self.kernel_tax.broker_latency_us =
+            self.kernel_tax.broker_latency_us.saturating_add(elapsed_us);
+    }
+
+    pub fn record_fsync_latency_us(&mut self, elapsed_us: u64) {
+        self.kernel_tax.record_fsync_latency_us = self
+            .kernel_tax
+            .record_fsync_latency_us
+            .saturating_add(elapsed_us);
+    }
+
+    pub fn record_kernel_tokens(&mut self, estimated_tokens: u64) {
+        self.kernel_tax.estimated_tokens = self
+            .kernel_tax
+            .estimated_tokens
+            .saturating_add(estimated_tokens);
+    }
+
+    pub(crate) fn mark_legacy_unattributed(&mut self) {
+        self.legacy_unattributed = true;
     }
 
     /// Process-local timing with an explicit completeness marker.
@@ -313,6 +403,8 @@ impl Ledger {
             self.amount_overflowed = true;
         }
         self.amount_overflowed |= child.amount_overflowed;
+        self.legacy_unattributed |= child.legacy_unattributed;
+        self.kernel_tax.add(child.kernel_tax);
         self.rate_card_digests
             .extend(child.rate_card_digests.iter().cloned());
         self.cost_projections
@@ -547,6 +639,10 @@ impl Ledger {
             CostState::Unknown {
                 reason: CostUnknownReason::BillingEvidenceMissing,
             }
+        } else if self.legacy_unattributed {
+            CostState::Unknown {
+                reason: CostUnknownReason::LegacyUnattributed,
+            }
         } else if self.turns > self.priced_turns {
             CostState::Unknown {
                 reason: CostUnknownReason::NoVerifiedRateCard,
@@ -696,6 +792,48 @@ mod tests {
             parent.cost_state(),
             CostState::Unknown {
                 reason: CostUnknownReason::BillingEvidenceMissing
+            }
+        );
+    }
+
+    #[test]
+    fn every_cost_unknown_reason_has_a_pinned_precedence() {
+        assert_eq!(CostUnknownReason::AmountOverflow.precedence(), 0);
+        assert_eq!(CostUnknownReason::BillingEvidenceMissing.precedence(), 1);
+        assert_eq!(CostUnknownReason::LegacyUnattributed.precedence(), 2);
+        assert_eq!(CostUnknownReason::NoVerifiedRateCard.precedence(), 3);
+
+        let mut ledger = Ledger::new();
+        ledger.attempt();
+        ledger.turn(&Usage::default(), 0);
+        assert_eq!(
+            ledger.cost_state(),
+            CostState::Unknown {
+                reason: CostUnknownReason::NoVerifiedRateCard
+            }
+        );
+
+        ledger.mark_legacy_unattributed();
+        assert_eq!(
+            ledger.cost_state(),
+            CostState::Unknown {
+                reason: CostUnknownReason::LegacyUnattributed
+            }
+        );
+
+        ledger.attempt();
+        assert_eq!(
+            ledger.cost_state(),
+            CostState::Unknown {
+                reason: CostUnknownReason::BillingEvidenceMissing
+            }
+        );
+
+        ledger.amount_overflowed = true;
+        assert_eq!(
+            ledger.cost_state(),
+            CostState::Unknown {
+                reason: CostUnknownReason::AmountOverflow
             }
         );
     }

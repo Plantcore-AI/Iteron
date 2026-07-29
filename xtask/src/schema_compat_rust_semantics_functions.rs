@@ -123,7 +123,7 @@ const METHODS: &[Methods] = &[
 
 const TYPES: &[Types] = &[
     Types {
-        path: "crates/kernel/src/lib.rs",
+        path: "crates/cli/src/runtime.rs",
         names: &[
             "UiEvent",
             "WorkflowTaskUi",

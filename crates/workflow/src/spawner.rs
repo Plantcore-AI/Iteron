@@ -7,6 +7,8 @@
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
+pub const AGENT_SPAWNER_PORT_VERSION: u32 = 1;
+
 /// One resolved `agent(prompt, opts)` call, marshaled out of the JS runtime. `agent_type`/`model`/
 /// `effort` are the caller's requested overrides; the spawner maps them onto the host's own model
 /// and effort ladder (Core's ids, not Claude Code's — see the design's fidelity notes §6).
@@ -72,5 +74,9 @@ impl AgentOutcome {
 /// the shared multi-thread runtime by the engine's `__agent` bridge).
 #[async_trait]
 pub trait AgentSpawner: Send + Sync {
+    fn port_version(&self) -> u32 {
+        AGENT_SPAWNER_PORT_VERSION
+    }
+
     async fn spawn(&self, call: AgentCall) -> AgentOutcome;
 }
