@@ -18,6 +18,11 @@ use crate::turn_state::{TurnLimits, TurnState};
 use core_protocol::Outcome;
 use std::time::Duration;
 
+/// The SQ and EQ bounds would be worth little if the driver's private reply queue could grow
+/// without limit. Checked at compile time, because a bound is a constant claim: a `bound` large
+/// enough never to bind is not a bound.
+const _: () = assert!(MAX_PENDING_REPLIES > 0 && MAX_PENDING_REPLIES <= 4096);
+
 /// In-memory ports. Every world module the loop would reach is a scripted value here, which is what
 /// issue #15 means by "the reducer and driver compile and test against in-memory fake ports".
 #[derive(Default)]
@@ -390,13 +395,6 @@ async fn late_operator_guidance_takes_another_turn_instead_of_committing_done() 
 
 #[tokio::test]
 async fn the_drivers_own_reply_queue_is_bounded_too() {
-    // The SQ and EQ bounds would be worth little if the driver's private queue could grow without
-    // limit. The bound is a compile-time constant, so what is worth asserting is that it is small
-    // enough to be a real ceiling rather than an unbounded queue wearing a number.
-    assert!(
-        MAX_PENDING_REPLIES <= 4096,
-        "a `bound` large enough to never bind is not a bound"
-    );
     let (sq, mut sq_rx, eq, _eq_rx) = bounded_queues(4, 64);
     drop(sq);
     let mut driver = TurnDriver::new(

@@ -626,6 +626,25 @@ fn nothing_is_asked_of_the_world_after_the_run_is_finished() {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
+fn a_second_admission_is_refused_rather_than_resolving_context_twice() {
+    // `SelectContext` is routed to a port that appends durably. A duplicate admission that produced
+    // a second one would put a context resolution on the record that never happened once.
+    let (state, actions) = drive(
+        TurnState::new(TurnLimits::default(), false),
+        &[Command::Admitted, Command::Admitted],
+    );
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|action| matches!(action, ActionRequest::SelectContext))
+            .count(),
+        1,
+        "context must be resolved exactly once, whatever the operator submits"
+    );
+    assert_eq!(state.fault, Some(HarnessFault::ProtocolViolation));
+}
+
+#[test]
 fn a_run_whose_record_cannot_be_written_makes_zero_provider_calls() {
     // The imperative form asserted a mock provider saw no requests. The split states it more
     // strongly: no `CallProvider` is ever *asked for*, so the property holds for every port

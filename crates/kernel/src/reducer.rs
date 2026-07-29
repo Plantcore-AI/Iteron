@@ -86,9 +86,11 @@ pub fn reduce(state: &TurnState, command: Command) -> (TurnState, Actions) {
 
         // ---- admission ----
         Command::Admitted if state.phase == TurnPhase::Admitting => {
-            (state.clone(), vec![ActionRequest::SelectContext])
+            let mut next = state.clone();
+            next.phase = TurnPhase::AwaitingContext;
+            (next, vec![ActionRequest::SelectContext])
         }
-        Command::ContextResolved if state.phase == TurnPhase::Admitting => {
+        Command::ContextResolved if state.phase == TurnPhase::AwaitingContext => {
             let mut next = state.clone();
             next.phase = TurnPhase::Boundary;
             (next, boundary_probe())

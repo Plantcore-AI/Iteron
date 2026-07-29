@@ -20,8 +20,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnPhase {
-    /// Before any work: the run has been admitted but the durable context is not resolved.
+    /// Before any work. Nothing has been admitted yet.
     Admitting,
+    /// A submission was admitted and the context port has been asked to resolve. Distinct from
+    /// `Admitting` so that a second admission is a protocol violation rather than a second
+    /// `SelectContext` — that request is routed to a port that appends durably, and asking twice
+    /// would put a duplicate context resolution on the record.
+    AwaitingContext,
     /// At a turn boundary. Every stop condition is evaluated here and nowhere else.
     Boundary,
     /// A provider request is in flight.
