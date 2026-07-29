@@ -895,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn d13_14_every_stream_record_type_matches_the_frozen_v4_corpus() {
+    fn d13_14_every_stream_record_type_matches_the_frozen_v5_corpus() {
         fn frozen_turn_end(effort: EffortApplication, turn: &mut u32) -> Value {
             stream_event(
                 UiEvent::TurnEnd {

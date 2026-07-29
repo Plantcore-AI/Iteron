@@ -30,16 +30,28 @@ fn wrap_body(body: &str) -> String {
 ///
 /// Not `Send` (it holds the `!Send` `LocalSet`/QuickJS across awaits): the blocking `execute` path
 /// awaits it directly, and `launch` drives it via `block_on` on a dedicated OS thread.
-pub async fn run_core(
-    script: &str,
-    args: serde_json::Value,
-    run_id: RunId,
-    limits: RunLimits,
-    cancel: CancellationToken,
-    journal: Arc<Journal>,
-    spawner: Arc<dyn AgentSpawner>,
-    sink: Arc<dyn ProgressSink>,
-) -> anyhow::Result<RunReport> {
+pub struct RunCoreRequest<'a> {
+    pub script: &'a str,
+    pub args: serde_json::Value,
+    pub run_id: RunId,
+    pub limits: RunLimits,
+    pub cancel: CancellationToken,
+    pub journal: Arc<Journal>,
+    pub spawner: Arc<dyn AgentSpawner>,
+    pub sink: Arc<dyn ProgressSink>,
+}
+
+pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> {
+    let RunCoreRequest {
+        script,
+        args,
+        run_id,
+        limits,
+        cancel,
+        journal,
+        spawner,
+        sink,
+    } = request;
     if spawner.port_version() != AGENT_SPAWNER_PORT_VERSION {
         anyhow::bail!(
             "unsupported AgentSpawner port version {}; expected {}",

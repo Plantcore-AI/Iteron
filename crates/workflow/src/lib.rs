@@ -296,9 +296,16 @@ impl WorkflowEngine {
             limits,
             ..
         } = spec;
-        host::run_core(
-            &script, args, run_id, limits, cancel, journal, spawner, sink,
-        )
+        host::run_core(host::RunCoreRequest {
+            script: &script,
+            args,
+            run_id,
+            limits,
+            cancel,
+            journal,
+            spawner,
+            sink,
+        })
         .await
     }
 
@@ -331,16 +338,16 @@ impl WorkflowEngine {
                         limits,
                         ..
                     } = spec;
-                    rt.block_on(host::run_core(
-                        &script,
+                    rt.block_on(host::run_core(host::RunCoreRequest {
+                        script: &script,
                         args,
                         run_id,
                         limits,
-                        cancel_thread,
+                        cancel: cancel_thread,
                         journal,
                         spawner,
                         sink,
-                    ))
+                    }))
                 })();
                 let _ = tx.send(result);
             })
