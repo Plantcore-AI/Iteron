@@ -12,7 +12,7 @@
 
 | 不变量 | 英文 | 含义 (normative) |
 |---|---|---|
-| **有界** | Bounded | 每个机制 MUST 在预先声明的 turns / wall-clock / token / 美元 / 队列深度上界内运行。无界队列、无界重试、无界递归 MUST NOT 存在于内核路径上。 |
+| **有界** | Bounded | 每个机制 MUST 在预先声明的上界内运行。v1 冻结的 `Budget` 有四条轴:`max_turns` / `max_wall_secs` / `max_usd`(`Option<f64>`,`None` 是诚实的"无货币保证")/ `max_consecutive_tool_errors`(`crates/protocol/src/lib.rs:240-248`)。**token 轴尚不存在**,按 abi.md §4.3(b)3 留待日后以 `Option<u64>` 无损追加;在它落地之前,任何"内核强制 token 预算"的表述都是目标形态,不是可验收的 MUST。无界队列、无界重试、无界递归 MUST NOT 存在于内核路径上。 |
 | **可恢复** | Recoverable | 任何被观测到的效果 (effect) MUST 拥有持久身份与终态;崩溃后 MUST 能从规范记录重建到一个一致状态;不确定的效果 MUST 记为 unknown 而非自动重放。 |
 | **可复现** | Reproducible | 给定同一命令序列与同一被钉死的策略束 (pinned policy bundle),状态归约 MUST 产生逐字节相同的结果与相同的动作请求 (action requests)。 |
 | **可观测** | Observable | 每一次准入决策、每一次效果、每一次预算耗尽、每一次终止 MUST 作为一个带关联 id 的事件出现在事件队列与规范记录上。内核 MUST NOT 把诊断直接写到 stderr 而绕过事件面。 |
@@ -52,7 +52,7 @@
 ReadOnly  <  ReversibleLocal  <  CodeExecuting  <  TrustMutating  <  IrreversibleExternal
 ```
 
-准入 MUST 是一个**纯的、默认拒绝 (deny-by-default) 的门**,模型无法影响其判决。准入 MUST 满足两条代数性质:(a) **仅交集 (intersection-only,「never union」)**,即任何授权只能相对于上界收窄,永不扩张;(b) **能力单调 (capability-monotone)**,即组合两条授权得到的能力集是二者交集,收窄始终安全。规范陈述如下:`ReadOnly` 与 `ReversibleLocal` MAY 无人值守运行;`CodeExecuting` MUST 在隔离无 egress 单元中执行,且不得被任何 mode/session 规则自动批准为无人值守;`TrustMutating`(写 `.git/`、git-config、CI 配置、指令文件)与 `IrreversibleExternal`(push/publish/send)MUST 始终经事前人工批准,且 MUST NOT 被任何权限 mode 或 session 规则自动批准。Plan mode 是一层硬性只读覆盖 (hard read-only overlay):在 Plan mode 下,任何高于 `ReadOnly` 的类别 MUST 被拒,无论 session 规则如何。仓库配置 MAY 收紧一条已授予的信任或预算,但 MUST NOT 凭空铸造代码执行、provider 路由、endpoint 路由、MCP 进程或生命周期 hook(即配置只能做交集收窄,不能做并集扩张,这正是性质 (a) 的一个直接推论)。
+准入 MUST 是一个**纯的、默认拒绝 (deny-by-default) 的门**,模型无法影响其判决。准入 MUST 满足两条代数性质:(a) **仅交集 (intersection-only,「never union」)**,即任何授权只能相对于上界收窄,永不扩张;(b) **能力单调 (capability-monotone)**,即组合两条授权得到的能力集是二者交集,收窄始终安全。规范陈述如下:`ReadOnly` 与 `ReversibleLocal` MAY 无人值守运行;`CodeExecuting` MUST 在隔离无 egress 单元中执行,其默认判决是 `Ask`;唯一的例外是 operator 显式选择的 Yolo mode,该 mode 下判 `Auto`(`crates/protocol/src/permission.rs:231`),但授权仍被无 egress 单元与 `Trust::egress_permitted` 围住,因此 `Capability::runs_unattended()` 仍 MUST 对该类返回假(`crates/protocol/src/tool.rs:41-44`):它描述的是默认分类,不是 operator 不可放弃的权利。**不可协商的豁免恰好只有两类**:`TrustMutating`(写 `.git/`、git-config、CI 配置、指令文件)与 `IrreversibleExternal`(push/publish/send)MUST 始终经事前人工批准;没有任何 mode、也没有任何**能力类**级 session 规则可以自动放行它们(`permission.rs:194-213`)。可以放行的只有一条**精确工具名**规则,那是一次有界、可审计的 operator 决定,它 MUST NOT 因此放行整个类。Plan mode 是一层硬性只读覆盖 (hard read-only overlay):在 Plan mode 下,任何高于 `ReadOnly` 的类别 MUST 被拒,无论 session 规则如何。仓库配置 MAY 收紧一条已授予的信任或预算,但 MUST NOT 凭空铸造代码执行、provider 路由、endpoint 路由、MCP 进程或生命周期 hook(即配置只能做交集收窄,不能做并集扩张,这正是性质 (a) 的一个直接推论)。
 
 **每层的规范判据。** 冻结的 `Capability` 枚举上真实存在的判据只有两个:`runs_unattended()`(仅 `ReadOnly` 与 `ReversibleLocal` 为真)与 `is_egress()`(仅 `IrreversibleExternal` 为真),见 `crates/protocol/src/tool.rs:41-52`。其余判据**不是**这个枚举上的方法,而由内核别处的纯函数承担,任何实现 MUST NOT 为了满足本节而在冻结类型上新增方法:(a) mode × capability 的准入裁决是纯函数 `permission::gate(mode, rules, tool, cap) -> Verdict`(`crates/protocol/src/permission.rs:179`),其中 `ReadOnly` 恒为 `Auto`,Plan mode 对一切高于 `ReadOnly` 的类别恒为 `Deny`,`TrustMutating` 与 `IrreversibleExternal` 默认落到 `Ask` 且 MUST NOT 被任何 mode 或能力类规则自动批准(能力类规则只能收紧,只有精确工具名规则可以逐工具地预批);(b) egress 是否被允许由 `Trust::egress_permitted()` 判定,即当次的 governing 信任层 MUST 为 `Trusted`(`crates/protocol/src/trust.rs:38-43`);(c) `ReversibleLocal` 的效果 MUST 落在检查点之后、可经 K8 回滚,`CodeExecuting` MUST 在隔离无 egress 单元中执行,这两条是工具注册与执行体的契约,不是能力值上的谓词。准入门的判决 MUST 只是上述布尔判据与当前信任上下文(K1)、当前 mode 的确定性函数。
 
@@ -93,7 +93,7 @@ ReadOnly  <  ReversibleLocal  <  CodeExecuting  <  TrustMutating  <  Irreversibl
 
 #### K6 预算 / 截止 / 取消 (budgets/deadlines/cancellation)
 
-**契约。** 内核 MUST 强制硬性的 turns / wall-clock / token / 美元预算与截止时间 (deadline),它们 MUST NOT 被任何策略模块放松或优化掉 (Bounded)。取消 MUST 是协作式的且在安全点生效,绝不在一次效果执行中途撕裂状态。`Op::Drain`(quiesce)MUST 拥有区别于 `Op::Interrupt` 的语义:停止接纳新 turn、静默收敛、做同步检查点、再退出。当某个上界无法被可信地计价时(例如缺少经核验的费率卡),美元上界 MUST **失败关闭 (fail closed)**,即宁可拒绝运行,也不在无价格真相时假装 $0。
+**契约。** 内核 MUST 强制 `Budget` 上冻结的四条硬上界(`max_turns` / `max_wall_secs` / `max_usd` / `max_consecutive_tool_errors`,`crates/protocol/src/lib.rs:240-248`)与截止时间 (deadline),它们 MUST NOT 被任何策略模块放松或优化掉 (Bounded)。token 上界是目标形态而非当前 MUST:`Budget` 上没有该轴,按 abi.md §4.3(b)3 留待日后追加。取消 MUST 是协作式的且在安全点生效,绝不在一次效果执行中途撕裂状态。`Op::Drain`(quiesce)MUST 拥有区别于 `Op::Interrupt` 的语义:停止接纳新 turn、静默收敛、做同步检查点、再退出。当某个上界无法被可信地计价时(例如缺少经核验的费率卡),美元上界 MUST **失败关闭 (fail closed)**,即宁可拒绝运行,也不在无价格真相时假装 $0。
 
 **上界耗尽的规范终态。** 每一类上界耗尽 MUST 转移到一个显式终态并以稳定退出码收束,而非被外部粗暴杀死:`max_turns` 耗尽 -> `BudgetExhausted("max_turns")`;`wall` 截止 -> `BudgetExhausted("max_wall_secs")`;`Op::Interrupt` 在安全点生效 -> `Interrupted`;`Op::Drain` 收敛完成 -> `Drained`。冻结的 `Outcome` 只有 `Done` / `Drained` / `BudgetExhausted(&'static str)` / `Interrupted` / `Stuck` / `HarnessError` 六臂(`crates/protocol/src/lib.rs:285-299`),其中**没有** `DeadlineExceeded` 这一臂:wall 截止以 `ProviderFailure::DeadlineExceeded`(`crates/kernel/src/turn_protocol.rs:73-75`)进入 reducer,再被折成 `Outcome::BudgetExhausted(BudgetCeiling::MaxWallSecs.reason())`(`crates/kernel/src/reducer.rs:286-288`),即哪一条上界被耗尽由那个 `&'static str` 承载,而不是各开一个终态臂。这些退出码 MUST 出现在规范记录上(Observable)。`Op::Interrupt` 与 `Op::Drain` 的区别是硬性的:前者尽快在下一个安全点停下 in-flight turn,后者要求先完成一次同步检查点再退出,MUST NOT 互相替代。
 
