@@ -69,6 +69,74 @@ fn d13_14_cli_outer_json_source_binding_ignores_nested_fields_and_rejects_duplic
 }
 
 #[test]
+fn an_optional_private_machine_record_producer_is_parsed_fail_closed() {
+    let source = live_source();
+    let source = std::str::from_utf8(&source).unwrap();
+    let producer = r#"
+fn input_attachment_event() -> Value {
+    json!({
+        "schema_version": SCHEMA_VERSION,
+        "type": "input_attachment",
+        "ordinal": 1,
+        "media_type": "image/png",
+        "encoded_bytes": 12,
+    })
+}
+
+"#;
+    let with_attachment = source.replacen(
+        "pub fn final_result(",
+        &format!("{producer}pub fn final_result("),
+        1,
+    );
+    assert_ne!(
+        with_attachment, source,
+        "the synthetic producer must be inserted"
+    );
+    let shapes = cli_machine_record_shapes(with_attachment.as_bytes()).unwrap();
+    assert_eq!(
+        shapes["input_attachment"],
+        BTreeSet::from([
+            "encoded_bytes".to_owned(),
+            "media_type".to_owned(),
+            "ordinal".to_owned(),
+            "schema_version".to_owned(),
+            "type".to_owned(),
+        ])
+    );
+
+    let public = with_attachment.replacen(
+        "fn input_attachment_event() -> Value",
+        "pub fn input_attachment_event() -> Value",
+        1,
+    );
+    assert!(
+        cli_machine_record_shapes(public.as_bytes()).is_err(),
+        "the additive producer cannot broaden its source authority"
+    );
+    let crate_visible = with_attachment.replacen(
+        "fn input_attachment_event() -> Value",
+        "pub(crate) fn input_attachment_event() -> Value",
+        1,
+    );
+    assert!(
+        cli_machine_record_shapes(crate_visible.as_bytes()).is_err(),
+        "the additive producer must remain module-private"
+    );
+    let indirect = source.replacen(
+        "pub fn final_result(",
+        "fn input_attachment_event() -> Value { evil_value() }\n\npub fn final_result(",
+        1,
+    );
+    assert_ne!(indirect, source);
+    assert!(super::cli_parse::parse_cli_output_source(&indirect).is_ok());
+    assert!(
+        cli_machine_record_shapes(indirect.as_bytes()).is_err(),
+        "the additive producer must retain a direct trusted json! object"
+    );
+}
+
+#[test]
 fn d13_14_cli_producer_rejects_selector_diff_and_executable_value_mutations() {
     let source = live_source();
     let text = std::str::from_utf8(&source).unwrap();

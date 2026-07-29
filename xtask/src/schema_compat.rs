@@ -25,6 +25,10 @@ use manifest::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+const CLI_INPUT_ATTACHMENT_SURFACE: &str = "cli.machine-stream.input-attachment";
+const CLI_INPUT_ATTACHMENT_FIXTURE: &str =
+    "crates/cli/tests/golden/input_attachment_stream_v5.jsonl";
+
 pub(crate) fn read_candidate_file_bounded(
     root: &Path,
     relative: &str,
@@ -226,11 +230,50 @@ fn compare_contracts(
         }
         if id.starts_with("cli.machine-stream.")
             && previous_cli_stream_version.is_some_and(|version| surface.current_version <= version)
+            && !is_v5_input_attachment_addition(surface, previous_cli_stream_version)
         {
             bail!("new CLI stream surface `{id}` requires a shared CLI schema version bump");
         }
     }
     Ok(())
+}
+
+/// One narrowly enumerated compatibility exception for metadata that old stream readers already
+/// promise to skip as an unknown top-level tag. Existing v5 surfaces and fixtures remain frozen.
+fn is_v5_input_attachment_addition(
+    surface: &Surface,
+    previous_cli_stream_version: Option<u32>,
+) -> bool {
+    let fields = surface
+        .fields
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect::<BTreeSet<_>>();
+    surface.id == CLI_INPUT_ATTACHMENT_SURFACE
+        && previous_cli_stream_version == Some(5)
+        && surface.current_version == 5
+        && surface.version_field.as_deref() == Some("schema_version")
+        && surface.selector.as_ref()
+            == Some(&manifest::Selector {
+                field: "type".into(),
+                value: "input_attachment".into(),
+            })
+        && surface.fixtures.len() == 1
+        && surface.fixtures[0].path == CLI_INPUT_ATTACHMENT_FIXTURE
+        && surface.fixtures[0].format == manifest::FixtureFormat::Jsonl
+        && surface.fixtures[0].schema_version == 5
+        && fields
+            == BTreeSet::from([
+                "encoded_bytes",
+                "media_type",
+                "ordinal",
+                "schema_version",
+                "type",
+            ])
+        && surface.fields.iter().all(|field| {
+            field.introduced_release == 1 && field.deprecated_release.is_none() && !field.optional
+        })
+        && surface.compatibility_shims.is_empty()
 }
 
 fn compare_surface(

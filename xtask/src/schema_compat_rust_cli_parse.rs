@@ -14,8 +14,14 @@ pub(super) fn cli_machine_record_shapes(
     let file = parse_cli_output_source(source)?;
     let mut shapes = BTreeMap::new();
     let mut macros = 0usize;
-    for name in ["stream_event", "final_result"] {
-        let function = unique_value_function(&file, name, true)?;
+    let mut producers = vec![("stream_event", true), ("final_result", true)];
+    if file.items.iter().any(
+        |item| matches!(item, syn::Item::Fn(function) if function.sig.ident == "input_attachment_event"),
+    ) {
+        producers.insert(1, ("input_attachment_event", false));
+    }
+    for (name, public) in producers {
+        let function = unique_value_function(&file, name, public)?;
         if name == "stream_event" {
             validate_stream_event_patterns(function)?;
         }
@@ -176,7 +182,10 @@ pub(super) fn unique_value_function<'a>(
     if functions.next().is_some() {
         bail!("CLI machine source repeats function '{name}'");
     }
-    let visibility_matches = public == matches!(function.vis, syn::Visibility::Public(_));
+    let visibility_matches = matches!(
+        (public, &function.vis),
+        (true, syn::Visibility::Public(_)) | (false, syn::Visibility::Inherited)
+    );
     if !visibility_matches
         || function
             .attrs
