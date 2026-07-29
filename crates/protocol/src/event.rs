@@ -377,6 +377,33 @@ pub enum EventKind {
         tool: String,
         reason: String,
     },
+    /// Proven successful terminal for a brokered effect that is **not** a registry tool call:
+    /// provider requests, lifecycle hooks, subagent spawns, verifier oracle runs, workspace
+    /// checkpoints and in-turn workflow launches.
+    ///
+    /// # Why these do not reuse `ToolDone`
+    ///
+    /// `ToolDone` is not merely a terminal marker; it is a transcript and accounting record.
+    /// `core_obs::pricing::replay` folds every `ToolDone` into `ledger.replay_tool`, and the
+    /// kernel reconstructs pending tool results from it. Minting a synthetic `ToolResult` for a
+    /// provider request or a checkpoint would inflate the tool counters and put rows that were
+    /// never tool calls into the transcript projection. A distinct tag keeps one WAL ordering for
+    /// every effect class without corrupting the meaning of the class that already had one.
+    ///
+    /// This is a purely additive top-level tag (abi.md §4.3(b)2): every byte already on disk
+    /// decodes unchanged, so `PROTOCOL_VERSION` MUST NOT bump for it.
+    EffectDone { id: EffectId, tool: String },
+    /// Proven **failed** terminal for a brokered effect. The distinction from
+    /// [`EventKind::EffectUnknown`] is the whole point of the boundary: `EffectFailed` means the
+    /// executor observed an authoritative negative outcome, so the effect is closed and recovery
+    /// owes it nothing; `EffectUnknown` means no terminal could be observed at all, so recovery
+    /// must never replay it. Collapsing the two would make every honest failure look unrecoverable
+    /// and every unrecoverable dispatch look like an honest failure.
+    EffectFailed {
+        id: EffectId,
+        tool: String,
+        reason: String,
+    },
     /// The model turn completed, with usage by cache class.
     TurnEnd { usage: Usage },
     /// A message for the operator (not part of the transcript).

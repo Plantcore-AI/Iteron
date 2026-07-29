@@ -62,7 +62,14 @@ ReadOnly  <  ReversibleLocal  <  CodeExecuting  <  TrustMutating  <  Irreversibl
 
 **契约。** 一切外部可见的效果 MUST 且**仅** MUST 经由单一 effect broker 出境。broker MUST 为每个效果分配一个持久身份并写一条**写前日志 (write-ahead) 的 `EffectIntent`**,该记录 MUST 在进入执行体之前被 fsync。效果完成后 broker MUST 回收一个终态并作为 `ArtifactRef`(ABI 契约之一,见 §3.5)交回。若 broker 观测到派发但无法证明完成,它 MUST 记 `EffectUnknown` 并且**绝不自动重放**(Recoverable)。`EffectIntent` 中携带的参数与工作区是一份**脱敏的审计投影 (scrubbed audit projection)**,不是可用的环境权限句柄,即效果记录本身不泄露密钥、不授予能力。
 
-**`EffectIntent` 字段(规范形状)。** 每条 `EffectIntent` MUST 至少携带:`id`(效果的持久唯一身份)、`tool`(工具名)、`capability`(五层格之一)、`arguments`(脱敏投影)、`workspace`(工作区标识)、`trust_context`(K1 信任层)。broker MUST NOT 在该记录中写入原始凭据、令牌或任何可直接复用的权限句柄。终态 MUST 是三选一:`ToolDone { id, artifact_ref }`、`EffectFailed { id, reason }`、`EffectUnknown { id, reason }`。三者 MUST 互斥且穷尽。
+**`EffectIntent` 字段(规范形状)。** 每条 `EffectIntent` MUST 至少携带:`id`(效果的持久唯一身份)、`tool`(工具名,对非注册表工具的效果类则为该类的稳定标签)、`capability`(五层格之一)、`arguments`(脱敏投影)、`workspace`(工作区标识)、`trust_context`(K1 信任层)。broker MUST NOT 在该记录中写入原始凭据、令牌或任何可直接复用的权限句柄。终态 MUST 互斥且穷尽,取自四者之一:
+
+- `ToolDone { id, artifact_ref }` —— 注册表工具调用的已证实成功终态;
+- `EffectDone { id, tool }` —— **非**注册表工具的效果类(provider 请求、hook、subagent、verify、checkpoint、workflow)的已证实成功终态;
+- `EffectFailed { id, tool, reason }` —— 已被观测到的失败:执行体给出了权威的否定结果,效果就此关闭;
+- `EffectUnknown { id, tool, reason }` —— 派发已发生但终态**无法证明**,MUST 绝不自动重放。
+
+**为什么成功终态分两个标签。** `ToolDone` 不只是一个终态标记,它同时是转录与计量记录:成本账本按 `ToolDone` 折算工具计数,内核也按它重建待回填的工具结果。若让一次 provider 请求或一次 checkpoint 伪造一条 `ToolResult` 去复用 `ToolDone`,工具计数会被灌水,转录里会出现从来不是工具调用的行。因此非工具类用独立标签,以此在**不破坏既有类含义**的前提下让所有类共享同一条 WAL 顺序。`EffectFailed` 与 `EffectUnknown` 的区分同样是刚性的:前者表示「确知失败」,后者表示「无法确知」;把两者合并会让每一次诚实的失败看起来不可恢复,也让每一次不可恢复的派发看起来只是一次普通失败。
 
 **失败模式。** (a) fsync 失败:broker MUST 视 `EffectIntent` 未落盘并拒绝进入执行体,不得「先执行后补记」。(b) 执行体崩溃且退出码不可读:broker MUST 落 `EffectUnknown`,恢复时交由操作者裁决,MUST NOT 自动重跑。(c) 同一 `id` 出现第二条 `EffectIntent`:broker MUST 拒绝,持久身份保证效果至多被派发一次。
 
@@ -190,7 +197,7 @@ bash 的归属是一个必须被明确回答的边界问题:bash 是不是在微
 
 ### 3.7 当前实现真相 (Current Implementation Truth)
 
-本规格描述目标形态。诚实的当前状态:Core Code 处于 **pre-alpha**,是一个**运行中的模块化单体 (running modular monolith)**,尚**未**声称微内核合规。具体而言:内核当前**硬依赖 (hard-depends on)** 一组具体的策略/世界 crate,而非注入的端口;运行时的心脏当前是一段命令式的驱动函数,而非 §3.2-K4 所要求的纯 reducer;单一 effect broker 目前只覆盖注册表工具,provider / hook / subagent / verify 的效果尚未全部收敛到该单一边界之后;SQ / EQ 目前使用无界通道,尚未满足 Bounded 的背压要求;**实时自我进化激活为 NO-GO**;尚无第一方基准数字。
+本规格描述目标形态。诚实的当前状态:Core Code 处于 **pre-alpha**,是一个**运行中的模块化单体 (running modular monolith)**,尚**未**声称微内核合规。具体而言:内核当前**硬依赖 (hard-depends on)** 一组具体的策略/世界 crate,而非注入的端口;运行时的心脏当前是一段命令式的驱动函数,而非 §3.2-K4 所要求的纯 reducer;SQ / EQ 目前使用无界通道,尚未满足 Bounded 的背压要求;**实时自我进化激活为 NO-GO**;尚无第一方基准数字。**单一 effect broker (K3) 已不再是缺口**:provider 请求、hook、subagent 派发、verify 预言机、workspace checkpoint 与 in-turn workflow 启动均已与注册表工具走同一条 fsync 的 `EffectIntent` 写前顺序,身份按类命名空间铸造以保证同一 turn 内不相撞,at-most-once 在写前日志之前由准入账本强制,且有一道源码级门禁断言内核里没有任何效果派发点绕过该边界。
 
 已经**存在且经测试**的部分,恰是本节最难、最应前置的骨架:一个真实的五层能力格与一个模型无法影响的默认拒绝准入门 (K2);效果/授权分离与信任污点 (K1);一个 SHA-256 哈希链、fsync 写前、可崩溃重建的规范记录 (K5);以及一个机器可检查的边界注册表,用于保证路径责任唯一并侦测内部依赖漂移。抽取 (extraction) 路径已在架构文档中给出:版本化的规范命令/事件信封 -> 纯状态 reducer -> 单一能力与 effect broker -> 注入的 provider / world / context / verification / scheduler 端口 -> 长驻的、有界流控的会话运行时 -> 版本化的 App Server。
 

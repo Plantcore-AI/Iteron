@@ -49,6 +49,17 @@ pub fn redact_event(event: &Event) -> Event {
             tool: scrub(tool),
             reason: scrub(reason),
         },
+        EventKind::EffectDone { id, tool } => EventKind::EffectDone {
+            id: id.clone(),
+            tool: scrub(tool),
+        },
+        // A failure reason is executor-authored free text (a spawn error, a provider message), so
+        // it is exactly the shape that carries a leaked token into the long-retained record.
+        EventKind::EffectFailed { id, tool, reason } => EventKind::EffectFailed {
+            id: id.clone(),
+            tool: scrub(tool),
+            reason: scrub(reason),
+        },
         EventKind::Message { message } => EventKind::Message {
             message: redact_message(message),
         },

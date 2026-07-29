@@ -115,7 +115,9 @@ mod tests {
         let source = read_bounded(root, EVENT_SOURCE, MAX_SOURCE_BYTES).unwrap();
         let shapes =
             tagged_enum_fields(&source, EVENT_KIND_SIGNATURE, "kind", 1, &BTreeMap::new()).unwrap();
-        assert_eq!(shapes.len(), 29);
+        // 29 original tags + `effect_done` and `effect_failed`, the two purely additive terminals
+        // the universal effect boundary (#16) introduced for non-registry classes.
+        assert_eq!(shapes.len(), 31);
         assert_eq!(
             shapes["notice"],
             BTreeSet::from(["kind".to_owned(), "text".to_owned()])

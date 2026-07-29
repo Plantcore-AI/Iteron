@@ -1,13 +1,20 @@
-//! Registry-tool effect admission and recovery invariants.
+//! The universal effect boundary: admission, durable intent ordering, terminal-or-unknown outcome.
 //!
-//! This is deliberately narrower than a universal effect broker: it covers only tool calls that
-//! pass through `core_tools::Registry`. Provider requests, hooks, MCP lifecycle, checkpoints,
-//! memory writes, and subagents still need the same boundary before Core can claim full coverage.
-//! The code here is constitutional mechanism, never a learnable/evolvable strategy slot.
+//! Every externally visible effect the kernel performs crosses this module — registry tool calls,
+//! provider requests, lifecycle hooks, subagent spawns, verifier oracle runs, workspace checkpoints
+//! and in-turn workflow launches. They share one fsynced `EffectIntent` write-ahead ordering, one
+//! at-most-once admission ledger (`crate::effect_admission`) and one terminal vocabulary, so the
+//! recovery story is a property of the boundary rather than a promise repeated at every call site.
+//!
+//! The identity vocabulary lives in `crate::effect_class` and the replay fold in
+//! `crate::effect_journal`. The code here is constitutional mechanism, never a learnable/evolvable
+//! strategy slot.
 
+use crate::effect_admission::{EffectAdmissionError, EffectAdmissions};
+use core_protocol::effect::EffectProposal;
 use core_protocol::{Capability, EffectId, Event, EventKind, Seq, ToolUse, TurnId};
 use core_tools::ToolExecution;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::future::Future;
 
 pub const MAX_TOOL_CALLS_PER_TURN: usize = 128;
@@ -33,6 +40,8 @@ pub enum ToolCallContractError {
     UnsafeIdentity,
     #[error("provider emitted a secret-shaped tool identity")]
     SecretShapedIdentity,
+    #[error("provider emitted a tool identity inside a harness-reserved namespace")]
+    ReservedIdentity,
     #[error("provider emitted a duplicate tool-use id in one turn")]
     DuplicateId,
     #[error("provider emitted an empty or oversized tool name")]
@@ -60,6 +69,15 @@ impl ToolCallAdmission {
         {
             return Err(ToolCallContractError::SecretShapedIdentity);
         }
+        // The harness mints two identity namespaces the model must never be able to enter: effect
+        // ids (`fx1-`) and its own correlation ids (`hx1-`). Both are fully predictable, so without
+        // this a provider could name a tool call after a checkpoint's audit record and have its
+        // result correlate against an effect it never performed.
+        if crate::effect_class::is_harness_effect_id(&tool.id)
+            || crate::effect_class::is_harness_correlation_id(&tool.id)
+        {
+            return Err(ToolCallContractError::ReservedIdentity);
+        }
         if !self.ids.insert(tool.id.clone()) {
             return Err(ToolCallContractError::DuplicateId);
         }
@@ -81,12 +99,6 @@ fn unsafe_identity(value: &str) -> bool {
                 0x200B..=0x200F | 0x202A..=0x202E | 0x2066..=0x2069 | 0x00AD | 0xFEFF
             )
     })
-}
-
-/// Mint a deterministic, harness-owned effect identity. Turn ids are recovered monotonically from
-/// the complete fork-aware durable history; `ordinal` is the provider's bounded tool order.
-pub fn effect_id(turn: TurnId, ordinal: usize) -> EffectId {
-    EffectId(format!("fx1-{:08x}-{ordinal:04x}", turn.0))
 }
 
 /// Fully admitted registry call. Constructing this value does not grant authority; the caller must
@@ -120,15 +132,53 @@ impl DurableEffectLog for core_record::Rollout {
 pub struct BrokeredEffect {
     pub turn: TurnId,
     pub effect_id: EffectId,
-    /// Provider/model correlation for effects that originate from a model `tool_use` block. Empty
-    /// for harness-internal effects (checkpoints, memory writes, subagent lifecycle) that have no
-    /// such id — the harness-minted `effect_id` is then the sole correlation key.
+    /// Provider/model correlation for effects that originate from a model `tool_use` block.
+    ///
+    /// **Never empty.** An earlier draft of this field allowed empty for harness-internal effects,
+    /// which `EffectProposal::validate` (crates/protocol/src/effect.rs) now refuses outright: empty
+    /// is reserved for *reading* the first experimental WAL format, where a terminal is correlated
+    /// by matching a `ToolResult`'s id against the effect id string. Classes with no model call
+    /// behind them carry `crate::effect_class::harness_correlation_id` instead.
     pub tool_use_id: String,
-    /// Stable, human-readable effect kind recorded in the intent and any unknown marker.
+    /// Stable, human-readable effect kind recorded in the intent and any terminal.
     pub kind: String,
     pub capability: Capability,
     pub audit_arguments: serde_json::Value,
     pub workspace: String,
+}
+
+impl BrokeredEffect {
+    /// The frozen W1 value form of this admission.
+    ///
+    /// Going through `EffectProposal` rather than writing the six fields straight into the event is
+    /// what makes the mint-time gate reachable: `validate` is the only place that knows empty
+    /// correlation ids and multi-class admissions cannot be recorded.
+    fn proposal(&self) -> EffectProposal {
+        EffectProposal::from_event_fields(
+            self.effect_id.clone(),
+            self.tool_use_id.clone(),
+            self.kind.clone(),
+            self.capability,
+            self.audit_arguments.clone(),
+            self.workspace.clone(),
+        )
+    }
+}
+
+/// Why the boundary refused, or how the durable log failed, on one dispatch.
+///
+/// The variants are kept apart because the caller owes them different things: `Record` means the
+/// durable log is broken and the run must stop trusting it, while `Admission` and `Proposal` mean
+/// the log is perfectly healthy and a *caller* asked for something the boundary will not record.
+/// Collapsing them made a duplicate-id bug look like disk failure.
+#[derive(Debug, thiserror::Error)]
+pub enum BrokerError {
+    #[error(transparent)]
+    Record(#[from] core_record::RecordError),
+    #[error(transparent)]
+    Admission(#[from] EffectAdmissionError),
+    #[error("effect proposal refused before the write-ahead append: {0}")]
+    Proposal(&'static str),
 }
 
 /// What an executor proves back to the boundary. `Definite` carries the exact durable terminal event
@@ -160,22 +210,108 @@ impl<T> BrokeredOutcome<T> {
     }
 }
 
-/// The one and only effect-dispatch sequence, for ANY effect kind: durable intent, exactly one
-/// executor invocation, durable terminal. It returns no outcome until the terminal append/fsync
-/// succeeds, keeping every downstream projection strictly behind canonical state. A failed intent
-/// append means the executor is never entered (no effect, no terminal); a failed terminal append
-/// leaves a single recoverable pending intent rather than a silently-lost effect. `execute_registry_tool`
-/// is one caller of this; it is not the only kind of effect the boundary admits.
+/// The one and only effect-dispatch sequence, for ANY effect kind: admission, durable intent,
+/// exactly one executor invocation, durable terminal.
+///
+/// The order of the four steps is the whole contract:
+///
+/// 1. **Admit.** The identity is claimed in `admissions` first, so a repeat never reaches the log
+///    and never reaches the executor. At-most-once is enforced *before* any side effect, not
+///    reconstructed afterwards by [`EffectJournal`].
+/// 2. **Validate.** The proposal crosses the frozen W1 mint-time gate. A proposal that cannot be
+///    recorded honestly (empty correlation id, multi-class admission, oversized projection) is
+///    refused here rather than written and reasoned about later.
+/// 3. **Intend.** The fsynced write-ahead `EffectIntent`. A failed append means the executor is
+///    never entered: no effect, no terminal, nothing to recover.
+/// 4. **Terminate.** Exactly one of `ToolDone`/`EffectDone` (proven success), `EffectFailed`
+///    (proven failure) or `EffectUnknown` (no terminal observable). A failed terminal append leaves
+///    one recoverable pending intent rather than a silently lost effect.
+///
+/// It returns no outcome until the terminal append/fsync succeeds, keeping every downstream
+/// projection strictly behind canonical state.
 pub async fn broker_effect<L, Execute, ExecuteFuture, T>(
     log: &mut L,
+    admissions: &mut EffectAdmissions,
     effect: BrokeredEffect,
     execute: Execute,
-) -> Result<BrokeredOutcome<T>, core_record::RecordError>
+) -> Result<BrokeredOutcome<T>, BrokerError>
 where
     L: DurableEffectLog,
     Execute: FnOnce() -> ExecuteFuture,
     ExecuteFuture: Future<Output = EffectDisposition<T>>,
 {
+    let ticket = open_effect(log, admissions, effect)?;
+    let (settlement, outcome) = match execute().await {
+        EffectDisposition::Definite { terminal, value } => (
+            Settlement::Definite(terminal),
+            BrokeredOutcome::Definite(value),
+        ),
+        EffectDisposition::Unknown { reason, value } => {
+            (Settlement::Unknown(reason), BrokeredOutcome::Unknown(value))
+        }
+    };
+    settle_effect(log, ticket, settlement)?;
+    Ok(outcome)
+}
+
+/// An admitted effect whose write-ahead intent is durable and whose terminal is still owed.
+///
+/// The ticket exists so an executor that needs the whole agent — the provider turn, the verifier
+/// poll loop, a subagent — can still cross the same boundary as a closure-shaped one. Both entry
+/// points run the identical sequence; [`broker_effect`] is literally `open` + execute + `settle`.
+///
+/// # What happens if a ticket is dropped
+///
+/// Nothing unsafe, by construction. A dropped ticket leaves a durable intent with no terminal,
+/// which is exactly the state recovery already understands: `EffectJournal::pending` reports it and
+/// the run journals `EffectUnknown` for it, never a replay. Forgetting to settle is therefore
+/// conservative, not fail-open — the boundary cannot be tricked into forgetting an effect happened.
+#[must_use = "an opened effect owes the log a terminal; dropping the ticket makes recovery treat it as unknown"]
+pub struct EffectTicket {
+    turn: TurnId,
+    effect_id: EffectId,
+    kind: String,
+}
+
+impl EffectTicket {
+    /// The identity this ticket will settle. Callers that need to name the effect in their own
+    /// terminal event (a registry `ToolDone`, say) read it from here rather than re-minting it.
+    pub fn effect_id(&self) -> &EffectId {
+        &self.effect_id
+    }
+}
+
+/// How an opened effect ends.
+// `Definite` carries an `EventKind` (~384 bytes) and `Unknown` a `String` (~24), so clippy asks for
+// a Box. Not taken: a `Settlement` is constructed immediately before `settle_effect` consumes it and
+// never crosses an await or a collection, so the boxing would buy nothing but an allocation on the
+// durability path — the one path where an extra failure mode is least welcome.
+#[allow(clippy::large_enum_variant)]
+pub enum Settlement {
+    /// The executor proved a terminal state and supplies the exact durable event.
+    Definite(EventKind),
+    /// The executor dispatched but could not observe an authoritative terminal.
+    Unknown(String),
+}
+
+/// Phase one of the one and only dispatch sequence: admit the identity, validate the proposal,
+/// fsync the write-ahead intent. The executor has NOT run when this returns.
+pub fn open_effect<L>(
+    log: &mut L,
+    admissions: &mut EffectAdmissions,
+    effect: BrokeredEffect,
+) -> Result<EffectTicket, BrokerError>
+where
+    L: DurableEffectLog,
+{
+    // Admission and validation both happen before a single byte is appended, so neither can leave
+    // a half-admitted effect on disk.
+    admissions.admit(effect.turn, &effect.effect_id)?;
+    effect
+        .proposal()
+        .validate()
+        .map_err(BrokerError::Proposal)?;
+
     let BrokeredEffect {
         turn,
         effect_id,
@@ -197,29 +333,42 @@ where
             workspace,
         },
     })?;
+    Ok(EffectTicket {
+        turn,
+        effect_id,
+        kind,
+    })
+}
 
-    match execute().await {
-        EffectDisposition::Definite { terminal, value } => {
-            log.append_effect(&Event {
-                seq: Seq::ZERO,
-                turn,
-                kind: terminal,
-            })?;
-            Ok(BrokeredOutcome::Definite(value))
-        }
-        EffectDisposition::Unknown { reason, value } => {
-            log.append_effect(&Event {
-                seq: Seq::ZERO,
-                turn,
-                kind: EventKind::EffectUnknown {
-                    id: effect_id,
-                    tool: kind,
-                    reason,
-                },
-            })?;
-            Ok(BrokeredOutcome::Unknown(value))
-        }
-    }
+/// Phase two: append exactly one terminal for an opened effect. Consuming the ticket is what makes
+/// "exactly one terminal" a type-level property rather than a review comment.
+pub fn settle_effect<L>(
+    log: &mut L,
+    ticket: EffectTicket,
+    settlement: Settlement,
+) -> Result<(), BrokerError>
+where
+    L: DurableEffectLog,
+{
+    let EffectTicket {
+        turn,
+        effect_id,
+        kind,
+    } = ticket;
+    let terminal = match settlement {
+        Settlement::Definite(terminal) => terminal,
+        Settlement::Unknown(reason) => EventKind::EffectUnknown {
+            id: effect_id,
+            tool: kind,
+            reason,
+        },
+    };
+    log.append_effect(&Event {
+        seq: Seq::ZERO,
+        turn,
+        kind: terminal,
+    })?;
+    Ok(())
 }
 
 /// The registry-effect dispatch sequence, expressed as one instance of the universal
@@ -229,9 +378,10 @@ where
 /// and every other brokered effect on a single, non-diverging WAL ordering.
 pub(crate) async fn execute_registry_tool<L, Execute, ExecuteFuture, Execution>(
     log: &mut L,
+    admissions: &mut EffectAdmissions,
     admitted: AdmittedRegistryTool,
     execute: Execute,
-) -> Result<ToolExecution, core_record::RecordError>
+) -> Result<ToolExecution, BrokerError>
 where
     L: DurableEffectLog,
     Execute: FnOnce(ToolUse) -> ExecuteFuture,
@@ -257,7 +407,7 @@ where
         audit_arguments,
         workspace,
     };
-    let outcome = broker_effect(log, effect, move || async move {
+    let outcome = broker_effect(log, admissions, effect, move || async move {
         let mut outcome: ToolExecution = execute(call).await.into();
         // Correlation identity belongs to the admitted call, never to plugin-returned data. Registry
         // already enforces this; repeating it here protects every executor behind the same boundary.
@@ -285,147 +435,14 @@ where
     Ok(outcome.into_value())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingEffect {
-    pub turn: TurnId,
-    pub id: EffectId,
-    pub tool: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum EffectJournalError {
-    #[error("effect journal contains a duplicate intent identity")]
-    DuplicateIntent,
-    #[error("effect journal contains a terminal result without its intent")]
-    TerminalWithoutIntent,
-    #[error("effect journal contains more than one terminal state for an intent")]
-    DuplicateTerminal,
-    #[error("effect journal contains an unknown marker without its intent")]
-    UnknownWithoutIntent,
-    #[error("effect journal tries to resolve an unknown outcome without reconciliation evidence")]
-    TerminalAfterUnknown,
-    #[error("effect journal marks a completed attempt as unknown")]
-    UnknownAfterTerminal,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum State {
-    Pending,
-    Completed,
-    Unknown,
-}
-
-#[derive(Debug, Clone)]
-struct Entry {
-    turn: TurnId,
-    id: EffectId,
-    tool: String,
-    legacy_tool_use_id: Option<String>,
-    state: State,
-}
-
-/// Pure fold of the durable effect sub-log. It never executes, retries, approves, or reconciles an
-/// effect; it only reports the state implied by canonical events.
-#[derive(Debug, Default)]
-pub struct EffectJournal {
-    entries: BTreeMap<(u32, String), Entry>,
-}
-
-impl EffectJournal {
-    pub fn replay(events: &[Event]) -> Result<Self, EffectJournalError> {
-        let mut journal = Self::default();
-        for event in events {
-            journal.apply(event)?;
-        }
-        Ok(journal)
-    }
-
-    fn apply(&mut self, event: &Event) -> Result<(), EffectJournalError> {
-        match &event.kind {
-            EventKind::EffectIntent {
-                id,
-                tool_use_id,
-                tool,
-                ..
-            } => {
-                let key = (event.turn.0, id.0.clone());
-                if self.entries.contains_key(&key) {
-                    return Err(EffectJournalError::DuplicateIntent);
-                }
-                self.entries.insert(
-                    key,
-                    Entry {
-                        turn: event.turn,
-                        id: id.clone(),
-                        tool: tool.clone(),
-                        legacy_tool_use_id: tool_use_id.is_empty().then(|| id.0.clone()),
-                        state: State::Pending,
-                    },
-                );
-            }
-            EventKind::ToolDone { result, effect_id } => {
-                let key = if let Some(id) = effect_id {
-                    Some((event.turn.0, id.0.clone()))
-                } else {
-                    self.entries.iter().find_map(|(key, entry)| {
-                        (entry.turn == event.turn
-                            && entry.legacy_tool_use_id.as_deref()
-                                == Some(result.tool_use_id.as_str()))
-                        .then(|| key.clone())
-                    })
-                };
-                let Some(key) = key else {
-                    // Pure tools and gate-denied calls intentionally have no EffectIntent.
-                    return Ok(());
-                };
-                let Some(entry) = self.entries.get_mut(&key) else {
-                    return Err(EffectJournalError::TerminalWithoutIntent);
-                };
-                entry.state = match entry.state {
-                    State::Pending => State::Completed,
-                    State::Completed => return Err(EffectJournalError::DuplicateTerminal),
-                    State::Unknown => return Err(EffectJournalError::TerminalAfterUnknown),
-                };
-            }
-            EventKind::EffectUnknown { id, .. } => {
-                let key = (event.turn.0, id.0.clone());
-                let Some(entry) = self.entries.get_mut(&key) else {
-                    return Err(EffectJournalError::UnknownWithoutIntent);
-                };
-                entry.state = match entry.state {
-                    State::Pending => State::Unknown,
-                    State::Completed => return Err(EffectJournalError::UnknownAfterTerminal),
-                    State::Unknown => return Err(EffectJournalError::DuplicateTerminal),
-                };
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    pub fn pending(&self) -> Vec<PendingEffect> {
-        self.entries
-            .values()
-            .filter(|entry| entry.state == State::Pending)
-            .map(|entry| PendingEffect {
-                turn: entry.turn,
-                id: entry.id.clone(),
-                tool: entry.tool.clone(),
-            })
-            .collect()
-    }
-
-    pub fn unknown_count(&self) -> usize {
-        self.entries
-            .values()
-            .filter(|entry| entry.state == State::Unknown)
-            .count()
-    }
-}
+/// The replay fold lives in its own module; it is re-exported here so every existing
+/// `effects::EffectJournal` path keeps resolving.
+pub use crate::effect_journal::{EffectJournal, EffectJournalError, PendingEffect};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::effect_class::{EffectClass, effect_id};
     use core_protocol::{Capability, Seq, ToolResult, Trust};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -563,7 +580,7 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
     fn admitted() -> AdmittedRegistryTool {
         AdmittedRegistryTool {
             turn: TurnId(7),
-            effect_id: effect_id(TurnId(7), 2),
+            effect_id: effect_id(TurnId(7), EffectClass::RegistryTool, 2),
             call: ToolUse {
                 id: "provider-call".into(),
                 name: "edit".into(),
@@ -583,16 +600,21 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
         };
         let calls = Arc::new(AtomicUsize::new(0));
         let executor_calls = calls.clone();
-        let result = execute_registry_tool(&mut log, admitted(), move |call| async move {
-            executor_calls.fetch_add(1, Ordering::SeqCst);
-            ToolResult {
-                tool_use_id: call.id,
-                content: "ran".into(),
-                is_error: false,
-                trust: Trust::Workspace,
-                latency_ms: 0,
-            }
-        })
+        let result = execute_registry_tool(
+            &mut log,
+            &mut EffectAdmissions::default(),
+            admitted(),
+            move |call| async move {
+                executor_calls.fetch_add(1, Ordering::SeqCst);
+                ToolResult {
+                    tool_use_id: call.id,
+                    content: "ran".into(),
+                    is_error: false,
+                    trust: Trust::Workspace,
+                    latency_ms: 0,
+                }
+            },
+        )
         .await;
         assert!(result.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -607,17 +629,22 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
         };
         let calls = Arc::new(AtomicUsize::new(0));
         let executor_calls = calls.clone();
-        let result = execute_registry_tool(&mut log, admitted(), move |call| async move {
-            executor_calls.fetch_add(1, Ordering::SeqCst);
-            ToolResult {
-                // A plugin cannot replace the admitted provider correlation id.
-                tool_use_id: "wrong-id".into(),
-                content: format!("ran {}", call.name),
-                is_error: false,
-                trust: Trust::Workspace,
-                latency_ms: 0,
-            }
-        })
+        let result = execute_registry_tool(
+            &mut log,
+            &mut EffectAdmissions::default(),
+            admitted(),
+            move |call| async move {
+                executor_calls.fetch_add(1, Ordering::SeqCst);
+                ToolResult {
+                    // A plugin cannot replace the admitted provider correlation id.
+                    tool_use_id: "wrong-id".into(),
+                    content: format!("ran {}", call.name),
+                    is_error: false,
+                    trust: Trust::Workspace,
+                    latency_ms: 0,
+                }
+            },
+        )
         .await;
         assert!(result.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -628,15 +655,20 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
     #[tokio::test]
     async fn successful_boundary_is_intent_then_terminal_and_normalizes_result_id() {
         let mut log = FakeLog::default();
-        let result = execute_registry_tool(&mut log, admitted(), |_| async {
-            ToolResult {
-                tool_use_id: "plugin-controlled".into(),
-                content: "ok".into(),
-                is_error: false,
-                trust: Trust::Workspace,
-                latency_ms: 0,
-            }
-        })
+        let result = execute_registry_tool(
+            &mut log,
+            &mut EffectAdmissions::default(),
+            admitted(),
+            |_| async {
+                ToolResult {
+                    tool_use_id: "plugin-controlled".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                    trust: Trust::Workspace,
+                    latency_ms: 0,
+                }
+            },
+        )
         .await
         .unwrap()
         .into_result();
@@ -660,15 +692,20 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
     #[tokio::test]
     async fn runtime_unknown_is_durable_and_never_fabricates_tool_done() {
         let mut log = FakeLog::default();
-        let outcome = execute_registry_tool(&mut log, admitted(), |_| async {
-            ToolExecution::Unknown(ToolResult {
-                tool_use_id: "plugin-controlled".into(),
-                content: "remote state unknown".into(),
-                is_error: true,
-                trust: Trust::Untrusted,
-                latency_ms: 0,
-            })
-        })
+        let outcome = execute_registry_tool(
+            &mut log,
+            &mut EffectAdmissions::default(),
+            admitted(),
+            |_| async {
+                ToolExecution::Unknown(ToolResult {
+                    tool_use_id: "plugin-controlled".into(),
+                    content: "remote state unknown".into(),
+                    is_error: true,
+                    trust: Trust::Untrusted,
+                    latency_ms: 0,
+                })
+            },
+        )
         .await
         .unwrap();
         assert!(matches!(outcome, ToolExecution::Unknown(_)));
@@ -701,14 +738,21 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
     // ===================================================================
 
     fn d1_08_memory_write_effect() -> (EffectId, BrokeredEffect) {
-        let id = effect_id(TurnId(11), 0);
+        let id = effect_id(TurnId(11), EffectClass::Checkpoint, 0);
         (
             id.clone(),
             BrokeredEffect {
                 turn: TurnId(11),
                 effect_id: id,
-                // A harness-internal effect carries NO provider tool_use_id.
-                tool_use_id: String::new(),
+                // A harness-internal effect has no provider tool_use_id, but it may not leave the
+                // field empty: empty is reserved for reading the first experimental WAL format, and
+                // a NEW record written that way becomes completable by a model-chosen tool id. It
+                // carries a harness-scoped correlation id instead.
+                tool_use_id: crate::effect_class::harness_correlation_id(
+                    TurnId(11),
+                    EffectClass::Checkpoint,
+                    0,
+                ),
                 kind: "memory_write".into(),
                 capability: Capability::ReversibleLocal,
                 audit_arguments: serde_json::json!({"key":"profile","bytes":42}),
@@ -736,15 +780,19 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
         let (id, effect) = d1_08_memory_write_effect();
         let terminal_id = id.clone();
 
-        let outcome: BrokeredOutcome<&'static str> =
-            broker_effect(&mut log, effect, move || async move {
+        let outcome: BrokeredOutcome<&'static str> = broker_effect(
+            &mut log,
+            &mut EffectAdmissions::default(),
+            effect,
+            move || async move {
                 EffectDisposition::Definite {
                     terminal: d1_08_generic_terminal(&terminal_id),
                     value: "memory-committed",
                 }
-            })
-            .await
-            .expect("a brokered non-registry effect must record cleanly");
+            },
+        )
+        .await
+        .expect("a brokered non-registry effect must record cleanly");
 
         // The executor value is handed back only once its terminal is durable.
         match outcome {
@@ -763,8 +811,9 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
             } => {
                 assert_eq!(tool, "memory_write");
                 assert!(
-                    tool_use_id.is_empty(),
-                    "a harness-internal effect carries no provider tool_use_id"
+                    crate::effect_class::is_harness_correlation_id(tool_use_id),
+                    "a harness-internal effect carries a harness-scoped correlation id, never an \
+                     empty one and never a model-controlled one"
                 );
                 assert_eq!(*capability, Capability::ReversibleLocal);
             }
@@ -783,7 +832,9 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
         let journal = EffectJournal::replay(&log.events).unwrap();
         assert!(journal.pending().is_empty());
         assert_eq!(journal.unknown_count(), 0);
-        assert_eq!(id.0, "fx1-0000000b-0000");
+        // Namespaced by class, so this identity can never collide with the turn's first registry
+        // tool call (`fx1-0000000b-0000`) the way a bare ordinal would.
+        assert_eq!(id.0, "fx1-0000000b-cp-0000");
     }
 
     #[tokio::test]
@@ -797,8 +848,11 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
         let calls = Arc::new(AtomicUsize::new(0));
         let executor_calls = calls.clone();
 
-        let result: Result<BrokeredOutcome<()>, core_record::RecordError> =
-            broker_effect(&mut log, effect, move || async move {
+        let result: Result<BrokeredOutcome<()>, BrokerError> = broker_effect(
+            &mut log,
+            &mut EffectAdmissions::default(),
+            effect,
+            move || async move {
                 executor_calls.fetch_add(1, Ordering::SeqCst);
                 EffectDisposition::Definite {
                     terminal: EventKind::Notice {
@@ -806,8 +860,9 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
                     },
                     value: (),
                 }
-            })
-            .await;
+            },
+        )
+        .await;
 
         assert!(
             result.is_err(),
@@ -827,7 +882,7 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
         // A provider request dispatched but whose remote outcome we cannot prove.
         let effect = BrokeredEffect {
             turn: TurnId(4),
-            effect_id: effect_id(TurnId(4), 1),
+            effect_id: effect_id(TurnId(4), EffectClass::RegistryTool, 1),
             tool_use_id: "prov-req-1".into(),
             kind: "provider_request".into(),
             capability: Capability::IrreversibleExternal,
@@ -835,12 +890,17 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
             workspace: "/repo".into(),
         };
 
-        let outcome: BrokeredOutcome<u8> = broker_effect(&mut log, effect, move || async move {
-            EffectDisposition::Unknown {
-                reason: "dispatched but no authoritative terminal observed".into(),
-                value: 7,
-            }
-        })
+        let outcome: BrokeredOutcome<u8> = broker_effect(
+            &mut log,
+            &mut EffectAdmissions::default(),
+            effect,
+            move || async move {
+                EffectDisposition::Unknown {
+                    reason: "dispatched but no authoritative terminal observed".into(),
+                    value: 7,
+                }
+            },
+        )
         .await
         .expect("recording an unknown is itself durable");
 
@@ -878,15 +938,19 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
         let calls = Arc::new(AtomicUsize::new(0));
         let executor_calls = calls.clone();
 
-        let result: Result<BrokeredOutcome<()>, core_record::RecordError> =
-            broker_effect(&mut log, effect, move || async move {
+        let result: Result<BrokeredOutcome<()>, BrokerError> = broker_effect(
+            &mut log,
+            &mut EffectAdmissions::default(),
+            effect,
+            move || async move {
                 executor_calls.fetch_add(1, Ordering::SeqCst);
                 EffectDisposition::Definite {
                     terminal: d1_08_generic_terminal(&terminal_id),
                     value: (),
                 }
-            })
-            .await;
+            },
+        )
+        .await;
 
         assert!(
             result.is_err(),

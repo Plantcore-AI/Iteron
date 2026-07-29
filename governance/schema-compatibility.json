@@ -986,6 +986,72 @@
       "compatibility_shims": []
     },
     {
+      "id": "record.event-kind.effect_done",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "effect_done"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "tool",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.effect_failed",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "effect_failed"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "reason",
+          "introduced_release": 1
+        },
+        {
+          "name": "tool",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
       "id": "record.event-kind.turn_end",
       "current_version": 1,
       "version_field": null,

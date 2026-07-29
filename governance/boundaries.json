@@ -188,10 +188,16 @@
       "primary": null,
       "reviewers": [],
       "paths": [
+        { "kind": "file", "path": "crates/kernel/src/effect_admission.rs" },
+        { "kind": "file", "path": "crates/kernel/src/effect_boundary_tests.rs" },
+        { "kind": "file", "path": "crates/kernel/src/effect_class.rs" },
+        { "kind": "file", "path": "crates/kernel/src/effect_journal.rs" },
         { "kind": "file", "path": "crates/kernel/src/effects.rs" }
       ],
       "contracts": ["intent-execute-terminal", "unknown-effect-block"],
-      "checks": ["cargo test -p core-kernel effects --locked"]
+      "checks": [
+        "cargo test -p core-kernel effect --locked"
+      ]
     },
     {
       "id": "kernel-hooks",
@@ -691,6 +697,10 @@
       "paths": [
         { "kind": "file", "path": "crates/protocol/src/event.rs" },
         { "kind": "file", "path": "crates/protocol/src/ids.rs" },
+        { "kind": "file", "path": "crates/kernel/src/effect_admission.rs" },
+        { "kind": "file", "path": "crates/kernel/src/effect_boundary_tests.rs" },
+        { "kind": "file", "path": "crates/kernel/src/effect_class.rs" },
+        { "kind": "file", "path": "crates/kernel/src/effect_journal.rs" },
         { "kind": "file", "path": "crates/kernel/src/effects.rs" },
         { "kind": "file", "path": "crates/kernel/src/lib.rs" },
         { "kind": "tree", "path": "crates/record" },

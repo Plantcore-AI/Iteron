@@ -47,7 +47,9 @@ pub enum HookEvent {
 }
 
 impl HookEvent {
-    fn key(self) -> &'static str {
+    /// The wire name of this lifecycle event. Public because the effect boundary records it as the
+    /// audit projection of a hook dispatch (#16).
+    pub const fn key(self) -> &'static str {
         match self {
             HookEvent::PreToolUse => "PreToolUse",
             HookEvent::PostToolUse => "PostToolUse",
