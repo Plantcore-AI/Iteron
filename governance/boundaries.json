@@ -360,6 +360,9 @@
       "paths": [
         { "kind": "file", "path": "crates/ctx/Cargo.toml" },
         { "kind": "file", "path": "crates/ctx/src/compact.rs" },
+        { "kind": "file", "path": "crates/ctx/src/context_assembly.rs" },
+        { "kind": "file", "path": "crates/ctx/src/context_port.rs" },
+        { "kind": "file", "path": "crates/ctx/src/context_strategy.rs" },
         { "kind": "file", "path": "crates/ctx/src/instructions.rs" },
         { "kind": "file", "path": "crates/ctx/src/lib.rs" },
         { "kind": "file", "path": "crates/ctx/src/outline.rs" },
@@ -478,6 +481,7 @@
         { "kind": "file", "path": "crates/tools/src/schema.rs" },
         { "kind": "file", "path": "crates/tools/src/schema_error.rs" },
         { "kind": "file", "path": "crates/tools/src/schema_tests.rs" },
+        { "kind": "file", "path": "crates/tools/src/tool_policy.rs" },
         { "kind": "file", "path": "crates/tools/src/write_file.rs" },
         { "kind": "file", "path": "crates/tools/src/write_file_tests.rs" }
       ],
@@ -577,6 +581,7 @@
         { "kind": "file", "path": "crates/cli/src/providers.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/pricing.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime/strategy_runtime.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/workflow_spawner.rs" },
         { "kind": "file", "path": "crates/cli/src/workflow.rs" }
       ],
@@ -1082,7 +1087,7 @@
         "build": []
       },
       "core-xtask": {
-        "normal": ["core-agents", "core-tools"],
+        "normal": ["core-agents", "core-ctx", "core-protocol", "core-tools"],
         "dev": [],
         "build": []
       }

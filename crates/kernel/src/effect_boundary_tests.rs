@@ -583,10 +583,10 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
                    Agent::brokered_hook so it crosses the effect boundary",
     },
     EffectPrimitive {
-        needle: "registry.run_effect(",
+        needle: "registry.run_admitted_intent(",
         allowed_in: &["drive_admitted"],
-        guidance: "an effecting registry tool must be dispatched by effects::execute_registry_tool, \
-                   never called directly",
+        guidance: "an admitted registry intent must be dispatched by \
+                   effects::execute_registry_tool, never called directly",
     },
     EffectPrimitive {
         needle: "self.bounded_provider_turn(",

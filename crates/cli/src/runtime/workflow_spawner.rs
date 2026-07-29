@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use core_agents::AgentDef;
 use core_obs::PricingPort;
 use core_protocol::capability_set::CapabilitySet;
+use core_protocol::slot::StrategySlot;
 use core_protocol::{
     Budget, CostAttribution, Effort, PermissionMode, PermissionRules, RunId, TenantId,
 };
@@ -75,6 +76,12 @@ pub struct KernelSpawnerContext {
     pub model_context_window: Option<u64>,
     pub model_max_output_tokens: Option<u32>,
     pub sensitive_env_names: Vec<String>,
+    /// Pinned strategy/port set inherited by every child; child construction never falls back to
+    /// a different policy generation.
+    pub context_strategy: Arc<dyn StrategySlot>,
+    pub tool_policy: Arc<dyn StrategySlot>,
+    pub context_port: Arc<dyn core_ctx::ContextPort>,
+    pub context_home_dir: Option<PathBuf>,
     /// Trusted lifecycle hooks (resolved once at the composition root). Children inherit this exact
     /// value; they never re-read ambient/repository config.
     pub hooks: Hooks,
@@ -136,6 +143,10 @@ impl KernelSpawnerContext {
             model_context_window: None,
             model_max_output_tokens: None,
             sensitive_env_names: Vec::new(),
+            context_strategy: Arc::new(core_ctx::ContextStrategy::default()),
+            tool_policy: Arc::new(core_tools::ToolPolicy::default()),
+            context_port: Arc::new(core_ctx::DefaultContextPort),
+            context_home_dir: None,
             hooks: Hooks::default(),
             system: AgentDef::generic().system,
             permission_mode: PermissionMode::default(),
@@ -243,6 +254,10 @@ impl KernelSpawner {
         sub.usd_budget = cx.usd_budget.clone();
         sub.authority_ceiling = cx.authority_ceiling;
         sub.policy_capabilities = cx.policy_capabilities;
+        sub.context_strategy = cx.context_strategy.clone();
+        sub.tool_policy = cx.tool_policy.clone();
+        sub.context_port = cx.context_port.clone();
+        sub.context_home_dir = cx.context_home_dir.clone();
         // A workflow child is exactly one level below the operator. `MAX_DELEGATION_DEPTH` then
         // refuses any deeper dispatch/workflow a writer child might attempt (defense in depth
         // beside the read-only registry's absence of those tools).

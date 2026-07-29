@@ -945,6 +945,12 @@ async fn run_cli() -> anyhow::Result<u8> {
         .with_budget(agent.budget.clone());
         agent.narrow_authority_ceiling(envelope.ceiling);
     }
+    agent.set_context_home_dir(
+        home_core
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf),
+    )?;
     agent.set_instruction_context(instruction_bytes, instruction_trust)?;
     if let Some(environment_context) = environment_context {
         agent.set_environment_context(environment_context, core_protocol::Trust::Workspace)?;
@@ -1276,6 +1282,7 @@ fn build_workflow_spawner(
     );
     cx.model_context_window = caps.context_window_tokens;
     cx.model_max_output_tokens = caps.max_output_tokens;
+    cx.context_home_dir = std::env::var_os("HOME").map(std::path::PathBuf::from);
     std::sync::Arc::new(runtime::KernelSpawner::new(cx))
 }
 

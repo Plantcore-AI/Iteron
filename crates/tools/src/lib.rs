@@ -3,6 +3,8 @@
 //! and invalidate cached reads when their attempt completes. Code execution crosses the platform
 //! sandbox rather than relying on the model's declaration.
 
+use core_protocol::intent::ToolIntent;
+use core_protocol::slot::StrategySlot;
 use core_protocol::{Capability, Purity, ToolResult, ToolSpec, ToolUse, Trust};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -24,6 +26,7 @@ mod schema;
 mod schema_error;
 mod shell;
 mod skill;
+mod tool_policy;
 mod web;
 mod workflow_tool;
 mod write_file;
@@ -31,6 +34,10 @@ mod write_file;
 pub use edit::apply_unique_edit;
 pub use mcp_timing::{McpDispatchClock, McpEffectAttribution};
 use memo::{Lookup, Memo};
+pub use tool_policy::{
+    RegisteredToolPolicy, TOOL_POLICY_SLOT_VERSION, ToolPolicy, ToolPolicyDecision,
+    ToolPolicyError, ToolPolicyObservation, ToolPolicyProposal,
+};
 
 /// Shared hardened Git observation used by the registry tool and the operator `/diff` surface.
 /// It remains an observable process effect; callers outside the registry must provide their own
@@ -236,6 +243,88 @@ impl Registry {
             .iter()
             .find(|t| t.spec.name == name)
             .map(|t| t.spec.capability)
+    }
+
+    /// Classify a model-emitted call through the pure `core/tool_policy` slot.
+    ///
+    /// Registry metadata is the only source of purity and capability. This method does not
+    /// validate arguments or call an executor; the returned intent remains deny-by-default until
+    /// the kernel's gate records and applies its admission decision.
+    pub fn propose_intent(
+        &self,
+        policy: &dyn StrategySlot,
+        call: ToolUse,
+        argument_trust: Trust,
+        ceiling: core_protocol::capability_set::CapabilitySet,
+    ) -> Result<ToolPolicyProposal, ToolPolicyError> {
+        let spec = self
+            .tools
+            .iter()
+            .find(|tool| tool.spec.name == call.name)
+            .map(|tool| &tool.spec)
+            .ok_or_else(|| ToolPolicyError::UnknownTool(call.name.clone()))?;
+        ToolPolicy::propose_with(
+            policy,
+            &ToolPolicyObservation {
+                version: TOOL_POLICY_SLOT_VERSION,
+                call,
+                registered: RegisteredToolPolicy {
+                    name: spec.name.clone(),
+                    purity: spec.purity,
+                    capability: spec.capability,
+                },
+                argument_trust,
+            },
+            ceiling,
+        )
+    }
+
+    /// Dispatch a pure tool only after the policy proposal and caller gate admitted its exact
+    /// registry capability. A malformed or stale intent becomes a tool error; no executor future
+    /// is constructed.
+    pub fn dispatch_intent(&self, intent: ToolIntent) -> boxfut::BoxFut {
+        if let Err(reason) = self.validate_admitted_intent(&intent, Some(Purity::Pure)) {
+            let id = intent.call.id;
+            return boxfut::box_it(async move { err_result(id, reason) });
+        }
+        self.dispatch(intent.call)
+    }
+
+    /// Execute an admitted post-stream call while preserving effect-outcome certainty.
+    pub async fn run_admitted_intent(&self, intent: ToolIntent) -> ToolExecution {
+        if let Err(reason) = self.validate_admitted_intent(&intent, None) {
+            return ToolExecution::Definite(err_result(intent.call.id, reason));
+        }
+        self.run_effect(intent.call).await
+    }
+
+    fn validate_admitted_intent(
+        &self,
+        intent: &ToolIntent,
+        required_purity: Option<Purity>,
+    ) -> Result<(), String> {
+        intent
+            .validate()
+            .map_err(|reason| format!("invalid tool intent: {reason}"))?;
+        let spec = self
+            .tools
+            .iter()
+            .find(|tool| tool.spec.name == intent.call.name)
+            .map(|tool| &tool.spec)
+            .ok_or_else(|| format!("unknown tool `{}`", intent.call.name))?;
+        if intent.purity != spec.purity || required_purity.is_some_and(|p| p != spec.purity) {
+            return Err(format!(
+                "tool intent metadata does not match registry purity for `{}`",
+                intent.call.name
+            ));
+        }
+        if !intent.admitted.contains(spec.capability) {
+            return Err(format!(
+                "tool intent lacks registry capability admission for `{}`",
+                intent.call.name
+            ));
+        }
+        Ok(())
     }
 
     /// Install the trusted provider directory's exact credential environment names. The shell

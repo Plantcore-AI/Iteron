@@ -12,6 +12,7 @@
 
 use crate::effect_admission::{EffectAdmissionError, EffectAdmissions};
 use core_protocol::effect::EffectProposal;
+use core_protocol::intent::ToolIntent;
 use core_protocol::{Capability, EffectId, Event, EventKind, Seq, ToolResult, ToolUse, TurnId};
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -128,7 +129,7 @@ fn unsafe_identity(value: &str) -> bool {
 pub struct AdmittedRegistryTool {
     pub turn: TurnId,
     pub effect_id: EffectId,
-    pub call: ToolUse,
+    pub intent: ToolIntent,
     pub capability: Capability,
     pub audit_arguments: serde_json::Value,
     pub workspace: String,
@@ -405,31 +406,31 @@ pub async fn execute_registry_tool<L, Execute, ExecuteFuture, Execution>(
 ) -> Result<ToolExecution, BrokerError>
 where
     L: DurableEffectLog,
-    Execute: FnOnce(ToolUse) -> ExecuteFuture,
+    Execute: FnOnce(ToolIntent) -> ExecuteFuture,
     ExecuteFuture: Future<Output = Execution>,
     Execution: Into<ToolExecution>,
 {
     let AdmittedRegistryTool {
         turn,
         effect_id,
-        call,
+        intent,
         capability,
         audit_arguments,
         workspace,
     } = admitted;
-    let provider_tool_use_id = call.id.clone();
+    let provider_tool_use_id = intent.call.id.clone();
     let terminal_effect_id = effect_id.clone();
     let effect = BrokeredEffect {
         turn,
         effect_id,
         tool_use_id: provider_tool_use_id.clone(),
-        kind: call.name.clone(),
+        kind: intent.call.name.clone(),
         capability,
         audit_arguments,
         workspace,
     };
     let outcome = broker_effect(log, admissions, effect, move || async move {
-        let mut outcome: ToolExecution = execute(call).await.into();
+        let mut outcome: ToolExecution = execute(intent).await.into();
         // Correlation identity belongs to the admitted call, never to plugin-returned data. Registry
         // already enforces this; repeating it here protects every executor behind the same boundary.
         {
@@ -599,14 +600,22 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
     }
 
     fn admitted() -> AdmittedRegistryTool {
-        AdmittedRegistryTool {
-            turn: TurnId(7),
-            effect_id: effect_id(TurnId(7), EffectClass::RegistryTool, 2),
-            call: ToolUse {
+        let mut intent = ToolIntent::denied(
+            core_protocol::slot::SlotId("core/tool_policy".into()),
+            ToolUse {
                 id: "provider-call".into(),
                 name: "edit".into(),
                 input: serde_json::json!({"path":"f"}),
             },
+            core_protocol::Purity::Effecting,
+            Trust::Workspace,
+        );
+        intent.admitted =
+            core_protocol::capability_set::CapabilitySet::only(Capability::ReversibleLocal);
+        AdmittedRegistryTool {
+            turn: TurnId(7),
+            effect_id: effect_id(TurnId(7), EffectClass::RegistryTool, 2),
+            intent,
             capability: Capability::ReversibleLocal,
             audit_arguments: serde_json::json!({"path":"f"}),
             workspace: "/repo".into(),
@@ -628,7 +637,7 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
             move |call| async move {
                 executor_calls.fetch_add(1, Ordering::SeqCst);
                 ToolResult {
-                    tool_use_id: call.id,
+                    tool_use_id: call.call.id,
                     content: "ran".into(),
                     is_error: false,
                     trust: Trust::Workspace,
@@ -659,7 +668,7 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
                 ToolResult {
                     // A plugin cannot replace the admitted provider correlation id.
                     tool_use_id: "wrong-id".into(),
-                    content: format!("ran {}", call.name),
+                    content: format!("ran {}", call.call.name),
                     is_error: false,
                     trust: Trust::Workspace,
                     latency_ms: 0,

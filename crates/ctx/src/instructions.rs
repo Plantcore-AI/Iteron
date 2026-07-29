@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
 use crate::source::{SourceScope, read_bounded_utf8};
+use core_protocol::context::InstructionScope;
 
 const CANDIDATES: &[&str] = &["AGENTS.md", "CLAUDE.md", ".core/instructions.md"];
 /// Large enough to preserve the existing 8 KB injected head while preventing a repository file
@@ -279,6 +280,62 @@ pub fn discover_hierarchy(
     discovery.bundle
 }
 
+/// Discover exactly one frozen context-selector scope.
+///
+/// Keeping the tier as an input avoids reconstructing provenance from rendered path labels (a
+/// project-root import may itself contain `/`). Like [`discover_hierarchy`], every path is
+/// explicit and every accepted source remains framed as untrusted data by the caller.
+pub(crate) fn discover_hierarchy_scope(
+    home_core: Option<&Path>,
+    repository_root: &Path,
+    active_dir: &Path,
+    scope: InstructionScope,
+) -> InstructionBundle {
+    let mut discovery = HierarchyDiscovery::new();
+    match scope {
+        InstructionScope::User => {
+            if let Some(home_core) = home_core {
+                discovery.load(
+                    home_core,
+                    home_core.join("instructions.md"),
+                    Some("~/.core"),
+                    false,
+                    0,
+                );
+            }
+        }
+        InstructionScope::Project => {
+            load_directory_candidates(&mut discovery, repository_root, repository_root);
+        }
+        InstructionScope::Directory => {
+            let relative_active = match active_dir.strip_prefix(repository_root) {
+                Ok(relative) => relative,
+                Err(_) => {
+                    discovery.reject(
+                        active_dir.display().to_string(),
+                        "active instruction directory is outside the repository root",
+                    );
+                    return discovery.bundle;
+                }
+            };
+            let mut directory = repository_root.to_path_buf();
+            for component in relative_active.components() {
+                let Component::Normal(component) = component else {
+                    discovery.reject(
+                        active_dir.display().to_string(),
+                        "active instruction directory contains a non-normal component",
+                    );
+                    break;
+                };
+                directory.push(component);
+                load_directory_candidates(&mut discovery, repository_root, &directory);
+            }
+        }
+        InstructionScope::Unknown => {}
+    }
+    discovery.bundle
+}
+
 fn load_directory_candidates(
     discovery: &mut HierarchyDiscovery,
     repository_root: &Path,
@@ -491,6 +548,44 @@ mod tests {
         }
         assert_eq!(rendered.matches("UNTRUSTED").count(), 6);
         assert!(bundle.rejections().is_empty());
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn scoped_discovery_keeps_root_imports_in_the_project_tier() {
+        let base = unique_temp("scoped-hierarchy");
+        let home_core = base.join("home/.core");
+        let repo = base.join("repo");
+        let active = repo.join("sub");
+        std::fs::create_dir_all(&home_core).unwrap();
+        std::fs::create_dir_all(&active).unwrap();
+        std::fs::write(home_core.join("instructions.md"), "home").unwrap();
+        std::fs::write(repo.join("AGENTS.md"), "root\n@import policy/root.md").unwrap();
+        std::fs::create_dir_all(repo.join("policy")).unwrap();
+        std::fs::write(repo.join("policy/root.md"), "root import").unwrap();
+        std::fs::write(active.join("AGENTS.md"), "directory").unwrap();
+
+        let user =
+            discover_hierarchy_scope(Some(&home_core), &repo, &active, InstructionScope::User);
+        let project =
+            discover_hierarchy_scope(Some(&home_core), &repo, &active, InstructionScope::Project);
+        let directory = discover_hierarchy_scope(
+            Some(&home_core),
+            &repo,
+            &active,
+            InstructionScope::Directory,
+        );
+
+        assert_eq!(user.sources()[0].source, "~/.core/instructions.md");
+        assert_eq!(
+            project
+                .sources()
+                .iter()
+                .map(|source| source.source.as_str())
+                .collect::<Vec<_>>(),
+            ["AGENTS.md", "policy/root.md"]
+        );
+        assert_eq!(directory.sources()[0].source, "sub/AGENTS.md");
         std::fs::remove_dir_all(&base).ok();
     }
 

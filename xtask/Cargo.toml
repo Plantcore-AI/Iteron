@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 core-agents = { path = "../crates/agents" }
+core-ctx = { path = "../crates/ctx" }
+core-protocol = { path = "../crates/protocol" }
 core-tools = { path = "../crates/tools" }
 serde = { workspace = true }
 serde_json = { workspace = true }
