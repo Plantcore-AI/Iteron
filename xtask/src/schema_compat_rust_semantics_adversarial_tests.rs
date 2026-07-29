@@ -21,6 +21,7 @@ fn trusted_base_rejects_type_serde_and_runtime_dataflow_bypasses() {
         "crates/record/src/lib.rs",
         "crates/kernel/src/diagnostics.rs",
         "crates/kernel/src/lib.rs",
+        "crates/cli/src/runtime.rs",
         "crates/cli/src/output.rs",
         "crates/cli/src/main.rs",
         "crates/eval/src/contract.rs",

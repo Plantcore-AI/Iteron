@@ -131,6 +131,7 @@ pub fn subagent_budget_ceiling() -> Budget {
         // No verified per-route rate card is inherited by a discovered worker yet. Turn/time
         // ceilings remain enforceable; a guessed dollar ceiling would not.
         max_usd: None,
+        max_tokens: None,
         max_wall_secs: 300,
         max_consecutive_tool_errors: 3,
     }
@@ -141,7 +142,11 @@ pub fn subagent_budget_ceiling() -> Budget {
 /// bounded-concurrent fan no longer needs to starve investigators down a serial chain). This is the
 /// authoritative policy consumed by the kernel: budget arithmetic belongs here with the agent
 /// definition, so the execution plane cannot grow a second set of mirrored limits.
-pub fn subagent_budget(remaining_turns: u32, remaining_wall_secs: u64) -> Option<Budget> {
+pub fn subagent_budget(
+    remaining_turns: u32,
+    remaining_wall_secs: u64,
+    remaining_tokens: Option<u64>,
+) -> Option<Budget> {
     let ceiling = subagent_budget_ceiling();
     // Half-plus-one keeps the writer strictly dominant while relaxing the old two-thirds reserve.
     let writer_reserve = ((remaining_turns / 2).saturating_add(1))
@@ -150,12 +155,16 @@ pub fn subagent_budget(remaining_turns: u32, remaining_wall_secs: u64) -> Option
     let child_turns = remaining_turns
         .saturating_sub(writer_reserve)
         .min(ceiling.max_turns);
-    if child_turns < 2 || remaining_wall_secs < 3 {
+    if child_turns < 2
+        || remaining_wall_secs < 3
+        || remaining_tokens.is_some_and(|tokens| tokens < 2)
+    {
         return None;
     }
     Some(Budget {
         max_turns: child_turns,
         max_usd: ceiling.max_usd,
+        max_tokens: remaining_tokens.map(|tokens| tokens / 2),
         max_wall_secs: (remaining_wall_secs / 3).clamp(1, ceiling.max_wall_secs),
         max_consecutive_tool_errors: ceiling.max_consecutive_tool_errors,
     })
@@ -324,14 +333,18 @@ mod tests {
     #[test]
     fn direct_subagent_budget_is_writer_first_and_bounded() {
         // The writer keeps about half; a budget too small to leave a >=2-turn child bypasses the fan.
-        assert!(subagent_budget(4, 300).is_none());
-        assert!(subagent_budget(60, 2).is_none());
+        assert!(subagent_budget(4, 300, None).is_none());
+        assert!(subagent_budget(60, 2, None).is_none());
+        assert!(subagent_budget(60, 300, Some(0)).is_none());
+        assert!(subagent_budget(60, 300, Some(1)).is_none());
 
-        let minimum = subagent_budget(6, 9).expect("two child turns remain after writer reserve");
+        let minimum =
+            subagent_budget(6, 9, Some(100)).expect("two child turns remain after writer reserve");
         assert_eq!(minimum.max_turns, 2);
         assert_eq!(minimum.max_wall_secs, 3);
+        assert_eq!(minimum.max_tokens, Some(50));
 
-        let capped = subagent_budget(u32::MAX, u64::MAX)
+        let capped = subagent_budget(u32::MAX, u64::MAX, None)
             .expect("large inputs remain bounded without overflowing");
         assert_eq!(capped.max_turns, 30);
         assert_eq!(capped.max_usd, None);

@@ -111,6 +111,12 @@ fn validate_surface_files(
         .iter()
         .map(|field| field.name.as_str())
         .collect::<BTreeSet<_>>();
+    let required_active_fields = surface
+        .fields
+        .iter()
+        .filter(|field| !field.optional)
+        .map(|field| field.name.as_str())
+        .collect::<BTreeSet<_>>();
     let expected = surface
         .fields
         .iter()
@@ -155,9 +161,11 @@ fn validate_surface_files(
             }
             if fixture.schema_version == surface.current_version {
                 let current_fields = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
-                if current_fields != active_fields {
+                if !required_active_fields.is_subset(&current_fields)
+                    || !current_fields.is_subset(&active_fields)
+                {
                     bail!(
-                        "current fixture `{}` does not have the exact active `{}` field shape",
+                        "current fixture `{}` does not have the required active `{}` field shape",
                         fixture.path,
                         surface.id
                     );
@@ -167,7 +175,21 @@ fn validate_surface_files(
         }
         fixture_objects_by_path.insert(fixture.path.as_str(), (fixture, objects));
     }
-    if actual != expected {
+    let required = surface
+        .fields
+        .iter()
+        .filter(|field| !field.optional)
+        .map(|field| field.name.as_str())
+        .chain(
+            surface
+                .compatibility_shims
+                .iter()
+                .map(|shim| shim.old_field.as_str()),
+        )
+        .collect::<BTreeSet<_>>();
+    let actual_names = actual.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let expected_names = expected.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    if !required.is_subset(&actual_names) || !actual_names.is_subset(&expected_names) {
         bail!(
             "schema surface `{}` fixture fields differ from its declared fields: declared {expected:?}, fixtures {actual:?}",
             surface.id

@@ -26,5 +26,5 @@ pub use report::{
 pub use runner::{EvalOptions, run_evaluation};
 pub use types::{
     BenchmarkReference, CellKey, CellResult, CostObservation, CostStatus, EvaluationManifest,
-    EvaluationPurpose, OracleStatus, Partition, RunStatus, SamplingControl,
+    EvaluationPurpose, KernelTaxObservation, OracleStatus, Partition, RunStatus, SamplingControl,
 };

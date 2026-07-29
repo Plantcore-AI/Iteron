@@ -65,7 +65,7 @@ pub struct FileConfig {
     pub rate_cards: Option<Vec<crate::pricing::RateCardConfig>>,
     /// MCP servers to connect and expose as tools (each an operator-configured stdio server).
     pub mcp_servers: Option<Vec<McpServerConfig>>,
-    /// Lifecycle hooks are consumed by `core_kernel::hooks::Hooks`, but they must also be part
+    /// Lifecycle hooks are consumed by `crate::runtime::hooks::Hooks`, but they must also be part
     /// of this strict top-level schema. Without this field, `deny_unknown_fields` rejects the user
     /// config before the dedicated hook loader can read it, making every configured hook brick
     /// startup. Keep the raw command lists here; only the trusted user-config loader executes them.

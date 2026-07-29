@@ -11,17 +11,9 @@ use crate::bindings::{AgentEnv, RunState};
 use crate::events::ProgressSink;
 use crate::journal::Journal;
 use crate::spawner::AgentSpawner;
-use crate::{RunId, RunReport};
+use crate::{AGENT_SPAWNER_PORT_VERSION, PROGRESS_SINK_PORT_VERSION, RunId, RunLimits, RunReport};
 
 const PRELUDE: &str = include_str!("prelude.js");
-
-/// The one global slot pool cap: `max(1, min(16, cores - 2))` (design §2.4).
-fn concurrency_cap() -> usize {
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-    cores.saturating_sub(2).clamp(1, 16)
-}
 
 /// Wrap the meta-stripped body so top-level `await`/`return` are legal (review B1), and marshal the
 /// return value out as a JSON string (any JS value -> serde_json::Value on the Rust side).
@@ -38,15 +30,42 @@ fn wrap_body(body: &str) -> String {
 ///
 /// Not `Send` (it holds the `!Send` `LocalSet`/QuickJS across awaits): the blocking `execute` path
 /// awaits it directly, and `launch` drives it via `block_on` on a dedicated OS thread.
-pub async fn run_core(
-    script: &str,
-    args: serde_json::Value,
-    run_id: RunId,
-    cancel: CancellationToken,
-    journal: Arc<Journal>,
-    spawner: Arc<dyn AgentSpawner>,
-    sink: Arc<dyn ProgressSink>,
-) -> anyhow::Result<RunReport> {
+pub struct RunCoreRequest<'a> {
+    pub script: &'a str,
+    pub args: serde_json::Value,
+    pub run_id: RunId,
+    pub limits: RunLimits,
+    pub cancel: CancellationToken,
+    pub journal: Arc<Journal>,
+    pub spawner: Arc<dyn AgentSpawner>,
+    pub sink: Arc<dyn ProgressSink>,
+}
+
+pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> {
+    let RunCoreRequest {
+        script,
+        args,
+        run_id,
+        limits,
+        cancel,
+        journal,
+        spawner,
+        sink,
+    } = request;
+    if spawner.port_version() != AGENT_SPAWNER_PORT_VERSION {
+        anyhow::bail!(
+            "unsupported AgentSpawner port version {}; expected {}",
+            spawner.port_version(),
+            AGENT_SPAWNER_PORT_VERSION
+        );
+    }
+    if sink.port_version() != PROGRESS_SINK_PORT_VERSION {
+        anyhow::bail!(
+            "unsupported ProgressSink port version {}; expected {}",
+            sink.port_version(),
+            PROGRESS_SINK_PORT_VERSION
+        );
+    }
     let body = crate::meta::strip_meta(script);
     let code = wrap_body(&body);
     let args_js = format!(
@@ -54,11 +73,11 @@ pub async fn run_core(
         serde_json::to_string(&args).unwrap_or_else(|_| "null".into())
     );
 
-    let gov = core_sched::Governor::new(concurrency_cap());
+    let gov = core_sched::Governor::new(limits.max_concurrency());
     // Keep a handle to the token for the post-run `stopped` check; the rest moves into the JS driver.
     let report_cancel = cancel.clone();
     let env = Arc::new(AgentEnv {
-        state: Arc::new(RunState::new()),
+        state: Arc::new(RunState::new(limits.max_agent_calls())),
         spawner,
         sink,
         gov,
@@ -112,7 +131,9 @@ pub async fn run_core(
         })
         .await;
 
-    journal.flush();
+    journal
+        .flush()
+        .map_err(|error| anyhow::anyhow!("workflow journal durability failed: {error}"))?;
     let stopped = report_cancel.is_cancelled();
     let value = match out {
         Ok(json) => {

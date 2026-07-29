@@ -50,6 +50,7 @@ fn cell(config: &str, status: RunStatus, terminal: Option<&str>, exit: Option<i3
         cost_usd: None,
         cost_reason: None,
         turns: None,
+        kernel_tax: None,
         oracle_status: OracleStatus::NotRun,
         oracle_detail: None,
         sampling: SamplingControl {
@@ -86,6 +87,7 @@ fn manifest(cells: Vec<CellResult>) -> EvaluationManifest {
         aggregate,
         comparison,
         selections,
+        kernel_tax: core_eval::types::KernelTaxObservation::default(),
     }
 }
 

@@ -54,6 +54,7 @@ fn priced_cell(config: &str, seed: u64, status: CostStatus, usd: Option<f64>) ->
         cost_usd: usd,
         cost_reason: (status == CostStatus::Unknown).then(|| "no_verified_rate_card".into()),
         turns: Some(2),
+        kernel_tax: None,
         oracle_status: OracleStatus::Passed,
         oracle_detail: None,
         sampling: SamplingControl {

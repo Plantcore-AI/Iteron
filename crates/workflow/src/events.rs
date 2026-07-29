@@ -3,6 +3,8 @@
 //! but stays presentation-agnostic: the CLI's plain renderer (design §3.5) and a future ratatui
 //! tree both consume this one enum. We adopt the 5-state semantic model over the raw wire.
 
+pub const PROGRESS_SINK_PORT_VERSION: u32 = 1;
+
 /// The semantic lifecycle state of one agent row (design §3.1). `Queued` and `Skipped` are derived
 /// in the higher layers; the slice emits `Running`/`Done`/`Error`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +57,10 @@ pub enum ProgressEvent {
 /// The frontend seam. Implementations must be cheap and non-blocking; the engine calls `emit` from
 /// its single JS-driver thread, so calls are already serialized (no line interleaving).
 pub trait ProgressSink: Send + Sync {
+    fn port_version(&self) -> u32 {
+        PROGRESS_SINK_PORT_VERSION
+    }
+
     fn emit(&self, event: ProgressEvent);
 }
 

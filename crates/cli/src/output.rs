@@ -7,15 +7,15 @@
 //!
 //! `schema_version` versions this CLI contract independently from Rust enum/debug formatting.
 
+use crate::runtime::{UiEvent, WorkflowUiEvent};
 use clap::ValueEnum;
-use core_kernel::{UiEvent, WorkflowUiEvent};
-use core_obs::CostState;
+use core_obs::{CostState, KernelTax};
 use core_protocol::{Outcome, Phase};
 use core_provider::EffortApplication;
 use serde_json::{Value, json};
 use std::io::{self, Write};
 
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 pub const EXIT_SUCCESS: u8 = 0;
 pub const EXIT_HARNESS: u8 = 2;
 pub const EXIT_BUDGET: u8 = 3;
@@ -425,6 +425,7 @@ pub fn final_result(
     run_id: &str,
     cost: &CostState,
     turns: u32,
+    kernel_tax: KernelTax,
     error: Option<&str>,
 ) -> Value {
     json!({
@@ -439,6 +440,7 @@ pub fn final_result(
         "cost_status": cost.status(),
         "cost_reason": cost.reason().map(|reason| reason.code()),
         "turns": turns,
+        "kernel_tax": kernel_tax,
         "exit_code": outcome_exit_code(outcome),
         "error": error.map(scrub),
     })
@@ -585,7 +587,7 @@ mod tests {
             rate_card_digest: "sha256:test-rate-card".into(),
         }
     }
-    use core_kernel::{
+    use crate::runtime::{
         WorkflowAgentOutcomeUi, WorkflowExecutionModeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi,
         WorkflowTaskUi,
     };
@@ -609,6 +611,7 @@ mod tests {
             "run-drained",
             &CostState::Zero,
             1,
+            KernelTax::default(),
             None,
         );
         assert_eq!(value["schema_version"], SCHEMA_VERSION);
@@ -618,10 +621,10 @@ mod tests {
         assert_eq!(
             value,
             serde_json::from_str::<Value>(include_str!(
-                "../tests/golden/one_shot_json_drained_v4.json"
+                "../tests/golden/one_shot_json_drained_v5.json"
             ))
             .unwrap(),
-            "the complete drained machine terminal is a frozen schema-v4 contract"
+            "the complete drained machine terminal is a frozen schema-v5 contract"
         );
     }
 
@@ -650,6 +653,7 @@ mod tests {
             "run-1",
             &known_cost(125_000),
             3,
+            KernelTax::default(),
             None,
         );
         assert_eq!(value["schema_version"], SCHEMA_VERSION);
@@ -670,7 +674,15 @@ mod tests {
         let unknown = CostState::Unknown {
             reason: core_obs::CostUnknownReason::NoVerifiedRateCard,
         };
-        let result = final_result(&Outcome::Done, "done", "run-unpriced", &unknown, 1, None);
+        let result = final_result(
+            &Outcome::Done,
+            "done",
+            "run-unpriced",
+            &unknown,
+            1,
+            KernelTax::default(),
+            None,
+        );
         assert_eq!(result["schema_version"], SCHEMA_VERSION);
         assert_eq!(result["cost_usd"], Value::Null);
         assert_eq!(result["cost_status"], "unknown");
@@ -715,6 +727,7 @@ mod tests {
                 reason: core_obs::CostUnknownReason::NoVerifiedRateCard,
             },
             8,
+            KernelTax::default(),
             None,
         );
         assert_eq!(value["outcome"], "budget_exhausted");
@@ -882,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn d13_14_every_stream_record_type_matches_the_frozen_v4_corpus() {
+    fn d13_14_every_stream_record_type_matches_the_frozen_v5_corpus() {
         fn frozen_turn_end(effort: EffortApplication, turn: &mut u32) -> Value {
             stream_event(
                 UiEvent::TurnEnd {
@@ -1083,10 +1096,11 @@ mod tests {
                 "run-all-types",
                 &CostState::Zero,
                 5,
+                KernelTax::default(),
                 None,
             ),
         ];
-        let frozen = include_str!("../tests/golden/machine_stream_all_v4.jsonl")
+        let frozen = include_str!("../tests/golden/machine_stream_all_v5.jsonl")
             .lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -1167,6 +1181,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "run-3",
             &CostState::Zero,
             0,
+            KernelTax::default(),
             Some(&format!("provider response: {secret}")),
         );
         let workflow = stream_event(

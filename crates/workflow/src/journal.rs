@@ -22,6 +22,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Append format version. Old lines without this field deserialize as v1.
+pub const JOURNAL_FORMAT_VERSION: u32 = 1;
+
+const fn journal_format_version() -> u32 {
+    JOURNAL_FORMAT_VERSION
+}
+
 /// The replayable outcome of one `agent()` call.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "t", rename_all = "snake_case")]
@@ -32,7 +39,14 @@ pub enum Outcome {
     Text { text: String },
     /// A degraded/terminal-negative outcome, replayed as JS `null`. Carries the reason so the
     /// progress row and resume both see why.
-    Null { reason: Option<String> },
+    Null {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// A newer writer's outcome vocabulary. Older engines keep it as an honest null-equivalent
+    /// cache hit and never re-run a child merely because they cannot interpret its result.
+    #[serde(other)]
+    Unknown,
 }
 
 /// A journaled agent result: its outcome plus the metrics that repaint the progress row on replay.
@@ -43,7 +57,7 @@ pub struct Record {
     pub tokens: u64,
     #[serde(default)]
     pub tool_calls: u64,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_tool_summary: Option<String>,
 }
 
@@ -84,13 +98,24 @@ impl Record {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Line {
     /// Written when live execution begins (mirrors Claude Code's `started` line; informational).
-    Started { key: String, agent_id: String },
+    Started {
+        #[serde(default = "journal_format_version")]
+        version: u32,
+        key: String,
+        agent_id: String,
+    },
     /// The replayable result.
     Result {
+        #[serde(default = "journal_format_version")]
+        version: u32,
         key: String,
         agent_id: String,
         record: Record,
     },
+    /// Forward-compatible sentinel for a newer informational line. It carries no authority and is
+    /// ignored by the v1 cache projection.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The per-run journal: a shared content-hash cache (prior run's records pre-loaded on resume, plus
@@ -100,6 +125,8 @@ pub struct Journal {
     cache: Mutex<HashMap<String, Record>>,
     /// Append sink for this run's `journal.jsonl`. `None` = in-memory only (no persistence).
     file: Mutex<Option<File>>,
+    /// First durability failure. Once set, no later write may claim success.
+    failure: Mutex<Option<String>>,
     hits: AtomicUsize,
     misses: AtomicUsize,
 }
@@ -111,6 +138,7 @@ impl Journal {
         Journal {
             cache: Mutex::new(HashMap::new()),
             file: Mutex::new(None),
+            failure: Mutex::new(None),
             hits: AtomicUsize::new(0),
             misses: AtomicUsize::new(0),
         }
@@ -136,6 +164,7 @@ impl Journal {
         Ok(Journal {
             cache: Mutex::new(cache),
             file: Mutex::new(file),
+            failure: Mutex::new(None),
             hits: AtomicUsize::new(0),
             misses: AtomicUsize::new(0),
         })
@@ -155,33 +184,47 @@ impl Journal {
     /// Record a live outcome: insert into the cache (so an identical later call in THIS run hits) and
     /// append a `started` + `result` line to `journal.jsonl`. Positive AND negative outcomes are
     /// recorded — that is the B2 invariant.
-    pub fn record(&self, key: &str, agent_id: &str, record: Record) {
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(key.to_string(), record.clone());
+    pub fn record(&self, key: &str, agent_id: &str, record: Record) -> io::Result<()> {
+        if let Some(message) = self.failure.lock().unwrap().clone() {
+            return Err(io::Error::other(message));
+        }
         let mut guard = self.file.lock().unwrap();
         if let Some(file) = guard.as_mut() {
             let started = Line::Started {
+                version: JOURNAL_FORMAT_VERSION,
                 key: key.to_string(),
                 agent_id: agent_id.to_string(),
             };
             let result = Line::Result {
+                version: JOURNAL_FORMAT_VERSION,
                 key: key.to_string(),
                 agent_id: agent_id.to_string(),
-                record,
+                record: record.clone(),
             };
-            let _ = write_line(file, &started);
-            let _ = write_line(file, &result);
+            let write = write_line(file, &started)
+                .and_then(|()| write_line(file, &result))
+                .and_then(|()| file.flush())
+                .and_then(|()| file.sync_data());
+            if let Err(error) = write {
+                *self.failure.lock().unwrap() = Some(error.to_string());
+                return Err(error);
+            }
         }
+        self.cache.lock().unwrap().insert(key.to_string(), record);
+        Ok(())
     }
 
-    /// Flush the append sink to disk (called once at run end so a resume can read it).
-    pub fn flush(&self) {
-        if let Some(file) = self.file.lock().unwrap().as_mut() {
-            let _ = file.flush();
-            let _ = file.sync_all();
+    /// Flush the append sink to disk (called once at run end so a resume can read it). Failure is
+    /// load-bearing: a run never reports success when its replay evidence is uncertain.
+    pub fn flush(&self) -> io::Result<()> {
+        if let Some(message) = self.failure.lock().unwrap().clone() {
+            return Err(io::Error::other(message));
         }
+        if let Some(file) = self.file.lock().unwrap().as_mut() {
+            file.flush()?;
+            file.sync_all()?;
+        }
+        Ok(())
     }
 
     pub fn hits(&self) -> usize {
@@ -211,7 +254,14 @@ fn load_records(path: &Path, out: &mut HashMap<String, Record>) -> io::Result<()
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(Line::Result { key, record, .. }) = serde_json::from_str::<Line>(&line) {
+        if let Ok(Line::Result {
+            version,
+            key,
+            record,
+            ..
+        }) = serde_json::from_str::<Line>(&line)
+            && version == JOURNAL_FORMAT_VERSION
+        {
             out.insert(key, record);
         }
     }
@@ -236,9 +286,11 @@ mod tests {
 
         {
             let j = Journal::open(Some(path.clone()), None).expect("open");
-            j.record("v2:aaa", "aaa", Record::text("hello".into(), 3, 0, None));
-            j.record("v2:bbb", "bbb", Record::null(Some("makenull".into())));
-            j.flush();
+            j.record("v2:aaa", "aaa", Record::text("hello".into(), 3, 0, None))
+                .unwrap();
+            j.record("v2:bbb", "bbb", Record::null(Some("makenull".into())))
+                .unwrap();
+            j.flush().unwrap();
         }
 
         // Resume: a fresh journal loading the prior file replays both, null included.
@@ -261,6 +313,73 @@ mod tests {
         assert!(resumed.get("v2:missing").is_none());
         assert_eq!(resumed.misses(), 1);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_durable_append_never_enters_the_replay_cache() {
+        let dir = std::env::temp_dir().join(format!(
+            "core-workflow-journal-failure-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("read-only.jsonl");
+        fs::write(&path, b"").unwrap();
+        let read_only = File::open(&path).unwrap();
+        let journal = Journal {
+            cache: Mutex::new(HashMap::new()),
+            file: Mutex::new(Some(read_only)),
+            failure: Mutex::new(None),
+            hits: AtomicUsize::new(0),
+            misses: AtomicUsize::new(0),
+        };
+
+        assert!(
+            journal
+                .record(
+                    "v2:never",
+                    "never",
+                    Record::text("unsafe".into(), 1, 0, None)
+                )
+                .is_err()
+        );
+        assert!(journal.get("v2:never").is_none());
+        assert!(journal.flush().is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_future_outcome_is_a_cache_hit_and_never_becomes_a_reexecution() {
+        let dir = std::env::temp_dir().join(format!(
+            "core-workflow-journal-future-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("journal.jsonl");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"future_info\",\"opaque\":true}\n",
+                "{\"type\":\"result\",\"version\":1,\"key\":\"v2:future\",",
+                "\"agent_id\":\"future\",\"record\":{\"outcome\":{\"t\":\"future_outcome\"},",
+                "\"tokens\":0,\"tool_calls\":0}}\n"
+            ),
+        )
+        .unwrap();
+
+        let resumed = Journal::open(None, Some(path)).unwrap();
+        assert_eq!(resumed.get("v2:future").unwrap().outcome, Outcome::Unknown);
+        assert_eq!(resumed.hits(), 1);
+        assert_eq!(resumed.misses(), 0);
         let _ = fs::remove_dir_all(&dir);
     }
 }

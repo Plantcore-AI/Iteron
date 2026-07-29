@@ -832,10 +832,16 @@ fn parse_outcome(s: &str) -> Option<Outcome> {
                 "max_turns"
             } else if s.contains("max_usd") {
                 "max_usd"
+            } else if s.contains("unpriced_usd_ceiling") {
+                "unpriced_usd_ceiling"
+            } else if s.contains("max_tokens") {
+                "max_tokens"
             } else if s.contains("max_wall_secs") {
                 "max_wall_secs"
             } else if s.contains("max_consecutive_tool_errors") {
                 "max_consecutive_tool_errors"
+            } else if s.contains("verify_attempts") {
+                "verify_attempts"
             } else {
                 "budget"
             };
@@ -1659,6 +1665,26 @@ fn expand_scoped_from(
 mod tests {
     use super::*;
     use core_protocol::{Capability, PermissionMode, PermissionRules, Verdict};
+
+    #[test]
+    fn every_budget_terminal_reason_survives_the_session_projection() {
+        for reason in [
+            "max_turns",
+            "max_tokens",
+            "max_usd",
+            "unpriced_usd_ceiling",
+            "max_wall_secs",
+            "max_consecutive_tool_errors",
+            "verify_attempts",
+        ] {
+            let debug = format!("BudgetExhausted(\"{reason}\")");
+            assert_eq!(
+                parse_outcome(&debug),
+                Some(Outcome::BudgetExhausted(reason)),
+                "{reason}"
+            );
+        }
+    }
 
     fn tmpdir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!(

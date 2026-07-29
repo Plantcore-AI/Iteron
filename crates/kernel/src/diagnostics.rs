@@ -88,14 +88,14 @@ pub fn bounded_channel() -> (DiagnosticPort, Receiver<KernelDiagnostic>) {
 }
 
 impl DiagnosticPort {
-    fn try_emit(&self, diagnostic: KernelDiagnostic) {
+    pub fn try_emit(&self, diagnostic: KernelDiagnostic) {
         let _ = self.sender.try_send(diagnostic);
     }
 }
 
-/// Internal bounded emitter cloned into every descendant agent.
+/// Bounded emitter injected into every concrete runtime agent.
 #[derive(Clone)]
-pub(crate) struct DiagnosticEmitter {
+pub struct DiagnosticEmitter {
     port: Option<DiagnosticPort>,
     emitted: Arc<AtomicU32>,
 }
@@ -118,14 +118,14 @@ impl DiagnosticEmitter {
         }
     }
 
-    pub(crate) fn with_port(&self, port: DiagnosticPort) -> Self {
+    pub fn with_port(&self, port: DiagnosticPort) -> Self {
         Self {
             port: Some(port),
             emitted: self.emitted.clone(),
         }
     }
 
-    pub(crate) fn emit(&self, diagnostic: KernelDiagnostic) {
+    pub fn emit(&self, diagnostic: KernelDiagnostic) {
         let admitted = self
             .emitted
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |emitted| {

@@ -12,8 +12,7 @@
 
 use crate::effect_admission::{EffectAdmissionError, EffectAdmissions};
 use core_protocol::effect::EffectProposal;
-use core_protocol::{Capability, EffectId, Event, EventKind, Seq, ToolUse, TurnId};
-use core_tools::ToolExecution;
+use core_protocol::{Capability, EffectId, Event, EventKind, Seq, ToolResult, ToolUse, TurnId};
 use std::collections::BTreeSet;
 use std::future::Future;
 
@@ -21,6 +20,28 @@ pub const MAX_TOOL_CALLS_PER_TURN: usize = 128;
 pub const MAX_TOOL_USE_ID_BYTES: usize = 512;
 pub const MAX_TOOL_NAME_BYTES: usize = 256;
 pub const MAX_TOOL_ARGUMENT_BYTES: usize = 1024 * 1024;
+
+/// The tool port's observation of an execution. This kernel-owned value prevents the universal
+/// broker from depending on a concrete registry crate. CLI adapters map their executor result into
+/// this two-state proof vocabulary before crossing the port.
+pub enum ToolExecution {
+    Definite(ToolResult),
+    Unknown(ToolResult),
+}
+
+impl From<ToolResult> for ToolExecution {
+    fn from(result: ToolResult) -> Self {
+        Self::Definite(result)
+    }
+}
+
+impl ToolExecution {
+    pub fn into_result(self) -> ToolResult {
+        match self {
+            Self::Definite(result) | Self::Unknown(result) => result,
+        }
+    }
+}
 
 /// Admission state for model-emitted tool calls in one provider turn. Validation happens before a
 /// call crosses the UI, record, or registry boundary. The count ceiling is a hard resource guard,
@@ -104,7 +125,7 @@ fn unsafe_identity(value: &str) -> bool {
 /// Fully admitted registry call. Constructing this value does not grant authority; the caller must
 /// already have completed the constitutional capability/taint/approval checks. The boundary owns
 /// only the non-negotiable WAL ordering from this point onward.
-pub(crate) struct AdmittedRegistryTool {
+pub struct AdmittedRegistryTool {
     pub turn: TurnId,
     pub effect_id: EffectId,
     pub call: ToolUse,
@@ -376,7 +397,7 @@ where
 /// returns no result until the terminal append/fsync succeeds, keeping every UI/transcript/ledger
 /// projection downstream of canonical state. Sharing `broker_effect` is what keeps registry tools
 /// and every other brokered effect on a single, non-diverging WAL ordering.
-pub(crate) async fn execute_registry_tool<L, Execute, ExecuteFuture, Execution>(
+pub async fn execute_registry_tool<L, Execute, ExecuteFuture, Execution>(
     log: &mut L,
     admissions: &mut EffectAdmissions,
     admitted: AdmittedRegistryTool,

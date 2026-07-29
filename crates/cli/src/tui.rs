@@ -25,7 +25,7 @@ use core_ctx::ContextEstimate;
 // `Agent` appears in exactly one place below: the parameter of `run`, which hands it straight to
 // `app_server::attach`. That is the invariant this lane establishes — past that statement the
 // frontend cannot reach the runtime, and everything it knows arrives through `app_server`.
-use core_kernel::{
+use crate::runtime::{
     Agent, UiEvent, WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi, WorkflowUiEvent,
 };
 use core_obs::CostState;
@@ -1429,7 +1429,7 @@ impl App {
                     dropped: 0,
                     duplicates_removed: 0,
                     invalid_removed: 0,
-                    execution_mode: core_kernel::WorkflowExecutionModeUi::Direct,
+                    execution_mode: crate::runtime::WorkflowExecutionModeUi::Direct,
                     fan_turn_budget: 0,
                     writer_turn_reserve: 0,
                     fan_wall_secs: 0,
@@ -5033,7 +5033,7 @@ async fn handle_registered_command(
             let home = std::env::var_os("HOME")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_default();
-            let hooks = core_kernel::hooks::Hooks::load_user(&home);
+            let hooks = crate::runtime::hooks::Hooks::load_user(&home);
             if hooks.is_empty() {
                 app.note(
                     block::NoticeLevel::Info,
@@ -9041,14 +9041,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut app,
             UiEvent::Workflow(WorkflowUiEvent::PlanReady {
                 run_id: run_id.into(),
-                tasks: vec![core_kernel::WorkflowTaskUi {
+                tasks: vec![crate::runtime::WorkflowTaskUi {
                     id: 0,
                     label: "inspect the runtime".into(),
                 }],
                 dropped: 0,
                 duplicates_removed: 0,
                 invalid_removed: 0,
-                execution_mode: core_kernel::WorkflowExecutionModeUi::Sequential,
+                execution_mode: crate::runtime::WorkflowExecutionModeUi::Sequential,
                 fan_turn_budget: 4,
                 writer_turn_reserve: 20,
                 fan_wall_secs: 60,
@@ -9171,11 +9171,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.workflow_event(WorkflowUiEvent::PlanReady {
             run_id: run_id.into(),
             tasks: vec![
-                core_kernel::WorkflowTaskUi {
+                crate::runtime::WorkflowTaskUi {
                     id: 0,
                     label: "running child".into(),
                 },
-                core_kernel::WorkflowTaskUi {
+                crate::runtime::WorkflowTaskUi {
                     id: 1,
                     label: "queued child".into(),
                 },
@@ -9183,7 +9183,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             dropped: 0,
             duplicates_removed: 0,
             invalid_removed: 0,
-            execution_mode: core_kernel::WorkflowExecutionModeUi::Sequential,
+            execution_mode: crate::runtime::WorkflowExecutionModeUi::Sequential,
             fan_turn_budget: 6,
             writer_turn_reserve: 20,
             fan_wall_secs: 60,

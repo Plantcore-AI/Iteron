@@ -38,13 +38,13 @@ pub mod spawner;
 pub use bindings::LIFETIME_CAP;
 pub use cachekey::{agent_id, agent_key};
 pub use events::{
-    NullSink, PREVIEW_MAX, ProgressEvent, ProgressSink, TOOL_SUMMARY_MAX, WorkflowState, fmt_count,
-    fmt_duration, truncate_preview,
+    NullSink, PREVIEW_MAX, PROGRESS_SINK_PORT_VERSION, ProgressEvent, ProgressSink,
+    TOOL_SUMMARY_MAX, WorkflowState, fmt_count, fmt_duration, truncate_preview,
 };
-pub use journal::{Journal, Outcome, Record};
+pub use journal::{JOURNAL_FORMAT_VERSION, Journal, Outcome, Record};
 pub use meta::{Meta, extract_meta, strip_meta};
 pub use schema::{RETRY_MAX, SchemaValidator};
-pub use spawner::{AgentCall, AgentOutcome, AgentSpawner};
+pub use spawner::{AGENT_SPAWNER_PORT_VERSION, AgentCall, AgentOutcome, AgentSpawner};
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -54,6 +54,51 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
+
+/// Aggregate engine ceilings supplied by the authority-owning composition root.
+///
+/// Both values are non-zero and immutable. A workflow script can consume these bounds but cannot
+/// widen them, and schema retries count as agent calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunLimits {
+    max_concurrency: usize,
+    max_agent_calls: usize,
+}
+
+impl RunLimits {
+    pub fn new(max_concurrency: usize, max_agent_calls: usize) -> Result<Self, &'static str> {
+        if max_concurrency == 0 {
+            return Err("workflow concurrency must be non-zero");
+        }
+        if max_agent_calls == 0 {
+            return Err("workflow agent-call ceiling must be non-zero");
+        }
+        Ok(Self {
+            max_concurrency,
+            max_agent_calls,
+        })
+    }
+
+    pub fn max_concurrency(self) -> usize {
+        self.max_concurrency
+    }
+
+    pub fn max_agent_calls(self) -> usize {
+        self.max_agent_calls
+    }
+}
+
+impl Default for RunLimits {
+    fn default() -> Self {
+        let cores = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(4);
+        Self {
+            max_concurrency: cores.saturating_sub(2).clamp(1, 16),
+            max_agent_calls: LIFETIME_CAP,
+        }
+    }
+}
 
 /// A workflow run identifier. Fresh runs get a time-ordered id; resume reuses a prior one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -103,6 +148,8 @@ pub struct RunSpec {
     pub workflows_dir: Option<PathBuf>,
     /// A prior run's id whose `journal.jsonl` (under `workflows_dir`) seeds the resume cache.
     pub resume_from: Option<RunId>,
+    /// Kernel/composition-root minted aggregate ceilings. Script input never controls this value.
+    pub limits: RunLimits,
 }
 
 impl RunSpec {
@@ -113,6 +160,7 @@ impl RunSpec {
             run_id: RunId::generate(),
             workflows_dir: None,
             resume_from: None,
+            limits: RunLimits::default(),
         }
     }
     pub fn with_args(mut self, args: serde_json::Value) -> RunSpec {
@@ -129,6 +177,10 @@ impl RunSpec {
     }
     pub fn with_resume_from(mut self, run_id: RunId) -> RunSpec {
         self.resume_from = Some(run_id);
+        self
+    }
+    pub fn with_limits(mut self, limits: RunLimits) -> RunSpec {
+        self.limits = limits;
         self
     }
 }
@@ -241,9 +293,20 @@ impl WorkflowEngine {
             script,
             args,
             run_id,
+            limits,
             ..
         } = spec;
-        host::run_core(&script, args, run_id, cancel, journal, spawner, sink).await
+        host::run_core(host::RunCoreRequest {
+            script: &script,
+            args,
+            run_id,
+            limits,
+            cancel,
+            journal,
+            spawner,
+            sink,
+        })
+        .await
     }
 
     /// Launch a run in the background and return a [`RunHandle`] immediately (mirrors Claude Code's
@@ -272,17 +335,19 @@ impl WorkflowEngine {
                         script,
                         args,
                         run_id,
+                        limits,
                         ..
                     } = spec;
-                    rt.block_on(host::run_core(
-                        &script,
+                    rt.block_on(host::run_core(host::RunCoreRequest {
+                        script: &script,
                         args,
                         run_id,
-                        cancel_thread,
+                        limits,
+                        cancel: cancel_thread,
                         journal,
                         spawner,
                         sink,
-                    ))
+                    }))
                 })();
                 let _ = tx.send(result);
             })

@@ -59,6 +59,7 @@ fn cell(config: &str, seed: u64, cost_status: CostStatus, cost_usd: Option<f64>)
         cost_reason: (cost_status == CostStatus::Unknown)
             .then(|| "no_verified_rate_card".to_owned()),
         turns: Some(1),
+        kernel_tax: None,
         oracle_status: OracleStatus::Passed,
         oracle_detail: None,
         sampling: SamplingControl {

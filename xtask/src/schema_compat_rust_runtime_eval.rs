@@ -72,6 +72,11 @@ fn validate_contract(contract: &syn::File) -> Result<()> {
                     return Err(ContractError::WrongType(kind.as_str().into()));
                 }
             };
+            if result.schema_version >= 5 && result.kernel_tax.is_none() {
+                return Err(ContractError::MalformedJson(
+                    "schema v5 result lacks `kernel_tax`".into(),
+                ));
+            }
             if result.exit_code != process_exit {
                 return Err(ContractError::ExitMismatch {
                     process: process_exit,
@@ -81,6 +86,7 @@ fn validate_contract(contract: &syn::File) -> Result<()> {
             if result.success != matches!(result.outcome.as_str(), "done" | "drained") {
                 return Err(ContractError::OutcomeMismatch);
             }
+            // Validate cost truth eagerly; a malformed cost must classify the cell as a harness error.
             let _ = result.cost()?;
             Ok(result)
         }"#,

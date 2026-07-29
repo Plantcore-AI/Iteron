@@ -51,6 +51,8 @@ jobs:
           persist-credentials: false
       - name: install pinned Rust toolchain
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: enforce the complete microkernel conformance matrix
+        run: cargo run --locked -p core-xtask -- conformance kernel
       - name: validate ownership and dependency contract on main
         if: github.event_name == 'push'
         run: cargo run --locked -p core-xtask -- boundaries check

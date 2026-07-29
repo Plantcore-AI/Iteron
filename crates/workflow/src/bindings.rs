@@ -37,22 +37,26 @@ use crate::spawner::{AgentCall, AgentOutcome, AgentSpawner};
 use core_sched::Governor;
 use core_sched::backoff::{BackoffPolicy, Jitter, full_jitter};
 
-/// Lifetime cap: the 1001st `agent()` call in a run degrades to `null` (design §2.4).
+/// Backward-compatible default aggregate ceiling. A kernel-minted [`crate::RunLimits`] may narrow
+/// it, and schema retries consume it one real spawn at a time.
 pub const LIFETIME_CAP: usize = 1000;
 
 /// Fresh-per-run engine state. All fields are interior-mutable so the `Fn` host closures can share
 /// one `Arc<RunState>` without a `&mut`.
 pub struct RunState {
     index: AtomicUsize,
-    lifetime: AtomicUsize,
+    agent_calls: AtomicUsize,
+    max_agent_calls: usize,
     phases: Mutex<Vec<String>>,
 }
 
 impl RunState {
-    pub fn new() -> Self {
+    pub fn new(max_agent_calls: usize) -> Self {
+        debug_assert!(max_agent_calls > 0);
         RunState {
             index: AtomicUsize::new(0),
-            lifetime: AtomicUsize::new(0),
+            agent_calls: AtomicUsize::new(0),
+            max_agent_calls,
             phases: Mutex::new(Vec::new()),
         }
     }
@@ -62,10 +66,14 @@ impl RunState {
         self.index.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    /// Total live `agent()` attempts so far (for the lifetime cap). Journal hits do NOT bump this —
-    /// the cap is short-circuited before it (B2).
-    fn bump_lifetime(&self) -> usize {
-        self.lifetime.fetch_add(1, Ordering::SeqCst) + 1
+    /// Admit one real child spawn. Journal hits do not consume the aggregate ceiling; every schema
+    /// retry does. The compare-and-update keeps concurrent callers from overshooting it.
+    fn admit_agent_call(&self) -> bool {
+        self.agent_calls
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |calls| {
+                (calls < self.max_agent_calls).then_some(calls + 1)
+            })
+            .is_ok()
     }
 
     /// 1-based first-seen phase index.
@@ -81,7 +89,7 @@ impl RunState {
 
 impl Default for RunState {
     fn default() -> Self {
-        Self::new()
+        Self::new(LIFETIME_CAP)
     }
 }
 
@@ -115,6 +123,7 @@ fn envelope_for(record: &Record) -> String {
         Outcome::Structured { value } => structured_envelope(value),
         Outcome::Text { text } => text_envelope(text),
         Outcome::Null { reason } => null_envelope(reason.as_deref().unwrap_or("null")),
+        Outcome::Unknown => null_envelope("unknown journal outcome"),
     }
 }
 
@@ -163,6 +172,11 @@ fn emit_finished(env: &AgentEnv, idx: usize, label: String, record: &Record, dur
                     .unwrap_or_else(|| "agent returned null".into()),
             ),
         ),
+        Outcome::Unknown => (
+            WorkflowState::Error,
+            None,
+            Some("unknown journal outcome".into()),
+        ),
     };
     env.sink.emit(ProgressEvent::AgentFinished {
         index: idx,
@@ -183,6 +197,12 @@ fn emit_finished(env: &AgentEnv, idx: usize, label: String, record: &Record, dur
 /// Spawn one SEND child, racing the cancel token. `Err` = the child was cancelled (`"stopped"`) or
 /// its task failed. The Governor permit is held by the caller for the whole call.
 async fn spawn_child(env: &AgentEnv, call: &AgentCall) -> Result<AgentOutcome, String> {
+    if !env.state.admit_agent_call() {
+        return Err(format!(
+            "agent call ceiling {} reached",
+            env.state.max_agent_calls
+        ));
+    }
     let spawner = env.spawner.clone();
     let call = call.clone();
     let mut child = tokio::spawn(async move { spawner.spawn(call).await });
@@ -333,28 +353,7 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
         return envelope_for(&record);
     }
 
-    // --- (2) lifetime cap — only LIVE calls consume it ------------------------------------------
-    if env.state.bump_lifetime() > LIFETIME_CAP {
-        let record = Record::null(Some("lifetime cap".into()));
-        env.journal
-            .record(&key, &cachekey::agent_id(&key), record.clone());
-        env.sink.emit(ProgressEvent::Log {
-            message: format!("workflow: lifetime cap {LIFETIME_CAP} reached; agent #{idx} -> null"),
-        });
-        env.sink.emit(ProgressEvent::AgentFinished {
-            index: idx,
-            label,
-            state: WorkflowState::Skipped,
-            tokens: 0,
-            tool_calls: 0,
-            duration_ms: 0,
-            result_preview: None,
-            last_tool_summary: None,
-            error: Some("lifetime cap".into()),
-        });
-        return null_envelope("lifetime cap");
-    }
-
+    // --- (2) build the bounded live call ---------------------------------------------------------
     let call = AgentCall {
         prompt: raw.prompt.clone(),
         label: Some(label.clone()),
@@ -385,8 +384,16 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
     let duration_ms = started.elapsed().as_millis() as u64;
 
     // --- (5) journal the outcome (positive AND negative — B2) -----------------------------------
-    env.journal
-        .record(&key, &cachekey::agent_id(&key), record.clone());
+    if let Err(error) = env
+        .journal
+        .record(&key, &cachekey::agent_id(&key), record.clone())
+    {
+        env.sink.emit(ProgressEvent::Log {
+            message: format!("workflow: journal durability failed: {error}"),
+        });
+        env.cancel.cancel();
+        return null_envelope("journal durability failed");
+    }
     emit_finished(&env, idx, label, &record, duration_ms);
     envelope
 }

@@ -5,7 +5,7 @@
 //! consumes a later ratatui frame. The caller supplies the live terminal backend as the writer,
 //! keeping the byte outside retained transcript state.
 
-use core_kernel::UiEvent;
+use crate::runtime::UiEvent;
 use core_protocol::SubmissionId;
 use std::io::Write;
 

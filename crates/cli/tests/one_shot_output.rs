@@ -888,6 +888,18 @@ fn normalize_runtime_fields(values: &mut [Value]) {
         if let Some(run_id) = value.get_mut("run_id") {
             *run_id = json!("<RUN_ID>");
         }
+        if let Some(kernel_tax) = value.get_mut("kernel_tax").and_then(Value::as_object_mut) {
+            for field in [
+                "admission_latency_us",
+                "broker_latency_us",
+                "record_fsync_latency_us",
+                "estimated_tokens",
+            ] {
+                if let Some(slot) = kernel_tax.get_mut(field) {
+                    *slot = json!(0);
+                }
+            }
+        }
         if value.get("type") == Some(&json!("turn_end"))
             && let Some(context) = value.get_mut("context").and_then(Value::as_object_mut)
         {
@@ -929,7 +941,7 @@ fn assert_diagnostics_on_stderr(output: &Output, outcome: &str) {
     assert!(!stdout.contains("core · repo="));
     assert!(!stdout.contains("record: "));
     assert!(
-        !stderr.contains("\"schema_version\":4"),
+        !stderr.contains("\"schema_version\":5"),
         "machine result records belong exclusively on stdout"
     );
     assert!(!stderr.contains("golden reply"));
@@ -937,7 +949,13 @@ fn assert_diagnostics_on_stderr(output: &Output, outcome: &str) {
 
 fn assert_terminal_result(value: &Value, expected_exit: i32, expected_outcome: &str) {
     assert!(value.is_object(), "terminal result is a JSON object");
-    assert_eq!(value["schema_version"], 4);
+    assert_eq!(value["schema_version"], 5);
+    let tax = &value["kernel_tax"];
+    assert!(tax["admission_latency_us"].as_u64().is_some());
+    assert!(tax["broker_latency_us"].as_u64().is_some());
+    assert!(tax["record_fsync_latency_us"].as_u64().is_some());
+    assert!(tax["estimated_tokens"].as_u64().is_some());
+    assert_eq!(tax["failed_runs"], u64::from(expected_exit != 0));
     assert_eq!(value["type"], "result");
     assert_eq!(value["outcome"], expected_outcome);
     assert_eq!(value["exit_code"], expected_exit);
@@ -1057,8 +1075,8 @@ fn json_one_shot_process_contract_matches_golden() {
     assert_eq!(
         actual,
         golden_lines(
-            "one_shot_json_success_v4.json",
-            include_str!("golden/one_shot_json_success_v4.json")
+            "one_shot_json_success_v5.json",
+            include_str!("golden/one_shot_json_success_v5.json")
         )
     );
 }
@@ -1087,8 +1105,8 @@ fn stream_json_one_shot_process_contract_matches_golden() {
     assert_eq!(
         actual,
         golden_lines(
-            "one_shot_stream_json_success_v4.jsonl",
-            include_str!("golden/one_shot_stream_json_success_v4.jsonl")
+            "one_shot_stream_json_success_v5.jsonl",
+            include_str!("golden/one_shot_stream_json_success_v5.jsonl")
         )
     );
 }

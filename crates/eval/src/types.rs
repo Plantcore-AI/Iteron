@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub const EVAL_SCHEMA_VERSION: u32 = 1;
+pub const EVAL_SCHEMA_VERSION: u32 = 2;
 
 /// Stable process exit codes for the `core-eval` binary.
 ///
@@ -91,6 +91,33 @@ pub struct CostObservation {
     pub reason: Option<String>,
 }
 
+/// Separate harness-overhead line aggregated across evaluation cells.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelTaxObservation {
+    pub admission_latency_us: u64,
+    pub broker_latency_us: u64,
+    pub record_fsync_latency_us: u64,
+    pub estimated_tokens: u64,
+    pub failed_runs: u64,
+}
+
+impl KernelTaxObservation {
+    pub fn add(&mut self, other: Self) {
+        self.admission_latency_us = self
+            .admission_latency_us
+            .saturating_add(other.admission_latency_us);
+        self.broker_latency_us = self
+            .broker_latency_us
+            .saturating_add(other.broker_latency_us);
+        self.record_fsync_latency_us = self
+            .record_fsync_latency_us
+            .saturating_add(other.record_fsync_latency_us);
+        self.estimated_tokens = self.estimated_tokens.saturating_add(other.estimated_tokens);
+        self.failed_runs = self.failed_runs.saturating_add(other.failed_runs);
+    }
+}
+
 impl CostObservation {
     pub fn known(usd: f64) -> Self {
         Self {
@@ -155,6 +182,7 @@ pub struct CellResult {
     pub cost_usd: Option<f64>,
     pub cost_reason: Option<String>,
     pub turns: Option<u32>,
+    pub kernel_tax: Option<KernelTaxObservation>,
     pub oracle_status: OracleStatus,
     pub oracle_detail: Option<String>,
     pub sampling: SamplingControl,
@@ -182,6 +210,7 @@ impl CellResult {
             cost_usd: None,
             cost_reason: Some("harness_error".into()),
             turns: None,
+            kernel_tax: None,
             oracle_status: OracleStatus::NotRun,
             oracle_detail: None,
             sampling: SamplingControl {
@@ -214,6 +243,7 @@ pub struct EvaluationManifest {
     pub aggregate: crate::report::Aggregate,
     pub comparison: crate::report::Comparison,
     pub selections: Vec<crate::report::SelectionSummary>,
+    pub kernel_tax: KernelTaxObservation,
 }
 
 impl EvaluationManifest {

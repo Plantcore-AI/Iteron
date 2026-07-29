@@ -243,6 +243,10 @@ pub struct Budget {
     /// a positive ceiling requires a verified route-bound rate card, while zero is universally
     /// enforceable without admitting a provider request.
     pub max_usd: Option<f64>,
+    /// Optional aggregate provider-token ceiling across the run and all descendants. This was
+    /// appended after the ABI freeze, so absence retains the exact pre-append wire bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
     pub max_wall_secs: u64,
     pub max_consecutive_tool_errors: u32,
 }
@@ -254,6 +258,7 @@ impl Default for Budget {
         Self {
             max_turns: 60,
             max_usd: None,
+            max_tokens: None,
             max_wall_secs: 900,
             max_consecutive_tool_errors: 3,
         }
@@ -374,6 +379,7 @@ mod effort_tests {
     fn monetary_budget_cannot_disable_itself_with_non_finite_values() {
         let mut budget = Budget {
             max_usd: Some(f64::NAN),
+            max_tokens: None,
             ..Budget::default()
         };
         assert_eq!(budget.validate(), Err("max_usd must be finite"));

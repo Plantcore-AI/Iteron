@@ -1,0 +1,1 @@
+{"assistant_text":"state checkpointed","cost_reason":null,"cost_status":"zero","cost_usd":0.0,"error":null,"exit_code":0,"outcome":"drained","reason":null,"run_id":"run-drained","schema_version":5,"success":true,"turns":1,"type":"result","kernel_tax":{"admission_latency_us":0,"broker_latency_us":0,"record_fsync_latency_us":0,"estimated_tokens":0,"failed_runs":0}}

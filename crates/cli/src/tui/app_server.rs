@@ -50,7 +50,7 @@
 //!   reported. Everything else, and `Done` above all, is delivered even if that means waiting for
 //!   the reader.
 
-use core_kernel::{Agent, UiEvent};
+use crate::runtime::{Agent, UiEvent};
 use core_protocol::{Op, Outcome, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -194,7 +194,7 @@ pub(crate) enum ControlReply {
     Refused(String),
     /// `/compact` finished.
     Compacted {
-        report: Box<core_kernel::CompactionReport>,
+        report: Box<crate::runtime::CompactionReport>,
         snapshot: Box<SessionSnapshot>,
     },
 }

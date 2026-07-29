@@ -11,35 +11,63 @@ use serde_json::Value;
 ///
 /// Keep the current version last. The schema-compatibility corpus test below binds this list to
 /// every retained machine-output fixture, so a producer bump cannot silently strand evaluation.
-pub const SUPPORTED_CORE_CLI_SCHEMA_VERSIONS: &[u32] = &[3, 4];
+pub const SUPPORTED_CORE_CLI_SCHEMA_VERSIONS: &[u32] = &[3, 4, 5];
 /// Version currently emitted by `core --output-format json`.
-pub const CORE_CLI_SCHEMA_VERSION: u32 = 4;
+pub const CORE_CLI_SCHEMA_VERSION: u32 = 5;
 /// Exact machine-record/version pairs admitted by the real evaluation consumer.
 pub const SUPPORTED_CORE_CLI_TYPE_VERSIONS: &[(&str, u32)] = &[
     ("approval_request", 4),
+    ("approval_request", 5),
     ("assistant_text", 3),
     ("assistant_text", 4),
+    ("assistant_text", 5),
     ("notice", 4),
+    ("notice", 5),
     ("phase", 3),
     ("phase", 4),
+    ("phase", 5),
     ("result", 3),
     ("result", 4),
+    ("result", 5),
     ("run_done", 3),
     ("run_done", 4),
+    ("run_done", 5),
     ("steer_applied", 4),
+    ("steer_applied", 5),
     ("thinking", 4),
+    ("thinking", 5),
     ("tool_end", 4),
+    ("tool_end", 5),
     ("tool_start", 4),
+    ("tool_start", 5),
     ("turn_end", 3),
     ("turn_end", 4),
+    ("turn_end", 5),
     ("workflow_agent_activity", 4),
+    ("workflow_agent_activity", 5),
     ("workflow_agent_end", 4),
+    ("workflow_agent_end", 5),
     ("workflow_agent_start", 4),
+    ("workflow_agent_start", 5),
     ("workflow_end", 4),
+    ("workflow_end", 5),
     ("workflow_phase", 4),
+    ("workflow_phase", 5),
     ("workflow_plan", 4),
+    ("workflow_plan", 5),
     ("workflow_start", 4),
+    ("workflow_start", 5),
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CliKernelTax {
+    pub admission_latency_us: u64,
+    pub broker_latency_us: u64,
+    pub record_fsync_latency_us: u64,
+    pub estimated_tokens: u64,
+    pub failed_runs: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,6 +84,8 @@ pub struct CliFinalResult {
     pub cost_status: String,
     pub cost_reason: Option<String>,
     pub turns: u32,
+    #[serde(default)]
+    pub kernel_tax: Option<CliKernelTax>,
     pub exit_code: i32,
     pub error: Option<String>,
 }
@@ -476,6 +506,11 @@ pub fn parse_final_result(
             return Err(ContractError::WrongType(kind.as_str().into()));
         }
     };
+    if result.schema_version >= 5 && result.kernel_tax.is_none() {
+        return Err(ContractError::MalformedJson(
+            "schema v5 result lacks `kernel_tax`".into(),
+        ));
+    }
     if result.exit_code != process_exit {
         return Err(ContractError::ExitMismatch {
             process: process_exit,
@@ -498,7 +533,7 @@ pub fn cost_status(result: &CliFinalResult) -> Result<CostStatus, ContractError>
 mod tests {
     use super::*;
     use serde_json::Value;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::{Path, PathBuf};
 
     fn result_json(extra: &str) -> Vec<u8> {
@@ -641,8 +676,8 @@ mod tests {
         let mut observed_versions = BTreeSet::new();
         let mut observed_types = BTreeSet::new();
         let mut observed_type_versions = BTreeSet::new();
-        let mut observed_diff_tags = BTreeSet::new();
-        let mut observed_diff_lines = 0usize;
+        let mut observed_diff_tags_by_version = BTreeMap::<u32, BTreeSet<CliDiffTag>>::new();
+        let mut observed_diff_lines_by_version = BTreeMap::<u32, usize>::new();
 
         for surface in surfaces.iter().filter(|surface| {
             surface["id"] == "cli.machine-result"
@@ -717,8 +752,13 @@ mod tests {
                             panic!("{relative} must freeze a non-null typed FileDiff")
                         };
                         for hunk in diff.hunks {
-                            observed_diff_lines += hunk.lines.len();
-                            observed_diff_tags.extend(hunk.lines.into_iter().map(|line| line.tag));
+                            *observed_diff_lines_by_version
+                                .entry(expected_version)
+                                .or_default() += hunk.lines.len();
+                            observed_diff_tags_by_version
+                                .entry(expected_version)
+                                .or_default()
+                                .extend(hunk.lines.into_iter().map(|line| line.tag));
                         }
                     }
                     let encoded = serde_json::to_vec(record).expect("machine fixture encodes");
@@ -776,16 +816,31 @@ mod tests {
             observed_type_versions, supported_type_versions,
             "eval admission must equal the exact frozen `(type, schema_version)` matrix"
         );
+        let supported_diff_versions = SUPPORTED_CORE_CLI_TYPE_VERSIONS
+            .iter()
+            .filter_map(|(kind, version)| (*kind == "tool_end").then_some(*version))
+            .collect::<BTreeSet<_>>();
         assert_eq!(
-            observed_diff_tags,
-            BTreeSet::from([CliDiffTag::Add, CliDiffTag::Ctx, CliDiffTag::Del]),
-            "the real eval consumer must decode every frozen DiffTag"
+            observed_diff_tags_by_version
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            supported_diff_versions,
+            "every admitted tool_end version must freeze a typed diff corpus"
         );
-        assert_eq!(
-            observed_diff_lines,
-            observed_diff_tags.len(),
-            "the real eval corpus must carry each DiffTag exactly once"
-        );
+        for version in supported_diff_versions {
+            let tags = &observed_diff_tags_by_version[&version];
+            assert_eq!(
+                tags,
+                &BTreeSet::from([CliDiffTag::Add, CliDiffTag::Ctx, CliDiffTag::Del]),
+                "the schema-v{version} eval consumer must decode every frozen DiffTag"
+            );
+            assert_eq!(
+                observed_diff_lines_by_version[&version],
+                tags.len(),
+                "the schema-v{version} eval corpus must carry each DiffTag exactly once"
+            );
+        }
         assert_eq!(
             SUPPORTED_CORE_CLI_SCHEMA_VERSIONS.last(),
             Some(&CORE_CLI_SCHEMA_VERSION),

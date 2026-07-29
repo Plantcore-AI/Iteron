@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use async_trait::async_trait;
 use core_agents::AgentDef;
 use core_obs::PricingPort;
+use core_protocol::capability_set::CapabilitySet;
 use core_protocol::{
     Budget, CostAttribution, Effort, PermissionMode, PermissionRules, RunId, TenantId,
 };
@@ -32,8 +33,9 @@ use core_tools::Registry;
 use core_workflow::{AgentCall, AgentOutcome, AgentSpawner};
 use sha2::{Digest, Sha256};
 
-use crate::hooks::Hooks;
-use crate::{Agent, usage_tokens};
+use super::hooks::Hooks;
+use super::pricing::SharedUsdBudget;
+use super::{Agent, usage_tokens};
 
 /// Everything a [`KernelSpawner`] needs to build children WITHOUT a live parent `Agent`. The CLI
 /// fills this once from the resolved provider/route/config, then hands it to [`KernelSpawner::new`].
@@ -51,6 +53,9 @@ pub struct KernelSpawnerContext {
     /// Pure, injected pricing strategy. REQUIRED only if `budget.max_usd` is a positive ceiling; a
     /// child that cannot bind a verified rate card for a positive ceiling resolves to `Null`.
     pub pricing_port: Option<Arc<dyn PricingPort>>,
+    /// One aggregate monetary ceiling shared by the parent and every workflow child. A child may
+    /// tighten it; no child receives an independent refill.
+    pub(super) usd_budget: Option<Arc<SharedUsdBudget>>,
     /// The repo the children read (their sandbox root + read-only registry root).
     pub workspace: PathBuf,
     /// The session runtime-state root: the directory that CONTAINS the parent session rollout
@@ -84,7 +89,8 @@ pub struct KernelSpawnerContext {
     /// fails closed on its first `Ask` (there is no approvals channel). Ignored by read-only
     /// children (they have nothing above `ReadOnly` to gate).
     pub bypass_permissions: bool,
-    pub allow_tainted_egress: bool,
+    pub authority_ceiling: CapabilitySet,
+    pub policy_capabilities: CapabilitySet,
 }
 
 impl KernelSpawnerContext {
@@ -105,6 +111,13 @@ impl KernelSpawnerContext {
         parent_run_id: String,
         workflow_id: String,
     ) -> Self {
+        let all_capabilities = CapabilitySet::from_iter_capabilities([
+            core_protocol::Capability::ReadOnly,
+            core_protocol::Capability::ReversibleLocal,
+            core_protocol::Capability::CodeExecuting,
+            core_protocol::Capability::TrustMutating,
+            core_protocol::Capability::IrreversibleExternal,
+        ]);
         KernelSpawnerContext {
             provider,
             model,
@@ -112,6 +125,7 @@ impl KernelSpawnerContext {
             catalog_digest,
             capability_digest,
             pricing_port: None,
+            usd_budget: None,
             workspace,
             runtime_state_dir,
             tenant,
@@ -127,7 +141,8 @@ impl KernelSpawnerContext {
             permission_mode: PermissionMode::default(),
             permission_rules: PermissionRules::new(),
             bypass_permissions: false,
-            allow_tainted_egress: false,
+            authority_ceiling: all_capabilities,
+            policy_capabilities: all_capabilities,
         }
     }
 }
@@ -225,6 +240,9 @@ impl KernelSpawner {
             sub_run: sub_run.0.clone(),
         });
         sub.runtime_state_dir = cx.runtime_state_dir.clone();
+        sub.usd_budget = cx.usd_budget.clone();
+        sub.authority_ceiling = cx.authority_ceiling;
+        sub.policy_capabilities = cx.policy_capabilities;
         // A workflow child is exactly one level below the operator. `MAX_DELEGATION_DEPTH` then
         // refuses any deeper dispatch/workflow a writer child might attempt (defense in depth
         // beside the read-only registry's absence of those tools).
@@ -235,7 +253,6 @@ impl KernelSpawner {
         sub.model_context_window = cx.model_context_window;
         sub.model_max_output_tokens = cx.model_max_output_tokens;
         sub.hooks = cx.hooks.clone();
-        sub.allow_tainted_egress = cx.allow_tainted_egress;
         sub.bypass_permissions = cx.bypass_permissions;
         // Installs the deny-list on the agent, its hooks, and (already, above) its registry.
         sub.set_sensitive_env_names(cx.sensitive_env_names.clone());

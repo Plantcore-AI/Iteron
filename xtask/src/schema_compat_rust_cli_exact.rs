@@ -107,6 +107,7 @@ pub(super) fn validate(file: &syn::File) -> Result<()> {
             run_id: &str,
             cost: &CostState,
             turns: u32,
+            kernel_tax: KernelTax,
             error: Option<&str>,
         ) -> Value {
             json!({
@@ -121,6 +122,7 @@ pub(super) fn validate(file: &syn::File) -> Result<()> {
                 "cost_status": cost.status(),
                 "cost_reason": cost.reason().map(|reason| reason.code()),
                 "turns": turns,
+                "kernel_tax": kernel_tax,
                 "exit_code": outcome_exit_code(outcome),
                 "error": error.map(scrub),
             })

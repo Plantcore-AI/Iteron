@@ -240,14 +240,13 @@ fn task_input() -> TaskInput {
     }
 }
 
-/// Fully populated on purpose, `max_usd` included. `Budget.max_usd` is an `Option` that is part of
-/// the original shape rather than appended after the freeze, so it prints unconditionally; leaving
-/// it `None` would record the row's JSON type as `null` and freeze nothing about the number a
-/// producer actually sends.
+/// Fully populated on purpose. `max_usd` is part of the original shape; `max_tokens` is the legal
+/// post-freeze optional append whose removal/re-encode behavior the generic append test exercises.
 fn budget() -> Budget {
     Budget {
         max_turns: 60,
         max_usd: Some(5.0),
+        max_tokens: Some(100_000),
         max_wall_secs: 900,
         max_consecutive_tool_errors: 3,
     }
