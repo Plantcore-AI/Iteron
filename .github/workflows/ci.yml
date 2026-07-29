@@ -124,8 +124,9 @@ jobs:
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
         env:
-          BOOTSTRAP_POLICY_SHA: 6b850ca79b3a167a25357f873841e2bedcbad59a
-          COMPATIBILITY_POLICY_SHA: 9319992f41a50cfd08dc19bce4852c0ee5a1028a
+          LEGACY_POLICY_ANCHOR_SHA: 6b850ca79b3a167a25357f873841e2bedcbad59a
+          LEGACY_PARSER_BLOB_OID: 1758a24e092648a71469f3e3cfbac45a9cb204b7
+          COMPATIBILITY_POLICY_SHA: 0a60c6d0a36ae94a6bb292fd2b9feb65511b3325
           POLICY_SHA: ${{ steps.policy.outputs.policy-sha }}
           PROJECTION_ROOT: ${{ runner.temp }}/core-policy-candidate-projection
           COMPATIBILITY_POLICY_ROOT: ${{ runner.temp }}/core-policy-compatibility
@@ -133,17 +134,36 @@ jobs:
           set -euo pipefail
           candidate_root=$GITHUB_WORKSPACE
           compatibility_active=false
+          legacy_parser=xtask/src/schema_compat_rust_cli_parse.rs
 
-          if [[ "$POLICY_SHA" == "$BOOTSTRAP_POLICY_SHA" ]]; then
+          test "$(git cat-file -t "$LEGACY_POLICY_ANCHOR_SHA")" = commit
+          read -r anchor_mode anchor_type anchor_oid anchor_path \
+            <<<"$(git ls-tree "$LEGACY_POLICY_ANCHOR_SHA" -- "$legacy_parser")"
+          test "$anchor_mode" = 100644
+          test "$anchor_type" = blob
+          test "$anchor_oid" = "$LEGACY_PARSER_BLOB_OID"
+          test "$anchor_path" = "$legacy_parser"
+
+          if git merge-base --is-ancestor \
+            "$LEGACY_POLICY_ANCHOR_SHA" "$POLICY_SHA"; then
+            read -r parser_mode parser_type parser_oid parser_path \
+              <<<"$(git ls-tree "$POLICY_SHA" -- "$legacy_parser")"
+          fi
+
+          if [[ "${parser_mode:-}" == 100644 \
+            && "${parser_type:-}" == blob \
+            && "${parser_oid:-}" == "$LEGACY_PARSER_BLOB_OID" \
+            && "${parser_path:-}" == "$legacy_parser" ]]; then
             candidate_sha=$(git rev-parse --verify 'HEAD^{commit}')
             [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
             test "$(git cat-file -t "$COMPATIBILITY_POLICY_SHA")" = commit
             git merge-base --is-ancestor \
-              "$BOOTSTRAP_POLICY_SHA" "$COMPATIBILITY_POLICY_SHA"
+              "$LEGACY_POLICY_ANCHOR_SHA" "$COMPATIBILITY_POLICY_SHA"
             git merge-base --is-ancestor \
               "$COMPATIBILITY_POLICY_SHA" "$candidate_sha"
 
             for pinned_path in \
+              governance/client-conformance.json \
               governance/schema-compatibility.json \
               crates/cli/tests/golden/input_attachment_stream_v5.jsonl \
               crates/eval/src/contract.rs \
@@ -196,7 +216,7 @@ jobs:
 
             git -C "$PROJECTION_ROOT" rm --quiet -- \
               crates/cli/tests/golden/input_attachment_stream_v5.jsonl
-            git -C "$PROJECTION_ROOT" checkout "$BOOTSTRAP_POLICY_SHA" -- \
+            git -C "$PROJECTION_ROOT" checkout "$POLICY_SHA" -- \
               crates/cli/src/main.rs crates/eval/src/contract.rs
 
             projected_paths=$RUNNER_TEMP/core-policy-projected-paths
@@ -226,14 +246,16 @@ jobs:
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
         env:
+          COMPATIBILITY_ACTIVE: ${{ steps.compatibility.outputs.active }}
           GH_TOKEN: ${{ github.token }}
+          POLICY_SHA: ${{ steps.policy.outputs.policy-sha }}
           POLICY_ROOT: ${{ runner.temp }}/core-policy-base
         run: |
           set -euo pipefail
           verifier=$POLICY_ROOT/release-tools/client_runtime_receipt.py
-          if [[ ! -f "$verifier" ]]; then
-            bootstrap_base=6b850ca79b3a167a25357f873841e2bedcbad59a
-            test "${{ steps.policy.outputs.policy-sha }}" = "$bootstrap_base"
+          if [[ ! -e "$verifier" ]]; then
+            test ! -L "$verifier"
+            test "$COMPATIBILITY_ACTIVE" = true
             jq -e '
               .schema_version == 2
               and .runtime_builder == null
@@ -249,11 +271,12 @@ jobs:
             printf 'one-time null/pending client runtime receipt bootstrap validated\n'
             exit 0
           fi
+          test -f "$verifier"
           test ! -L "$verifier"
           arguments=(
             verify-evidence
             --root "$GITHUB_WORKSPACE"
-            --trusted-commit "${{ steps.policy.outputs.policy-sha }}"
+            --trusted-commit "$POLICY_SHA"
             --require-attestation
           )
           builder_commit=$(jq -er '

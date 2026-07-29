@@ -397,9 +397,16 @@ class ReleaseToolsTest(unittest.TestCase):
             "$POLICY_ROOT/release-tools/client_runtime_receipt.py", verification
         )
         self.assertIn(
-            "bootstrap_base=6b850ca79b3a167a25357f873841e2bedcbad59a",
+            "COMPATIBILITY_ACTIVE: ${{ steps.compatibility.outputs.active }}",
             verification,
         )
+        self.assertIn(
+            "POLICY_SHA: ${{ steps.policy.outputs.policy-sha }}", verification
+        )
+        self.assertIn('test "$COMPATIBILITY_ACTIVE" = true', verification)
+        self.assertIn('if [[ ! -e "$verifier" ]]', verification)
+        self.assertIn('test ! -L "$verifier"', verification)
+        self.assertIn('test -f "$verifier"', verification)
         self.assertIn(".runtime_builder == null", verification)
         self.assertIn(".runtime_receipt == null", verification)
         self.assertIn(
@@ -409,10 +416,7 @@ class ReleaseToolsTest(unittest.TestCase):
         self.assertIn("ls-tree -r -z HEAD", verification)
         self.assertIn("verify-evidence", verification)
         self.assertIn('--root "$GITHUB_WORKSPACE"', verification)
-        self.assertIn(
-            '--trusted-commit "${{ steps.policy.outputs.policy-sha }}"',
-            verification,
-        )
+        self.assertIn('--trusted-commit "$POLICY_SHA"', verification)
         self.assertIn(
             'arguments+=(--trusted-builder-commit "$builder_commit")',
             verification,
@@ -459,9 +463,11 @@ class ReleaseToolsTest(unittest.TestCase):
                 repository / ".github/workflows/review-policy.yml"
             ).read_text(encoding="utf-8"),
         }
-        bootstrap = "6b850ca79b3a167a25357f873841e2bedcbad59a"
-        compatibility = "9319992f41a50cfd08dc19bce4852c0ee5a1028a"
+        anchor = "6b850ca79b3a167a25357f873841e2bedcbad59a"
+        parser_blob = "1758a24e092648a71469f3e3cfbac45a9cb204b7"
+        compatibility = "0a60c6d0a36ae94a6bb292fd2b9feb65511b3325"
         pinned_paths = (
+            "governance/client-conformance.json",
             "governance/schema-compatibility.json",
             "crates/cli/tests/golden/input_attachment_stream_v5.jsonl",
             "crates/eval/src/contract.rs",
@@ -476,16 +482,58 @@ class ReleaseToolsTest(unittest.TestCase):
                     "compatibility projection",
                     1,
                 )[1].split("- name: build trusted base validator", 1)[0]
-                self.assertIn(f"BOOTSTRAP_POLICY_SHA: {bootstrap}", projection)
+                self.assertIn(
+                    f"LEGACY_POLICY_ANCHOR_SHA: {anchor}", projection
+                )
+                self.assertIn(
+                    f"LEGACY_PARSER_BLOB_OID: {parser_blob}", projection
+                )
                 self.assertIn(
                     f"COMPATIBILITY_POLICY_SHA: {compatibility}", projection
+                )
+                self.assertIn(
+                    'test "$(git cat-file -t "$LEGACY_POLICY_ANCHOR_SHA")" '
+                    "= commit",
+                    projection,
+                )
+                self.assertIn('test "$anchor_mode" = 100644', projection)
+                self.assertIn('test "$anchor_type" = blob', projection)
+                self.assertIn(
+                    'test "$anchor_oid" = "$LEGACY_PARSER_BLOB_OID"',
+                    projection,
+                )
+                self.assertIn(
+                    'test "$anchor_path" = "$legacy_parser"', projection
+                )
+                self.assertIn(
+                    '"$LEGACY_POLICY_ANCHOR_SHA" "$POLICY_SHA"', projection
+                )
+                self.assertIn(
+                    'git ls-tree "$POLICY_SHA" -- "$legacy_parser"', projection
+                )
+                self.assertIn('"${parser_mode:-}" == 100644', projection)
+                self.assertIn('"${parser_type:-}" == blob', projection)
+                self.assertIn(
+                    '"${parser_oid:-}" == "$LEGACY_PARSER_BLOB_OID"',
+                    projection,
+                )
+                self.assertIn(
+                    '"${parser_path:-}" == "$legacy_parser"', projection
                 )
                 self.assertIn(
                     'test "$(git cat-file -t "$COMPATIBILITY_POLICY_SHA")" = commit',
                     projection,
                 )
                 self.assertEqual(
-                    projection.count("git merge-base --is-ancestor"), 2
+                    projection.count("git merge-base --is-ancestor"), 3
+                )
+                self.assertIn(
+                    '"$LEGACY_POLICY_ANCHOR_SHA" '
+                    '"$COMPATIBILITY_POLICY_SHA"',
+                    projection,
+                )
+                self.assertNotIn(
+                    '"$POLICY_SHA" "$COMPATIBILITY_POLICY_SHA"', projection
                 )
                 for path in pinned_paths:
                     self.assertIn(path, projection)
@@ -501,6 +549,10 @@ class ReleaseToolsTest(unittest.TestCase):
                 )
                 self.assertIn(
                     'git -C "$PROJECTION_ROOT" diff --name-only HEAD',
+                    projection,
+                )
+                self.assertIn(
+                    'git -C "$PROJECTION_ROOT" checkout "$POLICY_SHA"',
                     projection,
                 )
                 self.assertIn("compatibility_active=true", projection)
