@@ -39,36 +39,8 @@ observability, evaluation, and future evolution strategies.
 
 ## Install
 
-Install the latest immutable release on macOS or Linux:
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/Plantcore-AI/core/releases/latest/download/install.sh | sh
-
-core --version
-```
-
-The installer selects an archive for the current OS and architecture, verifies
-its SHA-256 digest, smoke-tests the downloaded binary, and atomically installs
-`core` without `sudo` or shell-profile edits. Its default destination is
-`$CORE_CODE_INSTALL_DIR`, `$XDG_BIN_HOME`, or `$HOME/.local/bin`, in that order;
-an explicit `--bin-dir` wins.
-
-Pin a release or choose an install directory:
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/Plantcore-AI/core/releases/download/v0.0.1/install.sh \
-  | sh -s -- --version v0.0.1 --bin-dir "$HOME/bin"
-```
-
-For provenance verification, manual installation, supported target triples, and
-uninstall steps, read the [installation guide](docs/getting-started/installation.md).
-
-<details>
-<summary><strong>Build from source</strong></summary>
-
-Rust 1.90 or newer is required.
+Core Code does not currently publish an accepted binary release. Build the
+current source with Rust 1.90 or newer:
 
 ```sh
 git clone https://github.com/Plantcore-AI/core.git
@@ -77,7 +49,12 @@ cargo install --locked --path crates/cli
 core --version
 ```
 
-</details>
+The repository includes an installer and native release pipeline, but neither
+is a currently available binary installation path. A binary release will be
+accepted only after every required platform has native build, test, packaging,
+and smoke-test evidence and the corresponding public assets exist. See the
+[installation guide](docs/getting-started/installation.md) for the proposed
+target matrix and verification contract.
 
 ## Quickstart
 
