@@ -318,6 +318,453 @@ fn admit_clean<'a>(
         .unwrap();
 }
 
+struct MultiSlotCheckpointFixture {
+    verifier: EvolutionVerifier,
+    datasets: ConsentAwareDatasetRegistry,
+    suite: EvaluationSuite,
+    evaluator: IndependentEvaluator,
+    baseline: PolicyCheckpoint,
+    merged: AlgebraOutput,
+    admissions: BTreeMap<StrategySlot, ManifestAdmissionPolicy>,
+    artifacts: BTreeMap<StrategySlot, Vec<u8>>,
+}
+
+impl MultiSlotCheckpointFixture {
+    fn new() -> Self {
+        let suite = evaluation("held-out-task");
+        let base_model = candidate_base_model();
+        let router = StrategySlot::router();
+        let planner = StrategySlot::planner();
+        let router_baseline = checkpoint_policy(router.clone(), "router-baseline", b"router-base");
+        let planner_baseline =
+            checkpoint_policy(planner.clone(), "planner-baseline", b"planner-base");
+        let baseline = PolicyCheckpoint::build(
+            "checkpoint-baseline",
+            None,
+            [
+                (
+                    router.clone(),
+                    checkpoint_manifest(router_baseline.clone(), None, &suite, base_model.clone()),
+                ),
+                (
+                    planner.clone(),
+                    checkpoint_manifest(planner_baseline.clone(), None, &suite, base_model.clone()),
+                ),
+            ]
+            .into(),
+        )
+        .unwrap();
+        let router_artifact = b"router-candidate".to_vec();
+        let planner_artifact = b"planner-candidate".to_vec();
+        let router_candidate =
+            checkpoint_policy(router.clone(), "router-candidate", &router_artifact);
+        let planner_candidate =
+            checkpoint_policy(planner.clone(), "planner-candidate", &planner_artifact);
+        let router_manifest = checkpoint_manifest(
+            router_candidate,
+            Some(router_baseline.clone()),
+            &suite,
+            base_model.clone(),
+        );
+        let planner_manifest = checkpoint_manifest(
+            planner_candidate,
+            Some(planner_baseline.clone()),
+            &suite,
+            base_model,
+        );
+        let admissions: BTreeMap<_, _> = [
+            (
+                router.clone(),
+                ManifestAdmissionPolicy::new(router.clone(), BTreeSet::new()).with_parent_ceiling(
+                    ParentCapabilityCeiling::new(router_baseline, BTreeSet::new()),
+                ),
+            ),
+            (
+                planner.clone(),
+                ManifestAdmissionPolicy::new(planner.clone(), BTreeSet::new()).with_parent_ceiling(
+                    ParentCapabilityCeiling::new(planner_baseline, BTreeSet::new()),
+                ),
+            ),
+        ]
+        .into();
+        let router_checkpoint = PolicyCheckpoint::build(
+            "router-source",
+            None,
+            [(router.clone(), router_manifest)].into(),
+        )
+        .unwrap();
+        let planner_checkpoint = PolicyCheckpoint::build(
+            "planner-source",
+            None,
+            [(planner.clone(), planner_manifest)].into(),
+        )
+        .unwrap();
+        let merged = merge(
+            "checkpoint-candidate",
+            Some("checkpoint-baseline".into()),
+            &[router_checkpoint, planner_checkpoint],
+            &admissions,
+        )
+        .unwrap();
+        Self {
+            verifier: evolution_verifier(),
+            datasets: ConsentAwareDatasetRegistry::new(),
+            suite,
+            evaluator: evaluator(),
+            baseline,
+            merged,
+            admissions,
+            artifacts: [(router, router_artifact), (planner, planner_artifact)].into(),
+        }
+    }
+
+    fn candidate_admissions(
+        &self,
+        stale_slot: Option<&StrategySlot>,
+    ) -> BTreeMap<StrategySlot, CheckpointCandidateAdmission<'_>> {
+        self.merged
+            .checkpoint
+            .fresh_held_out_slots()
+            .iter()
+            .map(|slot| {
+                let manifest = self.merged.checkpoint.manifest_for(slot).unwrap();
+                let artifact = self.artifacts.get(slot).unwrap();
+                let verified = self
+                    .verifier
+                    .verify_candidate_inputs(manifest, artifact, None, &self.suite)
+                    .unwrap();
+                let report = HeldOutEvaluation::new(
+                    manifest.policy.clone(),
+                    &verified,
+                    evidence(manifest.parent.as_ref().unwrap(), &manifest.policy, true),
+                )
+                .unwrap();
+                let checkpoint_digest = if stale_slot == Some(slot) {
+                    self.baseline.bundle().digest.as_str()
+                } else {
+                    self.merged.checkpoint.bundle().digest.as_str()
+                };
+                let signed = self
+                    .evaluator
+                    .sign_checkpoint_evaluation(
+                        checkpoint_digest,
+                        manifest,
+                        self.admissions.get(slot).unwrap(),
+                        report,
+                    )
+                    .unwrap();
+                (
+                    slot.clone(),
+                    CheckpointCandidateAdmission::new(
+                        self.admissions.get(slot).unwrap(),
+                        artifact,
+                        None,
+                        &self.suite,
+                        signed,
+                    ),
+                )
+            })
+            .collect()
+    }
+}
+
+fn checkpoint_policy(slot: StrategySlot, id: &str, artifact: &[u8]) -> PolicyRef {
+    PolicyRef {
+        slot,
+        policy_id: id.into(),
+        version: "1.0.0".into(),
+        digest: sha256_hex(artifact),
+    }
+}
+
+fn checkpoint_manifest(
+    policy: PolicyRef,
+    parent: Option<PolicyRef>,
+    suite: &EvaluationSuite,
+    base_model: BaseModelId,
+) -> PolicyManifest {
+    PolicyManifest {
+        schema_version: EVOLUTION_SCHEMA_VERSION,
+        policy,
+        artifact_kind: ArtifactKind::Rules,
+        artifact_locator: "inert:checkpoint-candidate".into(),
+        parent,
+        method: EvolutionMethod::HandAuthored,
+        protocol: ProtocolRange { min: 1, max: 1 },
+        required_capabilities: BTreeSet::new(),
+        training_dataset_digest: None,
+        evaluation_suite_digest: suite.digest().into(),
+        base_model,
+    }
+}
+
+fn bootstrap_checkpoint_authority(
+    root: &Path,
+    policy: &PromotionControlPolicy,
+    authorizer: &PromotionAuthorizer,
+    baseline: &PolicyCheckpoint,
+) -> PromotionAuthority {
+    let mut authority = open_authority(root, policy);
+    bootstrap(
+        &mut authority,
+        authorizer,
+        baseline.deployment_bundle().unwrap(),
+    );
+    authority
+}
+
+#[test]
+fn merged_checkpoint_requires_every_changed_slot_before_admission() {
+    let root = scratch("checkpoint-missing-slot");
+    let fixture = MultiSlotCheckpointFixture::new();
+    assert!(matches!(
+        fixture.merged.checkpoint.deployment_bundle(),
+        Err(PromotionAuthorityError::FreshHeldOutRequired)
+    ));
+    let policy = control_policy();
+    let authorizer = authorizer(&policy);
+    let mut authority =
+        bootstrap_checkpoint_authority(&root, &policy, &authorizer, &fixture.baseline);
+    let mut admissions = fixture.candidate_admissions(None);
+    admissions.remove(&StrategySlot::planner());
+    let request = PromotionRequest::admit_candidate(
+        "checkpoint-missing-slot-admit",
+        &fixture.merged.checkpoint.bundle().digest,
+    )
+    .unwrap();
+    let result = authority.admit_checkpoint_candidate(
+        &request,
+        &authorizer.authorize(&request).unwrap(),
+        &fixture.verifier,
+        &fixture.datasets,
+        &fixture.merged.checkpoint,
+        admissions,
+    );
+    assert!(matches!(
+        result,
+        Err(PromotionAuthorityError::LineageMismatch)
+    ));
+    assert_eq!(
+        authority
+            .candidate_stage(&fixture.merged.checkpoint.bundle().digest)
+            .unwrap(),
+        None
+    );
+    drop(authority);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn old_single_candidate_api_rejects_an_unevaluated_changed_slot() {
+    let root = scratch("checkpoint-single-api");
+    let fixture = MultiSlotCheckpointFixture::new();
+    let policy = control_policy();
+    let authorizer = authorizer(&policy);
+    let mut authority =
+        bootstrap_checkpoint_authority(&root, &policy, &authorizer, &fixture.baseline);
+    let slot = StrategySlot::router();
+    let manifest = fixture.merged.checkpoint.manifest_for(&slot).unwrap();
+    let artifact = fixture.artifacts.get(&slot).unwrap();
+    let verified = fixture
+        .verifier
+        .verify_candidate_inputs(manifest, artifact, None, &fixture.suite)
+        .unwrap();
+    let held_out = fixture
+        .evaluator
+        .sign_held_out(
+            HeldOutEvaluation::new(
+                manifest.policy.clone(),
+                &verified,
+                evidence(manifest.parent.as_ref().unwrap(), &manifest.policy, true),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let deployment = fixture
+        .merged
+        .checkpoint
+        .deployment_bundle_unchecked()
+        .unwrap();
+    let request = PromotionRequest::admit_candidate(
+        "checkpoint-single-api-admit",
+        &deployment.bundle().digest,
+    )
+    .unwrap();
+    let result = authority.admit_candidate(
+        &request,
+        &authorizer.authorize(&request).unwrap(),
+        &fixture.verifier,
+        &fixture.datasets,
+        manifest,
+        artifact,
+        None,
+        &fixture.suite,
+        held_out,
+        deployment,
+    );
+    assert!(matches!(
+        result,
+        Err(PromotionAuthorityError::LineageMismatch)
+    ));
+    drop(authority);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn source_checkpoint_attestation_cannot_unlock_a_merge() {
+    let root = scratch("checkpoint-stale-attestation");
+    let fixture = MultiSlotCheckpointFixture::new();
+    let policy = control_policy();
+    let authorizer = authorizer(&policy);
+    let mut authority =
+        bootstrap_checkpoint_authority(&root, &policy, &authorizer, &fixture.baseline);
+    let admissions = fixture.candidate_admissions(Some(&StrategySlot::planner()));
+    let request = PromotionRequest::admit_candidate(
+        "checkpoint-stale-attestation-admit",
+        &fixture.merged.checkpoint.bundle().digest,
+    )
+    .unwrap();
+    let result = authority.admit_checkpoint_candidate(
+        &request,
+        &authorizer.authorize(&request).unwrap(),
+        &fixture.verifier,
+        &fixture.datasets,
+        &fixture.merged.checkpoint,
+        admissions,
+    );
+    assert!(matches!(
+        result,
+        Err(PromotionAuthorityError::IndependentEvaluationRequired)
+    ));
+    drop(authority);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn exact_fresh_checkpoint_evidence_admits_and_replays_every_changed_slot() {
+    let root = scratch("checkpoint-exact-replay");
+    let fixture = MultiSlotCheckpointFixture::new();
+    let policy = control_policy();
+    let authorizer = authorizer(&policy);
+    let mut authority =
+        bootstrap_checkpoint_authority(&root, &policy, &authorizer, &fixture.baseline);
+    let request = PromotionRequest::admit_candidate(
+        "checkpoint-exact-replay-admit",
+        &fixture.merged.checkpoint.bundle().digest,
+    )
+    .unwrap();
+    let lineage = authority
+        .admit_checkpoint_candidate(
+            &request,
+            &authorizer.authorize(&request).unwrap(),
+            &fixture.verifier,
+            &fixture.datasets,
+            &fixture.merged.checkpoint,
+            fixture.candidate_admissions(None),
+        )
+        .unwrap();
+    assert_eq!(lineage.additional_evaluations.len(), 1);
+    assert_eq!(lineage.base_model, candidate_base_model());
+    assert_eq!(
+        lineage.additional_evaluations[0].base_model,
+        candidate_base_model()
+    );
+    assert_eq!(
+        authority
+            .candidate_stage(&fixture.merged.checkpoint.bundle().digest)
+            .unwrap(),
+        Some(DeploymentStage::Candidate)
+    );
+    drop(authority);
+
+    let mut reopened = open_authority(&root, &policy);
+    assert_eq!(
+        reopened
+            .candidate_stage(&fixture.merged.checkpoint.bundle().digest)
+            .unwrap(),
+        Some(DeploymentStage::Candidate)
+    );
+    let audit = reopened.audit().unwrap();
+    let admitted = audit
+        .iter()
+        .find(|event| matches!(event.kind, PromotionAuditKind::CandidateAdmitted))
+        .and_then(|event| event.lineage.as_ref())
+        .unwrap();
+    assert_eq!(admitted.additional_evaluations.len(), 1);
+    assert_eq!(admitted.base_model, candidate_base_model());
+    assert_eq!(
+        admitted.additional_evaluations[0].base_model,
+        candidate_base_model()
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn rewritten_checkpoint_admission_policy_is_refused_on_replay() {
+    let root = scratch("checkpoint-rewritten-admission");
+    let fixture = MultiSlotCheckpointFixture::new();
+    let policy = control_policy();
+    let authorizer = authorizer(&policy);
+    let mut authority =
+        bootstrap_checkpoint_authority(&root, &policy, &authorizer, &fixture.baseline);
+    let request = PromotionRequest::admit_candidate(
+        "checkpoint-rewritten-admission-admit",
+        &fixture.merged.checkpoint.bundle().digest,
+    )
+    .unwrap();
+    authority
+        .admit_checkpoint_candidate(
+            &request,
+            &authorizer.authorize(&request).unwrap(),
+            &fixture.verifier,
+            &fixture.datasets,
+            &fixture.merged.checkpoint,
+            fixture.candidate_admissions(None),
+        )
+        .unwrap();
+    drop(authority);
+
+    assert!(
+        crate::promotion_journal::rewrite_for_test(&root, |content| {
+            let crate::promotion_journal::JournalEvent::CheckpointCandidateAdmitted {
+                checkpoint,
+                admission_policies,
+                ..
+            } = &mut content.event
+            else {
+                return false;
+            };
+            let slot = StrategySlot::router();
+            let parent = checkpoint
+                .manifest_for(&slot)
+                .and_then(|manifest| manifest.parent.clone())
+                .unwrap();
+            admission_policies.insert(
+                slot.clone(),
+                ManifestAdmissionPolicy::new(slot, [core_protocol::Capability::ReadOnly].into())
+                    .with_parent_ceiling(ParentCapabilityCeiling::new(
+                        parent,
+                        [core_protocol::Capability::ReadOnly].into(),
+                    )),
+            );
+            true
+        })
+        .unwrap()
+    );
+    assert!(matches!(
+        PromotionAuthority::open(
+            &root,
+            "release-registry-a",
+            policy,
+            vec![promotion_anchor()],
+            vec![evaluator_anchor()],
+        ),
+        Err(PromotionAuthorityError::IndependentEvaluationRequired)
+    ));
+    std::fs::remove_dir_all(root).ok();
+}
+
 fn signed_stage(
     permit: &StagePermit,
     baseline: &PolicyRef,

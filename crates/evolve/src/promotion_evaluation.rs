@@ -6,12 +6,13 @@ use crate::promotion::{
 };
 use crate::verifier_crypto::{digest_serialized, hmac_serialized};
 use crate::{
-    BaseModelId, ContractError, DeploymentStage, PolicyRef, PromotionEvidence,
-    VerifiedCandidateInputs, validate_digest,
+    BaseModelId, ContractError, DeploymentStage, ManifestAdmissionPolicy, PolicyManifest,
+    PolicyRef, PromotionEvidence, VerifiedCandidateInputs, validate_digest,
 };
 use serde::{Deserialize, Serialize};
 
 const EVALUATION_DOMAIN: &str = "core-evolve/independent-evaluation/v1";
+const CHECKPOINT_EVALUATION_DOMAIN: &str = "core-evolve/checkpoint-evaluation/v1";
 const STAGE_RESULT_DOMAIN: &str = "core-evolve/stage-result/v1";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -152,6 +153,52 @@ impl std::fmt::Debug for SignedHeldOutEvaluation {
         formatter
             .debug_struct("SignedHeldOutEvaluation")
             .field("evaluator_id", &self.evaluator_id)
+            .field("report", &self.report)
+            .field("signature", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// A fresh held-out report bound to one exact checkpoint manifest and the trusted admission
+/// ceilings used for it.
+///
+/// The ordinary held-out attestation names a policy artifact, dataset, suite, and base model. That
+/// is sufficient for a single-policy candidate, but not for checkpoint algebra: `restrict` can
+/// change a manifest while retaining the same `PolicyRef`, and `merge` must not inherit a pass
+/// gathered before the merged deployment existed. This wrapper puts the checkpoint, manifest, and
+/// admission-policy digests inside a second evaluator HMAC.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct SignedCheckpointEvaluation {
+    pub(crate) evaluator_id: String,
+    pub(crate) checkpoint_digest: String,
+    pub(crate) manifest_digest: String,
+    pub(crate) admission_policy_digest: String,
+    pub(crate) report: HeldOutEvaluation,
+    pub(crate) signature: String,
+}
+
+impl SignedCheckpointEvaluation {
+    pub fn evaluator_id(&self) -> &str {
+        &self.evaluator_id
+    }
+
+    pub fn checkpoint_digest(&self) -> &str {
+        &self.checkpoint_digest
+    }
+
+    pub fn report(&self) -> &HeldOutEvaluation {
+        &self.report
+    }
+}
+
+impl std::fmt::Debug for SignedCheckpointEvaluation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SignedCheckpointEvaluation")
+            .field("evaluator_id", &self.evaluator_id)
+            .field("checkpoint_digest", &self.checkpoint_digest)
+            .field("manifest_digest", &self.manifest_digest)
+            .field("admission_policy_digest", &self.admission_policy_digest)
             .field("report", &self.report)
             .field("signature", &"[REDACTED]")
             .finish()
@@ -300,6 +347,48 @@ impl IndependentEvaluator {
         })
     }
 
+    /// Sign a fresh evaluation for one exact checkpoint slot.
+    ///
+    /// A signature produced for a source checkpoint cannot be replayed for a merge or restrict
+    /// output because the checkpoint digest is part of the HMAC preimage.
+    pub fn sign_checkpoint_evaluation(
+        &self,
+        checkpoint_digest: &str,
+        manifest: &PolicyManifest,
+        admission_policy: &ManifestAdmissionPolicy,
+        report: HeldOutEvaluation,
+    ) -> Result<SignedCheckpointEvaluation, PromotionAuthorityError> {
+        validate_digest(checkpoint_digest)?;
+        manifest.validate()?;
+        report.validate()?;
+        if report.candidate != manifest.policy
+            || report.artifact_digest != manifest.policy.digest
+            || report.training_dataset_digest != manifest.training_dataset_digest
+            || report.evaluation_suite_digest != manifest.evaluation_suite_digest
+            || report.base_model() != &manifest.base_model
+        {
+            return Err(PromotionAuthorityError::EvaluationIdentityMismatch);
+        }
+        let manifest_digest = checkpoint_manifest_digest(manifest)?;
+        let admission_policy_digest = checkpoint_admission_policy_digest(admission_policy)?;
+        let signature = checkpoint_evaluation_signature(
+            self.key.bytes(),
+            &self.evaluator_id,
+            checkpoint_digest,
+            &manifest_digest,
+            &admission_policy_digest,
+            &report,
+        )?;
+        Ok(SignedCheckpointEvaluation {
+            evaluator_id: self.evaluator_id.clone(),
+            checkpoint_digest: checkpoint_digest.to_owned(),
+            manifest_digest,
+            admission_policy_digest,
+            report,
+            signature,
+        })
+    }
+
     pub fn sign_stage(
         &self,
         observation: StageObservation,
@@ -408,8 +497,65 @@ pub(crate) fn held_out_domain() -> &'static str {
     EVALUATION_DOMAIN
 }
 
+pub(crate) fn checkpoint_manifest_digest(
+    manifest: &PolicyManifest,
+) -> Result<String, PromotionAuthorityError> {
+    Ok(digest_serialized(manifest, MAX_PROMOTION_AUTH_BYTES)?)
+}
+
+pub(crate) fn checkpoint_admission_policy_digest(
+    policy: &ManifestAdmissionPolicy,
+) -> Result<String, PromotionAuthorityError> {
+    Ok(digest_serialized(policy, MAX_PROMOTION_AUTH_BYTES)?)
+}
+
+pub(crate) fn checkpoint_evaluation_signature_for_anchor(
+    anchor: &EvaluatorTrustAnchor,
+    signed: &SignedCheckpointEvaluation,
+) -> Result<String, PromotionAuthorityError> {
+    checkpoint_evaluation_signature(
+        anchor.key.bytes(),
+        &anchor.evaluator_id,
+        &signed.checkpoint_digest,
+        &signed.manifest_digest,
+        &signed.admission_policy_digest,
+        &signed.report,
+    )
+}
+
 pub(crate) fn stage_result_domain() -> &'static str {
     STAGE_RESULT_DOMAIN
+}
+
+fn checkpoint_evaluation_signature(
+    key: &[u8],
+    evaluator_id: &str,
+    checkpoint_digest: &str,
+    manifest_digest: &str,
+    admission_policy_digest: &str,
+    report: &HeldOutEvaluation,
+) -> Result<String, PromotionAuthorityError> {
+    #[derive(Serialize)]
+    struct Payload<'a> {
+        domain: &'static str,
+        evaluator_id: &'a str,
+        checkpoint_digest: &'a str,
+        manifest_digest: &'a str,
+        admission_policy_digest: &'a str,
+        report: &'a HeldOutEvaluation,
+    }
+    Ok(hmac_serialized(
+        key,
+        &Payload {
+            domain: CHECKPOINT_EVALUATION_DOMAIN,
+            evaluator_id,
+            checkpoint_digest,
+            manifest_digest,
+            admission_policy_digest,
+            report,
+        },
+        MAX_PROMOTION_AUTH_BYTES,
+    )?)
 }
 
 fn evaluator_hmac(

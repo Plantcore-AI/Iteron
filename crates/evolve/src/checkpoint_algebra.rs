@@ -13,15 +13,28 @@ use crate::{
     PromotionEvidence, StrategySlot,
 };
 use core_protocol::Capability;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A closed checkpoint: one manifest for every policy identity and exact deployment bytes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PolicyCheckpoint {
     bundle: PolicyBundle,
     manifests: BTreeMap<StrategySlot, PolicyManifest>,
     deployment_bytes: Vec<u8>,
+    /// Slots whose permission surface or lineage changed without a checkpoint-bound fresh
+    /// held-out evaluation. A pending checkpoint is a valid algebra value, but it is deliberately
+    /// not a deployable value.
+    #[serde(default)]
+    fresh_held_out_slots: BTreeSet<StrategySlot>,
+}
+
+#[derive(Deserialize)]
+struct DeploymentContent {
+    schema_version: u16,
+    bundle_id: String,
+    rollback_to: Option<String>,
+    manifests: BTreeMap<StrategySlot, PolicyManifest>,
 }
 
 impl PolicyCheckpoint {
@@ -29,6 +42,15 @@ impl PolicyCheckpoint {
         bundle_id: impl Into<String>,
         rollback_to: Option<String>,
         manifests: BTreeMap<StrategySlot, PolicyManifest>,
+    ) -> Result<Self, CheckpointAlgebraError> {
+        Self::build_with_fresh_held_out(bundle_id, rollback_to, manifests, BTreeSet::new())
+    }
+
+    pub(crate) fn build_with_fresh_held_out(
+        bundle_id: impl Into<String>,
+        rollback_to: Option<String>,
+        manifests: BTreeMap<StrategySlot, PolicyManifest>,
+        fresh_held_out_slots: BTreeSet<StrategySlot>,
     ) -> Result<Self, CheckpointAlgebraError> {
         if manifests.is_empty() {
             return Err(CheckpointAlgebraError::EmptyCheckpoint);
@@ -70,9 +92,38 @@ impl PolicyCheckpoint {
             bundle,
             manifests,
             deployment_bytes,
+            fresh_held_out_slots,
         };
         checkpoint.validate()?;
         Ok(checkpoint)
+    }
+
+    pub(crate) fn from_deployment(
+        deployment: &DeploymentBundle,
+    ) -> Result<Self, CheckpointAlgebraError> {
+        let content: DeploymentContent =
+            serde_json::from_slice(deployment.bytes()).map_err(CheckpointAlgebraError::Encoding)?;
+        if content.schema_version != 1 {
+            return Err(CheckpointAlgebraError::UnsupportedDeploymentSchema(
+                content.schema_version,
+            ));
+        }
+        let checkpoint = Self::build(content.bundle_id, content.rollback_to, content.manifests)?;
+        if checkpoint.bundle() != deployment.bundle()
+            || checkpoint.deployment_bytes() != deployment.bytes()
+        {
+            return Err(CheckpointAlgebraError::DeploymentDigestMismatch);
+        }
+        Ok(checkpoint)
+    }
+
+    pub(crate) fn changed_slots(&self, other: &Self) -> BTreeSet<StrategySlot> {
+        self.manifests
+            .keys()
+            .chain(other.manifests.keys())
+            .filter(|slot| self.manifests.get(*slot) != other.manifests.get(*slot))
+            .cloned()
+            .collect()
     }
 
     pub fn validate(&self) -> Result<(), CheckpointAlgebraError> {
@@ -95,6 +146,13 @@ impl PolicyCheckpoint {
                 ));
             }
         }
+        if !self
+            .fresh_held_out_slots
+            .iter()
+            .all(|slot| self.manifests.contains_key(slot))
+        {
+            return Err(CheckpointAlgebraError::FreshHeldOutSetMismatch);
+        }
         Ok(())
     }
 
@@ -115,6 +173,19 @@ impl PolicyCheckpoint {
     }
 
     pub fn deployment_bundle(&self) -> Result<DeploymentBundle, PromotionAuthorityError> {
+        if !self.fresh_held_out_slots.is_empty() {
+            return Err(PromotionAuthorityError::FreshHeldOutRequired);
+        }
+        self.deployment_bundle_unchecked()
+    }
+
+    pub fn fresh_held_out_slots(&self) -> &BTreeSet<StrategySlot> {
+        &self.fresh_held_out_slots
+    }
+
+    pub(crate) fn deployment_bundle_unchecked(
+        &self,
+    ) -> Result<DeploymentBundle, PromotionAuthorityError> {
         DeploymentBundle::new(self.bundle.clone(), self.deployment_bytes.clone())
     }
 }
@@ -232,10 +303,17 @@ pub fn merge(
         }
     }
     readmit_all(&manifests, admissions)?;
-    let slots = manifests.keys().cloned().collect();
+    let slots: BTreeSet<_> = manifests.keys().cloned().collect();
     Ok(AlgebraOutput {
-        checkpoint: PolicyCheckpoint::build(bundle_id, rollback_to, manifests)?,
-        events: vec![CheckpointEvent::FreshHeldOutRequired { slots }],
+        checkpoint: PolicyCheckpoint::build_with_fresh_held_out(
+            bundle_id,
+            rollback_to,
+            manifests,
+            slots.clone(),
+        )?,
+        events: vec![CheckpointEvent::FreshHeldOutRequired {
+            slots: slots.into_iter().collect(),
+        }],
         fresh_held_out_required: true,
     })
 }
@@ -259,10 +337,11 @@ pub fn restrict(
     manifest.required_capabilities = capabilities.clone();
     readmit_all(&manifests, admissions)?;
     Ok(AlgebraOutput {
-        checkpoint: PolicyCheckpoint::build(
+        checkpoint: PolicyCheckpoint::build_with_fresh_held_out(
             bundle_id,
             source.bundle.rollback_to.clone(),
             manifests,
+            [slot.clone()].into(),
         )?,
         events: vec![
             CheckpointEvent::CapabilitiesRestricted {
@@ -301,10 +380,11 @@ pub fn retire(
     manifests.insert(slot.clone(), restored_manifest);
     readmit_all(&manifests, admissions)?;
     Ok(AlgebraOutput {
-        checkpoint: PolicyCheckpoint::build(
+        checkpoint: PolicyCheckpoint::build_with_fresh_held_out(
             bundle_id,
             source.bundle.rollback_to.clone(),
             manifests,
+            [slot.clone()].into(),
         )?,
         events: vec![
             CheckpointEvent::Retired {
@@ -339,6 +419,8 @@ pub enum CheckpointAlgebraError {
     InvalidContract(#[from] ContractError),
     #[error("checkpoint deployment JSON could not be encoded: {0}")]
     Encoding(#[source] serde_json::Error),
+    #[error("checkpoint deployment schema {0} is unsupported")]
+    UnsupportedDeploymentSchema(u16),
     #[error("checkpoint must contain at least one manifest")]
     EmptyCheckpoint,
     #[error("merge requires at least one checkpoint")]
@@ -353,6 +435,8 @@ pub enum CheckpointAlgebraError {
     ManifestPolicyMismatch(StrategySlot),
     #[error("checkpoint deployment bytes do not match the bundle digest")]
     DeploymentDigestMismatch,
+    #[error("checkpoint fresh-held-out set names a slot absent from the manifest set")]
+    FreshHeldOutSetMismatch,
     #[error("checkpoint merge contains duplicate slot `{0:?}`")]
     DuplicateSlot(StrategySlot),
     #[error("checkpoint change for slot `{0:?}` lacks held-out attribution")]

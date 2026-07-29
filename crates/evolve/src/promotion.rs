@@ -334,6 +334,8 @@ pub enum PromotionAuthorityError {
     Contract(#[from] ContractError),
     #[error("candidate verification failed: {0}")]
     Verifier(#[from] VerifierError),
+    #[error("checkpoint manifest admission failed: {0}")]
+    CheckpointAdmission(#[from] crate::CapabilityAdmissionError),
     #[error("dataset registry rejected the candidate: {0}")]
     Dataset(#[from] crate::DatasetRegistryError),
     #[error("authority key length is {actual}; expected {min}..={max} bytes")]
@@ -380,6 +382,8 @@ pub enum PromotionAuthorityError {
     CandidateConflict,
     #[error("candidate bundle or rollback lineage does not match the active baseline")]
     LineageMismatch,
+    #[error("checkpoint requires fresh held-out evidence before it can become a deployment bundle")]
+    FreshHeldOutRequired,
     #[error("candidate is not registered")]
     CandidateNotFound,
     #[error("candidate stage does not match the authorized transition")]

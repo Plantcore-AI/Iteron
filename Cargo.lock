@@ -354,7 +354,6 @@ dependencies = [
  "clap",
  "core-agents",
  "core-ctx",
- "core-evolve",
  "core-kernel",
  "core-mcp",
  "core-obs",

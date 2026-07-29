@@ -36,7 +36,7 @@ Core Code has one human Owner/Project Lead and a non-fixed number of human maint
 | `mcp-interop` — MCP interoperability | open | critical | Open | Open | `crates/mcp/**` |
 | `context-core` — Context core | open | elevated | Open | Open | `crates/ctx/Cargo.toml`<br>`crates/ctx/src/compact.rs`<br>`crates/ctx/src/context_assembly.rs`<br>`crates/ctx/src/context_port.rs`<br>`crates/ctx/src/context_strategy.rs`<br>`crates/ctx/src/instructions.rs`<br>`crates/ctx/src/lib.rs`<br>`crates/ctx/src/outline.rs`<br>`crates/ctx/src/source.rs` |
 | `context-knowledge` — Context knowledge | open | elevated | Open | Open | `crates/ctx/src/memory.rs`<br>`crates/ctx/src/skills.rs`<br>`crates/ctx/src/skills_metadata.rs`<br>`crates/ctx/tests/skill_frontmatter.rs` |
-| `agent-catalog` — Agent catalog | open | elevated | Open | Open | `crates/agents/Cargo.toml`<br>`crates/agents/src/catalog.rs`<br>`crates/agents/src/def.rs`<br>`crates/agents/src/lib.rs`<br>`crates/agents/src/policy_bundle.rs` |
+| `agent-catalog` — Agent catalog | open | elevated | Open | Open | `crates/agents/Cargo.toml`<br>`crates/agents/src/catalog.rs`<br>`crates/agents/src/def.rs`<br>`crates/agents/src/lib.rs` |
 | `agent-orchestration` — Agent orchestration | open | elevated | Open | Open | `crates/agents/src/decompose.rs`<br>`crates/agents/src/reduce.rs`<br>`crates/agents/src/stage.rs`<br>`crates/agents/tests/**` |
 | `evolution-control` — Evolution control | open | critical | Open | Open | `crates/evolve/**` |
 | `sandbox` — Sandbox | open | critical | Open | Open | `crates/sandbox/**` |
@@ -46,7 +46,7 @@ Core Code has one human Owner/Project Lead and a non-fixed number of human maint
 | `verification` — Verification | open | elevated | Open | Open | `crates/verify/**` |
 | `workflow-engine` — Workflow engine | active | elevated | Jamal Cao (`@fr0m-scratch`) | Open | `crates/workflow/**` |
 | `evaluation` — Evaluation | open | elevated | Open | Open | `crates/eval/**` |
-| `cli-host` — CLI host | open | critical | Open | Open | `crates/cli/Cargo.toml`<br>`crates/cli/drivers/**`<br>`crates/cli/src/bundle_adapter.rs`<br>`crates/cli/src/bundle_adapter_demo.rs`<br>`crates/cli/src/commands.rs`<br>`crates/cli/src/config/**`<br>`crates/cli/src/config.rs`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/pricing.rs`<br>`crates/cli/src/providers.rs`<br>`crates/cli/src/runtime.rs`<br>`crates/cli/src/runtime/pricing.rs`<br>`crates/cli/src/runtime/strategy_runtime.rs`<br>`crates/cli/src/runtime/workflow_spawner.rs`<br>`crates/cli/src/workflow.rs` |
+| `cli-host` — CLI host | open | critical | Open | Open | `crates/cli/Cargo.toml`<br>`crates/cli/src/commands.rs`<br>`crates/cli/src/config/**`<br>`crates/cli/src/config.rs`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/pricing.rs`<br>`crates/cli/src/providers.rs`<br>`crates/cli/src/runtime.rs`<br>`crates/cli/src/runtime/pricing.rs`<br>`crates/cli/src/runtime/strategy_runtime.rs`<br>`crates/cli/src/runtime/workflow_spawner.rs`<br>`crates/cli/src/workflow.rs` |
 | `cli-tui` — CLI TUI | open | elevated | Open | Open | `crates/cli/src/editor.rs`<br>`crates/cli/src/surface.rs`<br>`crates/cli/src/tui.rs`<br>`crates/cli/src/tui/**`<br>`crates/cli/tests/**` |
 | `cli-render` — CLI rendering | open | standard | Open | Open | `crates/cli/src/block.rs`<br>`crates/cli/src/highlight.rs`<br>`crates/cli/src/markdown.rs`<br>`crates/cli/src/render.rs`<br>`crates/cli/src/theme.rs`<br>`crates/cli/src/theme/**` |
 | `cli-output` — CLI machine output | open | elevated | Open | Open | `crates/cli/src/output.rs` |
@@ -195,9 +195,9 @@ Memory and skill discovery, trust, storage, bounded recall, and progressive disc
 
 ### `agent-catalog` — Agent catalog
 
-Agent definitions, discovery, trust, read-only tool filtering, boot-time policy resolution, and catalog diagnostics.
+Agent definitions, discovery, trust, read-only tool filtering, and catalog diagnostics.
 
-- Contracts: `read-only-agent-authority`, `agent-definition-trust`, `boot-once-policy-resolution`
+- Contracts: `read-only-agent-authority`, `agent-definition-trust`
 - Required checks: `cargo test -p core-agents --locked`
 
 ### `agent-orchestration` — Agent orchestration

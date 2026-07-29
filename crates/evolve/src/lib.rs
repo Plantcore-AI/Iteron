@@ -98,12 +98,15 @@ pub use promotion::{
 pub use promotion_auth::{
     PromotionAuthorization, PromotionAuthorizer, PromotionOperation, PromotionRequest,
 };
-pub use promotion_authority::PromotionAuthority;
+pub use promotion_authority::{CheckpointCandidateAdmission, PromotionAuthority};
 pub use promotion_evaluation::{
     AuthenticatedHeldOutEvaluation, BoundedStageExecutor, HeldOutEvaluation, IndependentEvaluator,
-    SignedHeldOutEvaluation, SignedStageObservation, StageObservation, StagePermit,
+    SignedCheckpointEvaluation, SignedHeldOutEvaluation, SignedStageObservation, StageObservation,
+    StagePermit,
 };
-pub use promotion_state::{PromotionAuditEvent, PromotionAuditKind, PromotionLineage};
+pub use promotion_state::{
+    PromotionAuditEvent, PromotionAuditKind, PromotionEvaluationLineage, PromotionLineage,
+};
 pub use prompt_producer::{
     MAX_INERT_PROMPT_ARTIFACT_BYTES, MAX_PROMPT_PREFERENCE_CANDIDATES, PromptPreferenceCandidate,
     PromptPreferenceError, PromptPreferenceProducer, PromptPreferenceSpec,

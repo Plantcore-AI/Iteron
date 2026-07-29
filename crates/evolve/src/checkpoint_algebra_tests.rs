@@ -614,7 +614,7 @@ fn every_operator_output_validates_as_policy_bundle() {
         &transferred.output.checkpoint,
     ] {
         output.validate().unwrap();
-        output.deployment_bundle().unwrap();
+        output.bundle().validate().unwrap();
         let slots: BTreeSet<_> = output
             .bundle()
             .policies
@@ -623,6 +623,17 @@ fn every_operator_output_validates_as_policy_bundle() {
             .collect();
         assert_eq!(slots.len(), output.bundle().policies.len());
     }
+    for pending in [
+        &merged.checkpoint,
+        &restricted.checkpoint,
+        &retired.checkpoint,
+    ] {
+        assert!(matches!(
+            pending.deployment_bundle(),
+            Err(PromotionAuthorityError::FreshHeldOutRequired)
+        ));
+    }
+    transferred.output.checkpoint.deployment_bundle().unwrap();
 }
 
 #[test]

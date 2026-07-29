@@ -59,7 +59,6 @@
 /docs/roadmap.md @fr0m-scratch
 /xtask/Cargo.toml @fr0m-scratch
 /crates/agents/tests/** @fr0m-scratch
-/crates/cli/drivers/** @fr0m-scratch
 /crates/cli/tests/** @fr0m-scratch
 /crates/record/tests/** @fr0m-scratch
 /.github/ISSUE_TEMPLATE/ownership_claim.yml @fr0m-scratch
@@ -94,12 +93,9 @@
 /crates/agents/src/decompose.rs @fr0m-scratch
 /crates/agents/src/def.rs @fr0m-scratch
 /crates/agents/src/lib.rs @fr0m-scratch
-/crates/agents/src/policy_bundle.rs @fr0m-scratch
 /crates/agents/src/reduce.rs @fr0m-scratch
 /crates/agents/src/stage.rs @fr0m-scratch
 /crates/cli/src/block.rs @fr0m-scratch
-/crates/cli/src/bundle_adapter.rs @fr0m-scratch
-/crates/cli/src/bundle_adapter_demo.rs @fr0m-scratch
 /crates/cli/src/commands.rs @fr0m-scratch
 /crates/cli/src/config.rs @fr0m-scratch
 /crates/cli/src/editor.rs @fr0m-scratch
