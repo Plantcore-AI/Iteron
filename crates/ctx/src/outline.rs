@@ -164,6 +164,15 @@ pub fn repo_outline(root: &Path, token_budget: usize) -> String {
 /// identifier from the query ranks ahead of unrelated files, even when those files contain more
 /// declarations. The output remains a pure deterministic function of repository bytes + query.
 pub fn repo_outline_for_task(root: &Path, token_budget: usize, query: &str) -> String {
+    repo_outline_for_task_at_depth(root, 8, token_budget, query)
+}
+
+pub(crate) fn repo_outline_for_task_at_depth(
+    root: &Path,
+    depth: u8,
+    token_budget: usize,
+    query: &str,
+) -> String {
     let bounded_query = core_protocol::text::head(query, MAX_OUTLINE_QUERY_BYTES);
     let identifiers = query_identifiers(&bounded_query);
     let mut files: Vec<OutlineFile> = Vec::new();
@@ -173,7 +182,7 @@ pub fn repo_outline_for_task(root: &Path, token_budget: usize, query: &str) -> S
     let mut source_budget_exhausted = false;
     let mut traversal_limited = false;
     let mut entries = WalkDir::new(root)
-        .max_depth(8)
+        .max_depth(usize::from(depth))
         .into_iter()
         .filter_entry(|e| !is_ignored(e.file_name().to_str().unwrap_or("")));
     for entry_index in 0..=MAX_OUTLINE_ENTRIES {

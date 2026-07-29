@@ -114,6 +114,9 @@
 /crates/cli/src/tui.rs @fr0m-scratch
 /crates/cli/src/workflow.rs @fr0m-scratch
 /crates/ctx/src/compact.rs @fr0m-scratch
+/crates/ctx/src/context_assembly.rs @fr0m-scratch
+/crates/ctx/src/context_port.rs @fr0m-scratch
+/crates/ctx/src/context_strategy.rs @fr0m-scratch
 /crates/ctx/src/instructions.rs @fr0m-scratch
 /crates/ctx/src/lib.rs @fr0m-scratch
 /crates/ctx/src/memory.rs @fr0m-scratch
@@ -181,11 +184,13 @@
 /crates/tools/src/schema_tests.rs @fr0m-scratch
 /crates/tools/src/shell.rs @fr0m-scratch
 /crates/tools/src/skill.rs @fr0m-scratch
+/crates/tools/src/tool_policy.rs @fr0m-scratch
 /crates/tools/src/web.rs @fr0m-scratch
 /crates/tools/src/workflow_tool.rs @fr0m-scratch
 /crates/tools/src/write_file.rs @fr0m-scratch
 /crates/tools/src/write_file_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/hooks.rs @fr0m-scratch
 /crates/cli/src/runtime/pricing.rs @fr0m-scratch
+/crates/cli/src/runtime/strategy_runtime.rs @fr0m-scratch
 /crates/cli/src/runtime/workflow_spawner.rs @fr0m-scratch
 /crates/provider/src/static_metadata/support.rs @fr0m-scratch

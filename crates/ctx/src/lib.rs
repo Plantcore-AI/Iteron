@@ -15,6 +15,9 @@
 //! because ctx must not depend on a provider (keeps the layering clean and this crate testable).
 
 pub mod compact;
+mod context_assembly;
+mod context_port;
+mod context_strategy;
 pub mod instructions;
 pub mod memory;
 pub mod outline;
@@ -24,6 +27,14 @@ pub mod source;
 pub use compact::{
     CompactionPlan, CompactionPolicy, ContextEstimate, TokenEstimateProvenance,
     estimate_request_context,
+};
+pub use context_assembly::{assemble_recorded_context, assemble_system_prompt};
+pub use context_port::{
+    ContextPort, ContextPortError, ContextPortInput, ContextValue, DefaultContextPort, PortStub,
+};
+pub use context_strategy::{
+    CONTEXT_SLOT_VERSION, ContextPlan, ContextSlotDecision, ContextSlotObservation,
+    ContextStrategy, MAX_CONTEXT_OUTLINE_DEPTH,
 };
 pub use instructions::{
     InstructionBundle, InstructionRejection, InstructionSource, Instructions,

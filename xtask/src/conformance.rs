@@ -1,4 +1,8 @@
 use anyhow::{Context, Result, bail};
+use core_protocol::capability_set::CapabilitySet;
+use core_protocol::context::{ContextSelector, InstructionScope, RequestId};
+use core_protocol::slot::StrategySlot;
+use core_protocol::{Capability, ToolUse, Trust};
 use quote::ToTokens;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -12,6 +16,8 @@ const MAX_RUNTIME_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_KERNEL_FILE_BYTES: u64 = 512 * 1024;
 const MAX_EVIDENCE_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_READ_ONLY_TOOLS: usize = 256;
+const MAX_POLICY_TOOLS: usize = 256;
+const MAX_W1_PLACEMENT_ROWS: usize = 16;
 const SPAWN_SIGNATURE: &str = "    async fn spawn_subagent(";
 const BUDGET_BINDING: &str = "let Some(budget) = core_agents::subagent_budget(";
 const REQUIRED_KERNEL_PATH_DEPENDENCIES: [&str; 3] = ["core-obs", "core-protocol", "core-record"];
@@ -207,6 +213,14 @@ const KERNEL_MATRIX: [MatrixRow; 23] = [
 /// boundaries command.
 pub fn validate(root: &Path) -> Result<()> {
     validate_read_only_registry(root)?;
+    validate_tool_policy_registry(root)?;
+    // Bootstrap fixtures and older trusted bases predate this W1 seam. The direct core-ctx build
+    // dependency is the activation bit: once the registry declares it, every new checkout must
+    // satisfy the placement and negative-space checks below.
+    if w1_context_contract_enabled(root)? {
+        validate_w1_placement_matrix(root)?;
+        validate_kernel_context_facade(root)?;
+    }
     validate_kernel_negative_space(root)?;
     let runtime = read_bounded_utf8(root, RUNTIME_SOURCE, MAX_RUNTIME_SOURCE_BYTES)?;
     validate_runtime_budget_binding(&runtime)
@@ -429,6 +443,247 @@ fn validate_matrix_evidence(root: &Path) -> Result<()> {
                 row.path
             );
         }
+    }
+    Ok(())
+}
+
+fn w1_context_contract_enabled(root: &Path) -> Result<bool> {
+    let registry: serde_json::Value = serde_json::from_str(&read_bounded_utf8(
+        root,
+        "governance/boundaries.json",
+        2 * 1024 * 1024,
+    )?)
+    .context("governance/boundaries.json is not valid JSON")?;
+    Ok(registry["cargo_policy"]["packages"]["core-xtask"]["normal"]
+        .as_array()
+        .is_some_and(|dependencies| {
+            dependencies
+                .iter()
+                .any(|dependency| dependency.as_str() == Some("core-ctx"))
+        }))
+}
+
+struct PlacementRow {
+    capability: &'static str,
+    authority_boundaries: &'static [&'static str],
+    strategy_slots: &'static [&'static str],
+    world_modules: &'static [&'static str],
+}
+
+const W1_PLACEMENT_ROWS: &[PlacementRow] = &[
+    PlacementRow {
+        capability: "read/list/glob",
+        authority_boundaries: &["kernel-runtime", "kernel-effects"],
+        strategy_slots: &["core/context", "core/tool_policy"],
+        world_modules: &[
+            "crates/ctx/src/context_port.rs",
+            "crates/tools/src/fs_tools.rs",
+        ],
+    },
+    PlacementRow {
+        capability: "skills",
+        authority_boundaries: &["kernel-runtime"],
+        strategy_slots: &["core/context"],
+        world_modules: &["crates/ctx/src/skills.rs"],
+    },
+];
+
+fn validate_w1_placement_matrix(root: &Path) -> Result<()> {
+    if W1_PLACEMENT_ROWS.len() > MAX_W1_PLACEMENT_ROWS {
+        bail!("W1 placement matrix exceeds its {MAX_W1_PLACEMENT_ROWS}-row limit");
+    }
+    let available_slots = [
+        core_ctx::ContextStrategy::default()
+            .slot()
+            .as_persisted_str()
+            .to_owned(),
+        core_tools::ToolPolicy::default()
+            .slot()
+            .as_persisted_str()
+            .to_owned(),
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    let registry: serde_json::Value = serde_json::from_str(&read_bounded_utf8(
+        root,
+        "governance/boundaries.json",
+        2 * 1024 * 1024,
+    )?)
+    .context("governance/boundaries.json is not valid JSON")?;
+    let boundary_ids = registry["boundaries"]
+        .as_array()
+        .context("boundary registry lacks a boundaries array")?
+        .iter()
+        .filter_map(|boundary| boundary["id"].as_str())
+        .collect::<BTreeSet<_>>();
+
+    let mut capabilities = BTreeSet::new();
+    for row in W1_PLACEMENT_ROWS {
+        if !capabilities.insert(row.capability) {
+            bail!("W1 placement matrix repeats `{}`", row.capability);
+        }
+        for boundary in row.authority_boundaries {
+            if !boundary_ids.contains(boundary) {
+                bail!(
+                    "W1 placement `{}` names unknown authority boundary `{boundary}`",
+                    row.capability
+                );
+            }
+        }
+        for slot in row.strategy_slots {
+            if !available_slots.contains(*slot) {
+                bail!(
+                    "W1 placement `{}` names unavailable strategy slot `{slot}`",
+                    row.capability
+                );
+            }
+        }
+        for module in row.world_modules {
+            if !root.join(module).is_file() {
+                bail!(
+                    "W1 placement `{}` names missing world module `{module}`",
+                    row.capability
+                );
+            }
+        }
+    }
+
+    validate_context_selector_projection()
+}
+
+fn validate_context_selector_projection() -> Result<()> {
+    let mut observation =
+        core_ctx::ContextSlotObservation::baseline(RequestId(1), "xtask conformance");
+    observation.instruction_scopes = vec![
+        InstructionScope::User,
+        InstructionScope::Project,
+        InstructionScope::Directory,
+    ];
+    observation.memory_keys = vec!["named".into()];
+    observation.transcript_turns = 1;
+    let plan = core_ctx::ContextStrategy::default()
+        .select(&observation, CapabilitySet::only(Capability::ReadOnly))
+        .map_err(|reason| {
+            anyhow::anyhow!("context strategy rejected conformance input: {reason}")
+        })?;
+    let actual = plan
+        .request
+        .selectors
+        .iter()
+        .map(|selector| match selector {
+            ContextSelector::RepoOutline { .. } => "repo_outline",
+            ContextSelector::Instructions { .. } => "instructions",
+            ContextSelector::MemoryKeys { .. } => "memory_keys",
+            ContextSelector::Transcript { .. } => "transcript",
+            ContextSelector::EnvironmentFacts => "environment_facts",
+            ContextSelector::Unknown => "unknown",
+        })
+        .collect::<BTreeSet<_>>();
+    let expected = [
+        "repo_outline",
+        "instructions",
+        "memory_keys",
+        "transcript",
+        "environment_facts",
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    if actual != expected || !plan.include_skills {
+        bail!("context strategy no longer projects every frozen selector plus local skills policy");
+    }
+    Ok(())
+}
+
+fn validate_kernel_context_facade(root: &Path) -> Result<()> {
+    const KERNEL_CONTEXT_INTERNALS: &[&str] = &[
+        "core_ctx::memory::",
+        "core_ctx::skills::",
+        "core_ctx::outline::",
+        "core_ctx::instructions::",
+        "FileMemory",
+        "SkillCatalog",
+        "MemoryStrategy",
+        "repo_outline_for_task",
+        "discover_hierarchy",
+    ];
+    let source_dir = root.join(KERNEL_SOURCE_DIR);
+    let mut files = std::fs::read_dir(&source_dir)
+        .with_context(|| format!("cannot inspect {}", source_dir.display()))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .collect::<Vec<_>>();
+    files.sort();
+    for path in files {
+        let relative = path
+            .strip_prefix(root)
+            .expect("kernel source is below repository root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = read_bounded_utf8(root, &relative, MAX_KERNEL_FILE_BYTES)?;
+        if let Some(forbidden) = KERNEL_CONTEXT_INTERNALS
+            .iter()
+            .find(|forbidden| text.contains(**forbidden))
+        {
+            bail!("kernel source `{relative}` reaches into ctx internal `{forbidden}`");
+        }
+    }
+    Ok(())
+}
+
+fn validate_tool_policy_registry(root: &Path) -> Result<()> {
+    let registry = core_tools::Registry::coding_agent(root).map_err(|error| {
+        anyhow::anyhow!("cannot construct core-tools coding-agent registry: {error}")
+    })?;
+    let specs = registry.specs();
+    if specs.len() > MAX_POLICY_TOOLS {
+        bail!("tool-policy conformance exceeds the {MAX_POLICY_TOOLS}-tool build-plane limit");
+    }
+    let ceiling = CapabilitySet::from_iter_capabilities([
+        Capability::ReadOnly,
+        Capability::ReversibleLocal,
+        Capability::CodeExecuting,
+        Capability::TrustMutating,
+        Capability::IrreversibleExternal,
+    ]);
+    let policy = core_tools::ToolPolicy::default();
+    for spec in specs {
+        let proposal = registry
+            .propose_intent(
+                &policy,
+                ToolUse {
+                    id: "xtask-conformance".into(),
+                    name: spec.name.clone(),
+                    input: serde_json::json!({}),
+                },
+                Trust::Workspace,
+                ceiling,
+            )
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "tool-policy rejected registered tool `{}`: {error}",
+                    spec.name
+                )
+            })?;
+        validate_tool_policy_projection(&spec.name, spec.purity, spec.capability, &proposal)?;
+    }
+    Ok(())
+}
+
+fn validate_tool_policy_projection(
+    name: &str,
+    purity: core_protocol::Purity,
+    capability: Capability,
+    proposal: &core_tools::ToolPolicyProposal,
+) -> Result<()> {
+    if proposal.intent.call.name != name
+        || proposal.intent.purity != purity
+        || proposal.eligible != CapabilitySet::only(capability)
+        || !proposal.intent.admitted.is_empty()
+    {
+        bail!(
+            "tool-policy projection for `{name}` does not exactly preserve registry purity/capability and deny-by-default admission"
+        );
     }
     Ok(())
 }
@@ -723,6 +978,49 @@ mod tests {
             .parent()
             .expect("xtask is directly below the repository root");
         validate_read_only_registry(root).unwrap();
+    }
+
+    #[test]
+    fn w1_tool_policy_matches_the_real_registry() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask is directly below the repository root");
+        validate_tool_policy_registry(root).unwrap();
+    }
+
+    #[test]
+    fn w1_tool_policy_capability_mismatch_fails_conformance() {
+        let proposal = core_tools::ToolPolicyProposal {
+            intent: core_protocol::intent::ToolIntent::denied(
+                core_protocol::slot::SlotId("core/tool_policy".into()),
+                ToolUse {
+                    id: "mismatch".into(),
+                    name: "sample".into(),
+                    input: serde_json::json!({}),
+                },
+                core_protocol::Purity::Pure,
+                Trust::Workspace,
+            ),
+            eligible: CapabilitySet::only(Capability::CodeExecuting),
+        };
+        assert!(
+            validate_tool_policy_projection(
+                "sample",
+                core_protocol::Purity::Pure,
+                Capability::ReadOnly,
+                &proposal,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn w1_context_and_skills_placement_matrix_matches_live_modules() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask is directly below the repository root");
+        validate_w1_placement_matrix(root).unwrap();
+        validate_kernel_context_facade(root).unwrap();
     }
 
     #[test]

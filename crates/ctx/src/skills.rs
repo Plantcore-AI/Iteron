@@ -90,9 +90,18 @@ impl SkillCatalog {
     /// found under a vendored dependency path is stripped (Untrusted, never injected). Sorted by
     /// name for a stable, reproducible listing.
     pub fn discover(user_skills_dir: &Path, repo: &Path) -> Self {
+        Self::discover_optional(Some(user_skills_dir), repo)
+    }
+
+    /// Discover with an explicitly optional user tier. `None` means the composition root did not
+    /// supply a home directory; it must not be replaced with `.` and accidentally treated as
+    /// trusted user material.
+    pub fn discover_optional(user_skills_dir: Option<&Path>, repo: &Path) -> Self {
         let mut cat = SkillCatalog::default();
         // User tier: the supplied `.core/skills` directory only.
-        cat.scan(user_skills_dir, user_skills_dir, SkillTier::User);
+        if let Some(user_skills_dir) = user_skills_dir {
+            cat.scan(user_skills_dir, user_skills_dir, SkillTier::User);
+        }
         // Project tier: the repo's `.core/skills` directory only.
         let project_dir = core_protocol::home::path(repo, "skills");
         cat.scan(repo, &project_dir, SkillTier::Project);

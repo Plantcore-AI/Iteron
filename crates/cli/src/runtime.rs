@@ -17,6 +17,7 @@
 pub use core_kernel::{diagnostics, effect_admission, effect_class, effect_journal, effects};
 pub mod hooks;
 mod pricing;
+mod strategy_runtime;
 mod workflow_spawner;
 use core_ctx::{CompactionPolicy, ContextEstimate, estimate_request_context};
 use core_obs::{
@@ -174,6 +175,10 @@ pub enum KernelError {
     EnvironmentContextTooLarge { bytes: usize, max: usize },
     #[error("environment context is already resolved for this run")]
     EnvironmentContextAlreadyResolved,
+    #[error("context resolution failed: {0}")]
+    ContextResolution(String),
+    #[error("context strategy inputs are already resolved for this run")]
+    ContextAlreadyResolved,
     #[error("delegation depth limit reached; child agents cannot delegate")]
     DelegationDepthExceeded,
 }
@@ -250,6 +255,12 @@ impl KernelError {
             }
             Self::EnvironmentContextAlreadyResolved => {
                 "environment context is already fixed for this run".into()
+            }
+            Self::ContextResolution(_) => {
+                "context selection or materialization failed closed".into()
+            }
+            Self::ContextAlreadyResolved => {
+                "context strategy inputs are already fixed for this run".into()
             }
             Self::DelegationDepthExceeded => {
                 "delegation depth limit reached; child agents cannot delegate".into()
@@ -1056,35 +1067,6 @@ fn strict_utf8_head(content: &str, max_bytes: usize) -> String {
         end -= 1;
     }
     format!("{}…", &content[..end])
-}
-
-fn materialize_recorded_context(
-    instructions: &DurableInstructionContext,
-    context_text: String,
-    context_trust: Trust,
-) -> (String, Trust) {
-    let mut text = instructions
-        .environment
-        .as_ref()
-        .map(|environment| environment.text.clone())
-        .unwrap_or_default();
-    text.push_str(&instructions.text);
-    text.push_str(&context_text);
-    let trust = Trust::governing(
-        [
-            instructions
-                .environment
-                .as_ref()
-                .filter(|environment| !environment.text.is_empty())
-                .map(|environment| environment.trust),
-            (!instructions.text.is_empty()).then_some(instructions.trust),
-            (!context_text.is_empty()).then_some(context_trust),
-        ]
-        .into_iter()
-        .flatten(),
-    )
-    .unwrap_or(Trust::Trusted);
-    (text, trust)
 }
 
 #[derive(Default)]
@@ -2121,6 +2103,13 @@ pub struct Agent {
     /// If set, remembered facts under this workspace are recalled ONCE at run start and injected
     /// into the stable system prefix (REC-INJECT). (Modular memory — R5, ADR-011 seam.)
     pub memory_workspace: Option<std::path::PathBuf>,
+    /// Pure context selection plus the injected world adapter. The default port is filesystem
+    /// backed; tests and the pre-#15 reducer seam may replace it with `core_ctx::PortStub`.
+    context_strategy: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+    tool_policy: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+    context_port: std::sync::Arc<dyn core_ctx::ContextPort>,
+    /// Explicit operator home supplied by the composition root. The kernel never reads `HOME`.
+    context_home_dir: Option<std::path::PathBuf>,
     /// The resolved memory segment for this run, recalled + recorded ONCE (REC-INJECT). `None`
     /// until `resolve_injection` runs; `Some("")` means "resolved, nothing to inject". Reused from
     /// the RECORD on resume — never re-read from disk mid-run (the live bug the R5 review flagged
@@ -2244,6 +2233,10 @@ impl Agent {
             ui_tx: None,
             effort: core_protocol::Effort::default(),
             memory_workspace: None,
+            context_strategy: std::sync::Arc::new(core_ctx::ContextStrategy::default()),
+            tool_policy: std::sync::Arc::new(core_tools::ToolPolicy::default()),
+            context_port: std::sync::Arc::new(core_ctx::DefaultContextPort),
+            context_home_dir: None,
             injected: None,
             injected_trust: None,
             observed_trust: Trust::Trusted,
@@ -2973,6 +2966,80 @@ impl Agent {
         self.sensitive_env_names = names;
     }
 
+    /// Replace the world-facing context adapter before context becomes durable for this run.
+    // Pinning seam for the W1 strategy slots. `Agent::new` installs the built-in
+    // strategies and every child/workflow agent inherits them by direct field copy, so the
+    // override is exercised by conformance tests rather than the composition root. It was a
+    // library-public method before the runtime moved into this binary.
+    #[allow(dead_code)]
+    pub fn set_context_port(
+        &mut self,
+        port: std::sync::Arc<dyn core_ctx::ContextPort>,
+    ) -> Result<(), KernelError> {
+        if self.injected.is_some() {
+            return Err(KernelError::ContextAlreadyResolved);
+        }
+        self.context_port = port;
+        Ok(())
+    }
+
+    /// Install a pinned replacement for `core/context` before the run resolves live context.
+    // Pinning seam for the W1 strategy slots. `Agent::new` installs the built-in
+    // strategies and every child/workflow agent inherits them by direct field copy, so the
+    // override is exercised by conformance tests rather than the composition root. It was a
+    // library-public method before the runtime moved into this binary.
+    #[allow(dead_code)]
+    pub fn set_context_strategy(
+        &mut self,
+        strategy: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+    ) -> Result<(), KernelError> {
+        if self.injected.is_some() {
+            return Err(KernelError::ContextAlreadyResolved);
+        }
+        if strategy.slot().as_persisted_str() != "core/context" {
+            return Err(KernelError::ContextResolution(
+                "context strategy has the wrong slot identity".into(),
+            ));
+        }
+        self.context_strategy = strategy;
+        Ok(())
+    }
+
+    /// Install a pinned replacement for `core/tool_policy` before provider execution starts.
+    // Pinning seam for the W1 strategy slots. `Agent::new` installs the built-in
+    // strategies and every child/workflow agent inherits them by direct field copy, so the
+    // override is exercised by conformance tests rather than the composition root. It was a
+    // library-public method before the runtime moved into this binary.
+    #[allow(dead_code)]
+    pub fn set_tool_policy(
+        &mut self,
+        policy: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+    ) -> Result<(), KernelError> {
+        if self.seq_turn != 0 || self.injected.is_some() {
+            return Err(KernelError::ContextAlreadyResolved);
+        }
+        if policy.slot().as_persisted_str() != "core/tool_policy" {
+            return Err(KernelError::ContextResolution(
+                "tool policy has the wrong slot identity".into(),
+            ));
+        }
+        self.tool_policy = policy;
+        Ok(())
+    }
+
+    /// Supply the operator home explicitly from the composition root; no ambient lookup occurs in
+    /// either the kernel or the context port.
+    pub fn set_context_home_dir(
+        &mut self,
+        home_dir: Option<std::path::PathBuf>,
+    ) -> Result<(), KernelError> {
+        if self.injected.is_some() {
+            return Err(KernelError::ContextAlreadyResolved);
+        }
+        self.context_home_dir = home_dir;
+        Ok(())
+    }
+
     /// Install the already-discovered, already-framed instruction bytes proposed by the context
     /// strategy. The kernel never walks instruction files itself; it bounds and applies the same
     /// record-safe redaction used by the durable chokepoint before admitting the value, so fresh
@@ -3203,10 +3270,7 @@ impl Agent {
     /// resume) — it does NOT touch the disk, so the stable prefix is byte-stable across a run and a
     /// replay reproduces instructions, memory, and skills exactly.
     fn effective_system(&self) -> String {
-        match &self.injected {
-            Some(inj) if !inj.is_empty() => format!("{}{}", self.system, inj),
-            _ => self.system.clone(),
-        }
+        core_ctx::assemble_system_prompt(&self.system, self.injected.as_deref())
     }
 
     fn proposed_durable_frontend_context(
@@ -3255,7 +3319,7 @@ impl Agent {
         if let Some((context_text, context_trust, durable_instructions)) = recorded.injection {
             if let Some(instructions) = durable_instructions {
                 let (text, trust) =
-                    materialize_recorded_context(&instructions, context_text, context_trust);
+                    core_ctx::assemble_recorded_context(&instructions, context_text, context_trust);
                 self.injected = Some(text);
                 self.injected_trust = Some(trust);
                 self.clear_frontend_context_proposals();
@@ -3273,7 +3337,7 @@ impl Agent {
                     },
                 )?;
                 let (text, trust) =
-                    materialize_recorded_context(&instructions, context_text, context_trust);
+                    core_ctx::assemble_recorded_context(&instructions, context_text, context_trust);
                 self.injected = Some(text);
                 self.injected_trust = Some(trust);
                 self.clear_frontend_context_proposals();
@@ -3291,39 +3355,21 @@ impl Agent {
         let mut context_sources = Vec::with_capacity(2);
 
         if let Some(ws) = self.memory_workspace.clone() {
-            // Build the tiered stores: user (~/.core/memory) if present + project memory. The
-            // project store deliberately has no `.with_instructions`: the frontend proposal above
-            // is already hierarchically discovered, framed, and bounded, and is recorded here once.
-            use core_ctx::{FileMemory, MemBudget, MemStore, MemTier, MemoryStrategy};
-            let mut stores = Vec::new();
-            if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from)
-                && core_protocol::home::path(&home, "memory").exists()
-            {
-                stores.push(MemStore::user(&home));
-            }
-            // Running in this repo is the consent that currently makes project memory
-            // Workspace-trusted (TODO: replace with a recorded TOFU decision — MEM-2).
-            stores.push(MemStore::new(
-                core_protocol::home::path(&ws, "memory"),
-                MemTier::Project,
-                true,
-            ));
-            let segment = FileMemory.recall(&stores, task, &MemBudget::default());
-            if !segment.is_empty() {
-                context_sources.push(segment.governing_trust());
-                context_text.push_str(&segment.render());
-            }
-
-            // Skills append a bounded name/description index. Bodies remain on-demand.
-            let user_skills = core_ctx::skills::user_skills_dir().unwrap_or_default();
-            let skill_catalog = core_ctx::skills::SkillCatalog::discover(&user_skills, &ws);
-            let active_paths = core_ctx::skills::active_paths_from_text(task);
-            let skill_listing = skill_catalog.listing_for_paths(2_000, &active_paths);
-            if !skill_listing.is_empty() {
-                if let Some(trust) = skill_catalog.governing_trust() {
-                    context_sources.push(trust);
-                }
-                context_text.push_str(&skill_listing);
+            // The frontend already owns instruction/environment gathering. Preserve that durable
+            // split while routing the remaining lexical-memory + skill-index selection through
+            // the pure frozen slot and the injected world adapter.
+            let resolved = strategy_runtime::resolve_live_context(
+                self.context_strategy.as_ref(),
+                self.context_port.as_ref(),
+                &ws,
+                self.context_home_dir.as_deref(),
+                turn,
+                task,
+            )
+            .map_err(KernelError::ContextResolution)?;
+            if !resolved.text.is_empty() {
+                context_sources.push(resolved.governing_trust);
+                context_text.push_str(&resolved.text);
             }
         }
 
@@ -3348,7 +3394,7 @@ impl Agent {
         let (text, trust) = match &durable_instructions {
             Some(instructions) => {
                 let (text, trust) =
-                    materialize_recorded_context(instructions, context_text, context_trust);
+                    core_ctx::assemble_recorded_context(instructions, context_text, context_trust);
                 (text, Some(trust))
             }
             None => (context_text, should_record.then_some(context_trust)),
@@ -4594,6 +4640,8 @@ impl Agent {
 
             // ---- the flagship: dispatch PURE tools mid-stream. ----
             let reg = &self.registry;
+            let tool_policy = self.tool_policy.clone();
+            let argument_trust = self.governing_turn_trust(&messages);
             let ui_tx = self.ui_tx.clone();
             // If a PreToolUse hook is configured, pure tools must NOT early-dispatch — the read
             // would be in flight before the hook could block it (security review MEDIUM #2: an
@@ -4611,7 +4659,7 @@ impl Agent {
             // block the model API rejects on the next turn).
             let mut pure: Vec<(usize, ToolUse, tokio::task::JoinHandle<ToolResult>, Instant)> =
                 Vec::new();
-            let mut overflow_pure: Vec<(usize, ToolUse)> = Vec::new();
+            let mut overflow_pure: Vec<(usize, core_protocol::intent::ToolIntent)> = Vec::new();
             let mut deferred: Vec<(usize, ToolUse)> = Vec::new();
             let mut order: usize = 0;
             let mut tool_admission = effects::ToolCallAdmission::default();
@@ -4653,13 +4701,23 @@ impl Agent {
                     }
                     let idx = order;
                     order += 1;
-                    let is_pure = reg.purity_of(&tu.name) == Some(Purity::Pure);
+                    let proposal = strategy_runtime::propose_tool(
+                        reg,
+                        tool_policy.as_ref(),
+                        tu.clone(),
+                        argument_trust,
+                    );
+                    let is_pure = proposal
+                        .as_ref()
+                        .is_ok_and(|proposal| proposal.intent.purity == Purity::Pure);
                     if is_pure && !hook_gates_reads {
+                        let proposal = proposal.expect("checked pure tool-policy proposal");
+                        let tu_ui = proposal.intent.call.clone();
+                        let intent = proposal.admit(CapabilitySet::only(Capability::ReadOnly));
                         if let Some(permit) = gov.try_acquire() {
                             // Spawn now — I/O overlaps the remaining decode. The permit is held
                             // for the task's lifetime and released on completion (bounded).
-                            let tu_ui = tu.clone(); // carry the ToolUse for tool_end_ui (diff/exit_code, Stage 4)
-                            let fut = reg.dispatch(tu);
+                            let fut = reg.dispatch_intent(intent);
                             let handle = tokio::spawn(async move {
                                 let _permit = permit;
                                 fut.await
@@ -4667,7 +4725,7 @@ impl Agent {
                             pure.push((idx, tu_ui, handle, Instant::now()));
                         } else {
                             // at the concurrency cap: run inline in the collection phase
-                            overflow_pure.push((idx, tu));
+                            overflow_pure.push((idx, intent));
                         }
                     } else {
                         deferred.push((idx, tu));
@@ -4733,7 +4791,7 @@ impl Agent {
                 .chain(
                     overflow_pure
                         .iter()
-                        .map(|(index, tool)| (*index, tool.clone())),
+                        .map(|(index, intent)| (*index, intent.call.clone())),
                 )
                 .chain(deferred.iter().map(|(index, tool)| (*index, tool.clone())))
                 .collect();
@@ -5177,10 +5235,10 @@ impl Agent {
 
             // Overflow pure tools (past the concurrency cap): run inline now. Pure, so safe to
             // run here; no overlap credit (they did not run during decode).
-            for (idx, tu) in overflow_pure {
-                let tu_ui = tu.clone();
-                let call_id = tu.id.clone();
-                let future = self.registry.dispatch(tu);
+            for (idx, intent) in overflow_pure {
+                let tu_ui = intent.call.clone();
+                let call_id = intent.call.id.clone();
+                let future = self.registry.dispatch_intent(intent);
                 let r = match self.run_time_remaining() {
                     Some(remaining) if remaining.is_zero() => ToolResult {
                         tool_use_id: call_id,
@@ -5257,6 +5315,28 @@ impl Agent {
                     any_error = true;
                     continue;
                 }
+                let proposal = match strategy_runtime::propose_tool(
+                    &self.registry,
+                    tool_policy.as_ref(),
+                    tu.clone(),
+                    argument_trust,
+                ) {
+                    Ok(proposal) => proposal,
+                    Err(error) => {
+                        let r = ToolResult {
+                            tool_use_id: tu.id.clone(),
+                            content: format!("tool policy refused `{}`: {error}", tu.name),
+                            is_error: true,
+                            trust: Trust::Trusted,
+                            latency_ms: 0,
+                        };
+                        self.commit_local_tool_result(turn_id, &r, 0)?;
+                        self.ui(tool_end_ui(&tu, &r));
+                        results[idx] = Some(r);
+                        any_error = true;
+                        continue;
+                    }
+                };
                 // Failed-action dedup (ADR-003): if this EXACT effecting call already failed this
                 // run, don't re-run it — feed the prior error back and tell the model to change
                 // approach. This kills the identical-failed-edit spiral without blocking a genuinely
@@ -5286,10 +5366,23 @@ impl Agent {
                 // model cannot influence. Auto runs; Deny refuses; Ask prompts the operator (or
                 // fails closed with no channel). This replaces the old bare allow_code bool with
                 // the four-mode lattice (R5 permission modes).
-                let base_cap = self
-                    .registry
-                    .capability_of(&tu.name)
-                    .unwrap_or(Capability::CodeExecuting);
+                let Some(base_cap) = proposal.eligible.iter().next() else {
+                    let r = ToolResult {
+                        tool_use_id: tu.id.clone(),
+                        content: format!(
+                            "tool policy refused `{}`: no capability survived the run ceiling",
+                            tu.name
+                        ),
+                        is_error: true,
+                        trust: Trust::Trusted,
+                        latency_ms: 0,
+                    };
+                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.ui(tool_end_ui(&tu, &r));
+                    results[idx] = Some(r);
+                    any_error = true;
+                    continue;
+                };
                 // Elevate a trust-mutating write (.git/CI/instruction/.core paths) so the gate
                 // cannot auto-approve it (code review: the carve-out was otherwise unreachable).
                 let cap = effective_capability(&tu.input, base_cap);
@@ -5536,7 +5629,7 @@ impl Agent {
                     capability: cap,
                     audit_arguments: ui_approval_arguments(&tu.input),
                     workspace: effect_workspace(&self.workspace),
-                    call: tu,
+                    intent: proposal.admit(CapabilitySet::only(base_cap)),
                 };
                 let registry = &self.registry;
                 let admissions = &mut self.effect_admissions;
@@ -5544,8 +5637,8 @@ impl Agent {
                     &mut self.rollout,
                     admissions,
                     admitted,
-                    |call| async move {
-                        match registry.run_effect(call).await {
+                    |intent| async move {
+                        match registry.run_admitted_intent(intent).await {
                             core_tools::ToolExecution::Definite(result) => {
                                 effects::ToolExecution::Definite(result)
                             }
@@ -6106,6 +6199,10 @@ impl Agent {
             kernel_limits.max_agent_calls(),
         )
         .map_err(|error| format!("Workflow: invalid engine aggregate budget: {error}"))?;
+        cx.context_strategy = self.context_strategy.clone();
+        cx.tool_policy = self.tool_policy.clone();
+        cx.context_port = self.context_port.clone();
+        cx.context_home_dir = self.context_home_dir.clone();
         let spawner: std::sync::Arc<dyn core_workflow::AgentSpawner> =
             std::sync::Arc::new(KernelSpawner::new(cx));
 
@@ -6215,6 +6312,10 @@ impl Agent {
         });
         sub.runtime_state_dir = self.runtime_state_dir.clone();
         sub.workspace = self.workspace.clone();
+        sub.context_strategy = self.context_strategy.clone();
+        sub.tool_policy = self.tool_policy.clone();
+        sub.context_port = self.context_port.clone();
+        sub.context_home_dir = self.context_home_dir.clone();
         sub.model_context_window = self.model_context_window;
         sub.model_max_output_tokens = self.model_max_output_tokens;
         sub.sensitive_env_names = self.sensitive_env_names.clone();
@@ -7212,6 +7313,10 @@ impl Agent {
         });
         sub.runtime_state_dir = self.runtime_state_dir.clone();
         sub.workspace = self.workspace.clone();
+        sub.context_strategy = self.context_strategy.clone();
+        sub.tool_policy = self.tool_policy.clone();
+        sub.context_port = self.context_port.clone();
+        sub.context_home_dir = self.context_home_dir.clone();
         sub.model_context_window = self.model_context_window;
         sub.model_max_output_tokens = self.model_max_output_tokens;
         sub.sensitive_env_names = self.sensitive_env_names.clone();
@@ -12217,6 +12322,37 @@ ant-api03-SuperSecretModelToken12345"
         assert!(!effective.contains(changed_marker));
         assert_eq!(core_record::replay(&path).unwrap().len(), 2);
         drop(resumed);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn w1_context_port_stub_is_the_only_live_materialization_path() {
+        let ws = temp_ws("context-port-stub");
+        let mut agent = agent_for(&ws);
+        agent.memory_workspace = Some(ws.clone());
+        agent
+            .set_context_port(std::sync::Arc::new(core_ctx::PortStub::new(vec![
+                core_protocol::context::ContextSegment {
+                    text: "stubbed context bytes".into(),
+                    trust: Trust::Trusted,
+                    source: core_protocol::context::ContextSource::Memory,
+                },
+            ])))
+            .unwrap();
+        agent.resolve_injection(TurnId(3), "task").unwrap();
+
+        assert!(agent.effective_system().contains("stubbed context bytes"));
+        assert_eq!(agent.injected_trust, Some(Trust::Workspace));
+        assert!(matches!(
+            agent.set_context_port(std::sync::Arc::new(core_ctx::PortStub::default())),
+            Err(KernelError::ContextAlreadyResolved)
+        ));
+        let events = core_record::replay(agent.rollout.path()).unwrap();
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::ContextInjection { text, .. } if text == "stubbed context bytes"
+        )));
+        drop(agent);
         let _ = std::fs::remove_dir_all(&ws);
     }
 

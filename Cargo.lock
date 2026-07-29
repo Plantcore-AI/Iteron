@@ -386,6 +386,8 @@ version = "0.0.1"
 dependencies = [
  "core-protocol",
  "libc",
+ "serde",
+ "serde_json",
  "walkdir",
 ]
 
@@ -572,6 +574,8 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "core-agents",
+ "core-ctx",
+ "core-protocol",
  "core-tools",
  "quote",
  "serde",
