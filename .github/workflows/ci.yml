@@ -197,6 +197,7 @@ jobs:
             projected_manifest=$PROJECTION_ROOT/governance/.schema-compatibility.projected.json
             test ! -L "$manifest"
             test ! -e "$projected_manifest"
+            test ! -L "$projected_manifest"
             test "$(jq '
               [.surfaces[]
                 | select(.id == "cli.machine-stream.input-attachment")]
@@ -246,8 +247,10 @@ jobs:
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
         env:
-          COMPATIBILITY_ACTIVE: ${{ steps.compatibility.outputs.active }}
+          CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
+          COMPATIBILITY_POLICY_SHA: 2c17775f7df54581eebee3fe49b00d5d0db16fe9
           GH_TOKEN: ${{ github.token }}
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
           POLICY_SHA: ${{ steps.policy.outputs.policy-sha }}
           POLICY_ROOT: ${{ runner.temp }}/core-policy-base
         run: |
@@ -255,7 +258,29 @@ jobs:
           verifier=$POLICY_ROOT/release-tools/client_runtime_receipt.py
           if [[ ! -e "$verifier" ]]; then
             test ! -L "$verifier"
-            test "$COMPATIBILITY_ACTIVE" = true
+            candidate_sha=$(git rev-parse --verify 'HEAD^{commit}')
+            [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
+            test "$(git cat-file -t "$COMPATIBILITY_POLICY_SHA")" = commit
+            git merge-base --is-ancestor \
+              "$COMPATIBILITY_POLICY_SHA" "$candidate_sha"
+
+            manifest=governance/client-conformance.json
+            read -r candidate_mode candidate_type candidate_oid candidate_path \
+              <<<"$(git ls-tree "$candidate_sha" -- "$manifest")"
+            read -r policy_mode policy_type policy_oid policy_path \
+              <<<"$(git ls-tree "$COMPATIBILITY_POLICY_SHA" -- "$manifest")"
+            test "$candidate_mode" = 100644
+            test "$candidate_type" = blob
+            [[ "$candidate_oid" =~ ^[0-9a-f]{40}$ ]]
+            test "$candidate_path" = "$manifest"
+            test "$policy_mode" = 100644
+            test "$policy_type" = blob
+            test "$policy_oid" = "$candidate_oid"
+            test "$policy_path" = "$manifest"
+            test "$(git cat-file -s "$candidate_oid")" -le 65536
+            test -x "$POLICY_BIN"
+            test ! -L "$POLICY_BIN"
+            "$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check
             jq -e '
               .schema_version == 2
               and .runtime_builder == null
@@ -263,9 +288,10 @@ jobs:
               and .version_independence.status == "pending"
               and (.platform_smoke | length == 5)
               and ([.platform_smoke[].status] | all(. == "pending"))
-            ' "$GITHUB_WORKSPACE/governance/client-conformance.json" >/dev/null
+            ' < <(git cat-file blob "$candidate_oid") >/dev/null
             evidence_paths=$RUNNER_TEMP/core-runtime-bootstrap-evidence-paths
-            git -C "$GITHUB_WORKSPACE" ls-tree -r -z HEAD -- \
+            test ! -e "$evidence_paths"
+            git -C "$GITHUB_WORKSPACE" ls-tree -r -z "$candidate_sha" -- \
               governance/client-conformance/runtime > "$evidence_paths"
             test ! -s "$evidence_paths"
             printf 'one-time null/pending client runtime receipt bootstrap validated\n'

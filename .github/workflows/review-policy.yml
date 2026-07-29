@@ -121,6 +121,7 @@ jobs:
             projected_manifest=$PROJECTION_ROOT/governance/.schema-compatibility.projected.json
             test ! -L "$manifest"
             test ! -e "$projected_manifest"
+            test ! -L "$projected_manifest"
             test "$(jq '
               [.surfaces[]
                 | select(.id == "cli.machine-stream.input-attachment")]

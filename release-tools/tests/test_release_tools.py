@@ -397,23 +397,47 @@ class ReleaseToolsTest(unittest.TestCase):
             "$POLICY_ROOT/release-tools/client_runtime_receipt.py", verification
         )
         self.assertIn(
-            "COMPATIBILITY_ACTIVE: ${{ steps.compatibility.outputs.active }}",
+            "CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}",
+            verification,
+        )
+        self.assertIn(
+            "COMPATIBILITY_POLICY_SHA: "
+            "2c17775f7df54581eebee3fe49b00d5d0db16fe9",
+            verification,
+        )
+        self.assertIn(
+            "POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask",
             verification,
         )
         self.assertIn(
             "POLICY_SHA: ${{ steps.policy.outputs.policy-sha }}", verification
         )
-        self.assertIn('test "$COMPATIBILITY_ACTIVE" = true', verification)
         self.assertIn('if [[ ! -e "$verifier" ]]', verification)
         self.assertIn('test ! -L "$verifier"', verification)
         self.assertIn('test -f "$verifier"', verification)
+        self.assertIn(
+            '"$COMPATIBILITY_POLICY_SHA" "$candidate_sha"', verification
+        )
+        self.assertIn(
+            'manifest=governance/client-conformance.json', verification
+        )
+        self.assertIn('test "$candidate_mode" = 100644', verification)
+        self.assertIn('test "$candidate_type" = blob', verification)
+        self.assertIn('test "$policy_oid" = "$candidate_oid"', verification)
+        self.assertIn(
+            '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check',
+            verification,
+        )
+        self.assertIn(
+            'git cat-file blob "$candidate_oid"', verification
+        )
         self.assertIn(".runtime_builder == null", verification)
         self.assertIn(".runtime_receipt == null", verification)
         self.assertIn(
             "one-time null/pending client runtime receipt bootstrap validated",
             verification,
         )
-        self.assertIn("ls-tree -r -z HEAD", verification)
+        self.assertIn('ls-tree -r -z "$candidate_sha"', verification)
         self.assertIn("verify-evidence", verification)
         self.assertIn('--root "$GITHUB_WORKSPACE"', verification)
         self.assertIn('--trusted-commit "$POLICY_SHA"', verification)
@@ -546,6 +570,9 @@ class ReleaseToolsTest(unittest.TestCase):
                 self.assertIn(
                     'select(.id != "cli.machine-stream.input-attachment")',
                     projection,
+                )
+                self.assertIn(
+                    'test ! -L "$projected_manifest"', projection
                 )
                 self.assertIn(
                     'git -C "$PROJECTION_ROOT" diff --name-only HEAD',
