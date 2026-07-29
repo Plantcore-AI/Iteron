@@ -121,6 +121,10 @@
 /crates/ctx/src/source.rs @fr0m-scratch
 /crates/ctx/tests/skill_frontmatter.rs @fr0m-scratch
 /crates/kernel/src/diagnostics.rs @fr0m-scratch
+/crates/kernel/src/effect_admission.rs @fr0m-scratch
+/crates/kernel/src/effect_boundary_tests.rs @fr0m-scratch
+/crates/kernel/src/effect_class.rs @fr0m-scratch
+/crates/kernel/src/effect_journal.rs @fr0m-scratch
 /crates/kernel/src/effects.rs @fr0m-scratch
 /crates/kernel/src/hooks.rs @fr0m-scratch
 /crates/kernel/src/lib.rs @fr0m-scratch

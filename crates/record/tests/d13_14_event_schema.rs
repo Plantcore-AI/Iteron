@@ -20,13 +20,15 @@ const MAX_CONTRACT_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_OBJECTS: usize = 4096;
 
-const WRITABLE_EVENT_TAGS: [&str; 29] = [
+const WRITABLE_EVENT_TAGS: [&str; 31] = [
     "approval",
     "checkpoint",
     "compaction",
     "context_injection",
     "cost_projected",
     "done",
+    "effect_done",
+    "effect_failed",
     "effect_intent",
     "effect_unknown",
     "effort_changed",
@@ -776,6 +778,12 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             tool: _,
             reason: _,
         } => "effect_unknown",
+        EventKind::EffectDone { id: _, tool: _ } => "effect_done",
+        EventKind::EffectFailed {
+            id: _,
+            tool: _,
+            reason: _,
+        } => "effect_failed",
         EventKind::TurnEnd { usage: _ } => "turn_end",
         EventKind::Notice { text: _ } => "notice",
         EventKind::SubmissionRejected { reason: _ } => "submission_rejected",

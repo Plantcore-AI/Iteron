@@ -32,3 +32,5 @@
 {"seq":31,"turn":1,"kind":{"kind":"workflow_v2","version":"v2","workflow_id":"workflow-1","event":{"event":"reduced","evidence_message_seq":3,"done":0,"failed":0,"skipped":1,"elapsed_ms":19}}}
 {"seq":32,"turn":1,"kind":{"kind":"workflow_v2","version":"v2","workflow_id":"workflow-1","event":{"event":"finished","outcome":"drained","metrics":{"provider_attempts":0,"completed_turns":0,"usage":{"input":0,"output":0,"cache_creation":0,"cache_read":0,"thinking":0},"tool_calls":0,"tool_errors":0,"model_ms":null,"tools_ms":null,"cost":null},"elapsed_ms":23,"error_code":"operator_drain","error_detail":null}}}
 {"seq":33,"turn":1,"kind":{"kind":"done","outcome":"done"}}
+{"seq":34,"turn":1,"kind":{"kind":"effect_done","id":"effect-4","tool":"provider"}}
+{"seq":35,"turn":1,"kind":{"kind":"effect_failed","id":"effect-5","tool":"hook","reason":"hook executor exited non-zero"}}

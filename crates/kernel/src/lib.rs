@@ -15,8 +15,17 @@
 //! tiering of ADR-007, with the full sandbox/policy as the next crates.
 
 pub mod diagnostics;
+pub mod effect_admission;
+pub mod effect_class;
+pub mod effect_journal;
 pub mod effects;
 pub mod hooks;
+
+/// Conformance for the universal effect boundary. In its own file rather than inline: it needs
+/// crate-internal visibility, and `AGENTS.md` asks for a new module over a longer one.
+#[cfg(test)]
+#[path = "effect_boundary_tests.rs"]
+mod effect_boundary_tests;
 mod pricing;
 mod workflow_spawner;
 use core_ctx::{CompactionPolicy, ContextEstimate, estimate_request_context};
@@ -55,6 +64,9 @@ const PROVIDER_INTERRUPT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 /// Top-level agents may create one read-only child layer. The explicit counter is defense in depth
 /// beside the child registry's absence of `dispatch_agent`.
 const MAX_DELEGATION_DEPTH: u8 = 1;
+/// Bound on the executor-authored reason recorded with a proven effect failure. Unbounded here
+/// would let a chatty executor write megabytes into the long-retained audit log on every failure.
+const EFFECT_REASON_MAX_BYTES: usize = 4 * 1024;
 const MAX_STEER_BYTES: usize = 64 * 1024;
 const MAX_INBOUND_OPS_PER_POLL: usize = 256;
 const UNSUPPORTED_SUBMISSION_NOTICE: &str =
@@ -137,6 +149,12 @@ pub enum KernelError {
     UnknownEffects { count: usize },
     #[error("effect journal invariant failed: {0}")]
     EffectJournal(#[from] effects::EffectJournalError),
+    /// The boundary refused a dispatch. Distinct from [`KernelError::Record`] on purpose: the
+    /// durable log is healthy and a caller asked for something unrecordable (a repeated identity, a
+    /// proposal that cannot be minted). Folding it into `Record` made a caller bug halt the run as
+    /// if the disk had failed.
+    #[error("effect boundary refused the dispatch: {0}")]
+    EffectBoundary(String),
     #[error("{0} identity space is exhausted; refusing to reuse a durable correlation id")]
     IdentityExhausted(&'static str),
     #[error("provider request budget is exhausted: {0}")]
@@ -203,6 +221,12 @@ impl KernelError {
             ),
             Self::EffectJournal(_) => {
                 "the durable effect journal is inconsistent; Core will not execute".into()
+            }
+            // The refusal reason names an effect identity and a class, both harness-minted, so it
+            // carries no model text, no path and no credential. It is the one detail an operator
+            // actually needs to tell a duplicate dispatch from a ceiling.
+            Self::EffectBoundary(reason) => {
+                format!("effect boundary refused the dispatch: {reason}")
             }
             Self::IdentityExhausted(kind) => {
                 format!("{kind} identity space is exhausted; Core will not reuse an id")
@@ -826,6 +850,199 @@ fn workflow_child_activity(event: UiEvent) -> Option<String> {
         | UiEvent::Notice(_)
         | UiEvent::ApprovalRequest { .. }
         | UiEvent::Done(_) => None,
+    }
+}
+
+/// How one provider dispatch settles at the boundary.
+///
+/// Shared by the two call shapes: the `&mut self` helper used by the compaction and decomposition
+/// turns, and the main turn loop, which cannot take `&mut self` across its dispatch because the
+/// mid-stream pure-tool path holds a borrow of the registry. One classifier so the two shapes
+/// cannot drift into disagreeing about what counts as unknown.
+fn provider_settlement(
+    turn: TurnId,
+    ordinal: usize,
+    result: &Result<core_provider::TurnResult, KernelError>,
+) -> effects::Settlement {
+    let class = effect_class::EffectClass::Provider;
+    match result {
+        Ok(_) => effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal)),
+        Err(KernelError::Provider(error)) if provider_outcome_is_unobservable(error) => {
+            effects::Settlement::Unknown(format!(
+                "provider request was dispatched and produced no authoritative outcome ({}); \
+                 automatic retry is forbidden",
+                error.public_summary()
+            ))
+        }
+        Err(error) => effects::Settlement::Definite(effect_failed_terminal(
+            turn,
+            class,
+            ordinal,
+            &error.public_summary(),
+        )),
+    }
+}
+
+/// Did this provider failure leave the turn's outcome unobservable?
+///
+/// The distinction the effect boundary needs: an endpoint that answered — even to refuse — closed
+/// the turn, while a dropped stream or an unreadable response leaves a possibly-billed turn whose
+/// result nobody can name. Only the second may ever be journalled as unknown, because unknown is
+/// the state that blocks a run until a human reconciles it.
+fn provider_outcome_is_unobservable(error: &core_provider::ProviderError) -> bool {
+    matches!(
+        error,
+        core_provider::ProviderError::Interrupted
+            | core_provider::ProviderError::DeadlineExceeded
+            | core_provider::ProviderError::Stream(_)
+            | core_provider::ProviderError::Decode(_)
+    )
+}
+
+/// What the verifier dispatch proved, which is a different question from what it decided.
+///
+/// The caller only ever wants the [`core_verify::Verdict`]; the boundary needs to know whether that
+/// verdict was *observed* from the oracle, *synthesised* after dropping a running oracle, or
+/// synthesised without ever having started one. Collapsing the three made a cancellation before
+/// dispatch indistinguishable from a kill mid-dispatch, and only the second is an unknown effect.
+enum VerifyDispatch {
+    /// The oracle produced this verdict itself. Proven terminal.
+    Observed(core_verify::Verdict),
+    /// The oracle future was polled at least once and then dropped. No terminal is observable.
+    Dropped(core_verify::Verdict),
+    /// The oracle future was never polled, so no process was started. Proven non-event.
+    NotDispatched(core_verify::Verdict),
+}
+
+impl VerifyDispatch {
+    fn from_drop(dispatched: bool, verdict: core_verify::Verdict) -> Self {
+        if dispatched {
+            VerifyDispatch::Dropped(verdict)
+        } else {
+            VerifyDispatch::NotDispatched(verdict)
+        }
+    }
+
+    #[cfg(test)]
+    fn verdict(&self) -> &core_verify::Verdict {
+        match self {
+            VerifyDispatch::Observed(verdict)
+            | VerifyDispatch::Dropped(verdict)
+            | VerifyDispatch::NotDispatched(verdict) => verdict,
+        }
+    }
+}
+
+/// One non-registry effect, addressed to the boundary.
+///
+/// A descriptor rather than a parameter list because the dispatch helper needs disjoint mutable and
+/// shared borrows of the agent at the same time, and because six positional arguments of which three
+/// are integers is exactly the shape that gets mis-ordered silently.
+struct KernelEffect<'a> {
+    turn: TurnId,
+    class: effect_class::EffectClass,
+    ordinal: usize,
+    /// The class this dispatch is *audited* as. Recording it grants nothing: the constitutional
+    /// gate has already run, and the boundary only writes down what was admitted.
+    capability: Capability,
+    audit_arguments: serde_json::Value,
+    workspace: &'a std::path::Path,
+}
+
+/// Dispatch one non-registry effect across the single boundary.
+///
+/// Every class that is not a registry tool call goes through here, which is what makes the boundary
+/// test enforceable: there is exactly one place in the kernel that builds a
+/// [`effects::BrokeredEffect`] for them, so "no call site bypasses the broker" is a property of one
+/// function rather than a promise about thirty call sites.
+///
+/// It is a free function, not a method, for a load-bearing reason: the executor almost always needs
+/// to borrow *some* part of the agent (`hooks`, `provider`, `verify` state) while the boundary needs
+/// `&mut rollout` and `&mut effect_admissions`. Taking the two ledgers explicitly lets the caller
+/// destructure the agent into disjoint borrows, which a `&mut self` method could not.
+///
+/// Returning [`effects::EffectDisposition::Unknown`] from `execute` is not an error path. It is the
+/// honest answer when a dispatch crossed the boundary and no terminal could be observed, and it is
+/// what stops recovery from ever replaying it.
+async fn broker_kernel_effect<Execute, ExecuteFuture, T>(
+    rollout: &mut Rollout,
+    admissions: &mut effect_admission::EffectAdmissions,
+    effect: KernelEffect<'_>,
+    execute: Execute,
+) -> Result<effects::BrokeredOutcome<T>, effects::BrokerError>
+where
+    Execute: FnOnce() -> ExecuteFuture,
+    ExecuteFuture: std::future::Future<Output = effects::EffectDisposition<T>>,
+{
+    let KernelEffect {
+        turn,
+        class,
+        ordinal,
+        capability,
+        audit_arguments,
+        workspace,
+    } = effect;
+    let brokered = effects::BrokeredEffect {
+        turn,
+        effect_id: effect_class::effect_id(turn, class, ordinal),
+        tool_use_id: effect_class::harness_correlation_id(turn, class, ordinal),
+        kind: effect_class_label(class).to_string(),
+        capability,
+        audit_arguments,
+        workspace: effect_workspace(workspace),
+    };
+    effects::broker_effect(rollout, admissions, brokered, execute).await
+}
+
+/// The durable kind string for a non-registry class.
+fn effect_class_label(class: effect_class::EffectClass) -> &'static str {
+    class
+        .label()
+        .expect("only registry tools have no durable label, and they record their tool name")
+}
+
+/// The proven-success terminal for a non-registry effect.
+fn effect_done_terminal(
+    turn: TurnId,
+    class: effect_class::EffectClass,
+    ordinal: usize,
+) -> EventKind {
+    EventKind::EffectDone {
+        id: effect_class::effect_id(turn, class, ordinal),
+        tool: effect_class_label(class).to_string(),
+    }
+}
+
+/// The proven-failure terminal for a non-registry effect. `reason` is executor-authored text: it is
+/// bounded here and scrubbed by the record boundary before it becomes durable.
+fn effect_failed_terminal(
+    turn: TurnId,
+    class: effect_class::EffectClass,
+    ordinal: usize,
+    reason: &str,
+) -> EventKind {
+    EventKind::EffectFailed {
+        id: effect_class::effect_id(turn, class, ordinal),
+        tool: effect_class_label(class).to_string(),
+        reason: strict_utf8_head(reason, EFFECT_REASON_MAX_BYTES),
+    }
+}
+
+/// The scrubbed, bounded workspace projection every brokered effect records.
+///
+/// One helper rather than a repeated expression at each call site, because the shape is part of the
+/// contract: `EffectProposal::validate` refuses an empty workspace and anything past 4 KiB. An agent
+/// constructed with an empty workspace path is legal (subagents and one-shot runs do it), so a bare
+/// `display()` would have made those effects unrecordable at exactly the moment they matter.
+fn effect_workspace(workspace: &std::path::Path) -> String {
+    let rendered = strict_utf8_head(
+        &core_record::redact::scrub(&workspace.display().to_string()),
+        2_048,
+    );
+    if rendered.is_empty() {
+        ".".to_string()
+    } else {
+        rendered
     }
 }
 
@@ -1905,6 +2122,11 @@ pub struct Agent {
     /// Set if a durable record append failed. Checked at turn admission so the run halts at a
     /// safe point rather than proceeding with an audit gap / forked chain (code review).
     record_failed: bool,
+    /// Live at-most-once ledger for effect identities (#16). Consulted by the boundary BEFORE the
+    /// write-ahead append, so a repeated identity never reaches an executor. Seeded from the
+    /// replayed journal on recovery so a resumed process cannot re-mint what the previous one
+    /// already put on disk.
+    effect_admissions: effect_admission::EffectAdmissions,
     /// Cooperative interrupt (operability): when set (e.g. by a Ctrl-C handler), an in-flight
     /// provider turn is cancelled MID-STREAM (D1-16) and the loop then stops. No effect is ever
     /// left half-committed and the run stays resumable, but the turn itself is NOT atomic with
@@ -2026,6 +2248,7 @@ impl Agent {
             fail_next_durable_append: None,
             diagnostics: DiagnosticEmitter::default(),
             record_failed: false,
+            effect_admissions: effect_admission::EffectAdmissions::default(),
             interrupt: None,
             interrupt_requested: false,
             max_tool_concurrency: 16,
@@ -2307,6 +2530,75 @@ impl Agent {
             self.usd_budget.as_ref(),
             projected_at_unix_secs,
         ))
+    }
+
+    /// Would a dispatch be refused before the transport is even opened?
+    ///
+    /// Pulled out of [`Agent::bounded_provider_turn`] so [`Agent::brokered_provider_turn`] can run
+    /// it *before* opening the effect. Both refusals — an exhausted wall deadline and an already
+    /// pending interrupt — are proven non-events: `turn_cancellable` returns without opening the
+    /// stream. Journalling them inside the boundary would manufacture an unknown effect out of a
+    /// request that never left the process.
+    fn provider_dispatch_refusal(&self) -> Option<KernelError> {
+        let deadline = self.run_deadline?;
+        if deadline.saturating_duration_since(Instant::now()).is_zero() {
+            return Some(KernelError::Provider(
+                core_provider::ProviderError::DeadlineExceeded,
+            ));
+        }
+        let interrupted = self
+            .interrupt
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
+        interrupted.then_some(KernelError::Provider(
+            core_provider::ProviderError::Interrupted,
+        ))
+    }
+
+    /// One paid inference request, across the effect boundary.
+    ///
+    /// A provider request is the most expensive externally visible thing the kernel does and the
+    /// one whose outcome is least observable: the D1-16 contract drops the stream mid-flight on
+    /// Ctrl-C, so the model may have been billed for a turn whose result nobody will ever see.
+    /// Before #16 that left `TurnStart` with no counterpart and nothing for recovery to report.
+    ///
+    /// # How a provider error is classified
+    ///
+    /// * A dropped in-flight stream (`Interrupted`, `DeadlineExceeded`) and a broken or unreadable
+    ///   response (`Stream`, `Decode`) are **unknown**: the request reached the endpoint and no
+    ///   authoritative outcome exists. Recovery reports them and never re-sends.
+    /// * A structured answer from the endpoint (`Http`, `Api`, `ApiResponse`, `Refusal`,
+    ///   `UnknownStopReason`) is a **proven failure**: the turn is closed, just not successfully.
+    ///
+    /// The pre-flight refusal above removes the two cases that would otherwise be misfiled, so the
+    /// only residual imprecision is a flag that flips between the pre-flight check and
+    /// `turn_cancellable`'s own — which lands on the conservative side.
+    async fn brokered_provider_turn(
+        &mut self,
+        turn: TurnId,
+        request: &TurnRequest,
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
+    ) -> Result<core_provider::TurnResult, KernelError> {
+        if let Some(refusal) = self.provider_dispatch_refusal() {
+            return Err(refusal);
+        }
+        let class = effect_class::EffectClass::Provider;
+        let ordinal = self.next_effect_ordinal(turn, class);
+        let ticket = self.open_kernel_effect(
+            turn,
+            class,
+            ordinal,
+            Capability::IrreversibleExternal,
+            serde_json::json!({
+                "model": request.model,
+                "messages": request.messages.len(),
+                "tools": request.tools.len(),
+                "max_tokens": request.max_tokens,
+            }),
+        )?;
+        let result = self.bounded_provider_turn(request, on_item).await;
+        self.settle_kernel_effect(ticket, provider_settlement(turn, ordinal, &result))?;
+        result
     }
 
     async fn bounded_provider_turn(
@@ -3156,12 +3448,140 @@ impl Agent {
             .emit(KernelDiagnostic::RecordAppendFailed {});
     }
 
+    /// Translate a boundary refusal into the kernel's error vocabulary.
+    ///
+    /// Only a durable-log failure sets `record_failed`; an admission or proposal refusal leaves the
+    /// record trustworthy and must not latch the run into "the audit trail is broken" mode.
+    fn effect_boundary_failed(&mut self, error: effects::BrokerError) -> KernelError {
+        match error {
+            effects::BrokerError::Record(error) => {
+                self.record_failed = true;
+                KernelError::Record(error)
+            }
+            other => KernelError::EffectBoundary(other.to_string()),
+        }
+    }
+
+    /// Mint the next ordinal for one effect class in this turn.
+    fn next_effect_ordinal(&mut self, turn: TurnId, class: effect_class::EffectClass) -> usize {
+        self.effect_admissions.next_ordinal(turn, class)
+    }
+
+    /// Open a non-registry effect: admit the identity and fsync its write-ahead intent.
+    ///
+    /// The two-phase form exists for the executors that need `&mut self` while they run — the
+    /// provider turn, the verifier's cancellation poll loop, a subagent. They cross the identical
+    /// boundary as the closure-shaped callers; only the borrow shape differs.
+    fn open_kernel_effect(
+        &mut self,
+        turn: TurnId,
+        class: effect_class::EffectClass,
+        ordinal: usize,
+        capability: Capability,
+        audit_arguments: serde_json::Value,
+    ) -> Result<effects::EffectTicket, KernelError> {
+        let effect = effects::BrokeredEffect {
+            turn,
+            effect_id: effect_class::effect_id(turn, class, ordinal),
+            tool_use_id: effect_class::harness_correlation_id(turn, class, ordinal),
+            kind: effect_class_label(class).to_string(),
+            capability,
+            audit_arguments,
+            workspace: effect_workspace(&self.workspace),
+        };
+        let Agent {
+            rollout,
+            effect_admissions,
+            ..
+        } = self;
+        match effects::open_effect(rollout, effect_admissions, effect) {
+            Ok(ticket) => Ok(ticket),
+            Err(error) => Err(self.effect_boundary_failed(error)),
+        }
+    }
+
+    /// Settle an opened effect with its one terminal.
+    fn settle_kernel_effect(
+        &mut self,
+        ticket: effects::EffectTicket,
+        settlement: effects::Settlement,
+    ) -> Result<(), KernelError> {
+        match effects::settle_effect(&mut self.rollout, ticket, settlement) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.effect_boundary_failed(error)),
+        }
+    }
+
+    /// Run one lifecycle hook across the effect boundary.
+    ///
+    /// A hook is an operator-configured process the kernel starts, which makes it an externally
+    /// visible effect by every definition the boundary uses. Before #16 it was the largest
+    /// unbrokered class in the kernel — the comment beside the PostToolUse call site said so in as
+    /// many words — so a crash between spawning a hook and returning left no durable trace that
+    /// anything had been started.
+    ///
+    /// # Why a returning hook is a *proven* terminal
+    ///
+    /// `Hooks::run` always returns: a command that cannot spawn, exits non-zero, or overruns its
+    /// timeout is reaped and reported as "no opinion". So when it returns, the process lifecycle is
+    /// closed and the terminal is proven, even though the hook's *verdict* may be unknown — those
+    /// are different questions and only the first belongs to the boundary. The genuinely
+    /// unprovable case is the one the boundary already covers: if this process dies between the
+    /// intent and the terminal, recovery finds a pending intent and journals `EffectUnknown`.
+    ///
+    /// # Why a boundary failure is not swallowed here
+    ///
+    /// Every existing call site wrote `let _ = self.hooks.run(...)`, because a hook's opinion is
+    /// advisory. A *boundary* failure is not: it means either the durable log is broken or a caller
+    /// asked for an unrecordable dispatch, and continuing would report a clean outcome over a
+    /// broken audit trail.
+    async fn brokered_hook(
+        &mut self,
+        turn: TurnId,
+        event: HookEvent,
+        context_json: &str,
+    ) -> Result<hooks::HookDecision, KernelError> {
+        if self.hooks.is_empty() {
+            return Ok(hooks::HookDecision::Allow);
+        }
+        let class = effect_class::EffectClass::Hook;
+        let ordinal = self.next_effect_ordinal(turn, class);
+        let effect = KernelEffect {
+            turn,
+            class,
+            ordinal,
+            capability: Capability::CodeExecuting,
+            audit_arguments: serde_json::json!({ "event": event.key() }),
+            workspace: self.workspace.as_path(),
+        };
+        let Agent {
+            rollout,
+            effect_admissions,
+            hooks,
+            ..
+        } = self;
+        let outcome = broker_kernel_effect(rollout, effect_admissions, effect, || async move {
+            effects::EffectDisposition::Definite {
+                terminal: effect_done_terminal(turn, class, ordinal),
+                value: hooks.run(event, context_json).await,
+            }
+        })
+        .await;
+        match outcome {
+            Ok(outcome) => Ok(outcome.into_value()),
+            Err(error) => Err(self.effect_boundary_failed(error)),
+        }
+    }
+
     /// Refuse blind replay across the edit/process crash window. A durable intent without a
     /// correlated ToolDone is conservatively materialized as EffectUnknown; an existing Unknown
     /// remains blocking until a future broker/reconciler appends authoritative completion.
     fn guard_unresolved_effects(&mut self) -> Result<(), KernelError> {
         let events = replay_logical_rollout(self.rollout.path())?;
         let journal = effects::EffectJournal::replay(&events)?;
+        // At-most-once has to survive the process boundary, not just the turn loop: a resumed run
+        // must not be able to re-mint an identity the previous process already admitted.
+        self.effect_admissions = effect_admission::EffectAdmissions::from_journal(&journal);
         let newly_unknown = journal.pending();
         for pending in &newly_unknown {
             self.emit_durable(
@@ -3173,7 +3593,12 @@ impl Agent {
                 },
             )?;
         }
-        let count = journal.unknown_count().saturating_add(newly_unknown.len());
+        let count = journal.unknown_requiring_reconciliation().saturating_add(
+            newly_unknown
+                .iter()
+                .filter(|pending| effect_journal::kind_blocks_resume(&pending.tool))
+                .count(),
+        );
         if count > 0 {
             return Err(KernelError::UnknownEffects { count });
         }
@@ -3751,10 +4176,11 @@ impl Agent {
         self.synchronize_usd_budget()?;
         self.close_usd_budget_on_unknown_cost();
         if let Some(outcome) = self.finish_requested_control(TurnId(self.seq_turn))? {
-            if outcome != Outcome::Drained && !self.hooks.is_empty() {
+            if outcome != Outcome::Drained {
                 let ctx = serde_json::json!({"event":"Stop","outcome":format!("{outcome:?}")})
                     .to_string();
-                let _ = self.hooks.run(HookEvent::Stop, &ctx).await;
+                self.brokered_hook(TurnId(self.seq_turn), HookEvent::Stop, &ctx)
+                    .await?;
             }
             return Ok(outcome);
         }
@@ -3799,12 +4225,12 @@ impl Agent {
         // top-level entry — run_orchestrated calls drive(), not run()). A drained terminal is the
         // exception: starting an arbitrary hook after its sync checkpoint would mutate state past
         // the recovery boundary, so no new lifecycle effect is admitted after Drained.
-        if !self.hooks.is_empty()
-            && let Ok(o) = &outcome
+        if let Ok(o) = &outcome
             && *o != Outcome::Drained
         {
             let ctx = serde_json::json!({"event":"Stop","outcome":format!("{o:?}")}).to_string();
-            let _ = self.hooks.run(HookEvent::Stop, &ctx).await;
+            self.brokered_hook(TurnId(self.seq_turn), HookEvent::Stop, &ctx)
+                .await?;
         }
         // Every exit from the admitted run loop is a session boundary, including provider,
         // pricing, transcript, or tool errors after a durable TurnEnd. Keep cache failure
@@ -3833,10 +4259,11 @@ impl Agent {
         self.synchronize_usd_budget()?;
         self.close_usd_budget_on_unknown_cost();
         if let Some(outcome) = self.finish_requested_control(TurnId(self.seq_turn))? {
-            if outcome != Outcome::Drained && !self.hooks.is_empty() {
+            if outcome != Outcome::Drained {
                 let ctx = serde_json::json!({"event":"Stop","outcome":format!("{outcome:?}")})
                     .to_string();
-                let _ = self.hooks.run(HookEvent::Stop, &ctx).await;
+                self.brokered_hook(TurnId(self.seq_turn), HookEvent::Stop, &ctx)
+                    .await?;
             }
             return Ok(outcome);
         }
@@ -3863,12 +4290,12 @@ impl Agent {
         if owns_deadline {
             self.run_deadline = None;
         }
-        if !self.hooks.is_empty()
-            && let Ok(o) = &outcome
+        if let Ok(o) = &outcome
             && *o != Outcome::Drained
         {
             let ctx = serde_json::json!({"event":"Stop","outcome":format!("{o:?}")}).to_string();
-            let _ = self.hooks.run(HookEvent::Stop, &ctx).await;
+            self.brokered_hook(TurnId(self.seq_turn), HookEvent::Stop, &ctx)
+                .await?;
         }
         let _ = self.rollout.refresh_session_cache();
         outcome
@@ -4057,6 +4484,31 @@ impl Agent {
             // unchanged.
             let usd_attempt = self.admit_provider_effect(turn_id, &req)?;
 
+            // Open the provider effect BEFORE the mid-stream pure-tool machinery takes its borrow
+            // of the registry. That borrow lives across the dispatch, so `&mut self` is unavailable
+            // at the call itself; the boundary is therefore opened here and settled after the
+            // borrow dies, which is the same intent-execute-terminal order, only spelled out.
+            let provider_refusal = self.provider_dispatch_refusal();
+            let provider_class = effect_class::EffectClass::Provider;
+            let provider_ordinal = self.next_effect_ordinal(turn_id, provider_class);
+            let provider_ticket = match provider_refusal {
+                // A refusal means nothing was dispatched, so nothing is admitted and no intent is
+                // written. Recording one would invent an effect out of a request that never left.
+                Some(_) => None,
+                None => Some(self.open_kernel_effect(
+                    turn_id,
+                    provider_class,
+                    provider_ordinal,
+                    Capability::IrreversibleExternal,
+                    serde_json::json!({
+                        "model": req.model,
+                        "messages": req.messages.len(),
+                        "tools": req.tools.len(),
+                        "max_tokens": req.max_tokens,
+                    }),
+                )?),
+            };
+
             // ---- the flagship: dispatch PURE tools mid-stream. ----
             let reg = &self.registry;
             let ui_tx = self.ui_tx.clone();
@@ -4144,7 +4596,14 @@ impl Agent {
             // `attempt` means a provider request crossed the dispatch boundary. Local context
             // rejection above therefore remains provable zero, while every dispatched request
             // without authoritative Usage becomes an honest unknown.
-            let provider_result = self.bounded_provider_turn(&req, &mut on_item).await;
+            let provider_result = match provider_refusal {
+                Some(refusal) => Err(refusal),
+                None => self.bounded_provider_turn(&req, &mut on_item).await,
+            };
+            if let Some(ticket) = provider_ticket {
+                let settlement = provider_settlement(turn_id, provider_ordinal, &provider_result);
+                self.settle_kernel_effect(ticket, settlement)?;
+            }
             let turn_res = match provider_result {
                 Ok(result) => result,
                 Err(error) => {
@@ -4388,7 +4847,7 @@ impl Agent {
                                 },
                             );
                             let verify_span = PhaseSpan::enter(Phase::Verify);
-                            let verdict = self.run_verify(&cmd).await;
+                            let verdict = self.run_verify(&cmd).await?;
                             self.ledger.phase_verify(verify_span.elapsed_ms());
                             // Drain deliberately lets the already-admitted oracle reach a verdict,
                             // then checkpoints before any failure/timeout branch can substitute a
@@ -4841,12 +5300,13 @@ impl Agent {
                     continue;
                 }
                 // PreToolUse hook (R5): an operator (user-config-only) hook may BLOCK this tool.
-                if !self.hooks.is_empty() {
+                {
                     let ctx =
                         serde_json::json!({"event":"PreToolUse","tool":tu.name,"input":tu.input})
                             .to_string();
-                    if let HookDecision::Deny(reason) =
-                        self.hooks.run(HookEvent::PreToolUse, &ctx).await
+                    if let HookDecision::Deny(reason) = self
+                        .brokered_hook(turn_id, HookEvent::PreToolUse, &ctx)
+                        .await?
                     {
                         // Record the block decision explicitly (audit — a hook runs an arbitrary
                         // command; the decision must be on the record, not only in the tool_result
@@ -4929,7 +5389,30 @@ impl Agent {
                 // + PreToolUse hook, since it fans out real children that spend provider budget.
                 if tu.name == core_tools::WORKFLOW_TOOL {
                     let input = tu.input.clone();
-                    let (content, is_error) = match self.launch_workflow(turn_id, input).await {
+                    // The workflow tool never reaches `Registry::run_effect`, so before #16 it was
+                    // the one admitted, capability-gated, budget-spending dispatch in the turn loop
+                    // that produced a `ToolDone` with no preceding `EffectIntent`. It fans out real
+                    // children; it crosses the boundary under its own class.
+                    let wf_class = effect_class::EffectClass::Workflow;
+                    let wf_ordinal = self.next_effect_ordinal(turn_id, wf_class);
+                    let ticket = self.open_kernel_effect(
+                        turn_id,
+                        wf_class,
+                        wf_ordinal,
+                        cap,
+                        ui_approval_arguments(&tu.input),
+                    )?;
+                    let launched = self.launch_workflow(turn_id, input).await;
+                    let settlement = match &launched {
+                        Ok(_) => effects::Settlement::Definite(effect_done_terminal(
+                            turn_id, wf_class, wf_ordinal,
+                        )),
+                        Err(error) => effects::Settlement::Definite(effect_failed_terminal(
+                            turn_id, wf_class, wf_ordinal, error,
+                        )),
+                    };
+                    self.settle_kernel_effect(ticket, settlement)?;
+                    let (content, is_error) = match launched {
                         Ok(summary) => (summary, false),
                         Err(error) => (error, true),
                     };
@@ -4949,28 +5432,29 @@ impl Agent {
                 let tu_ui = tu.clone(); // carry args for tool_end_ui (edit diff / bash exit_code) — this is where edits land
                 let admitted = effects::AdmittedRegistryTool {
                     turn: turn_id,
-                    effect_id: effects::effect_id(turn_id, idx),
+                    effect_id: effect_class::effect_id(
+                        turn_id,
+                        effect_class::EffectClass::RegistryTool,
+                        idx,
+                    ),
                     capability: cap,
                     audit_arguments: ui_approval_arguments(&tu.input),
-                    workspace: strict_utf8_head(
-                        &core_record::redact::scrub(&self.workspace.display().to_string()),
-                        2_048,
-                    ),
+                    workspace: effect_workspace(&self.workspace),
                     call: tu,
                 };
                 let registry = &self.registry;
-                let execution =
-                    match effects::execute_registry_tool(&mut self.rollout, admitted, |call| {
-                        registry.run_effect(call)
-                    })
-                    .await
-                    {
-                        Ok(execution) => execution,
-                        Err(error) => {
-                            self.record_failed = true;
-                            return Err(KernelError::Record(error));
-                        }
-                    };
+                let admissions = &mut self.effect_admissions;
+                let execution = match effects::execute_registry_tool(
+                    &mut self.rollout,
+                    admissions,
+                    admitted,
+                    |call| registry.run_effect(call),
+                )
+                .await
+                {
+                    Ok(execution) => execution,
+                    Err(error) => return Err(self.effect_boundary_failed(error)),
+                };
                 let r = match execution {
                     core_tools::ToolExecution::Definite(result) => result,
                     core_tools::ToolExecution::Unknown(result) => {
@@ -4990,10 +5474,12 @@ impl Agent {
                 // PostToolUse hook (observational): its exit code is ignored (a hook cannot undo a
                 // completed tool). It runs only AFTER the effect terminal is durable, so its own
                 // timeout/crash window cannot turn a completed tool into an unknown tool outcome.
-                // NOTE: it is AWAITED and still an unbrokered, separately audited effect.
-                if !self.hooks.is_empty() {
+                // It now crosses the same boundary as the tool it observes (#16), so the hook's own
+                // intent/terminal pair is journalled after — never inside — the tool's.
+                {
                     let ctx = serde_json::json!({"event":"PostToolUse","tool":r.tool_use_id,"is_error":r.is_error,"content":core_protocol::text::head(&r.content, 2000)}).to_string();
-                    let _ = self.hooks.run(HookEvent::PostToolUse, &ctx).await;
+                    self.brokered_hook(turn_id, HookEvent::PostToolUse, &ctx)
+                        .await?;
                 }
             }
             self.ledger.phase_tools(tools_span.elapsed_ms());
@@ -5087,10 +5573,6 @@ impl Agent {
     }
 
     fn finish_drained(&mut self, turn: TurnId) -> Result<Outcome, KernelError> {
-        // The snapshot is keyed to the sequence its durable Checkpoint event will receive. Every
-        // prior append has already crossed Rollout's fsync barrier; after checkpoint() returns,
-        // the event and terminal outcome are each synchronously appended in order.
-        let at = self.rollout.next_sequence();
         if self.runtime_state_dir.as_os_str().is_empty() {
             return Err(KernelError::Record(core_record::RecordError::Io(
                 std::io::Error::new(
@@ -5113,19 +5595,51 @@ impl Agent {
                 ),
             )));
         }
+        // A checkpoint copies the workspace tree: a real, externally visible write, and before #16
+        // the only one in the kernel that recorded its marker *after* doing the work. It now crosses
+        // the boundary like every other effect, so a crash mid-copy leaves a durable intent that
+        // recovery reports rather than a snapshot nobody knows exists.
+        let class = effect_class::EffectClass::Checkpoint;
+        let ordinal = self.next_effect_ordinal(turn, class);
+        let ticket = self.open_kernel_effect(
+            turn,
+            class,
+            ordinal,
+            Capability::ReversibleLocal,
+            serde_json::json!({ "scope": "workspace-excluding-runtime-state" }),
+        )?;
+        // Ordering: the intent is already durable, so the next append is the `Checkpoint` event and
+        // `at` names its sequence, exactly as before. The effect terminal follows it.
+        let at = self.rollout.next_sequence();
         let runtime_state_dir = &self.runtime_state_dir;
-        let snapshot = core_record::checkpoint_excluding_runtime_state(
+        let snapshot = match core_record::checkpoint_excluding_runtime_state(
             self.rollout.run_id(),
             at,
             &self.workspace,
             runtime_state_dir,
-        )?;
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                // A refused snapshot is a proven non-event, not an unknown one: no tree_ref was
+                // produced and nothing downstream can observe a partial checkpoint.
+                let reason = error.to_string();
+                let settlement = effects::Settlement::Definite(effect_failed_terminal(
+                    turn, class, ordinal, &reason,
+                ));
+                self.settle_kernel_effect(ticket, settlement)?;
+                return Err(error.into());
+            }
+        };
         self.emit_durable(
             turn,
             EventKind::Checkpoint {
                 at: snapshot.at,
                 tree_ref: snapshot.tree_ref,
             },
+        )?;
+        self.settle_kernel_effect(
+            ticket,
+            effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal)),
         )?;
         let outcome = self.finish(turn, Outcome::Drained)?;
         // Drain is absorbing only until the durable checkpoint + terminal pair completes. The
@@ -5591,9 +6105,43 @@ impl Agent {
         let prompt = format!(
             "{subtask}\n\nReturn a concise summary with file:line references. Do not attempt to edit anything."
         );
+        // Spawning a subagent starts a process that makes its own paid calls and its own tool
+        // dispatches. It is an effect of the parent even though every effect the child performs is
+        // brokered in the child's own journal, so the parent's write-ahead intent is opened here —
+        // after every admission check, so no early return can drop the ticket, and immediately
+        // before the only line that actually runs the child.
+        let spawn_class = effect_class::EffectClass::Subagent;
+        let spawn_turn = TurnId(self.seq_turn);
+        let spawn_ordinal = self.next_effect_ordinal(spawn_turn, spawn_class);
+        let ticket = self
+            .open_kernel_effect(
+                spawn_turn,
+                spawn_class,
+                spawn_ordinal,
+                Capability::CodeExecuting,
+                serde_json::json!({ "sub_run": sub_run.0.clone() }),
+            )
+            .map_err(|error| error.public_summary())?;
         // The recursive child future is boxed inside `run_child_with_control`. One level only: a
         // subagent has no dispatch_agent tool, so this cannot recurse unboundedly.
         let outcome = self.run_child_with_control(&mut sub, &prompt).await;
+        // The child returned, so the spawn's terminal is proven either way: a failed child is a
+        // failed effect, not an unobservable one.
+        let spawn_settlement = match &outcome {
+            Ok(_) => effects::Settlement::Definite(effect_done_terminal(
+                spawn_turn,
+                spawn_class,
+                spawn_ordinal,
+            )),
+            Err(error) => effects::Settlement::Definite(effect_failed_terminal(
+                spawn_turn,
+                spawn_class,
+                spawn_ordinal,
+                &error.public_summary(),
+            )),
+        };
+        self.settle_kernel_effect(ticket, spawn_settlement)
+            .map_err(|error| error.public_summary())?;
         let (result, child_outcome, error_code, error_detail) = match outcome {
             Ok(Outcome::Done) => {
                 let s = strict_utf8_head(sub.last_assistant_text.trim(), 16 * 1024);
@@ -6096,7 +6644,7 @@ impl Agent {
             },
         );
         let model_started = Instant::now();
-        let response = self.bounded_provider_turn(&req, &mut sink).await;
+        let response = self.brokered_provider_turn(turn_id, &req, &mut sink).await;
         let text = match response {
             Ok(r) => {
                 let complete_usage = self.record_provider_usage(
@@ -6571,7 +7119,67 @@ impl Agent {
 
     /// Run the strong verification oracle: the configured test command, in the egress-off
     /// sandbox. The harness's own ground-truth check on the model's "done".
-    async fn run_verify(&mut self, command: &str) -> core_verify::Verdict {
+    ///
+    /// The oracle runs repository-controlled code in a sandbox, so it is an effect and crosses the
+    /// boundary (#16). Its verdict vocabulary maps onto the terminal vocabulary exactly:
+    /// `Cancelled` and `TimedOut` mean the oracle process was dispatched and dropped without a
+    /// verdict — no terminal was observed — so they settle as `EffectUnknown`, while every graded
+    /// outcome (pass, test failure, infrastructure failure) is a proven terminal.
+    async fn run_verify(&mut self, command: &str) -> Result<core_verify::Verdict, KernelError> {
+        let class = effect_class::EffectClass::Verify;
+        let turn = TurnId(self.seq_turn);
+        let ordinal = self.next_effect_ordinal(turn, class);
+        let ticket = self.open_kernel_effect(
+            turn,
+            class,
+            ordinal,
+            Capability::CodeExecuting,
+            serde_json::json!({ "command": command }),
+        )?;
+        let dispatch = self.dispatch_verify(command).await;
+        let (settlement, verdict) = match dispatch {
+            // The oracle future was never polled, so no sandboxed process was ever started. The
+            // effect provably did not happen; saying "unknown" here would strand the session over
+            // a command that was cancelled before it could run.
+            VerifyDispatch::NotDispatched(verdict) => (
+                effects::Settlement::Definite(effect_failed_terminal(
+                    turn,
+                    class,
+                    ordinal,
+                    "verification was cancelled before the oracle was dispatched",
+                )),
+                verdict,
+            ),
+            // The oracle future was dropped mid-run. The sandboxed command was started, may have
+            // touched the workspace, and produced no authoritative verdict. This is the honest
+            // unknown: recovery reports it and never re-runs it.
+            VerifyDispatch::Dropped(verdict) => (
+                effects::Settlement::Unknown(
+                    "verification was dropped after dispatch and before the oracle produced a \
+                     verdict; automatic retry is forbidden"
+                        .into(),
+                ),
+                verdict,
+            ),
+            // The oracle answered. Every graded outcome is a proven terminal, including its own
+            // timeout and infrastructure failure — those are observations, not lost dispatches.
+            VerifyDispatch::Observed(verdict) => {
+                let terminal =
+                    if verdict.outcome == core_verify::VerificationOutcome::InfrastructureFailure {
+                        effect_failed_terminal(turn, class, ordinal, &verdict.detail)
+                    } else {
+                        effect_done_terminal(turn, class, ordinal)
+                    };
+                (effects::Settlement::Definite(terminal), verdict)
+            }
+        };
+        self.settle_kernel_effect(ticket, settlement)?;
+        Ok(verdict)
+    }
+
+    /// Build and run the oracle. Split from [`Agent::run_verify`] so the boundary owns the
+    /// intent/terminal pair and this owns only the dispatch.
+    async fn dispatch_verify(&mut self, command: &str) -> VerifyDispatch {
         #[cfg(test)]
         if let Some(oracle) = self.verify_oracle.clone() {
             return self.run_bounded_verify(oracle).await;
@@ -6604,9 +7212,13 @@ impl Agent {
     async fn run_bounded_verify(
         &mut self,
         oracle: std::sync::Arc<dyn core_verify::Oracle>,
-    ) -> core_verify::Verdict {
+    ) -> VerifyDispatch {
         const VERIFY_CANCEL_POLL: Duration = Duration::from_millis(25);
 
+        // Whether the oracle future has ever been polled, which is exactly whether a sandboxed
+        // process can exist. The boundary needs this distinction: a cancellation before the first
+        // poll provably dispatched nothing, while one after it leaves an unobservable outcome.
+        let mut dispatched = false;
         let mut evaluation = Box::pin(async move { oracle.evaluate().await });
         loop {
             let queue_cancelled = self.collect_inbound_ops(TurnId(self.seq_turn));
@@ -6615,21 +7227,24 @@ impl Agent {
                 .as_ref()
                 .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
             if queue_cancelled.interrupts() || flag_cancelled {
-                return core_verify::Verdict::cancelled(
+                let verdict = core_verify::Verdict::cancelled(
                     "verification cancelled by the operator before a verdict",
                 );
+                return VerifyDispatch::from_drop(dispatched, verdict);
             }
 
             let remaining = self.run_time_remaining();
             if remaining.is_some_and(|duration| duration.is_zero()) {
-                return core_verify::Verdict::timed_out(
+                let verdict = core_verify::Verdict::timed_out(
                     "verification exceeded the absolute run deadline",
                 );
+                return VerifyDispatch::from_drop(dispatched, verdict);
             }
             let poll_for = remaining
                 .map(|duration| duration.min(VERIFY_CANCEL_POLL))
                 .unwrap_or(VERIFY_CANCEL_POLL);
 
+            dispatched = true;
             match tokio::time::timeout(poll_for, &mut evaluation).await {
                 Ok(verdict) => {
                     // Cancellation wins a boundary race with a just-completed oracle. This keeps
@@ -6641,11 +7256,14 @@ impl Agent {
                         .as_ref()
                         .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
                     if queue_cancelled.interrupts() || flag_cancelled {
-                        return core_verify::Verdict::cancelled(
+                        // The oracle completed; only its verdict is being discarded in favour of
+                        // the operator's stop. The sandboxed process demonstrably ended, so the
+                        // effect terminal is observed even though the caller sees Cancelled.
+                        return VerifyDispatch::Observed(core_verify::Verdict::cancelled(
                             "verification cancelled by the operator at the verdict boundary",
-                        );
+                        ));
                     }
-                    return verdict;
+                    return VerifyDispatch::Observed(verdict);
                 }
                 Err(_) => {
                     // The pinned oracle future remains alive across polling ticks. On an absolute
@@ -6696,7 +7314,7 @@ impl Agent {
             },
         );
         let model_started = Instant::now();
-        let response = self.bounded_provider_turn(&req, &mut sink).await;
+        let response = self.brokered_provider_turn(turn_id, &req, &mut sink).await;
         match response {
             Ok(res) => {
                 let complete_usage = self.record_provider_usage(
@@ -9964,8 +10582,15 @@ ant-api03-SuperSecretModelToken12345"
         agent.run_deadline = Some(Instant::now() + Duration::from_millis(60));
 
         let began = Instant::now();
-        let verdict = agent.run_bounded_verify(oracle).await;
+        let dispatch = agent.run_bounded_verify(oracle).await;
 
+        // The oracle was polled and then dropped at the deadline, so the boundary must class this
+        // as an unobservable dispatch rather than a proven timeout.
+        assert!(
+            matches!(dispatch, VerifyDispatch::Dropped(_)),
+            "a hung oracle dropped at the run deadline is an unknown effect, not a proven one"
+        );
+        let verdict = dispatch.verdict();
         assert_eq!(verdict.outcome, core_verify::VerificationOutcome::TimedOut);
         assert!(verdict.detail.contains("absolute run deadline"));
         assert!(
@@ -10562,9 +11187,15 @@ ant-api03-SuperSecretModelToken12345"
                 )
             })
             .unwrap();
+        // The turn's provider request is itself a brokered effect now, so pick the intent that
+        // belongs to the model-driven tool call: harness-minted classes carry a harness-scoped
+        // correlation id, a registry tool carries the provider's own tool_use id.
         let intent = events
             .iter()
-            .position(|event| matches!(&event.kind, EventKind::EffectIntent { .. }))
+            .position(|event| {
+                matches!(&event.kind, EventKind::EffectIntent { tool_use_id, .. }
+                    if !effect_class::is_harness_correlation_id(tool_use_id))
+            })
             .unwrap();
         let remembered_policy = events
             .iter()
@@ -15045,9 +15676,10 @@ ant-api03-SuperSecretModelToken12345"
             "both declared calls receive durable denied results"
         );
         assert!(
-            !events
-                .iter()
-                .any(|event| matches!(event.kind, EventKind::EffectIntent { .. })),
+            !events.iter().any(|event| {
+                matches!(&event.kind, EventKind::EffectIntent { tool_use_id, .. }
+                    if !effect_class::is_harness_correlation_id(tool_use_id))
+            }),
             "no denied effect crosses the WAL admission boundary"
         );
         assert_eq!(
@@ -15248,6 +15880,87 @@ ant-api03-SuperSecretModelToken12345"
                 .any(|path| path.starts_with(".core/runs/")),
             "a child checkpoint must inherit and exclude the root session-state directory"
         );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// End-to-end evidence for #16: a real run's durable record carries an intent/terminal pair for
+    /// the classes that used to have none, and the pure journal agrees nothing is left dangling.
+    ///
+    /// The unit conformance in `crate::effect_boundary_tests` proves the boundary sequence and the
+    /// source gate proves nothing bypasses it. This proves the two meet in a real rollout.
+    #[tokio::test]
+    async fn every_dispatched_class_leaves_an_intent_and_a_terminal_in_a_real_record() {
+        let ws = temp_ws("universal-boundary-e2e");
+        let home = ws.join("operator-home");
+        std::fs::create_dir_all(core_protocol::home::path(&home, "")).unwrap();
+        std::fs::write(
+            core_protocol::home::path(&home, "config.json"),
+            serde_json::json!({"hooks":{"Stop":["true"]}}).to_string(),
+        )
+        .unwrap();
+        let runs = ws.join(".core/runs");
+        let run = core_protocol::RunId("universal-boundary-e2e".into());
+        let rollout = Rollout::open(&runs, &run, core_protocol::TenantId::default()).unwrap();
+        let provider = std::sync::Arc::new(ScriptedAlwaysEndTurn::default());
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+        agent.hooks = Hooks::load_user(&home);
+        assert!(!agent.hooks.is_empty());
+
+        assert_eq!(agent.run("do the thing").await.unwrap(), Outcome::Done);
+
+        let events = core_record::replay(&runs.join(format!("{}.jsonl", run.0))).unwrap();
+        let mut intents: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let mut terminals: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for event in &events {
+            match &event.kind {
+                EventKind::EffectIntent { id, tool, .. } => {
+                    intents.insert(id.0.clone(), tool.clone());
+                }
+                EventKind::EffectDone { id, .. } | EventKind::EffectFailed { id, .. } => {
+                    terminals.insert(id.0.clone());
+                }
+                EventKind::ToolDone {
+                    effect_id: Some(id),
+                    ..
+                } => {
+                    terminals.insert(id.0.clone());
+                }
+                _ => {}
+            }
+        }
+        let kinds: std::collections::BTreeSet<&str> =
+            intents.values().map(String::as_str).collect();
+        assert!(
+            kinds.contains("provider"),
+            "a paid inference request must cross the boundary; recorded kinds: {kinds:?}"
+        );
+        assert!(
+            kinds.contains("hook"),
+            "a lifecycle hook must cross the boundary; recorded kinds: {kinds:?}"
+        );
+        for (id, kind) in &intents {
+            assert!(
+                terminals.contains(id),
+                "{kind} intent {id} has no terminal in the durable record"
+            );
+        }
+
+        // Every intent is correlated to exactly one terminal, so the pure fold sees a clean log.
+        let journal = effects::EffectJournal::replay(&events).unwrap();
+        assert!(
+            journal.pending().is_empty(),
+            "a completed run must leave no dangling intent"
+        );
+        assert_eq!(journal.unknown_count(), 0);
         let _ = std::fs::remove_dir_all(&ws);
     }
 
