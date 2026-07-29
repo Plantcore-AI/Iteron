@@ -1,13 +1,15 @@
 # Releases and changelog
 
-Core Code publishes immutable pre-alpha releases. A published artifact has passed
-the release workflow; it does not imply stable CLI, configuration, record, or
-runtime compatibility.
+Core Code defines an immutable pre-alpha release process, but does not currently
+claim an accepted binary release. Native receipts for the complete target matrix
+and the corresponding public assets are still pending. A future published
+artifact must pass the release workflow; publication will not imply stable CLI,
+configuration, record, or runtime compatibility.
 
 ## Release artifacts
 
-The [GitHub Releases](https://github.com/Plantcore-AI/core/releases) page is the
-canonical binary distribution channel. Each accepted release contains:
+The [GitHub Releases](https://github.com/Plantcore-AI/core/releases) page will be
+the canonical binary distribution channel. An accepted release must contain:
 
 - native macOS, Linux, and Windows archives for the documented target matrix;
 - a version-bound `install.sh` and `SHA256SUMS`;
@@ -16,12 +18,13 @@ canonical binary distribution channel. Each accepted release contains:
 - per-target SPDX SBOMs;
 - build provenance, SBOM attestations, and offline bundles.
 
-Published releases are protected by GitHub immutable releases. Version tags are
-Owner-created and cannot be moved or deleted. If a correction is required, the
-project publishes a new patch version.
+Accepted releases must be protected by GitHub immutable releases. Version tags
+are Owner-created and cannot be moved or deleted. If a published release needs a
+correction, the project must publish a new patch version.
 
-See the [installation guide](../getting-started/installation.md) for curl,
-version pinning, supported targets, verification, and uninstall instructions.
+See the [installation guide](../getting-started/installation.md) for the planned
+curl path, version pinning, required targets, verification, and uninstall
+instructions.
 
 ## Changelog
 
@@ -35,7 +38,7 @@ public interfaces may change between releases.
 
 ## Acceptance gate
 
-A release is accepted only when all of the following are true:
+A binary release may be accepted only when all of the following are true:
 
 - the annotated SemVer tag resolves to the current protected `main` commit;
 - source, ownership, formatting, clippy, and full workspace tests pass;
@@ -43,7 +46,7 @@ A release is accepted only when all of the following are true:
 - archive structure, licenses, notices, checksums, SBOMs, and provenance pass;
 - the Owner approves the protected `release` environment;
 - the published release reports itself immutable;
-- fixed-version and `latest` public-download canaries pass on all five supported
-  targets.
+- fixed-version and `latest` public-download canaries pass on all five required
+  release targets.
 
 Maintainers follow the detailed [release guide](../development/releasing.md).
