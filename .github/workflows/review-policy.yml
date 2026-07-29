@@ -50,7 +50,7 @@ jobs:
         env:
           LEGACY_POLICY_ANCHOR_SHA: 6b850ca79b3a167a25357f873841e2bedcbad59a
           LEGACY_PARSER_BLOB_OID: 1758a24e092648a71469f3e3cfbac45a9cb204b7
-          COMPATIBILITY_POLICY_SHA: 0a60c6d0a36ae94a6bb292fd2b9feb65511b3325
+          COMPATIBILITY_POLICY_SHA: 2c17775f7df54581eebee3fe49b00d5d0db16fe9
           POLICY_SHA: ${{ steps.policy.outputs.policy-sha }}
           PROJECTION_ROOT: ${{ runner.temp }}/core-policy-candidate-projection
           COMPATIBILITY_POLICY_ROOT: ${{ runner.temp }}/core-policy-compatibility

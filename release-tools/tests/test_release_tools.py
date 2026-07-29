@@ -465,7 +465,7 @@ class ReleaseToolsTest(unittest.TestCase):
         }
         anchor = "6b850ca79b3a167a25357f873841e2bedcbad59a"
         parser_blob = "1758a24e092648a71469f3e3cfbac45a9cb204b7"
-        compatibility = "0a60c6d0a36ae94a6bb292fd2b9feb65511b3325"
+        compatibility = "2c17775f7df54581eebee3fe49b00d5d0db16fe9"
         pinned_paths = (
             "governance/client-conformance.json",
             "governance/schema-compatibility.json",
