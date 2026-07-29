@@ -1,6 +1,8 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "placement_reference": "docs/spec/capability-mapping.md#71-三个安置类别与一个前端平面",
+  "runtime_builder": null,
+  "runtime_receipt": null,
   "rows": [
     {
       "capability": "streaming_render",
@@ -192,8 +194,7 @@
         "path": "crates/cli/tests/windows_conpty.rs",
         "selector": "fn native_conpty_rejects_version_skew_before_terminal_takeover()"
       }
-    ],
-    "native_runtime": []
+    ]
   },
   "platform_smoke": [
     {

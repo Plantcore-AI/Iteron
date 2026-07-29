@@ -203,6 +203,250 @@ class ReleaseToolsTest(unittest.TestCase):
                 tools["tools"][tool]["hosts"]["windows-x86_64"]["archive"], "zip"
             )
 
+    def test_release_manual_dispatch_preserves_selected_ref_preflight_and_exports_tree(
+        self,
+    ) -> None:
+        release = (TOOLS.parent / ".github/workflows/release.yml").read_text(
+            encoding="utf-8"
+        )
+        dispatch = release.split("workflow_dispatch:", 1)[1].split("permissions:", 1)[0]
+        self.assertNotIn("inputs:", dispatch)
+        metadata = release.split(
+            "- name: Validate version and release source commit", 1
+        )[1].split(
+            "- name: Validate against the previous immutable schema release", 1
+        )[0]
+        self.assertIn('test "$GITHUB_EVENT_NAME" = workflow_dispatch', metadata)
+        self.assertIn("tag_commit=$event_commit", metadata)
+        self.assertNotIn('test "$GITHUB_REF" = refs/heads/main', metadata)
+        self.assertIn('tested_tree=$(git rev-parse "$tag_commit^{tree}")', metadata)
+        self.assertIn('[[ "$tested_tree" =~ ^[0-9a-f]{40}$ ]]', metadata)
+        self.assertIn('echo "tree=$tested_tree"', metadata)
+        self.assertIn("tree: ${{ steps.metadata.outputs.tree }}", release)
+
+    def test_release_native_version_proof_runs_exact_tests_on_two_native_targets(
+        self,
+    ) -> None:
+        release = (TOOLS.parent / ".github/workflows/release.yml").read_text(
+            encoding="utf-8"
+        )
+        proof = release.split("- name: Run native version-independence proof", 1)[
+            1
+        ].split("- name: Generate and normalize the binary SBOM", 1)[0]
+        self.assertIn("id: native-version-independence", proof)
+        self.assertIn("success() &&", proof)
+        self.assertIn("matrix.target == 'x86_64-unknown-linux-musl'", proof)
+        self.assertIn("matrix.target == 'x86_64-pc-windows-msvc'", proof)
+        self.assertIn("max_log_bytes=1048576", proof)
+        self.assertIn('head -c "$((max_log_bytes + 1))"', proof)
+        self.assertIn('pipeline_status=("${PIPESTATUS[@]}")', proof)
+        self.assertIn("test \"$summaries\" -eq 1", proof)
+        self.assertIn("1 passed; 0 failed; 0 ignored; 0 measured", proof)
+        self.assertEqual(proof.count('--target "$target"'), 4)
+        for cargo_target in (
+            "--bin core",
+            "--test one_shot_output",
+            "--test headless_serve",
+            "--test windows_conpty",
+        ):
+            self.assertIn(cargo_target, proof)
+        for selector in (
+            "tui::app_server::tests::version_skew_is_refused_up_front",
+            "one_shot_refuses_app_server_version_skew_before_provider_dispatch",
+            "no_tty_skew_reconnect_and_result_v5_share_one_headless_server",
+            "native_conpty_rejects_version_skew_before_terminal_takeover",
+        ):
+            self.assertIn(selector, proof)
+        self.assertEqual(proof.count("-- --exact"), 4)
+        self.assertIn(
+            'if [[ "$target" == x86_64-pc-windows-msvc ]]; then', proof
+        )
+        for step_id in (
+            "target-tests",
+            "release-binary",
+            "native-binary",
+            "native-client",
+            "native-version-independence",
+        ):
+            self.assertIn(f"id: {step_id}", release)
+
+    def test_runtime_receipt_is_a_dormant_pinnable_builder_and_signer(self) -> None:
+        repository = TOOLS.parent
+        release = (repository / ".github/workflows/release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("\n  runtime-receipt:", release)
+        self.assertNotIn("uses: ./.github/workflows/runtime-receipt.yml", release)
+
+        receipt = (
+            repository / ".github/workflows/runtime-receipt.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("workflow_call:", receipt)
+        self.assertEqual(receipt.count("type: string"), 4)
+        self.assertEqual(receipt.count("required: true"), 4)
+        for input_name in (
+            "repository-id",
+            "tested-commit",
+            "tested-tree",
+            "builder-workflow-commit",
+        ):
+            self.assertIn(f"{input_name}:", receipt)
+        for target, runner in (
+            ("aarch64-apple-darwin", "macos-15"),
+            ("x86_64-apple-darwin", "macos-15-intel"),
+            ("aarch64-unknown-linux-musl", "ubuntu-24.04-arm"),
+            ("x86_64-unknown-linux-musl", "ubuntu-24.04"),
+            ("x86_64-pc-windows-msvc", "windows-2022"),
+        ):
+            self.assertIn(f"target: {target}", receipt)
+            self.assertIn(f"runner: {runner}", receipt)
+        self.assertIn(
+            "name: native client runtime / ${{ matrix.target }}", receipt
+        )
+        self.assertIn("needs: native-runtime", receipt)
+        self.assertIn("actions: read", receipt)
+        self.assertIn("attestations: write", receipt)
+        self.assertIn("contents: read", receipt)
+        self.assertIn("id-token: write", receipt)
+        self.assertNotIn("contents: write", receipt)
+        self.assertIn(
+            "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+            receipt,
+        )
+        self.assertIn("ref: ${{ inputs.builder-workflow-commit }}", receipt)
+        self.assertIn("ref: ${{ inputs.tested-commit }}", receipt)
+        self.assertIn("fetch-depth: 0", receipt)
+        self.assertIn('test "$GITHUB_REF" = refs/heads/main', receipt)
+        self.assertIn(
+            'test "$BUILDER_WORKFLOW_COMMIT" != "$TESTED_COMMIT"',
+            receipt,
+        )
+        self.assertIn(
+            'git -C "$candidate" merge-base --is-ancestor', receipt
+        )
+        self.assertIn('"$BUILDER_WORKFLOW_COMMIT"', receipt)
+        self.assertIn('"$TESTED_COMMIT"', receipt)
+        self.assertIn("--porcelain=v1 -z --untracked-files=all", receipt)
+        for step in (
+            "Run the complete target test suite",
+            "Build an auditable release binary",
+            "Verify architecture, linkage, and executable smoke tests",
+            "Complete one task with the native release client",
+            "Run native version-independence proof",
+        ):
+            self.assertIn(f"- name: {step}", receipt)
+        self.assertIn("../builder/release-tools/smoke_release_client.py", receipt)
+        self.assertIn("$builder/release-tools/verify_pe.py", receipt)
+        self.assertIn(
+            "actions/attest@a1948c3f048ba23858d222213b7c278aabede763",
+            receipt,
+        )
+        self.assertIn(
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+            receipt,
+        )
+        self.assertIn("filter=latest&per_page=100", receipt)
+        self.assertIn('head -c "$((maximum + 1))"', receipt)
+        self.assertIn('pipeline_status=("${PIPESTATUS[@]}")', receipt)
+        self.assertIn("gh api \\", receipt)
+        self.assertIn("2>&1", receipt)
+        self.assertIn(
+            "Plantcore-AI/core/.github/workflows/runtime-receipt.yml@",
+            receipt,
+        )
+        self.assertIn(
+            "python3 -I builder/release-tools/client_runtime_receipt.py collect",
+            receipt,
+        )
+        self.assertIn(
+            '--builder-workflow-commit "$BUILDER_WORKFLOW_COMMIT"', receipt
+        )
+        self.assertIn('test "$receipt_bytes" -le 65536', receipt)
+        self.assertIn('test "$bundle_bytes" -le 2097152', receipt)
+        self.assertIn(
+            "receipt=$evidence_dir/runtime-receipt-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}.json",
+            receipt,
+        )
+        self.assertIn(
+            "runtime-receipt-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}.sigstore.json",
+            receipt,
+        )
+        self.assertIn(
+            "name: core-client-runtime-receipt-attempt-${{ github.run_attempt }}",
+            receipt,
+        )
+        self.assertIn("retention-days: 90", receipt)
+
+    def test_ci_verifies_receipts_with_the_materialized_trusted_base(self) -> None:
+        ci = (TOOLS.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        boundary = ci.split("\n  boundary:", 1)[1].split("\n  test:", 1)[0]
+        self.assertIn("attestations: read", boundary)
+        verification = boundary.split(
+            "- name: verify captured client runtime evidence with trusted base policy",
+            1,
+        )[1].split(
+            "- name: validate candidate against published schema chronology", 1
+        )[0]
+        self.assertIn(
+            "if: github.event_name == 'pull_request' || "
+            "github.event_name == 'merge_group'",
+            verification,
+        )
+        self.assertIn("GH_TOKEN: ${{ github.token }}", verification)
+        self.assertIn(
+            "$POLICY_ROOT/release-tools/client_runtime_receipt.py", verification
+        )
+        self.assertIn(
+            "bootstrap_base=6b850ca79b3a167a25357f873841e2bedcbad59a",
+            verification,
+        )
+        self.assertIn(".runtime_builder == null", verification)
+        self.assertIn(".runtime_receipt == null", verification)
+        self.assertIn(
+            "one-time null/pending client runtime receipt bootstrap validated",
+            verification,
+        )
+        self.assertIn("ls-tree -r -z HEAD", verification)
+        self.assertIn("verify-evidence", verification)
+        self.assertIn('--root "$GITHUB_WORKSPACE"', verification)
+        self.assertIn(
+            '--trusted-commit "${{ steps.policy.outputs.policy-sha }}"',
+            verification,
+        )
+        self.assertIn(
+            'arguments+=(--trusted-builder-commit "$builder_commit")',
+            verification,
+        )
+        self.assertIn("--require-attestation", verification)
+        push_verification = boundary.split(
+            "- name: verify captured client runtime evidence on main", 1
+        )[1].split(
+            "- name: validate ownership and dependency contract on main", 1
+        )[0]
+        self.assertIn("if: github.event_name == 'push'", push_verification)
+        self.assertIn(
+            "source_commit=$(git rev-parse --verify 'HEAD^1^{commit}')",
+            push_verification,
+        )
+        self.assertIn(
+            "python3 -I release-tools/client_runtime_receipt.py",
+            push_verification,
+        )
+        self.assertIn("--require-attestation", push_verification)
+        conformance = (
+            "- name: enforce the complete microkernel conformance matrix"
+        )
+        self.assertLess(
+            boundary.index(
+                "- name: verify captured client runtime evidence with trusted base policy"
+            ),
+            boundary.index(conformance),
+        )
+        self.assertLess(
+            boundary.index("- name: validate candidate with trusted base policy"),
+            boundary.index(conformance),
+        )
+
     def test_fetch_tool_extracts_only_one_regular_binary(self) -> None:
         archive_path = self.root / "tool.tar.gz"
         with tarfile.open(archive_path, "w:gz") as archive:

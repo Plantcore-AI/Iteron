@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
+mod runtime_receipt;
+
 const MATRIX_PATH: &str = "governance/client-conformance.json";
 const MAX_MATRIX_BYTES: u64 = 256 * 1024;
 const MAX_EVIDENCE_BYTES: u64 = 2 * 1024 * 1024;
@@ -21,18 +23,36 @@ const REQUIRED_CAPABILITIES: [&str; 8] = [
 ];
 const REQUIRED_CLIENTS: [&str; 3] = ["headless", "one-shot", "tui"];
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct Matrix {
     schema_version: u32,
     placement_reference: String,
+    runtime_builder: Option<BuilderRef>,
+    runtime_receipt: Option<ReceiptRef>,
     rows: Vec<CapabilityRow>,
     client_parity: ClientParity,
     version_independence: VersionIndependence,
     platform_smoke: Vec<PlatformSmoke>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct BuilderRef {
+    path: String,
+    commit: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct ReceiptRef {
+    path: String,
+    sha256: String,
+    attestation_path: String,
+    attestation_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct CapabilityRow {
     capability: String,
@@ -42,7 +62,7 @@ struct CapabilityRow {
     evidence: Vec<Evidence>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct Evidence {
     kind: String,
@@ -50,7 +70,7 @@ struct Evidence {
     selector: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct ClientParity {
     status: String,
@@ -59,18 +79,16 @@ struct ClientParity {
     test: Evidence,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct VersionIndependence {
     status: String,
     clients: Vec<String>,
     operating_systems: Vec<String>,
     evidence: Vec<Evidence>,
-    #[serde(default)]
-    native_runtime: Vec<Evidence>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct PlatformSmoke {
     platform: String,
@@ -79,8 +97,6 @@ struct PlatformSmoke {
     status: String,
     native: bool,
     workflow: Evidence,
-    #[serde(default)]
-    runtime_evidence: Option<Evidence>,
 }
 
 pub(crate) fn validate(
@@ -88,13 +104,9 @@ pub(crate) fn validate(
     result_authority: &crate::schema_compat::CurrentCliResultSnapshot,
 ) -> Result<()> {
     let source = read_bounded_regular(root, MATRIX_PATH, MAX_MATRIX_BYTES)?;
-    let matrix: Matrix = serde_json::from_value(crate::schema_compat::parse_json_no_duplicates(
-        &source,
-        "client conformance matrix",
-    )?)
-    .context("invalid client conformance matrix")?;
-    if matrix.schema_version != 1 {
-        bail!("client conformance matrix schema_version must be 1");
+    let matrix = parse_matrix(&source, "client conformance matrix")?;
+    if matrix.schema_version != 2 {
+        bail!("client conformance matrix schema_version must be 2");
     }
     if matrix.placement_reference != "docs/spec/capability-mapping.md#71-三个安置类别与一个前端平面"
     {
@@ -104,7 +116,18 @@ pub(crate) fn validate(
     validate_capability_rows(root, &matrix.rows)?;
     validate_client_parity(root, &matrix.client_parity, result_authority)?;
     validate_version_independence(root, &matrix.version_independence)?;
-    validate_platform_smoke(root, &matrix.platform_smoke)
+    validate_platform_smoke(root, &matrix.platform_smoke)?;
+    runtime_receipt::validate(root, &matrix)
+}
+
+fn parse_matrix(source: &[u8], label: &str) -> Result<Matrix> {
+    let value = crate::schema_compat::parse_json_no_duplicates(source, label)?;
+    if !value.as_object().is_some_and(|object| {
+        object.contains_key("runtime_builder") && object.contains_key("runtime_receipt")
+    }) {
+        bail!("{label} must explicitly declare nullable runtime_builder and runtime_receipt");
+    }
+    serde_json::from_value(value).with_context(|| format!("invalid {label}"))
 }
 
 fn validate_capability_rows(root: &Path, rows: &[CapabilityRow]) -> Result<()> {
@@ -137,16 +160,8 @@ fn validate_capability_rows(root: &Path, rows: &[CapabilityRow]) -> Result<()> {
                 row.capability
             );
         }
-        let mut executable = false;
         for evidence in &row.evidence {
-            validate_evidence(root, evidence, &["test", "runtime"])?;
-            executable |= matches!(evidence.kind.as_str(), "test" | "runtime");
-        }
-        if !executable {
-            bail!(
-                "client conformance capability `{}` is target-only; executable evidence is required",
-                row.capability
-            );
+            validate_evidence(root, evidence, &["test"])?;
         }
     }
     let required = REQUIRED_CAPABILITIES.into_iter().collect::<BTreeSet<_>>();
@@ -297,21 +312,6 @@ fn validate_version_independence(root: &Path, version: &VersionIndependence) -> 
     for evidence in &version.evidence {
         validate_evidence(root, evidence, &["test"])?;
     }
-    match version.status.as_str() {
-        "green" => {
-            if version.native_runtime.is_empty() {
-                bail!("green version independence requires captured native runtime evidence");
-            }
-            for evidence in &version.native_runtime {
-                validate_evidence(root, evidence, &["runtime"])?;
-            }
-        }
-        "pending" if !version.native_runtime.is_empty() => {
-            bail!("pending version independence must not carry green runtime evidence")
-        }
-        "pending" => {}
-        _ => unreachable!(),
-    }
     Ok(())
 }
 
@@ -360,19 +360,6 @@ fn validate_platform_smoke(root: &Path, rows: &[PlatformSmoke]) -> Result<()> {
                 "platform smoke `{}` must bind its native release workflow target",
                 row.platform
             );
-        }
-        match (&*row.status, &row.runtime_evidence) {
-            ("green", Some(evidence)) => validate_evidence(root, evidence, &["runtime"])?,
-            ("green", None) => bail!(
-                "green platform smoke `{}` requires captured native runtime evidence",
-                row.platform
-            ),
-            ("pending", None) => {}
-            ("pending", Some(_)) => bail!(
-                "pending platform smoke `{}` must not label a capture as green evidence",
-                row.platform
-            ),
-            _ => unreachable!(),
         }
     }
     let expected = required.keys().copied().collect::<BTreeSet<_>>();
@@ -494,5 +481,18 @@ mod tests {
             .expect_err("target-only rows must fail")
             .to_string();
         assert!(error.contains("target-only"), "{error}");
+    }
+
+    #[test]
+    fn generic_runtime_substring_evidence_is_not_a_capability_receipt() {
+        let evidence = Evidence {
+            kind: "runtime".into(),
+            path: "Cargo.toml".into(),
+            selector: "[workspace]".into(),
+        };
+        let error = validate_evidence(Path::new("."), &evidence, &["test"])
+            .expect_err("runtime substring evidence must fail")
+            .to_string();
+        assert!(error.contains("unsupported"), "{error}");
     }
 }

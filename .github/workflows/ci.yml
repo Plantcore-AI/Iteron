@@ -44,6 +44,9 @@ jobs:
     name: boundary / validate
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      attestations: read
+      contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -51,8 +54,31 @@ jobs:
           persist-credentials: false
       - name: install pinned Rust toolchain
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-      - name: enforce the complete microkernel conformance matrix
-        run: cargo run --locked -p core-xtask -- conformance kernel
+      - name: verify captured client runtime evidence on main
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source_commit=$(git rev-parse --verify 'HEAD^1^{commit}')
+          arguments=(
+            verify-evidence
+            --root "$GITHUB_WORKSPACE"
+            --trusted-commit "$source_commit"
+            --require-attestation
+          )
+          builder_commit=$(jq -er '
+            if .runtime_builder == null then
+              ""
+            else
+              .runtime_builder.commit
+            end
+          ' governance/client-conformance.json)
+          if [[ -n "$builder_commit" ]]; then
+            arguments+=(--trusted-builder-commit "$builder_commit")
+          fi
+          python3 -I release-tools/client_runtime_receipt.py "${arguments[@]}"
       - name: validate ownership and dependency contract on main
         if: github.event_name == 'push'
         run: cargo run --locked -p core-xtask -- boundaries check
@@ -97,6 +123,51 @@ jobs:
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         working-directory: ${{ runner.temp }}/core-policy-base
         run: cargo build --locked -p core-xtask
+      - name: verify captured client runtime evidence with trusted base policy
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POLICY_ROOT: ${{ runner.temp }}/core-policy-base
+        run: |
+          set -euo pipefail
+          verifier=$POLICY_ROOT/release-tools/client_runtime_receipt.py
+          if [[ ! -f "$verifier" ]]; then
+            bootstrap_base=6b850ca79b3a167a25357f873841e2bedcbad59a
+            test "${{ steps.policy.outputs.policy-sha }}" = "$bootstrap_base"
+            jq -e '
+              .schema_version == 2
+              and .runtime_builder == null
+              and .runtime_receipt == null
+              and .version_independence.status == "pending"
+              and (.platform_smoke | length == 5)
+              and ([.platform_smoke[].status] | all(. == "pending"))
+            ' "$GITHUB_WORKSPACE/governance/client-conformance.json" >/dev/null
+            evidence_paths=$RUNNER_TEMP/core-runtime-bootstrap-evidence-paths
+            git -C "$GITHUB_WORKSPACE" ls-tree -r -z HEAD -- \
+              governance/client-conformance/runtime > "$evidence_paths"
+            test ! -s "$evidence_paths"
+            printf 'one-time null/pending client runtime receipt bootstrap validated\n'
+            exit 0
+          fi
+          test ! -L "$verifier"
+          arguments=(
+            verify-evidence
+            --root "$GITHUB_WORKSPACE"
+            --trusted-commit "${{ steps.policy.outputs.policy-sha }}"
+            --require-attestation
+          )
+          builder_commit=$(jq -er '
+            if .runtime_builder == null then
+              ""
+            else
+              .runtime_builder.commit
+            end
+          ' "$POLICY_ROOT/governance/client-conformance.json")
+          if [[ -n "$builder_commit" ]]; then
+            arguments+=(--trusted-builder-commit "$builder_commit")
+          fi
+          python3 -I "$verifier" "${arguments[@]}"
       - name: validate candidate against published schema chronology
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
@@ -211,6 +282,8 @@ jobs:
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
           PR_BODY: ${{ github.event.pull_request.body }}
         run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries check-pr --base "$BASE_SHA"'
+      - name: enforce the complete microkernel conformance matrix
+        run: cargo run --locked -p core-xtask -- conformance kernel
 
   test:
     name: rust / ${{ matrix.os }}
