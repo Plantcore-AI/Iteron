@@ -381,12 +381,12 @@ def verify_evidence(arguments: argparse.Namespace) -> None:
     builder = None
     if contract["runtime_builder"] is not None:
         builder = validate_builder(contract["runtime_builder"], "runtime builder")
-        if builder["commit"] == trusted_commit:
-            raise ReleaseToolError("runtime builder commit must predate trusted commit")
     if contract["runtime_receipt"] is None:
         return
     if builder is None:
         raise ReleaseToolError("runtime receipt requires runtime_builder")
+    if builder["commit"] == trusted_commit:
+        raise ReleaseToolError("runtime builder commit must predate trusted commit")
     supplied_builder = getattr(arguments, "trusted_builder_commit", None)
     if supplied_builder is None:
         raise ReleaseToolError("runtime receipt requires --trusted-builder-commit")

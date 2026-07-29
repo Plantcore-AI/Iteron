@@ -119,6 +119,105 @@ jobs:
             echo "diff-base-sha=$diff_base_sha"
             echo "policy-sha=$policy_sha"
           } >> "$GITHUB_OUTPUT"
+      - name: materialize one-time trusted-policy compatibility projection
+        id: compatibility
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        env:
+          BOOTSTRAP_POLICY_SHA: 6b850ca79b3a167a25357f873841e2bedcbad59a
+          COMPATIBILITY_POLICY_SHA: 9319992f41a50cfd08dc19bce4852c0ee5a1028a
+          POLICY_SHA: ${{ steps.policy.outputs.policy-sha }}
+          PROJECTION_ROOT: ${{ runner.temp }}/core-policy-candidate-projection
+          COMPATIBILITY_POLICY_ROOT: ${{ runner.temp }}/core-policy-compatibility
+        run: |
+          set -euo pipefail
+          candidate_root=$GITHUB_WORKSPACE
+          compatibility_active=false
+
+          if [[ "$POLICY_SHA" == "$BOOTSTRAP_POLICY_SHA" ]]; then
+            candidate_sha=$(git rev-parse --verify 'HEAD^{commit}')
+            [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
+            test "$(git cat-file -t "$COMPATIBILITY_POLICY_SHA")" = commit
+            git merge-base --is-ancestor \
+              "$BOOTSTRAP_POLICY_SHA" "$COMPATIBILITY_POLICY_SHA"
+            git merge-base --is-ancestor \
+              "$COMPATIBILITY_POLICY_SHA" "$candidate_sha"
+
+            for pinned_path in \
+              governance/schema-compatibility.json \
+              crates/cli/tests/golden/input_attachment_stream_v5.jsonl \
+              crates/eval/src/contract.rs \
+              crates/cli/src/main.rs \
+              crates/cli/src/output.rs
+            do
+              read -r candidate_mode candidate_type candidate_oid candidate_path \
+                <<<"$(git ls-tree "$candidate_sha" -- "$pinned_path")"
+              read -r policy_mode policy_type policy_oid policy_path \
+                <<<"$(git ls-tree "$COMPATIBILITY_POLICY_SHA" -- "$pinned_path")"
+              test "$candidate_mode" = 100644
+              test "$candidate_type" = blob
+              [[ "$candidate_oid" =~ ^[0-9a-f]{40}$ ]]
+              test "$candidate_path" = "$pinned_path"
+              test "$policy_mode" = 100644
+              test "$policy_type" = blob
+              [[ "$policy_oid" =~ ^[0-9a-f]{40}$ ]]
+              test "$policy_oid" = "$candidate_oid"
+              test "$policy_path" = "$pinned_path"
+            done
+
+            test ! -e "$PROJECTION_ROOT"
+            test ! -e "$COMPATIBILITY_POLICY_ROOT"
+            git worktree add --detach "$PROJECTION_ROOT" "$candidate_sha"
+            git worktree add --detach \
+              "$COMPATIBILITY_POLICY_ROOT" "$COMPATIBILITY_POLICY_SHA"
+            test -z "$(git -C "$PROJECTION_ROOT" status --porcelain=v1 \
+              --untracked-files=all)"
+
+            manifest=$PROJECTION_ROOT/governance/schema-compatibility.json
+            projected_manifest=$PROJECTION_ROOT/governance/.schema-compatibility.projected.json
+            test ! -L "$manifest"
+            test ! -e "$projected_manifest"
+            test "$(jq '
+              [.surfaces[]
+                | select(.id == "cli.machine-stream.input-attachment")]
+              | length
+            ' "$manifest")" = 1
+            jq '
+              .surfaces |= map(
+                select(.id != "cli.machine-stream.input-attachment")
+              )
+            ' "$manifest" > "$projected_manifest"
+            mv "$projected_manifest" "$manifest"
+            test "$(jq '
+              [.surfaces[]
+                | select(.id == "cli.machine-stream.input-attachment")]
+              | length
+            ' "$manifest")" = 0
+
+            git -C "$PROJECTION_ROOT" rm --quiet -- \
+              crates/cli/tests/golden/input_attachment_stream_v5.jsonl
+            git -C "$PROJECTION_ROOT" checkout "$BOOTSTRAP_POLICY_SHA" -- \
+              crates/cli/src/main.rs crates/eval/src/contract.rs
+
+            projected_paths=$RUNNER_TEMP/core-policy-projected-paths
+            test ! -e "$projected_paths"
+            git -C "$PROJECTION_ROOT" diff --name-only HEAD -- > "$projected_paths"
+            diff -u <(printf '%s\n' \
+              crates/cli/src/main.rs \
+              crates/cli/tests/golden/input_attachment_stream_v5.jsonl \
+              crates/eval/src/contract.rs \
+              governance/schema-compatibility.json) "$projected_paths"
+            test -z "$(git -C "$PROJECTION_ROOT" status --porcelain=v1 \
+              --untracked-files=all | grep '^??' || true)"
+
+            candidate_root=$PROJECTION_ROOT
+            compatibility_active=true
+          fi
+
+          {
+            echo "active=$compatibility_active"
+            echo "candidate-root=$candidate_root"
+          } >> "$GITHUB_OUTPUT"
       - name: build trusted base validator
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         working-directory: ${{ runner.temp }}/core-policy-base
@@ -173,6 +272,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
           POLICY_ROOT: ${{ runner.temp }}/core-policy-base
         run: |
@@ -210,7 +310,7 @@ jobs:
           previous=$(python3 "$POLICY_ROOT/release-tools/schema_release.py" \
             --input "$releases" --latest)
           if [[ "$previous" == BOOTSTRAP ]]; then
-            "$POLICY_BIN" --repo "$GITHUB_WORKSPACE" \
+            "$POLICY_BIN" --repo "$CANDIDATE_ROOT" \
               schema-compat check-bootstrap
             exit 0
           fi
@@ -239,12 +339,13 @@ jobs:
               cargo build --locked -p core-xtask
           )
           "$release_policy_target/debug/core-xtask" \
-            --repo "$GITHUB_WORKSPACE" \
+            --repo "$CANDIDATE_ROOT" \
             schema-compat check-release --base "$previous_commit"
       - name: validate candidate against its immediate trusted base
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
           DIFF_BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
+          CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
           POLICY_ROOT: ${{ runner.temp }}/core-policy-base
         run: |
@@ -256,10 +357,10 @@ jobs:
             | .checks
             | index($check) != null
           ' "$POLICY_ROOT/governance/boundaries.json" >/dev/null; then
-            "$POLICY_BIN" --repo "$GITHUB_WORKSPACE" \
+            "$POLICY_BIN" --repo "$CANDIDATE_ROOT" \
               boundaries check-base --base "$DIFF_BASE_SHA"
           elif [[ -f "$POLICY_ROOT/governance/schema-compatibility.json" ]]; then
-            "$POLICY_BIN" --repo "$GITHUB_WORKSPACE" \
+            "$POLICY_BIN" --repo "$CANDIDATE_ROOT" \
               schema-compat check-base --base "$DIFF_BASE_SHA"
           else
             printf 'one-time schema compatibility bootstrap; no trusted contract exists yet\n'
@@ -267,21 +368,35 @@ jobs:
       - name: validate candidate with trusted base policy
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
+          CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
-        run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries check'
+        run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check'
       - name: summarize pull request boundary impact
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
+          CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
-        run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries affected --base "$BASE_SHA" >> "$GITHUB_STEP_SUMMARY"'
+        run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries affected --base "$BASE_SHA" >> "$GITHUB_STEP_SUMMARY"'
       - name: validate pull request responsibility contract
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
+          CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries check-pr --base "$BASE_SHA"'
+        run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check-pr --base "$BASE_SHA"'
+      - name: build one-time compatibility validator
+        if: steps.compatibility.outputs.active == 'true'
+        working-directory: ${{ runner.temp }}/core-policy-compatibility
+        run: cargo build --locked -p core-xtask
+      - name: validate real candidate with one-time compatibility policy
+        if: steps.compatibility.outputs.active == 'true'
+        env:
+          COMPATIBILITY_POLICY_BIN: ${{ runner.temp }}/core-policy-compatibility/target/debug/core-xtask
+        run: >-
+          "$COMPATIBILITY_POLICY_BIN" --repo "$GITHUB_WORKSPACE"
+          boundaries check
       - name: enforce the complete microkernel conformance matrix
         run: cargo run --locked -p core-xtask -- conformance kernel
 

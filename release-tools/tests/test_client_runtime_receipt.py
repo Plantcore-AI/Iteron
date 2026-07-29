@@ -643,6 +643,21 @@ class ClientRuntimeReceiptTest(unittest.TestCase):
 
         self.write_json(
             "governance/client-conformance.json",
+            {
+                "schema_version": 2,
+                "runtime_builder": {
+                    "path": runtime.BUILDER_WORKFLOW,
+                    "commit": self.tested_commit,
+                },
+                "runtime_receipt": None,
+            },
+        )
+        with mock.patch.object(runtime.subprocess, "run") as run:
+            runtime.verify_evidence(arguments)
+        run.assert_not_called()
+
+        self.write_json(
+            "governance/client-conformance.json",
             {"schema_version": 2, "runtime_builder": None},
         )
         with self.assertRaisesRegex(runtime.ReleaseToolError, "omits"):

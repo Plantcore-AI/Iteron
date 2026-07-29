@@ -447,6 +447,129 @@ class ReleaseToolsTest(unittest.TestCase):
             boundary.index(conformance),
         )
 
+    def test_trusted_base_bootstrap_uses_an_exact_compatibility_projection(
+        self,
+    ) -> None:
+        repository = TOOLS.parent
+        workflows = {
+            "ci": (repository / ".github/workflows/ci.yml").read_text(
+                encoding="utf-8"
+            ),
+            "review": (
+                repository / ".github/workflows/review-policy.yml"
+            ).read_text(encoding="utf-8"),
+        }
+        bootstrap = "6b850ca79b3a167a25357f873841e2bedcbad59a"
+        compatibility = "9319992f41a50cfd08dc19bce4852c0ee5a1028a"
+        pinned_paths = (
+            "governance/schema-compatibility.json",
+            "crates/cli/tests/golden/input_attachment_stream_v5.jsonl",
+            "crates/eval/src/contract.rs",
+            "crates/cli/src/main.rs",
+            "crates/cli/src/output.rs",
+        )
+
+        for label, workflow in workflows.items():
+            with self.subTest(workflow=label):
+                projection = workflow.split(
+                    "- name: materialize one-time trusted-policy "
+                    "compatibility projection",
+                    1,
+                )[1].split("- name: build trusted base validator", 1)[0]
+                self.assertIn(f"BOOTSTRAP_POLICY_SHA: {bootstrap}", projection)
+                self.assertIn(
+                    f"COMPATIBILITY_POLICY_SHA: {compatibility}", projection
+                )
+                self.assertIn(
+                    'test "$(git cat-file -t "$COMPATIBILITY_POLICY_SHA")" = commit',
+                    projection,
+                )
+                self.assertEqual(
+                    projection.count("git merge-base --is-ancestor"), 2
+                )
+                for path in pinned_paths:
+                    self.assertIn(path, projection)
+                self.assertIn('test "$candidate_mode" = 100644', projection)
+                self.assertIn('test "$candidate_type" = blob', projection)
+                self.assertIn('test "$policy_type" = blob', projection)
+                self.assertIn(
+                    'test "$policy_oid" = "$candidate_oid"', projection
+                )
+                self.assertIn(
+                    'select(.id != "cli.machine-stream.input-attachment")',
+                    projection,
+                )
+                self.assertIn(
+                    'git -C "$PROJECTION_ROOT" diff --name-only HEAD',
+                    projection,
+                )
+                self.assertIn("compatibility_active=true", projection)
+                self.assertIn("candidate-root=$candidate_root", projection)
+
+                build = workflow.split(
+                    "- name: build one-time compatibility validator", 1
+                )[1].split(
+                    "- name: validate real candidate with one-time "
+                    "compatibility policy",
+                    1,
+                )[0]
+                self.assertIn(
+                    "steps.compatibility.outputs.active == 'true'", build
+                )
+                real_validation = workflow.split(
+                    "- name: validate real candidate with one-time "
+                    "compatibility policy",
+                    1,
+                )[1]
+                self.assertIn('--repo "$GITHUB_WORKSPACE"', real_validation)
+                trusted_final = (
+                    "- name: validate pull request responsibility contract"
+                    if label == "ci"
+                    else "- name: enforce registered human review groups"
+                )
+                self.assertLess(
+                    workflow.index(trusted_final),
+                    workflow.index(
+                        "- name: build one-time compatibility validator"
+                    ),
+                )
+
+        ci = workflows["ci"]
+        receipt_verification = ci.split(
+            "- name: verify captured client runtime evidence with trusted base policy",
+            1,
+        )[1].split(
+            "- name: validate candidate against published schema chronology", 1
+        )[0]
+        self.assertIn('--root "$GITHUB_WORKSPACE"', receipt_verification)
+        for name in (
+            "validate candidate against published schema chronology",
+            "validate candidate against its immediate trusted base",
+            "validate candidate with trusted base policy",
+            "summarize pull request boundary impact",
+            "validate pull request responsibility contract",
+        ):
+            step = ci.split(f"- name: {name}", 1)[1].split("\n      - name:", 1)[
+                0
+            ]
+            self.assertIn(
+                "CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}",
+                step,
+            )
+
+        review = workflows["review"]
+        for name in (
+            "validate candidate ownership contract",
+            "enforce registered human review groups",
+        ):
+            step = review.split(f"- name: {name}", 1)[1].split(
+                "\n      - name:", 1
+            )[0]
+            self.assertIn(
+                "CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}",
+                step,
+            )
+
     def test_fetch_tool_extracts_only_one_regular_binary(self) -> None:
         archive_path = self.root / "tool.tar.gz"
         with tarfile.open(archive_path, "w:gz") as archive:
