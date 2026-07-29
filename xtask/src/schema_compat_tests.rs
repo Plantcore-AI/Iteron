@@ -139,6 +139,72 @@ const V3: &str = "governance/schema-compat/fixtures/test/v3.json";
 const MIXED_V1: &str = "governance/schema-compat/fixtures/test/mixed-v1.jsonl";
 const MIXED_V2: &str = "governance/schema-compat/fixtures/test/mixed-v2.jsonl";
 
+fn v5_input_attachment_surface() -> Surface {
+    serde_json::from_value(json!({
+        "id": CLI_INPUT_ATTACHMENT_SURFACE,
+        "current_version": 5,
+        "version_field": "schema_version",
+        "selector": {"field": "type", "value": "input_attachment"},
+        "fixtures": [{
+            "path": CLI_INPUT_ATTACHMENT_FIXTURE,
+            "format": "jsonl",
+            "schema_version": 5
+        }],
+        "fields": [
+            {"name": "encoded_bytes", "introduced_release": 1},
+            {"name": "media_type", "introduced_release": 1},
+            {"name": "ordinal", "introduced_release": 1},
+            {"name": "schema_version", "introduced_release": 1},
+            {"name": "type", "introduced_release": 1}
+        ],
+        "compatibility_shims": []
+    }))
+    .unwrap()
+}
+
+#[test]
+fn d13_14_only_input_attachment_has_the_same_version_cli_stream_exception() {
+    let admitted = v5_input_attachment_surface();
+    assert!(is_v5_input_attachment_addition(&admitted, Some(5)));
+
+    let mut mutations = Vec::new();
+    let mut wrong_id = admitted.clone();
+    wrong_id.id = "cli.machine-stream.other".into();
+    mutations.push(wrong_id);
+    let mut wrong_version = admitted.clone();
+    wrong_version.current_version = 6;
+    mutations.push(wrong_version);
+    let mut wrong_selector = admitted.clone();
+    wrong_selector.selector.as_mut().unwrap().value = "other".into();
+    mutations.push(wrong_selector);
+    let mut wrong_fixture = admitted.clone();
+    wrong_fixture.fixtures[0].path = "crates/cli/tests/golden/other_stream_v5.jsonl".into();
+    mutations.push(wrong_fixture);
+    let mut extra_field = admitted.clone();
+    extra_field.fields.push(
+        serde_json::from_value(json!({
+            "name": "path",
+            "introduced_release": 1
+        }))
+        .unwrap(),
+    );
+    mutations.push(extra_field);
+    let mut optional_field = admitted.clone();
+    optional_field.fields[0].optional = true;
+    mutations.push(optional_field);
+    let mut rewritten_history = admitted.clone();
+    rewritten_history.fields[0].introduced_release = 2;
+    mutations.push(rewritten_history);
+
+    for mutation in mutations {
+        assert!(
+            !is_v5_input_attachment_addition(&mutation, Some(5)),
+            "the allowlist must fail closed for {mutation:?}"
+        );
+    }
+    assert!(!is_v5_input_attachment_addition(&admitted, Some(4)));
+}
+
 #[test]
 fn d13_14_candidate_contract_rejects_duplicate_keys_at_nested_schema_levels() {
     let repo = GitRepo::new();

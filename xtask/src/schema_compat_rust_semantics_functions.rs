@@ -65,7 +65,13 @@ const FREE_FUNCTIONS: &[FreeFunctions] = &[
     },
     FreeFunctions {
         path: "crates/cli/src/main.rs",
-        names: &["main", "run_cli"],
+        // `main` is the immutable dispatch root. `run_cli` is intentionally validated by the
+        // dedicated AST authorities in `schema_compat_rust_cli_main` and
+        // `schema_compat_rust_cli_writer`: freezing its entire orchestration body made a
+        // result-byte-preserving client/transport refactor indistinguishable from a schema
+        // mutation. Those authorities retain the exact Emitter construction, two event drains,
+        // direct final_result binding/sink, and stdout-exclusivity checks.
+        names: &["main"],
     },
 ];
 

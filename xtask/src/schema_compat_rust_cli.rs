@@ -33,6 +33,7 @@ fn cli_manifest_fixture_versions(
     current_version: u32,
     current_golden_path: &str,
 ) -> Result<BTreeSet<u32>> {
+    const INPUT_ATTACHMENT_SURFACE: &str = "cli.machine-stream.input-attachment";
     let mut versions = BTreeSet::new();
     let mut stream_surfaces = 0usize;
     let mut current_all_goldens = BTreeSet::new();
@@ -56,7 +57,7 @@ fn cli_manifest_fixture_versions(
         }
         if id.starts_with("cli.machine-stream.") {
             stream_surfaces = stream_surfaces.saturating_add(1);
-            if !declares_current_golden {
+            if !declares_current_golden && id != INPUT_ATTACHMENT_SURFACE {
                 bail!("current CLI stream surface '{id}' does not declare '{current_golden_path}'");
             }
         }
