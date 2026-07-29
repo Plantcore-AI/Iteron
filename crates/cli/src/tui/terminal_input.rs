@@ -8,9 +8,10 @@
 use crate::theme::capabilities::{BackgroundTone, Environment, tone_from_osc11_body};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::VecDeque;
-#[cfg(windows)]
-use std::io::IsTerminal;
 use std::time::{Duration, Instant};
+
+#[cfg(windows)]
+mod windows_query;
 
 const OSC11_QUERY: &[u8] = b"\x1b]11;?\x1b\\";
 const OSC11_TIMEOUT: Duration = Duration::from_millis(80);
@@ -42,7 +43,8 @@ impl TerminalInput {
             if !terminal_pair_is_supported() {
                 return false;
             }
-            let Some(deadline) = self.begin_keyboard_query(write_keyboard_query) else {
+            let Some(deadline) = self.begin_keyboard_query(windows_query::write_keyboard_query)
+            else {
                 return false;
             };
 
@@ -513,7 +515,7 @@ fn terminal_pair_is_supported() -> bool {
 
 #[cfg(windows)]
 fn terminal_pair_is_supported() -> bool {
-    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+    windows_query::terminal_pair_is_supported()
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -522,91 +524,29 @@ fn terminal_pair_is_supported() -> bool {
 }
 
 #[cfg(any(windows, test))]
-fn await_keyboard_query_write_until(
-    receiver: std::sync::mpsc::Receiver<std::io::Result<usize>>,
-    deadline: Instant,
-    on_timeout: impl FnOnce(),
-) -> std::io::Result<()> {
-    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-        on_timeout();
-        return Err(keyboard_query_timeout());
-    };
-    match receiver.recv_timeout(remaining) {
-        Ok(Ok(written)) if written == KEYBOARD_ENHANCEMENT_QUERY.len() => Ok(()),
-        Ok(Ok(written)) => Err(std::io::Error::new(
+fn wait_millis_until(now: Instant, deadline: Instant) -> u32 {
+    let remaining = deadline.saturating_duration_since(now);
+    if remaining.is_zero() {
+        return 0;
+    }
+    remaining
+        .as_nanos()
+        .div_ceil(1_000_000)
+        .min(u128::from(u32::MAX)) as u32
+}
+
+#[cfg(any(windows, test))]
+fn exact_keyboard_query_write(written: usize) -> std::io::Result<()> {
+    if written == KEYBOARD_ENHANCEMENT_QUERY.len() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
             std::io::ErrorKind::WriteZero,
             format!(
                 "keyboard capability query wrote {written} of {} bytes",
                 KEYBOARD_ENHANCEMENT_QUERY.len()
             ),
-        )),
-        Ok(Err(error)) => Err(error),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            on_timeout();
-            Err(keyboard_query_timeout())
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(std::io::Error::new(
-            std::io::ErrorKind::BrokenPipe,
-            "keyboard capability query writer stopped without a result",
-        )),
-    }
-}
-
-#[cfg(any(windows, test))]
-fn keyboard_query_timeout() -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::TimedOut,
-        "keyboard capability query write timed out",
-    )
-}
-
-#[cfg(windows)]
-fn write_keyboard_query(deadline: Instant) -> std::io::Result<()> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::System::IO::CancelSynchronousIo;
-
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    let writer = std::thread::Builder::new()
-        .name("core-keyboard-query".into())
-        .spawn(move || {
-            let _ = sender.send(write_keyboard_query_once());
-        })?;
-    await_keyboard_query_write_until(receiver, deadline, || {
-        // SAFETY: the JoinHandle owns a live Windows thread handle for the writer. Cancellation is
-        // best-effort and targets only synchronous I/O issued by that thread.
-        let thread = writer.as_raw_handle() as HANDLE;
-        let _ = unsafe { CancelSynchronousIo(thread) };
-    })
-}
-
-#[cfg(windows)]
-fn write_keyboard_query_once() -> std::io::Result<usize> {
-    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-    use windows_sys::Win32::Storage::FileSystem::WriteFile;
-    use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
-
-    // SAFETY: GetStdHandle returns the process-owned stdout handle without transferring ownership.
-    let stdout = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
-    if stdout.is_null() || stdout == INVALID_HANDLE_VALUE {
-        return Err(std::io::Error::last_os_error());
-    }
-    let mut written = 0_u32;
-    // SAFETY: the query is a live static byte slice, `written` is valid for this call, and no
-    // OVERLAPPED pointer is supplied for this synchronous one-shot write.
-    let succeeded = unsafe {
-        WriteFile(
-            stdout,
-            KEYBOARD_ENHANCEMENT_QUERY.as_ptr(),
-            KEYBOARD_ENHANCEMENT_QUERY.len() as u32,
-            &mut written,
-            std::ptr::null_mut(),
-        )
-    };
-    if succeeded == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(written as usize)
+        ))
     }
 }
 
@@ -850,61 +790,33 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_query_write_wait_is_exact_bounded_and_preserves_failures() {
-        let (success_sender, success_receiver) = std::sync::mpsc::sync_channel(1);
-        success_sender
-            .send(Ok(KEYBOARD_ENHANCEMENT_QUERY.len()))
-            .unwrap();
-        let mut cancelled = false;
-        assert!(
-            await_keyboard_query_write_until(
-                success_receiver,
-                Instant::now() + Duration::from_secs(1),
-                || cancelled = true,
-            )
-            .is_ok()
+    fn keyboard_query_wait_rounds_up_and_stays_finite() {
+        let now = Instant::now();
+        assert_eq!(wait_millis_until(now, now), 0);
+        assert_eq!(wait_millis_until(now, now + Duration::from_nanos(1)), 1);
+        assert_eq!(wait_millis_until(now, now + Duration::from_millis(1)), 1);
+        assert_eq!(
+            wait_millis_until(
+                now,
+                now + Duration::from_millis(1) + Duration::from_nanos(1)
+            ),
+            2
         );
-        assert!(!cancelled);
+        assert_eq!(
+            wait_millis_until(now, now + Duration::from_millis(u64::from(u32::MAX) + 1)),
+            u32::MAX
+        );
+    }
 
-        let (partial_sender, partial_receiver) = std::sync::mpsc::sync_channel(1);
-        partial_sender
-            .send(Ok(KEYBOARD_ENHANCEMENT_QUERY.len() - 1))
-            .unwrap();
-        let partial = await_keyboard_query_write_until(
-            partial_receiver,
-            Instant::now() + Duration::from_secs(1),
-            || panic!("a ready partial write must not time out"),
-        )
-        .unwrap_err();
-        assert_eq!(partial.kind(), std::io::ErrorKind::WriteZero);
-
-        let (error_sender, error_receiver) = std::sync::mpsc::sync_channel(1);
-        error_sender
-            .send(Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "injected writer refusal",
-            )))
-            .unwrap();
-        let failure = await_keyboard_query_write_until(
-            error_receiver,
-            Instant::now() + Duration::from_secs(1),
-            || panic!("a ready writer error must not time out"),
-        )
-        .unwrap_err();
-        assert_eq!(failure.kind(), std::io::ErrorKind::PermissionDenied);
-
-        let (_pending_sender, pending_receiver) = std::sync::mpsc::sync_channel(1);
-        let mut timeout_cancelled = false;
-        let timeout = await_keyboard_query_write_until(
-            pending_receiver,
-            Instant::now()
-                .checked_sub(Duration::from_millis(1))
-                .unwrap(),
-            || timeout_cancelled = true,
-        )
-        .unwrap_err();
-        assert_eq!(timeout.kind(), std::io::ErrorKind::TimedOut);
-        assert!(timeout_cancelled);
+    #[test]
+    fn keyboard_query_write_requires_the_exact_frame() {
+        assert!(exact_keyboard_query_write(KEYBOARD_ENHANCEMENT_QUERY.len()).is_ok());
+        assert_eq!(
+            exact_keyboard_query_write(KEYBOARD_ENHANCEMENT_QUERY.len() - 1)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::WriteZero
+        );
     }
 
     #[test]
