@@ -400,21 +400,129 @@ pub(super) fn import_fingerprints(file: &syn::File) -> BTreeSet<String> {
         .collect()
 }
 
+fn module_fingerprint(module: &syn::ItemMod) -> String {
+    let mut module = module.clone();
+    module.attrs.retain(|attribute| !is_doc(attribute));
+    if let Some((brace, _)) = module.content.take() {
+        module.content = Some((brace, Vec::new()));
+    }
+    module.into_token_stream().to_string()
+}
+
 pub(super) fn module_fingerprints(file: &syn::File) -> Vec<String> {
     file.items
         .iter()
-        .filter_map(|item| {
-            let syn::Item::Mod(module) = item else {
-                return None;
-            };
-            let mut module = module.clone();
-            module.attrs.retain(|attribute| !is_doc(attribute));
-            if let Some((brace, _)) = module.content.take() {
-                module.content = Some((brace, Vec::new()));
-            }
-            Some(module.into_token_stream().to_string())
+        .filter_map(|item| match item {
+            syn::Item::Mod(module) => Some(module_fingerprint(module)),
+            _ => None,
         })
         .collect()
+}
+
+/// A file-scope binding: the fingerprint that must not drift, and the names it puts in scope.
+///
+/// `names` is `None` for a glob import. `use a::*;` can introduce any name, so a glob can never be
+/// shown irrelevant to a frozen item and always stays under comparison.
+pub(super) struct ScopeBinding {
+    pub(super) fingerprint: String,
+    pub(super) names: Option<BTreeSet<String>>,
+}
+
+impl ScopeBinding {
+    /// Whether this binding can supply any of the identifiers a frozen item mentions.
+    pub(super) fn reaches(&self, referenced: &BTreeSet<String>) -> bool {
+        self.names
+            .as_ref()
+            .is_none_or(|names| names.iter().any(|name| referenced.contains(name)))
+    }
+}
+
+fn use_tree_names(
+    tree: &syn::UseTree,
+    parent: Option<&syn::Ident>,
+    names: &mut Option<BTreeSet<String>>,
+) {
+    match tree {
+        syn::UseTree::Path(path) => use_tree_names(&path.tree, Some(&path.ident), names),
+        syn::UseTree::Name(name) => {
+            // `use a::b::{self}` binds `b`, not the literal `self`.
+            let bound = if name.ident == "self" {
+                parent.map(ToString::to_string)
+            } else {
+                Some(name.ident.to_string())
+            };
+            if let (Some(names), Some(bound)) = (names.as_mut(), bound) {
+                names.insert(bound);
+            }
+        }
+        syn::UseTree::Rename(rename) => {
+            if let Some(names) = names.as_mut() {
+                names.insert(rename.rename.to_string());
+            }
+        }
+        syn::UseTree::Glob(_) => *names = None,
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                use_tree_names(item, parent, names);
+            }
+        }
+    }
+}
+
+pub(super) fn import_bindings(file: &syn::File) -> Vec<ScopeBinding> {
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Use(item) => {
+                let mut names = Some(BTreeSet::new());
+                use_tree_names(&item.tree, None, &mut names);
+                Some(ScopeBinding {
+                    fingerprint: semantic_use(item),
+                    names,
+                })
+            }
+            syn::Item::ExternCrate(item) => Some(ScopeBinding {
+                fingerprint: semantic_extern_crate(item),
+                names: Some(BTreeSet::from([item.rename.as_ref().map_or_else(
+                    || item.ident.to_string(),
+                    |(_, alias)| alias.to_string(),
+                )])),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+pub(super) fn module_bindings(file: &syn::File) -> Vec<ScopeBinding> {
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Mod(module) => Some(ScopeBinding {
+                fingerprint: module_fingerprint(module),
+                names: Some(BTreeSet::from([module.ident.to_string()])),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every identifier-shaped run of characters in a fingerprint.
+///
+/// A fingerprint is `proc_macro2`'s token rendering, so this over-collects: keywords, path
+/// segments, literals, and type names all land in the set. Over-collection is the safe direction —
+/// it can only hold more bindings under comparison, never fewer.
+pub(super) fn identifier_occurrences(fingerprint: &str, names: &mut BTreeSet<String>) {
+    let mut current = String::new();
+    for character in fingerprint.chars() {
+        if character == '_' || character.is_alphanumeric() {
+            current.push(character);
+        } else if !current.is_empty() {
+            names.insert(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        names.insert(current);
+    }
 }
 
 pub(super) fn file_attribute_fingerprints(file: &syn::File) -> Vec<String> {
