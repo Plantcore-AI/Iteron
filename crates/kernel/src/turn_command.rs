@@ -8,6 +8,7 @@
 use crate::turn_protocol::{
     BudgetCeiling, ControlSignal, ProviderFailure, ProviderTermination, VerifyOutcome,
 };
+use core_protocol::context::ContextGrant;
 use serde::{Deserialize, Serialize};
 
 /// One thing that happened, addressed to the reducer.
@@ -16,9 +17,14 @@ use serde::{Deserialize, Serialize};
 pub enum Command {
     /// A submission was admitted and the run may begin.
     Admitted,
-    /// The context port answered. The reducer never learns what was selected — only that the
-    /// durable context is resolved and a request may now be built.
-    ContextResolved,
+    /// The context port answered, carrying the grant it produced.
+    ///
+    /// The reducer does not read the grant: no control-flow branch turns on what was selected, and
+    /// a test pins that. It rides in the command stream anyway, because the stream is supposed to
+    /// be a *complete* description of a run — a replay that had to re-read the workspace to find
+    /// out what context was injected would be reconstructing the run from the world rather than
+    /// from the record, which is the thing determinism is meant to rule out.
+    ContextResolved { grant: Box<ContextGrant> },
     /// Budget readings, sampled by the driver immediately before a turn boundary decision.
     ///
     /// `ceiling` is `Some` when a ceiling is already spent. Passing the *decision* rather than the
@@ -53,7 +59,7 @@ impl Command {
     pub const fn label(&self) -> &'static str {
         match self {
             Command::Admitted => "admitted",
-            Command::ContextResolved => "context_resolved",
+            Command::ContextResolved { .. } => "context_resolved",
             Command::BudgetSampled { .. } => "budget_sampled",
             Command::ControlObserved { .. } => "control_observed",
             Command::RecordFailed => "record_failed",
@@ -77,7 +83,13 @@ mod tests {
         // cannot be part of a recorded stream.
         let commands = [
             Command::Admitted,
-            Command::ContextResolved,
+            Command::ContextResolved {
+                grant: Box::new(core_protocol::context::ContextGrant {
+                    request_id: core_protocol::context::RequestId(1),
+                    segments: Vec::new(),
+                    bytes: 0,
+                }),
+            },
             Command::BudgetSampled {
                 ceiling: Some(BudgetCeiling::MaxUsd),
             },

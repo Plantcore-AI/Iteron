@@ -190,8 +190,12 @@ pub enum ProviderReply {
 /// in-memory fake in the tests, so the loop is exercised end to end with no concrete world module.
 #[async_trait::async_trait]
 pub trait TurnPorts: Send {
-    /// Resolve the durable context. The W3 seam.
-    async fn select_context(&mut self) -> Result<(), PortFault>;
+    /// Resolve the durable context, returning the grant.
+    ///
+    /// The W3 seam #17 consumes. Returning the grant rather than discarding it is what lets the
+    /// recorded command stream replay context without re-reading the workspace; a port that
+    /// answered only "done" would have made the replay invariant vacuous on this path.
+    async fn select_context(&mut self) -> Result<core_protocol::context::ContextGrant, PortFault>;
     /// Sample the budget ceilings. A reading, taken here so the reducer never takes one.
     async fn sample_budget(&mut self) -> Option<BudgetCeiling>;
     /// Observe operator control at a safe point.
@@ -280,7 +284,9 @@ impl<P: TurnPorts> TurnDriver<P> {
     async fn route(&mut self, action: ActionRequest) -> Result<Option<Outcome>, DriverError> {
         match action {
             ActionRequest::SelectContext => match self.ports.select_context().await {
-                Ok(()) => self.push_reply(Command::ContextResolved)?,
+                Ok(grant) => self.push_reply(Command::ContextResolved {
+                    grant: Box::new(grant),
+                })?,
                 Err(fault) => self.fault(fault)?,
             },
             ActionRequest::SampleBudget => {

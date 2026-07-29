@@ -90,7 +90,9 @@ pub fn reduce(state: &TurnState, command: Command) -> (TurnState, Actions) {
             next.phase = TurnPhase::AwaitingContext;
             (next, vec![ActionRequest::SelectContext])
         }
-        Command::ContextResolved if state.phase == TurnPhase::AwaitingContext => {
+        // The grant is deliberately not read. Context content never steers control flow; it is
+        // carried so the stream can replay without the world, not so the reducer can consult it.
+        Command::ContextResolved { .. } if state.phase == TurnPhase::AwaitingContext => {
             let mut next = state.clone();
             next.phase = TurnPhase::Boundary;
             (next, boundary_probe())
