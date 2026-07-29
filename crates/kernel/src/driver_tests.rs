@@ -16,7 +16,22 @@ use crate::turn_protocol::{
 };
 use crate::turn_state::{TurnLimits, TurnState};
 use core_protocol::Outcome;
+use core_protocol::context::{ContextGrant, ContextSegment, ContextSource, RequestId};
+use core_protocol::trust::Trust;
 use std::time::Duration;
+
+/// The grant the stub context port answers with.
+fn stub_grant() -> ContextGrant {
+    ContextGrant {
+        request_id: RequestId(1),
+        segments: vec![ContextSegment {
+            text: "stub instructions".into(),
+            trust: Trust::Workspace,
+            source: ContextSource::Instructions,
+        }],
+        bytes: "stub instructions".len() as u32,
+    }
+}
 
 /// The SQ and EQ bounds would be worth little if the driver's private reply queue could grow
 /// without limit. Checked at compile time, because a bound is a constant claim: a `bound` large
@@ -57,11 +72,11 @@ impl StubPorts {
 
 #[async_trait::async_trait]
 impl TurnPorts for StubPorts {
-    async fn select_context(&mut self) -> Result<(), PortFault> {
+    async fn select_context(&mut self) -> Result<ContextGrant, PortFault> {
         self.contexts += 1;
         match &self.context_error {
             Some(fault) => Err(fault.clone()),
-            None => Ok(()),
+            None => Ok(stub_grant()),
         }
     }
     async fn sample_budget(&mut self) -> Option<BudgetCeiling> {
@@ -137,8 +152,10 @@ fn drain(rx: &mut tokio::sync::mpsc::Receiver<DriverEvent>) -> Vec<DriverEvent> 
 async fn a_full_submission_queue_rejects_explicitly_and_hands_the_command_back() {
     let (sq, _sq_rx, _eq, _eq_rx) = bounded_queues(2, 8);
     sq.try_submit(Command::Admitted).expect("first slot");
-    sq.try_submit(Command::ContextResolved)
-        .expect("second slot");
+    sq.try_submit(Command::ContextResolved {
+        grant: Box::new(stub_grant()),
+    })
+    .expect("second slot");
     assert_eq!(sq.capacity_remaining(), 0);
 
     let refused = sq
@@ -161,7 +178,9 @@ async fn a_full_submission_queue_blocks_a_producer_rather_than_growing() {
     // The queue is full: an awaiting producer must not complete.
     let blocked = tokio::time::timeout(
         Duration::from_millis(80),
-        sq.submit(Command::ContextResolved),
+        sq.submit(Command::ContextResolved {
+            grant: Box::new(stub_grant()),
+        }),
     )
     .await;
     assert!(
@@ -171,13 +190,24 @@ async fn a_full_submission_queue_blocks_a_producer_rather_than_growing() {
 
     // Draining one slot lets the producer through, and nothing was lost on the way.
     let pending = sq.clone();
-    let producer = tokio::spawn(async move { pending.submit(Command::ContextResolved).await });
+    let producer = tokio::spawn(async move {
+        pending
+            .submit(Command::ContextResolved {
+                grant: Box::new(stub_grant()),
+            })
+            .await
+    });
     assert_eq!(sq_rx.recv().await, Some(Command::Admitted));
     producer
         .await
         .expect("producer task")
         .expect("a drained slot admits the waiting producer");
-    assert_eq!(sq_rx.recv().await, Some(Command::ContextResolved));
+    assert_eq!(
+        sq_rx.recv().await,
+        Some(Command::ContextResolved {
+            grant: Box::new(stub_grant())
+        })
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

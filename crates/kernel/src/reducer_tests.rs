@@ -21,6 +21,8 @@ use crate::turn_protocol::{
 };
 use crate::turn_state::{TurnLimits, TurnState};
 use core_protocol::Outcome;
+use core_protocol::context::{ContextGrant, ContextSegment, ContextSource, RequestId};
+use core_protocol::trust::Trust;
 use std::collections::BTreeSet;
 
 /// Fold a whole command stream, collecting every action in order.
@@ -32,6 +34,23 @@ fn drive(mut state: TurnState, commands: &[Command]) -> (TurnState, Vec<ActionRe
         actions.extend(produced);
     }
     (state, actions)
+}
+
+/// A grant whose content the caller controls, so a test can prove content never steers control.
+fn grant(text: &str) -> Box<ContextGrant> {
+    Box::new(ContextGrant {
+        request_id: RequestId(1),
+        segments: vec![ContextSegment {
+            text: text.to_string(),
+            trust: Trust::Workspace,
+            source: ContextSource::Instructions,
+        }],
+        bytes: text.len() as u32,
+    })
+}
+
+fn resolved(text: &str) -> Command {
+    Command::ContextResolved { grant: grant(text) }
 }
 
 fn wire(actions: &[ActionRequest]) -> String {
@@ -168,7 +187,7 @@ fn the_purity_gate_would_actually_catch_a_violation() {
 fn recorded_stream() -> Vec<Command> {
     vec![
         Command::Admitted,
-        Command::ContextResolved,
+        resolved("instructions"),
         Command::ControlObserved {
             signal: ControlSignal::None,
         },
@@ -242,6 +261,54 @@ fn replaying_a_command_stream_produces_a_byte_identical_action_sequence() {
 }
 
 #[test]
+fn the_grant_rides_the_command_stream_so_replay_never_re_reads_the_world() {
+    // #17's acceptance asks that replay rebuild context from the recorded `ContextGrant` rather
+    // than from disk. That is only possible if the grant is IN the stream, so this pins it: the
+    // serialised stream must carry the granted bytes themselves.
+    let stream = vec![Command::Admitted, resolved("the injected instructions")];
+    let recorded = serde_json::to_string(&stream).expect("the stream serialises");
+    assert!(
+        recorded.contains("the injected instructions"),
+        "a recorded stream that omits the grant cannot replay context without the world: {recorded}"
+    );
+    let restored: Vec<Command> = serde_json::from_str(&recorded).expect("the stream decodes back");
+    assert_eq!(
+        restored, stream,
+        "the grant must survive the round trip intact"
+    );
+}
+
+#[test]
+fn what_context_granted_never_steers_control_flow() {
+    // The other half of carrying the grant: the reducer must not consult it. Two runs whose only
+    // difference is the granted content must produce byte-identical actions and state -- otherwise
+    // the workspace's contents could change which branch the kernel takes, and the transition table
+    // would stop being the whole story.
+    let limits = TurnLimits {
+        max_turns: 16,
+        ..TurnLimits::default()
+    };
+    let with = |text: &str| {
+        let mut stream = recorded_stream();
+        stream[1] = resolved(text);
+        drive(TurnState::new(limits, true), &stream)
+    };
+    let (lean_state, lean_actions) = with("a");
+    let (fat_state, fat_actions) = with("an entirely different, much longer context grant");
+    assert_eq!(
+        wire(&lean_actions),
+        wire(&fat_actions),
+        "grant content changed the action sequence, so context is steering control flow"
+    );
+    assert_eq!(
+        serde_json::to_string(&lean_state).unwrap(),
+        serde_json::to_string(&fat_state).unwrap(),
+        "grant content leaked into the turn state"
+    );
+    assert_eq!(lean_state.outcome, Some(Outcome::Done));
+}
+
+#[test]
 fn replay_is_stable_across_an_independent_fold_order_of_the_same_stream() {
     // Replaying one command at a time from a cloned state must equal replaying the whole stream:
     // the fold has no hidden accumulator outside `TurnState`.
@@ -273,7 +340,7 @@ fn awaiting_provider(limits: TurnLimits, verify_gate: bool) -> TurnState {
         TurnState::new(limits, verify_gate),
         &[
             Command::Admitted,
-            Command::ContextResolved,
+            resolved("instructions"),
             Command::ControlObserved {
                 signal: ControlSignal::None,
             },
@@ -301,7 +368,7 @@ fn transition_table() -> Vec<TransitionCase> {
     let boundary = |verify_gate: bool| {
         let (state, _) = drive(
             TurnState::new(limits, verify_gate),
-            &[Command::Admitted, Command::ContextResolved],
+            &[Command::Admitted, resolved("instructions")],
         );
         state
     };
@@ -594,7 +661,7 @@ fn nothing_is_asked_of_the_world_after_the_run_is_finished() {
         let (state, _) = drive(case.state.clone(), &case.commands);
         // Every command, including ones that would normally dispatch, must be inert now.
         for command in [
-            Command::ContextResolved,
+            resolved("instructions"),
             Command::BudgetSampled { ceiling: None },
             Command::ProviderCompleted {
                 termination: ProviderTermination::EndTurn,
@@ -655,7 +722,7 @@ fn a_run_whose_record_cannot_be_written_makes_zero_provider_calls() {
         vec![
             Command::Admitted,
             Command::RecordFailed,
-            Command::ContextResolved,
+            resolved("instructions"),
             Command::ControlObserved {
                 signal: ControlSignal::None,
             },
@@ -664,7 +731,7 @@ fn a_run_whose_record_cannot_be_written_makes_zero_provider_calls() {
         // The record is already known-bad when the boundary is evaluated.
         vec![
             Command::Admitted,
-            Command::ContextResolved,
+            resolved("instructions"),
             Command::RecordFailed,
             Command::ControlObserved {
                 signal: ControlSignal::None,
