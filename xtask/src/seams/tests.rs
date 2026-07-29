@@ -1,11 +1,17 @@
 use super::source::{
-    find_trait_impl, include_targets, is_test_path, macro_bodies_mention, mentioned_identifiers,
-    normalise, resolve_alias_closure,
+    TRUSTED_CANONICAL_SEAM_SOURCE, find_trait_impl, include_targets, is_test_path,
+    macro_bodies_mention, mentioned_identifiers, normalise, resolve_alias_closure,
 };
 use super::{SATISFIABILITY_TEST, SEAMS, validate_sources};
 use std::collections::BTreeSet;
 
 const TEST_SEAMS: &[&str] = &["TrajectoryProjection", "HeldOutEvidenceBridge"];
+const CANONICAL_EVOLVE_ROOT: &str = "\
+mod held_out;
+mod seams;
+mod trajectory_projection;
+pub use seams::{HeldOutEvidenceBridge, TrajectoryProjection};
+";
 
 fn implements(source: &str) -> bool {
     let names = resolve_alias_closure(&[("x.rs".into(), source.to_owned(), BTreeSet::new())]);
@@ -23,7 +29,7 @@ fn source(path: &str, source: impl Into<String>) -> (String, String, BTreeSet<St
 
 fn held_out_sources(implementation: &str) -> Vec<(String, String, BTreeSet<String>)> {
     vec![
-        source("crates/evolve/src/lib.rs", "mod held_out;"),
+        source("crates/evolve/src/lib.rs", CANONICAL_EVOLVE_ROOT),
         source(
             "crates/evolve/src/held_out.rs",
             format!("use crate::{{HeldOutEvidenceBridge, Other}};\n{implementation}"),
@@ -35,6 +41,21 @@ fn validate_transition(
     remaining: &[&str],
     mut sources: Vec<(String, String, BTreeSet<String>)>,
 ) -> anyhow::Result<()> {
+    if !sources
+        .iter()
+        .any(|(path, _, _)| path == "crates/evolve/src/lib.rs")
+    {
+        sources.push(source("crates/evolve/src/lib.rs", CANONICAL_EVOLVE_ROOT));
+    }
+    if !sources
+        .iter()
+        .any(|(path, _, _)| path == "crates/evolve/src/seams.rs")
+    {
+        sources.push(source(
+            "crates/evolve/src/seams.rs",
+            TRUSTED_CANONICAL_SEAM_SOURCE,
+        ));
+    }
     if !sources
         .iter()
         .any(|(path, _, _)| path == SATISFIABILITY_TEST)
@@ -74,11 +95,19 @@ fn removing_a_seam_requires_an_explicit_non_test_impl() {
             "crates/evolve/src/bridge.rs",
             "// impl HeldOutEvidenceBridge for CommentOnly",
         )],
-        vec![source(
-            "crates/evolve/src/held_out.rs",
-            "use crate::HeldOutEvidenceBridge;\n\
-             impl HeldOutEvidenceBridge for Unreferenced {}",
-        )],
+        vec![
+            source(
+                "crates/evolve/src/lib.rs",
+                "mod seams;\n\
+                 mod trajectory_projection;\n\
+                 pub use seams::{HeldOutEvidenceBridge, TrajectoryProjection};",
+            ),
+            source(
+                "crates/evolve/src/held_out.rs",
+                "use crate::HeldOutEvidenceBridge;\n\
+                 impl HeldOutEvidenceBridge for Unreferenced {}",
+            ),
+        ],
         held_out_sources("#[cfg(any())]\nimpl HeldOutEvidenceBridge for CfgDisabled {}"),
         vec![
             source("crates/evolve/src/lib.rs", "mod held_out;"),
@@ -191,14 +220,66 @@ fn a_removed_seam_needs_its_exact_crate_binding_not_an_alias_or_test_impl() {
 }
 
 #[test]
+fn a_crate_root_alias_and_same_named_decoy_do_not_implement_the_frozen_trait() {
+    let decoy_root = "\
+mod held_out;
+mod seams;
+mod trajectory_projection;
+pub use seams::{
+    HeldOutEvidenceBridge as FrozenHeldOutEvidenceBridge,
+    TrajectoryProjection,
+};
+pub trait HeldOutEvidenceBridge {}
+";
+    assert!(
+        validate_transition(
+            &["TrajectoryProjection"],
+            vec![
+                source("crates/evolve/src/lib.rs", decoy_root),
+                source(
+                    "crates/evolve/src/held_out.rs",
+                    "use crate::HeldOutEvidenceBridge;\n\
+                     impl HeldOutEvidenceBridge for DecoyStore {}",
+                ),
+            ],
+        )
+        .is_err(),
+        "a crate-root decoy satisfied retirement of the frozen trait"
+    );
+}
+
+#[test]
+fn changing_the_frozen_trait_source_cannot_satisfy_a_transition() {
+    let redirected = TRUSTED_CANONICAL_SEAM_SOURCE.replacen(
+        "pub trait HeldOutEvidenceBridge",
+        "pub trait HeldOutEvidenceBridgeReplacement",
+        1,
+    );
+    assert!(
+        validate_transition(
+            &["TrajectoryProjection"],
+            vec![
+                source("crates/evolve/src/lib.rs", CANONICAL_EVOLVE_ROOT),
+                source("crates/evolve/src/seams.rs", redirected),
+                source(
+                    "crates/evolve/src/held_out.rs",
+                    "use crate::HeldOutEvidenceBridge;\n\
+                     impl HeldOutEvidenceBridge for DecoyStore {}",
+                ),
+            ],
+        )
+        .is_err(),
+        "a rewritten frozen trait declaration satisfied retirement"
+    );
+}
+
+#[test]
 fn removing_every_seam_requires_every_real_impl_and_no_longer_needs_the_stub_proof() {
     let transition = super::transition::Transition::from_sets(TEST_SEAMS, BTreeSet::new()).unwrap();
     validate_sources(
         &[
-            source(
-                "crates/evolve/src/lib.rs",
-                "mod held_out;\nmod trajectory_projection;",
-            ),
+            source("crates/evolve/src/lib.rs", CANONICAL_EVOLVE_ROOT),
+            source("crates/evolve/src/seams.rs", TRUSTED_CANONICAL_SEAM_SOURCE),
             source(
                 "crates/evolve/src/held_out.rs",
                 "use crate::HeldOutEvidenceBridge;\n\

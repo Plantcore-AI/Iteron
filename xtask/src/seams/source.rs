@@ -1,8 +1,13 @@
 use super::{IMPLEMENTATION_SITES, INTERNAL_CRATE_PREFIX};
 use anyhow::{Context, Result, bail};
+use quote::ToTokens;
 use std::collections::BTreeSet;
 use std::path::Path;
 use syn::ext::IdentExt;
+
+const CANONICAL_SEAM_SOURCE: &str = "crates/evolve/src/seams.rs";
+pub(super) const TRUSTED_CANONICAL_SEAM_SOURCE: &str =
+    include_str!("../../../crates/evolve/src/seams.rs");
 
 /// Every Rust source file under `crates/`, and everything reachable from one through `include!`.
 ///
@@ -283,18 +288,25 @@ pub(super) fn has_canonical_production_impl(
     {
         return Ok(false);
     }
-    let mut modules = root.items.iter().filter_map(|item| match item {
-        syn::Item::Mod(module) if module.ident.unraw() == site.module => Some(module),
-        _ => None,
-    });
-    let Some(module) = modules.next() else {
-        return Ok(false);
-    };
-    if modules.next().is_some()
-        || !module.attrs.is_empty()
-        || !matches!(module.vis, syn::Visibility::Inherited)
-        || module.content.is_some()
+
+    // `use crate::Seam` proves the intended trait only while the crate-root binding still resolves
+    // to the frozen declaration. Pin all three links in that chain:
+    //
+    // 1. `mod seams;` still names the default, unredirected canonical source;
+    // 2. that source still contains the exact trusted trait item (docs may evolve);
+    // 3. the crate root still publicly re-exports that item under its canonical name.
+    //
+    // Without these checks a candidate could re-export the frozen trait under an alias, publish a
+    // same-named decoy trait at the crate root, implement the decoy at the designated site, and
+    // retire the real seam without ever implementing it.
+    if !has_exact_private_external_module(&root, "seams")
+        || !canonical_trait_is_unchanged(sources, seam)?
+        || !root_exports_canonical_seam(&root, seam)
     {
+        return Ok(false);
+    }
+
+    if !has_exact_private_external_module(&root, site.module) {
         return Ok(false);
     }
 
@@ -338,6 +350,129 @@ pub(super) fn has_canonical_production_impl(
             && path.segments[0].ident.unraw() == seam
             && matches!(path.segments[0].arguments, syn::PathArguments::None)
     }))
+}
+
+fn has_exact_private_external_module(file: &syn::File, name: &str) -> bool {
+    let mut modules = file.items.iter().filter_map(|item| match item {
+        syn::Item::Mod(module) if module.ident.unraw() == name => Some(module),
+        _ => None,
+    });
+    let Some(module) = modules.next() else {
+        return false;
+    };
+    modules.next().is_none()
+        && module.attrs.is_empty()
+        && matches!(module.vis, syn::Visibility::Inherited)
+        && module.content.is_none()
+}
+
+fn root_exports_canonical_seam(root: &syn::File, seam: &str) -> bool {
+    root.items
+        .iter()
+        .filter(|item| {
+            let syn::Item::Use(item) = item else {
+                return false;
+            };
+            item.attrs.is_empty()
+                && matches!(item.vis, syn::Visibility::Public(_))
+                && item.leading_colon.is_none()
+                && use_tree_exports_module_seam(&item.tree, &[], "seams", seam)
+        })
+        .count()
+        == 1
+}
+
+fn use_tree_exports_module_seam(
+    tree: &syn::UseTree,
+    prefix: &[String],
+    module: &str,
+    seam: &str,
+) -> bool {
+    match tree {
+        syn::UseTree::Path(path) => {
+            let mut nested = prefix.to_vec();
+            nested.push(path.ident.unraw().to_string());
+            use_tree_exports_module_seam(&path.tree, &nested, module, seam)
+        }
+        syn::UseTree::Name(name) => prefix == [module] && name.ident.unraw() == seam,
+        syn::UseTree::Group(group) => group
+            .items
+            .iter()
+            .any(|item| use_tree_exports_module_seam(item, prefix, module, seam)),
+        // An alias does not establish the canonical crate-root binding the implementation imports.
+        syn::UseTree::Rename(_) | syn::UseTree::Glob(_) => false,
+    }
+}
+
+fn canonical_trait_is_unchanged(
+    sources: &[(String, String, BTreeSet<String>)],
+    seam: &str,
+) -> Result<bool> {
+    let trusted = syn::parse_file(TRUSTED_CANONICAL_SEAM_SOURCE)
+        .context("compiled canonical seam source does not parse as Rust")?;
+    let trusted_source = canonical_seam_source_fingerprint(&trusted);
+    let Some(trusted) = canonical_trait_fingerprint(&trusted, seam) else {
+        return Ok(false);
+    };
+    let Some((_, candidate, _)) = sources
+        .iter()
+        .find(|(path, _, _)| path == CANONICAL_SEAM_SOURCE)
+    else {
+        return Ok(false);
+    };
+    let candidate = syn::parse_file(candidate)
+        .with_context(|| format!("`{CANONICAL_SEAM_SOURCE}` does not parse as Rust"))?;
+    Ok(
+        canonical_seam_source_fingerprint(&candidate) == trusted_source
+            && canonical_trait_fingerprint(&candidate, seam).is_some_and(|item| item == trusted),
+    )
+}
+
+fn canonical_seam_source_fingerprint(file: &syn::File) -> String {
+    let mut fingerprint = file
+        .attrs
+        .iter()
+        .filter(|attribute| !attribute.path().is_ident("doc"))
+        .map(|attribute| attribute.to_token_stream().to_string())
+        .collect::<Vec<_>>();
+    fingerprint.extend(file.items.iter().map(|item| match item {
+        syn::Item::Trait(item) => {
+            let mut item = item.clone();
+            strip_trait_docs(&mut item);
+            item.into_token_stream().to_string()
+        }
+        _ => item.to_token_stream().to_string(),
+    }));
+    fingerprint.join("\n")
+}
+
+fn canonical_trait_fingerprint(file: &syn::File, seam: &str) -> Option<String> {
+    let mut traits = file.items.iter().filter_map(|item| match item {
+        syn::Item::Trait(item) if item.ident.unraw() == seam => Some(item),
+        _ => None,
+    });
+    let mut item = traits.next()?.clone();
+    if traits.next().is_some() {
+        return None;
+    }
+    strip_trait_docs(&mut item);
+    Some(item.into_token_stream().to_string())
+}
+
+fn strip_trait_docs(item: &mut syn::ItemTrait) {
+    item.attrs
+        .retain(|attribute| !attribute.path().is_ident("doc"));
+    for member in &mut item.items {
+        let attrs = match member {
+            syn::TraitItem::Const(item) => &mut item.attrs,
+            syn::TraitItem::Fn(item) => &mut item.attrs,
+            syn::TraitItem::Type(item) => &mut item.attrs,
+            syn::TraitItem::Macro(item) => &mut item.attrs,
+            syn::TraitItem::Verbatim(_) => continue,
+            _ => continue,
+        };
+        attrs.retain(|attribute| !attribute.path().is_ident("doc"));
+    }
 }
 
 fn use_tree_imports_crate_seam(tree: &syn::UseTree, prefix: &[String], seam: &str) -> bool {
