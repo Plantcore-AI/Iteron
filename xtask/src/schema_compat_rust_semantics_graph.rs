@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use quote::ToTokens;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use syn::ext::IdentExt;
 
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_PROTOCOL_FILES: usize = 128;
@@ -421,8 +422,10 @@ pub(super) fn module_fingerprints(file: &syn::File) -> Vec<String> {
 
 /// A file-scope binding: the fingerprint that must not drift, and the names it puts in scope.
 ///
-/// `names` is `None` for a glob import. `use a::*;` can introduce any name, so a glob can never be
-/// shown irrelevant to a frozen item and always stays under comparison.
+/// `names` is `None` when the declaration can affect scope without exposing a statically knowable
+/// name. Glob and anonymous trait imports have that property, as do active/conditional attributes
+/// such as `#[macro_use]` and `#[cfg_attr(..., macro_use)]`; these declarations always stay under
+/// comparison.
 pub(super) struct ScopeBinding {
     pub(super) fingerprint: String,
     pub(super) names: Option<BTreeSet<String>>,
@@ -446,18 +449,23 @@ fn use_tree_names(
         syn::UseTree::Path(path) => use_tree_names(&path.tree, Some(&path.ident), names),
         syn::UseTree::Name(name) => {
             // `use a::b::{self}` binds `b`, not the literal `self`.
-            let bound = if name.ident == "self" {
-                parent.map(ToString::to_string)
+            let bound = if name.ident.unraw() == "self" {
+                parent.map(|ident| ident.unraw().to_string())
             } else {
-                Some(name.ident.to_string())
+                Some(name.ident.unraw().to_string())
             };
             if let (Some(names), Some(bound)) = (names.as_mut(), bound) {
                 names.insert(bound);
             }
         }
         syn::UseTree::Rename(rename) => {
-            if let Some(names) = names.as_mut() {
-                names.insert(rename.rename.to_string());
+            let bound = rename.rename.unraw().to_string();
+            if bound == "_" {
+                // `use Trait as _;` places an unnamed trait in method-resolution scope. No token in
+                // a frozen method can name that binding, so it must be compared unconditionally.
+                *names = None;
+            } else if let Some(names) = names.as_mut() {
+                names.insert(bound);
             }
         }
         syn::UseTree::Glob(_) => *names = None,
@@ -474,20 +482,25 @@ pub(super) fn import_bindings(file: &syn::File) -> Vec<ScopeBinding> {
         .iter()
         .filter_map(|item| match item {
             syn::Item::Use(item) => {
-                let mut names = Some(BTreeSet::new());
+                let mut names = binding_attributes_are_inert(&item.attrs).then(BTreeSet::new);
                 use_tree_names(&item.tree, None, &mut names);
                 Some(ScopeBinding {
                     fingerprint: semantic_use(item),
                     names,
                 })
             }
-            syn::Item::ExternCrate(item) => Some(ScopeBinding {
-                fingerprint: semantic_extern_crate(item),
-                names: Some(BTreeSet::from([item.rename.as_ref().map_or_else(
-                    || item.ident.to_string(),
-                    |(_, alias)| alias.to_string(),
-                )])),
-            }),
+            syn::Item::ExternCrate(item) => {
+                let bound = item.rename.as_ref().map_or_else(
+                    || item.ident.unraw().to_string(),
+                    |(_, alias)| alias.unraw().to_string(),
+                );
+                let names = (binding_attributes_are_inert(&item.attrs) && bound != "_")
+                    .then(|| BTreeSet::from([bound]));
+                Some(ScopeBinding {
+                    fingerprint: semantic_extern_crate(item),
+                    names,
+                })
+            }
             _ => None,
         })
         .collect()
@@ -499,11 +512,21 @@ pub(super) fn module_bindings(file: &syn::File) -> Vec<ScopeBinding> {
         .filter_map(|item| match item {
             syn::Item::Mod(module) => Some(ScopeBinding {
                 fingerprint: module_fingerprint(module),
-                names: Some(BTreeSet::from([module.ident.to_string()])),
+                names: binding_attributes_are_inert(&module.attrs)
+                    .then(|| BTreeSet::from([module.ident.unraw().to_string()])),
             }),
             _ => None,
         })
         .collect()
+}
+
+/// Doc attributes do not affect scope. Every other declaration attribute is treated as potentially
+/// active because `macro_use` and conditional forms can introduce names that are not the declared
+/// module/crate/import name.
+fn binding_attributes_are_inert(attributes: &[syn::Attribute]) -> bool {
+    attributes
+        .iter()
+        .all(|attribute| attribute.path().is_ident("doc"))
 }
 
 /// Every identifier-shaped run of characters in a fingerprint.
@@ -512,6 +535,11 @@ pub(super) fn module_bindings(file: &syn::File) -> Vec<ScopeBinding> {
 /// segments, literals, and type names all land in the set. Over-collection is the safe direction —
 /// it can only hold more bindings under comparison, never fewer.
 pub(super) fn identifier_occurrences(fingerprint: &str, names: &mut BTreeSet<String>) {
+    // `Ident::to_string()` preserves the `r#` spelling while `IdentExt::unraw()` above does not.
+    // Normalize rendered raw identifiers before scanning so `use trusted::r#type;` still matches a
+    // frozen token that names `r#type`. Treating a raw-string prefix the same way only
+    // over-collects literal contents, which is conservative.
+    let fingerprint = fingerprint.replace("r#", "");
     let mut current = String::new();
     for character in fingerprint.chars() {
         if character == '_' || character.is_alphanumeric() {

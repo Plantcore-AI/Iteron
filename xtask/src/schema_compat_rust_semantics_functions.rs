@@ -232,23 +232,26 @@ pub(super) fn compare_critical_functions(
     Ok(())
 }
 
-/// Compare the file-scope bindings this file's frozen items actually depend on.
+/// Compare the file-scope bindings that can affect this file's frozen items.
 ///
 /// Freezing an item's token fingerprint only means something while the names inside those tokens
 /// keep resolving to the same things, so imports and module declarations have to be compared too.
-/// Comparing *every* binding in the file is the wrong bound: a critical source is a whole file, and
-/// only a handful of its items are frozen. `crates/cli/src/runtime.rs` holds seven frozen frontend
-/// types inside sixteen thousand lines that no freeze covers, so unrelated churn in the other
-/// sixteen thousand was rejected for changing "its import bindings" — twice, for changes that left
-/// all seven types byte-identical.
 ///
-/// Compare the bindings whose names appear in the frozen items' own tokens instead. A binding no
-/// frozen token can name cannot redirect a frozen token. Two things keep this fail-closed: a glob
-/// import binds unknowable names and is always compared, and the identifier scan over-collects, so
-/// the comparison set is a superset of what the items strictly reference.
+/// Frozen executable code keeps every import compared. A trait import can change `value.method()`
+/// resolution without the trait's own name appearing in the function tokens, so name-only import
+/// filtering is not sound there. Plain module declarations remain name-filtered: an
+/// attribute-free `mod image_input;` cannot affect an item that never names `image_input`.
+/// Type-only files use the narrower name-aware comparison for both. Unknown-name declarations
+/// (glob/anonymous imports and active `macro_use`/conditional declarations) remain compared
+/// unconditionally.
 fn compare_frozen_scope(path: &str, base: &syn::File, current: &syn::File) -> Result<()> {
     let referenced = frozen_identifiers(path, base, current)?;
-    match scope_drift(base, current, referenced.as_ref()) {
+    match scope_drift_with_import_mode(
+        base,
+        current,
+        referenced.as_ref(),
+        path_has_frozen_executable(path),
+    ) {
         Some(ScopeDrift::Import) => {
             bail!(
                 "critical schema source '{path}' changed an import binding its frozen items rely on"
@@ -276,29 +279,44 @@ enum ScopeDrift {
 /// Which facet of the file scope drifted, considering only bindings `referenced` can name.
 ///
 /// `referenced` of `None` compares every binding, for whole-file freezes.
+#[cfg(test)]
 fn scope_drift(
     base: &syn::File,
     current: &syn::File,
     referenced: Option<&BTreeSet<String>>,
 ) -> Option<ScopeDrift> {
-    let retain = |bindings: Vec<ScopeBinding>| -> Vec<String> {
+    scope_drift_with_import_mode(base, current, referenced, false)
+}
+
+fn scope_drift_with_import_mode(
+    base: &syn::File,
+    current: &syn::File,
+    referenced: Option<&BTreeSet<String>>,
+    compare_all_imports: bool,
+) -> Option<ScopeDrift> {
+    let retain = |bindings: Vec<ScopeBinding>, compare_all: bool| -> Vec<String> {
         bindings
             .into_iter()
-            .filter(|binding| referenced.is_none_or(|referenced| binding.reaches(referenced)))
+            .filter(|binding| {
+                compare_all || referenced.is_none_or(|referenced| binding.reaches(referenced))
+            })
             .map(|binding| binding.fingerprint)
             .collect()
     };
 
     // Imports keep set semantics: re-ordering `use` items never changes what they bind.
     let imports = |file| {
-        retain(import_bindings(file))
+        retain(import_bindings(file), compare_all_imports)
             .into_iter()
             .collect::<BTreeSet<_>>()
     };
     if imports(base) != imports(current) {
         return Some(ScopeDrift::Import);
     }
-    if retain(module_bindings(base)) != retain(module_bindings(current)) {
+    // An attribute-free `mod image_input;` cannot affect a frozen item that never names
+    // `image_input`. Attributed declarations remain unconditional ScopeBindings, so macro-use and
+    // conditional module sources are still compared even in this name-filtered path.
+    if retain(module_bindings(base), false) != retain(module_bindings(current), false) {
         return Some(ScopeDrift::Module);
     }
     // File-level attributes stay compared whole: `#![cfg_attr(...)]` and friends can re-shape any
@@ -311,10 +329,12 @@ fn scope_drift(
 
 /// Every identifier named by the frozen items in `path`, across both revisions.
 ///
-/// `None` means "compare every binding": a whole-file freeze already covers the imports and module
-/// declarations, so nothing there may drift. Both revisions contribute, because an item that gained
-/// a reference must have the binding behind that reference compared as well — the item-level
-/// comparison that would reject the change itself runs after this one.
+/// `None` means "compare every binding" for a whole-file freeze. Frozen functions and methods still
+/// collect their identifiers for module-declaration filtering, but
+/// [`path_has_frozen_executable`] separately forces every import to remain compared because trait
+/// imports participate in method resolution without being named in the frozen tokens. Both
+/// revisions contribute because an item that gained a reference must have the binding behind that
+/// reference compared as well — the item-level comparison that rejects the change runs later.
 fn frozen_identifiers(
     path: &str,
     base: &syn::File,
@@ -347,6 +367,11 @@ fn frozen_identifiers(
         }
     }
     Ok(Some(names))
+}
+
+fn path_has_frozen_executable(path: &str) -> bool {
+    FREE_FUNCTIONS.iter().any(|group| group.path == path)
+        || METHODS.iter().any(|group| group.path == path)
 }
 
 fn named_type<'a>(file: &'a syn::File, name: &str) -> Result<&'a syn::Item> {
@@ -492,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn churn_no_frozen_token_can_name_is_admitted() {
+    fn type_only_churn_no_frozen_token_can_name_is_admitted() {
         let base: syn::File = syn::parse_quote! {
             use core_protocol::Phase;
             mod pricing;
@@ -517,6 +542,122 @@ mod tests {
         );
         // ...and the whole-file freeze still refuses both.
         assert_eq!(scope_drift(&base, &current, None), Some(ScopeDrift::Import));
+    }
+
+    #[test]
+    fn executable_freezes_compare_named_trait_imports_even_when_tokens_do_not_name_them() {
+        let base: syn::File = syn::parse_quote! {
+            use std::io::Write;
+            mod pricing;
+        };
+        let redirected: syn::File = syn::parse_quote! {
+            use crate::EvilWrite;
+            mod pricing;
+        };
+        let unrelated_module: syn::File = syn::parse_quote! {
+            use std::io::Write;
+            mod pricing;
+            mod image_input;
+        };
+        // `Rollout::append` contains `self.file.write_all(...)`, but its tokens do not contain the
+        // trait name `Write`. A local `EvilWrite for File` can therefore redirect that exact method
+        // call while leaving the frozen method byte-for-byte unchanged.
+        let names = referenced("self.file.write_all(line.as_bytes())");
+        assert!(path_has_frozen_executable("crates/record/src/lib.rs"));
+        assert_eq!(
+            scope_drift(&base, &redirected, Some(&names)),
+            None,
+            "the name-only filter demonstrates why executable imports need their own mode"
+        );
+        assert_eq!(
+            scope_drift_with_import_mode(&base, &redirected, Some(&names), true),
+            Some(ScopeDrift::Import)
+        );
+        assert_eq!(
+            scope_drift_with_import_mode(&base, &unrelated_module, Some(&names), true),
+            None,
+            "full import comparison must not make plain unrelated modules global"
+        );
+    }
+
+    #[test]
+    fn anonymous_trait_imports_are_always_compared() {
+        let base: syn::File = syn::parse_quote! {
+            use trusted::Extension as _;
+            pub struct Frozen;
+        };
+        let redirected: syn::File = syn::parse_quote! {
+            use attacker::Extension as _;
+            pub struct Frozen;
+        };
+        assert_eq!(
+            scope_drift(&base, &redirected, Some(&referenced("pub struct Frozen ;"))),
+            Some(ScopeDrift::Import)
+        );
+        assert_eq!(
+            import_bindings(&base)[0].names,
+            None,
+            "an anonymous trait import affects method resolution without binding a name"
+        );
+    }
+
+    #[test]
+    fn active_macro_sources_are_always_compared() {
+        let base_extern: syn::File = syn::parse_quote! {
+            #[macro_use]
+            extern crate trusted;
+            pub struct Frozen;
+        };
+        let redirected_extern: syn::File = syn::parse_quote! {
+            #[macro_use]
+            extern crate attacker;
+            pub struct Frozen;
+        };
+        assert_eq!(
+            scope_drift(
+                &base_extern,
+                &redirected_extern,
+                Some(&referenced("pub struct Frozen ;"))
+            ),
+            Some(ScopeDrift::Import)
+        );
+
+        let base_module: syn::File = syn::parse_quote! {
+            #[macro_use]
+            mod trusted {}
+            pub struct Frozen;
+        };
+        let redirected_module: syn::File = syn::parse_quote! {
+            #[macro_use]
+            mod attacker {}
+            pub struct Frozen;
+        };
+        assert_eq!(
+            scope_drift(
+                &base_module,
+                &redirected_module,
+                Some(&referenced("pub struct Frozen ;"))
+            ),
+            Some(ScopeDrift::Module)
+        );
+    }
+
+    #[test]
+    fn raw_identifier_bindings_match_the_frozen_tokens_that_name_them() {
+        let base: syn::File = syn::parse_quote! {
+            use trusted::r#type;
+            pub struct Frozen(r#type);
+        };
+        let redirected: syn::File = syn::parse_quote! {
+            use attacker::r#type;
+            pub struct Frozen(r#type);
+        };
+        let names = referenced("pub struct Frozen (r#type) ;");
+        assert!(names.contains("type"));
+        assert_eq!(
+            scope_drift(&base, &redirected, Some(&names)),
+            Some(ScopeDrift::Import)
+        );
     }
 
     #[test]
