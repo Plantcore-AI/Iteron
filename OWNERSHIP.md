@@ -24,12 +24,12 @@ Core Code has one human Owner/Project Lead and a non-fixed number of human maint
 | `build-release` — Build and release | open | critical | Open | Open | `.github/actionlint.yaml`<br>`.github/dependabot.yml`<br>`.github/workflows/**`<br>`.gitignore`<br>`CHANGELOG.md`<br>`Cargo.lock`<br>`Cargo.toml`<br>`install.sh`<br>`release-tools/**`<br>`xtask/**` |
 | `protocol-compat` — Protocol compatibility | open | critical | Open | Open | `crates/protocol/**` |
 | `kernel-reduction` — Kernel reduction and driver | open | critical | Open | Open | `crates/kernel/src/driver.rs`<br>`crates/kernel/src/driver_tests.rs`<br>`crates/kernel/src/reducer.rs`<br>`crates/kernel/src/reducer_tests.rs`<br>`crates/kernel/src/turn_action.rs`<br>`crates/kernel/src/turn_command.rs`<br>`crates/kernel/src/turn_protocol.rs`<br>`crates/kernel/src/turn_state.rs` |
-| `kernel-runtime` — Kernel runtime | open | critical | Open | Open | `crates/kernel/Cargo.toml`<br>`crates/kernel/src/diagnostics.rs`<br>`crates/kernel/src/lib.rs`<br>`crates/kernel/src/ports.rs` |
+| `kernel-runtime` — Kernel runtime | open | critical | Open | Open | `crates/kernel/Cargo.toml`<br>`crates/kernel/src/admission.rs`<br>`crates/kernel/src/diagnostics.rs`<br>`crates/kernel/src/lib.rs`<br>`crates/kernel/src/ports.rs` |
 | `kernel-effects` — Kernel effects | open | critical | Open | Open | `crates/kernel/src/effect_admission.rs`<br>`crates/kernel/src/effect_boundary_tests.rs`<br>`crates/kernel/src/effect_class.rs`<br>`crates/kernel/src/effect_journal.rs`<br>`crates/kernel/src/effects.rs` |
 | `kernel-hooks` — Runtime lifecycle hooks | open | critical | Open | Open | `crates/cli/src/runtime/hooks.rs` |
 | `record-core` — Record core | open | critical | Open | Open | `crates/record/Cargo.toml`<br>`crates/record/src/checkpoint.rs`<br>`crates/record/src/lib.rs`<br>`crates/record/src/redact.rs`<br>`crates/record/tests/**` |
 | `record-sessions` — Record sessions | open | elevated | Open | Open | `crates/record/src/cache_io.rs`<br>`crates/record/src/session.rs` |
-| `observability` — Observability | open | elevated | Open | Open | `crates/obs/**` |
+| `observability` — Observability | active | elevated | Jamal Cao (`@fr0m-scratch`) | Open | `crates/obs/**` |
 | `scheduler` — Scheduler | open | elevated | Open | Open | `crates/sched/**` |
 | `provider-core` — Provider core | open | elevated | Open | Open | `crates/provider/Cargo.toml`<br>`crates/provider/static-provider-metadata-v1.json`<br>`crates/provider/src/catalog.rs`<br>`crates/provider/src/lib.rs`<br>`crates/provider/src/sse.rs`<br>`crates/provider/src/static_metadata.rs`<br>`crates/provider/src/static_metadata/support.rs`<br>`crates/provider/src/usage.rs` |
 | `provider-adapters` — Provider adapters | open | elevated | Open | Open | `crates/provider/src/anthropic.rs`<br>`crates/provider/src/openai.rs`<br>`crates/provider/src/responses.rs` |

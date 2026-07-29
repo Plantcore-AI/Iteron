@@ -2299,6 +2299,7 @@
       "fixtures": [{ "path": "governance/schema-compat/fixtures/record/struct-budget-v1.json", "format": "json", "schema_version": 1 }],
       "fields": [
         { "name": "max_consecutive_tool_errors", "introduced_release": 1 },
+        { "name": "max_tokens", "introduced_release": 1, "optional": true },
         { "name": "max_turns", "introduced_release": 1 },
         { "name": "max_usd", "introduced_release": 1 },
         { "name": "max_wall_secs", "introduced_release": 1 }

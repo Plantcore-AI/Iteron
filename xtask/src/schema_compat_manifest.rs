@@ -67,6 +67,10 @@ pub(super) struct Field {
     pub(super) introduced_release: u32,
     #[serde(default)]
     pub(super) deprecated_release: Option<u32>,
+    /// An appended `Option` with `skip_serializing_if = "Option::is_none"` may be absent from
+    /// every frozen pre-append fixture while remaining part of the current Rust shape.
+    #[serde(default)]
+    pub(super) optional: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

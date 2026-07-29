@@ -12648,6 +12648,7 @@ ant-api03-SuperSecretModelToken12345"
                 Budget {
                     max_turns,
                     max_usd,
+                    max_tokens: None,
                     max_wall_secs: 60,
                     max_consecutive_tool_errors: 5,
                 },

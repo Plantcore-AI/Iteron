@@ -141,6 +141,126 @@ pub(super) fn validate(root: &Path, contract: &Contract) -> Result<()> {
                 surface.id
             );
         }
+        validate_optional_fields(surface, source, signature)?;
     }
     Ok(())
+}
+
+fn validate_optional_fields(
+    surface: &super::super::manifest::Surface,
+    source: &str,
+    signature: &str,
+) -> Result<()> {
+    let optional = surface
+        .fields
+        .iter()
+        .filter(|field| field.optional)
+        .map(|field| field.name.as_str())
+        .collect::<BTreeSet<_>>();
+    if optional.is_empty() {
+        return Ok(());
+    }
+    let struct_name = signature
+        .strip_prefix("pub struct ")
+        .and_then(|rest| rest.strip_suffix(" {"))
+        .context("named schema signature is not a public struct")?;
+    let file = syn::parse_file(source)?;
+    let item = file
+        .items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Struct(item) if item.ident == struct_name => Some(item),
+            _ => None,
+        })
+        .with_context(|| format!("schema source lacks `{struct_name}`"))?;
+    let syn::Fields::Named(fields) = &item.fields else {
+        bail!("schema struct `{struct_name}` is not named-field");
+    };
+    for field in &fields.named {
+        let Some(identifier) = &field.ident else {
+            continue;
+        };
+        let mut wire_name = identifier.to_string();
+        let mut has_default = false;
+        let mut skips_none = false;
+        for attribute in field
+            .attrs
+            .iter()
+            .filter(|attribute| attribute.path().is_ident("serde"))
+        {
+            attribute.parse_nested_meta(|meta| {
+                if meta.path.is_ident("default") {
+                    has_default = true;
+                } else if meta.path.is_ident("rename") {
+                    wire_name = meta.value()?.parse::<syn::LitStr>()?.value();
+                } else if meta.path.is_ident("skip_serializing_if") {
+                    skips_none = meta.value()?.parse::<syn::LitStr>()?.value() == "Option::is_none";
+                } else if meta.input.peek(syn::Token![=]) {
+                    let _: syn::Expr = meta.value()?.parse()?;
+                }
+                Ok(())
+            })?;
+        }
+        if !optional.contains(wire_name.as_str()) {
+            continue;
+        }
+        let is_option = matches!(
+            &field.ty,
+            syn::Type::Path(path)
+                if path.path.segments.last().is_some_and(|segment| segment.ident == "Option")
+        );
+        if !is_option || !has_default || !skips_none {
+            bail!(
+                "optional schema field `{}.{wire_name}` must be Option with serde default + skip_serializing_if=Option::is_none",
+                surface.id
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod optional_field_tests {
+    use super::*;
+
+    fn surface() -> super::super::super::manifest::Surface {
+        serde_json::from_value(serde_json::json!({
+            "id": "record.named.fixture",
+            "current_version": 1,
+            "version_field": null,
+            "fixtures": [{
+                "path": "governance/schema-compat/fixtures/test/fixture.json",
+                "format": "json",
+                "schema_version": 1
+            }],
+            "fields": [{
+                "name": "value",
+                "introduced_release": 1,
+                "optional": true
+            }],
+            "compatibility_shims": []
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn optional_manifest_fields_require_the_byte_compatible_rust_shape() {
+        let good = r#"
+            pub struct Wire {
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                pub value: Option<u64>,
+            }
+        "#;
+        assert!(validate_optional_fields(&surface(), good, "pub struct Wire {").is_ok());
+
+        for bad in [
+            "pub struct Wire { pub value: Option<u64> }",
+            r#"pub struct Wire {
+                #[serde(default, skip_serializing_if = "String::is_empty")]
+                pub value: String,
+            }"#,
+        ] {
+            assert!(validate_optional_fields(&surface(), bad, "pub struct Wire {").is_err());
+        }
+    }
 }

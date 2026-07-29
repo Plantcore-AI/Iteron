@@ -43,6 +43,15 @@ const FORBIDDEN_WORLD_PATHS: [&str; 15] = [
     "PolicyTrainer",
 ];
 const W1_FREEZE_COMMIT: &str = "304027e";
+const TCB_FREEZE_FIXTURES: [&str; 7] = [
+    "governance/schema-compat/fixtures/abi/task-envelope-v1.json",
+    "governance/schema-compat/fixtures/abi/context-request-v1.json",
+    "governance/schema-compat/fixtures/abi/tool-intent-v1.json",
+    "governance/schema-compat/fixtures/abi/effect-proposal-v1.json",
+    "governance/schema-compat/fixtures/abi/artifact-ref-v1.json",
+    "crates/evolve/tests/fixtures/policy-manifest-v1.json",
+    "crates/evolve/tests/fixtures/policy-manifest-v2.json",
+];
 
 #[derive(Clone, Copy)]
 struct MatrixRow {
@@ -207,8 +216,7 @@ pub fn validate(root: &Path) -> Result<()> {
 /// frozen TCB contract has no breaking diff from the W1 freeze.
 pub fn kernel(root: &Path) -> Result<()> {
     validate(root)?;
-    crate::schema_compat::validate_against_base(root, W1_FREEZE_COMMIT)
-        .context("TCB breaking-diff proof against W1 freeze failed")?;
+    validate_tcb_freeze(root).context("TCB breaking-diff proof against W1 freeze failed")?;
     validate_matrix_evidence(root)?;
     run_matrix_tests(root)?;
 
@@ -219,7 +227,112 @@ pub fn kernel(root: &Path) -> Result<()> {
             row.group, row.id, row.path, row.test
         );
     }
-    println!("snapshot\tW1 frozen TCB\tPASS\tschema-compat check-base --base {W1_FREEZE_COMMIT}");
+    println!(
+        "snapshot\tW1 frozen TCB\tPASS\tfive ABI fixtures + StrategySlot + PROTOCOL_VERSION + PolicyManifest @ {W1_FREEZE_COMMIT}"
+    );
+    Ok(())
+}
+
+fn validate_tcb_freeze(root: &Path) -> Result<()> {
+    // First prove the candidate's full compatibility corpus agrees with its Rust shapes. The
+    // against-W1 comparison below is deliberately TCB-scoped: unrelated versioned product/eval
+    // surfaces are allowed to advance without invalidating a microkernel freeze proof.
+    crate::schema_compat::validate_current(root)?;
+
+    for relative in TCB_FREEZE_FIXTURES {
+        let current = crate::schema_compat::read_candidate_file_bounded(
+            root,
+            relative,
+            MAX_EVIDENCE_SOURCE_BYTES,
+        )?;
+        let frozen = crate::schema_compat::read_revision_file_bounded(
+            root,
+            W1_FREEZE_COMMIT,
+            relative,
+            MAX_EVIDENCE_SOURCE_BYTES,
+        )?
+        .with_context(|| format!("W1 freeze lacks `{relative}`"))?;
+        require_identical_snapshot(relative, &frozen, &current)?;
+    }
+
+    for (relative, kind, name) in [
+        (
+            "crates/protocol/src/slot.rs",
+            SnapshotItemKind::Trait,
+            "StrategySlot",
+        ),
+        (
+            "crates/evolve/src/lib.rs",
+            SnapshotItemKind::Struct,
+            "PolicyManifest",
+        ),
+    ] {
+        let current = crate::schema_compat::read_candidate_file_bounded(
+            root,
+            relative,
+            MAX_EVIDENCE_SOURCE_BYTES,
+        )?;
+        let frozen = crate::schema_compat::read_revision_file_bounded(
+            root,
+            W1_FREEZE_COMMIT,
+            relative,
+            MAX_EVIDENCE_SOURCE_BYTES,
+        )?
+        .with_context(|| format!("W1 freeze lacks `{relative}`"))?;
+        require_identical_snapshot(
+            &format!("{relative}::{name}"),
+            normalized_item(&frozen, kind, name)?.as_bytes(),
+            normalized_item(&current, kind, name)?.as_bytes(),
+        )?;
+    }
+
+    let wire = crate::validate::PROTOCOL_VERSION_SOURCE;
+    let current =
+        crate::schema_compat::read_candidate_file_bounded(root, wire, MAX_EVIDENCE_SOURCE_BYTES)?;
+    let frozen = crate::schema_compat::read_revision_file_bounded(
+        root,
+        W1_FREEZE_COMMIT,
+        wire,
+        MAX_EVIDENCE_SOURCE_BYTES,
+    )?
+    .with_context(|| format!("W1 freeze lacks `{wire}`"))?;
+    let current_version = crate::validate::protocol_version_from_source(&current)?;
+    let frozen_version = crate::validate::protocol_version_from_source(&frozen)?;
+    if current_version != frozen_version {
+        bail!("PROTOCOL_VERSION changed from W1 value {frozen_version} to {current_version}");
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum SnapshotItemKind {
+    Trait,
+    Struct,
+}
+
+fn normalized_item(source: &[u8], kind: SnapshotItemKind, name: &str) -> Result<String> {
+    let source = std::str::from_utf8(source)
+        .with_context(|| format!("snapshot source for `{name}` is not UTF-8"))?;
+    let file = syn::parse_file(source)
+        .with_context(|| format!("snapshot source containing `{name}` is invalid Rust"))?;
+    file.items
+        .into_iter()
+        .find_map(|item| match (kind, item) {
+            (SnapshotItemKind::Trait, syn::Item::Trait(item)) if item.ident == name => {
+                Some(item.to_token_stream().to_string())
+            }
+            (SnapshotItemKind::Struct, syn::Item::Struct(item)) if item.ident == name => {
+                Some(item.to_token_stream().to_string())
+            }
+            _ => None,
+        })
+        .with_context(|| format!("snapshot source lacks `{name}`"))
+}
+
+fn require_identical_snapshot(label: &str, frozen: &[u8], current: &[u8]) -> Result<()> {
+    if frozen != current {
+        bail!("W1 TCB snapshot `{label}` has a breaking diff");
+    }
     Ok(())
 }
 
@@ -725,5 +838,19 @@ mod tests {
             }
         "#;
         assert!(production_source_violations(fixture).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_planted_tcb_snapshot_change_turns_the_freeze_proof_red() {
+        assert!(require_identical_snapshot("fixture", b"frozen", b"frozen").is_ok());
+        assert!(require_identical_snapshot("fixture", b"frozen", b"changed").is_err());
+    }
+
+    #[test]
+    fn current_tcb_snapshot_matches_the_w1_freeze() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask is directly below the repository root");
+        validate_tcb_freeze(root).unwrap();
     }
 }

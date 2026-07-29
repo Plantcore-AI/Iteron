@@ -122,6 +122,7 @@
 /crates/ctx/src/skills_metadata.rs @fr0m-scratch
 /crates/ctx/src/source.rs @fr0m-scratch
 /crates/ctx/tests/skill_frontmatter.rs @fr0m-scratch
+/crates/kernel/src/admission.rs @fr0m-scratch
 /crates/kernel/src/diagnostics.rs @fr0m-scratch
 /crates/kernel/src/driver.rs @fr0m-scratch
 /crates/kernel/src/driver_tests.rs @fr0m-scratch

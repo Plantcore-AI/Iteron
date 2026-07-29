@@ -251,7 +251,10 @@ fn compare_surface(
     if candidate.current_version < previous.current_version {
         bail!("schema surface `{}` version cannot decrease", previous.id);
     }
-    if candidate != previous && candidate.current_version <= previous.current_version {
+    if candidate != previous
+        && candidate.current_version <= previous.current_version
+        && !is_additive_optional_append(previous, candidate, candidate_contract.release_ordinal)
+    {
         bail!(
             "schema surface `{}` changed without a version bump",
             previous.id
@@ -406,6 +409,35 @@ fn compare_surface(
         }
     }
     Ok(())
+}
+
+fn is_additive_optional_append(
+    previous: &Surface,
+    candidate: &Surface,
+    release_ordinal: u32,
+) -> bool {
+    if candidate.current_version != previous.current_version
+        || candidate.version_field != previous.version_field
+        || candidate.selector != previous.selector
+        || candidate.fixtures != previous.fixtures
+        || candidate.compatibility_shims != previous.compatibility_shims
+        || candidate.fields.len() <= previous.fields.len()
+        || !previous
+            .fields
+            .iter()
+            .all(|old| candidate.fields.iter().any(|new| new == old))
+    {
+        return false;
+    }
+    candidate
+        .fields
+        .iter()
+        .filter(|field| !previous.fields.iter().any(|old| old.name == field.name))
+        .all(|field| {
+            field.optional
+                && field.introduced_release == release_ordinal
+                && field.deprecated_release.is_none()
+        })
 }
 
 #[cfg(test)]

@@ -1142,6 +1142,7 @@ fn d1_02_only_a_moved_published_shape_obliges_a_protocol_version_bump() {
         name: "appended_optional".to_owned(),
         introduced_release: 2,
         deprecated_release: None,
+        optional: true,
     });
     assert!(!super::line_format_moved(&base, &appended));
 
