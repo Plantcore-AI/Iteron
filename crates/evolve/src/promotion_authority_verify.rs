@@ -9,8 +9,8 @@ use crate::promotion_auth::{
     PromotionAuthorization, PromotionOperation, PromotionRequest, authorization_signature,
 };
 use crate::promotion_evaluation::{
-    SignedHeldOutEvaluation, SignedStageObservation, StagePermit, evaluation_signature,
-    held_out_domain, stage_result_domain,
+    AuthenticatedHeldOutEvaluation, SignedHeldOutEvaluation, SignedStageObservation, StagePermit,
+    evaluation_signature, held_out_domain, stage_result_domain,
 };
 use crate::promotion_journal::{CandidateIdentity, JournalContent, JournalEvent, RefusalCode};
 use crate::promotion_state::AuthorityState;
@@ -21,6 +21,29 @@ use std::collections::BTreeSet;
 use crate::promotion_authority::PromotionAuthority;
 
 impl PromotionAuthority {
+    /// Authenticate a held-out report for offline checkpoint-transfer accounting.
+    ///
+    /// This deliberately verifies only the independent signature and suite ownership. The
+    /// checkpoint algebra subsequently binds the authenticated report to the exact manifest,
+    /// artifact, dataset, policy identity, and base model; normal candidate admission repeats the
+    /// complete authority check before any journal state can change.
+    pub fn authenticate_held_out(
+        &self,
+        suite: &EvaluationSuite,
+        signed: SignedHeldOutEvaluation,
+    ) -> Result<AuthenticatedHeldOutEvaluation, PromotionAuthorityError> {
+        signed.report.validate()?;
+        if signed.report.evaluation_suite_digest != suite.digest() {
+            return Err(PromotionAuthorityError::EvaluationIdentityMismatch);
+        }
+        let anchor = self.require_evaluator(&signed.evaluator_id, suite.owner_id())?;
+        let expected = evaluation_signature(anchor, held_out_domain(), &signed.report)?;
+        if !constant_time_eq(expected.as_bytes(), signed.signature.as_bytes()) {
+            return Err(PromotionAuthorityError::IndependentEvaluationRequired);
+        }
+        Ok(AuthenticatedHeldOutEvaluation::new(signed))
+    }
+
     pub(crate) fn refresh(&mut self) -> Result<(), PromotionAuthorityError> {
         let records = self.journal.records()?;
         let mut state = AuthorityState::default();

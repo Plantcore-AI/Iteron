@@ -59,7 +59,7 @@ impl HeldOutEvaluation {
         &self.evidence.base_model
     }
 
-    fn validate(&self) -> Result<(), PromotionAuthorityError> {
+    pub(crate) fn validate(&self) -> Result<(), PromotionAuthorityError> {
         self.candidate.validate()?;
         validate_digest(&self.artifact_digest)?;
         if let Some(digest) = &self.training_dataset_digest {
@@ -106,10 +106,9 @@ impl SignedHeldOutEvaluation {
     /// outside this crate — `pub(crate)` fields, no accessor of any kind — while
     /// [`crate::HeldOutEvidenceBridge`]'s own doc told an implementor that the `base_model` argument
     /// was "checkable against the returned report". It was not: a probe crate holding only
-    /// `core-evolve` got `E0616: field report is private`. And out-of-crate is the *only* place an
-    /// implementor may live, because `core-xtask boundaries check` forbids implementing that seam
-    /// inside this crate outside a test target. A doc that states a property only the one forbidden
-    /// crate can use is the same defect this seam was already corrected for once.
+    /// `core-evolve` got `E0616: field report is private`. The crate now ships one bounded
+    /// implementation, but the seam remains public and externally implementable; a property that
+    /// only an in-crate implementation could use would still make that contract false.
     ///
     /// **The barrier is the key, not the field visibility.** `pub(crate)` stops a struct literal
     /// from outside and nothing more: this type derives `Deserialize`, and serde's generated impl
@@ -120,6 +119,31 @@ impl SignedHeldOutEvaluation {
     /// the only one worth stating.
     pub fn report(&self) -> &HeldOutEvaluation {
         &self.report
+    }
+}
+
+/// A held-out attestation whose HMAC and evaluation-suite owner were checked against one
+/// [`crate::PromotionAuthority`]'s configured evaluator anchors.
+///
+/// Unlike [`SignedHeldOutEvaluation`], this wrapper has no deserialization surface and cannot be
+/// constructed outside this crate. It does not mean the candidate has been admitted; transfer
+/// still binds the report to the checkpoint manifest and independently applies the target gate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthenticatedHeldOutEvaluation {
+    signed: SignedHeldOutEvaluation,
+}
+
+impl AuthenticatedHeldOutEvaluation {
+    pub(crate) fn new(signed: SignedHeldOutEvaluation) -> Self {
+        Self { signed }
+    }
+
+    pub fn evaluator_id(&self) -> &str {
+        self.signed.evaluator_id()
+    }
+
+    pub fn report(&self) -> &HeldOutEvaluation {
+        self.signed.report()
     }
 }
 
@@ -251,6 +275,11 @@ impl IndependentEvaluator {
             evaluator_id: checked_identity("evaluator.evaluator_id", evaluator_id.into())?,
             key,
         })
+    }
+
+    /// Stable identity placed inside every attestation this evaluator signs.
+    pub fn evaluator_id(&self) -> &str {
+        &self.evaluator_id
     }
 
     pub fn sign_held_out(

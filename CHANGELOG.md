@@ -7,7 +7,11 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- Offline evolution evidence, checkpoint algebra, recorded-run projection,
+  parameterized signed transcripts, cross-model transfer, and immutable
+  boot-time policy-bundle resolution.
 
 ## [0.0.1] - 2026-07-15
 

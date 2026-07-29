@@ -325,6 +325,20 @@ pub struct ProducedPolicyCandidate {
 }
 
 impl ProducedPolicyCandidate {
+    pub(crate) fn from_parts(
+        artifact_bytes: Vec<u8>,
+        manifest: PolicyManifest,
+        capability_admission: CapabilityAdmission,
+        selected_candidate_id: String,
+    ) -> Self {
+        Self {
+            artifact_bytes,
+            manifest,
+            capability_admission,
+            selected_candidate_id,
+        }
+    }
+
     pub fn artifact_bytes(&self) -> &[u8] {
         &self.artifact_bytes
     }

@@ -20,9 +20,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod admission;
 mod base_model;
+mod checkpoint_algebra;
+mod checkpoint_transfer;
 mod dataset;
 mod dataset_registry;
 mod evidence;
+mod held_out;
 mod producer;
 mod promotion;
 mod promotion_auth;
@@ -31,10 +34,18 @@ mod promotion_authority_verify;
 mod promotion_evaluation;
 mod promotion_journal;
 mod promotion_state;
+mod prompt_producer;
 mod registry;
 mod schema;
 mod seams;
 mod training;
+mod trajectory_projection;
+mod transcript;
+mod transcript_demo;
+mod transcript_demo_support;
+mod transcript_method_proof;
+mod transcript_safety;
+mod transcript_target_fixture;
 mod verifier;
 mod verifier_crypto;
 mod verifier_eval;
@@ -47,6 +58,11 @@ pub use admission::{
     ParentCapabilityCeiling,
 };
 pub use base_model::{BaseModelId, MAX_BASE_MODEL_PART_BYTES, UNSPECIFIED_FAMILY};
+pub use checkpoint_algebra::{
+    AlgebraOutput, CheckpointAlgebraError, CheckpointDiff, CheckpointEvent, PolicyCheckpoint,
+    SlotDelta, diff, merge, restrict, retire,
+};
+pub use checkpoint_transfer::{TransferMetric, TransferResult, TransferSlotMetric, transfer};
 /// Re-exported so an outside implementor of [`TrajectoryProjection`] can construct the
 /// [`TrajectoryEnvelope`] it must return without taking a second, undeclared dependency on
 /// `core-protocol`. Without these the seam was unimplementable from outside the crate (E0603).
@@ -61,6 +77,12 @@ pub use dataset_registry::{
     MAX_REGISTERED_DATASETS,
 };
 pub use evidence::{EvidenceRecordError, EvidenceRecorder};
+pub use held_out::{
+    HELD_OUT_REPORT_SCHEMA_VERSION, HeldOutBridgeError, HeldOutEvalReport,
+    HeldOutEvidenceRegistration, HeldOutEvidenceStore, HeldOutMetricBounds, HeldOutReportIntervals,
+    HeldOutTaskPair, HeldOutTrainingCorpus, MAX_HELD_OUT_EVIDENCE_RECORDS,
+    MAX_HELD_OUT_REPORT_JSON_BYTES, MAX_HELD_OUT_REPORT_TASKS,
+};
 pub use producer::{
     MAX_INERT_RULE_ARTIFACT_BYTES, MAX_OFFLINE_RULE_CANDIDATES, OfflineProducerError,
     OfflineRuleCandidate, OfflineRuleSearchProducer, OfflineRuleSearchSpec,
@@ -78,10 +100,14 @@ pub use promotion_auth::{
 };
 pub use promotion_authority::PromotionAuthority;
 pub use promotion_evaluation::{
-    BoundedStageExecutor, HeldOutEvaluation, IndependentEvaluator, SignedHeldOutEvaluation,
-    SignedStageObservation, StageObservation, StagePermit,
+    AuthenticatedHeldOutEvaluation, BoundedStageExecutor, HeldOutEvaluation, IndependentEvaluator,
+    SignedHeldOutEvaluation, SignedStageObservation, StageObservation, StagePermit,
 };
 pub use promotion_state::{PromotionAuditEvent, PromotionAuditKind, PromotionLineage};
+pub use prompt_producer::{
+    MAX_INERT_PROMPT_ARTIFACT_BYTES, MAX_PROMPT_PREFERENCE_CANDIDATES, PromptPreferenceCandidate,
+    PromptPreferenceError, PromptPreferenceProducer, PromptPreferenceSpec,
+};
 pub use registry::{
     BundleLineage, MAX_TRAJECTORY_LINEAGE_POLICIES, MAX_TRAJECTORY_REGISTRY_BYTES,
     MAX_TRAJECTORY_REGISTRY_ENVELOPE_BYTES, MAX_TRAJECTORY_REGISTRY_RECORD_BYTES,
@@ -97,6 +123,16 @@ pub use training::{
     MAX_RETENTION_POLICY_TABLE_ENTRIES, MAX_TRAINING_LICENSE_ALLOWLIST_ENTRIES,
     RetentionTrainingUse, TrainingAdmissionPolicy, TrainingEligibilityError,
     TrainingEligibleTrajectory,
+};
+pub use trajectory_projection::{
+    MAX_RECORDED_RUN_FIXTURE_JSON_BYTES, MAX_RECORDED_RUN_FIXTURES,
+    RECORDED_RUN_FIXTURE_SCHEMA_VERSION, RecordedDecision, RecordedRunFixture,
+    RecordedRunProjector, RecordedRunProjectorError,
+};
+pub use transcript::{
+    OfflineTranscriptConfig, OfflineTranscriptResult, TranscriptEvent, TranscriptProducerKind,
+    TranscriptRecord, TranscriptRunError, run_offline_transcript,
+    run_offline_transcript_with_config, verify_offline_transcript,
 };
 pub use verifier::{
     AttestationKey, EvolutionVerifier, MAX_ATTESTATION_KEY_BYTES, MAX_TRUSTED_PRODUCERS,
@@ -236,6 +272,8 @@ pub enum ContractError {
     InvalidPromotionGate(&'static str),
     #[error("promotion evidence contains a non-finite or malformed metric interval")]
     MalformedMetricInterval,
+    #[error("recorded-run projection failed: {0}")]
+    ProjectionFailed(&'static str),
 }
 
 fn validate_digest(value: &str) -> Result<(), ContractError> {

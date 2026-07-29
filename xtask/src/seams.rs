@@ -98,7 +98,7 @@ use source::{
 /// `PolicyBundleResolver` is deliberately absent: it lives in `core-protocol`, is declared over
 /// `ResolvedBundle`, and both sides of its seam already depend on that crate, so naming it costs
 /// nobody a dependency and there is nothing to police.
-const SEAMS: &[&str] = &["TrajectoryProjection", "HeldOutEvidenceBridge"];
+const SEAMS: &[&str] = &[];
 
 /// The one crate permitted to declare and name the seams above.
 const OWNING_CRATE: &str = "crates/evolve/";

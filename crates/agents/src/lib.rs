@@ -42,6 +42,7 @@
 mod catalog;
 mod decompose;
 mod def;
+mod policy_bundle;
 mod reduce;
 mod stage;
 
@@ -50,6 +51,7 @@ pub use decompose::{
     Decomposer, FAN_CAP, LEAF_MAX_CHARS, NormalizedLeaves, RepoSignals, TaskClass,
 };
 pub use def::{AgentDef, READ_ONLY_TOOLS, ToolFilter, subagent_budget, subagent_budget_ceiling};
+pub use policy_bundle::{BootPolicySnapshot, ToolPolicyBinding, ToolPolicyCatalog};
 pub use reduce::{OrderedBundle, Summary, SummaryOutcome, reduce};
 pub use stage::{
     AgentTask, BudgetedWorkflowPlan, INVESTIGATOR_DELIVERABLE, INVESTIGATOR_SCOPE, Stage,

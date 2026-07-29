@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "observation_id": "target-held-out-safe-v1",
+  "task_score_delta": 0.0625,
+  "candidate_safety_violations": 0,
+  "candidate_policy_violations": 0,
+  "replay_equivalence_passed": true,
+  "sandbox_suite_passed": true,
+  "invariant_suites": {
+    "durability": true,
+    "runtime": true,
+    "security": true
+  },
+  "reported_train_eval_overlap": false
+}

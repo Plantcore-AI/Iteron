@@ -344,6 +344,98 @@ fn signed_stage(
     evaluator().sign_stage(observation).unwrap()
 }
 
+#[test]
+fn transfer_authentication_rejects_a_serde_reconstituted_bad_signature() {
+    let root = scratch("transfer-authentication");
+    let authority = open_authority(&root, &control_policy());
+    let suite = evaluation("held-out-task");
+    let baseline = policy_ref("baseline", b"baseline");
+    let candidate = policy_ref("candidate", b"candidate");
+    let verified = VerifiedCandidateInputs {
+        artifact_digest: candidate.digest.clone(),
+        training_dataset_digest: None,
+        evaluation_suite_digest: suite.digest().into(),
+        base_model: candidate_base_model(),
+    };
+    let report = HeldOutEvaluation::new(
+        candidate.clone(),
+        &verified,
+        evidence(&baseline, &candidate, true),
+    )
+    .unwrap();
+    let signed = evaluator().sign_held_out(report).unwrap();
+    assert!(
+        authority
+            .authenticate_held_out(&suite, signed.clone())
+            .is_ok()
+    );
+
+    let mut forged = serde_json::to_value(signed).unwrap();
+    forged["signature"] = serde_json::Value::String("0".repeat(64));
+    let forged: SignedHeldOutEvaluation = serde_json::from_value(forged).unwrap();
+    assert!(matches!(
+        authority.authenticate_held_out(&suite, forged),
+        Err(PromotionAuthorityError::IndependentEvaluationRequired)
+    ));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn authority_authenticates_independent_held_out_and_rejects_a_promotion_key_signature() {
+    let root = scratch("held-out-anchor-separation");
+    let authority = open_authority(&root, &control_policy());
+    let suite = evaluation("held-out-task");
+    let baseline = policy_ref("baseline", b"baseline");
+    let candidate = policy_ref("candidate", b"candidate");
+    let verified = VerifiedCandidateInputs {
+        artifact_digest: candidate.digest.clone(),
+        training_dataset_digest: None,
+        evaluation_suite_digest: suite.digest().into(),
+        base_model: candidate_base_model(),
+    };
+    let report = HeldOutEvaluation::new(
+        candidate.clone(),
+        &verified,
+        evidence(&baseline, &candidate, true),
+    )
+    .unwrap();
+
+    let independently_signed = evaluator().sign_held_out(report.clone()).unwrap();
+    assert!(
+        authority
+            .authenticate_held_out(&suite, independently_signed)
+            .is_ok()
+    );
+
+    let promotion_key_alias =
+        IndependentEvaluator::new("independent-evaluator", key(0x11)).unwrap();
+    let signed_with_promotion_key = promotion_key_alias.sign_held_out(report).unwrap();
+    assert!(matches!(
+        authority.authenticate_held_out(&suite, signed_with_promotion_key),
+        Err(PromotionAuthorityError::IndependentEvaluationRequired)
+    ));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn authority_rejects_cross_role_key_aliases_even_under_different_ids() {
+    let root = scratch("cross-role-key-alias");
+    let aliased_evaluator =
+        EvaluatorTrustAnchor::new("differently-named-evaluator", "held-out-owner", key(0x11))
+            .unwrap();
+    assert!(matches!(
+        PromotionAuthority::open(
+            &root,
+            "release-registry-a",
+            control_policy(),
+            vec![promotion_anchor()],
+            vec![aliased_evaluator],
+        ),
+        Err(PromotionAuthorityError::InvalidTrustConfiguration)
+    ));
+    std::fs::remove_dir_all(root).ok();
+}
+
 struct TestStageExecutor {
     baseline: PolicyRef,
     candidate: PolicyRef,

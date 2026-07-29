@@ -13,6 +13,7 @@ use crate::promotion_evaluation::{
 };
 use crate::promotion_journal::{CandidateIdentity, JournalEvent, PromotionJournal};
 use crate::promotion_state::{AuthorityState, PromotionAuditEvent, PromotionLineage};
+use crate::verifier_crypto::constant_time_eq;
 use crate::{
     ConsentAwareDatasetRegistry, DeploymentBundle, DeploymentStage, EvaluationSuite,
     EvolutionVerifier, MAX_EVALUATOR_TRUST_ANCHORS, MAX_PROMOTION_TRUST_ANCHORS, PolicyManifest,
@@ -63,6 +64,9 @@ impl PromotionAuthority {
         let mut evaluators = BTreeMap::new();
         for anchor in evaluator_anchors {
             if promotions.contains_key(&anchor.evaluator_id)
+                || promotions
+                    .values()
+                    .any(|promotion| constant_time_eq(promotion.key.bytes(), anchor.key.bytes()))
                 || evaluators
                     .insert(anchor.evaluator_id.clone(), anchor)
                     .is_some()

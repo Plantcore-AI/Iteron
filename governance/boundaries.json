@@ -391,7 +391,7 @@
     {
       "id": "agent-catalog",
       "title": "Agent catalog",
-      "summary": "Agent definitions, discovery, trust, read-only tool filtering, and catalog diagnostics.",
+      "summary": "Agent definitions, discovery, trust, read-only tool filtering, boot-time policy resolution, and catalog diagnostics.",
       "status": "open",
       "risk": "elevated",
       "primary": null,
@@ -400,9 +400,10 @@
         { "kind": "file", "path": "crates/agents/Cargo.toml" },
         { "kind": "file", "path": "crates/agents/src/catalog.rs" },
         { "kind": "file", "path": "crates/agents/src/def.rs" },
-        { "kind": "file", "path": "crates/agents/src/lib.rs" }
+        { "kind": "file", "path": "crates/agents/src/lib.rs" },
+        { "kind": "file", "path": "crates/agents/src/policy_bundle.rs" }
       ],
-      "contracts": ["read-only-agent-authority", "agent-definition-trust"],
+      "contracts": ["read-only-agent-authority", "agent-definition-trust", "boot-once-policy-resolution"],
       "checks": ["cargo test -p core-agents --locked"]
     },
     {
@@ -571,6 +572,9 @@
       "reviewers": [],
       "paths": [
         { "kind": "file", "path": "crates/cli/Cargo.toml" },
+        { "kind": "tree", "path": "crates/cli/drivers" },
+        { "kind": "file", "path": "crates/cli/src/bundle_adapter.rs" },
+        { "kind": "file", "path": "crates/cli/src/bundle_adapter_demo.rs" },
         { "kind": "file", "path": "crates/cli/src/commands.rs" },
         { "kind": "tree", "path": "crates/cli/src/config" },
         { "kind": "file", "path": "crates/cli/src/config.rs" },
@@ -997,6 +1001,7 @@
         "normal": [
           "core-agents",
           "core-ctx",
+          "core-evolve",
           "core-kernel",
           "core-mcp",
           "core-obs",
