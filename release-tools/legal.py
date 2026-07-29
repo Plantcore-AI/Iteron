@@ -116,7 +116,7 @@ def merge_metadata(documents: list[dict]) -> dict:
 
 
 def release_dependency_ids(metadata: dict, dependency_trees: list[Path]) -> set[str]:
-    """Resolve cargo-tree's four-target normal graph to exact Cargo package identities."""
+    """Resolve cargo-tree's supported-target normal graph to exact Cargo package identities."""
     if not dependency_trees:
         raise ReleaseToolError("at least one release dependency tree is required")
     packages: dict[tuple[str, str], list[dict]] = {}

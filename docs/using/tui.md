@@ -2,9 +2,9 @@
 
 The TUI is Core Code's default frontend when stdin and stdout are attached to a
 terminal. It owns presentation and input as a version-negotiated client of the
-same resident App Server used by one-shot operation. Runtime state and the
-authoritative terminal result arrive over the event queue; the TUI never reclaims
-or inspects the agent directly.
+same resident App Server used by one-shot and headless operation. Runtime state
+and the authoritative terminal result arrive over the event queue; the TUI never
+reclaims or inspects the agent directly.
 
 ## Start the TUI
 
@@ -22,8 +22,8 @@ required. A pipeline should use [one-shot mode](one-shot.md) instead.
 - Type `@path.png` or `@image(path.png)` to attach a repository-relative image.
 - Paste or terminal-drag a whole local image path to create an attachment chip.
   Press ++ctrl+v++ for bitmap clipboard capture when `pngpaste` (macOS),
-  `wl-paste`, or `xclip` (Linux) is available. Text paste remains ordinary
-  composer text.
+  `wl-paste`/`xclip` (Linux), or PowerShell clipboard support (Windows) is
+  available. Text paste remains ordinary composer text.
 - Review the bounded attachment chips above the draft; ++alt+backspace++ removes
   the most recent chip. Image bytes and paths are never rendered in the preview.
 - Scroll the transcript with the wheel or trackpad. A captured left click folds a

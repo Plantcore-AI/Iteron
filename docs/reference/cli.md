@@ -19,6 +19,7 @@ have installed.
 | `--image PATH` | Attach a sniffed, bounded PNG/JPEG/GIF/WebP to a one-shot task; repeatable up to eight |
 | `--output-format text\|json\|stream-json` | One-shot stdout contract |
 | `-C`, `--repo PATH` | Target repository; default `.` |
+| `serve --listen ADDR` | Run the versioned App Server on a loopback TCP address; default `127.0.0.1:0` |
 
 ## Provider and model
 
@@ -62,3 +63,7 @@ User config also supports a wall-clock ceiling; the current CLI has no
 Local validation runs before a new rollout is opened, so malformed mode, effort,
 verification, or TUI/one-shot combinations should fail without creating a
 phantom session.
+
+`core serve` uses bounded newline-delimited JSON frames and refuses non-loopback
+addresses. Its bound address and lifecycle diagnostics are JSON objects on
+stderr; it does not require or write to a terminal.

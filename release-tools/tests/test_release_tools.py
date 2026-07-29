@@ -12,12 +12,14 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
 
 import checksums  # noqa: E402
+import common  # noqa: E402
 import dependency_audit  # noqa: E402
 import fetch_advisory_db  # noqa: E402
 import fetch_tool  # noqa: E402
@@ -27,6 +29,7 @@ import package  # noqa: E402
 import render_installer  # noqa: E402
 import sbom  # noqa: E402
 import schema_release  # noqa: E402
+import verify_pe  # noqa: E402
 from common import ReleaseToolError, sha256_file  # noqa: E402
 
 
@@ -45,7 +48,9 @@ class ReleaseToolsTest(unittest.TestCase):
         path.chmod(mode)
         return path
 
-    def package_arguments(self, output: Path) -> argparse.Namespace:
+    def package_arguments(
+        self, output: Path, target: str = "aarch64-apple-darwin"
+    ) -> argparse.Namespace:
         return argparse.Namespace(
             binary=self.write("core", "#!/bin/sh\nprintf 'core 0.0.1\\n'\n", 0o755),
             license=self.write("LICENSE", "Apache-2.0\n"),
@@ -55,7 +60,7 @@ class ReleaseToolsTest(unittest.TestCase):
             sbom=self.write("SBOM.spdx.json", "{}\n"),
             build_info=self.write("BUILD-INFO.json", "{}\n"),
             version="0.0.1",
-            target="aarch64-apple-darwin",
+            target=target,
             source_date_epoch=1_700_000_000,
             output_dir=output,
         )
@@ -105,9 +110,98 @@ class ReleaseToolsTest(unittest.TestCase):
 
     def test_package_size_protocol_matches_installer_ceiling(self) -> None:
         self.assertGreater(
-            package.ustar_size([package.MAX_UNPACKED_TAR_BYTES]),
-            package.MAX_UNPACKED_TAR_BYTES,
+            package.ustar_size([package.MAX_UNPACKED_ARCHIVE_BYTES]),
+            package.MAX_UNPACKED_ARCHIVE_BYTES,
         )
+
+    def test_windows_package_is_a_deterministic_exact_zip_with_core_exe(self) -> None:
+        target = "x86_64-pc-windows-msvc"
+        first = package.build_archive(
+            self.package_arguments(self.root / "windows-first", target)
+        )
+        second = package.build_archive(
+            self.package_arguments(self.root / "windows-second", target)
+        )
+        self.assertEqual(first.suffix, ".zip")
+        self.assertEqual(sha256_file(first), sha256_file(second))
+
+        root = f"core-code-v0.0.1-{target}"
+        expected = [
+            f"{root}/",
+            f"{root}/core.exe",
+            f"{root}/LICENSE",
+            f"{root}/README.md",
+            f"{root}/THIRD_PARTY_LICENSES.html",
+            f"{root}/THIRD_PARTY_NOTICES.txt",
+            f"{root}/SBOM.spdx.json",
+            f"{root}/BUILD-INFO.json",
+        ]
+        with zipfile.ZipFile(first) as archive:
+            self.assertEqual(archive.namelist(), expected)
+            self.assertEqual(
+                archive.read(f"{root}/core.exe"),
+                b"#!/bin/sh\nprintf 'core 0.0.1\\n'\n",
+            )
+            members = archive.infolist()
+            self.assertEqual((members[1].external_attr >> 16) & 0o777, 0o755)
+            self.assertTrue(
+                all(member.date_time == (2023, 11, 14, 22, 13, 20) for member in members)
+            )
+
+    def test_windows_pe_verifier_requires_amd64_pe32_plus_executable(self) -> None:
+        binary = self.root / "core.exe"
+        image = bytearray(512)
+        image[:2] = b"MZ"
+        image[0x3C:0x40] = (128).to_bytes(4, "little")
+        image[128:132] = b"PE\0\0"
+        image[132:134] = verify_pe.AMD64_MACHINE.to_bytes(2, "little")
+        image[150:152] = verify_pe.IMAGE_FILE_EXECUTABLE_IMAGE.to_bytes(2, "little")
+        image[152:154] = verify_pe.PE32_PLUS_MAGIC.to_bytes(2, "little")
+        binary.write_bytes(image)
+        verify_pe.verify(binary)
+
+        image[132:134] = (0x014C).to_bytes(2, "little")
+        binary.write_bytes(image)
+        with self.assertRaisesRegex(ReleaseToolError, "not AMD64"):
+            verify_pe.verify(binary)
+
+    def test_windows_release_and_native_client_oracles_are_wired(self) -> None:
+        repository = TOOLS.parent
+        target = "x86_64-pc-windows-msvc"
+        self.assertIn(target, common.SUPPORTED_TARGETS)
+
+        release = (repository / ".github/workflows/release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("runner: windows-2022", release)
+        self.assertIn(f"target: {target}", release)
+        self.assertIn("archive-suffix: .zip", release)
+        self.assertIn("release-tools/verify_pe.py", release)
+        self.assertIn("$rows = @(Get-Content", release)
+        for failure in (
+            "SHA256SUMS download exited with $LASTEXITCODE",
+            "Windows archive download exited with $LASTEXITCODE",
+            "Windows release binary exited with $LASTEXITCODE",
+            "latest Windows archive download exited with $LASTEXITCODE",
+            "latest Windows release binary exited with $LASTEXITCODE",
+        ):
+            self.assertIn(failure, release)
+
+        ci = (repository / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn("windows-2022", ci)
+        self.assertIn("--test windows_conpty", ci)
+        self.assertIn(
+            "no_tty_skew_reconnect_and_result_v5_share_one_headless_server", ci
+        )
+        self.assertIn("text_one_shot_process_contract_is_byte_exact", ci)
+
+        tools = json.loads(
+            (repository / "release-tools/tools-lock.json").read_text(encoding="utf-8")
+        )
+        for tool in ("cargo-auditable", "syft"):
+            self.assertEqual(
+                tools["tools"][tool]["hosts"]["windows-x86_64"]["archive"], "zip"
+            )
 
     def test_fetch_tool_extracts_only_one_regular_binary(self) -> None:
         archive_path = self.root / "tool.tar.gz"
@@ -130,6 +224,22 @@ class ReleaseToolsTest(unittest.TestCase):
             archive.addfile(link)
         with self.assertRaises(ReleaseToolError):
             fetch_tool.extract_binary(bad_archive, "tool", self.root / "bad")
+
+    def test_fetch_tool_extracts_one_pinned_windows_executable_from_zip(self) -> None:
+        archive_path = self.root / "tool.zip"
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr("README.md", "fixture")
+            archive.writestr("nested/tool.exe", b"MZfixture")
+        output = self.root / "bin/tool.exe"
+        fetch_tool.extract_binary(archive_path, "tool.exe", output, "zip")
+        self.assertEqual(output.read_bytes(), b"MZfixture")
+
+        duplicate = self.root / "duplicate-tool.zip"
+        with zipfile.ZipFile(duplicate, "w") as archive:
+            archive.writestr("one/tool.exe", b"one")
+            archive.writestr("two/tool.exe", b"two")
+        with self.assertRaisesRegex(ReleaseToolError, "count or size"):
+            fetch_tool.extract_binary(duplicate, "tool.exe", self.root / "duplicate", "zip")
 
     def test_fetch_tool_rejects_untrusted_redirect_hops(self) -> None:
         fetch_tool.validate_download_url(
@@ -659,6 +769,34 @@ exit 1
         )
         result = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(result["product"], "Core Code")
+        self.assertEqual(result["targets"][target]["archive"]["name"], base)
+
+    def test_release_manifest_selects_zip_for_windows(self) -> None:
+        dist = self.root / "windows-dist"
+        dist.mkdir()
+        self.write("windows-dist/install.sh", "#!/bin/sh\n")
+        self.write("windows-dist/THIRD_PARTY_LICENSES.html", "licenses\n")
+        self.write("windows-dist/THIRD_PARTY_NOTICES.txt", "notices\n")
+        target = "x86_64-pc-windows-msvc"
+        base = f"core-code-v0.0.1-{target}.zip"
+        for name in (
+            base,
+            f"{base}.provenance.json",
+            f"{base}.spdx.json",
+            f"{base}.sbom-attestation.json",
+        ):
+            self.write(f"windows-dist/{name}", f"{name}\n")
+        output = dist / "release-manifest.json"
+        manifest.create_release(
+            argparse.Namespace(
+                version="0.0.1",
+                commit="a" * 40,
+                dist=dist,
+                targets=[target],
+                output=output,
+            )
+        )
+        result = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(result["targets"][target]["archive"]["name"], base)
 
     def test_checksums_reject_unsafe_asset_name(self) -> None:

@@ -483,7 +483,8 @@ jobs:
             aarch64-apple-darwin \
             x86_64-apple-darwin \
             aarch64-unknown-linux-musl \
-            x86_64-unknown-linux-musl
+            x86_64-unknown-linux-musl \
+            x86_64-pc-windows-msvc
           do
             cargo +"$RUST_VERSION" tree --locked -p core-cli \
               --target "$target" -e normal --prefix none --format '{p}' \
@@ -495,6 +496,7 @@ jobs:
             --dependency-tree "$RUNNER_TEMP/cargo-tree-x86_64-apple-darwin.txt" \
             --dependency-tree "$RUNNER_TEMP/cargo-tree-aarch64-unknown-linux-musl.txt" \
             --dependency-tree "$RUNNER_TEMP/cargo-tree-x86_64-unknown-linux-musl.txt" \
+            --dependency-tree "$RUNNER_TEMP/cargo-tree-x86_64-pc-windows-msvc.txt" \
             --licenses "$RUNNER_TEMP/legal/THIRD_PARTY_LICENSES.html" \
             --inventory "$RUNNER_TEMP/cargo-about.json" \
             --output "$RUNNER_TEMP/legal/THIRD_PARTY_NOTICES.txt"
@@ -521,17 +523,38 @@ jobs:
           - runner: macos-15
             host: darwin-arm64
             target: aarch64-apple-darwin
+            binary: core
+            archive-suffix: .tar.gz
+            python: python3
           - runner: macos-15-intel
             host: darwin-x86_64
             target: x86_64-apple-darwin
+            binary: core
+            archive-suffix: .tar.gz
+            python: python3
           - runner: ubuntu-24.04-arm
             host: linux-arm64
             target: aarch64-unknown-linux-musl
+            binary: core
+            archive-suffix: .tar.gz
+            python: python3
           - runner: ubuntu-24.04
             host: linux-x86_64
             target: x86_64-unknown-linux-musl
+            binary: core
+            archive-suffix: .tar.gz
+            python: python3
+          - runner: windows-2022
+            host: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            binary: core.exe
+            archive-suffix: .zip
+            python: python
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
     env:
       CARGO_INCREMENTAL: 0
       CARGO_TARGET_DIR: ${{ github.workspace }}/target/release-build
@@ -542,6 +565,15 @@ jobs:
         with:
           ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
+      - name: Normalize Windows build paths for native tools
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          workspace=$(cygpath -m "$GITHUB_WORKSPACE")
+          {
+            echo "CARGO_TARGET_DIR=$workspace/target/release-build"
+            echo "RUSTFLAGS=--remap-path-prefix=$workspace=/workspace -C strip=symbols"
+          } >> "$GITHUB_ENV"
       # Keep this identical to CI's narrow Ubuntu 24.04 bwrap authorization. The profile grants
       # user namespaces only to the root-owned system binary and leaves the global restriction on.
       - name: Install Linux build and sandbox dependencies
@@ -571,16 +603,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/release-bin"
-          python3 release-tools/fetch_tool.py cargo-auditable "${{ matrix.host }}" \
-            --output "$RUNNER_TEMP/release-bin/cargo-auditable"
-          python3 release-tools/fetch_tool.py syft "${{ matrix.host }}" \
-            --output "$RUNNER_TEMP/release-bin/syft"
+          "${{ matrix.python }}" release-tools/fetch_tool.py cargo-auditable "${{ matrix.host }}" \
+            --output "$RUNNER_TEMP/release-bin/cargo-auditable${{ runner.os == 'Windows' && '.exe' || '' }}"
+          "${{ matrix.python }}" release-tools/fetch_tool.py syft "${{ matrix.host }}" \
+            --output "$RUNNER_TEMP/release-bin/syft${{ runner.os == 'Windows' && '.exe' || '' }}"
           echo "$RUNNER_TEMP/release-bin" >> "$GITHUB_PATH"
       - name: Run the complete target test suite
-        run: >-
-          cargo +"$RUST_VERSION" test
-          --workspace --all-targets --locked
-          --target "${{ matrix.target }}"
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cargo +"$RUST_VERSION" test --locked -p core-cli \
+              --target "${{ matrix.target }}"
+          else
+            cargo +"$RUST_VERSION" test --workspace --all-targets --locked \
+              --target "${{ matrix.target }}"
+          fi
       - name: Build an auditable release binary
         run: >-
           cargo +"$RUST_VERSION" auditable build
@@ -590,11 +626,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/core"
+          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
           target=${{ matrix.target }}
-          test -x "$binary"
+          test -f "$binary"
           test "$("$binary" --version)" = "core ${{ needs.validate.outputs.version }}"
           "$binary" --help >/dev/null
+          if [[ "$target" == x86_64-pc-windows-msvc ]]; then
+            "${{ matrix.python }}" release-tools/verify_pe.py --binary "$binary"
+            exit 0
+          fi
+          test -x "$binary"
           description=$(file "$binary")
           case "$target" in
             aarch64-apple-darwin) grep -q 'arm64' <<<"$description" ;;
@@ -605,14 +646,18 @@ jobs:
           if [[ "$target" == *-unknown-linux-musl ]]; then
             grep -Eq 'statically linked|static-pie linked' <<<"$description"
           fi
+      - name: Complete one task with the native release client
+        run: >-
+          "${{ matrix.python }}" -I release-tools/smoke_release_client.py
+          --binary "$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
       - name: Generate and normalize the binary SBOM
         shell: bash
         run: |
           set -euo pipefail
-          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/core"
+          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
           mkdir -p dist
           syft scan "$binary" -o "spdx-json=$RUNNER_TEMP/raw.spdx.json"
-          python3 release-tools/sbom.py \
+          "${{ matrix.python }}" release-tools/sbom.py \
             --input "$RUNNER_TEMP/raw.spdx.json" \
             --binary "$binary" \
             --output "$RUNNER_TEMP/SBOM.spdx.json" \
@@ -624,15 +669,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/core"
-          python3 release-tools/manifest.py build-info \
+          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
+          "${{ matrix.python }}" release-tools/manifest.py build-info \
             --version "${{ needs.validate.outputs.version }}" \
             --target "${{ matrix.target }}" \
             --commit "${{ needs.validate.outputs.commit }}" \
             --rustc "$(rustc +"$RUST_VERSION" --version --verbose)" \
             --cargo "$(cargo +"$RUST_VERSION" --version)" \
             --output "$RUNNER_TEMP/BUILD-INFO.json"
-          python3 release-tools/package.py \
+          "${{ matrix.python }}" release-tools/package.py \
             --binary "$binary" \
             --license LICENSE \
             --readme README.md \
@@ -644,7 +689,7 @@ jobs:
             --target "${{ matrix.target }}" \
             --source-date-epoch "$SOURCE_DATE_EPOCH" \
             --output-dir dist
-          archive_name="core-code-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.tar.gz"
+          archive_name="core-code-v${{ needs.validate.outputs.version }}-${{ matrix.target }}${{ matrix.archive-suffix }}"
           cp "$RUNNER_TEMP/SBOM.spdx.json" "dist/$archive_name.spdx.json"
           echo "archive=dist/$archive_name" >> "$GITHUB_OUTPUT"
           echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
@@ -877,7 +922,8 @@ jobs:
           done
           [[ "$release_verified" == true ]]
 
-          for archive in dist/core-code-v*.tar.gz; do
+          for archive in dist/core-code-v*.tar.gz dist/core-code-v*.zip; do
+            test -f "$archive" || continue
             gh attestation verify "$archive" \
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
@@ -909,12 +955,15 @@ jobs:
             target: aarch64-unknown-linux-musl
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     permissions:
       contents: read
     steps:
       - name: Install the exact public release through curl
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -925,6 +974,7 @@ jobs:
             | sh -s -- --version "$GITHUB_REF_NAME" --bin-dir "$bin_dir"
           test "$("$bin_dir/core" --version)" = "core ${{ needs.validate.outputs.version }}"
       - name: Verify the latest installer redirect
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -934,3 +984,60 @@ jobs:
             "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/install.sh" \
             | sh -s -- --bin-dir "$bin_dir"
           test "$("$bin_dir/core" --version)" = "core ${{ needs.validate.outputs.version }}"
+      - name: Verify the exact public Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archiveName = "core-code-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.zip"
+          $root = "core-code-v${{ needs.validate.outputs.version }}-${{ matrix.target }}"
+          $releaseRoot = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME"
+          $archive = Join-Path $env:RUNNER_TEMP $archiveName
+          $checksums = Join-Path $env:RUNNER_TEMP 'SHA256SUMS'
+          curl.exe --proto '=https' --tlsv1.2 -LsSf --retry 6 --retry-all-errors `
+            --retry-delay 2 "$releaseRoot/SHA256SUMS" -o $checksums
+          if ($LASTEXITCODE -ne 0) { throw "SHA256SUMS download exited with $LASTEXITCODE" }
+          curl.exe --proto '=https' --tlsv1.2 -LsSf --retry 6 --retry-all-errors `
+            --retry-delay 2 "$releaseRoot/$archiveName" -o $archive
+          if ($LASTEXITCODE -ne 0) { throw "Windows archive download exited with $LASTEXITCODE" }
+          $rows = @(Get-Content -LiteralPath $checksums |
+            Where-Object { $_ -match "^[0-9a-f]{64}\s+\*?$([regex]::Escape($archiveName))$" })
+          if ($rows.Count -ne 1) { throw 'SHA256SUMS lacks one exact Windows archive row' }
+          $expected = ($rows[0] -split '\s+')[0]
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw 'Windows archive checksum mismatch' }
+          $destination = Join-Path $env:RUNNER_TEMP 'core-code-exact'
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination
+          $binary = Join-Path $destination "$root/core.exe"
+          $reported = & $binary --version
+          if ($LASTEXITCODE -ne 0) { throw "Windows release binary exited with $LASTEXITCODE" }
+          if ($reported -ne "core ${{ needs.validate.outputs.version }}") {
+            throw "unexpected Windows release version: $reported"
+          }
+      - name: Verify the latest Windows archive redirect
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archiveName = "core-code-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.zip"
+          $root = "core-code-v${{ needs.validate.outputs.version }}-${{ matrix.target }}"
+          $archive = Join-Path $env:RUNNER_TEMP 'core-code-latest.zip'
+          curl.exe --proto '=https' --tlsv1.2 -LsSf --retry 6 --retry-all-errors `
+            --retry-delay 2 `
+            "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/$archiveName" `
+            -o $archive
+          if ($LASTEXITCODE -ne 0) { throw "latest Windows archive download exited with $LASTEXITCODE" }
+          $exactArchive = Join-Path $env:RUNNER_TEMP $archiveName
+          $latestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+          $exactHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exactArchive).Hash
+          if ($latestHash -ne $exactHash) {
+            throw 'latest Windows archive does not match the checksum-verified tag archive'
+          }
+          $destination = Join-Path $env:RUNNER_TEMP 'core-code-latest'
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination
+          $binary = Join-Path $destination "$root/core.exe"
+          $reported = & $binary --version
+          if ($LASTEXITCODE -ne 0) { throw "latest Windows release binary exited with $LASTEXITCODE" }
+          if ($reported -ne "core ${{ needs.validate.outputs.version }}") {
+            throw "unexpected latest Windows release version: $reported"
+          }

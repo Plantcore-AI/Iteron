@@ -13,8 +13,9 @@ pub struct Report {
 pub fn validate(root: &Path, registry: &Registry) -> Result<Report> {
     validate_registry(registry)?;
     validate_protocol_boundary(root, registry)?;
-    crate::schema_compat::validate_current(root)?;
+    let cli_result_authority = crate::schema_compat::validate_current(root)?;
     crate::conformance::validate(root)?;
+    crate::client_conformance::validate(root, &cli_result_authority)?;
     let files = public_files(root)?;
     validate_path_coverage(registry, &files)?;
     crate::seams::validate(root, &files)?;

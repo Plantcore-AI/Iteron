@@ -18,6 +18,7 @@ impl Scratch {
             std::env::temp_dir().join(format!("core-cli-reindex-{}-{serial}", std::process::id()));
         std::fs::create_dir_all(root.join("repo")).unwrap();
         std::fs::create_dir_all(root.join("runs")).unwrap();
+        std::fs::create_dir_all(root.join("home")).unwrap();
         Self(root)
     }
 
@@ -28,6 +29,10 @@ impl Scratch {
     fn runs(&self) -> PathBuf {
         self.0.join("runs")
     }
+
+    fn home(&self) -> PathBuf {
+        self.0.join("home")
+    }
 }
 
 impl Drop for Scratch {
@@ -36,17 +41,33 @@ impl Drop for Scratch {
     }
 }
 
-fn run_core(repo: &Path, arguments: &[&str]) -> (ExitStatus, String, String) {
+fn run_core(home: &Path, repo: &Path, arguments: &[&str]) -> (ExitStatus, String, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_core"));
     command
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env(
+            "PATH",
+            if cfg!(windows) {
+                std::env::var_os("PATH").unwrap_or_default()
+            } else {
+                "/usr/bin:/bin".into()
+            },
+        )
         .env("LANG", "C.UTF-8")
         .current_dir(repo)
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if cfg!(windows) {
+        for name in ["SystemRoot", "WINDIR"] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+    }
     let mut child = command.spawn().unwrap();
     let deadline = Instant::now() + PROCESS_TIMEOUT;
     let status = loop {
@@ -118,6 +139,7 @@ fn d9_10_g1_reindex_subcommand_repairs_corrupt_cache_and_sessions_listing() {
     let repo_arg = scratch.repo().display().to_string();
     let runs_arg = scratch.runs().display().to_string();
     let (status, stdout, stderr) = run_core(
+        &scratch.home(),
         &scratch.repo(),
         &["--repo", &repo_arg, "--runs-dir", &runs_arg, "reindex"],
     );
@@ -134,6 +156,7 @@ fn d9_10_g1_reindex_subcommand_repairs_corrupt_cache_and_sessions_listing() {
     assert_eq!(meta["title"], "repairable session title");
 
     let (status, sessions, stderr) = run_core(
+        &scratch.home(),
         &scratch.repo(),
         &["--repo", &repo_arg, "--runs-dir", &runs_arg, "--sessions"],
     );

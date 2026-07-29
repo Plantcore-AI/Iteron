@@ -45,12 +45,20 @@ failure ownership are documented.
 
 ## Platform evidence
 
-macOS and Linux required jobs run the same full Rust gate. Linux CI installs
+macOS and Linux required jobs run the full workspace Rust gate. Linux CI installs
 bubblewrap and loads a path-specific AppArmor user-namespace profile so the live
 network-denial test must execute rather than skip. macOS runs live Seatbelt
 confinement tests.
 
-Do not treat a local macOS pass as Linux evidence or vice versa.
+The native `windows-2022` job runs format plus all-target check, clippy, and tests
+for `core-cli`, including the real ConPTY Unicode/resize oracle, one-shot
+completion, and the loopback `core serve` version-skew/reconnect/result-v5
+oracle. It also performs the explicit
+`cargo build --target x86_64-pc-windows-msvc -p core-cli` acceptance build.
+Unavailable Windows confinement operations remain fall-closed.
+
+Do not treat a local macOS or DGX Linux pass as native Windows evidence, or any
+one operating-system pass as evidence for another.
 
 ## Remote canaries
 

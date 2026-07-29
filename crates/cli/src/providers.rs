@@ -979,17 +979,16 @@ fn load_existing_scope_key(path: &Path) -> io::Result<CatalogCacheScopeKey> {
 }
 
 fn default_catalog_cache_path() -> Option<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME")?);
-    if !home.is_absolute() {
-        return None;
-    }
+    let home = core_protocol::home::operator()?;
     Some(core_protocol::home::path(&home, "cache/providers").join(CATALOG_CACHE_FILE))
 }
 
 fn default_static_provider_metadata_path() -> Option<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME")?);
-    home.is_absolute()
-        .then(|| core_protocol::home::path(&home, STATIC_PROVIDER_METADATA_FILE))
+    let home = core_protocol::home::operator()?;
+    Some(core_protocol::home::path(
+        &home,
+        STATIC_PROVIDER_METADATA_FILE,
+    ))
 }
 
 fn load_static_provider_metadata() -> anyhow::Result<Arc<StaticProviderMetadata>> {

@@ -1,13 +1,15 @@
 //! Terminal input demultiplexing for bounded startup capability detection.
 //!
 //! Crossterm turns unknown terminal responses into ordinary key events. This adapter recognizes only
-//! the exact, bounded OSC 11 and keyboard-enhancement grammars, queues every unrelated event
+//! the exact, bounded OSC 11 and Windows keyboard-enhancement grammars, queues every unrelated event
 //! for normal TUI dispatch, and stays armed after a timeout so a late response cannot become
 //! synthetic operator input.
 
 use crate::theme::capabilities::{BackgroundTone, Environment, tone_from_osc11_body};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::VecDeque;
+#[cfg(windows)]
+use std::io::IsTerminal;
 use std::time::{Duration, Instant};
 
 const OSC11_QUERY: &[u8] = b"\x1b]11;?\x1b\\";
@@ -15,9 +17,9 @@ const OSC11_TIMEOUT: Duration = Duration::from_millis(80);
 const MAX_OSC11_BODY_CHARS: usize = 48;
 const MAX_STARTUP_REPLAY_EVENTS: usize = 256;
 const CANDIDATE_TIMEOUT: Duration = Duration::from_millis(40);
-#[cfg(test)]
+#[cfg(any(windows, test))]
 const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
-#[cfg(test)]
+#[cfg(any(windows, test))]
 const KEYBOARD_QUERY_TIMEOUT: Duration = Duration::from_millis(200);
 const MAX_KEYBOARD_RESPONSE_CHARS: usize = 24;
 const MAX_KEYBOARD_RESPONSE_EVENTS: usize = 64;
@@ -30,15 +32,42 @@ pub(crate) struct TerminalInput {
 }
 
 impl TerminalInput {
-    /// Probe progressive keyboard enhancement through the currently supported terminal backend.
+    /// Probe progressive keyboard enhancement without relying on Crossterm's Windows implementation,
+    /// which is a hard-coded `false`. On Windows, query bytes and the primary device-attributes
+    /// sentinel share one bounded wait. Any unrelated startup events are replayed in exact order,
+    /// while a late terminal response remains armed for suppression instead of becoming input.
     pub(crate) fn supports_keyboard_enhancement(&mut self) -> bool {
-        #[cfg(unix)]
+        #[cfg(windows)]
+        {
+            if !terminal_pair_is_supported() {
+                return false;
+            }
+            let Some(deadline) = self.begin_keyboard_query(write_keyboard_query) else {
+                return false;
+            };
+
+            let mut supported = false;
+            for _ in 0..MAX_STARTUP_REPLAY_EVENTS {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    return supported;
+                };
+                let Ok(true) = event::poll(remaining) else {
+                    return supported;
+                };
+                let Ok(incoming) = event::read() else {
+                    return supported;
+                };
+                match self.route_all(incoming).keyboard {
+                    Some(KeyboardResponse::Enhancement) => supported = true,
+                    Some(KeyboardResponse::DeviceAttributes) => return supported,
+                    None => {}
+                }
+            }
+            supported
+        }
+        #[cfg(not(windows))]
         {
             crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
-        }
-        #[cfg(not(unix))]
-        {
-            false
         }
     }
 
@@ -142,7 +171,7 @@ impl TerminalInput {
         write(deadline).ok().map(|()| deadline)
     }
 
-    #[cfg(test)]
+    #[cfg(any(windows, test))]
     fn begin_keyboard_query(
         &mut self,
         write: impl FnOnce(Instant) -> std::io::Result<()>,
@@ -157,7 +186,7 @@ impl TerminalInput {
 
 #[derive(Debug, Default)]
 struct RoutedResponses {
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     keyboard: Option<KeyboardResponse>,
     background: Option<BackgroundTone>,
 }
@@ -182,7 +211,7 @@ struct KeyboardCandidate {
 }
 
 impl KeyboardResponseDemux {
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     fn arm(&mut self) {
         self.armed = true;
         self.candidate = None;
@@ -482,12 +511,17 @@ fn terminal_pair_is_supported() -> bool {
     unsafe { libc::isatty(libc::STDIN_FILENO) == 1 && libc::isatty(libc::STDOUT_FILENO) == 1 }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn terminal_pair_is_supported() -> bool {
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
+#[cfg(not(any(unix, windows)))]
 fn terminal_pair_is_supported() -> bool {
     false
 }
 
-#[cfg(test)]
+#[cfg(any(windows, test))]
 fn await_keyboard_query_write_until(
     receiver: std::sync::mpsc::Receiver<std::io::Result<usize>>,
     deadline: Instant,
@@ -518,12 +552,62 @@ fn await_keyboard_query_write_until(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(windows, test))]
 fn keyboard_query_timeout() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::TimedOut,
         "keyboard capability query write timed out",
     )
+}
+
+#[cfg(windows)]
+fn write_keyboard_query(deadline: Instant) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::IO::CancelSynchronousIo;
+
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let writer = std::thread::Builder::new()
+        .name("core-keyboard-query".into())
+        .spawn(move || {
+            let _ = sender.send(write_keyboard_query_once());
+        })?;
+    await_keyboard_query_write_until(receiver, deadline, || {
+        // SAFETY: the JoinHandle owns a live Windows thread handle for the writer. Cancellation is
+        // best-effort and targets only synchronous I/O issued by that thread.
+        let thread = writer.as_raw_handle() as HANDLE;
+        let _ = unsafe { CancelSynchronousIo(thread) };
+    })
+}
+
+#[cfg(windows)]
+fn write_keyboard_query_once() -> std::io::Result<usize> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::WriteFile;
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
+
+    // SAFETY: GetStdHandle returns the process-owned stdout handle without transferring ownership.
+    let stdout = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    if stdout.is_null() || stdout == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut written = 0_u32;
+    // SAFETY: the query is a live static byte slice, `written` is valid for this call, and no
+    // OVERLAPPED pointer is supplied for this synchronous one-shot write.
+    let succeeded = unsafe {
+        WriteFile(
+            stdout,
+            KEYBOARD_ENHANCEMENT_QUERY.as_ptr(),
+            KEYBOARD_ENHANCEMENT_QUERY.len() as u32,
+            &mut written,
+            std::ptr::null_mut(),
+        )
+    };
+    if succeeded == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(written as usize)
+    }
 }
 
 #[cfg(unix)]

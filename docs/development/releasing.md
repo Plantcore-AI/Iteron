@@ -18,20 +18,20 @@ supply-chain event, not a local `cargo build` plus an uploaded binary.
 
 Before creating an immutable tag, dispatch `release.yml` against the exact
 candidate commit. This preflight runs the same validation, legal-evidence, native
-four-target test, package, SBOM, and attestation graph, but the publish and curl
+five-target test, package, SBOM, and attestation graph, but the publish and public
 canary jobs are structurally restricted to `refs/tags/v*`. All preflight jobs must
 be green before the Owner creates the tag.
 
 ## Required artifacts
 
-Every platform archive contains the `core` binary, `LICENSE`, `README.md`, audited
-third-party licenses and notices, an SPDX SBOM, and build metadata. The release
-also publishes `SHA256SUMS`, a versioned machine-readable manifest, the installer,
-and GitHub artifact attestations.
+Every platform archive contains the `core` binary (`core.exe` on Windows),
+`LICENSE`, `README.md`, audited third-party licenses and notices, an SPDX SBOM,
+and build metadata. The release also publishes `SHA256SUMS`, a versioned
+machine-readable manifest, the POSIX installer, and GitHub artifact attestations.
 
 The first supported targets are documented by the release workflow and
-installation guide. A target enters the installer allowlist only after a native
-runner builds, tests, packages, and installs it successfully.
+installation guide. A target enters the public distribution matrix only after a
+native runner builds, tests, packages, and smoke-tests it successfully.
 
 ## Publication order
 
@@ -42,7 +42,7 @@ runner builds, tests, packages, and installs it successfully.
 5. Create a draft release and upload the complete set.
 6. Compare uploaded asset digests with the local manifest.
 7. Publish once, as the immutable latest release.
-8. Run fixed-version and `latest` public installer canaries.
+8. Run fixed-version and `latest` public installer or archive canaries.
 
 A failed draft is deleted or corrected before publication. An immutable published
 release is never edited; publish a new patch version.

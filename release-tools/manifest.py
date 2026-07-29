@@ -9,6 +9,7 @@ from pathlib import Path
 from common import (
     ReleaseToolError,
     SUPPORTED_TARGETS,
+    archive_suffix,
     atomic_write_text,
     canonical_json,
     require_regular_file,
@@ -87,7 +88,7 @@ def create_release(arguments: argparse.Namespace) -> None:
     }
     target_documents = {}
     for target in sorted(targets):
-        base = f"core-code-v{version}-{target}.tar.gz"
+        base = f"core-code-v{version}-{target}{archive_suffix(target)}"
         archive = arguments.dist / base
         target_documents[target] = {
             "archive": digest_entry(archive),

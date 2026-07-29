@@ -90,13 +90,22 @@ impl SkillCatalog {
     /// found under a vendored dependency path is stripped (Untrusted, never injected). Sorted by
     /// name for a stable, reproducible listing.
     pub fn discover(user_skills_dir: &Path, repo: &Path) -> Self {
-        Self::discover_optional(Some(user_skills_dir), repo)
+        Self::discover_with_user(Some(user_skills_dir), repo)
     }
 
     /// Discover with an explicitly optional user tier. `None` means the composition root did not
     /// supply a home directory; it must not be replaced with `.` and accidentally treated as
     /// trusted user material.
     pub fn discover_optional(user_skills_dir: Option<&Path>, repo: &Path) -> Self {
+        Self::discover_with_user(user_skills_dir, repo)
+    }
+
+    /// Discover repository skills when no validated operator home is available.
+    pub fn discover_without_user(repo: &Path) -> Self {
+        Self::discover_with_user(None, repo)
+    }
+
+    fn discover_with_user(user_skills_dir: Option<&Path>, repo: &Path) -> Self {
         let mut cat = SkillCatalog::default();
         // User tier: the supplied `.core/skills` directory only.
         if let Some(user_skills_dir) = user_skills_dir {
@@ -336,9 +345,9 @@ fn one_line(s: &str, max: usize) -> String {
     out
 }
 
-/// The user skills dir `~/.core/skills`, if HOME is set.
+/// The user skills dir `~/.core/skills`, if an absolute operator home is available.
 pub fn user_skills_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".core").join("skills"))
+    core_protocol::home::operator().map(|home| core_protocol::home::path(&home, "skills"))
 }
 
 #[cfg(test)]

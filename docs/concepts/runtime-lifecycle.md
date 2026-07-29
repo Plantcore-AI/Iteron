@@ -1,8 +1,8 @@
 # Runtime lifecycle
 
-Core Code runs one resident App Server task per session. The TUI and one-shot
-emitter are clients of its bounded SQ/EQ queues; neither reclaims or directly
-runs the kernel `Agent`.
+Core Code runs one resident App Server task per session. The TUI, one-shot
+emitter, and headless transport are clients of its bounded SQ/EQ queues; none
+reclaims or directly runs the kernel `Agent`.
 
 ## Current startup path
 
@@ -21,7 +21,7 @@ At a high level, the executable:
 8. discovers bounded repository instructions, memory, skills, hooks, and agent
    definitions with their source trust;
 9. moves the runtime into the resident App Server and attaches the interactive
-   TUI or one-shot emitter as a versioned client;
+   TUI, one-shot emitter, or headless transport as a versioned client;
 10. runs bounded model/tool/verification turns until a terminal outcome.
 
 The order matters. Routing-sensitive values never come from a cloned repository,
@@ -55,11 +55,24 @@ input, approval responses, steering, interrupt, and drain operations are explici
 submissions. Phases and tool or workflow activity are emitted as events for the
 frontend and record path.
 
-The TUI and one-shot client use the in-process versioned wire. Every live event
-has a checked monotonic sequence, and the one-shot emitter consumes the same
-terminal summary authority as the TUI. Session resume remains a separate durable
-operation: `--resume RUN_ID` reconstructs from the hash-chained Rollout before
-the App Server starts.
+The TUI and one-shot client use the in-process versioned wire. `core serve`
+projects the same events onto a bounded loopback JSONL transport. Every live
+event has a checked monotonic cursor. The transport retains a bounded replay ring;
+when a requested cursor predates that ring it sends hash-verified Rollout events
+on a separate `rollout_seq` field before resuming live delivery. A slow external
+client is disconnected instead of blocking the runtime and can reconnect from
+its last cursor.
+
+Live reattach and session resume are deliberately different operations:
+
+- `resume_from` is a presentation-stream cursor within one still-running App
+  Server. It never selects or opens a run record.
+- `--resume RUN_ID` reconstructs a session from the hash-chained Rollout before
+  the App Server starts. It never accepts an EQ cursor.
+
+Keeping the identifiers and frame variants separate prevents a live reconnect
+from creating a second Rollout writer or a session resume from pretending that
+durable record sequence numbers are presentation events.
 
 `Interrupt` and `Drain` have deliberately different terminal semantics. Interrupt
 stops at the next turn-safe point and records `Interrupted`. Drain stops admitting
@@ -88,8 +101,8 @@ The runtime boundary is:
 2. a pure reducer that requests actions rather than performing them;
 3. one capability and effect broker;
 4. injected provider, world, context, verification, and scheduler ports;
-5. a long-lived session runtime with bounded queues;
-6. a versioned App Server used by the TUI and one-shot CLI.
+5. a long-lived session runtime with bounded queues and reconnect semantics;
+6. a versioned App Server used by the TUI, one-shot CLI, and headless clients.
 
 The process remains a modular monolith: the boundary isolates ownership and
 client contracts, but it does not claim that every component is a separately

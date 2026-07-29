@@ -93,8 +93,8 @@ pub(crate) const EQ_CAPACITY: usize = 1024;
 
 /// The authoritative terminal facts needed by every non-interactive client.
 ///
-/// Keeping this projection on the server side is what lets one-shot remain a client: it does not
-/// need to reclaim the [`Agent`] or parse `UiEvent::Done`'s debug string. The
+/// Keeping this projection on the server side is what lets one-shot and headless clients remain
+/// clients: neither needs to reclaim the [`Agent`] or parse `UiEvent::Done`'s debug string. The
 /// stable result-v5 object is still constructed by `output::final_result` at the client boundary.
 #[derive(Debug, Clone)]
 pub(crate) struct TerminalSummary {
@@ -503,9 +503,10 @@ pub(crate) struct Attached {
 /// **The composition root.** The one place an `Agent` is handed to an App Server, and the one place
 /// the wire's version, capacities and ownership are decided.
 ///
-/// The interactive TUI and one-shot path attach to this same function rather than building a second
-/// wire of their own. That is the point of it being a function: a client that constructs its own
-/// transport is a client that can drift from the protocol the server speaks.
+/// The interactive TUI attaches here today; the one-shot path and the headless `core serve` (#44)
+/// attach to this same function rather than building a second wire of their own. That is the point
+/// of it being a function: a client that constructs its own transport is a client that can drift
+/// from the protocol the server speaks, which is the failure this lane exists to remove.
 ///
 /// It is a function here rather than statements in `main.rs` because the schema-compatibility
 /// authority freezes `main` and `run_cli` token-for-token, along with `main.rs`'s module list
@@ -1117,6 +1118,39 @@ mod tests {
         assert_eq!(err.actual, PROTOCOL_VERSION + 1);
         assert!(rx.try_recv().is_err(), "a refused handshake queues nothing");
         assert!(AppServerClient::connect(PROTOCOL_VERSION - 1, tx).is_err());
+    }
+
+    #[test]
+    fn parity_transcript_done_capture_matches_terminal_summary_projection() {
+        let summary = TerminalSummary {
+            outcome: Outcome::Done,
+            assistant_text: "parity reply".into(),
+            run_id: "run-client-parity".into(),
+            cost: core_obs::CostState::default(),
+            turns: 1,
+            kernel_tax: core_obs::KernelTax::default(),
+            error: None,
+            memo_hits: 0,
+            memo_misses: 0,
+        };
+        let authoritative = summary.result_v5();
+        let transcript: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../governance/client-conformance/client-parity-v5.json"
+        ))
+        .unwrap();
+        let captures = transcript["clients"].as_array().unwrap();
+        assert_eq!(captures.len(), 3);
+        for capture in captures {
+            assert_eq!(
+                capture["result"], authoritative,
+                "{} changed terminal authority rather than presentation",
+                capture["client"]
+            );
+        }
+        assert_eq!(authoritative["outcome"], "done");
+        assert_eq!(authoritative["exit_code"], 0);
+        assert_eq!(authoritative["type"], "result");
+        assert_eq!(authoritative["schema_version"], 5);
     }
 
     #[test]

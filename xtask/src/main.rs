@@ -1,3 +1,4 @@
+mod client_conformance;
 mod conformance;
 mod model;
 mod render;

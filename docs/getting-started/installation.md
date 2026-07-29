@@ -1,7 +1,7 @@
 # Installation
 
-Core Code publishes pre-alpha binaries for macOS and Linux. Rust 1.90 or newer
-is required only when building from source.
+Core Code publishes pre-alpha binaries for macOS, Linux, and 64-bit Windows.
+Rust 1.90 or newer is required only when building from source.
 
 !!! warning "Pre-alpha software"
     A verified release is not a compatibility or unattended-safety promise.
@@ -9,7 +9,7 @@ is required only when building from source.
     [sandbox limitations](../using/permissions-and-sandbox.md) before using
     Core Code on important work.
 
-## Install the latest release
+## Install the latest release on macOS or Linux
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
@@ -32,6 +32,14 @@ An explicit `--bin-dir` wins. Otherwise the destination is
 `$CORE_CODE_INSTALL_DIR`, `$XDG_BIN_HOME`, or `$HOME/.local/bin`, in that order.
 Ensure that directory is already on `PATH`.
 
+The POSIX installer does not run on Windows. On Windows, download the
+`core-code-vVERSION-x86_64-pc-windows-msvc.zip` asset and `SHA256SUMS` from the
+same immutable release, verify the archive's exact lowercase SHA-256 row with
+`Get-FileHash`, and use `Expand-Archive`. The archive contains
+`core-code-vVERSION-x86_64-pc-windows-msvc\core.exe`; move that executable to a
+directory already on `PATH`. The release workflow performs the same checksum,
+extraction, `--version`, and latest-release canaries on `windows-2022`.
+
 ## Pin a version or destination
 
 ```sh
@@ -51,9 +59,12 @@ downloaded release asset with `--help` to inspect the complete interface.
 | macOS, Intel | `x86_64-apple-darwin` | `macos-15-intel` |
 | Linux, arm64 | `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` |
 | Linux, x86-64 | `x86_64-unknown-linux-musl` | `ubuntu-24.04` |
+| Windows, x86-64 | `x86_64-pc-windows-msvc` | `windows-2022` |
 
-Each target is built, tested, packaged, and installed on a native hosted runner.
-Windows is not a supported runtime target today.
+Each target is built, tested, packaged, and smoke-tested on a native hosted
+runner. The Windows sandbox remains a fall-closed stub: TUI, one-shot, and
+headless client paths work, while unavailable code-execution confinement is
+refused.
 
 ## Verify a release independently
 
@@ -73,6 +84,9 @@ row in `SHA256SUMS`, then verify the GitHub attestation:
 gh attestation verify core-code-v0.0.1-aarch64-apple-darwin.tar.gz \
   --repo Plantcore-AI/core
 ```
+
+For Windows, pass the `.zip` asset name to the same `gh attestation verify`
+command.
 
 A checksum fetched from the same release detects corruption. The GitHub
 attestation additionally binds an artifact to this repository and its release
@@ -98,11 +112,17 @@ Run the installer again to upgrade to the latest release, or pass `--version` to
 install a specific release. The existing executable is preserved if download,
 verification, extraction, or smoke testing fails.
 
+On Windows, repeat the verified archive procedure and replace only `core.exe`
+after the downloaded binary passes `core.exe --version`.
+
 To uninstall, remove only the executable from the destination you selected:
 
 ```sh
 rm "$HOME/.local/bin/core"
 ```
+
+On Windows, remove only the `core.exe` file from the directory where you placed
+it.
 
 Core Code does not remove `.core/` session and recovery data automatically.
 Review that evidence before deleting it.

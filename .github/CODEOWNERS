@@ -5,6 +5,7 @@
 /governance/** @fr0m-scratch
 /release-tools/** @fr0m-scratch
 /xtask/** @fr0m-scratch
+/.gitattributes @fr0m-scratch
 /.gitignore @fr0m-scratch
 /AGENTS.md @fr0m-scratch
 /CHANGELOG.md @fr0m-scratch

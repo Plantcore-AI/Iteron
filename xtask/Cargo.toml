@@ -13,6 +13,7 @@ core-protocol = { path = "../crates/protocol" }
 core-tools = { path = "../crates/tools" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true }
 toml = { workspace = true }

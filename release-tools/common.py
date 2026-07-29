@@ -21,6 +21,7 @@ SUPPORTED_TARGETS = (
     "x86_64-apple-darwin",
     "aarch64-unknown-linux-musl",
     "x86_64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
 )
 
 
@@ -49,6 +50,12 @@ def validate_target(value: str) -> str:
     if value not in SUPPORTED_TARGETS:
         fail(f"unsupported release target: {value!r}")
     return value
+
+
+def archive_suffix(target: str) -> str:
+    """Return the one release archive format assigned to a supported target."""
+    validate_target(target)
+    return ".zip" if target.endswith("-pc-windows-msvc") else ".tar.gz"
 
 
 def require_regular_file(path: Path, *, max_bytes: int | None = None) -> Path:

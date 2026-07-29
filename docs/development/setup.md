@@ -2,9 +2,11 @@
 
 ## Prerequisites
 
-Core Code development is supported on macOS and Linux. Install Git, a Rust
-toolchain at version 1.90 or newer, and the native compiler/linker required by
-Rust. The repository does not use a JavaScript build for the product runtime.
+Core Code development is supported on macOS, Linux, and 64-bit Windows. Install
+Git, a Rust toolchain at version 1.90 or newer, and the native compiler/linker
+required by Rust. Windows builds use the MSVC toolchain and require the Visual
+Studio Build Tools C++ workload. The repository does not use a JavaScript build
+for the product runtime.
 
 ```sh
 rustup toolchain install 1.90.0 --profile minimal \
@@ -26,6 +28,11 @@ to make a test pass.
 
 macOS uses the system `sandbox-exec`/Seatbelt boundary and needs no extra package.
 
+Windows uses the `x86_64-pc-windows-msvc` target. The client, ConPTY TUI, and
+loopback App Server build natively, but code-execution operations whose WS5
+Confinement backend is not yet available fail closed rather than running
+unconfined.
+
 ## Fork and clone
 
 Create a GitHub fork, then:
@@ -46,6 +53,8 @@ cargo build --locked -p core-cli
 ./target/debug/core --help
 ./target/debug/core -C /path/to/a/test/repository
 ```
+
+In PowerShell, run the built executable as `.\target\debug\core.exe`.
 
 Use a disposable test repository for changes involving edits, shell execution,
 permissions, hooks, or sandboxing. Code execution remains off unless explicitly
@@ -71,7 +80,8 @@ public push-protection scanners do not mistake them for live credentials.
 - If Linux sandbox tests report `Unsupported`, run the exact capability probe in
   `crates/sandbox/src/bubblewrap.rs` and inspect local AppArmor policy.
 - If a PTY test hangs, rerun only `cargo test -p core-cli --test tui_pty --locked
-  -- --nocapture` and capture the terminal size and OS.
+  -- --nocapture` on Unix, or `cargo test -p core-cli --test windows_conpty
+  --locked -- --nocapture` on Windows, and capture the terminal size and OS.
 - If generated ownership is stale, run `cargo run --locked -p core-xtask --
   boundaries generate`, then validate the resulting diff.
 

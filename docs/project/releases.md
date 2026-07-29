@@ -9,7 +9,7 @@ runtime compatibility.
 The [GitHub Releases](https://github.com/Plantcore-AI/core/releases) page is the
 canonical binary distribution channel. Each accepted release contains:
 
-- native macOS and Linux archives for the documented target matrix;
+- native macOS, Linux, and Windows archives for the documented target matrix;
 - a version-bound `install.sh` and `SHA256SUMS`;
 - `release-manifest.json` with commit, size, and digest evidence;
 - Apache-2.0 and third-party license and notice material;
@@ -43,6 +43,7 @@ A release is accepted only when all of the following are true:
 - archive structure, licenses, notices, checksums, SBOMs, and provenance pass;
 - the Owner approves the protected `release` environment;
 - the published release reports itself immutable;
-- fixed-version and `latest` curl canaries pass on all four supported targets.
+- fixed-version and `latest` public-download canaries pass on all five supported
+  targets.
 
 Maintainers follow the detailed [release guide](../development/releasing.md).

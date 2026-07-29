@@ -346,9 +346,10 @@ impl FileConfig {
     /// Load the USER config `~/.core/config.json` (trust-by-origin). ONLY the user's own config may
     /// declare command-spawning entries — `mcp_servers` spawns a subprocess at startup, so a project/
     /// cloned-repo config must never supply them (else cloning a hostile repo = RCE). Mirrors
-    /// `Hooks::load_user`. Absent HOME/file → default; malformed → error (fail loud on your own config).
+    /// `Hooks::load_user`. Absent operator home/file → default; malformed → error (fail loud on
+    /// your own config).
     pub fn load_user() -> anyhow::Result<FileConfig> {
-        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        let Some(home) = core_protocol::home::operator() else {
             return Ok(FileConfig::default());
         };
         let path = core_protocol::home::path(&home, "config.json");

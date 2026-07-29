@@ -394,6 +394,7 @@ dependencies = [
  "tokio",
  "url",
  "vt100",
+ "windows-sys 0.61.2",
  "zune-jpeg",
 ]
 
@@ -597,6 +598,7 @@ dependencies = [
  "quote",
  "serde",
  "serde_json",
+ "sha2",
  "syn 2.0.118",
  "toml",
 ]

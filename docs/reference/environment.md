@@ -48,10 +48,14 @@ removes the named variable from sandboxed shell and verification environments.
 | `CORE_THEME` | Explicit TUI theme selection where supported |
 | `NO_COLOR` | Select monochrome rendering |
 | `COLORFGBG` | Terminal light/dark hint when no explicit theme is set |
-| `HOME` | Locates operator-owned `~/.core` config, skills, agents, and memory |
+| `HOME` | Preferred operator home for `~/.core` config, skills, agents, and memory |
+| `USERPROFILE` | Native Windows operator-home fallback when `HOME` is absent or not absolute |
+| `HOMEDRIVE` + `HOMEPATH` | Final native Windows fallback when their combined path is absolute |
 
-Unset `HOME` means user-level sources are unavailable; repository operation can
-still use explicit CLI settings.
+On Unix, an absent or non-absolute `HOME` means user-level sources are unavailable.
+On Windows, Core next tries an absolute `USERPROFILE`, then an absolute path formed
+from `HOMEDRIVE` and `HOMEPATH`. Repository operation can still use explicit CLI
+settings when no operator home is available.
 
 ## Environment facts in the model context
 
@@ -76,7 +80,7 @@ or replaced from live state.
 
 The TUI emits OSC 8 hyperlinks only when the inherited terminal environment gives
 positive evidence for a supported terminal (for example iTerm2, WezTerm, Kitty,
-Ghostty, VS Code, recent VTE, or recent Konsole). Unknown
+Ghostty, VS Code, Windows Terminal, recent VTE, or recent Konsole). Unknown
 terminals, `TERM=dumb`, tmux, and screen use the plain `text (url)` rendering; Core
 does not assume passthrough support through a multiplexer.
 
