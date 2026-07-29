@@ -533,7 +533,7 @@ pub fn cost_status(result: &CliFinalResult) -> Result<CostStatus, ContractError>
 mod tests {
     use super::*;
     use serde_json::Value;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::{Path, PathBuf};
 
     fn result_json(extra: &str) -> Vec<u8> {
@@ -676,8 +676,8 @@ mod tests {
         let mut observed_versions = BTreeSet::new();
         let mut observed_types = BTreeSet::new();
         let mut observed_type_versions = BTreeSet::new();
-        let mut observed_diff_tags = BTreeSet::new();
-        let mut observed_diff_lines = 0usize;
+        let mut observed_diff_tags_by_version = BTreeMap::<u32, BTreeSet<CliDiffTag>>::new();
+        let mut observed_diff_lines_by_version = BTreeMap::<u32, usize>::new();
 
         for surface in surfaces.iter().filter(|surface| {
             surface["id"] == "cli.machine-result"
@@ -752,8 +752,13 @@ mod tests {
                             panic!("{relative} must freeze a non-null typed FileDiff")
                         };
                         for hunk in diff.hunks {
-                            observed_diff_lines += hunk.lines.len();
-                            observed_diff_tags.extend(hunk.lines.into_iter().map(|line| line.tag));
+                            *observed_diff_lines_by_version
+                                .entry(expected_version)
+                                .or_default() += hunk.lines.len();
+                            observed_diff_tags_by_version
+                                .entry(expected_version)
+                                .or_default()
+                                .extend(hunk.lines.into_iter().map(|line| line.tag));
                         }
                     }
                     let encoded = serde_json::to_vec(record).expect("machine fixture encodes");
@@ -811,16 +816,31 @@ mod tests {
             observed_type_versions, supported_type_versions,
             "eval admission must equal the exact frozen `(type, schema_version)` matrix"
         );
+        let supported_diff_versions = SUPPORTED_CORE_CLI_TYPE_VERSIONS
+            .iter()
+            .filter_map(|(kind, version)| (*kind == "tool_end").then_some(*version))
+            .collect::<BTreeSet<_>>();
         assert_eq!(
-            observed_diff_tags,
-            BTreeSet::from([CliDiffTag::Add, CliDiffTag::Ctx, CliDiffTag::Del]),
-            "the real eval consumer must decode every frozen DiffTag"
+            observed_diff_tags_by_version
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            supported_diff_versions,
+            "every admitted tool_end version must freeze a typed diff corpus"
         );
-        assert_eq!(
-            observed_diff_lines,
-            observed_diff_tags.len(),
-            "the real eval corpus must carry each DiffTag exactly once"
-        );
+        for version in supported_diff_versions {
+            let tags = &observed_diff_tags_by_version[&version];
+            assert_eq!(
+                tags,
+                &BTreeSet::from([CliDiffTag::Add, CliDiffTag::Ctx, CliDiffTag::Del]),
+                "the schema-v{version} eval consumer must decode every frozen DiffTag"
+            );
+            assert_eq!(
+                observed_diff_lines_by_version[&version],
+                tags.len(),
+                "the schema-v{version} eval corpus must carry each DiffTag exactly once"
+            );
+        }
         assert_eq!(
             SUPPORTED_CORE_CLI_SCHEMA_VERSIONS.last(),
             Some(&CORE_CLI_SCHEMA_VERSION),
