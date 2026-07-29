@@ -55,16 +55,22 @@ pub struct TaskEnvelope {
  pub budget: Budget,
  /// 治理这个 task 的已编译 vertical profile 句柄。**v1 冻结形状里没有这一项**；见下。
  // pub profile_ref: Option<ArtifactRef>,
- /// 这个 task 的 capability 上限（tier ceiling）。任何下游 ToolIntent /
+ /// 这个 task 的 capability 上限（一个类的集合，不是序上的一个点；`capability_set.rs:1-19`）。任何下游 ToolIntent /
  /// EffectProposal 的授权都 MUST 是它的子集：intersection-only，从不 union。
  pub ceiling: CapabilitySet,
 }
 
+/// v1 冻结形状（`crates/protocol/src/task.rs:36-46`）：只有 `Text` 一个可发射变体。
+/// 结构化 task（例如 SWE 风格的 issue + repo 指针 + 目标测试）**不在** v1 里，也**没有**
+/// `SchemaId` 这个类型；它按 §4.3(b)2 以一个新的顶层 tag 追加，今天的读端届时把它读成
+/// `Unknown`。
 pub enum TaskInput {
  /// 兼容 Op::UserInput 的自由文本 task。
  Text { text: String },
- /// 结构化 task（例如 SWE 风格的 issue + repo 指针 + 目标测试）。
- Structured { schema: SchemaId, body: serde_json::Value },
+ /// §4.3(b)1 降级臂：更新的写端产生的未知 kind 降级为 Unknown 并丢弃 payload，
+ /// 整条 envelope 仍可解析。可解析不等于可执行：`TaskEnvelope::validate` 对
+ /// `Unknown` 返回 Err（task.rs:198-200），fail-closed。
+ #[serde(other)] Unknown,
 }
 
 /// 验收如何被客观判定：一组具名、机器可跑的 check，每个带自己的量词。
@@ -111,8 +117,8 @@ pub enum Quantifier {
 - 冻结的 `Budget` 就是 `core_protocol::Budget`（`crates/protocol/src/lib.rs`），它已随 `EventKind::ChildStarted` 落在 durable 记录上，形状不可另铸；token 轴按 §4.3(b)3 以 `max_tokens: Option<u64>` + `skip_serializing_if` 追加，归属 #18，追加后两个载体的字节都逐字节不变。
 - `profile_ref` 是 §4.2.1 里唯一可以事后无损追加的字段：当第一个真实消费者出现时，按 §4.3(b)3 以 `#[serde(default, skip_serializing_if = "Option::is_none")] pub profile_ref: Option<ArtifactRef>` 追加，`None` 与今天的字节逐字节一致。今天的 bundle 解析走 boot-time `PolicyBundleResolver`（进程级、只读），不经过 envelope。
 
-  该 port 声明在 **`core_protocol::bundle`**，不在 `crates/evolve`。这一条是被一次合并后复审改正的：冻结时它被声明为 `core_evolve::PolicyBundleResolver`，签名里三个类型（`PolicyBundle` / `StrategySlot` / `ContractError`）全部来自 `core-evolve`，于是 #28 要在 `crates/agents` 里实现它就必须先引入 `core-evolve` —— 正是 #26 验收条目 5 用 grep 守着的那条禁止依赖。该 grep 当时为绿，只因为那个 trait 没有任何实现者与调用者：它测的是「没人用」，不是「不变式成立」。
-  port 落在 `core-protocol` 后，producing 侧（`crates/evolve`）与 consuming 侧（`crates/agents`）都已依赖它，**两侧零新增依赖**。跨接缝传的是 `ResolvedBundle` 这个只读投影（只带 slot 身份与 digest，不带 policy 本体、locator 或 lineage），由 `PolicyBundle::resolve()` 生成，并在 `SlotId` 无法表达某个 slot 时**整体拒绝**而非丢弃该条 —— 丢弃会让那个 slot 跑内置策略，而 promotion journal 记录它已被治理。
+  该 port 声明在 **`core_protocol::bundle`**，不在 `crates/evolve`。这一条是被一次合并后复审改正的：冻结时它被声明为 `core_evolve::PolicyBundleResolver`，签名里三个类型（`PolicyBundle` / `StrategySlot` / `ContractError`）全部来自 `core-evolve`，于是 #28 要在 `crates/agents` 里实现它就必须先引入 `core-evolve`，正是 #26 验收条目 5 用 grep 守着的那条禁止依赖。该 grep 当时为绿，只因为那个 trait 没有任何实现者与调用者：它测的是「没人用」，不是「不变式成立」。
+  port 落在 `core-protocol` 后，producing 侧（`crates/evolve`）与 consuming 侧（`crates/agents`）都已依赖它，**两侧零新增依赖**。跨接缝传的是 `ResolvedBundle` 这个只读投影（只带 slot 身份与 digest，不带 policy 本体、locator 或 lineage），由 `PolicyBundle::resolve()` 生成，并在 `SlotId` 无法表达某个 slot 时**整体拒绝**而非丢弃该条：丢弃会让那个 slot 跑内置策略，而 promotion journal 记录它已被治理。
 
 `Acceptance` 是必带字段，不是 `Option`：一个 task 总要说清「怎么算做完」，哪怕答案是空集。v1 冻结形状里没有 `oracle` / `min_strength` / `objective_digest`：`AcceptanceCheck.id` 是 check 在 task 内的稳定句柄，由 verifier slot 解析到具体 oracle；oracle 引用类型、强度序数与 held-out digest 按 §4.3(b)3 以 `Option` + `skip_serializing_if` 追加，归属 #51（`crates/verify` 的所有权 issue）：今天的 `crates/verify/src/oracle.rs::OracleStrength` 不带 serde 且 `core-verify` 依赖 `core-protocol`，反向依赖会成环。
 
@@ -136,12 +142,15 @@ pub struct ContextRequest {
  pub trust_ceiling: Trust,
 }
 
+/// 冻结形状：`crates/protocol/src/context.rs:134-153`，六个臂，没有别的。
 pub enum ContextSelector {
  RepoOutline { root: String, depth: u8 },
- Instructions { scope: InstructionScope }, // 项目/用户级指令文件
+ Instructions { scope: InstructionScope }, // user / project / directory 三级指令文件；
+ // InstructionScope 另带 unknown 降级臂（context.rs:114-126）
  MemoryKeys { keys: Vec<String> }, // memory slot 的读路径
  Transcript { last_n_turns: u16 },
  EnvironmentFacts, // cwd、git 状态等 frontend 事实
+ #[serde(other)] Unknown, // §4.3(b)1 降级臂：未知 selector 降级并丢弃 payload
 }
 
 /// kernel 的回应：bounded、trust 标注、可落 ContextInjection 事件。
@@ -230,7 +239,7 @@ gate 裁决与终态（对应 `event.rs` 的既有类型）：
 
 规范性约束：
 
-- 每个 `EffectProposal` 在执行前 **MUST** 有一个 fsynce 的 `EffectIntent`（durable id + 脱敏参数投影）。
+- 每个 `EffectProposal` 在执行前 **MUST** 有一个已 fsync 的 `EffectIntent`（durable id + 脱敏参数投影）。
 - `TrustMutating` 与 `IrreversibleExternal` **MUST NOT** 被任何 mode 或 session rule 自动批准；仓库配置 **MAY** 收紧一个已授予的 grant 或预算，但 **MUST NOT** 凭空铸造 code execution、provider routing、endpoint routing、MCP 进程或 lifecycle hook。
 - broker 是**唯一** effect 出口；任何 module **MUST NOT** 绕过它直接产生对外 effect。
 
@@ -247,7 +256,7 @@ pub struct ArtifactRef {
  pub hash: String,
  /// 产物的类型化 schema：决定读它的人如何解释它。
  pub schema: ArtifactSchema,
- /// 谁产生了它（slot / tool / run），用于归属与审计。
+ /// 谁产生了它（slot / tool / run，外加原样保留未知 tag 的 unknown 臂），用于归属与审计。
  pub producer: Producer,
  /// 出处链：父 hash / run id / 触发它的 effect_id。tamper-evident。
  pub provenance: Provenance,
@@ -257,6 +266,7 @@ pub struct ArtifactRef {
  pub locator: String,
 }
 
+/// 证据句柄的 schema 词表（`crates/protocol/src/artifact.rs:101-126`）。
 pub enum ArtifactSchema {
  FileDiff, // 种子：protocol::FileDiff（结构化补丁）
  Checkpoint, // 种子：EventKind::Checkpoint { tree_ref }
@@ -264,6 +274,18 @@ pub enum ArtifactSchema {
  GovernedDataset, // evolution 的治理数据集
  VerticalProfile, // 已编译的垂类 profile
  Trajectory, // evolution 采样出的一条 run trajectory（4.3(d) 管线的首个输入）
+ Unknown(String), // 保留臂：原样保留未知 tag，decode 后再 encode 逐字节不变（见本节第四条约束）
+}
+
+/// 归属词表（`crates/protocol/src/artifact.rs:197-215`）。三个已知 case 是互斥的选择，
+/// 不是并列字段：checkpoint 背后既没有 slot 也没有注册表 tool，而 edit tool 产出的补丁
+/// 不由某个 slot 决定。
+pub enum Producer {
+ Slot { slot: SlotId }, // 一个可替换 strategy slot 产生的；用 SlotId 而非裸串
+ Tool { tool: String }, // 一个注册表 tool 物化的
+ Run, // run 自身产生的（checkpoint 账本）；刻意不带 run id，
+ // Provenance.run_id 已有一个，第二份会与它不一致
+ Unknown(String), // 保留臂：只保留原 kind 串，丢弃它旁边的所有字段
 }
 
 pub struct Provenance {

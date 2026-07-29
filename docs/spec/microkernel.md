@@ -18,7 +18,7 @@
 | **可观测** | Observable | 每一次准入决策、每一次效果、每一次预算耗尽、每一次终止 MUST 作为一个带关联 id 的事件出现在事件队列与规范记录上。内核 MUST NOT 把诊断直接写到 stderr 而绕过事件面。 |
 | **默认拒绝 (安全有界)** | Security-bounded (deny-by-default) | 授权 MUST 默认拒绝;能力 (capability) 只能经**交集 (intersection-only)** 收窄,永不并集;不受信输入 (untrusted input) MUST NOT 因其含祈使语气而升格为操作者权限。 |
 
-这五条不变量是本规格全文引用的验收语言。当后文说某组件「满足 Recoverable」时,指的就是上表这一条。每条不变量都有其**可机检的判据**:Bounded 对应上界字段必须在 `TaskEnvelope`(见 §3.5)中被声明且非空;Reproducible 对应重放两条相同命令流得到逐字节相同的动作请求序列;Observable 对应每个决策/效果在规范记录中都能按关联 id 检索到对应事件。
+这五条不变量是本规格全文引用的验收语言。当后文说某组件「满足 Recoverable」时,指的就是上表这一条。每条不变量都有其**可机检的判据**:Bounded 对应 `TaskEnvelope` 的 `budget` 与 `ceiling` 两个字段被显式声明(`crates/protocol/src/task.rs:116-135`),但判据**不是**「每个上界字段非空」:`Budget.max_usd` 是 `Option<f64>`,且冻结的默认值就是 `None`(`crates/protocol/src/lib.rs:245`、`256`),`None` 表示「本次运行不作货币上界的保证」,是诚实的缺省而非缺陷;Reproducible 对应重放两条相同命令流得到逐字节相同的动作请求序列;Observable 对应每个决策/效果在规范记录中都能按关联 id 检索到对应事件。
 
 ### 3.2 微内核组件清单 (Enumeration of TCB Components)
 
@@ -54,17 +54,17 @@ ReadOnly  <  ReversibleLocal  <  CodeExecuting  <  TrustMutating  <  Irreversibl
 
 准入 MUST 是一个**纯的、默认拒绝 (deny-by-default) 的门**,模型无法影响其判决。准入 MUST 满足两条代数性质:(a) **仅交集 (intersection-only,「never union」)**,即任何授权只能相对于上界收窄,永不扩张;(b) **能力单调 (capability-monotone)**,即组合两条授权得到的能力集是二者交集,收窄始终安全。规范陈述如下:`ReadOnly` 与 `ReversibleLocal` MAY 无人值守运行;`CodeExecuting` MUST 在隔离无 egress 单元中执行,且不得被任何 mode/session 规则自动批准为无人值守;`TrustMutating`(写 `.git/`、git-config、CI 配置、指令文件)与 `IrreversibleExternal`(push/publish/send)MUST 始终经事前人工批准,且 MUST NOT 被任何权限 mode 或 session 规则自动批准。Plan mode 是一层硬性只读覆盖 (hard read-only overlay):在 Plan mode 下,任何高于 `ReadOnly` 的类别 MUST 被拒,无论 session 规则如何。仓库配置 MAY 收紧一条已授予的信任或预算,但 MUST NOT 凭空铸造代码执行、provider 路由、endpoint 路由、MCP 进程或生命周期 hook(即配置只能做交集收窄,不能做并集扩张,这正是性质 (a) 的一个直接推论)。
 
-**每层的规范判据(取值表)。** `ReadOnly.runs_unattended() == true` 且 `mutates_trust() == false`;`ReversibleLocal.runs_unattended() == true` 且其效果 MUST 落在检查点之后、可经 K8 回滚;`CodeExecuting.requires_isolation() == true` 且 `runs_unattended() == false`;`TrustMutating.requires_prior_human_approval() == true`;`IrreversibleExternal.requires_prior_human_approval() == true` 且 `requires_trusted_context() == true`。准入门的判决 MUST 只是这些布尔判据与当前信任上下文(K1)、当前 mode 的确定性函数。
+**每层的规范判据。** 冻结的 `Capability` 枚举上真实存在的判据只有两个:`runs_unattended()`(仅 `ReadOnly` 与 `ReversibleLocal` 为真)与 `is_egress()`(仅 `IrreversibleExternal` 为真),见 `crates/protocol/src/tool.rs:41-52`。其余判据**不是**这个枚举上的方法,而由内核别处的纯函数承担,任何实现 MUST NOT 为了满足本节而在冻结类型上新增方法:(a) mode × capability 的准入裁决是纯函数 `permission::gate(mode, rules, tool, cap) -> Verdict`(`crates/protocol/src/permission.rs:179`),其中 `ReadOnly` 恒为 `Auto`,Plan mode 对一切高于 `ReadOnly` 的类别恒为 `Deny`,`TrustMutating` 与 `IrreversibleExternal` 默认落到 `Ask` 且 MUST NOT 被任何 mode 或能力类规则自动批准(能力类规则只能收紧,只有精确工具名规则可以逐工具地预批);(b) egress 是否被允许由 `Trust::egress_permitted()` 判定,即当次的 governing 信任层 MUST 为 `Trusted`(`crates/protocol/src/trust.rs:38-43`);(c) `ReversibleLocal` 的效果 MUST 落在检查点之后、可经 K8 回滚,`CodeExecuting` MUST 在隔离无 egress 单元中执行,这两条是工具注册与执行体的契约,不是能力值上的谓词。准入门的判决 MUST 只是上述布尔判据与当前信任上下文(K1)、当前 mode 的确定性函数。
 
 **示例。** 一次 `edit` 调用声明能力 `ReversibleLocal`(在检查点之后编辑工作区内被追踪的源文件)。准入门查表:`ReversibleLocal.runs_unattended() == true`,于是在非 plan mode 下无需逐次人工提示即可放行,但仍受检查点保护以便事后审计与回滚。若同一 `edit` 的目标路径落在 `.git/` 下,工具契约会把它重新归类为 `TrustMutating`,准入门据「始终事前批准」的非协商条款拒绝自动放行。同一个门、同一张策略表,判决只由能力类别与信任上下文决定。
 
 #### K3 单一 effect broker (the single effect broker)
 
-**契约。** 一切外部可见的效果 MUST 且**仅** MUST 经由单一 effect broker 出境。broker MUST 为每个效果分配一个持久身份并写一条**写前日志 (write-ahead) 的 `EffectIntent`**,该记录 MUST 在进入执行体之前被 fsync。效果完成后 broker MUST 回收一个终态并作为 `ArtifactRef`(ABI 契约之一,见 §3.5)交回。若 broker 观测到派发但无法证明完成,它 MUST 记 `EffectUnknown` 并且**绝不自动重放**(Recoverable)。`EffectIntent` 中携带的参数与工作区是一份**脱敏的审计投影 (scrubbed audit projection)**,不是可用的环境权限句柄,即效果记录本身不泄露密钥、不授予能力。
+**契约。** 一切外部可见的效果 MUST 且**仅** MUST 经由单一 effect broker 出境。broker MUST 为每个效果分配一个持久身份并写一条**写前日志 (write-ahead) 的 `EffectIntent`**,该记录 MUST 在进入执行体之前被 fsync。效果完成后 broker MUST 回收一个终态并把它作为一条事件追加到规范记录上;若该效果产出了可复用的产物,产物 MUST 以 `ArtifactRef`(ABI 契约之一,见 §3.5)引用,而非内联随终态交回。若 broker 观测到派发但无法证明完成,它 MUST 记 `EffectUnknown` 并且**绝不自动重放**(Recoverable)。`EffectIntent` 中携带的参数与工作区是一份**脱敏的审计投影 (scrubbed audit projection)**,不是可用的环境权限句柄,即效果记录本身不泄露密钥、不授予能力。
 
-**`EffectIntent` 字段(规范形状)。** 每条 `EffectIntent` MUST 至少携带:`id`(效果的持久唯一身份)、`tool`(工具名,对非注册表工具的效果类则为该类的稳定标签)、`capability`(五层格之一)、`arguments`(脱敏投影)、`workspace`(工作区标识)、`trust_context`(K1 信任层)。broker MUST NOT 在该记录中写入原始凭据、令牌或任何可直接复用的权限句柄。终态 MUST 互斥且穷尽,取自四者之一:
+**`EffectIntent` 字段(冻结形状,`crates/protocol/src/event.rs:361-371`)。** 每条 `EffectIntent` 携带且仅携带六个字段:`id`(harness 铸造的持久唯一身份)、`tool_use_id`(provider/model 侧的关联元数据,不受信,MUST NOT 被当作持久身份)、`tool`(工具名,对非注册表工具的效果类则为该类的稳定标签)、`capability`(五个能力类之一)、`arguments`(脱敏投影)、`workspace`(工作区标识)。该记录上**没有** `trust_context`:把它写成必填字段等于对一条已 fsync 的持久记录做破坏性改形,而信任裁决本来就读当次效果的 governing 信任上下文(K1),不读效果记录里的一份副本。broker MUST NOT 在该记录中写入原始凭据、令牌或任何可直接复用的权限句柄。终态 MUST 互斥且穷尽,取自四者之一:
 
-- `ToolDone { id, artifact_ref }` —— 注册表工具调用的已证实成功终态;
+- `ToolDone { result: ToolResult, effect_id: Option<EffectId> }`(`crates/protocol/src/event.rs:353-357`):注册表工具调用的已证实成功终态:关联键是 `effect_id`,结果内容在 `result`,该变体上既没有 `id` 也没有 `artifact_ref`;
 - `EffectDone { id, tool }` —— **非**注册表工具的效果类(provider 请求、hook、subagent、verify、checkpoint、workflow)的已证实成功终态;
 - `EffectFailed { id, tool, reason }` —— 已被观测到的失败:执行体给出了权威的否定结果,效果就此关闭;
 - `EffectUnknown { id, tool, reason }` —— 派发已发生但终态**无法证明**,MUST 绝不自动重放。
@@ -95,17 +95,17 @@ ReadOnly  <  ReversibleLocal  <  CodeExecuting  <  TrustMutating  <  Irreversibl
 
 **契约。** 内核 MUST 强制硬性的 turns / wall-clock / token / 美元预算与截止时间 (deadline),它们 MUST NOT 被任何策略模块放松或优化掉 (Bounded)。取消 MUST 是协作式的且在安全点生效,绝不在一次效果执行中途撕裂状态。`Op::Drain`(quiesce)MUST 拥有区别于 `Op::Interrupt` 的语义:停止接纳新 turn、静默收敛、做同步检查点、再退出。当某个上界无法被可信地计价时(例如缺少经核验的费率卡),美元上界 MUST **失败关闭 (fail closed)**,即宁可拒绝运行,也不在无价格真相时假装 $0。
 
-**上界耗尽的规范终态。** 每一类上界耗尽 MUST 转移到一个显式终态并以稳定退出码收束,而非被外部粗暴杀死:`max_turns` 耗尽 -> `BudgetExhausted`;`wall` 截止 -> `DeadlineExceeded`;`Op::Interrupt` 在安全点生效 -> `Interrupted`;`Op::Drain` 收敛完成 -> `Drained`。这些退出码 MUST 出现在规范记录上(Observable)。`Op::Interrupt` 与 `Op::Drain` 的区别是硬性的:前者尽快在下一个安全点停下 in-flight turn,后者要求先完成一次同步检查点再退出,MUST NOT 互相替代。
+**上界耗尽的规范终态。** 每一类上界耗尽 MUST 转移到一个显式终态并以稳定退出码收束,而非被外部粗暴杀死:`max_turns` 耗尽 -> `BudgetExhausted("max_turns")`;`wall` 截止 -> `BudgetExhausted("max_wall_secs")`;`Op::Interrupt` 在安全点生效 -> `Interrupted`;`Op::Drain` 收敛完成 -> `Drained`。冻结的 `Outcome` 只有 `Done` / `Drained` / `BudgetExhausted(&'static str)` / `Interrupted` / `Stuck` / `HarnessError` 六臂(`crates/protocol/src/lib.rs:285-299`),其中**没有** `DeadlineExceeded` 这一臂:wall 截止以 `ProviderFailure::DeadlineExceeded`(`crates/kernel/src/turn_protocol.rs:73-75`)进入 reducer,再被折成 `Outcome::BudgetExhausted(BudgetCeiling::MaxWallSecs.reason())`(`crates/kernel/src/reducer.rs:286-288`),即哪一条上界被耗尽由那个 `&'static str` 承载,而不是各开一个终态臂。这些退出码 MUST 出现在规范记录上(Observable)。`Op::Interrupt` 与 `Op::Drain` 的区别是硬性的:前者尽快在下一个安全点停下 in-flight turn,后者要求先完成一次同步检查点再退出,MUST NOT 互相替代。
 
 **示例。** 一次运行设了 `max_turns=20`、`wall=15m`。第 20 个 turn 后 reducer 转移到终态并以稳定退出码 `BudgetExhausted` 收束,而不是被外部粗暴杀死。若操作者在流式生成中途发 `Op::Interrupt`,driver 在下一个安全点(而非 effect 中途)让 in-flight 的 provider turn 停下,状态干净落到 `Interrupted`。一个进化出来的 planner 若试图把 `max_turns` 调到 50 以「多想几步」,该请求在准入时即被拒:预算属于内核,候选可以提议但不能放松预算。
 
 #### K7 版本注册表 (version registry)
 
-**契约。** 内核 MUST 为每次运行钉死 (pin) 两组版本:(a) 提交队列/事件队列 (SQ/EQ) 的 **wire 协议版本**,用于客户端与运行时的兼容协商 (negotiation)、最小支持版本与能力交换;(b) 本次运行所激活的**策略束 (policy bundle) 的精确版本**。二者 MUST 在记录中可见 (Observable)。命令与事件信封 MUST 前向兼容:一个更新客户端发来的未知 tag,其不透明载荷 MUST 被安全丢弃而不得进入日志、错误、UI 或记录(参见 `Op::Unknown` 与 `EventKind::Unknown` 的 `#[serde(other)]` 前向兼容哨兵)。
+**契约。** 内核 MUST 为每次运行钉死 (pin) 两组版本:(a) 提交队列/事件队列 (SQ/EQ) 的 **wire 协议版本** `PROTOCOL_VERSION`,一次运行钉死**恰好一个**值(现值为 `1`,`crates/protocol/src/wire.rs:40`);(b) 本次运行所激活的**策略束 (policy bundle) 的精确版本**。二者 MUST 在记录中可见 (Observable)。命令与事件信封 MUST 前向兼容:一个更新客户端发来的未知 tag,其不透明载荷 MUST 被安全丢弃而不得进入日志、错误、UI 或记录(参见 `Op::Unknown` 与 `EventKind::Unknown` 的 `#[serde(other)]` 前向兼容哨兵)。
 
-**前向兼容的规范行为。** 反序列化遇到未知 `Op` / `EventKind` 变体时,MUST 把该未知 tag 连同其字段整体丢弃,MUST NOT 让不透明载荷落入证据面;MAY 追加一条封闭的 `Notice` 记录此事发生,但该 `Notice` MUST NOT 包含被丢弃的原始载荷。版本协商 MUST 收敛到双方都支持的最小 wire 版本;若客户端低于运行时的最小支持版本,握手 MUST 失败关闭而非降级到未定义行为。
+**前向兼容的规范行为。** 反序列化遇到未知 `Op` / `EventKind` 变体时,MUST 把该未知 tag 连同其字段整体丢弃,MUST NOT 让不透明载荷落入证据面;MAY 追加一条封闭的 `Notice` 记录此事发生,但该 `Notice` MUST NOT 包含被丢弃的原始载荷。版本 skew MUST 被**硬拒**而非协商:`SqEnvelope::into_current` 对任何 `protocol_version != PROTOCOL_VERSION` 的信封返回 `ProtocolVersionError`(`crates/protocol/src/wire.rs:93-96`),该信封连解包成 `Op` 都做不到。系统里**没有**最小支持版本、没有版本区间、也没有能力交换;前向兼容只发生在同一个 wire 版本内部,由上述 `#[serde(other)]` 降级臂承载。
 
-**示例。** 运行开始时,内核记录「本次运行绑定策略束 `pack-db@v14`,SQ/EQ wire 版本 `3`」。一个较旧的 GUI 客户端以 wire 版本 `2` 连上,协商到双方都支持的最小版本;一个较新的客户端发来一个内核尚不认识的 `Op` 变体,反序列化把该未知 tag 连同其字段一并丢弃并落一条封闭的 `Notice`,而不是让不可信的不透明载荷污染证据面。因为策略束被钉死,同一次运行的可复现性 (Reproducible) 才有意义:重放时用的是同一个 `pack-db@v14`。
+**示例。** 运行开始时,内核记录「本次运行绑定策略束 `pack-db@v14`,SQ/EQ wire 版本 `1`」。一个 wire 版本不等于 `1` 的 GUI 客户端连上,它的每一条提交都在 `SqEnvelope::into_current` 处被拒为 `ProtocolVersionError`,既不降级也不协商;一个同版本但更新的客户端发来一个内核尚不认识的 `Op` 变体,反序列化把该未知 tag 连同其字段一并丢弃并落一条封闭的 `Notice`,而不是让不可信的不透明载荷污染证据面。因为策略束被钉死,同一次运行的可复现性 (Reproducible) 才有意义:重放时用的是同一个 `pack-db@v14`。
 
 #### K8 终止 / 回滚 (kill/rollback)
 
@@ -121,7 +121,7 @@ ReadOnly  <  ReversibleLocal  <  CodeExecuting  <  TrustMutating  <  Irreversibl
 
 **背压的规范行为。** 当 SQ 满时,生产者 MUST 被阻塞或收到显式拒绝,driver MUST NOT 静默丢弃命令,也 MUST NOT 让队列无界增长(Bounded)。当 EQ 满时,driver MUST 施加背压到产生事件的路径,而非丢事件(Observable 要求每个决策/效果都有对应事件)。driver 采集的所有非确定读数(时间戳、随机种子)MUST 作为命令字段喂入 reducer,以维持 K4 的确定性。
 
-**示例。** reducer 产出动作请求 `SelectContext { budget }`。driver **不自己**去遍历工作区或读 `CLAUDE.md`;它把该请求投递给注入的 `context` 端口(它背后是可进化的 `core/context` 策略模块),模块以一个 `ContextRequest` 返回选中的上下文,driver 再把结果作为下一条命令折进 reducer。整个过程中,内核持有的是**授权与编排**,而具体「选哪些文件、怎么压缩」这类决策完全在模块侧、在 ABI 之外;这正是「内核只做骨架,策略可训练」的落地形态。
+**示例。** reducer 产出动作请求 `SelectContext { budget }`。driver **不自己**去遍历工作区或读 `CLAUDE.md`;它把该请求路由给注入的 `context` 端口(它背后是可进化的 `core/context` 策略模块);模块**不做任何 I/O**(`crates/protocol/src/slot.rs:41`),只交回一个 `ContextRequest { request_id, slot, selectors, max_bytes, trust_ceiling }`(`crates/protocol/src/context.rs:183-204`,该类型的定义原文即「a module's typed request」),即一份只声明意图的 selector 清单,而非上下文本身;实际物化由内核受审的边界完成(`crates/kernel/src/lib.rs:3209` 的 `resolve_injection`),产出 `ContextGrant { request_id, segments, bytes }`(`crates/protocol/src/context.rs:280-290`,定义原文即「the kernel's answer」),driver 再把该 grant 作为下一条命令折进 reducer。方向不可颠倒:模块提请求、内核给授予,见 §4.2.2 与 `docs/spec/abi.md:18`。整个过程中,内核持有的是**授权与编排**,而具体「选哪些文件、怎么压缩」这类决策完全在模块侧、在 ABI 之外;这正是「内核只做骨架,策略可训练」的落地形态。
 
 ### 3.3 负空间:内核绝不做的事 (Negative Space: the Kernel MUST NOT)
 
@@ -150,9 +150,9 @@ bash 的归属是一个必须被明确回答的边界问题:bash 是不是在微
 
 | 步骤 | 发生什么 | 归属 | ABI 契约 |
 |---|---|---|---|
-| 1 | `core/tool_policy` 模块(可训练)决定「用 bash 跑 `cargo test`」 | **模块 / ABI 之外** | 产出 `ToolIntent { tool: "bash", args: {cmd: "cargo test"} }` |
-| 2 | bash 工具实现把该意图具化为一个待执行效果 | **模块 / ABI 之外** | 产出 `EffectProposal { capability: CodeExecuting, workspace, args }` |
-| 3 | 能力准入 (K2) 对 `EffectProposal` 求值:`CodeExecuting` 非无人值守类,须隔离无 egress 单元 + 按 mode 决策 | **内核** | 准入判决 |
+| 1 | `core/tool_policy` 模块(可训练)决定「用 bash 跑 `cargo test`」 | **模块 / ABI 之外** | 产出 `ToolIntent { proposed_by: SlotId("core/tool_policy"), call: ToolUse { id, name: "bash", input: {"cmd": "cargo test"} }, purity: Effecting, admitted: CapabilitySet::none(), argument_trust }`(`crates/protocol/src/intent.rs:48-63`);工具名与参数都在 `call` 里,该类型上没有 `tool` / `args` 字段 |
+| 2 | bash 工具实现把该意图具化为具体命令、脱敏 `arguments` 投影与 `workspace` | **模块 / ABI 之外** | 此步尚未铸出任何 ABI 契约值:`EffectProposal.admitted` 按定义是 gate 的放行结果,模块 MUST NOT 自行铸造(§4.2.3) |
+| 3 | 能力准入 (K2) 求值:`CodeExecuting` 非无人值守类,须隔离无 egress 单元 + 按 mode 决策;放行后由内核侧铸出提案 | **内核** | 准入判决 + `EffectProposal { id, tool_use_id, tool, admitted: CapabilitySet, arguments, workspace }`(`crates/protocol/src/effect.rs:58-79`);`admitted` 是**集合**,不是能力序上的一个点 |
 | 4 | 若准入,effect broker (K3) 先 fsync `EffectIntent`,再在沙箱中执行 | **内核** | 执行 + 回 `ArtifactRef` |
 | 5 | 结果作为命令折回 reducer (K4),`tool_policy` 据 stderr / 退出码决定下一步 | reducer 在内核;**决策**在模块 | 新一轮 `ToolIntent` |
 
@@ -170,16 +170,16 @@ bash 的归属是一个必须被明确回答的边界问题:bash 是不是在微
 | ABI 契约 | 方向 | 语义 | 相关内核组件 |
 |---|---|---|---|
 | `TaskEnvelope` | 客户端 -> 内核 | 一次运行的任务与其边界(预算、信任、身份) | K1, K6, K9 |
-| `ContextRequest` | 内核 -> `context` / `memory` 模块 | 「在此预算内选上下文」,不授予文件权限 | K9 -> 模块 |
+| `ContextRequest` | `context` / `memory` 模块 -> 内核 | 「我要这些 selector,最多 `max_bytes` 字节」,只声明意图,不授予文件权限;内核以 `ContextGrant` 应答 | K9 |
 | `ToolIntent` | `tool_policy` 模块 -> 内核 | 「我想用工具 T 传参 A」,一个**意图**非授权 | K2 |
-| `EffectProposal` | 工具 -> 内核 | 一个待准入的、带能力类别的效果 | K2, K3 |
+| `EffectProposal` | 内核 gate <-> broker | 一个带 durable id 与 `admitted: CapabilitySet` 的对外可见效果,由内核在放行后铸出 | K2, K3 |
 | `ArtifactRef` | 内核 -> 模块 | 效果的持久结果句柄,能力受限 | K3, K5 |
 
-**每个契约的最小字段(规范形状)。** `TaskEnvelope` MUST 携带身份三元组、全部上界字段(turns / wall / token / 美元)与初始信任上下文;缺任一上界字段 MUST 被拒(Bounded 的可机检判据)。`ContextRequest` MUST 携带一个预算但 MUST NOT 携带任何文件系统句柄或环境权限,模块只能在该预算内**请求**上下文,不能直接触达世界。`ToolIntent` 是纯意图,MUST NOT 被内核当作授权;它必须先经工具实现具化为 `EffectProposal` 再进 K2。`EffectProposal` MUST 声明能力类别(五层格之一)、工作区与脱敏参数。`ArtifactRef` 是能力受限的结果句柄,MUST NOT 携带可复用的原始权限。
+**每个契约的冻结字段(权威定义见 §4.2,本节只作转述)。** `TaskEnvelope` 携带 `task_id`、`protocol_version`、`input`、`trust`、`acceptance`、`budget`、`ceiling`(`crates/protocol/src/task.rs:116-135`):冻结形状里**没有**「身份三元组」这样一个字段,身份由 `task_id` 与被钉死的 `protocol_version` / 策略束版本(K7)共同承载;`Budget` 也**没有** token 轴,它只有 `max_turns` / `max_usd: Option<f64>` / `max_wall_secs` / `max_consecutive_tool_errors`(`crates/protocol/src/lib.rs:240-248`),token 上界按 §4.3(b)3 日后以 `max_tokens: Option<u64>` 无损追加。因此 Bounded 的可机检判据是「`budget` 与 `ceiling` 被显式声明,且 `Budget::validate()` 通过」,而不是「缺任一上界字段 MUST 被拒」,后者按字面对冻结形状不可满足。`ContextRequest` 携带 `request_id`、`slot`、`selectors`、`max_bytes`、`trust_ceiling`(`crates/protocol/src/context.rs:185-204`),MUST NOT 携带任何文件系统句柄或环境权限,模块只能在 `max_bytes` 这个字节上界内**请求**上下文,不能直接触达世界。`ToolIntent` 是纯意图,MUST NOT 被内核当作授权:它的 `admitted` 是 gate 收窄后交回的集合,模块 MUST NOT 自行铸造,真正的授权只发生在 `EffectProposal` 过 broker 之时。`EffectProposal` MUST 携带 `admitted: CapabilitySet`(一个**集合**,不是能力序上的一个点)、`workspace` 与脱敏的 `arguments`。`ArtifactRef` 是能力受限的结果句柄,MUST NOT 携带可复用的原始权限。
 
 关键规范陈述:**这五个 ABI 契约在进化过程中 MUST NOT 改变。** 进化改变的是**槽里的策略 (the policy in a slot)**,不是槽与内核之间的接口。`core/tool_policy` 可以从一个手写规则演进成一个 GRPO 训练出来的策略,但它与内核之间仍然只说 `ToolIntent`;`core/context` 无论怎样进化,与内核之间仍然只说 `ContextRequest` / `ArtifactRef`。正因为接口冻结,一个经训练的策略状态(PolicyManifest,即「harness checkpoint」)才能被 diff、merge、restrict、retire、transfer,并跨冻结的基座模型迁移:**权重学先验,harness 学具体情境 (weights learn the prior; the harness learns the situation)**。
 
-九个 well-known 核心槽(`core/router`、`core/planner`、`core/context`、`core/memory`、`core/scheduler`、`core/tool_policy`、`core/verifier`、`core/model_router`、`core/collaboration`)之外,一个 vertical pack MAY 增加命名空间化的新槽(如 `db/query_planner`、`support/escalation_router`)**而完全不触碰微内核**,因为 `StrategySlot` 是一个开放的命名空间化字符串类型,而非封闭枚举。可扩展性 (extensibility) 由此得到保证:开放命名空间意味着新增能力 = 新增槽 + 新增策略,永不 = 修改内核。一个 worked example:要为数据库 vertical 增加一个查询规划能力,只需注册 `db/query_planner` 槽并提供其策略,内核的九个组件、五条不变量、五个 ABI 契约一律不变;这与在内核里新增第十个组件是本质不同的两件事,后者被 §3.2 的封闭词汇表明令禁止。
+九个 well-known 核心槽(`core/router`、`core/planner`、`core/context`、`core/memory`、`core/scheduler`、`core/tool_policy`、`core/verifier`、`core/model_router`、`core/collaboration`)之外,一个 vertical pack MAY 增加命名空间化的新槽(如 `db/query_planner`、`support/escalation_router`)**而完全不触碰微内核**,因为槽身份 `SlotId` 是一个开放的、命名空间化的字符串类型(文法为 `<domain>/<role>`,恰好一个 `/`,`crates/protocol/src/slot.rs:68-87`),而非封闭枚举。注意不要与 `StrategySlot` 这个名字混淆:在 `core_protocol` 里它是内核调用的 **trait**(`crates/protocol/src/slot.rs:140-150`),在 `crates/evolve/src/lib.rs:131` 里另有一个同名的身份 newtype;跨接缝的槽身份类型只有 `SlotId`。可扩展性 (extensibility) 由此得到保证:开放命名空间意味着新增能力 = 新增槽 + 新增策略,永不 = 修改内核。一个 worked example:要为数据库 vertical 增加一个查询规划能力,只需注册 `db/query_planner` 槽并提供其策略,内核的九个组件、五条不变量、五个 ABI 契约一律不变;这与在内核里新增第十个组件是本质不同的两件事,后者被 §3.2 的封闭词汇表明令禁止。
 
 ### 3.6 为什么必须从零构建 (Why From-Scratch: Decoupling Behind the ABI)
 

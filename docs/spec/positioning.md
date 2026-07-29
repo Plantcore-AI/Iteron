@@ -30,9 +30,9 @@ Core Code 的命题只有一句:
 
 > **专精化一个 agent,意味着训练它的 harness,而不是训练那个 model。**
 
-更精确地:除 microkernel (见 §1.6 与 §1.7,以及后续章节) 之外,一个 agent 的每一个非内核决策 (用哪个 router、如何 plan、选什么 context、留存什么 memory、如何 schedule、用什么 tool policy、如何 verify、如何在多个 model 之间路由、如何组织多 agent 协作) 都是**同一个 typed 策略空间**里的一个 policy。这个策略空间的元素叫 **StrategySlot**;9 个众所周知的核心 slot 是 `router`、`planner`、`context`、`memory`、`scheduler`、`tool_policy`、`verifier`、`model_router`、`collaboration`。
+更精确地:除 microkernel (见 §1.6 与 §1.7,以及后续章节) 之外,一个 agent 的每一个非内核决策 (用哪个 router、如何 plan、选什么 context、留存什么 memory、如何 schedule、用什么 tool policy、如何 verify、如何在多个 model 之间路由、如何组织多 agent 协作) 都是**同一个 typed 策略空间**里的一个 policy。这个策略空间的元素叫 **StrategySlot**;9 个众所周知的核心 slot 是 `core/router`、`core/planner`、`core/context`、`core/memory`、`core/scheduler`、`core/tool_policy`、`core/verifier`、`core/model_router`、`core/collaboration` (crates/evolve/src/lib.rs:156-182)。
 
-StrategySlot 是一个**开放的、命名字符串型 (open namespaced-string)** 类型,而不是一个封闭枚举。可扩展性正由这个开放命名空间保证:一个垂类包 (vertical pack) MAY 增加自己的 slot,只要它落在自己的命名空间前缀下 (例如数据库垂类的 `db/query_planner`、客服垂类的 `support/escalation_router`),而**完全不触碰 microkernel**。命名约定 SHOULD 为 `<vertical>/<slot_name>`:9 个核心 slot 占用无前缀的保留名;垂类自加的 slot MUST 带前缀,以免与核心名或其它垂类相撞。一个未知前缀的 slot 对 microkernel 是不透明的:内核既不解释它,也不因它而改变行为,内核只中介它经由 ABI 发出的提议 (见 §1.7)。
+StrategySlot 是一个**开放的、命名字符串型 (open namespaced-string)** 类型,而不是一个封闭枚举。可扩展性正由这个开放命名空间保证:一个垂类包 (vertical pack) MAY 增加自己的 slot,只要它落在自己的命名空间前缀下 (例如数据库垂类的 `db/query_planner`、客服垂类的 `support/escalation_router`),而**完全不触碰 microkernel**。命名约定 MUST 为 `<domain>/<role>`:跨接缝的 `SlotId` 文法强制恰好一个 `/` (crates/protocol/src/slot.rs:68-87),因此「无前缀的保留名」根本不是一个可构造的 slot 身份。9 个核心 slot 占用 `core/` 这个域;垂类自加的 slot MUST 带自己的 vertical 域前缀,以免与 `core/` 或其它垂类相撞。本文其余段落为行文简洁,有时只写核心 slot 的 `<role>` 半段 (如「`verifier` slot」),其完整身份始终是 `core/<role>`。一个未知前缀的 slot 对 microkernel 是不透明的:内核既不解释它,也不因它而改变行为,内核只中介它经由 ABI 发出的提议 (见 §1.7)。
 
 一套 harness 在某个垂类上被训练出来的状态,被封装成一个一等制品,本规范称之为 **harness checkpoint**,其正式名字是 **PolicyManifest**。它是:
 
@@ -94,7 +94,7 @@ Core Code 的参考基座 MUST 开源,理由有两层,都不是姿态而是工�
 
 **五条不变式 (Five Invariants)。** 本规范中的任何机制,MUST 同时满足:
 
-1. **Bounded** (有界):预算、deadline、可取消,任何执行不得无界扩张。预算 MUST 是一个带上限的数值 (如 token 数、墙钟毫秒数),deadline MUST 是一个可比较的时间点,取消 MUST 能在有界步数内生效。
+1. **Bounded** (有界):预算、deadline、可取消,任何执行不得无界扩张。预算 MUST 是带上限的数值:v1 冻结的 `Budget` 恰好是 `max_turns`、`max_usd: Option<f64>`、`max_wall_secs`、`max_consecutive_tool_errors` 四条轴 (crates/protocol/src/lib.rs:240-248),其中**没有 token 轴**,token 轴按 §4.3(b)3 属于事后可无损追加的字段。deadline MUST 是一个带上限的时长而不是一个可比较的时间点:协议里没有名为 deadline 的字段,它就是秒级的 `max_wall_secs` 这条墙钟轴。取消 MUST 能在有界步数内生效。
 2. **Recoverable** (可恢复):任何晋升都能确定性回滚到已知良好状态。回滚 MUST NOT 依赖于外部状态是否"恰好还在",而是从记录里可确定重建。
 3. **Reproducible** (可复现):同一输入加同一 pinned policy bundle 产生同一结果;记录可 replay。此处 pinned 指 policy bundle 的版本被钉死且不可变。
 4. **Observable** (可观测):决策与副作用留下可审计的证据 (SHA-256 hash-chained、防篡改),任一记录被改动都会破坏链上后续哈希。
@@ -102,13 +102,13 @@ Core Code 的参考基座 MUST 开源,理由有两层,都不是姿态而是工�
 
 **三层结构 (Three Planes)。** 整个系统被切成三个平面,本文档的其余章节沿此展开:
 
-- **固定的 microkernel (fixed TCB / trusted computing base)**:被冻结、不参与优化的最小可信基。它拥有:身份与信任 (identity & trust);capability admission (一个 5 层能力格 lattice,只做交集、capability-monotone);唯一的 effect broker;确定性状态归约 (一个纯 reducer);canonical record/checkpoint/replay (SHA-256 hash-chained、防篡改);预算/deadline/取消;version registry;kill/rollback;以及那个执行 reducer 所产出 action requests 的、有界的 agent-loop **driver**。它的**负空间**同样是规范的一部分,内核 MUST NOT:读文件或环境变量、调 provider、构造 prompt、选 context、spawn 进程、解析 MCP、渲染 UI、或训练/激活一个 policy。关于 bash 的一条明确裁决:内核只拥有 effect broker 加 capability admission,即"任何 tool (包括 bash) 被允许做什么"的**权威**;而"选哪个 tool、用什么参数、按垂类如何调"是可进化的 `tool_policy` slot (见 §1.3)。**bash 是一个其副作用被内核中介与准入的 tool,而不是内核内部的逻辑。**
+- **固定的 microkernel (fixed TCB / trusted computing base)**:被冻结、不参与优化的最小可信基。它拥有:身份与信任 (identity & trust);capability admission (5 个互相独立的 capability class 构成的一个**集合** `CapabilitySet`,只做交集、capability-monotone;它不是一条可按 `<=` 比较的层级阶梯,见 crates/protocol/src/tool.rs:26-39 与 crates/protocol/src/capability_set.rs:1-19);唯一的 effect broker;确定性状态归约 (一个纯 reducer);canonical record/checkpoint/replay (SHA-256 hash-chained、防篡改);预算/deadline/取消;version registry;kill/rollback;以及那个执行 reducer 所产出 action requests 的、有界的 agent-loop **driver**。它的**负空间**同样是规范的一部分,内核 MUST NOT:读文件或环境变量、调 provider、构造 prompt、选 context、spawn 进程、解析 MCP、渲染 UI、或训练/激活一个 policy。关于 bash 的一条明确裁决:内核只拥有 effect broker 加 capability admission,即"任何 tool (包括 bash) 被允许做什么"的**权威**;而"选哪个 tool、用什么参数、按垂类如何调"是可进化的 `tool_policy` slot (见 §1.3)。**bash 是一个其副作用被内核中介与准入的 tool,而不是内核内部的逻辑。**
 - **可替换的 strategy 与 world 模块 (replaceable strategy & world modules)**:即 §1.3 的 StrategySlot 们,活在 TCB 之外,躲在稳定 typed ABI 之后。它们返回有界的**提议 (proposals)**、收到能力受限的结果;它们**不持有** ambient authority。
 - **进化控制平面 (evolution control plane)**:§1.5 描述的那条离线、人类把关的流水线,产出 immutable 的 candidate PolicyManifest。安全策略、权限、耐久性、证据完整性、预算、数据同意、晋升授权,MUST 保持人类控制,不可被优化掉。
 
 **稳定 typed ABI (stable typed ABI)。** 模块与内核之间、模块与模块之间,MUST 只经由五个契约通信:**TaskEnvelope、ContextRequest、ToolIntent、EffectProposal、ArtifactRef**。它们各自承担一件事:
 
-- **TaskEnvelope**:一个待办任务的 typed 入口,携带目标、约束、预算、deadline、垂类标识。它是不变式 1 (Bounded) 在 ABI 层的落点,因为预算与 deadline 从入口就被显式携带。
+- **TaskEnvelope**:一个待办任务的 typed 入口,携带 `input` (任务本体)、`trust` (输入的信任来源)、`acceptance` (怎么算做完)、`budget` 与 `ceiling` (crates/protocol/src/task.rs:116-135)。它是不变式 1 (Bounded) 在 ABI 层的落点,因为预算与 deadline 从入口就被显式携带:deadline 不是一个独立字段,而是 `budget.max_wall_secs` 这条轴 (crates/protocol/src/lib.rs:240-248)。v1 冻结形状**不携带垂类标识**:`profile_ref` 在 §4.2.1 打印的结构体里被显式注释掉,并被同节的规范性约束指名为该结构里唯一可事后无损追加的字段。
 - **ContextRequest**:一个 strategy 模块 (通常是 `context` slot) 发起的、有界的上下文检索提议,声明"想要什么、要多少",而不直接触碰存储。
 - **ToolIntent**:一个"想调用某个 tool"的声明 (tool 标识加参数),尚未获得副作用授权,由 `tool_policy` slot 产出。
 - **EffectProposal**:一个待内核 effect broker 准入的副作用提议 (写文件、调外部服务、执行命令);它是唯一能让副作用真正发生的路径,MUST 经 capability admission 裁决。

@@ -25,7 +25,7 @@ harness checkpoint 是对 `StrategySlot` ABI 上一条 policy 的**已训练状�
 | `parent` | `Option<PolicyRef>` | 精确父策略身份(用于 lineage 与 admission) | root candidate 为 `None` |
 | `method` | `EvolutionMethod` | 如何产出(见 §6.3) | **promotion 语义故意不依赖此字段** |
 | `protocol` | `ProtocolRange {min,max}` | 兼容的 ABI 协议区间 | MUST 非倒置(`min <= max`,否则 `InvertedProtocolRange`) |
-| `required_capabilities` | `BTreeSet<Capability>` | 声明其运行需要的能力(5-tier lattice) | candidate 只能**声明**,不能**授予**(§6.6) |
+| `required_capabilities` | `BTreeSet<Capability>` | 声明其运行需要的能力(五个独立 `Capability` 类构成的一个集合) | candidate 只能**声明**,不能**授予**(§6.6) |
 | `training_dataset_digest` | `Option<String>` | governed dataset 的 digest | 任何 data-derived method MUST 钉死;仅 `HandAuthored` 可为空 |
 | `evaluation_suite_digest` | `String` | 评估套件 digest | MUST 存在(64 位 hex) |
 | `base_model` | `BaseModelId` | 该 policy 所依据的冻结基座模型(family / id / digest) | schema 3 起 MUST 存在且有界;由 schema 2 迁移而来的文档携带 `BaseModelId::unspecified()` 哨兵,well-formed 但永不 admissible。**`model_digest` MUST 是规范 64 位小写 hex**,与本 crate 其他 digest 同规;三个分量均 MUST NOT 含控制字符。缺失该字段 MUST 拒收,MUST NOT 默认为哨兵 —— 哨兵只属于诚实声明自己是 schema 2 的文档 |
@@ -164,7 +164,7 @@ admission 是 candidate 进入流水线的第一道、也是最强的一道门�
 
 > 一条 candidate 的有效权限 = `subset( slot-ceiling INTERSECT exact-parent-ceiling INTERSECT runtime-allowed )`。**永不 union。**
 
-能力空间是 microkernel 的 5-tier lattice(`Capability`):`ReadOnly` subset `ReversibleLocal` subset `CodeExecuting` subset `TrustMutating` subset `IrreversibleExternal`(语义:只读 / 可逆本地编辑 / 跑仓库内代码 / 改信任面 / 对外不可逆)。`ManifestAdmissionPolicy::assess` 强制:candidate 的 `required_capabilities` MUST 同时是 **slot 天花板**与**精确父策略天花板**的子集,否则 `ExceedsSlotCeiling` / `ExceedsParentCeiling`;父身份必须精确匹配(否则 `ParentIdentityMismatch`),缺父天花板 fail-closed(`MissingParentCeiling`)。此处"精确匹配"指父的 `PolicyRef` 四元组(slot、policy_id、version、digest)逐字段相等,digest 不同即视为不同父,防止把一条 candidate 挂到一个它并非真正派生自的、权限更宽的父上。
+能力空间是 microkernel 的五个 `Capability` 类:`ReadOnly` / `ReversibleLocal` / `CodeExecuting` / `TrustMutating` / `IrreversibleExternal`(语义:只读 / 可逆本地编辑 / 跑仓库内代码 / 改信任面 / 对外不可逆),它们彼此独立、不构成一条包含链(`crates/protocol/src/tool.rs:26-39`)。下文所说的"子集"是 `BTreeSet<Capability>` 之间的集合包含,不是能力类之间的强弱序;把上限表示为序上的一个点并用 `<=` 判定,会静默放行本不该放行的类(`crates/protocol/src/capability_set.rs:1-19`)。`ManifestAdmissionPolicy::assess` 强制:candidate 的 `required_capabilities` MUST 同时是 **slot 天花板**与**精确父策略天花板**的子集,否则 `ExceedsSlotCeiling` / `ExceedsParentCeiling`;父身份必须精确匹配(否则 `ParentIdentityMismatch`),缺父天花板 fail-closed(`MissingParentCeiling`)。此处"精确匹配"指父的 `PolicyRef` 四元组(slot、policy_id、version、digest)逐字段相等,digest 不同即视为不同父,防止把一条 candidate 挂到一个它并非真正派生自的、权限更宽的父上。
 
 **worked example: intersection-only,never union。** 一条 `core/router` candidate 声明 `required = {ReadOnly, CodeExecuting}`,父天花板 = `{ReadOnly, CodeExecuting}`,slot 天花板 = `{ReadOnly, CodeExecuting, TrustMutating}`,而某次运行时 runtime-allowed = `{ReadOnly, TrustMutating, IrreversibleExternal}`。有效集 = 四者交集 = **`{ReadOnly}`**。注意:`CodeExecuting` 虽在 candidate/父/slot 里,但不在 runtime-allowed 里,落选;`TrustMutating`/`IrreversibleExternal` 虽在别处,但不在 candidate required 里,也落选。**没有任何一个能力能仅凭出现在 manifest、slot、父、runtime 之一就进入有效集。** 即使 runtime 允许一切,只要 candidate 没 required,也进不去;即使 candidate required,只要 runtime 不允许,也进不去。
 

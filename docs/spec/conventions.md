@@ -24,7 +24,7 @@
 | **agent-loop driver（回路驱动）** | 微内核中把 reducer 产出的 ActionRequest 通过 effect broker 执行的最薄执行体；它只调度，不含策略。 |
 | **record / checkpoint / replay** | 微内核中的证据面：一条 append-only、SHA-256 哈希链、防篡改、可崩溃重演、可 resume/continue/fork 的规范记录。 |
 | **稳定类型 ABI (Stable Typed ABI)** | 微内核与策略模块之间唯一的通信契约，由五个类型构成：**TaskEnvelope**、**ContextRequest**、**ToolIntent**、**EffectProposal**、**ArtifactRef**。ABI 是**版本化且稳定**的（见 §0.3 与 §4）。 |
-| **StrategySlot（策略槽）** | 可进化策略空间的元素。类型为**开放命名字符串**（open namespaced-string），非封闭枚举。九个核心槽：`router`、`planner`、`context`、`memory`、`scheduler`、`tool_policy`、`verifier`、`model_router`、`collaboration`。垂类包 MAY 增加自有槽（如 `db/query_planner`），且**不触碰微内核**。另有一个 code-valued 逃生槽，带 blob->typed 的晋升路径。 |
+| **StrategySlot（策略槽）** | 可进化策略空间的元素。类型为**开放命名字符串**（open namespaced-string），非封闭枚举。名字的文法为 `<domain>/<role>`，**恰好一个** `/`：`SlotId::validate`（`crates/protocol/src/slot.rs:68-87`）拒绝任何不满足该文法的名字，因此 `core/` 前缀是槽身份的组成部分，不是排版上的省略，无前缀的名字不是可构造的槽身份。九个核心槽：`core/router`、`core/planner`、`core/context`、`core/memory`、`core/scheduler`、`core/tool_policy`、`core/verifier`、`core/model_router`、`core/collaboration`（`crates/evolve/src/lib.rs:156-182`）。垂类包 MAY 增加自有槽（如 `db/query_planner`），且**不触碰微内核**。另有一个 code-valued 逃生槽，带 blob->typed 的晋升路径。 |
 | **策略模块 (strategy module)** | 实现某个 StrategySlot 的可替换、可进化组件；它返回**有界的提议**并接收**能力受限的结果**，**MUST NOT** 持有环境权威。 |
 | **世界模块 (world module)** | 位于 effect broker **之后**、真正实施某类副作用的可替换组件（如 sandbox 执行、仓库读写、浏览器、数据库适配）。它在 effect broker 的能力受限句柄下执行，本身不持有环境权威。世界模块是「机制面」的实现载体，区别于「策略面」的 strategy module。 |
 | **harness checkpoint / PolicyManifest** | 一套 harness 被训练出来的状态的一等制品：**方法无关**（搜索/GEPA、SFT、偏好、GRPO、RL 均发射同一形状）、**可版本化、可 diff**、被独立评估、像发布一样晋升/回滚、可跨冻结基座模型携带。其代数：diff、merge、restrict、retire、transfer。全文可用「harness checkpoint」作口语句柄，`PolicyManifest` 为其正式类型名。 |

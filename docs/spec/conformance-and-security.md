@@ -46,7 +46,7 @@
 
 **稳定类型 ABI 的版本演进。** ABI（§4）是产品的长期兼容面，其演进 **MUST** 遵守：
 - 每个 envelope 携带版本；未知字段/变体走前向兼容降级（如 `#[serde(other)]`）而非硬失败。
-- 破坏性变更 **MUST** 走一次显式的版本号跃迁 + 兼容性协商（min/supported version + 能力交换），并附一致性测试。
+- 破坏性变更 **MUST** 走一次显式的 `PROTOCOL_VERSION` 跃迁（`crates/protocol/src/wire.rs:40`，现值 `1`），并附一致性测试；是否构成破坏性变更由受信基线的 surface 集比对机器判定，见 `governance/schema-compatibility.json` 与 `core-xtask boundaries check-base` / `check-pr`（§4.3(a)）。**不存在**兼容性协商：一次 run 只钉死并只接受恰好一个 `PROTOCOL_VERSION` 的消息，版本 skew 由 `SqEnvelope::into_current` 硬拒为 `ProtocolVersionError`（`crates/protocol/src/wire.rs:93-96`），既无 min/supported 版本协商，也无能力交换。
 - 一个 PolicyManifest **MUST** 声明其所依赖的 ABI 版本；跨 ABI 版本的 checkpoint 迁移 **MUST** 经 §6 的同一道评测门再入。
 
 **PolicyManifest 的版本与晋升。** 每个 candidate PolicyManifest 有不可变身份与血缘 (lineage)；晋升/回滚是对「已认证、定形的离线发布记录 + active-bundle 指针」的推进，**MUST** 保持确定性回滚能力。
