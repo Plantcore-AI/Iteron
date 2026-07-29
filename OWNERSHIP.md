@@ -23,6 +23,7 @@ Core Code has one human Owner/Project Lead and a non-fixed number of human maint
 | `documentation-site` — Documentation site | open | elevated | Open | Open | `docs/_mkdocs_hooks.py`<br>`docs/assets/**`<br>`docs/development/**`<br>`docs/getting-started/**`<br>`docs/index.md`<br>`docs/maintainer-onboarding.md`<br>`docs/project/**`<br>`docs/reference/**`<br>`docs/repository-enforcement.md`<br>`docs/using/**`<br>`mkdocs.yml`<br>`requirements-docs.in`<br>`requirements-docs.lock` |
 | `build-release` — Build and release | open | critical | Open | Open | `.github/actionlint.yaml`<br>`.github/dependabot.yml`<br>`.github/workflows/**`<br>`.gitignore`<br>`CHANGELOG.md`<br>`Cargo.lock`<br>`Cargo.toml`<br>`install.sh`<br>`release-tools/**`<br>`xtask/**` |
 | `protocol-compat` — Protocol compatibility | open | critical | Open | Open | `crates/protocol/**` |
+| `kernel-reduction` — Kernel reduction and driver | open | critical | Open | Open | `crates/kernel/src/driver.rs`<br>`crates/kernel/src/driver_tests.rs`<br>`crates/kernel/src/reducer.rs`<br>`crates/kernel/src/reducer_tests.rs`<br>`crates/kernel/src/turn_action.rs`<br>`crates/kernel/src/turn_command.rs`<br>`crates/kernel/src/turn_protocol.rs`<br>`crates/kernel/src/turn_state.rs` |
 | `kernel-runtime` — Kernel runtime | open | critical | Open | Open | `crates/kernel/Cargo.toml`<br>`crates/kernel/src/diagnostics.rs`<br>`crates/kernel/src/lib.rs`<br>`crates/kernel/src/pricing.rs`<br>`crates/kernel/src/workflow_spawner.rs` |
 | `kernel-effects` — Kernel effects | open | critical | Open | Open | `crates/kernel/src/effect_admission.rs`<br>`crates/kernel/src/effect_boundary_tests.rs`<br>`crates/kernel/src/effect_class.rs`<br>`crates/kernel/src/effect_journal.rs`<br>`crates/kernel/src/effects.rs` |
 | `kernel-hooks` — Kernel hooks | open | critical | Open | Open | `crates/kernel/src/hooks.rs` |
@@ -100,6 +101,13 @@ Versioned submissions, events, identity, trust, permission, message, and tool co
 
 - Contracts: `runtime-protocol`, `durable-event-schema`, `permission-schema`, `sqeq-version-lockstep`
 - Required checks: `cargo test -p core-protocol --locked`, `core-xtask boundaries check-base --base <rev>`, `core-xtask boundaries check-pr --base <rev>`
+
+### `kernel-reduction` — Kernel reduction and driver
+
+The pure turn reducer, its closed command/action vocabulary, and the bounded agent-loop driver that routes action requests to injected ports.
+
+- Contracts: `pure-reduction`, `bounded-queues`
+- Required checks: `cargo test -p core-kernel reducer --locked`, `cargo test -p core-kernel driver --locked`
 
 ### `kernel-runtime` — Kernel runtime
 

@@ -15,11 +15,31 @@
 //! tiering of ADR-007, with the full sandbox/policy as the next crates.
 
 pub mod diagnostics;
+pub mod driver;
 pub mod effect_admission;
 pub mod effect_class;
 pub mod effect_journal;
+
+/// Conformance for the bounded driver: explicit reject and backpressure on both queues, and the
+/// loop end to end against in-memory ports.
+#[cfg(test)]
+#[path = "driver_tests.rs"]
+mod driver_tests;
+
 pub mod effects;
 pub mod hooks;
+pub mod reducer;
+
+/// Conformance for the pure reducer: the determinism ban, byte-identical replay, and the
+/// state-transition table. In its own file for the same reason as the boundary tests.
+#[cfg(test)]
+#[path = "reducer_tests.rs"]
+mod reducer_tests;
+
+pub mod turn_action;
+pub mod turn_command;
+pub mod turn_protocol;
+pub mod turn_state;
 
 /// Conformance for the universal effect boundary. In its own file rather than inline: it needs
 /// crate-internal visibility, and `AGENTS.md` asks for a new module over a longer one.

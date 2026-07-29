@@ -162,6 +162,30 @@
       ]
     },
     {
+      "id": "kernel-reduction",
+      "title": "Kernel reduction and driver",
+      "summary": "The pure turn reducer, its closed command/action vocabulary, and the bounded agent-loop driver that routes action requests to injected ports.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/kernel/src/driver.rs" },
+        { "kind": "file", "path": "crates/kernel/src/driver_tests.rs" },
+        { "kind": "file", "path": "crates/kernel/src/reducer.rs" },
+        { "kind": "file", "path": "crates/kernel/src/reducer_tests.rs" },
+        { "kind": "file", "path": "crates/kernel/src/turn_action.rs" },
+        { "kind": "file", "path": "crates/kernel/src/turn_command.rs" },
+        { "kind": "file", "path": "crates/kernel/src/turn_protocol.rs" },
+        { "kind": "file", "path": "crates/kernel/src/turn_state.rs" }
+      ],
+      "contracts": ["pure-reduction", "bounded-queues"],
+      "checks": [
+        "cargo test -p core-kernel reducer --locked",
+        "cargo test -p core-kernel driver --locked"
+      ]
+    },
+    {
       "id": "kernel-runtime",
       "title": "Kernel runtime",
       "summary": "Turn state machine, admission, budgets, orchestration execution, and frontend event seam.",
