@@ -396,6 +396,7 @@ name = "core-eval"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "core-evolve",
  "core-sandbox",
  "core-verify",
  "hex",

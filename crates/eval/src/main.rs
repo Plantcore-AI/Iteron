@@ -76,7 +76,8 @@ struct Cli {
     #[arg(long, default_value_t = 900)]
     oracle_timeout_secs: u64,
 
-    #[arg(long, default_value_t = 20)]
+    /// Turn cap supplied to Core. Zero is the explicit uncapped mode.
+    #[arg(long, default_value_t = 250)]
     max_turns: u32,
 }
 
@@ -215,7 +216,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn d14_07_cli_defaults_to_three_requested_and_minimum_seeds() {
+    fn d14_07_cli_defaults_are_powered_and_250_turns() {
         let cli = Cli::try_parse_from([
             "core-eval",
             "--corpus",
@@ -226,5 +227,21 @@ mod tests {
         .expect("minimal arguments should parse");
         assert_eq!(cli.seeds, 3);
         assert_eq!(cli.minimum_seeds, 3);
+        assert_eq!(cli.max_turns, 250);
+    }
+
+    #[test]
+    fn zero_turn_cap_is_an_explicit_uncapped_request() {
+        let cli = Cli::try_parse_from([
+            "core-eval",
+            "--corpus",
+            "fixture.json",
+            "--model",
+            "fixed-model",
+            "--max-turns",
+            "0",
+        ])
+        .expect("zero is the explicit uncapped value");
+        assert_eq!(cli.max_turns, 0);
     }
 }

@@ -191,6 +191,13 @@ fn task(id: &str, repo_url: &str, commit: &str) -> CorpusTask {
         prompt: id.to_owned(),
         verify_command: "test \"$(cat status.txt)\" = good".into(),
         ground_truth_command: "test \"$(cat status.txt)\" = good".into(),
+        dockerhub_tag: None,
+        fail_to_pass: vec!["fixture::status".into()],
+        pass_to_pass: Vec::new(),
+        test_cmd: std::collections::BTreeMap::from([(
+            "legacy".into(),
+            "test \"$(cat status.txt)\" = good".into(),
+        )]),
         partition: Partition::HeldOut,
         provenance: Provenance {
             source: "local-fault-sweep-v1".into(),
@@ -397,23 +404,27 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
         .find(|cell| cell.config == "verify_OFF")
         .expect("verify_OFF selection-gap cell");
     assert_eq!(selection_gap_off.resolved, Some(false));
-    assert_eq!(selection_gap_off.oracle_status, OracleStatus::NotRun);
+    assert_eq!(
+        selection_gap_off.oracle_status,
+        OracleStatus::TestFailed,
+        "both arms now carry the same Core F2P/P2P oracle verdict"
+    );
     let selection_gap_on = selection_gap_cells
         .iter()
         .find(|cell| cell.config == "verify_ON")
         .expect("verify_ON selection-gap cell");
     assert_eq!(selection_gap_on.resolved, Some(true));
-    assert_eq!(selection_gap_on.oracle_status, OracleStatus::TestFailed);
+    assert_eq!(selection_gap_on.oracle_status, OracleStatus::Passed);
     let selection = manifest
         .selections
         .iter()
         .find(|selection| selection.task == "selection-gap")
         .expect("public runner must persist a selection summary");
     assert_eq!(selection.candidates, 2);
-    assert_eq!(selection.chosen, Some(0));
+    assert_eq!(selection.chosen, Some(1));
     assert!(selection.ceiling);
-    assert!(!selection.resolved);
-    assert!(selection.resolve_vs_ceiling_gap);
+    assert!(selection.resolved);
+    assert!(!selection.resolve_vs_ceiling_gap);
 
     for cell in cells_for(&manifest, "bad-checkout") {
         assert_eq!(cell.commit, "f".repeat(40));
@@ -433,11 +444,9 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
         assert_eq!(cell.run_status, RunStatus::Completed);
         assert_eq!(cell.resolved, Some(true));
     }
-    let pass_after_index = manifest
-        .cells
-        .iter()
-        .position(|cell| cell.task == "pass-after")
-        .expect("post-fault cell must execute");
+    // `run_evaluation` sorts the completed matrix by CellKey before persistence. Presence of the
+    // final queued task, rather than its post-sort index, proves a prior fault did not truncate the
+    // workers=1 sweep.
     for fault in [
         "malformed",
         "crashed",
@@ -448,14 +457,9 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
         "stalled",
         "bad-checkout",
     ] {
-        let fault_index = manifest
-            .cells
-            .iter()
-            .position(|cell| cell.task == fault)
-            .expect("fault cell must exist");
         assert!(
-            fault_index < pass_after_index,
-            "{fault} must occur before the successful post-fault cell"
+            manifest.cells.iter().any(|cell| cell.task == fault),
+            "{fault} must remain in the completed matrix"
         );
     }
 

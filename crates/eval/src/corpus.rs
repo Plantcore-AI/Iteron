@@ -3,13 +3,16 @@
 use crate::types::{BenchmarkReference, EvaluationPurpose, Partition};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 
-pub const CORPUS_SCHEMA_VERSION: u32 = 1;
+pub const CORPUS_SCHEMA_VERSION: u32 = 2;
+pub const CORPUS_PREVIOUS_SCHEMA_VERSION: u32 = 1;
 const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_TASKS: usize = 10_000;
+const MAX_TESTS_PER_SET: usize = 50_000;
+const MAX_TEST_COMMANDS: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -36,8 +39,22 @@ pub struct CorpusTask {
     /// Full, immutable Git object id. Branches and tags are deliberately rejected.
     pub commit: String,
     pub prompt: String,
+    /// Legacy candidate-side verification command. Kept through the N-1 migration so a schema-v1
+    /// corpus does not lose its original bytes or behavior.
     pub verify_command: String,
+    /// Legacy hidden ground-truth command. Native v2 tasks use `test_cmd` plus the two explicit
+    /// oracle sets, but retaining this field keeps v1 fixtures reproducible.
     pub ground_truth_command: String,
+    /// Official prebuilt environment reference. For SWE-bench Pro this is the repository plus the
+    /// dataset's per-instance `dockerhub_tag`; callers may additionally pin a registry digest.
+    pub dockerhub_tag: Option<String>,
+    /// Tests that must change from red before the candidate patch to green afterwards.
+    pub fail_to_pass: Vec<String>,
+    /// Tests that must be green both before and after the candidate patch.
+    pub pass_to_pass: Vec<String>,
+    /// Per-language command used to execute the named test sets. Commands receive
+    /// `CORE_EVAL_TEST_SET` and `CORE_EVAL_TEST_IDS_JSON` in their confined shell environment.
+    pub test_cmd: BTreeMap<String, String>,
     pub partition: Partition,
     pub provenance: Provenance,
     pub benchmark: Option<BenchmarkBinding>,
@@ -51,6 +68,34 @@ pub struct CorpusManifest {
     /// `sha256:<hex>` over the canonical JSON serialization of `tasks`.
     pub dataset_digest: String,
     pub tasks: Vec<CorpusTask>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SchemaProbe {
+    schema_version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CorpusTaskV1 {
+    id: String,
+    repo_url: String,
+    commit: String,
+    prompt: String,
+    verify_command: String,
+    ground_truth_command: String,
+    partition: Partition,
+    provenance: Provenance,
+    benchmark: Option<BenchmarkBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CorpusManifestV1 {
+    schema_version: u32,
+    corpus_version: String,
+    dataset_digest: String,
+    tasks: Vec<CorpusTaskV1>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -110,9 +155,19 @@ impl CorpusManifest {
         if bytes.len() as u64 > MAX_MANIFEST_BYTES {
             return Err(CorpusError::TooLarge);
         }
-        let manifest: Self = serde_json::from_slice(&bytes).map_err(CorpusError::Json)?;
-        manifest.validate()?;
-        Ok(manifest)
+        let probe: SchemaProbe = serde_json::from_slice(&bytes).map_err(CorpusError::Json)?;
+        match probe.schema_version {
+            CORPUS_SCHEMA_VERSION => {
+                let manifest: Self = serde_json::from_slice(&bytes).map_err(CorpusError::Json)?;
+                manifest.validate()?;
+                Ok(manifest)
+            }
+            CORPUS_PREVIOUS_SCHEMA_VERSION => migrate_v1(&bytes),
+            actual => Err(CorpusError::Schema {
+                actual,
+                expected: CORPUS_SCHEMA_VERSION,
+            }),
+        }
     }
 
     pub fn validate(&self) -> Result<(), CorpusError> {
@@ -189,6 +244,63 @@ pub fn digest_tasks(tasks: &[CorpusTask]) -> Result<String, CorpusError> {
     Ok(format!("sha256:{}", hex::encode(Sha256::digest(canonical))))
 }
 
+fn migrate_v1(bytes: &[u8]) -> Result<CorpusManifest, CorpusError> {
+    let legacy: CorpusManifestV1 = serde_json::from_slice(bytes).map_err(CorpusError::Json)?;
+    if legacy.schema_version != CORPUS_PREVIOUS_SCHEMA_VERSION {
+        return Err(CorpusError::Schema {
+            actual: legacy.schema_version,
+            expected: CORPUS_SCHEMA_VERSION,
+        });
+    }
+    let expected = digest_serializable(&legacy.tasks)?;
+    if legacy.dataset_digest != expected {
+        return Err(CorpusError::DigestMismatch {
+            actual: legacy.dataset_digest,
+            expected,
+        });
+    }
+
+    let tasks = legacy
+        .tasks
+        .into_iter()
+        .map(|task| {
+            let mut test_cmd = BTreeMap::new();
+            test_cmd.insert("legacy".to_owned(), task.ground_truth_command.clone());
+            CorpusTask {
+                id: task.id,
+                repo_url: task.repo_url,
+                commit: task.commit,
+                prompt: task.prompt,
+                fail_to_pass: vec![task.verify_command.clone()],
+                pass_to_pass: Vec::new(),
+                test_cmd,
+                verify_command: task.verify_command,
+                ground_truth_command: task.ground_truth_command,
+                dockerhub_tag: task
+                    .benchmark
+                    .as_ref()
+                    .and_then(|binding| binding.reference.environment_image.clone()),
+                partition: task.partition,
+                provenance: task.provenance,
+                benchmark: task.benchmark,
+            }
+        })
+        .collect::<Vec<_>>();
+    let manifest = CorpusManifest {
+        schema_version: CORPUS_SCHEMA_VERSION,
+        corpus_version: legacy.corpus_version,
+        dataset_digest: digest_tasks(&tasks)?,
+        tasks,
+    };
+    manifest.validate()?;
+    Ok(manifest)
+}
+
+fn digest_serializable<T: Serialize + ?Sized>(value: &T) -> Result<String, CorpusError> {
+    let canonical = serde_json::to_vec(value).map_err(CorpusError::Json)?;
+    Ok(format!("sha256:{}", hex::encode(Sha256::digest(canonical))))
+}
+
 fn validate_task(task: &CorpusTask) -> Result<(), CorpusError> {
     let invalid = |field, reason: &str| CorpusError::InvalidTask {
         task: task.id.clone(),
@@ -239,8 +351,82 @@ fn validate_task(task: &CorpusTask) -> Result<(), CorpusError> {
             return Err(invalid(field, &format!("must contain 1..={limit} bytes")));
         }
     }
+    if let Some(image) = &task.dockerhub_tag
+        && (image.trim().is_empty()
+            || image.len() > 1_024
+            || image.contains(char::is_whitespace)
+            || image.ends_with(":latest"))
+    {
+        return Err(invalid(
+            "dockerhub_tag",
+            "must be a bounded, non-latest image reference without whitespace",
+        ));
+    }
+    validate_test_set(task, "fail_to_pass", &task.fail_to_pass, true)?;
+    validate_test_set(task, "pass_to_pass", &task.pass_to_pass, false)?;
+    let mut tests = HashSet::new();
+    for test in &task.fail_to_pass {
+        tests.insert(test);
+    }
+    if task.pass_to_pass.iter().any(|test| !tests.insert(test)) {
+        return Err(invalid(
+            "pass_to_pass",
+            "must not overlap FAIL_TO_PASS or contain duplicates",
+        ));
+    }
+    if task.test_cmd.is_empty() || task.test_cmd.len() > MAX_TEST_COMMANDS {
+        return Err(invalid(
+            "test_cmd",
+            &format!("must contain 1..={MAX_TEST_COMMANDS} language commands"),
+        ));
+    }
+    for (language, command) in &task.test_cmd {
+        if language.is_empty()
+            || language.len() > 32
+            || !language
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return Err(invalid(
+                "test_cmd",
+                "language keys must be 1..=32 lowercase ASCII identifier bytes",
+            ));
+        }
+        if command.trim().is_empty() || command.len() > 64 * 1024 {
+            return Err(invalid("test_cmd", "commands must contain 1..=65536 bytes"));
+        }
+    }
     if let Some(binding) = &task.benchmark {
         validate_benchmark(task, binding)?;
+    }
+    Ok(())
+}
+
+fn validate_test_set(
+    task: &CorpusTask,
+    field: &'static str,
+    tests: &[String],
+    required: bool,
+) -> Result<(), CorpusError> {
+    let invalid = |reason: &str| CorpusError::InvalidTask {
+        task: task.id.clone(),
+        field,
+        reason: reason.to_owned(),
+    };
+    if (required && tests.is_empty()) || tests.len() > MAX_TESTS_PER_SET {
+        return Err(invalid(&format!(
+            "must contain {}..={MAX_TESTS_PER_SET} tests",
+            usize::from(required)
+        )));
+    }
+    let mut unique = HashSet::new();
+    for test in tests {
+        if test.trim().is_empty() || test.len() > 16 * 1024 {
+            return Err(invalid("each test id must contain 1..=16384 bytes"));
+        }
+        if !unique.insert(test) {
+            return Err(invalid("must not contain duplicate test ids"));
+        }
     }
     Ok(())
 }
@@ -333,6 +519,10 @@ mod tests {
             prompt: "fix the bug".into(),
             verify_command: "cargo test --locked".into(),
             ground_truth_command: "cargo test --locked".into(),
+            dockerhub_tag: None,
+            fail_to_pass: vec!["legacy::cargo-test".into()],
+            pass_to_pass: Vec::new(),
+            test_cmd: BTreeMap::from([("rust".into(), "cargo test --locked".into())]),
             partition,
             provenance: Provenance {
                 source: "benchmark-v1".into(),
@@ -346,7 +536,7 @@ mod tests {
     fn manifest(tasks: Vec<CorpusTask>) -> CorpusManifest {
         CorpusManifest {
             schema_version: CORPUS_SCHEMA_VERSION,
-            corpus_version: "fixture-v1".into(),
+            corpus_version: "fixture-v2".into(),
             dataset_digest: digest_tasks(&tasks).unwrap(),
             tasks,
         }
@@ -395,6 +585,102 @@ mod tests {
             loaded.tasks_for(EvaluationPurpose::Score).unwrap()[0].id,
             "two"
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn v1_manifest_migrates_without_changing_prompt_or_hidden_patch_bytes() {
+        let mut legacy_task = CorpusTaskV1 {
+            id: "legacy".into(),
+            repo_url: "https://github.com/example/repo.git".into(),
+            commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            prompt: "preserve me byte-for-byte\n".into(),
+            verify_command: "cargo test legacy::f2p".into(),
+            ground_truth_command: "cargo test --all".into(),
+            partition: Partition::HeldOut,
+            provenance: Provenance {
+                source: "legacy-v1".into(),
+                task_id: "legacy".into(),
+                license: Some("MIT".into()),
+            },
+            benchmark: None,
+        };
+        let patch = "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new with spaces  \n";
+        legacy_task.benchmark = Some(BenchmarkBinding {
+            reference: BenchmarkReference {
+                name: "legacy".into(),
+                instance_id: "legacy".into(),
+                dataset_revision: "2".repeat(40),
+                environment_setup_commit: "3".repeat(40),
+                environment_image: Some("example/image:pinned".into()),
+                test_patch_sha256: format!(
+                    "sha256:{}",
+                    hex::encode(Sha256::digest(patch.as_bytes()))
+                ),
+            },
+            test_patch: patch.into(),
+        });
+        legacy_task.provenance.source = format!(
+            "https://example.invalid/dataset/tree/{}",
+            legacy_task
+                .benchmark
+                .as_ref()
+                .unwrap()
+                .reference
+                .dataset_revision
+        );
+        let legacy = CorpusManifestV1 {
+            schema_version: CORPUS_PREVIOUS_SCHEMA_VERSION,
+            corpus_version: "fixture-v1".into(),
+            dataset_digest: digest_serializable(std::slice::from_ref(&legacy_task)).unwrap(),
+            tasks: vec![legacy_task.clone()],
+        };
+        let path = temp_file();
+        std::fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+        let loaded = CorpusManifest::load(&path).unwrap();
+        assert_eq!(loaded.schema_version, CORPUS_SCHEMA_VERSION);
+        assert_eq!(loaded.tasks[0].prompt, legacy_task.prompt);
+        assert_eq!(
+            loaded.tasks[0].benchmark.as_ref().unwrap().test_patch,
+            legacy_task.benchmark.as_ref().unwrap().test_patch
+        );
+        assert_eq!(
+            loaded.tasks[0].fail_to_pass,
+            vec![legacy_task.verify_command]
+        );
+        assert_eq!(
+            loaded.tasks[0].ground_truth_command,
+            legacy_task.ground_truth_command
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn v3_and_unknown_fields_are_rejected_before_task_data_is_used() {
+        let mut corpus = manifest(vec![task("task", Partition::HeldOut)]);
+        corpus.schema_version = 3;
+        let path = temp_file();
+        std::fs::write(&path, serde_json::to_vec(&corpus).unwrap()).unwrap();
+        let error = CorpusManifest::load(&path).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                CorpusError::Schema {
+                    actual: 3,
+                    expected: CORPUS_SCHEMA_VERSION
+                }
+            ),
+            "unexpected error: {error:?}"
+        );
+
+        let mut value =
+            serde_json::to_value(manifest(vec![task("task", Partition::HeldOut)])).unwrap();
+        value["tasks"][0]["unknown"] = serde_json::Value::Bool(true);
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(matches!(
+            CorpusManifest::load(&path),
+            Err(CorpusError::Json(_))
+        ));
         let _ = std::fs::remove_file(path);
     }
 
