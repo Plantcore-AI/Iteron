@@ -4,7 +4,10 @@ use crate::DeploymentStage;
 use crate::promotion::{DeploymentBundle, MAX_PROMOTION_CANDIDATES, PromotionAuthorityError};
 use crate::promotion_auth::{PromotionOperation, PromotionRequest};
 use crate::promotion_evaluation::StagePermit;
-use crate::promotion_journal::{CandidateIdentity, JournalEvent, JournalRecord, RefusalCode};
+use crate::promotion_journal::{
+    CandidateIdentity, CheckpointEvaluationIdentity, JournalEvent, JournalRecord, RefusalCode,
+};
+use crate::{BaseModelId, PolicyBundle, StrategySlot};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,6 +23,22 @@ pub struct PromotionLineage {
     pub artifact_digest: String,
     pub training_dataset_digest: Option<String>,
     pub evaluation_suite_digest: String,
+    pub base_model: BaseModelId,
+    pub evaluation_owner_id: String,
+    pub evaluator_id: String,
+    pub additional_evaluations: Vec<PromotionEvaluationLineage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromotionEvaluationLineage {
+    pub slot: StrategySlot,
+    pub candidate_policy_id: String,
+    pub candidate_policy_digest: String,
+    pub parent_policy_id: Option<String>,
+    pub artifact_digest: String,
+    pub training_dataset_digest: Option<String>,
+    pub evaluation_suite_digest: String,
+    pub base_model: BaseModelId,
     pub evaluation_owner_id: String,
     pub evaluator_id: String,
 }
@@ -40,6 +59,32 @@ impl From<&CandidateIdentity> for PromotionLineage {
             artifact_digest: identity.artifact_digest.clone(),
             training_dataset_digest: identity.training_dataset_digest.clone(),
             evaluation_suite_digest: identity.evaluation_suite_digest.clone(),
+            base_model: identity.base_model.clone(),
+            evaluation_owner_id: identity.evaluation_owner_id.clone(),
+            evaluator_id: identity.evaluator_id.clone(),
+            additional_evaluations: identity
+                .additional_evaluations
+                .iter()
+                .map(PromotionEvaluationLineage::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<&CheckpointEvaluationIdentity> for PromotionEvaluationLineage {
+    fn from(identity: &CheckpointEvaluationIdentity) -> Self {
+        Self {
+            slot: identity.candidate_policy.slot.clone(),
+            candidate_policy_id: identity.candidate_policy.policy_id.clone(),
+            candidate_policy_digest: identity.candidate_policy.digest.clone(),
+            parent_policy_id: identity
+                .parent_policy
+                .as_ref()
+                .map(|parent| parent.policy_id.clone()),
+            artifact_digest: identity.artifact_digest.clone(),
+            training_dataset_digest: identity.training_dataset_digest.clone(),
+            evaluation_suite_digest: identity.evaluation_suite_digest.clone(),
+            base_model: identity.base_model.clone(),
             evaluation_owner_id: identity.evaluation_owner_id.clone(),
             evaluator_id: identity.evaluator_id.clone(),
         }
@@ -138,6 +183,24 @@ impl AuthorityState {
                 {
                     return Err(PromotionAuthorityError::EvaluationIdentityMismatch);
                 }
+                (
+                    PromotionAuditKind::CandidateAdmitted,
+                    Some(PromotionLineage::from(identity.as_ref())),
+                )
+            }
+            JournalEvent::CheckpointCandidateAdmitted {
+                checkpoint,
+                identity,
+                admission_policies,
+                attestations,
+            } => {
+                self.apply_checkpoint_candidate(
+                    request,
+                    checkpoint,
+                    identity,
+                    admission_policies,
+                    attestations,
+                )?;
                 (
                     PromotionAuditKind::CandidateAdmitted,
                     Some(PromotionLineage::from(identity.as_ref())),
@@ -277,6 +340,14 @@ impl AuthorityState {
             .bundles
             .get(active_digest)
             .ok_or(PromotionAuthorityError::MissingBaseline)?;
+        let changed_slots = changed_deployment_slots(active, bundle)?;
+        if !identity.additional_evaluations.is_empty()
+            || changed_slots != [identity.candidate_policy.slot.clone()].into()
+            || changed_policy_slots(active.bundle(), bundle.bundle())
+                != [identity.candidate_policy.slot.clone()].into()
+        {
+            return Err(PromotionAuthorityError::LineageMismatch);
+        }
         if identity.baseline_bundle_digest != *active_digest
             || identity.rollback_bundle_id != active.bundle().bundle_id
             || bundle.bundle().rollback_to.as_deref() != Some(identity.rollback_bundle_id.as_str())
@@ -289,6 +360,94 @@ impl AuthorityState {
         }
         self.bundles
             .insert(identity.bundle_digest.clone(), bundle.clone());
+        self.candidates.insert(
+            identity.bundle_digest.clone(),
+            CandidateState {
+                identity: identity.clone(),
+                stage: DeploymentStage::Candidate,
+                permit: None,
+            },
+        );
+        Ok(())
+    }
+
+    fn apply_checkpoint_candidate(
+        &mut self,
+        request: &PromotionRequest,
+        checkpoint: &crate::PolicyCheckpoint,
+        identity: &CandidateIdentity,
+        admission_policies: &BTreeMap<StrategySlot, crate::ManifestAdmissionPolicy>,
+        attestations: &[crate::SignedCheckpointEvaluation],
+    ) -> Result<(), PromotionAuthorityError> {
+        checkpoint
+            .validate()
+            .map_err(|_| PromotionAuthorityError::LineageMismatch)?;
+        let bundle = checkpoint.deployment_bundle_unchecked()?;
+        if request.operation() != PromotionOperation::AdmitCandidate
+            || request.candidate_bundle_digest() != bundle.bundle().digest
+            || identity.bundle_digest != bundle.bundle().digest
+            || identity.bundle_id != bundle.bundle().bundle_id
+        {
+            return Err(PromotionAuthorityError::InvalidRequestTransition);
+        }
+        if self.candidates.len() >= MAX_PROMOTION_CANDIDATES {
+            return Err(PromotionAuthorityError::CandidateLimit {
+                max: MAX_PROMOTION_CANDIDATES,
+            });
+        }
+        if self.candidates.contains_key(&identity.bundle_digest)
+            || self.bundles.contains_key(&identity.bundle_digest)
+            || self
+                .bundles
+                .values()
+                .any(|stored| stored.bundle().bundle_id == identity.bundle_id)
+        {
+            return Err(PromotionAuthorityError::CandidateConflict);
+        }
+        let active_digest = self
+            .active_bundle_digest
+            .as_ref()
+            .ok_or(PromotionAuthorityError::MissingBaseline)?;
+        let active = self
+            .bundles
+            .get(active_digest)
+            .ok_or(PromotionAuthorityError::MissingBaseline)?;
+        let required = checkpoint.fresh_held_out_slots();
+        let evaluated = evaluated_slots(identity)?;
+        let attested: BTreeSet<_> = attestations
+            .iter()
+            .map(|attestation| attestation.report().candidate.slot.clone())
+            .collect();
+        let active_checkpoint = crate::PolicyCheckpoint::from_deployment(active)
+            .map_err(|_| PromotionAuthorityError::LineageMismatch)?;
+        let changed = active_checkpoint.changed_slots(checkpoint);
+        if required.is_empty()
+            || changed.is_empty()
+            || &evaluated != required
+            || !checkpoint_evaluations_are_canonical(identity, &changed, required)
+            || !checkpoint_evaluators_are_independent(identity, checkpoint.bundle())
+            || &attested != required
+            || admission_policies.keys().cloned().collect::<BTreeSet<_>>() != *required
+            || !changed.is_subset(required)
+            || identity.baseline_bundle_digest != *active_digest
+            || identity.rollback_bundle_id != active.bundle().bundle_id
+            || bundle.bundle().rollback_to.as_deref() != Some(identity.rollback_bundle_id.as_str())
+        {
+            return Err(PromotionAuthorityError::LineageMismatch);
+        }
+        for evaluation in checkpoint_evaluations(identity) {
+            let slot = &evaluation.candidate_policy.slot;
+            if bundle.bundle().policy_for(slot) != Some(evaluation.candidate_policy)
+                || evaluation.parent_policy.as_ref() != active.bundle().policy_for(slot)
+                || checkpoint
+                    .manifest_for(slot)
+                    .map(|manifest| &manifest.policy)
+                    != Some(evaluation.candidate_policy)
+            {
+                return Err(PromotionAuthorityError::LineageMismatch);
+            }
+        }
+        self.bundles.insert(identity.bundle_digest.clone(), bundle);
         self.candidates.insert(
             identity.bundle_digest.clone(),
             CandidateState {
@@ -433,6 +592,122 @@ impl AuthorityState {
         self.active_bundle_digest = Some(restored_bundle_digest.to_owned());
         Ok(candidate.identity.clone())
     }
+}
+
+pub(crate) fn changed_policy_slots(
+    before: &PolicyBundle,
+    after: &PolicyBundle,
+) -> BTreeSet<StrategySlot> {
+    before
+        .policies
+        .iter()
+        .map(|policy| policy.slot.clone())
+        .chain(after.policies.iter().map(|policy| policy.slot.clone()))
+        .filter(|slot| before.policy_for(slot) != after.policy_for(slot))
+        .collect()
+}
+
+pub(crate) fn changed_deployment_slots(
+    before: &DeploymentBundle,
+    after: &DeploymentBundle,
+) -> Result<BTreeSet<StrategySlot>, PromotionAuthorityError> {
+    match (
+        crate::PolicyCheckpoint::from_deployment(before),
+        crate::PolicyCheckpoint::from_deployment(after),
+    ) {
+        (Ok(before_checkpoint), Ok(after_checkpoint)) => {
+            Ok(before_checkpoint.changed_slots(&after_checkpoint))
+        }
+        _ => Ok(changed_policy_slots(before.bundle(), after.bundle())),
+    }
+}
+
+pub(crate) fn evaluated_slots(
+    identity: &CandidateIdentity,
+) -> Result<BTreeSet<StrategySlot>, PromotionAuthorityError> {
+    let mut slots = BTreeSet::new();
+    if !slots.insert(identity.candidate_policy.slot.clone()) {
+        return Err(PromotionAuthorityError::LineageMismatch);
+    }
+    for evaluation in &identity.additional_evaluations {
+        if !slots.insert(evaluation.candidate_policy.slot.clone()) {
+            return Err(PromotionAuthorityError::LineageMismatch);
+        }
+    }
+    Ok(slots)
+}
+
+pub(crate) fn checkpoint_evaluations_are_canonical(
+    identity: &CandidateIdentity,
+    changed: &BTreeSet<StrategySlot>,
+    required: &BTreeSet<StrategySlot>,
+) -> bool {
+    checkpoint_evaluations(identity)
+        .map(|evaluation| &evaluation.candidate_policy.slot)
+        .eq(changed.iter().chain(required.difference(changed)))
+}
+
+pub(crate) fn checkpoint_evaluators_are_independent(
+    identity: &CandidateIdentity,
+    bundle: &PolicyBundle,
+) -> bool {
+    let policy_ids: BTreeSet<_> = bundle
+        .policies
+        .iter()
+        .map(|policy| policy.policy_id.as_str())
+        .collect();
+    checkpoint_evaluations(identity).all(|evaluation| {
+        evaluation.evaluator_id != &identity.bundle_id
+            && !policy_ids.contains(evaluation.evaluator_id.as_str())
+    })
+}
+
+pub(crate) fn checkpoint_evaluations(
+    identity: &CandidateIdentity,
+) -> impl Iterator<Item = CheckpointEvaluationRef<'_>> {
+    std::iter::once(CheckpointEvaluationRef {
+        candidate_policy: &identity.candidate_policy,
+        parent_policy: &identity.parent_policy,
+        artifact_digest: &identity.artifact_digest,
+        training_dataset_digest: &identity.training_dataset_digest,
+        evaluation_suite_digest: &identity.evaluation_suite_digest,
+        base_model: &identity.base_model,
+        evaluation_owner_id: &identity.evaluation_owner_id,
+        evaluator_id: &identity.evaluator_id,
+    })
+    .chain(
+        identity
+            .additional_evaluations
+            .iter()
+            .map(|evaluation| CheckpointEvaluationRef {
+                candidate_policy: &evaluation.candidate_policy,
+                parent_policy: &evaluation.parent_policy,
+                artifact_digest: &evaluation.artifact_digest,
+                training_dataset_digest: &evaluation.training_dataset_digest,
+                evaluation_suite_digest: &evaluation.evaluation_suite_digest,
+                base_model: &evaluation.base_model,
+                evaluation_owner_id: &evaluation.evaluation_owner_id,
+                evaluator_id: &evaluation.evaluator_id,
+            }),
+    )
+}
+
+pub(crate) fn checkpoint_evaluation_for<'a>(
+    identity: &'a CandidateIdentity,
+    slot: &StrategySlot,
+) -> Option<CheckpointEvaluationRef<'a>> {
+    checkpoint_evaluations(identity).find(|evaluation| &evaluation.candidate_policy.slot == slot)
+}
+
+pub(crate) struct CheckpointEvaluationRef<'a> {
+    pub(crate) candidate_policy: &'a crate::PolicyRef,
+    pub(crate) parent_policy: &'a Option<crate::PolicyRef>,
+    pub(crate) artifact_digest: &'a String,
+    pub(crate) training_dataset_digest: &'a Option<String>,
+    pub(crate) evaluation_suite_digest: &'a String,
+    pub(crate) base_model: &'a crate::BaseModelId,
+    pub(crate) evaluation_owner_id: &'a String,
+    pub(crate) evaluator_id: &'a String,
 }
 
 fn refusal_code_name(code: &RefusalCode) -> String {

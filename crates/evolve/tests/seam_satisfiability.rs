@@ -1,11 +1,12 @@
-//! Proof that the two declared-not-implemented seams can actually be implemented, from outside.
+//! Proof that the two frozen seam contracts remain implementable from outside.
 //!
 //! # Why this file exists and why it is not a `#[cfg(test)]` module
 //!
 //! An in-crate test module compiles at crate-private visibility. It can reach privately imported
 //! names, private modules, and `pub(crate)` items that no outside implementor can touch, so it would
-//! prove only that `core-evolve` itself can satisfy these seams — the one crate that must never
-//! implement them. An integration test links this crate exactly as an external consumer does.
+//! prove only that `core-evolve` itself can satisfy these seams. An integration test links this
+//! crate exactly as an external consumer does, independently of the bounded in-crate
+//! implementations.
 //!
 //! That distinction is not theoretical. The first version of these seams was proved "satisfiable" by
 //! in-crate doubles that all returned `Ok(None)`. `Ok(None)` constructs no payload, so it certified
@@ -256,8 +257,7 @@ fn a_crate_holding_only_core_evolve_can_implement_every_seam() {
     fn ingest<P: TrajectoryProjection>(projection: &P) -> Option<TrajectoryEnvelope> {
         projection.project(&digest('a')).expect("projection ok")
     }
-    // Dynamic dispatch, and a composition root holding both seams as trait objects. Neither needs
-    // an inhabitant to compile, which is why no stub is shipped.
+    // Dynamic dispatch, and a composition root holding both seams as trait objects.
     struct Root<'a> {
         runs: &'a dyn TrajectoryProjection,
         evidence: &'a dyn HeldOutEvidenceBridge,
@@ -298,7 +298,7 @@ fn a_non_empty_payload_is_constructible_from_outside_this_crate() {
     // This also checks the property `HeldOutEvidenceBridge`'s doc comment promises an implementor:
     // that the `base_model` argument is checkable against the returned report. It was NOT, until an
     // accessor was added — the type was fully opaque outside this crate, so the doc described
-    // something only the one crate forbidden from implementing the seam could do.
+    // something an external implementation could not do.
     let asked = real_base_model();
     let attested = RealEvidence
         .evidence_for(&digest('a'), &asked)

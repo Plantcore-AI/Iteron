@@ -9,17 +9,56 @@ use crate::promotion::{
 };
 use crate::promotion_auth::{PromotionAuthorization, PromotionOperation, PromotionRequest};
 use crate::promotion_evaluation::{
-    BoundedStageExecutor, SignedHeldOutEvaluation, SignedStageObservation, StagePermit,
+    BoundedStageExecutor, SignedCheckpointEvaluation, SignedHeldOutEvaluation,
+    SignedStageObservation, StagePermit,
 };
-use crate::promotion_journal::{CandidateIdentity, JournalEvent, PromotionJournal};
-use crate::promotion_state::{AuthorityState, PromotionAuditEvent, PromotionLineage};
+use crate::promotion_journal::{
+    CandidateIdentity, CheckpointEvaluationIdentity, JournalEvent, PromotionJournal,
+};
+use crate::promotion_state::{
+    AuthorityState, CheckpointEvaluationRef, PromotionAuditEvent, PromotionLineage,
+    changed_deployment_slots, changed_policy_slots, checkpoint_evaluators_are_independent,
+};
+use crate::verifier_crypto::constant_time_eq;
 use crate::{
     ConsentAwareDatasetRegistry, DeploymentBundle, DeploymentStage, EvaluationSuite,
-    EvolutionVerifier, MAX_EVALUATOR_TRUST_ANCHORS, MAX_PROMOTION_TRUST_ANCHORS, PolicyManifest,
+    EvolutionVerifier, MAX_EVALUATOR_TRUST_ANCHORS, MAX_PROMOTION_TRUST_ANCHORS,
+    ManifestAdmissionPolicy, PolicyCheckpoint, PolicyManifest, StrategySlot,
     VerifiedTrainingDataset,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
+
+/// One changed checkpoint slot and the trusted inputs required to admit it.
+///
+/// The map key passed to [`PromotionAuthority::admit_checkpoint_candidate`] is the slot identity;
+/// the manifest itself comes from the checkpoint, so a caller cannot present one manifest for
+/// evaluation while deploying another.
+pub struct CheckpointCandidateAdmission<'a> {
+    admission_policy: &'a ManifestAdmissionPolicy,
+    artifact_bytes: &'a [u8],
+    training_dataset: Option<&'a VerifiedTrainingDataset<'a>>,
+    evaluation_suite: &'a EvaluationSuite,
+    held_out: SignedCheckpointEvaluation,
+}
+
+impl<'a> CheckpointCandidateAdmission<'a> {
+    pub fn new(
+        admission_policy: &'a ManifestAdmissionPolicy,
+        artifact_bytes: &'a [u8],
+        training_dataset: Option<&'a VerifiedTrainingDataset<'a>>,
+        evaluation_suite: &'a EvaluationSuite,
+        held_out: SignedCheckpointEvaluation,
+    ) -> Self {
+        Self {
+            admission_policy,
+            artifact_bytes,
+            training_dataset,
+            evaluation_suite,
+            held_out,
+        }
+    }
+}
 
 pub struct PromotionAuthority {
     pub(crate) authority_id: String,
@@ -63,6 +102,9 @@ impl PromotionAuthority {
         let mut evaluators = BTreeMap::new();
         for anchor in evaluator_anchors {
             if promotions.contains_key(&anchor.evaluator_id)
+                || promotions
+                    .values()
+                    .any(|promotion| constant_time_eq(promotion.key.bytes(), anchor.key.bytes()))
                 || evaluators
                     .insert(anchor.evaluator_id.clone(), anchor)
                     .is_some()
@@ -139,6 +181,10 @@ impl PromotionAuthority {
             || deployment.bundle().policy_for(&manifest.policy.slot) != Some(&manifest.policy)
             || deployment.bundle().rollback_to.as_deref()
                 != Some(active.bundle().bundle_id.as_str())
+            || changed_deployment_slots(&active, &deployment)?
+                != [manifest.policy.slot.clone()].into()
+            || changed_policy_slots(active.bundle(), deployment.bundle())
+                != [manifest.policy.slot.clone()].into()
         {
             return Err(PromotionAuthorityError::LineageMismatch);
         }
@@ -174,6 +220,7 @@ impl PromotionAuthority {
             base_model: verified.base_model.clone(),
             evaluation_owner_id: evaluation_suite.owner_id().to_owned(),
             evaluator_id: held_out.evaluator_id.clone(),
+            additional_evaluations: Vec::new(),
         };
         self.verify_held_out(&identity, baseline_policy, evaluation_suite, &held_out)?;
         let lineage = PromotionLineage::from(&identity);
@@ -184,6 +231,149 @@ impl PromotionAuthority {
                 bundle: deployment,
                 identity: Box::new(identity),
                 held_out_attestation: Box::new(held_out),
+            },
+        )?;
+        Ok(lineage)
+    }
+
+    /// Admit an algebra checkpoint only after every marked slot has a fresh, checkpoint-bound
+    /// held-out attestation and a re-run of its trusted manifest admission policy.
+    ///
+    /// This is intentionally a separate path from [`Self::admit_candidate`]. The latter admits
+    /// exactly one changed `PolicyRef`; it rejects a deployment carrying any additional change.
+    /// Checkpoint operations such as `merge` and `restrict` can be atomic only through this method.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_checkpoint_candidate<'a>(
+        &mut self,
+        request: &PromotionRequest,
+        authorization: &PromotionAuthorization,
+        verifier: &EvolutionVerifier,
+        datasets: &ConsentAwareDatasetRegistry,
+        checkpoint: &PolicyCheckpoint,
+        admissions: BTreeMap<StrategySlot, CheckpointCandidateAdmission<'a>>,
+    ) -> Result<PromotionLineage, PromotionAuthorityError> {
+        self.refresh()?;
+        self.prepare_authorized(request, authorization, PromotionOperation::AdmitCandidate)?;
+        checkpoint
+            .validate()
+            .map_err(|_| PromotionAuthorityError::LineageMismatch)?;
+        let active = self.active_bundle_ref()?.clone();
+        let deployment = checkpoint.deployment_bundle_unchecked()?;
+        let active_checkpoint = PolicyCheckpoint::from_deployment(&active)
+            .map_err(|_| PromotionAuthorityError::LineageMismatch)?;
+        let required = checkpoint.fresh_held_out_slots();
+        let supplied: std::collections::BTreeSet<_> = admissions.keys().cloned().collect();
+        let changed = active_checkpoint.changed_slots(checkpoint);
+        if required.is_empty()
+            || changed.is_empty()
+            || supplied != *required
+            || !changed.is_subset(required)
+            || request.candidate_bundle_digest() != deployment.bundle().digest
+            || deployment.bundle().rollback_to.as_deref()
+                != Some(active.bundle().bundle_id.as_str())
+        {
+            return Err(PromotionAuthorityError::LineageMismatch);
+        }
+
+        let mut identities = Vec::with_capacity(admissions.len());
+        let mut admission_policies = BTreeMap::new();
+        let mut attestations = Vec::with_capacity(admissions.len());
+        for (slot, admission) in admissions {
+            let manifest = checkpoint
+                .manifest_for(&slot)
+                .ok_or(PromotionAuthorityError::LineageMismatch)?;
+            admission.admission_policy.assess(manifest)?;
+            let registered = datasets.require_manifest_dataset(manifest)?;
+            match (registered, admission.training_dataset) {
+                (Some(registered), Some(dataset)) if registered.digest == dataset.digest() => {}
+                (None, None) => {}
+                _ => return Err(PromotionAuthorityError::LineageMismatch),
+            }
+            let verified = verifier.verify_candidate_inputs(
+                manifest,
+                admission.artifact_bytes,
+                admission.training_dataset,
+                admission.evaluation_suite,
+            )?;
+            let baseline_policy = active
+                .bundle()
+                .policy_for(&slot)
+                .ok_or(PromotionAuthorityError::LineageMismatch)?;
+            let identity = CheckpointEvaluationIdentity {
+                candidate_policy: manifest.policy.clone(),
+                // Checkpoint transition lineage is relative to the active deployment. The
+                // manifest's own artifact lineage is assessed separately by its exact admission
+                // policy and may legitimately name an older source (merge) or no parent (retire).
+                parent_policy: Some(baseline_policy.clone()),
+                artifact_digest: verified.artifact_digest.clone(),
+                training_dataset_digest: verified.training_dataset_digest.clone(),
+                evaluation_suite_digest: verified.evaluation_suite_digest.clone(),
+                base_model: verified.base_model.clone(),
+                evaluation_owner_id: admission.evaluation_suite.owner_id().to_owned(),
+                evaluator_id: admission.held_out.evaluator_id.clone(),
+            };
+            self.verify_checkpoint_held_out(
+                deployment.bundle(),
+                required,
+                CheckpointEvaluationRef {
+                    candidate_policy: &identity.candidate_policy,
+                    parent_policy: &identity.parent_policy,
+                    artifact_digest: &identity.artifact_digest,
+                    training_dataset_digest: &identity.training_dataset_digest,
+                    evaluation_suite_digest: &identity.evaluation_suite_digest,
+                    base_model: &identity.base_model,
+                    evaluation_owner_id: &identity.evaluation_owner_id,
+                    evaluator_id: &identity.evaluator_id,
+                },
+                baseline_policy,
+                manifest,
+                admission.admission_policy,
+                Some(admission.evaluation_suite),
+                &admission.held_out,
+            )?;
+            identities.push(identity);
+            admission_policies.insert(slot, admission.admission_policy.clone());
+            attestations.push(admission.held_out);
+        }
+
+        identities.sort_by(|left, right| {
+            let left_changed = changed.contains(&left.candidate_policy.slot);
+            let right_changed = changed.contains(&right.candidate_policy.slot);
+            right_changed
+                .cmp(&left_changed)
+                .then_with(|| left.candidate_policy.slot.cmp(&right.candidate_policy.slot))
+        });
+        let mut identities = identities.into_iter();
+        let primary = identities
+            .next()
+            .ok_or(PromotionAuthorityError::FreshHeldOutRequired)?;
+        let identity = CandidateIdentity {
+            bundle_id: deployment.bundle().bundle_id.clone(),
+            bundle_digest: deployment.bundle().digest.clone(),
+            rollback_bundle_id: active.bundle().bundle_id.clone(),
+            baseline_bundle_digest: active.bundle().digest.clone(),
+            candidate_policy: primary.candidate_policy,
+            parent_policy: primary.parent_policy,
+            artifact_digest: primary.artifact_digest,
+            training_dataset_digest: primary.training_dataset_digest,
+            evaluation_suite_digest: primary.evaluation_suite_digest,
+            base_model: primary.base_model,
+            evaluation_owner_id: primary.evaluation_owner_id,
+            evaluator_id: primary.evaluator_id,
+            additional_evaluations: identities.collect(),
+        };
+        if !checkpoint_evaluators_are_independent(&identity, deployment.bundle()) {
+            return Err(PromotionAuthorityError::IndependentEvaluationRequired);
+        }
+        let lineage = PromotionLineage::from(&identity);
+        self.append(
+            request,
+            authorization,
+            JournalEvent::CheckpointCandidateAdmitted {
+                checkpoint: Box::new(checkpoint.clone()),
+                identity: Box::new(identity),
+                admission_policies,
+                attestations,
             },
         )?;
         Ok(lineage)

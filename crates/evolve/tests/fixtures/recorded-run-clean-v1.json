@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "rollout_digest": "0722b7c0b2b2f35b340557421165459ab748e6bfa1355d30e398ebc9270439f9",
+  "checkpoint_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "run_id": "fixture-recorded-run",
+  "tenant_id": "default",
+  "task_id": "training-task-fixture",
+  "domain": "coding",
+  "bundle": {
+    "bundle_id": "training-bundle",
+    "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "policies": [
+      {
+        "slot": "core/router",
+        "policy_id": "router-v1",
+        "version": "1.0.0",
+        "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    ],
+    "rollback_to": null
+  },
+  "decisions": [
+    {
+      "decision_id": "decision-0",
+      "ordinal": 0,
+      "policy": {
+        "slot": "core/router",
+        "policy_id": "router-v1",
+        "version": "1.0.0",
+        "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "observation_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "candidate_set_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "action": {
+        "route": "safe"
+      },
+      "propensity": 1.0
+    }
+  ],
+  "terminal_outcome": "completed",
+  "reward": {
+    "task_score": 1.0,
+    "correctness": 1.0,
+    "safety_violations": 0,
+    "policy_violations": 0,
+    "cost_usd": 0.01,
+    "wall_time_ms": 10,
+    "human_acceptance": null,
+    "domain": {}
+  },
+  "governance": {
+    "class": "public",
+    "consent": "allowed",
+    "content_license": "apache-2.0",
+    "contains_secret_material": false,
+    "retention_policy": "training-v1"
+  },
+  "training_revoked": false
+}

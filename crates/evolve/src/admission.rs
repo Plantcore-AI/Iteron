@@ -10,6 +10,7 @@ use crate::{
     validate_collection,
 };
 use core_protocol::Capability;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 #[derive(Debug, thiserror::Error)]
@@ -33,7 +34,7 @@ pub enum CapabilityAdmissionError {
 }
 
 /// Capability ceiling tied to the exact immutable parent policy identity.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParentCapabilityCeiling {
     parent: PolicyRef,
     allowed: BTreeSet<Capability>,
@@ -58,7 +59,7 @@ impl ParentCapabilityCeiling {
 /// Constructing this policy does not grant its capabilities. The caller is responsible for
 /// sourcing the slot and parent ceilings from an authoritative registry rather than candidate
 /// input.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestAdmissionPolicy {
     slot: StrategySlot,
     slot_allowed: BTreeSet<Capability>,

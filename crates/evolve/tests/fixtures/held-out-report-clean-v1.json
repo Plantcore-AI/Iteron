@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "baseline": {
+    "slot": "core/tool_policy",
+    "policy_id": "baseline-tool-policy",
+    "version": "1.0.0",
+    "digest": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "candidate": {
+    "slot": "core/tool_policy",
+    "policy_id": "candidate-tool-policy",
+    "version": "1.0.0",
+    "digest": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "pairs": [
+    {
+      "task_id": "held-out-a",
+      "fixture_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+      "baseline": {
+        "task_score": 0.2,
+        "correctness": 0.2,
+        "safety_violations": 0,
+        "policy_violations": 0,
+        "cost_usd": 0.01,
+        "wall_time_ms": 10,
+        "human_acceptance": null,
+        "domain": {}
+      },
+      "candidate": {
+        "task_score": 0.7,
+        "correctness": 0.7,
+        "safety_violations": 0,
+        "policy_violations": 0,
+        "cost_usd": 0.01,
+        "wall_time_ms": 10,
+        "human_acceptance": null,
+        "domain": {}
+      }
+    },
+    {
+      "task_id": "held-out-b",
+      "fixture_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+      "baseline": {
+        "task_score": 0.4,
+        "correctness": 0.4,
+        "safety_violations": 0,
+        "policy_violations": 0,
+        "cost_usd": 0.02,
+        "wall_time_ms": 20,
+        "human_acceptance": null,
+        "domain": {}
+      },
+      "candidate": {
+        "task_score": 0.8,
+        "correctness": 0.8,
+        "safety_violations": 0,
+        "policy_violations": 0,
+        "cost_usd": 0.02,
+        "wall_time_ms": 20,
+        "human_acceptance": null,
+        "domain": {}
+      }
+    }
+  ],
+  "intervals": {
+    "task_score_delta": {
+      "lower": 0.3,
+      "upper": 0.6
+    },
+    "cost_delta_usd": {
+      "lower": 0.0,
+      "upper": 0.0
+    },
+    "latency_delta_ms": {
+      "lower": 0.0,
+      "upper": 0.0
+    }
+  },
+  "replay_equivalence_passed": true,
+  "sandbox_suite_passed": true,
+  "invariant_suites": {
+    "durability": true,
+    "runtime": true,
+    "security": true
+  },
+  "reported_train_eval_overlap": false
+}

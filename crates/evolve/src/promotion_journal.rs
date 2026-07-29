@@ -2,10 +2,16 @@
 
 use crate::promotion::{DeploymentBundle, MAX_PROMOTION_AUDIT_EVENTS, PromotionAuthorityError};
 use crate::promotion_auth::PromotionRequest;
-use crate::promotion_evaluation::{SignedHeldOutEvaluation, SignedStageObservation, StagePermit};
+use crate::promotion_evaluation::{
+    SignedCheckpointEvaluation, SignedHeldOutEvaluation, SignedStageObservation, StagePermit,
+};
 use crate::verifier_crypto::sha256_hex;
-use crate::{BaseModelId, DeploymentStage, PolicyRef};
+use crate::{
+    BaseModelId, DeploymentStage, ManifestAdmissionPolicy, PolicyCheckpoint, PolicyRef,
+    StrategySlot,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -13,7 +19,8 @@ use std::path::{Path, PathBuf};
 pub(crate) const MAX_PROMOTION_JOURNAL_BYTES: u64 = 256 * 1024 * 1024;
 pub(crate) const MAX_PROMOTION_JOURNAL_RECORD_BYTES: usize = 2 * 1024 * 1024;
 /// Bumped 1 -> 2 when `base_model` was threaded into `CandidateIdentity` and into the signed
-/// `HeldOutEvaluation` payload.
+/// `HeldOutEvaluation` payload; bumped 2 -> 3 when checkpoint candidates gained an exact
+/// per-changed-slot identity set plus checkpoint-bound attestations.
 ///
 /// This is a hard break rather than a migration, and deliberately so. The new field is inside the
 /// HMAC preimage, so every held-out signature written under schema 1 recomputes to a different value
@@ -22,7 +29,7 @@ pub(crate) const MAX_PROMOTION_JOURNAL_RECORD_BYTES: usize = 2 * 1024 * 1024;
 /// old one, and the existing check below already does exactly that. There are no shipped journals,
 /// so the cost of breaking now is zero; after the first real promotion it would be a migration of
 /// hash-chained, signed records.
-const JOURNAL_SCHEMA_VERSION: u16 = 2;
+const JOURNAL_SCHEMA_VERSION: u16 = 3;
 const JOURNAL_FILE_NAME: &str = "promotion-authority.jsonl";
 const ZERO_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -40,6 +47,23 @@ pub(crate) struct CandidateIdentity {
     /// Copied off the verified inputs, so the authority holds the base model the *verifier* read.
     /// `verify_held_out_without_suite` refuses an attestation whose signed report names a different
     /// one, which is what stops evidence gathered on one set of weights being replayed for another.
+    pub(crate) base_model: BaseModelId,
+    pub(crate) evaluation_owner_id: String,
+    pub(crate) evaluator_id: String,
+    /// Additional changed slots for an atomic checkpoint candidate. The primary fields above
+    /// remain the stage-observation identity; this bounded tail makes admission/replay account for
+    /// every other changed slot rather than silently letting it ride on the primary evaluation.
+    #[serde(default)]
+    pub(crate) additional_evaluations: Vec<CheckpointEvaluationIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CheckpointEvaluationIdentity {
+    pub(crate) candidate_policy: PolicyRef,
+    pub(crate) parent_policy: Option<PolicyRef>,
+    pub(crate) artifact_digest: String,
+    pub(crate) training_dataset_digest: Option<String>,
+    pub(crate) evaluation_suite_digest: String,
     pub(crate) base_model: BaseModelId,
     pub(crate) evaluation_owner_id: String,
     pub(crate) evaluator_id: String,
@@ -66,6 +90,12 @@ pub(crate) enum JournalEvent {
         bundle: DeploymentBundle,
         identity: Box<CandidateIdentity>,
         held_out_attestation: Box<SignedHeldOutEvaluation>,
+    },
+    CheckpointCandidateAdmitted {
+        checkpoint: Box<PolicyCheckpoint>,
+        identity: Box<CandidateIdentity>,
+        admission_policies: BTreeMap<StrategySlot, ManifestAdmissionPolicy>,
+        attestations: Vec<SignedCheckpointEvaluation>,
     },
     StageTransition {
         candidate_bundle_digest: String,

@@ -9,18 +9,49 @@ use crate::promotion_auth::{
     PromotionAuthorization, PromotionOperation, PromotionRequest, authorization_signature,
 };
 use crate::promotion_evaluation::{
-    SignedHeldOutEvaluation, SignedStageObservation, StagePermit, evaluation_signature,
-    held_out_domain, stage_result_domain,
+    AuthenticatedHeldOutEvaluation, SignedCheckpointEvaluation, SignedHeldOutEvaluation,
+    SignedStageObservation, StagePermit, checkpoint_admission_policy_digest,
+    checkpoint_evaluation_set_digest, checkpoint_evaluation_signature_for_anchor,
+    checkpoint_manifest_digest, evaluation_signature, held_out_domain, stage_result_domain,
 };
 use crate::promotion_journal::{CandidateIdentity, JournalContent, JournalEvent, RefusalCode};
-use crate::promotion_state::AuthorityState;
+use crate::promotion_state::{
+    AuthorityState, CheckpointEvaluationRef, checkpoint_evaluation_for,
+    checkpoint_evaluations_are_canonical, checkpoint_evaluators_are_independent, evaluated_slots,
+};
 use crate::verifier_crypto::constant_time_eq;
-use crate::{DeploymentBundle, DeploymentStage, EvaluationSuite, PromotionAssessment};
+use crate::{
+    DeploymentBundle, DeploymentStage, EvaluationSuite, ManifestAdmissionPolicy, PolicyBundle,
+    PolicyManifest, PromotionAssessment,
+};
 use std::collections::BTreeSet;
 
 use crate::promotion_authority::PromotionAuthority;
 
 impl PromotionAuthority {
+    /// Authenticate a held-out report for offline checkpoint-transfer accounting.
+    ///
+    /// This deliberately verifies only the independent signature and suite ownership. The
+    /// checkpoint algebra subsequently binds the authenticated report to the exact manifest,
+    /// artifact, dataset, policy identity, and base model; normal candidate admission repeats the
+    /// complete authority check before any journal state can change.
+    pub fn authenticate_held_out(
+        &self,
+        suite: &EvaluationSuite,
+        signed: SignedHeldOutEvaluation,
+    ) -> Result<AuthenticatedHeldOutEvaluation, PromotionAuthorityError> {
+        signed.report.validate()?;
+        if signed.report.evaluation_suite_digest != suite.digest() {
+            return Err(PromotionAuthorityError::EvaluationIdentityMismatch);
+        }
+        let anchor = self.require_evaluator(&signed.evaluator_id, suite.owner_id())?;
+        let expected = evaluation_signature(anchor, held_out_domain(), &signed.report)?;
+        if !constant_time_eq(expected.as_bytes(), signed.signature.as_bytes()) {
+            return Err(PromotionAuthorityError::IndependentEvaluationRequired);
+        }
+        Ok(AuthenticatedHeldOutEvaluation::new(signed))
+    }
+
     pub(crate) fn refresh(&mut self) -> Result<(), PromotionAuthorityError> {
         let records = self.journal.records()?;
         let mut state = AuthorityState::default();
@@ -49,6 +80,72 @@ impl PromotionAuthority {
                         baseline_policy,
                         held_out_attestation,
                     )?;
+                }
+                JournalEvent::CheckpointCandidateAdmitted {
+                    checkpoint,
+                    identity,
+                    admission_policies,
+                    attestations,
+                } => {
+                    checkpoint
+                        .validate()
+                        .map_err(|_| PromotionAuthorityError::LineageMismatch)?;
+                    let active_digest = state
+                        .active_bundle_digest
+                        .as_ref()
+                        .ok_or(PromotionAuthorityError::MissingBaseline)?;
+                    let active = state
+                        .bundles
+                        .get(active_digest)
+                        .ok_or(PromotionAuthorityError::MissingBaseline)?;
+                    let required = checkpoint.fresh_held_out_slots();
+                    let evaluated = evaluated_slots(identity)?;
+                    let attested: BTreeSet<_> = attestations
+                        .iter()
+                        .map(|attestation| attestation.report().candidate.slot.clone())
+                        .collect();
+                    let active_checkpoint = crate::PolicyCheckpoint::from_deployment(active)
+                        .map_err(|_| PromotionAuthorityError::LineageMismatch)?;
+                    let changed = active_checkpoint.changed_slots(checkpoint);
+                    if required.is_empty()
+                        || changed.is_empty()
+                        || !changed.is_subset(required)
+                        || &evaluated != required
+                        || !checkpoint_evaluations_are_canonical(identity, &changed, required)
+                        || !checkpoint_evaluators_are_independent(identity, checkpoint.bundle())
+                        || &attested != required
+                        || admission_policies.keys().cloned().collect::<BTreeSet<_>>() != *required
+                        || attestations.len() != required.len()
+                    {
+                        return Err(PromotionAuthorityError::LineageMismatch);
+                    }
+                    let deployment = checkpoint.deployment_bundle_unchecked()?;
+                    for attestation in attestations {
+                        let slot = &attestation.report().candidate.slot;
+                        let manifest = checkpoint
+                            .manifest_for(slot)
+                            .ok_or(PromotionAuthorityError::LineageMismatch)?;
+                        let admission_policy = admission_policies
+                            .get(slot)
+                            .ok_or(PromotionAuthorityError::LineageMismatch)?;
+                        admission_policy.assess(manifest)?;
+                        let evaluation = checkpoint_evaluation_for(identity, slot)
+                            .ok_or(PromotionAuthorityError::LineageMismatch)?;
+                        let baseline_policy = active
+                            .bundle()
+                            .policy_for(slot)
+                            .ok_or(PromotionAuthorityError::LineageMismatch)?;
+                        self.verify_checkpoint_held_out(
+                            deployment.bundle(),
+                            required,
+                            evaluation,
+                            baseline_policy,
+                            manifest,
+                            admission_policy,
+                            None,
+                            attestation,
+                        )?;
+                    }
                 }
                 JournalEvent::StageTransition {
                     candidate_bundle_digest,
@@ -208,6 +305,70 @@ impl PromotionAuthority {
             || signed.report.base_model() != &identity.base_model
             || signed.report.evidence.baseline != *baseline_policy
             || signed.report.evidence.candidate != identity.candidate_policy
+        {
+            return Err(PromotionAuthorityError::IndependentEvaluationRequired);
+        }
+        match self
+            .policy
+            .gate()
+            .assess(DeploymentStage::Candidate, &signed.report.evidence)
+        {
+            PromotionAssessment::EligibleForReleaseReview {
+                suggested_next: DeploymentStage::Shadow,
+            } => Ok(()),
+            PromotionAssessment::Reject { reasons } => {
+                Err(PromotionAuthorityError::PromotionRefused { reasons })
+            }
+            _ => Err(PromotionAuthorityError::PromotionRefused {
+                reasons: vec!["assessor did not return the authorized next stage".into()],
+            }),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn verify_checkpoint_held_out(
+        &self,
+        deployment: &PolicyBundle,
+        evaluation_slots: &BTreeSet<crate::StrategySlot>,
+        identity: CheckpointEvaluationRef<'_>,
+        baseline_policy: &crate::PolicyRef,
+        manifest: &PolicyManifest,
+        admission_policy: &ManifestAdmissionPolicy,
+        suite: Option<&EvaluationSuite>,
+        signed: &SignedCheckpointEvaluation,
+    ) -> Result<(), PromotionAuthorityError> {
+        signed.report.validate()?;
+        let manifest_digest = checkpoint_manifest_digest(manifest)?;
+        let admission_policy_digest = checkpoint_admission_policy_digest(admission_policy)?;
+        let evaluation_set_digest = checkpoint_evaluation_set_digest(evaluation_slots)?;
+        if suite.is_some_and(|suite| {
+            suite.owner_id() != identity.evaluation_owner_id
+                || suite.digest() != identity.evaluation_suite_digest
+        }) {
+            return Err(PromotionAuthorityError::EvaluationIdentityMismatch);
+        }
+        let anchor = self.require_evaluator(&signed.evaluator_id, identity.evaluation_owner_id)?;
+        let expected = checkpoint_evaluation_signature_for_anchor(anchor, signed)?;
+        if signed.evaluator_id == identity.candidate_policy.policy_id
+            || signed.evaluator_id == deployment.bundle_id
+            || signed.evaluator_id != *identity.evaluator_id
+            || !constant_time_eq(expected.as_bytes(), signed.signature.as_bytes())
+            || signed.checkpoint_digest != deployment.digest
+            || signed.evaluation_set_digest != evaluation_set_digest
+            || signed.manifest_digest != manifest_digest
+            || signed.admission_policy_digest != admission_policy_digest
+            || signed.report.candidate != *identity.candidate_policy
+            || signed.report.artifact_digest != *identity.artifact_digest
+            || signed.report.training_dataset_digest != *identity.training_dataset_digest
+            || signed.report.evaluation_suite_digest != *identity.evaluation_suite_digest
+            || signed.report.base_model() != identity.base_model
+            || signed.report.evidence.baseline != *baseline_policy
+            || signed.report.evidence.candidate != *identity.candidate_policy
+            || manifest.policy != *identity.candidate_policy
+            || manifest.policy.digest != *identity.artifact_digest
+            || manifest.training_dataset_digest != *identity.training_dataset_digest
+            || manifest.evaluation_suite_digest != *identity.evaluation_suite_digest
+            || manifest.base_model != *identity.base_model
         {
             return Err(PromotionAuthorityError::IndependentEvaluationRequired);
         }
