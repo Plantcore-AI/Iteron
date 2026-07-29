@@ -80,3 +80,57 @@ path = "evil.rs"
     .unwrap();
     assert!(validate_package_metadata(&redirected, "Cargo.toml", "core-protocol").is_err());
 }
+
+#[test]
+fn optional_evolve_binary_has_one_exact_canonical_declaration() {
+    let exact: toml::Value = toml::from_str(
+        r#"[[bin]]
+name = "evolve-transcript"
+path = "src/main.rs"
+"#,
+    )
+    .unwrap();
+    validate_bin_declaration(
+        &exact,
+        "crates/evolve/Cargo.toml",
+        "evolve-transcript",
+        "src/main.rs",
+    )
+    .unwrap();
+
+    for invalid in [
+        r#"[[bin]]
+name = "alternate"
+path = "src/main.rs"
+"#,
+        r#"[[bin]]
+name = "evolve-transcript"
+path = "src/bin/transcript.rs"
+"#,
+        r#"[[bin]]
+name = "evolve-transcript"
+path = "src/main.rs"
+
+[[bin]]
+name = "alternate"
+path = "src/alternate.rs"
+"#,
+        r#"[[bin]]
+name = "evolve-transcript"
+path = "src/main.rs"
+required-features = ["alternate"]
+"#,
+    ] {
+        let value: toml::Value = toml::from_str(invalid).unwrap();
+        assert!(
+            validate_bin_declaration(
+                &value,
+                "crates/evolve/Cargo.toml",
+                "evolve-transcript",
+                "src/main.rs",
+            )
+            .is_err(),
+            "accepted non-canonical declaration:\n{invalid}"
+        );
+    }
+}

@@ -251,6 +251,12 @@ fn validate_targets_and_internal_paths(root: &Path) -> Result<()> {
     }
     validate_bin_target(root, "crates/cli/Cargo.toml", "core", "src/main.rs")?;
     validate_bin_target(root, "crates/eval/Cargo.toml", "core-eval", "src/main.rs")?;
+    validate_optional_bin_target(
+        root,
+        "crates/evolve/Cargo.toml",
+        "evolve-transcript",
+        "src/main.rs",
+    )?;
     Ok(())
 }
 
@@ -285,7 +291,9 @@ fn reject_implicit_targets(
     manifest: &toml::Value,
 ) -> Result<()> {
     let has_lib = !matches!(package_name, "core-cli" | "core-xtask");
-    let has_bin = matches!(package_name, "core-cli" | "core-eval" | "core-xtask");
+    let explicit_bin = manifest.get("bin");
+    let has_bin = matches!(package_name, "core-cli" | "core-eval" | "core-xtask")
+        || (package_name == "core-evolve" && explicit_bin.is_some());
     if has_lib {
         let source = format!("{member}/src/lib.rs");
         let _ = read_bounded(root, &source, MAX_SOURCE_BYTES)?;
@@ -303,12 +311,11 @@ fn reject_implicit_targets(
             bail!("managed package '{member}' gains implicit Cargo target '{relative}'");
         }
     }
-    let explicit_bin = manifest.get("bin");
     if matches!(package_name, "core-cli" | "core-eval") {
         if explicit_bin.is_none() {
             bail!("managed package '{member}' loses its explicit canonical binary target");
         }
-    } else if explicit_bin.is_some() {
+    } else if package_name != "core-evolve" && explicit_bin.is_some() {
         bail!("managed package '{member}' gains an alternate binary target");
     }
     Ok(())
@@ -316,6 +323,27 @@ fn reject_implicit_targets(
 
 fn validate_bin_target(root: &Path, manifest: &str, name: &str, path: &str) -> Result<()> {
     let value = read_toml(root, manifest)?;
+    validate_bin_declaration(&value, manifest, name, path)
+}
+
+/// Admit the transcript driver only if it is declared as the one canonical `core-evolve` binary.
+///
+/// Absence remains valid so this governance prerequisite can land before the implementation. Once
+/// a candidate adds any `[[bin]]` entry, the exact target name and source path become mandatory.
+fn validate_optional_bin_target(root: &Path, manifest: &str, name: &str, path: &str) -> Result<()> {
+    let value = read_toml(root, manifest)?;
+    if value.get("bin").is_none() {
+        return Ok(());
+    }
+    validate_bin_declaration(&value, manifest, name, path)
+}
+
+fn validate_bin_declaration(
+    value: &toml::Value,
+    manifest: &str,
+    name: &str,
+    path: &str,
+) -> Result<()> {
     let bins = value
         .get("bin")
         .and_then(toml::Value::as_array)
