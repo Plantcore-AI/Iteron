@@ -184,7 +184,19 @@ fn reserve_address() -> SocketAddr {
     listener.local_addr().unwrap()
 }
 
-fn spawn_core(scratch: &Scratch, address: SocketAddr) -> Child {
+fn fresh_bearer_token() -> String {
+    let mut random = [0_u8; 32];
+    getrandom::fill(&mut random).expect("generate a fresh per-server bearer token");
+    let mut encoded = String::with_capacity(64);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in random {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+fn core_command(scratch: &Scratch, address: SocketAddr) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_core"));
     command
         .env_clear()
@@ -217,7 +229,6 @@ fn spawn_core(scratch: &Scratch, address: SocketAddr) -> Child {
         .arg("serve")
         .arg("--listen")
         .arg(address.to_string())
-        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     if cfg!(windows) {
@@ -227,7 +238,30 @@ fn spawn_core(scratch: &Scratch, address: SocketAddr) -> Child {
             }
         }
     }
-    command.spawn().expect("spawn real headless core process")
+    command
+}
+
+fn spawn_core_with_token_input(
+    scratch: &Scratch,
+    address: SocketAddr,
+    token_input: &[u8],
+) -> Child {
+    let mut child = core_command(scratch, address)
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("spawn real headless core process");
+    let mut stdin = child.stdin.take().expect("headless token pipe");
+    stdin
+        .write_all(token_input)
+        .expect("write headless bearer token");
+    drop(stdin);
+    child
+}
+
+fn spawn_core(scratch: &Scratch, address: SocketAddr) -> (Child, String) {
+    let token = fresh_bearer_token();
+    let child = spawn_core_with_token_input(scratch, address, token.as_bytes());
+    (child, token)
 }
 
 fn connect(address: SocketAddr) -> TcpStream {
@@ -259,6 +293,30 @@ fn receive(reader: &mut BufReader<TcpStream>) -> Value {
     serde_json::from_str(&line).expect("server frame is JSON")
 }
 
+fn hello(token: &str, protocol_version: u32, resume_from: u64) -> Value {
+    json!({
+        "type": "hello",
+        "bearer_token": token,
+        "protocol_version": protocol_version,
+        "resume_from": resume_from,
+    })
+}
+
+fn assert_closed_without_frame(stream: TcpStream) {
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(0) => {}
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::UnexpectedEof
+            ) => {}
+        Ok(_) => panic!("unauthorized connection received a server frame: {line:?}"),
+        Err(error) => panic!("unexpected unauthorized connection error: {error}"),
+    }
+}
+
 fn only_rollout(runs: &Path) -> PathBuf {
     let mut paths = fs::read_dir(runs)
         .unwrap()
@@ -269,6 +327,27 @@ fn only_rollout(runs: &Path) -> PathBuf {
     paths.sort();
     assert_eq!(paths.len(), 1);
     paths.pop().unwrap()
+}
+
+fn wait_for_exit(mut child: Child) -> (std::process::ExitStatus, Vec<u8>) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            let mut stderr = Vec::new();
+            child
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_end(&mut stderr)
+                .unwrap();
+            return (status, stderr);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("headless process did not exit after rejecting its startup token");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn stop(mut child: Child) -> Vec<u8> {
@@ -300,20 +379,112 @@ fn stop(mut child: Child) -> Vec<u8> {
 }
 
 #[test]
+fn malformed_parent_token_fails_before_the_listener_binds_and_is_not_disclosed() {
+    let scratch = Scratch::new("http://127.0.0.1:9/v1");
+    let address = reserve_address();
+    let token = fresh_bearer_token();
+    let overlong = format!("{token}0");
+    let child = spawn_core_with_token_input(&scratch, address, overlong.as_bytes());
+    let (status, stderr) = wait_for_exit(child);
+    assert!(!status.success());
+    let _listener = TcpListener::bind(address).expect("invalid token must fail before bind");
+    let stderr = String::from_utf8(stderr).unwrap();
+    assert!(stderr.contains("invalid headless bearer token on stdin"));
+    assert!(!stderr.contains(&token));
+    assert!(!stderr.contains(&overlong));
+}
+
+#[test]
+fn authentication_precedes_version_replay_and_submission_behavior_without_token_leaks() {
+    let scratch = Scratch::new("http://127.0.0.1:9/v1");
+    let address = reserve_address();
+    let (child, token) = spawn_core(&scratch, address);
+
+    let mut wrong = token.as_bytes().to_vec();
+    wrong[0] = if wrong[0] == b'0' { b'1' } else { b'0' };
+    let wrong = String::from_utf8(wrong).unwrap();
+
+    let mut unauthorized = connect(address);
+    let rollout = only_rollout(&scratch.runs());
+    let before = fs::read(&rollout).unwrap();
+    send(&mut unauthorized, hello(&wrong, 999, 0));
+    assert_closed_without_frame(unauthorized);
+
+    let mut missing = connect(address);
+    send(
+        &mut missing,
+        json!({"type":"hello","protocol_version":1,"resume_from":0}),
+    );
+    assert_closed_without_frame(missing);
+
+    let mut submit_first = connect(address);
+    send(
+        &mut submit_first,
+        json!({
+            "type":"submit",
+            "protocol_version":1,
+            "op":{"op":"user_input","text":"must not be admitted"}
+        }),
+    );
+    assert_closed_without_frame(submit_first);
+    assert_eq!(fs::read(&rollout).unwrap(), before);
+
+    let mut authorized = connect(address);
+    send(&mut authorized, hello(&token, 1, 0));
+    let mut reader = BufReader::new(authorized);
+    assert_eq!(receive(&mut reader)["type"], "hello");
+    assert_eq!(fs::read(&rollout).unwrap(), before);
+
+    let stderr = String::from_utf8(stop(child)).unwrap();
+    assert!(!stderr.contains(&token));
+    assert!(!stderr.contains(&wrong));
+}
+
+#[test]
+fn connection_limit_drops_rejects_without_tasks_and_completed_connections_are_reaped() {
+    let scratch = Scratch::new("http://127.0.0.1:9/v1");
+    let address = reserve_address();
+    let (child, token) = spawn_core(&scratch, address);
+
+    let mut blockers = Vec::new();
+    for _ in 0..32 {
+        let mut connection = connect(address);
+        send(&mut connection, hello(&token, 1, 0));
+        let mut reader = BufReader::new(connection.try_clone().unwrap());
+        assert_eq!(receive(&mut reader)["type"], "hello");
+        blockers.push(connection);
+    }
+
+    let rejected = connect(address);
+    assert_closed_without_frame(rejected);
+    drop(blockers);
+    thread::sleep(Duration::from_millis(100));
+
+    // Repeatedly complete more than one full permit set. A JoinSet that only accumulated finished
+    // entries would grow here even though active connection concurrency remains one.
+    for _ in 0..96 {
+        let mut connection = connect(address);
+        send(&mut connection, hello(&token, 1, 0));
+        let mut reader = BufReader::new(connection);
+        assert_eq!(receive(&mut reader)["type"], "hello");
+    }
+
+    let stderr = String::from_utf8(stop(child)).unwrap();
+    assert!(!stderr.contains(&token));
+}
+
+#[test]
 fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server() {
     let provider = PausedProvider::spawn();
     let scratch = Scratch::new(&provider.api_root);
     let address = reserve_address();
-    let child = spawn_core(&scratch, address);
+    let (child, token) = spawn_core(&scratch, address);
 
     // A skewed hello is refused before any SQ submission or Rollout mutation.
     let mut skewed = connect(address);
     let rollout = only_rollout(&scratch.runs());
     let before = fs::read(&rollout).unwrap();
-    send(
-        &mut skewed,
-        json!({"type":"hello","protocol_version":2,"resume_from":0}),
-    );
+    send(&mut skewed, hello(&token, 2, 0));
     let mut skewed_reader = BufReader::new(skewed);
     let refusal = receive(&mut skewed_reader);
     assert_eq!(refusal["type"], "error");
@@ -322,10 +493,7 @@ fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server() {
 
     // Start through the real SQ, disconnect mid-turn, then resume from the last live cursor.
     let mut first = connect(address);
-    send(
-        &mut first,
-        json!({"type":"hello","protocol_version":1,"resume_from":0}),
-    );
+    send(&mut first, hello(&token, 1, 0));
     let mut first_reader = BufReader::new(first.try_clone().unwrap());
     assert_eq!(receive(&mut first_reader)["type"], "hello");
     send(
@@ -357,10 +525,7 @@ fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server() {
     provider.release.send(()).unwrap();
 
     let mut resumed = connect(address);
-    send(
-        &mut resumed,
-        json!({"type":"hello","protocol_version":1,"resume_from":last_seq}),
-    );
+    send(&mut resumed, hello(&token, 1, last_seq));
     let mut resumed_reader = BufReader::new(resumed);
     let hello = receive(&mut resumed_reader);
     assert_eq!(hello["type"], "hello");
@@ -386,10 +551,27 @@ fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server() {
     assert_eq!(result["outcome"], "done");
     assert_eq!(result["exit_code"], 0);
 
+    resumed_reader
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_millis(250)))
+        .unwrap();
+    let mut unexpected = String::new();
+    match resumed_reader.read_line(&mut unexpected) {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) => {}
+        Ok(0) => {}
+        Ok(_) => panic!("a duplicate post-result frame was delivered: {unexpected}"),
+        Err(error) => panic!("unexpected post-result read failure: {error}"),
+    }
+
     let stderr = stop(child);
     let stderr = String::from_utf8(stderr).unwrap();
     assert!(stderr.contains("\"event\":\"listening\""));
     assert!(stderr.contains("\"transport\":\"loopback_tcp_jsonl\""));
+    assert!(!stderr.contains(&token));
     provider.finish();
 }
 
@@ -400,13 +582,10 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     let provider = PausedProvider::spawn_with_chunks(4200);
     let scratch = Scratch::new(&provider.api_root);
     let address = reserve_address();
-    let child = spawn_core(&scratch, address);
+    let (child, token) = spawn_core(&scratch, address);
 
     let mut client = connect(address);
-    send(
-        &mut client,
-        json!({"type":"hello","protocol_version":1,"resume_from":0}),
-    );
+    send(&mut client, hello(&token, 1, 0));
     let mut reader = BufReader::new(client.try_clone().unwrap());
     assert_eq!(receive(&mut reader)["type"], "hello");
     send(
@@ -429,10 +608,7 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     let deadline = Instant::now() + TIMEOUT;
     let mut fallback_reader = loop {
         let mut candidate = connect(address);
-        send(
-            &mut candidate,
-            json!({"type":"hello","protocol_version":1,"resume_from":0}),
-        );
+        send(&mut candidate, hello(&token, 1, 0));
         let mut candidate = BufReader::new(candidate);
         let hello = receive(&mut candidate);
         if hello["replay_source"] == "rollout" {
@@ -451,9 +627,7 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     assert!(durable["event"].is_object());
 
     let stderr = stop(child);
-    assert!(
-        String::from_utf8(stderr)
-            .unwrap()
-            .contains("\"event\":\"listening\"")
-    );
+    let stderr = String::from_utf8(stderr).unwrap();
+    assert!(stderr.contains("\"event\":\"listening\""));
+    assert!(!stderr.contains(&token));
 }
