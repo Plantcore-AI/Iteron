@@ -4,6 +4,7 @@ mod render;
 mod rust_source;
 mod schema_compat;
 mod seams;
+mod spec_shapes;
 mod validate;
 
 use anyhow::{Context, Result, bail};
