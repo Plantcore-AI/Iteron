@@ -49,7 +49,7 @@ Core Code has one human Owner/Project Lead and a non-fixed number of human maint
 | `cli-host` — CLI host | open | critical | Open | Open | `crates/cli/Cargo.toml`<br>`crates/cli/src/commands.rs`<br>`crates/cli/src/config/**`<br>`crates/cli/src/config.rs`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/image_input.rs`<br>`crates/cli/src/image_input/**`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/pricing.rs`<br>`crates/cli/src/providers.rs`<br>`crates/cli/src/runtime.rs`<br>`crates/cli/src/runtime/pricing.rs`<br>`crates/cli/src/runtime/strategy_runtime.rs`<br>`crates/cli/src/runtime/workflow_spawner.rs`<br>`crates/cli/src/workflow.rs` |
 | `cli-tui` — CLI TUI | open | elevated | Open | Open | `crates/cli/src/editor.rs`<br>`crates/cli/src/surface.rs`<br>`crates/cli/src/tui.rs`<br>`crates/cli/src/tui/**`<br>`crates/cli/tests/**` |
 | `cli-render` — CLI rendering | open | standard | Open | Open | `crates/cli/src/block.rs`<br>`crates/cli/src/block/**`<br>`crates/cli/src/highlight.rs`<br>`crates/cli/src/markdown.rs`<br>`crates/cli/src/render.rs`<br>`crates/cli/src/theme.rs`<br>`crates/cli/src/theme/**` |
-| `cli-output` — CLI machine output | open | elevated | Open | Open | `crates/cli/src/output.rs` |
+| `cli-output` — CLI machine output | open | elevated | Open | Open | `crates/cli/src/output.rs`<br>`crates/cli/src/session_view.rs`<br>`crates/cli/src/session_view_tests.rs` |
 
 ## Boundary contracts
 

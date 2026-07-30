@@ -637,7 +637,9 @@
       "primary": null,
       "reviewers": [],
       "paths": [
-        { "kind": "file", "path": "crates/cli/src/output.rs" }
+        { "kind": "file", "path": "crates/cli/src/output.rs" },
+        { "kind": "file", "path": "crates/cli/src/session_view.rs" },
+        { "kind": "file", "path": "crates/cli/src/session_view_tests.rs" }
       ],
       "contracts": ["machine-output-schema", "stable-exit-code", "streaming-redaction"],
       "checks": ["cargo test -p core-cli output --locked"]

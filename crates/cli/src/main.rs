@@ -18,6 +18,7 @@ mod pricing;
 mod providers;
 mod render;
 mod runtime;
+mod session_view;
 mod surface;
 mod theme;
 mod tui;
@@ -272,6 +273,11 @@ struct Cli {
     #[arg(long)]
     sessions: bool,
 
+    /// Read one session's transcript and exit. Pair with `--output-format json` for the machine
+    /// document; a client should never open a file under `.core/runs` itself.
+    #[arg(long, value_name = "RUN_ID")]
+    transcript: Option<String>,
+
     /// Fork a prior run at its tail into a new branch (shared past, divergent future) and print the
     /// new run id. The fork is tamper-evident: its genesis pins the parent chain's hash at the fork
     /// point (ADR-008 §4), so a later edit to the parent prefix is detected on resume.
@@ -316,12 +322,17 @@ async fn run_cli() -> anyhow::Result<u8> {
 
     // `--sessions` and `--fork` predate the one-shot machine contract and intentionally keep their
     // human output. Reject the combination instead of silently contaminating JSON stdout.
-    if cli.output_format.is_machine()
-        && (cli.sessions || cli.fork.is_some() || cli.command.is_some())
-    {
+    // `--fork` and the local subcommands mutate state and predate the machine contract, so they
+    // keep their human output. `--sessions` and `--transcript` are read-only and now publish a
+    // machine document: a client that is not a terminal otherwise has to read `.core/runs` itself
+    // and couple to a private layout the record layer is free to change (#77).
+    if cli.output_format.is_machine() && (cli.fork.is_some() || cli.command.is_some()) {
         anyhow::bail!(
-            "--output-format json/stream-json is only supported for agent runs, not local session maintenance"
+            "--output-format json/stream-json is only supported for agent runs and session reads, not local session maintenance"
         );
+    }
+    if cli.transcript.is_some() && cli.sessions {
+        anyhow::bail!("--transcript and --sessions are separate reads; ask for one");
     }
 
     let repo = cli
@@ -358,7 +369,38 @@ async fn run_cli() -> anyhow::Result<u8> {
     // MCP server — listing or forking the append-only record needs no API key and must not spawn MCP
     // subprocesses or print connection noise (review: `core --sessions` failed with "no api key"
     // and eagerly started MCP servers, though it never touches the model).
+    if let Some(run) = cli.transcript.clone() {
+        let run = core_protocol::RunId(run);
+        let document = session_view::read_transcript(&cli.runs_dir, &run)?;
+        if cli.output_format.is_machine() {
+            println!("{}", serde_json::to_string(&document)?);
+        } else {
+            eprintln!(
+                "{}: {} event(s){}",
+                document.run_id,
+                document.total_events,
+                if document.truncated {
+                    " (truncated at the byte ceiling)"
+                } else {
+                    ""
+                }
+            );
+            for event in &document.events {
+                println!("{event}");
+            }
+        }
+        return Ok(output::EXIT_SUCCESS);
+    }
     if cli.sessions {
+        if cli.output_format.is_machine() {
+            let document = session_view::list_sessions(
+                &cli.runs_dir,
+                &tenant,
+                session_view::MAX_SESSIONS_PER_PAGE,
+            );
+            println!("{}", serde_json::to_string(&document)?);
+            return Ok(output::EXIT_SUCCESS);
+        }
         let metas = core_record::list(&cli.runs_dir, &tenant);
         if metas.is_empty() {
             eprintln!("no sessions in {}", cli.runs_dir.display());
