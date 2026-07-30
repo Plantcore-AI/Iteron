@@ -11,6 +11,11 @@ interfaces may change between releases.
 
 - Offline evolution evidence, checkpoint algebra, recorded-run projection,
   parameterized signed transcripts, and cross-model transfer.
+- `providers[].model_capabilities`, an operator-declared per-model
+  `context_window_tokens`. Before this, only the built-in GLM route had a known
+  context window, so every other provider fell back to the absolute compaction
+  trigger and skipped the pre-flight context-admission check. A declaration is
+  recorded with operator provenance and never outranks an official vendor snapshot.
 
 ## [0.0.1] - 2026-07-15
 

@@ -594,6 +594,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             enabled: true,
             catalog: true,
             models: Vec::new(),
+            model_capabilities: std::collections::BTreeMap::new(),
         };
         let validation = FileConfig {
             providers: Some(vec![temporary.clone()]),
