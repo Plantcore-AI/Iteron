@@ -13,12 +13,12 @@
 use crate::git_filters::discover_filter_drivers;
 #[cfg(test)]
 use crate::git_filters::{MAX_FILTER_DRIVERS, parse_filter_drivers};
+#[cfg(test)]
+use crate::git_harness::{CapturedProcess, NULL_DEVICE, ResolvedGit};
 use crate::git_harness::{
     GIT_TIMEOUT, STDERR_LIMIT, hardened_args, hardened_git_command, resolve_git_executable,
     resolve_repository_layout, run_command_bounded,
 };
-#[cfg(test)]
-use crate::git_harness::{NULL_DEVICE, ResolvedGit};
 use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
 use core_protocol::{Capability, Purity, ToolSpec};
 #[cfg(test)]
@@ -196,6 +196,41 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
+    /// Run a command, retrying while Linux reports `ETXTBSY`.
+    ///
+    /// These tests write a shell script and execute it immediately. `execve` fails with `ETXTBSY`
+    /// while any process holds a write descriptor to the target, and the descriptor need not be
+    /// ours: `cargo test --workspace` runs many test binaries at once, and any of them that forks
+    /// between this module's `open` and `close` hands its child an inherited write descriptor to
+    /// the file we are about to exec. `O_CLOEXEC` does not close the window, because the kernel
+    /// checks for writers during `execve` rather than at `fork`. Linux enforces this and macOS
+    /// does not, which is why the failure was Linux-only and invisible in local development.
+    ///
+    /// Production never writes a program and then executes it, so the retry belongs here rather
+    /// than in `run_command_bounded`, where it would mask a real `ETXTBSY` from a caller that
+    /// genuinely raced its own writer (#54, #55).
+    #[cfg(unix)]
+    async fn run_command_bounded_retrying_busy(
+        command: &mut tokio::process::Command,
+        timeout: Duration,
+        stdout_limit: usize,
+        stderr_limit: usize,
+    ) -> io::Result<CapturedProcess> {
+        const MAX_ATTEMPTS: u32 = 64;
+        const BACKOFF: Duration = Duration::from_millis(20);
+        for attempt in 1..=MAX_ATTEMPTS {
+            let outcome = run_command_bounded(command, timeout, stdout_limit, stderr_limit).await;
+            let Err(error) = &outcome else {
+                return outcome;
+            };
+            if error.kind() != io::ErrorKind::ExecutableFileBusy || attempt == MAX_ATTEMPTS {
+                return outcome;
+            }
+            tokio::time::sleep(BACKOFF).await;
+        }
+        unreachable!("the final attempt returns rather than looping")
+    }
+
     #[cfg(unix)]
     fn fixture_path(workspace: &Path) -> Option<OsString> {
         let workspace = workspace.canonicalize().ok()?;
@@ -205,6 +240,27 @@ mod tests {
             .filter_map(|directory| directory.canonicalize().ok())
             .filter(|directory| !directory.starts_with(&workspace));
         std::env::join_paths(directories).ok()
+    }
+
+    /// Serialise the fixture tests that drive real `git` porcelain.
+    ///
+    /// These three build repositories with dozens of real `git` subprocesses, and `git submodule`
+    /// is itself a shell script that spawns more. Run concurrently on a loaded box they compete
+    /// for the same 5-second per-command deadline in `setup_git`, which is the shape of the
+    /// second, macOS-side flake in #55 — a failure nobody can reproduce on demand and which
+    /// teaches readers to re-run a red CI instead of reading it.
+    ///
+    /// The issue admits an explicit serialisation in place of a diagnosis, and that is what this
+    /// is: not a claim about the mechanism, but a refusal to let these three overlap. It costs a
+    /// few seconds of wall clock in one crate and buys a deterministic suite.
+    ///
+    /// The guard is held across `await`, so it has to be the futures-aware lock: a
+    /// `std::sync::MutexGuard` parked across a suspension point is what `clippy::await_holding_lock`
+    /// exists to stop.
+    #[cfg(unix)]
+    fn git_fixture_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        &LOCK
     }
 
     #[cfg(unix)]
@@ -362,9 +418,10 @@ mod tests {
             .kill_on_drop(true)
             .process_group(0);
 
-        let captured = run_command_bounded(&mut command, Duration::from_secs(5), 1024, 512)
-            .await
-            .unwrap();
+        let captured =
+            run_command_bounded_retrying_busy(&mut command, Duration::from_secs(5), 1024, 512)
+                .await
+                .unwrap();
         assert!(captured.status.success());
         assert!(captured.stdout.truncated());
         assert!(captured.stderr.truncated());
@@ -410,9 +467,10 @@ mod tests {
             .kill_on_drop(true)
             .process_group(0);
 
-        let error = run_command_bounded(&mut command, Duration::from_millis(50), 1024, 1024)
-            .await
-            .unwrap_err();
+        let error =
+            run_command_bounded_retrying_busy(&mut command, Duration::from_millis(50), 1024, 1024)
+                .await
+                .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         tokio::time::sleep(Duration::from_millis(1100)).await;
         assert!(
@@ -424,6 +482,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn repository_clean_filter_is_neutralized_before_diff() {
+        let _serial = git_fixture_lock().lock().await;
         let temp = TestDir::new("clean-filter");
         let workspace = temp.0.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -482,6 +541,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn malicious_core_worktree_cannot_leak_an_outside_file() {
+        let _serial = git_fixture_lock().lock().await;
         let temp = TestDir::new("core-worktree-escape");
         let workspace = temp.0.join("workspace");
         let outside = temp.0.join("outside");
@@ -606,9 +666,10 @@ mod tests {
         let repository = resolve_repository_layout(&workspace).unwrap();
 
         let mut command = hardened_git_command(&git, &repository, &[]);
-        let captured = run_command_bounded(&mut command, Duration::from_secs(5), 128, 128)
-            .await
-            .unwrap();
+        let captured =
+            run_command_bounded_retrying_busy(&mut command, Duration::from_secs(5), 128, 128)
+                .await
+                .unwrap();
         assert!(captured.status.success());
         assert_eq!(captured.stdout.render("probe stdout"), "1");
     }
@@ -616,6 +677,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn dirty_submodule_filter_is_not_descended_into() {
+        let _serial = git_fixture_lock().lock().await;
         let temp = TestDir::new("submodule-filter");
         let source = temp.0.join("source");
         let workspace = temp.0.join("workspace");
