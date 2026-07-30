@@ -532,6 +532,8 @@ dependencies = [
  "async-trait",
  "core-protocol",
  "core-provider",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
