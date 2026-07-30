@@ -13,12 +13,12 @@
 use crate::git_filters::discover_filter_drivers;
 #[cfg(test)]
 use crate::git_filters::{MAX_FILTER_DRIVERS, parse_filter_drivers};
-#[cfg(test)]
-use crate::git_harness::{CapturedProcess, NULL_DEVICE, ResolvedGit};
 use crate::git_harness::{
     GIT_TIMEOUT, STDERR_LIMIT, hardened_args, hardened_git_command, resolve_git_executable,
     resolve_repository_layout, run_command_bounded,
 };
+#[cfg(test)]
+use crate::git_harness::{NULL_DEVICE, ResolvedGit};
 use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
 use core_protocol::{Capability, Purity, ToolSpec};
 #[cfg(test)]
@@ -196,39 +196,13 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    /// Run a command, retrying while Linux reports `ETXTBSY`.
-    ///
-    /// These tests write a shell script and execute it immediately. `execve` fails with `ETXTBSY`
-    /// while any process holds a write descriptor to the target, and the descriptor need not be
-    /// ours: `cargo test --workspace` runs many test binaries at once, and any of them that forks
-    /// between this module's `open` and `close` hands its child an inherited write descriptor to
-    /// the file we are about to exec. `O_CLOEXEC` does not close the window, because the kernel
-    /// checks for writers during `execve` rather than at `fork`. Linux enforces this and macOS
-    /// does not, which is why the failure was Linux-only and invisible in local development.
-    ///
-    /// Production never writes a program and then executes it, so the retry belongs here rather
-    /// than in `run_command_bounded`, where it would mask a real `ETXTBSY` from a caller that
-    /// genuinely raced its own writer (#54, #55).
     #[cfg(unix)]
-    async fn run_command_bounded_retrying_busy(
-        command: &mut tokio::process::Command,
-        timeout: Duration,
-        stdout_limit: usize,
-        stderr_limit: usize,
-    ) -> io::Result<CapturedProcess> {
-        const MAX_ATTEMPTS: u32 = 64;
-        const BACKOFF: Duration = Duration::from_millis(20);
-        for attempt in 1..=MAX_ATTEMPTS {
-            let outcome = run_command_bounded(command, timeout, stdout_limit, stderr_limit).await;
-            let Err(error) = &outcome else {
-                return outcome;
-            };
-            if error.kind() != io::ErrorKind::ExecutableFileBusy || attempt == MAX_ATTEMPTS {
-                return outcome;
-            }
-            tokio::time::sleep(BACKOFF).await;
-        }
-        unreachable!("the final attempt returns rather than looping")
+    fn shell_script_command(path: &Path) -> OsString {
+        let path = path
+            .to_str()
+            .expect("Git test fixture paths must be valid UTF-8");
+        let quoted = path.replace('\'', "'\\''");
+        format!("/bin/sh '{quoted}'").into()
     }
 
     #[cfg(unix)]
@@ -418,10 +392,9 @@ mod tests {
             .kill_on_drop(true)
             .process_group(0);
 
-        let captured =
-            run_command_bounded_retrying_busy(&mut command, Duration::from_secs(5), 1024, 512)
-                .await
-                .unwrap();
+        let captured = run_command_bounded(&mut command, Duration::from_secs(5), 1024, 512)
+            .await
+            .unwrap();
         assert!(captured.status.success());
         assert!(captured.stdout.truncated());
         assert!(captured.stderr.truncated());
@@ -467,10 +440,9 @@ mod tests {
             .kill_on_drop(true)
             .process_group(0);
 
-        let error =
-            run_command_bounded_retrying_busy(&mut command, Duration::from_millis(50), 1024, 1024)
-                .await
-                .unwrap_err();
+        let error = run_command_bounded(&mut command, Duration::from_millis(50), 1024, 1024)
+            .await
+            .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         tokio::time::sleep(Duration::from_millis(1100)).await;
         assert!(
@@ -506,7 +478,7 @@ mod tests {
             &[
                 OsStr::new("config"),
                 OsStr::new("filter.evil.clean"),
-                filter.as_os_str(),
+                shell_script_command(&filter).as_os_str(),
             ],
         )
         .await;
@@ -656,20 +628,32 @@ mod tests {
     async fn hardened_command_disables_partial_clone_lazy_fetch() {
         let temp = TestDir::new("no-lazy-fetch");
         let workspace = temp.0.join("workspace");
-        std::fs::create_dir_all(workspace.join(".git")).unwrap();
-        let executable = temp.0.join("git-env-probe");
-        script(&executable, "printf '%s' \"$GIT_NO_LAZY_FETCH\"");
-        let git = ResolvedGit {
-            executable,
-            safe_path: None,
-        };
+        std::fs::create_dir_all(&workspace).unwrap();
+        let git = resolve_git_executable(std::env::var_os("PATH").as_deref(), &workspace).unwrap();
+        setup_git(
+            &git,
+            &workspace,
+            &[OsStr::new("init"), OsStr::new("--quiet")],
+        )
+        .await;
         let repository = resolve_repository_layout(&workspace).unwrap();
 
-        let mut command = hardened_git_command(&git, &repository, &[]);
-        let captured =
-            run_command_bounded_retrying_busy(&mut command, Duration::from_secs(5), 128, 128)
-                .await
-                .unwrap();
+        // Use the stable system Git binary rather than directly executing a freshly written
+        // script. On Linux another test thread can fork while that script still has a writer;
+        // the child briefly inherits the descriptor and execve then returns ETXTBSY. A shell Git
+        // alias observes the same command environment without creating that unrelated race.
+        let args = hardened_args(
+            &[],
+            [
+                OsString::from("-c"),
+                OsString::from("alias.print-env=!printf '%s' \"$GIT_NO_LAZY_FETCH\""),
+                OsString::from("print-env"),
+            ],
+        );
+        let mut command = hardened_git_command(&git, &repository, &args);
+        let captured = run_command_bounded(&mut command, Duration::from_secs(5), 128, 128)
+            .await
+            .unwrap();
         assert!(captured.status.success());
         assert_eq!(captured.stdout.render("probe stdout"), "1");
     }
@@ -767,7 +751,7 @@ mod tests {
             &[
                 OsStr::new("config"),
                 OsStr::new("filter.evil.clean"),
-                filter.as_os_str(),
+                shell_script_command(&filter).as_os_str(),
             ],
         )
         .await;
