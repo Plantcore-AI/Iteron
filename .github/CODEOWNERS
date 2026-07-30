@@ -112,6 +112,8 @@
 /crates/cli/src/providers.rs @fr0m-scratch
 /crates/cli/src/render.rs @fr0m-scratch
 /crates/cli/src/runtime.rs @fr0m-scratch
+/crates/cli/src/session_view.rs @fr0m-scratch
+/crates/cli/src/session_view_tests.rs @fr0m-scratch
 /crates/cli/src/surface.rs @fr0m-scratch
 /crates/cli/src/theme.rs @fr0m-scratch
 /crates/cli/src/tui.rs @fr0m-scratch
