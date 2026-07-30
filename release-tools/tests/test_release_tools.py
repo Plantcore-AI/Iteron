@@ -666,6 +666,9 @@ exit 1
         ):
             self.write(f"dist/{name}", f"{name}\n")
         output = dist / "release-manifest.json"
+        protocol = self.write(
+            "protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 7;\n"
+        )
         manifest.create_release(
             argparse.Namespace(
                 version="0.0.1",
@@ -673,11 +676,32 @@ exit 1
                 dist=dist,
                 targets=[target],
                 output=output,
+                protocol_source=protocol,
             )
         )
         result = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(result["product"], "Core Code")
         self.assertEqual(result["targets"][target]["archive"]["name"], base)
+        # A client pins on the protocol the binary speaks, so the manifest must carry the number
+        # the crate declares rather than one restated here.
+        self.assertEqual(result["protocol_version"], 7)
+        self.assertEqual(result["schema_version"], 2)
+
+    def test_release_manifest_reads_protocol_version_from_the_declaring_crate(self) -> None:
+        # The real crate, not a fixture: if this drifts from the shipped binary the field is a lie.
+        real = manifest.read_protocol_version(TOOLS.parent / "crates/protocol/src/wire.rs")
+        self.assertGreaterEqual(real, 1)
+
+        missing = self.write("no-const/wire.rs", "pub const OTHER: u32 = 1;\n")
+        with self.assertRaises(ReleaseToolError):
+            manifest.read_protocol_version(missing)
+
+        duplicated = self.write(
+            "two-const/wire.rs",
+            "pub const PROTOCOL_VERSION: u32 = 1;\npub const PROTOCOL_VERSION: u32 = 2;\n",
+        )
+        with self.assertRaises(ReleaseToolError):
+            manifest.read_protocol_version(duplicated)
 
     def test_checksums_reject_unsafe_asset_name(self) -> None:
         dist = self.root / "checksums"
