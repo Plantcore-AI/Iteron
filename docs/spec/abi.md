@@ -67,6 +67,9 @@ pub struct TaskEnvelope {
 pub enum TaskInput {
  /// 兼容 Op::UserInput 的自由文本 task。
  Text { text: String },
+ /// 多模态/结构化输入：一组已归一的内容分段（ContentSegments），
+ /// 与 Text 互斥；沿用 §4.2 的分段词汇，不另铸类型。
+ ContentSegments { segments: ContentSegments },
  /// §4.3(b)1 降级臂：更新的写端产生的未知 kind 降级为 Unknown 并丢弃 payload，
  /// 整条 envelope 仍可解析。可解析不等于可执行：`TaskEnvelope::validate` 对
  /// `Unknown` 返回 Err（task.rs:198-200），fail-closed。

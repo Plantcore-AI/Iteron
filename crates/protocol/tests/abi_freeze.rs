@@ -54,22 +54,17 @@
 //! draft of this list recorded as a departure is gone, because the spec was corrected rather than
 //! quietly departed from: §4.2.1 now declares `input` / `trust` / `budget`, §4.2.3 declares
 //! `proposed_by`, §4.2.4 names the effect id `id`, and every authority ceiling in the spec is a
-//! `CapabilitySet` rather than a point on `Capability`'s declaration order. Three places still
-//! differ. Each is argued in the module that made the choice, which is where a reader should go
-//! to check the claim.
+//! `CapabilitySet` rather than a point on `Capability`'s declaration order.
 //!
-//!   - `TaskInput` is `Text` plus a degrading `Unknown`, where §4.2.1 names `Text` and
-//!     `Structured { schema: SchemaId, body }` (`task.rs`). No `SchemaId` type exists in this
-//!     crate and nothing consumes a structured payload yet, so freezing that variant would freeze
-//!     a shape no reader can honour. The `Unknown` arm is what lets it be appended later without
-//!     breaking a reader shipped today, and `TaskEnvelope::validate` refuses to *run* what it can
-//!     decode.
-//!   - `ContextSelector`, `InstructionScope` and `ContextSource` each carry a degrading `Unknown`
-//!     that the spec's code blocks omit (`context.rs`). It is the §4.3(b)1 arm, not another
-//!     member of the vocabulary.
-//!   - `Producer` has a body at all: §4.2.5 names the type and gives its vocabulary as
-//!     "slot / tool / run" without one (`artifact.rs`). The body is supplied there, and its
-//!     `Unknown(String)` arm is the retention §4.2.5's fourth normative bullet requires.
+//! This module used to carry a prose list of three places where the spec and the code still
+//! differed. That list was the whole problem: a comment is as far as an observation can travel, so
+//! the spec kept rotting beside it and three issue bodies were written from the rotted version.
+//! The comparison is now machine-checked by `core-xtask boundaries check`
+//! (`xtask/src/spec_shapes.rs`), which parses every fenced Rust block under `docs/spec`, compares
+//! it against `crates/protocol/src` at name-and-arity level, and fails on a divergence that is not
+//! recorded in its `DIVERGENCES` allowlist with a reason. The allowlist is empty today, because the
+//! three entries were resolved by correcting the spec rather than by recording them, and the gate
+//! refuses an entry that is no longer live so it cannot rot the way this comment did.
 //!
 //! `TaskEnvelope` carries no `profile_ref`. That is not a departure: §4.2.1 comments the field out
 //! and names it the one field in the section that may be appended losslessly under §4.3(b)3, so
