@@ -147,6 +147,15 @@ pub enum ClientEvent {
     Done {
         outcome: String,
     },
+    /// A run declaring a product.
+    ///
+    /// Unlike every other variant this one has no `UiEvent` source, because it is not a rendering
+    /// of the conversation: it is the run saying "I produced this". It is minted beside the
+    /// durable `EventKind::ArtifactProduced`, from the same handle, so a socket client and the
+    /// record cannot disagree about what was produced.
+    ArtifactProduced {
+        artifact: core_protocol::artifact::ArtifactRef,
+    },
 }
 
 /// Cost as evidence-backed state, not a bare number.
@@ -299,6 +308,14 @@ pub enum ClientWorkflowEvent {
         failed_tasks: u32,
         skipped_tasks: u32,
     },
+}
+
+impl From<&core_protocol::artifact::ArtifactRef> for ClientEvent {
+    fn from(artifact: &core_protocol::artifact::ArtifactRef) -> Self {
+        Self::ArtifactProduced {
+            artifact: artifact.clone(),
+        }
+    }
 }
 
 impl From<&core_obs::CostState> for ClientCost {

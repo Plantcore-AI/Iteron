@@ -20,8 +20,9 @@ const MAX_CONTRACT_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_OBJECTS: usize = 4096;
 
-const WRITABLE_EVENT_TAGS: [&str; 31] = [
+const WRITABLE_EVENT_TAGS: [&str; 32] = [
     "approval",
+    "artifact_produced",
     "checkpoint",
     "compaction",
     "context_injection",
@@ -74,7 +75,10 @@ const WORKFLOW_EVENT_TAGS: [&str; 7] = [
 
 const COST_ATTRIBUTION_TAGS: [&str; 2] = ["direct_subagent", "workflow_child"];
 
-const NAMED_SURFACE_IDS: [&str; 19] = [
+// `ArtifactRef` and its `Provenance` became durable with `artifact_produced` (#78):
+// making a type reachable from the record makes its shape a published surface.
+const NAMED_SURFACE_IDS: [&str; 21] = [
+    "record.named.artifact-ref",
     "record.named.budget",
     "record.named.cost-projection",
     "record.named.cost-projection-identity",
@@ -84,6 +88,7 @@ const NAMED_SURFACE_IDS: [&str; 19] = [
     "record.named.message",
     "record.named.permission-rules",
     "record.named.pricing-route",
+    "record.named.provenance",
     "record.named.provider-state",
     "record.named.rate-card",
     "record.named.signed-rate-card",
@@ -529,6 +534,12 @@ fn assert_named_surface_corpus(
             "record.named.provider-state" => {
                 typed_named_fixture_wires::<ProviderState>(root, surface)
             }
+            "record.named.artifact-ref" => {
+                typed_named_fixture_wires::<core_protocol::artifact::ArtifactRef>(root, surface)
+            }
+            "record.named.provenance" => {
+                typed_named_fixture_wires::<core_protocol::artifact::Provenance>(root, surface)
+            }
             "record.named.tool-use" => typed_named_fixture_wires::<ToolUse>(root, surface),
             "record.named.tool-result" => typed_named_fixture_wires::<ToolResult>(root, surface),
             "record.named.usage" => typed_named_fixture_wires::<Usage>(root, surface),
@@ -783,6 +794,7 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             reason: _,
         } => "effect_unknown",
         EventKind::EffectDone { id: _, tool: _ } => "effect_done",
+        EventKind::ArtifactProduced { artifact: _ } => "artifact_produced",
         EventKind::EffectFailed {
             id: _,
             tool: _,
@@ -1186,6 +1198,14 @@ fn d13_14_event_schema_corpora_are_exact_exhaustive_and_replayable() {
                                 &mut named_wires,
                             );
                         }
+                    }
+                    EventKind::ArtifactProduced { artifact } => {
+                        record_named(&mut named_wires, "record.named.artifact-ref", artifact);
+                        record_named(
+                            &mut named_wires,
+                            "record.named.provenance",
+                            &artifact.provenance,
+                        );
                     }
                     EventKind::ToolReady { tool, .. } => {
                         record_named(&mut named_wires, "record.named.tool-use", tool);
