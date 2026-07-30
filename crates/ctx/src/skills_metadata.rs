@@ -20,6 +20,66 @@ pub struct SkillMetadata {
     pub paths: Vec<String>,
     /// Hide the skill from model discovery while keeping explicit lookup available to the user.
     pub disable_model_invocation: bool,
+    /// An allowed-tools declaration that can only NARROW the registry a skill runs against.
+    ///
+    /// `None` means the skill declared nothing and inherits whatever the caller already had.
+    /// `Some` is an intersection, never a grant: [`SkillMetadata::narrow`] can only remove names
+    /// from the set it is handed. A skill naming a write, execute, or dispatch tool is a load
+    /// error rather than a silently ignored line, because a definition that believes it was
+    /// granted `write_file` is wrong about what it is allowed to do, and finding that out at the
+    /// moment of use is worse than finding it out at catalog build.
+    pub tools: Option<Vec<String>>,
+}
+
+/// The most tool names a skill may declare.
+const MAX_SKILL_TOOLS: usize = 64;
+
+/// Tool names a skill may never name.
+///
+/// This list is duplicated from `core-agents`, which owns the authoritative vocabulary, because
+/// `core-agents` depends on `core-ctx` and the reverse edge would be a cycle. The duplication is
+/// held honest from the other side: a test in `core-agents` asserts this list covers every name it
+/// refuses, so the two cannot drift apart quietly.
+pub const SKILL_REFUSED_TOOLS: &[&str] = &[
+    "edit",
+    "bash",
+    "dispatch_agent",
+    "write",
+    "notebookedit",
+    "multiedit",
+    "apply_patch",
+    "shell",
+    "task",
+    "write_file",
+    "run",
+    "execute",
+    "agent",
+    "multi_file_patch",
+    "str_replace_editor",
+    "notebook_edit",
+];
+
+impl SkillMetadata {
+    /// Narrow a registry by this skill's declaration.
+    ///
+    /// Intersection only. A declared name that is not in `registry` is dropped rather than added,
+    /// so a skill can never widen the set it was handed — which is the whole reason the
+    /// declaration is expressed as a filter over a caller-supplied registry instead of as a list
+    /// the skill hands back.
+    pub fn narrow(&self, registry: &[String]) -> Vec<String> {
+        let Some(declared) = &self.tools else {
+            return registry.to_vec();
+        };
+        registry
+            .iter()
+            .filter(|tool| {
+                declared
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(tool.as_str()))
+            })
+            .cloned()
+            .collect()
+    }
 }
 
 /// Extract a bounded, order-preserving set of repository-relative path hints from operator text.
@@ -80,6 +140,7 @@ pub(super) fn parse(frontmatter: &str) -> Result<SkillMetadata, String> {
     let mut saw_when_to_use = false;
     let mut saw_paths = false;
     let mut saw_disable_model_invocation = false;
+    let mut saw_tools = false;
 
     for raw_line in frontmatter.lines() {
         let line = raw_line.trim();
@@ -113,6 +174,10 @@ pub(super) fn parse(frontmatter: &str) -> Result<SkillMetadata, String> {
                 reject_duplicate(key, &mut saw_disable_model_invocation)?;
                 metadata.disable_model_invocation = parse_bool(key, value)?;
             }
+            "tools" | "allowed-tools" | "allowed_tools" => {
+                reject_duplicate(key, &mut saw_tools)?;
+                metadata.tools = Some(parse_tools(value)?);
+            }
             // `name` and `description` are parsed by the parent module. Extra keys are explicitly
             // tolerated so newer producers do not make older clients reject an otherwise safe
             // skill.
@@ -141,7 +206,55 @@ fn is_known_key(line: &str) -> bool {
             | "paths"
             | "disable-model-invocation"
             | "disable_model_invocation"
+            | "tools"
+            | "allowed-tools"
+            | "allowed_tools"
     )
+}
+
+/// Parse an allowed-tools declaration, refusing any write, execute, or dispatch name.
+fn parse_tools(value: &str) -> Result<Vec<String>, String> {
+    let inner = value
+        .trim()
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(value);
+    let mut tools = Vec::new();
+    for raw in inner.split(',') {
+        let name = unquote(raw.trim()).trim().to_owned();
+        if name.is_empty() {
+            continue;
+        }
+        if tools.len() >= MAX_SKILL_TOOLS {
+            return Err(format!(
+                "skill frontmatter `tools` exceeds {MAX_SKILL_TOOLS} entries"
+            ));
+        }
+        if SKILL_REFUSED_TOOLS
+            .iter()
+            .any(|refused| name.eq_ignore_ascii_case(refused))
+        {
+            // Surfaced, not stripped. A skill that thinks it was granted a writer is wrong about
+            // its own authority, and the catalog is the last place that can say so cheaply.
+            return Err(format!(
+                "skill frontmatter `tools` names `{name}`, which writes, executes, or dispatches; \
+                 a skill may only narrow the read-only registry"
+            ));
+        }
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        {
+            return Err(format!(
+                "skill frontmatter `tools` entry `{name}` is not a plain slug"
+            ));
+        }
+        tools.push(name);
+    }
+    if tools.is_empty() {
+        return Err("skill frontmatter `tools` must name at least one tool".into());
+    }
+    Ok(tools)
 }
 
 fn parse_text(key: &str, value: &str) -> Result<String, String> {

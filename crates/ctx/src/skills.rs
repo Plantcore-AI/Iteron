@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 #[path = "skills_metadata.rs"]
 mod metadata;
-pub use metadata::{SkillMetadata, active_paths_from_text};
+pub use metadata::{SKILL_REFUSED_TOOLS, SkillMetadata, active_paths_from_text};
 
 /// Discovery ceilings apply before parsing or prompt construction.
 const MAX_SKILL_DIRS: usize = 1_024;
@@ -355,6 +355,94 @@ mod tests {
         let dir = root.join(".core").join("skills").join(name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), front_body).unwrap();
+    }
+
+    /// A skill may narrow the registry it runs against, and only narrow it.
+    #[test]
+    fn a_declared_tool_set_narrows_the_registry() {
+        let root = tmp("skill-scoping-narrow");
+        write_skill(
+            &root,
+            "reader",
+            "---\nname: reader\ndescription: reads\ntools: [read_file, grep]\n---\nBody.\n",
+        );
+        let catalog = SkillCatalog::discover_optional(None, &root);
+        assert!(catalog.errors().is_empty(), "{:?}", catalog.errors());
+        let skill = catalog.get("reader").expect("the skill loaded");
+        let registry: Vec<String> = ["read_file", "list_dir", "grep", "glob"]
+            .iter()
+            .map(|t| (*t).to_owned())
+            .collect();
+        assert_eq!(
+            skill.metadata.narrow(&registry),
+            vec!["read_file".to_owned(), "grep".to_owned()]
+        );
+
+        // A name the registry does not contain is dropped, never added: the declaration is a
+        // filter over what the caller had, not a list the skill hands back.
+        let narrower: Vec<String> = vec!["list_dir".to_owned()];
+        assert!(skill.metadata.narrow(&narrower).is_empty());
+
+        // Declaring nothing inherits whatever the caller already had.
+        let silent = SkillMetadata::default();
+        assert_eq!(silent.narrow(&registry), registry);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A skill that believes it was granted a writer is wrong about its own authority, and the
+    /// catalog is the last cheap place to say so.
+    #[test]
+    fn declaring_a_write_tool_is_a_load_error_at_catalog_build() {
+        let root = tmp("skill-scoping-refuse");
+        write_skill(
+            &root,
+            "writer",
+            "---\nname: writer\ndescription: writes\ntools: [read_file, write_file]\n---\nBody.\n",
+        );
+        let catalog = SkillCatalog::discover_optional(None, &root);
+        assert!(
+            catalog.get("writer").is_none(),
+            "a skill naming a writer must not load"
+        );
+        let error = catalog
+            .errors()
+            .iter()
+            .find(|error| error.reason.contains("write_file"))
+            .expect("the refusal is surfaced, not silent");
+        assert!(error.reason.contains("narrow"), "{}", error.reason);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Every refused name is refused, and an empty or malformed declaration is refused too.
+    #[test]
+    fn every_write_exec_dispatch_name_is_refused() {
+        for refused in SKILL_REFUSED_TOOLS {
+            let root = tmp(&format!("skill-scoping-{refused}"));
+            write_skill(
+                &root,
+                "candidate",
+                &format!("---\nname: candidate\ndescription: d\ntools: [{refused}]\n---\nBody.\n"),
+            );
+            let catalog = SkillCatalog::discover_optional(None, &root);
+            assert!(
+                catalog.get("candidate").is_none(),
+                "`{refused}` must be refused"
+            );
+            let _ = std::fs::remove_dir_all(&root);
+        }
+
+        let root = tmp("skill-scoping-empty");
+        write_skill(
+            &root,
+            "empty",
+            "---\nname: empty\ndescription: d\ntools: []\n---\nBody.\n",
+        );
+        let catalog = SkillCatalog::discover_optional(None, &root);
+        assert!(
+            catalog.get("empty").is_none(),
+            "an empty declaration is a refusal, not a silent grant of everything"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
