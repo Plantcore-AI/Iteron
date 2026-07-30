@@ -1,0 +1,17 @@
+{
+  "hash": "0000000000000000000000000000000000000000000000000000000000000001",
+  "schema": "file_diff",
+  "producer": {
+    "kind": "tool",
+    "tool": "edit"
+  },
+  "provenance": {
+    "run_id": "run-1",
+    "parent_hashes": [],
+    "effect_id": null
+  },
+  "permissions": [
+    "read_only"
+  ],
+  "locator": "reports/summary.md"
+}

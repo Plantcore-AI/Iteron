@@ -34,3 +34,4 @@
 {"seq":33,"turn":1,"kind":{"kind":"done","outcome":"done"}}
 {"seq":34,"turn":1,"kind":{"kind":"effect_done","id":"effect-4","tool":"provider"}}
 {"seq":35,"turn":1,"kind":{"kind":"effect_failed","id":"effect-5","tool":"hook","reason":"hook executor exited non-zero"}}
+{"seq":2,"turn":0,"kind":{"kind":"artifact_produced","artifact":{"hash":"0000000000000000000000000000000000000000000000000000000000000001","schema":"file_diff","producer":{"kind":"tool","tool":"edit"},"provenance":{"run_id":"run-1","parent_hashes":[],"effect_id":null},"permissions":["read_only"],"locator":"reports/summary.md"}}}

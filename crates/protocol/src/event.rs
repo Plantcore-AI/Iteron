@@ -2,6 +2,7 @@
 //! (invariant #4, observable). The phase is the point: the harness is the only layer that
 //! knows what phase it is in (the phase-oracle thesis).
 
+use crate::artifact::ArtifactRef;
 use crate::ids::{EffectId, Seq, SubmissionId, TurnId};
 use crate::message::{Message, Usage};
 use crate::permission::Verdict;
@@ -406,6 +407,22 @@ pub enum EventKind {
     },
     /// The model turn completed, with usage by cache class.
     TurnEnd { usage: Usage },
+    /// A run declaring a product: "I produced this", with a content-addressed handle.
+    ///
+    /// `ArtifactRef` is deliberately a handle rather than inline content, because the evolution
+    /// registry has to be able to verify what it holds. Everything the stream vocabulary needs is
+    /// already on it or on the enclosing event: the ref and its hash, the kind (`schema`), the
+    /// producing turn (`Event::turn`), and the tool or effect that made it (`producer`). Adding
+    /// fields beside it would create a second, drifting copy of what the handle already says.
+    ///
+    /// Before this existed, a product built on top of a run could only be discovered by parsing
+    /// the assistant's prose, so every consumer invented its own convention and none of them could
+    /// be verified.
+    ///
+    /// This is a purely additive top-level tag (abi.md §4.3(b)2), exactly like
+    /// [`EventKind::EffectDone`]: every byte already on disk decodes unchanged, so
+    /// `PROTOCOL_VERSION` MUST NOT bump for it.
+    ArtifactProduced { artifact: ArtifactRef },
     /// A message for the operator (not part of the transcript).
     Notice { text: String },
     /// A submission was decoded safely but is not understood by this build. The record contains

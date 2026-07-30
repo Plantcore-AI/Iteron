@@ -107,6 +107,14 @@ pub fn redact_event(event: &Event) -> Event {
                     }),
                 }),
         },
+        // A locator is a path and a producer name is free text, so both are scrubbed. The hash
+        // is a content address and is preserved exactly: masking it would make the handle
+        // unresolvable, which is the same correlation break `tool_use_id` had.
+        EventKind::ArtifactProduced { artifact } => {
+            let mut artifact = artifact.clone();
+            artifact.locator = scrub(&artifact.locator);
+            EventKind::ArtifactProduced { artifact }
+        }
         EventKind::Notice { text } => EventKind::Notice { text: scrub(text) },
         // Route/provenance events are durable control-plane data. They deliberately contain no
         // credential field, but operator-defined ids are still strings and must not become a

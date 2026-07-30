@@ -330,3 +330,32 @@ fn cost_keeps_its_three_states_apart() {
     };
     assert_eq!(ClientCost::from(&known), ClientCost::Known { usd: 1.5 });
 }
+
+/// The client half of #78: a run declaring a product, on the same vocabulary a socket consumes.
+#[test]
+fn an_artifact_declaration_round_trips_on_the_client_vocabulary() {
+    use core_protocol::artifact::{ArtifactRef, ArtifactSchema, Producer, Provenance};
+    let declared = ArtifactRef {
+        hash: format!("{:064x}", 1),
+        schema: ArtifactSchema::FileDiff,
+        producer: Producer::Tool {
+            tool: "edit".into(),
+        },
+        provenance: Provenance {
+            run_id: core_protocol::RunId("run-1".into()),
+            parent_hashes: Vec::new(),
+            effect_id: None,
+        },
+        permissions: core_protocol::capability_set::CapabilitySet::only(Capability::ReadOnly),
+        locator: "reports/summary.md".into(),
+    };
+    let event = ClientEvent::from(&declared);
+    let encoded = serde_json::to_string(&ClientEventEnvelope::current(event.clone())).unwrap();
+    let decoded: ClientEventEnvelope = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded.into_current().unwrap(), event);
+
+    let value = serde_json::to_value(&event).unwrap();
+    assert_eq!(value["kind"], "artifact_produced");
+    // The content address is what makes the product resolvable; it must survive verbatim.
+    assert_eq!(value["artifact"]["hash"], declared.hash);
+}
