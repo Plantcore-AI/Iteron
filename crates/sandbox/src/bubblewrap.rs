@@ -273,6 +273,21 @@ fn bwrap_args_with_home(conf: &Confinement, command: &str, home: Option<&Path>) 
     a.push("/dev".into());
     a.push("--proc".into());
     a.push("/proc".into());
+    // Make the namespace root read-only.
+    //
+    // This is the line that turns "nothing else is bound" into "nothing else is writable". bwrap's
+    // root is a fresh tmpfs, and it *creates the parent directories of every mount point on it* —
+    // so binding `<root>/workspace` silently materialises a writable `<root>/` beside it. A write
+    // to a sibling path like `<root>/outside-write` then succeeds: it lands in the disposable root
+    // tmpfs rather than on the host, so nothing escapes, but the write syscall is not denied and
+    // the process cannot tell the difference. That is the gap `d4_13_d5_14_linux_live_...` probes,
+    // and why the sandbox could not be described as a write-containment boundary.
+    //
+    // `--remount-ro /` remounts only the root mount. The workspace bind, the private `/tmp` tmpfs,
+    // `/dev` and `/proc` are each their own mount, so they keep the access they were given. It has
+    // to come after every bind, because bwrap applies these in order.
+    a.push("--remount-ro".into());
+    a.push("/".into());
     // Hardening.
     a.push("--die-with-parent".into());
     a.push("--new-session".into());

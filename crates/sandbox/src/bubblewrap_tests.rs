@@ -331,10 +331,13 @@ async fn d4_13_d5_14_linux_live_network_is_blocked_when_bwrap_present() {
 // `cfg(linux)`, so it never compiles on macOS and no local run could have caught it; the first
 // execution anywhere was CI on the pull request that promoted this line to main.
 //
-// Do NOT delete this test and do NOT weaken its assertions. Un-ignore it as part of #21, which
-// owns crates/sandbox execution under the OS sandbox. Until then the sandbox must not be treated
-// as a write-containment boundary.
-#[ignore = "sandbox write containment is not implemented yet; owned by #21 (gaps D4-13, D5-14)"]
+// Do NOT delete this test and do NOT weaken its assertions.
+//
+// The gap is closed: `bwrap_args` now ends its mount plan with `--remount-ro /`. bwrap creates
+// the parent directories of every mount point on its root tmpfs, so binding the workspace was
+// materialising a writable directory beside it, and a write to a sibling path succeeded into
+// that disposable tmpfs. Nothing escaped to the host, but the syscall was not denied, which is
+// not the same thing and is not what this probe asserts. Every assertion below is unchanged.
 async fn d4_13_d5_14_linux_live_enforces_writes_home_secret_and_exact_env_name() {
     let fixture = LiveFixture::new("filesystem-env");
     let (sandbox, mut confinement) = match live_backend(&fixture.workspace).await {
