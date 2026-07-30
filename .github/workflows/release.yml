@@ -718,6 +718,7 @@ jobs:
             --version "${{ needs.validate.outputs.version }}" \
             --commit "${{ needs.validate.outputs.commit }}" \
             --dist dist \
+            --protocol-source crates/protocol/src/wire.rs \
             --output dist/release-manifest.json
           python3 release-tools/checksums.py \
             --dist dist \

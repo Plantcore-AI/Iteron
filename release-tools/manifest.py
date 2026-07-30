@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 from common import (
@@ -38,7 +39,36 @@ def parser() -> argparse.ArgumentParser:
     release.add_argument("--dist", required=True, type=Path)
     release.add_argument("--target", action="append", dest="targets")
     release.add_argument("--output", required=True, type=Path)
+    release.add_argument(
+        "--protocol-source",
+        type=Path,
+        default=Path("crates/protocol/src/wire.rs"),
+        help="source of PROTOCOL_VERSION; read, never restated by hand",
+    )
     return result
+
+
+PROTOCOL_VERSION_PATTERN = re.compile(
+    r"^pub const PROTOCOL_VERSION: u32 = (?P<value>\d{1,9});$", re.MULTILINE
+)
+
+
+def read_protocol_version(source: Path) -> int:
+    """Read `PROTOCOL_VERSION` from the crate that declares it.
+
+    A client pins on the protocol a binary speaks, so the number in the manifest has to be the one
+    the binary was built from. Restating it here would let the two drift silently, which is the
+    whole failure this field exists to prevent: a desktop that resolves an older runtime and starts
+    a run that behaves subtly differently.
+    """
+    require_regular_file(source, max_bytes=1024 * 1024)
+    text = source.read_text(encoding="utf-8")
+    matches = PROTOCOL_VERSION_PATTERN.findall(text)
+    if len(matches) != 1:
+        raise ReleaseToolError(
+            f"expected exactly one PROTOCOL_VERSION declaration in {source}, found {len(matches)}"
+        )
+    return int(matches[0])
 
 
 def digest_entry(path: Path) -> dict[str, object]:
@@ -98,14 +128,17 @@ def create_release(arguments: argparse.Namespace) -> None:
             ),
         }
 
+    protocol_version = read_protocol_version(arguments.protocol_source)
+
     document = {
         "command": "core",
         "commit": commit,
         "installer": installer,
         "legal": legal,
         "product": "Core Code",
+        "protocol_version": protocol_version,
         "repository": "https://github.com/Plantcore-AI/core",
-        "schema_version": 1,
+        "schema_version": 2,
         "tag": f"v{version}",
         "targets": target_documents,
         "version": version,
