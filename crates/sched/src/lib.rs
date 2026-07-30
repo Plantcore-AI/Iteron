@@ -15,8 +15,13 @@ pub mod backoff;
 pub mod clock;
 pub mod governor;
 pub mod retry;
+pub mod strategy;
 
 pub use backoff::{BackoffPolicy, full_jitter};
 pub use clock::{Clock, TokioClock};
 pub use governor::Governor;
 pub use retry::RetryProvider;
+pub use strategy::{
+    SCHEDULER_SLOT_VERSION, SchedulerPlan, SchedulerProposal, SchedulerSlotDecision,
+    SchedulerSlotError, SchedulerSlotObservation, SchedulerStrategy,
+};
