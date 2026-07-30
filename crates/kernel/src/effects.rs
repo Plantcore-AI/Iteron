@@ -86,7 +86,10 @@ impl ToolCallAdmission {
         if unsafe_identity(&tool.id) || unsafe_identity(&tool.name) {
             return Err(ToolCallContractError::UnsafeIdentity);
         }
-        if core_record::redact::scrub(&tool.id) != tool.id
+        // The id is asked the question the record path will answer. A structural correlation id
+        // survives redaction verbatim, so admitting it cannot desynchronise the two sides; a
+        // credential-shaped one would still be masked, so it stays refused (#74).
+        if core_record::redact::scrub_correlation_identifier(&tool.id) != tool.id
             || core_record::redact::scrub(&tool.name) != tool.name
         {
             return Err(ToolCallContractError::SecretShapedIdentity);
@@ -498,6 +501,30 @@ mod tests {
                 },
                 effect_id: id.map(|value| EffectId(value.into())),
             },
+        }
+    }
+
+    /// #74: a provider-minted tool-call id is high-entropy by construction, and the generic
+    /// entropy rule masks any 32+ character mixed-case-with-digit run. Admission refused every
+    /// such call, so tool use was unusable on any provider minting ids of this shape while an
+    /// otherwise identical call with a shorter id succeeded.
+    #[test]
+    fn admission_accepts_provider_minted_correlation_ids() {
+        for id in [
+            "call_00_RFTSn3Qcw4Wu9i4Z276c9895",
+            "chatcmpl-tool-abc123DEF456ghi789",
+            "call_1",
+        ] {
+            let call = ToolUse {
+                id: id.into(),
+                name: "edit".into(),
+                input: serde_json::json!({"path": "f"}),
+            };
+            assert_eq!(
+                ToolCallAdmission::default().admit(&call),
+                Ok(()),
+                "provider correlation id `{id}` must be admitted"
+            );
         }
     }
 
