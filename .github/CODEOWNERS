@@ -98,6 +98,8 @@
 /crates/agents/src/reduce.rs @fr0m-scratch
 /crates/agents/src/stage.rs @fr0m-scratch
 /crates/cli/src/block.rs @fr0m-scratch
+/crates/cli/src/client_event.rs @fr0m-scratch
+/crates/cli/src/client_event_tests.rs @fr0m-scratch
 /crates/cli/src/commands.rs @fr0m-scratch
 /crates/cli/src/config.rs @fr0m-scratch
 /crates/cli/src/editor.rs @fr0m-scratch

@@ -17,6 +17,11 @@ mod output;
 mod pricing;
 mod providers;
 mod render;
+// The published client-event vocabulary. Nothing in this binary consumes it yet: it is the
+// payload contract #44 will put on a socket, landed first so the transport does not get to
+// decide which of the four documented losses stands. Its round trips are covered by tests.
+#[allow(dead_code)]
+mod client_event;
 mod runtime;
 mod session_view;
 mod surface;
