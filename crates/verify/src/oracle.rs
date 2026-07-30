@@ -4,7 +4,10 @@ use core_sandbox::{Confinement, Sandbox};
 use std::path::PathBuf;
 
 /// How much authority an oracle's verdict carries. The ranking is a type, not a convention.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum OracleStrength {
     /// An LLM judging correctness. Advisory only; never enters the selection function.
     Weakest = 0,

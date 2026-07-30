@@ -11,6 +11,8 @@ core-sandbox = { path = "../sandbox" }
 sha2 = { workspace = true }
 hex = { workspace = true }
 async-trait = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }
