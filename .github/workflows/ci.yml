@@ -221,8 +221,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
+      # `cargo test --workspace` runs the xtask conformance suite, and
+      # `current_tcb_snapshot_matches_the_w1_freeze` resolves the W1 freeze commit through git.
+      # A shallow checkout does not contain that commit, so the whole matrix fails on
+      # `cannot resolve compatibility base revision`. The boundary job fetches full history for
+      # the same reason.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: install pinned Rust toolchain
         run: >-
