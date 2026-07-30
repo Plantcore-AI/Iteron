@@ -17,6 +17,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const PROCESS_OUTPUT_LIMIT: usize = 1024 * 1024;
 const ORACLE_OUTPUT_LIMIT: usize = 128 * 1024;
+const MAX_CANDIDATE_DIFF_BYTES: usize = 8 * 1024 * 1024;
+const MAX_EVAL_CELLS: usize = 1_000_000;
+const MAX_BUNDLE_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct EvalOptions {
@@ -36,6 +39,57 @@ pub struct EvalOptions {
     pub checkout_timeout: Duration,
     pub oracle_timeout: Duration,
     pub max_turns: u32,
+}
+
+/// Versioned WS4 execution controls layered behind the frozen `EvalOptions`/CLI seam.
+///
+/// The legacy options remain source-compatible with the schema-authority `main` function while
+/// this surface carries the bounded-worker, bundle, and explicit-uncapped controls.
+#[derive(Debug, Clone)]
+pub struct ParallelEvalOptions {
+    pub corpus_path: PathBuf,
+    pub output_path: PathBuf,
+    pub work_root: PathBuf,
+    pub core_bin: Option<PathBuf>,
+    pub allow_local_repositories: bool,
+    pub model: String,
+    pub provider: Option<String>,
+    pub bundle_path: Option<PathBuf>,
+    pub purpose: EvaluationPurpose,
+    pub seeds: u64,
+    pub minimum_seeds: u64,
+    pub run_timeout: Duration,
+    pub checkout_timeout: Duration,
+    pub oracle_timeout: Duration,
+    pub workers: usize,
+    pub max_turns: u32,
+    /// Explicitly omit the CLI turn ceiling. `max_turns` remains populated for capped runs and for
+    /// stable CLI defaults, but is ignored when this flag is set.
+    pub uncapped: bool,
+}
+
+impl From<&EvalOptions> for ParallelEvalOptions {
+    fn from(options: &EvalOptions) -> Self {
+        Self {
+            corpus_path: options.corpus_path.clone(),
+            output_path: options.output_path.clone(),
+            work_root: options.work_root.clone(),
+            core_bin: options.core_bin.clone(),
+            allow_local_repositories: options.allow_local_repositories,
+            model: options.model.clone(),
+            provider: options.provider.clone(),
+            bundle_path: None,
+            purpose: options.purpose,
+            seeds: options.seeds,
+            minimum_seeds: options.minimum_seeds,
+            run_timeout: options.run_timeout,
+            checkout_timeout: options.checkout_timeout,
+            oracle_timeout: options.oracle_timeout,
+            workers: 50,
+            max_turns: options.max_turns,
+            uncapped: options.max_turns == 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -75,10 +129,18 @@ pub enum RunnerError {
         path: String,
         source: std::io::Error,
     },
+    #[error("evaluation worker failed to join: {0}")]
+    WorkerJoin(String),
 }
 
 pub async fn run_evaluation(options: &EvalOptions) -> Result<EvaluationManifest, RunnerError> {
-    validate_options(options)?;
+    run_evaluation_parallel(&ParallelEvalOptions::from(options)).await
+}
+
+pub async fn run_evaluation_parallel(
+    options: &ParallelEvalOptions,
+) -> Result<EvaluationManifest, RunnerError> {
+    validate_parallel_options(options)?;
     let corpus = CorpusManifest::load(&options.corpus_path)?;
     let tasks = corpus.tasks_for(options.purpose)?;
     let core = find_core(options.core_bin.as_deref())?;
@@ -92,27 +154,120 @@ pub async fn run_evaluation(options: &EvalOptions) -> Result<EvaluationManifest,
         path: run_root.display().to_string(),
         source,
     })?;
+    let mut runtime_options = options.clone();
+    let bundle_digest = match options.bundle_path.as_deref() {
+        Some(source) => {
+            let snapshot = run_root.join("policy.bundle");
+            let digest = snapshot_bundle(source, &snapshot)?;
+            runtime_options.bundle_path = Some(snapshot);
+            Some(digest)
+        }
+        None => None,
+    };
+    let legacy_options = EvalOptions {
+        corpus_path: runtime_options.corpus_path.clone(),
+        output_path: runtime_options.output_path.clone(),
+        work_root: runtime_options.work_root.clone(),
+        core_bin: runtime_options.core_bin.clone(),
+        allow_local_repositories: runtime_options.allow_local_repositories,
+        model: runtime_options.model.clone(),
+        provider: runtime_options.provider.clone(),
+        purpose: runtime_options.purpose,
+        seeds: runtime_options.seeds,
+        minimum_seeds: runtime_options.minimum_seeds,
+        run_timeout: runtime_options.run_timeout,
+        checkout_timeout: runtime_options.checkout_timeout,
+        oracle_timeout: runtime_options.oracle_timeout,
+        max_turns: if runtime_options.uncapped {
+            0
+        } else {
+            runtime_options.max_turns
+        },
+    };
 
-    let mut cells = Vec::new();
+    let seeds = usize::try_from(options.seeds)
+        .map_err(|_| RunnerError::InvalidOption("seeds do not fit this platform".into()))?;
+    let total_cells = tasks
+        .len()
+        .checked_mul(CONFIGS.len())
+        .and_then(|count| count.checked_mul(seeds))
+        .ok_or_else(|| RunnerError::InvalidOption("evaluation cell count overflow".into()))?;
+    if total_cells > MAX_EVAL_CELLS {
+        return Err(RunnerError::InvalidOption(format!(
+            "evaluation expands to {total_cells} cells; maximum is {MAX_EVAL_CELLS}"
+        )));
+    }
+
+    let mut pending = std::collections::VecDeque::with_capacity(total_cells);
     for task in tasks {
         for config in CONFIGS {
             for seed in 0..options.seeds {
-                let cell_root = run_root.join(cell_directory(task, config, seed));
-                let checkout = match authorize_repository(task, options.allow_local_repositories) {
+                pending.push_back((task.clone(), config, seed));
+            }
+        }
+    }
+
+    let options = std::sync::Arc::new(runtime_options);
+    let legacy_options = std::sync::Arc::new(legacy_options);
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(options.workers));
+    let mut running = tokio::task::JoinSet::new();
+    let mut cells = Vec::with_capacity(total_cells);
+    while !pending.is_empty() || !running.is_empty() {
+        while running.len() < options.workers {
+            let Some((task, config, seed)) = pending.pop_front() else {
+                break;
+            };
+            let core = core.clone();
+            let run_root = run_root.clone();
+            let options = std::sync::Arc::clone(&options);
+            let legacy_options = std::sync::Arc::clone(&legacy_options);
+            let semaphore = std::sync::Arc::clone(&semaphore);
+            running.spawn(async move {
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .expect("evaluation semaphore is owned until all workers join");
+                let directory = cell_directory(&task, config, seed);
+                let cell_root = run_root.join(&directory);
+                let oracle_root = run_root.join(format!("{directory}-oracle"));
+                let checkout = match authorize_repository(&task, options.allow_local_repositories) {
                     Ok(()) => {
-                        materialize_repository(task, &cell_root, options.checkout_timeout).await
+                        materialize_repository(&task, &cell_root, options.checkout_timeout).await
                     }
                     Err(error) => Err(error),
                 };
                 let mut cell = match checkout {
-                    Ok(()) => run_cell(&core, &cell_root, task, config, seed, options).await,
-                    Err(error) => errored_cell(task, config, seed, "checkout", error),
+                    Ok(()) => {
+                        let cell =
+                            run_cell(&core, &cell_root, &task, config, seed, &legacy_options).await;
+                        attach_two_sided_verdict(cell, &oracle_root, &task, &options).await
+                    }
+                    Err(error) => errored_cell(&task, config, seed, "checkout", error),
                 };
-                cell.benchmark = benchmark_reference(task);
-                cells.push(cell);
-            }
+                cell.benchmark = benchmark_reference(&task);
+                cell
+            });
+        }
+        if let Some(joined) = running.join_next().await {
+            cells.push(joined.map_err(|error| RunnerError::WorkerJoin(error.to_string()))?);
         }
     }
+    cells.sort_by(|left, right| {
+        (
+            &left.task,
+            &left.config,
+            left.seed,
+            &left.repo_url,
+            &left.commit,
+        )
+            .cmp(&(
+                &right.task,
+                &right.config,
+                right.seed,
+                &right.repo_url,
+                &right.commit,
+            ))
+    });
 
     let summary = aggregate(&cells, options.minimum_seeds);
     let comparison = compare(&summary, "verify_OFF", "verify_ON");
@@ -125,9 +280,12 @@ pub async fn run_evaluation(options: &EvalOptions) -> Result<EvaluationManifest,
         dataset_digest: corpus.dataset_digest,
         model: options.model.clone(),
         provider: options.provider.clone(),
+        bundle_digest,
         purpose: options.purpose,
         seeds: options.seeds,
         minimum_seeds: options.minimum_seeds,
+        workers: options.workers as u16,
+        max_turns: (!options.uncapped).then_some(options.max_turns),
         run_timeout_secs: options.run_timeout.as_secs(),
         result_path: options.output_path.clone(),
         cells,
@@ -140,7 +298,7 @@ pub async fn run_evaluation(options: &EvalOptions) -> Result<EvaluationManifest,
     Ok(manifest)
 }
 
-fn validate_options(options: &EvalOptions) -> Result<(), RunnerError> {
+fn validate_parallel_options(options: &ParallelEvalOptions) -> Result<(), RunnerError> {
     if options.model.trim().is_empty() {
         return Err(RunnerError::InvalidOption("model must be explicit".into()));
     }
@@ -154,6 +312,11 @@ fn validate_options(options: &EvalOptions) -> Result<(), RunnerError> {
             "minimum_seeds must be at least 1".into(),
         ));
     }
+    if !(1..=100).contains(&options.workers) {
+        return Err(RunnerError::InvalidOption(
+            "workers must be in 1..=100".into(),
+        ));
+    }
     for (name, duration) in [
         ("run_timeout", options.run_timeout),
         ("checkout_timeout", options.checkout_timeout),
@@ -165,12 +328,86 @@ fn validate_options(options: &EvalOptions) -> Result<(), RunnerError> {
             )));
         }
     }
-    if options.max_turns == 0 {
+    if !options.uncapped && options.max_turns == 0 {
         return Err(RunnerError::InvalidOption(
-            "max_turns must be at least 1".into(),
+            "max_turns must be at least 1 for a capped run".into(),
+        ));
+    }
+    if options
+        .bundle_path
+        .as_ref()
+        .is_some_and(|path| !path.is_file())
+    {
+        return Err(RunnerError::InvalidOption(
+            "bundle_path must name an existing regular file".into(),
         ));
     }
     Ok(())
+}
+
+fn snapshot_bundle(source: &Path, destination: &Path) -> Result<String, RunnerError> {
+    let input = std::fs::File::open(source).map_err(|error| {
+        RunnerError::InvalidOption(format!(
+            "cannot open bundle `{}`: {error}",
+            source.display()
+        ))
+    })?;
+    let metadata = input.metadata().map_err(|error| {
+        RunnerError::InvalidOption(format!(
+            "cannot inspect bundle `{}`: {error}",
+            source.display()
+        ))
+    })?;
+    if !metadata.is_file() || metadata.len() > MAX_BUNDLE_BYTES {
+        return Err(RunnerError::InvalidOption(format!(
+            "bundle `{}` must be a regular file no larger than {MAX_BUNDLE_BYTES} bytes",
+            source.display()
+        )));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let mut bounded_input = std::io::Read::take(input, MAX_BUNDLE_BYTES + 1);
+    std::io::Read::read_to_end(&mut bounded_input, &mut bytes).map_err(|error| {
+        RunnerError::InvalidOption(format!(
+            "cannot read bundle `{}`: {error}",
+            source.display()
+        ))
+    })?;
+    if bytes.len() as u64 > MAX_BUNDLE_BYTES {
+        return Err(RunnerError::InvalidOption(format!(
+            "bundle `{}` grew beyond the {MAX_BUNDLE_BYTES}-byte bound while reading",
+            source.display()
+        )));
+    }
+    let mut output = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(destination)
+        .map_err(|error| RunnerError::CreatePath {
+            path: destination.display().to_string(),
+            source: error,
+        })?;
+    output
+        .write_all(&bytes)
+        .and_then(|()| output.sync_all())
+        .map_err(|error| RunnerError::WriteArtifact {
+            path: destination.display().to_string(),
+            source: error,
+        })?;
+    let mut permissions = output
+        .metadata()
+        .map_err(|error| RunnerError::WriteArtifact {
+            path: destination.display().to_string(),
+            source: error,
+        })?
+        .permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(destination, permissions).map_err(|error| {
+        RunnerError::WriteArtifact {
+            path: destination.display().to_string(),
+            source: error,
+        }
+    })?;
+    Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
 }
 
 async fn run_cell(
@@ -310,6 +547,77 @@ async fn run_cell(
     cell
 }
 
+async fn attach_two_sided_verdict(
+    mut cell: CellResult,
+    oracle_workspace: &Path,
+    task: &CorpusTask,
+    options: &ParallelEvalOptions,
+) -> CellResult {
+    let started = Instant::now();
+    let Some(candidate_diff) = cell.candidate_diff.as_deref() else {
+        if matches!(
+            cell.failure_phase.as_deref(),
+            Some("core" | "core_spawn" | "core_contract" | "core_timeout")
+        ) {
+            return cell;
+        }
+        cell.run_status = RunStatus::Errored;
+        cell.failure_phase = Some("candidate_diff".into());
+        cell.oracle_status = OracleStatus::InfrastructureFailed;
+        cell.error = Some("candidate diff could not be captured".into());
+        cell.elapsed_ms = cell.elapsed_ms.saturating_add(millis(started.elapsed()));
+        return cell;
+    };
+    // `candidate_diff` is written only after the frozen cell has decoded a completed Core result.
+    // Its legacy oracle result is intentionally superseded by this fresh two-sided Pro oracle.
+    cell.run_status = RunStatus::Completed;
+    cell.failure_phase = None;
+    cell.resolved = None;
+    cell.oracle_status = OracleStatus::NotRun;
+    cell.oracle_detail = None;
+    cell.error = None;
+    let receipt = match score_candidate_diff(
+        task,
+        candidate_diff,
+        oracle_workspace,
+        options.checkout_timeout,
+        options.oracle_timeout,
+    )
+    .await
+    {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            cell.run_status = RunStatus::Errored;
+            cell.failure_phase = Some("oracle_setup".into());
+            cell.oracle_status = OracleStatus::InfrastructureFailed;
+            cell.error = Some(error.clone());
+            cell.oracle_detail = Some(format!("two-sided oracle setup failed: {error}"));
+            cell.elapsed_ms = cell.elapsed_ms.saturating_add(millis(started.elapsed()));
+            return cell;
+        }
+    };
+    let status = two_sided_status(&receipt);
+    cell.oracle_status = status;
+    cell.oracle_detail = serde_json::to_string(&receipt).ok();
+    match status {
+        OracleStatus::Passed | OracleStatus::TestFailed => {
+            cell.resolved = Some(receipt.resolved);
+        }
+        OracleStatus::TimedOut => {
+            cell.run_status = RunStatus::TimedOut;
+            cell.failure_phase = Some("two_sided_oracle".into());
+            cell.error = Some("F2P/P2P oracle timed out".into());
+        }
+        OracleStatus::InfrastructureFailed | OracleStatus::NotRun => {
+            cell.run_status = RunStatus::Errored;
+            cell.failure_phase = Some("two_sided_oracle".into());
+            cell.error = Some("F2P/P2P oracle could not run under confinement".into());
+        }
+    }
+    cell.elapsed_ms = cell.elapsed_ms.saturating_add(millis(started.elapsed()));
+    cell
+}
+
 fn aggregate_kernel_tax(cells: &[CellResult]) -> KernelTaxObservation {
     let mut total = KernelTaxObservation::default();
     for cell in cells {
@@ -385,6 +693,145 @@ async fn apply_benchmark_test_patch(
     Ok(())
 }
 
+/// Score an externally produced candidate with Core's own hidden F2P/P2P oracle.
+///
+/// Reference harnesses deliberately enter through this function. Their self-reported pass/fail
+/// value is not an input, so both Core and third-party candidates use the identical evaluator.
+pub async fn score_candidate_diff(
+    task: &CorpusTask,
+    candidate_diff: &str,
+    workspace: &Path,
+    checkout_timeout: Duration,
+    oracle_timeout: Duration,
+) -> Result<crate::types::TwoSidedOracleReceipt, String> {
+    materialize_repository(task, workspace, checkout_timeout).await?;
+    // Hidden tests exist only in the oracle checkout. The model-facing checkout never receives
+    // them, so a candidate cannot read its held-out oracle before producing the diff.
+    apply_benchmark_test_patch(task, workspace, checkout_timeout).await?;
+
+    let provisioner = crate::provisioner::Provisioner::default();
+    let fail_to_pass_before = provisioner
+        .run_test_set(
+            task,
+            workspace,
+            crate::provisioner::TestSet::FailToPass,
+            oracle_timeout,
+        )
+        .await;
+    let pass_to_pass_before = provisioner
+        .run_test_set(
+            task,
+            workspace,
+            crate::provisioner::TestSet::PassToPass,
+            oracle_timeout,
+        )
+        .await;
+
+    apply_candidate_diff(candidate_diff, workspace, checkout_timeout).await?;
+    let fail_to_pass_after = provisioner
+        .run_test_set(
+            task,
+            workspace,
+            crate::provisioner::TestSet::FailToPass,
+            oracle_timeout,
+        )
+        .await;
+    let pass_to_pass_after = provisioner
+        .run_test_set(
+            task,
+            workspace,
+            crate::provisioner::TestSet::PassToPass,
+            oracle_timeout,
+        )
+        .await;
+
+    let resolved = fail_to_pass_before.status == OracleStatus::TestFailed
+        && pass_to_pass_before.status == OracleStatus::Passed
+        && fail_to_pass_after.status == OracleStatus::Passed
+        && pass_to_pass_after.status == OracleStatus::Passed;
+    Ok(crate::types::TwoSidedOracleReceipt {
+        fail_to_pass_before,
+        pass_to_pass_before,
+        fail_to_pass_after,
+        pass_to_pass_after,
+        resolved,
+    })
+}
+
+fn two_sided_status(receipt: &crate::types::TwoSidedOracleReceipt) -> OracleStatus {
+    let statuses = [
+        receipt.fail_to_pass_before.status,
+        receipt.pass_to_pass_before.status,
+        receipt.fail_to_pass_after.status,
+        receipt.pass_to_pass_after.status,
+    ];
+    if statuses.contains(&OracleStatus::InfrastructureFailed) {
+        OracleStatus::InfrastructureFailed
+    } else if statuses.contains(&OracleStatus::TimedOut) {
+        OracleStatus::TimedOut
+    } else if statuses.contains(&OracleStatus::NotRun) {
+        OracleStatus::NotRun
+    } else if receipt.resolved {
+        OracleStatus::Passed
+    } else {
+        OracleStatus::TestFailed
+    }
+}
+
+async fn apply_candidate_diff(
+    candidate_diff: &str,
+    workspace: &Path,
+    timeout: Duration,
+) -> Result<(), String> {
+    if candidate_diff.is_empty() {
+        return Ok(());
+    }
+    if candidate_diff.len() > MAX_CANDIDATE_DIFF_BYTES {
+        return Err(format!(
+            "candidate diff exceeds the {MAX_CANDIDATE_DIFF_BYTES}-byte bound"
+        ));
+    }
+    let patch_path = workspace.join(".core-eval-candidate.patch");
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&patch_path)
+        .map_err(|error| format!("create candidate patch: {error}"))?;
+    if let Err(error) = file
+        .write_all(candidate_diff.as_bytes())
+        .and_then(|()| file.sync_all())
+    {
+        drop(file);
+        let _ = std::fs::remove_file(&patch_path);
+        return Err(format!("write candidate patch: {error}"));
+    }
+    drop(file);
+    let output = run_git(
+        vec![
+            "apply".into(),
+            "--binary".into(),
+            "--whitespace=nowarn".into(),
+            "--".into(),
+            patch_path.as_os_str().to_owned(),
+        ],
+        Some(workspace),
+        timeout,
+    )
+    .await;
+    let cleanup = std::fs::remove_file(&patch_path);
+    let output = output?;
+    cleanup.map_err(|error| format!("remove candidate patch: {error}"))?;
+    if !output.success() {
+        return Err(format!(
+            "git apply of candidate diff failed (exit={}, timed_out={}): {}",
+            output.exit_code,
+            output.timed_out,
+            bounded_text(&output.stderr_lossy(), 2_048)
+        ));
+    }
+    Ok(())
+}
+
 async fn run_core(
     core: &Path,
     workspace: &Path,
@@ -401,12 +848,22 @@ async fn run_core(
         "--model".into(),
         options.model.clone().into(),
         "--allow-code".into(),
-        "--max-turns".into(),
-        options.max_turns.to_string().into(),
     ];
+    if options.max_turns != 0 {
+        args.push("--max-turns".into());
+        args.push(options.max_turns.to_string().into());
+    }
     if let Some(provider) = &options.provider {
         args.push("--provider".into());
         args.push(provider.into());
+    }
+    if let Some(bundle) = workspace
+        .parent()
+        .map(|run_root| run_root.join("policy.bundle"))
+        .filter(|path| path.is_file())
+    {
+        args.push("--bundle".into());
+        args.push(bundle.into_os_string());
     }
     if config.verify_gate {
         args.push("--verify".into());
@@ -425,7 +882,7 @@ async fn run_core(
     .map_err(|error| error.to_string())
 }
 
-async fn materialize_repository(
+pub(crate) async fn materialize_repository(
     task: &CorpusTask,
     destination: &Path,
     timeout: Duration,
@@ -486,6 +943,24 @@ async fn materialize_repository(
     if !head.success() || String::from_utf8_lossy(&head.stdout).trim() != task.commit {
         return Err("materialized checkout HEAD does not equal the pinned commit".into());
     }
+    let marker = base_commit_marker(destination)
+        .ok_or_else(|| "checkout cannot derive its external base marker".to_owned())?;
+    let mut marker_file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&marker)
+        .map_err(|error| format!("create external checkout base marker: {error}"))?;
+    marker_file
+        .write_all(task.commit.as_bytes())
+        .and_then(|()| marker_file.sync_all())
+        .map_err(|error| format!("write external checkout base marker: {error}"))?;
+    let mut permissions = marker_file
+        .metadata()
+        .map_err(|error| format!("inspect external checkout base marker: {error}"))?
+        .permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&marker, permissions)
+        .map_err(|error| format!("seal external checkout base marker: {error}"))?;
     Ok(())
 }
 
@@ -493,6 +968,15 @@ async fn run_git(
     args: Vec<OsString>,
     cwd: Option<&Path>,
     timeout: Duration,
+) -> Result<ProcessOutput, String> {
+    run_git_with_output_limit(args, cwd, timeout, 64 * 1024).await
+}
+
+async fn run_git_with_output_limit(
+    args: Vec<OsString>,
+    cwd: Option<&Path>,
+    timeout: Duration,
+    max_output_bytes: usize,
 ) -> Result<ProcessOutput, String> {
     run_process(&ProcessSpec {
         program: PathBuf::from("git"),
@@ -508,7 +992,7 @@ async fn run_git(
             ("GIT_LFS_SKIP_SMUDGE".into(), "1".into()),
         ],
         timeout,
-        max_output_bytes: 64 * 1024,
+        max_output_bytes,
     })
     .await
     .map_err(|error| error.to_string())
@@ -563,15 +1047,37 @@ async fn evaluate_command(workspace: &Path, command: &str, timeout: Duration) ->
 }
 
 async fn collect_candidate_diff(workspace: &Path, timeout: Duration) -> Option<String> {
-    let output = run_git(
+    let marker = base_commit_marker(workspace)?;
+    if std::fs::metadata(&marker).ok()?.len() > 64 {
+        return None;
+    }
+    let base_commit = std::fs::read_to_string(marker).ok()?;
+    let base_commit = base_commit.trim();
+    if base_commit.len() != 40 || !base_commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    // Intent-to-add makes untracked source files appear in `git diff` without staging their
+    // contents or mutating the caller's real repository (this checkout is cell-private).
+    let intent = run_git(
+        vec!["add".into(), "-N".into(), "--".into(), ".".into()],
+        Some(workspace),
+        timeout,
+    )
+    .await
+    .ok()?;
+    if !intent.success() {
+        return None;
+    }
+    let output = run_git_with_output_limit(
         vec![
             "diff".into(),
             "--binary".into(),
             "--no-ext-diff".into(),
-            "HEAD".into(),
+            base_commit.into(),
         ],
         Some(workspace),
         timeout,
+        MAX_CANDIDATE_DIFF_BYTES,
     )
     .await
     .ok()?;
@@ -579,6 +1085,12 @@ async fn collect_candidate_diff(workspace: &Path, timeout: Duration) -> Option<S
         return None;
     }
     String::from_utf8(output.stdout).ok()
+}
+
+fn base_commit_marker(workspace: &Path) -> Option<PathBuf> {
+    let parent = workspace.parent()?;
+    let name = workspace.file_name()?.to_str()?;
+    Some(parent.join(format!(".{name}.base-commit")))
 }
 
 fn timeout_cell(
@@ -743,6 +1255,13 @@ mod tests {
             prompt: "make status.txt contain good".into(),
             verify_command: "test \"$(cat status.txt)\" = good".into(),
             ground_truth_command: "test \"$(cat status.txt)\" = good".into(),
+            dockerhub_tag: None,
+            fail_to_pass: vec!["fixture::status".into()],
+            pass_to_pass: Vec::new(),
+            test_cmd: std::collections::BTreeMap::from([(
+                "legacy".into(),
+                "test \"$(cat status.txt)\" = good".into(),
+            )]),
             partition: Partition::HeldOut,
             provenance: Provenance {
                 source: "local-git-golden".into(),
@@ -778,6 +1297,40 @@ mod tests {
             .await
             .is_err()
         );
+        let _ = std::fs::remove_dir_all(repo);
+        let _ = std::fs::remove_dir_all(checkout);
+    }
+
+    #[tokio::test]
+    async fn candidate_diff_is_anchored_to_base_even_after_agent_commit() {
+        let (repo, url, commit) = fixture_repo();
+        let task = task(url, commit.clone());
+        let checkout = unique_dir("committed-candidate");
+        materialize_repository(&task, &checkout, Duration::from_secs(10))
+            .await
+            .unwrap();
+        std::fs::write(checkout.join("status.txt"), "good\n").unwrap();
+        git(&checkout, &["add", "status.txt"]);
+        git(
+            &checkout,
+            &[
+                "-c",
+                "user.name=eval",
+                "-c",
+                "user.email=eval@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "agent candidate",
+            ],
+        );
+        std::fs::write(checkout.join("new.txt"), "untracked\n").unwrap();
+        let diff = collect_candidate_diff(&checkout, Duration::from_secs(10))
+            .await
+            .expect("candidate diff");
+        assert!(diff.contains("-bad"));
+        assert!(diff.contains("+good"));
+        assert!(diff.contains("new.txt"));
         let _ = std::fs::remove_dir_all(repo);
         let _ = std::fs::remove_dir_all(checkout);
     }
@@ -900,9 +1453,12 @@ mod tests {
             dataset_digest: "sha256:fixture".into(),
             model: "provider/model-fixed".into(),
             provider: Some("provider".into()),
+            bundle_digest: None,
             purpose: EvaluationPurpose::Score,
             seeds: 8,
             minimum_seeds: 3,
+            workers: 1,
+            max_turns: Some(20),
             run_timeout_secs: 60,
             result_path: PathBuf::from("result.json"),
             comparison: compare(&aggregate, "verify_OFF", "verify_ON"),

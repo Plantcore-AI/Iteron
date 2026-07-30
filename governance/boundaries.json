@@ -1027,7 +1027,7 @@
         "build": []
       },
       "core-eval": {
-        "normal": ["core-sandbox", "core-verify"],
+        "normal": ["core-evolve", "core-sandbox", "core-verify"],
         "dev": [],
         "build": []
       },

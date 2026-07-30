@@ -42,6 +42,10 @@ fn write_valid_corpus(root: &TempRoot) -> PathBuf {
         prompt: "the checkout intentionally fails before Core is invoked".into(),
         verify_command: "true".into(),
         ground_truth_command: "true".into(),
+        dockerhub_tag: None,
+        fail_to_pass: vec!["legacy::true".into()],
+        pass_to_pass: Vec::new(),
+        test_cmd: std::collections::BTreeMap::from([("legacy".into(), "true".into())]),
         partition: Partition::HeldOut,
         provenance: Provenance {
             source: "cwd-discovery-integration-v1".into(),

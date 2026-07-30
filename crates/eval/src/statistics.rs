@@ -1,7 +1,10 @@
 //! Deterministic, bounded confidence intervals for binary evaluation outcomes.
 
+use sha2::{Digest, Sha256};
+
 /// The two-sided normal quantile for a 95% confidence interval.
 const Z_95: f64 = 1.959_963_984_540_054;
+pub(crate) const PAIRED_BOOTSTRAP_SAMPLES: usize = 10_000;
 
 /// Wilson score interval for a binomial proportion.
 ///
@@ -65,6 +68,62 @@ pub(crate) fn rate(successes: u64, trials: u64) -> f64 {
     }
 }
 
+/// Deterministic paired bootstrap for matched binary outcomes.
+///
+/// Each tuple is `(baseline, treatment)`. Resampling is over pairs, so instance-level covariance
+/// is preserved. The PRNG seed is derived from the sorted indicators rather than process entropy;
+/// identical inputs therefore produce bit-identical intervals on every worker count and run.
+pub(crate) fn paired_bootstrap_interval(pairs: &[(bool, bool)]) -> [f64; 2] {
+    if pairs.is_empty() {
+        return [-1.0, 1.0];
+    }
+
+    let mut encoded = pairs
+        .iter()
+        .map(|(baseline, treatment)| (u8::from(*baseline) << 1) | u8::from(*treatment))
+        .collect::<Vec<_>>();
+    encoded.sort_unstable();
+    let mut hasher = Sha256::new();
+    hasher.update((encoded.len() as u64).to_le_bytes());
+    hasher.update(&encoded);
+    let digest = hasher.finalize();
+    let mut state = u64::from_le_bytes(
+        digest[..8]
+            .try_into()
+            .expect("a SHA-256 digest always contains eight seed bytes"),
+    );
+    if state == 0 {
+        state = 0x9e37_79b9_7f4a_7c15;
+    }
+
+    let pair_deltas = encoded
+        .into_iter()
+        .map(|bits| i16::from(bits & 1) - i16::from((bits >> 1) & 1))
+        .collect::<Vec<_>>();
+    let mut samples = Vec::with_capacity(PAIRED_BOOTSTRAP_SAMPLES);
+    for _ in 0..PAIRED_BOOTSTRAP_SAMPLES {
+        let mut sum = 0_i64;
+        for _ in 0..pair_deltas.len() {
+            state = xorshift64_star(state);
+            let index = (state % pair_deltas.len() as u64) as usize;
+            sum += i64::from(pair_deltas[index]);
+        }
+        samples.push(sum as f64 / pair_deltas.len() as f64);
+    }
+    samples.sort_by(f64::total_cmp);
+    let last = samples.len() - 1;
+    let lower = last * 25 / 1_000;
+    let upper = last * 975 / 1_000;
+    [samples[lower], samples[upper]]
+}
+
+fn xorshift64_star(mut state: u64) -> u64 {
+    state ^= state >> 12;
+    state ^= state << 25;
+    state ^= state >> 27;
+    state.wrapping_mul(0x2545_f491_4f6c_dd1d)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +155,24 @@ mod tests {
         let first = difference_interval((7, 18), (10, 18));
         let second = difference_interval((7, 18), (10, 18));
         assert_eq!(first.map(f64::to_bits), second.map(f64::to_bits));
+    }
+
+    #[test]
+    fn paired_bootstrap_is_bit_reproducible_and_order_independent() {
+        let pairs = [
+            (false, true),
+            (true, true),
+            (true, false),
+            (false, true),
+            (false, false),
+            (true, true),
+        ];
+        let first = paired_bootstrap_interval(&pairs);
+        let second = paired_bootstrap_interval(&pairs);
+        let reversed = paired_bootstrap_interval(&pairs.into_iter().rev().collect::<Vec<_>>());
+        assert_eq!(first.map(f64::to_bits), second.map(f64::to_bits));
+        assert_eq!(first.map(f64::to_bits), reversed.map(f64::to_bits));
+        assert!(first[0] <= first[1]);
+        assert!(first.iter().all(|bound| (-1.0..=1.0).contains(bound)));
     }
 }

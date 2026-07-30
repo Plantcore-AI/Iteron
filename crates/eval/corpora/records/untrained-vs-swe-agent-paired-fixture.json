@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "report_type": "recorded_fixture_untrained_vs_swe_agent",
+  "corpus_version": "swe-bench-pro-os-ca10a60a5fcae51e6948ffe1485d4153d421e6c5-slice-v2",
+  "dataset_digest": "sha256:a97b67f804b06bc3e546fc714de6eabdce2d4f75b26144482bfc774c9ce05d7a",
+  "model": "fixture-frozen-model-m@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "provider": "recorded-fixture",
+  "comparison": {
+    "baseline": {
+      "name": "swe_agent_3ea751c",
+      "attempted": 4,
+      "completed": 4,
+      "resolved": 2,
+      "resolved_rate": 0.5,
+      "failed_runs": 0
+    },
+    "treatment": {
+      "name": "core_untrained",
+      "attempted": 4,
+      "completed": 4,
+      "resolved": 3,
+      "resolved_rate": 0.75,
+      "failed_runs": 0
+    },
+    "matched_pairs": 4,
+    "minimum_pairs": 3,
+    "resolved_rate_delta": 0.25,
+    "paired_ci95": [
+      0.0,
+      0.75
+    ],
+    "statistical_conclusion": {
+      "status": "not_significant"
+    },
+    "statistically_significant": false,
+    "cost_delta_usd": 0.0,
+    "cost_delta_reason": null
+  },
+  "kernel_tax": {
+    "label": "kernel_tax",
+    "status": "reserved",
+    "turns_delta": null,
+    "cost_delta_usd": null,
+    "latency_delta_ms": null,
+    "included_in_resolved_rate": false
+  }
+}
