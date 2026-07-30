@@ -255,7 +255,25 @@ exit 1
         repository = TOOLS.parent
         tools_lock = TOOLS / "tools-lock.json"
         policy = dependency_audit.load_policy(TOOLS / "audit-policy.json")
-        self.assertEqual(policy.ignored_advisories, ())
+        # An exception is allowed, but only as a recorded argument. Asserting the list is empty
+        # would force the next unsound advisory to be silenced somewhere less visible; asserting
+        # the contract keeps "we looked at this" attached to a reason and an issue.
+        raw = json.loads((TOOLS / "audit-policy.json").read_text(encoding="utf-8"))
+        for entry in raw["ignored_advisories"]:
+            self.assertRegex(entry["id"], r"^RUSTSEC-\d{4}-\d{4}$")
+            self.assertGreater(
+                len(entry["reason"]),
+                80,
+                f"{entry['id']} needs an argument, not a shrug",
+            )
+            self.assertRegex(
+                entry["tracking_issue"],
+                r"^https://github\.com/Plantcore-AI/core/issues/\d+$",
+            )
+        self.assertEqual(
+            tuple(entry["id"] for entry in raw["ignored_advisories"]),
+            policy.ignored_advisories,
+        )
         database = fetch_advisory_db.load_entry(tools_lock, policy.advisory_database)
         self.assertRegex(database["commit"], r"^[0-9a-f]{40}$")
         self.assertRegex(database["sha256"], r"^[0-9a-f]{64}$")

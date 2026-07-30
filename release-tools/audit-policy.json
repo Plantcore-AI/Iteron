@@ -2,5 +2,16 @@
   "schema_version": 1,
   "cargo_audit_version": "0.22.2",
   "advisory_database": "rustsec",
-  "ignored_advisories": []
+  "ignored_advisories": [
+    {
+      "id": "RUSTSEC-2026-0002",
+      "reason": "unsound: lru::IterMut violates Stacked Borrows. Reached only through ratatui 0.29, which uses LruCache solely as its layout-split cache (src/layout/layout.rs) via cap, get, put and resize. No iter_mut call on that cache exists anywhere in the crate, so the affected path is unreachable from this workspace. ratatui 0.30 drops lru 0.12 entirely but changes the buffer-diff behaviour our OSC 8 hyperlink workaround depends on, which silently drops rendered text; see the tracking issue.",
+      "tracking_issue": "https://github.com/Plantcore-AI/core/issues/56"
+    },
+    {
+      "id": "RUSTSEC-2024-0436",
+      "reason": "unmaintained: paste. A proc-macro used at build time by ratatui 0.29; it contributes no runtime code and no network or filesystem surface. ratatui 0.30 drops it, blocked on the same hyperlink regression as the entry above.",
+      "tracking_issue": "https://github.com/Plantcore-AI/core/issues/56"
+    }
+  ]
 }
