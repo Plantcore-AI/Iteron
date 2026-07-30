@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
+#
+# Dependency audit gate.
+#
+# STANDING POLICY, decided 2026-07-30 for issue #56.
+#
+# A vulnerability fails. So does an advisory cargo-audit classifies as informational — `unsound`
+# and `unmaintained` are denied here rather than printed. The default is the opposite, and that
+# default is how RUSTSEC-2026-0002 was printed by every run for six months without being read: a
+# gate that reports a potential-UB advisory and then reports success trains a reader to skip its
+# output, which costs more than the advisory it surfaced.
+#
+# The escape hatch is a written one. An advisory stays out of the way only by an entry in
+# `release-tools/audit-policy.json` carrying an id, a reason, and a tracking issue, so "we looked
+# at this" is a recorded decision with an argument attached rather than a silent exit code. Every
+# current exception argues reachability, not inconvenience.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)

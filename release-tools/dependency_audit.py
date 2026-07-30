@@ -206,6 +206,15 @@ def run_audit(
             str(database),
             "--no-fetch",
             "--no-yanked",
+            # An advisory cargo-audit classifies as informational still exits 0 by default. That is
+            # how RUSTSEC-2026-0002 (unsound: `lru::IterMut` invalidates an internal pointer) was
+            # printed by every run since 2026-01-07 without anyone seeing it. A gate that reports a
+            # potential-UB advisory and then reports success teaches a reader to skip its output, so
+            # this denies both informational classes and requires a written exception instead.
+            "--deny",
+            "unsound",
+            "--deny",
+            "unmaintained",
             "--file",
             str(lockfile),
         ]
