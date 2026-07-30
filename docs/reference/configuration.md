@@ -100,8 +100,37 @@ Each user-defined provider requires:
 - `api_root`: HTTPS absolute root, except exact loopback HTTP;
 - `key_env`: uppercase environment-variable name.
 
-Optional fields are `display_name`, `error_profile`, `enabled`, `catalog`, and a
-bounded `models` manifest. See [configure a provider](../getting-started/providers.md).
+Optional fields are `display_name`, `error_profile`, `enabled`, `catalog`, a
+bounded `models` manifest, and a bounded `model_capabilities` manifest. See
+[configure a provider](../getting-started/providers.md).
+
+### `model_capabilities`
+
+A map from model id to facts no account-scoped API reports. At most 256 entries; each key follows
+the same bound as a `models` id. One field is declarable:
+
+- `context_window_tokens`: positive integer, at most 1000000000.
+
+Core cannot discover this. A `GET models` response is not capability evidence, and the
+[static provider metadata](provider-metadata.md) document is a bounded set of official vendor
+snapshots, so it can only speak for the vendors it ships. Declaring the window is what turns on
+two behaviours that are otherwise silently unavailable: window-relative compaction, which triggers
+at a share of the window instead of the absolute `compaction_trigger_tokens`, and the pre-flight
+context-admission check, which rejects an over-large request before it is paid for.
+
+An official vendor snapshot outranks a declaration for the same route. A declared value is
+recorded with operator provenance rather than a vendor version, so it changes the route's
+capability digest: a signed rate card bound to the previous digest stops matching, by design.
+
+Prefer this over a 1M-sized `compaction_trigger_tokens`. That knob is global and fixed — setting
+it replaces the window-relative rule for *every* provider, so a value sized for one large-window
+model stops compaction from triggering for a smaller-window one and turns its long sessions into
+a hard context-window rejection.
+
+`max_output_tokens`, `tool_calling` and `semantic_effort` are deliberately not declarable. The
+request path clamps the output reservation to 8192 regardless of any declaration, and the other
+two gate a request feature rather than an arithmetic bound: an operator declaration is not an
+entitlement.
 
 ## Signed rate cards
 

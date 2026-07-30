@@ -61,7 +61,7 @@ fn artifacts(events: &[Event]) -> Vec<ArtifactRef> {
 fn a_declared_artifact_survives_replay() {
     let runs = runs_dir("survives");
     let run = RunId("artifact-run".into());
-    let declared = vec![
+    let declared = [
         artifact(1, "reports/summary.md"),
         artifact(2, "reports/table.csv"),
     ];

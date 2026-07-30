@@ -16,7 +16,7 @@ use core_provider::{
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -35,6 +35,12 @@ const CATALOG_CACHE_FILE: &str = "catalogs-v3.json";
 const CATALOG_CACHE_SCOPE_KEY_FILE: &str = "catalog-scope-v1.key";
 const CATALOG_CACHE_SCOPE_KEY_BYTES: usize = 32;
 const CATALOG_CACHE_SCOPE_PREFIX: &str = "hmac-sha256:";
+/// Provenance stamped on capabilities that came from the operator config rather than from a
+/// captured vendor snapshot. It participates in the capability digest, so a route that starts
+/// trusting a declared number is recorded as a different route.
+const OPERATOR_DECLARED_CAPABILITY_VERSION: &str = "operator-declared-capability-v1";
+const OPERATOR_DECLARED_CAPABILITY_SOURCE: &str =
+    "operator config (providers[].model_capabilities)";
 const CATALOG_CACHE_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 const CATALOG_CACHE_FUTURE_SKEW_SECS: u64 = 24 * 60 * 60;
 const MAX_CATALOG_CACHE_BYTES: usize = 16 * 1024 * 1024;
@@ -108,6 +114,9 @@ pub(crate) struct ProviderEntry {
     /// True only for cached display evidence that must not authorize a picker selection.
     pub catalog_stale: bool,
     catalog_provenance: CatalogProvenance,
+    /// Per-model facts the operator declared for this instance, keyed by model id. Empty for
+    /// built-ins, whose facts come from the static metadata document instead.
+    declared_capabilities: BTreeMap<String, crate::config::ProviderModelCapabilities>,
 }
 
 impl ProviderEntry {
@@ -1572,6 +1581,23 @@ impl ProviderDirectory {
                 source: Some(capabilities.source.clone()),
             };
         }
+        // An official vendor snapshot outranks a hand-written number, so this is reached only
+        // when the static document cannot speak for this route. The declaration is marked as
+        // operator provenance rather than borrowing a version/source that would read like
+        // captured vendor evidence, which keeps the capability digest honest about where the
+        // number came from.
+        if let Some(declared) = entry.declared_capabilities.get(&selection.model_id)
+            && declared.context_window_tokens.is_some()
+        {
+            return ModelCapabilities {
+                context_window_tokens: declared.context_window_tokens,
+                max_output_tokens: None,
+                tool_calling: None,
+                semantic_effort: None,
+                version: Some(OPERATOR_DECLARED_CAPABILITY_VERSION.into()),
+                source: Some(OPERATOR_DECLARED_CAPABILITY_SOURCE.into()),
+            };
+        }
         ModelCapabilities::unknown()
     }
 
@@ -1885,6 +1911,7 @@ fn builtin_entries_with_metadata(
                 catalog_fallback_explicit: false,
                 catalog_stale: false,
                 catalog_provenance,
+                declared_capabilities: BTreeMap::new(),
             })
         })
         .collect::<Result<Vec<_>, core_provider::ProviderError>>()
@@ -1968,6 +1995,7 @@ fn entry_from_config_with_metadata(
         catalog_fallback_explicit: false,
         catalog_stale: false,
         catalog_provenance,
+        declared_capabilities: config.model_capabilities.clone(),
     })
 }
 
@@ -2204,6 +2232,7 @@ mod tests {
             catalog_error: None,
             catalog_fallback_explicit: false,
             catalog_stale: false,
+            declared_capabilities: BTreeMap::new(),
             catalog_provenance: CatalogProvenance::Unavailable,
         }
     }
@@ -2236,6 +2265,7 @@ mod tests {
             catalog_error: None,
             catalog_fallback_explicit: false,
             catalog_stale: false,
+            declared_capabilities: BTreeMap::new(),
             catalog_provenance: CatalogProvenance::StaticOfficial {
                 version: metadata.glm_catalog_version().into(),
                 source: metadata.glm_catalog_source().into(),
@@ -2307,6 +2337,7 @@ mod tests {
             catalog_error,
             catalog_fallback_explicit: false,
             catalog_stale: false,
+            declared_capabilities: BTreeMap::new(),
             catalog_provenance: CatalogProvenance::Unavailable,
         }
     }
@@ -3309,6 +3340,142 @@ mod tests {
         }
     }
 
+    fn declaring_config(
+        id: &str,
+        api_root: &str,
+        error_profile: Option<&str>,
+        capabilities: BTreeMap<String, crate::config::ProviderModelCapabilities>,
+    ) -> ProviderConfig {
+        ProviderConfig {
+            id: id.into(),
+            display_name: None,
+            adapter: "openai_chat".into(),
+            error_profile: error_profile.map(Into::into),
+            api_root: api_root.into(),
+            key_env: "GATEWAY_KEY".into(),
+            enabled: true,
+            // Discovery off keeps this offline and makes the declared manifest the inventory.
+            catalog: false,
+            models: vec!["k3".into(), "k3-256k".into()],
+            model_capabilities: capabilities,
+        }
+    }
+
+    fn declared_window(
+        model_id: &str,
+        window: u64,
+    ) -> BTreeMap<String, crate::config::ProviderModelCapabilities> {
+        BTreeMap::from([(
+            model_id.to_owned(),
+            crate::config::ProviderModelCapabilities {
+                context_window_tokens: Some(window),
+            },
+        )])
+    }
+
+    #[tokio::test]
+    async fn operator_declared_window_is_reported_with_operator_provenance() {
+        let config = declaring_config(
+            "kimi",
+            "https://gateway.example/v1",
+            None,
+            declared_window("k3", 1_048_576),
+        );
+        let directory =
+            ProviderDirectory::discover_entries(vec![entry_from_config(&config).unwrap()], None)
+                .await
+                .unwrap();
+
+        let declared = directory.selection_capabilities(&ModelSelection {
+            provider_id: "kimi".into(),
+            model_id: "k3".into(),
+        });
+        assert_eq!(declared.context_window_tokens, Some(1_048_576));
+        // Only the arithmetic bound is declarable. A hand-written number must not be able to
+        // switch on a request feature or raise the output reservation.
+        assert_eq!(declared.max_output_tokens, None);
+        assert_eq!(declared.tool_calling, None);
+        assert_eq!(declared.semantic_effort, None);
+        // The provenance says "operator wrote this", not a version/source that would read like
+        // captured vendor evidence.
+        assert_eq!(
+            declared.version.as_deref(),
+            Some(OPERATOR_DECLARED_CAPABILITY_VERSION)
+        );
+        assert_eq!(
+            declared.source.as_deref(),
+            Some(OPERATOR_DECLARED_CAPABILITY_SOURCE)
+        );
+
+        // A declaration is per model id; a sibling in the same manifest inherits nothing.
+        assert_eq!(
+            directory.selection_capabilities(&ModelSelection {
+                provider_id: "kimi".into(),
+                model_id: "k3-256k".into(),
+            }),
+            ModelCapabilities::unknown(),
+            "an undeclared sibling never inherits the declared window"
+        );
+
+        // Trusting a declared number is a different route than not trusting one, so the capability
+        // digest must move. A rate card bound to the undeclared digest stops matching, by design.
+        let undeclared =
+            declaring_config("kimi", "https://gateway.example/v1", None, BTreeMap::new());
+        let plain = ProviderDirectory::discover_entries(
+            vec![entry_from_config(&undeclared).unwrap()],
+            None,
+        )
+        .await
+        .unwrap();
+        let selection = ModelSelection {
+            provider_id: "kimi".into(),
+            model_id: "k3".into(),
+        };
+        assert_eq!(
+            plain.selection_capabilities(&selection),
+            ModelCapabilities::unknown()
+        );
+        assert_ne!(
+            directory.selection_digests(&selection).1,
+            plain.selection_digests(&selection).1,
+            "a declared window must change the capability digest"
+        );
+    }
+
+    #[tokio::test]
+    async fn official_snapshot_outranks_an_operator_declaration_on_the_same_route() {
+        let glm_root = StaticProviderMetadata::embedded().glm_api_root().to_owned();
+        let mut config = declaring_config(
+            "glm-lookalike",
+            &glm_root,
+            Some("glm"),
+            declared_window("glm-5.2", 12_345),
+        );
+        config.models = vec!["glm-5.2".into()];
+        let directory =
+            ProviderDirectory::discover_entries(vec![entry_from_config(&config).unwrap()], None)
+                .await
+                .unwrap();
+
+        let capabilities = directory.selection_capabilities(&ModelSelection {
+            provider_id: "glm-lookalike".into(),
+            model_id: "glm-5.2".into(),
+        });
+        assert_eq!(
+            capabilities.context_window_tokens,
+            Some(1_000_000),
+            "the captured vendor snapshot wins over a hand-written number"
+        );
+        assert_eq!(capabilities.max_output_tokens, Some(128_000));
+        assert!(
+            capabilities
+                .version
+                .as_deref()
+                .is_some_and(|version| version.starts_with("glm-5.2-model-page@")),
+            "provenance must stay the vendor snapshot, not the declaration"
+        );
+    }
+
     #[test]
     fn operator_manifest_becomes_a_sorted_selectable_manual_family() {
         let config = ProviderConfig {
@@ -3321,6 +3488,7 @@ mod tests {
             enabled: true,
             catalog: false,
             models: vec!["vendor/model-b".into(), "vendor/model-a".into()],
+            model_capabilities: BTreeMap::new(),
         };
         let entry = entry_from_config(&config).unwrap();
         let catalog = entry.catalog.as_ref().unwrap();
@@ -3381,6 +3549,7 @@ mod tests {
             enabled: true,
             catalog: false,
             models: Vec::new(),
+            model_capabilities: BTreeMap::new(),
         };
         assert_eq!(
             entry_from_config(&config).unwrap().instance.error_profile(),
