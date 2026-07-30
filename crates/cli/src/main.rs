@@ -20,6 +20,11 @@ mod render;
 // The published client-event vocabulary. Nothing in this binary consumes it yet: it is the
 // payload contract #44 will put on a socket, landed first so the transport does not get to
 // decide which of the four documented losses stands. Its round trips are covered by tests.
+// The composition root's evolve -> agents bundle projection. Nothing in this binary boots
+// against it yet; it is the seam #28 declares, with its two-boot behavioural diff covered
+// by tests.
+#[allow(dead_code)]
+mod bundle_adapter;
 #[allow(dead_code)]
 mod client_event;
 mod runtime;
@@ -594,6 +599,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             enabled: true,
             catalog: true,
             models: Vec::new(),
+            model_capabilities: std::collections::BTreeMap::new(),
         };
         let validation = FileConfig {
             providers: Some(vec![temporary.clone()]),

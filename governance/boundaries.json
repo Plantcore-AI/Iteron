@@ -415,6 +415,8 @@
       "reviewers": [],
       "paths": [
         { "kind": "file", "path": "crates/agents/src/decompose.rs" },
+        { "kind": "file", "path": "crates/agents/src/policy.rs" },
+        { "kind": "file", "path": "crates/agents/src/policy_tests.rs" },
         { "kind": "file", "path": "crates/agents/src/reduce.rs" },
         { "kind": "file", "path": "crates/agents/src/stage.rs" },
         { "kind": "tree", "path": "crates/agents/tests" }
@@ -638,6 +640,8 @@
       "reviewers": [],
       "paths": [
         { "kind": "file", "path": "crates/cli/src/output.rs" },
+        { "kind": "file", "path": "crates/cli/src/bundle_adapter.rs" },
+        { "kind": "file", "path": "crates/cli/src/bundle_adapter_tests.rs" },
         { "kind": "file", "path": "crates/cli/src/client_event.rs" },
         { "kind": "file", "path": "crates/cli/src/client_event_tests.rs" },
         { "kind": "file", "path": "crates/cli/src/session_view.rs" },
@@ -1010,6 +1014,7 @@
         "normal": [
           "core-agents",
           "core-ctx",
+          "core-evolve",
           "core-kernel",
           "core-mcp",
           "core-obs",
