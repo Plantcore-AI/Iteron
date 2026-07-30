@@ -565,6 +565,8 @@ dependencies = [
  "core-protocol",
  "core-sandbox",
  "hex",
+ "serde",
+ "serde_json",
  "sha2",
  "tokio",
 ]
