@@ -20,6 +20,7 @@ core-workflow = { path = "../workflow" }
 core-kernel = { path = "../kernel" }
 core-ctx = { path = "../ctx" }
 core-agents = { path = "../agents" }
+core-evolve = { path = "../evolve" }
 core-mcp = { path = "../mcp" }
 core-verify = { path = "../verify" }
 core-sandbox = { path = "../sandbox" }

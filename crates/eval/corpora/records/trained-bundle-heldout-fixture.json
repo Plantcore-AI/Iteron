@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "report_type": "trained_bundle_held_out",
+  "bundle": {
+    "bundle_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "training_dataset_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "producer_id": "fixture-producer-search",
+    "method": "search",
+    "artifact_kind": "rules"
+  },
+  "trained_vs_untrained": {
+    "schema_version": 1,
+    "report_type": "trained_vs_untrained",
+    "corpus_version": "swe-bench-pro-os-ca10a60a5fcae51e6948ffe1485d4153d421e6c5-slice-v2",
+    "dataset_digest": "sha256:a97b67f804b06bc3e546fc714de6eabdce2d4f75b26144482bfc774c9ce05d7a",
+    "model": "fixture-frozen-model-m@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "provider": "recorded-fixture",
+    "comparison": {
+      "baseline": {
+        "name": "core_untrained",
+        "attempted": 4,
+        "completed": 4,
+        "resolved": 0,
+        "resolved_rate": 0.0,
+        "failed_runs": 0
+      },
+      "treatment": {
+        "name": "core_trained",
+        "attempted": 4,
+        "completed": 4,
+        "resolved": 3,
+        "resolved_rate": 0.75,
+        "failed_runs": 0
+      },
+      "matched_pairs": 4,
+      "minimum_pairs": 3,
+      "resolved_rate_delta": 0.75,
+      "paired_ci95": [
+        0.25,
+        1.0
+      ],
+      "statistical_conclusion": {
+        "status": "significant_increase"
+      },
+      "statistically_significant": true,
+      "cost_delta_usd": 0.0,
+      "cost_delta_reason": null
+    },
+    "kernel_tax": {
+      "label": "kernel_tax",
+      "status": "measured",
+      "turns_delta": 1.0,
+      "cost_delta_usd": 0.25,
+      "latency_delta_ms": 5.0,
+      "included_in_resolved_rate": false
+    }
+  },
+  "cross_model_transfer": {
+    "bundle_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "original_model": "fixture-frozen-model-m@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "rebound_model": "fixture-frozen-model-m2@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "original_held_out_gain": 0.75,
+    "retained_held_out_gain": 0.5,
+    "portable_fraction": 0.6666666666666666,
+    "applied_to_promotion_threshold": false
+  }
+}

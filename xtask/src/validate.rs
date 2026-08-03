@@ -15,6 +15,7 @@ pub fn validate(root: &Path, registry: &Registry) -> Result<Report> {
     validate_protocol_boundary(root, registry)?;
     let cli_result_authority = crate::schema_compat::validate_current(root)?;
     crate::conformance::validate(root)?;
+    crate::spec_shapes::validate(root)?;
     crate::client_conformance::validate(root, &cli_result_authority)?;
     let files = public_files(root)?;
     validate_path_coverage(registry, &files)?;

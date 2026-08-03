@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "record_type": "live_gold_patch_validation",
+  "corpus_version": "swe-bench-pro-os-ca10a60a5fcae51e6948ffe1485d4153d421e6c5-slice-v2",
+  "dataset_digest": "sha256:a97b67f804b06bc3e546fc714de6eabdce2d4f75b26144482bfc774c9ce05d7a",
+  "source_evaluation": {
+    "kind": "swe-bench-pro-os-gold-validation",
+    "source": "https://raw.githubusercontent.com/scaleapi/SWE-bench_Pro-os/ca10a60a5fcae51e6948ffe1485d4153d421e6c5/helper_code/sweap_eval_full_v2.jsonl",
+    "source_revision": "ca10a60a5fcae51e6948ffe1485d4153d421e6c5",
+    "recorded_at": "2026-07-30",
+    "executor": "dgx-spark",
+    "target_arch": "aarch64",
+    "gold_patch_sha256": "sha256:72b6b9bda1d9bd55ea88f1ee31f03f798481e975946cffc7e9f6105e53c3b87a",
+    "note": "Live gold-patch oracle run; the upstream solution patch is deliberately not stored in the corpus."
+  },
+  "cells": [
+    {
+      "task": "instance_ansible__ansible-be59caa59bf47ca78a4760eb7ff38568372a8260-v1055803c3a812189a1133297f7f5468579283f86",
+      "partition": "held_out",
+      "benchmark": {
+        "name": "SWE-bench Pro OS",
+        "instance_id": "instance_ansible__ansible-be59caa59bf47ca78a4760eb7ff38568372a8260-v1055803c3a812189a1133297f7f5468579283f86",
+        "dataset_revision": "ca10a60a5fcae51e6948ffe1485d4153d421e6c5",
+        "environment_setup_commit": "ca10a60a5fcae51e6948ffe1485d4153d421e6c5",
+        "environment_image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-be59caa59bf47ca78a4760eb7ff38568372a8260-v1055803c3a812189a1133297f7f5468579283f86",
+        "test_patch_sha256": "sha256:8020721943d4bf8495dca4555f47d2957ed4dd83c88588d807745562ed405850"
+      },
+      "run_status": "completed",
+      "resolved": true,
+      "evidence": {
+        "two_sided_oracle": {
+          "fail_to_pass_before": {
+            "test_set": "fail_to_pass",
+            "status": "test_failed",
+            "commands": [
+              {
+                "language": "python",
+                "test_set": "fail_to_pass",
+                "test_ids": [
+                  "test/units/modules/test_iptables.py::TestIptables::test_match_set"
+                ],
+                "backend": "docker",
+                "image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-be59caa59bf47ca78a4760eb7ff38568372a8260-v1055803c3a812189a1133297f7f5468579283f86",
+                "platform": "linux/amd64",
+                "status": "test_failed",
+                "exit_code": 1,
+                "timed_out": false,
+                "egress_disabled": true,
+                "detail": "============================= test session starts ==============================\nplatform linux -- Python 3.9.23, pytest-6.2.1, py-1.10.0, pluggy-0.13.1\nrootdir: /app\nplugins: mock-3.5.1, rerunfailures-9.1.1, xdist-2.2.0, cov-2.10.1, forked-1.3.0\ncollected 1 item\n\ntest/units/modules/test_iptables.py R                                    [100%]R [100%]R [100%]F [100%]\n\n=================================== FAILURES ===================================\n_________________________ TestIptables.test_match_set __________________________\ntest/units/modules/test_iptables.py:975: in test_match_set\n    iptables.main()\nlib/ansible/modules/iptables.py:679: in main\n    module = AnsibleModule(\nlib/ansible/module_utils/basic.py:736: in __init__\n    self._check_arguments()\nlib/ansible/module_utils/basic.py:1573: in _check_arguments\n    self.fail_json(msg=msg)\ntest/units/modules/utils.py:38: in fail_json\n    raise AnsibleFailJson(kwargs)\nE   units.modules.utils.AnsibleFailJson: {'msg': 'Unsupported parameters for (basic.py) module: match_set, match_set_flags Supported parameters include: action, chain, comment, ctstate, destination, destination_port, destination_ports, dst_range, flush, fragment, gateway, gid_owner, goto, icmp_type, in_interface, ip_version, jump, limit, limit_burst, log_level, log_prefix, match, out_interface, policy, protocol, reject_with, rule_num, set_counters, set_dscp_mark, set_dscp_mark_class, source, source_port, src_range, state, syn, table, tcp_flags, to_destination, to_ports, to_source, uid_owner, wait', 'failed': True}\n=========================== short test summary info ============================\nFAILED test/units/modules/test_iptables.py::TestIptables::test_match_set - un...\n========================== 1 failed, 3 rerun in <elapsed>s ==========================\n\n"
+              }
+            ]
+          },
+          "pass_to_pass_before": {
+            "test_set": "pass_to_pass",
+            "status": "passed",
+            "commands": [
+              {
+                "language": "python",
+                "test_set": "pass_to_pass",
+                "test_ids": [
+                  "test/units/modules/test_iptables.py::TestIptables::test_jump_tee_gateway",
+                  "test/units/modules/test_iptables.py::TestIptables::test_comment_position_at_end",
+                  "test/units/modules/test_iptables.py::TestIptables::test_insert_rule_with_wait",
+                  "test/units/modules/test_iptables.py::TestIptables::test_append_rule",
+                  "test/units/modules/test_iptables.py::TestIptables::test_iprange",
+                  "test/units/modules/test_iptables.py::TestIptables::test_policy_table",
+                  "test/units/modules/test_iptables.py::TestIptables::test_tcp_flags",
+                  "test/units/modules/test_iptables.py::TestIptables::test_remove_rule",
+                  "test/units/modules/test_iptables.py::TestIptables::test_policy_table_changed_false",
+                  "test/units/modules/test_iptables.py::TestIptables::test_flush_table_check_true",
+                  "test/units/modules/test_iptables.py::TestIptables::test_jump_tee_gateway_negative",
+                  "test/units/modules/test_iptables.py::TestIptables::test_insert_rule",
+                  "test/units/modules/test_iptables.py::TestIptables::test_append_rule_check_mode",
+                  "test/units/modules/test_iptables.py::TestIptables::test_remove_rule_check_mode",
+                  "test/units/modules/test_iptables.py::TestIptables::test_flush_table_without_chain",
+                  "test/units/modules/test_iptables.py::TestIptables::test_insert_jump_reject_with_reject",
+                  "test/units/modules/test_iptables.py::TestIptables::test_destination_ports",
+                  "test/units/modules/test_iptables.py::TestIptables::test_insert_with_reject",
+                  "test/units/modules/test_iptables.py::TestIptables::test_without_required_parameters",
+                  "test/units/modules/test_iptables.py::TestIptables::test_policy_table_no_change",
+                  "test/units/modules/test_iptables.py::TestIptables::test_insert_rule_change_false",
+                  "test/units/modules/test_iptables.py::TestIptables::test_log_level"
+                ],
+                "backend": "docker",
+                "image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-be59caa59bf47ca78a4760eb7ff38568372a8260-v1055803c3a812189a1133297f7f5468579283f86",
+                "platform": "linux/amd64",
+                "status": "passed",
+                "exit_code": 0,
+                "timed_out": false,
+                "egress_disabled": true,
+                "detail": "============================= test session starts ==============================\nplatform linux -- Python 3.9.23, pytest-6.2.1, py-1.10.0, pluggy-0.13.1\nrootdir: /app\nplugins: mock-3.5.1, rerunfailures-9.1.1, xdist-2.2.0, cov-2.10.1, forked-1.3.0\ncollected 22 items\n\ntest/units/modules/test_iptables.py ......................               [100%]\n\n============================== 22 passed in <elapsed>s ==============================\n\n"
+              }
+            ]
+          },
+          "fail_to_pass_after": {
+            "test_set": "fail_to_pass",
+            "status": "passed",
+            "commands": [
+              {
+                "language": "python",
+                "test_set": "fail_to_pass",
+                "test_ids": [
+                  "test/units/modules/test_iptables.py::TestIptables::test_match_set"
+                ],
+                "backend": "docker",
+                "image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-be59caa59bf47ca78a4760eb7ff38568372a8260-v1055803c3a812189a1133297f7f5468579283f86",
+                "platform": "linux/amd64",
+                "status": "passed",
+                "exit_code": 0,
+                "timed_out": false,
+                "egress_disabled": true,
+                "detail": "============================= test session starts ==============================\nplatform linux -- Python 3.9.23, pytest-6.2.1, py-1.10.0, pluggy-0.13.1\nrootdir: /app\nplugins: mock-3.5.1, rerunfailures-9.1.1, xdist-2.2.0, cov-2.10.1, forked-1.3.0\ncollected 1 item\n\ntest/units/modules/test_iptables.py .                                    [100%]\n\n============================== 1 passed in <elapsed>s ===============================\n\n"
+              }
+            ]
+          },
+          "pass_to_pass_after": {
+            "test_set": "pass_to_pass",
+            "status": "passed",
+            "commands": [
+              {
+                "language": "python",
+                "test_set": "pass_to_pass",
+                "test_ids": [
+                  "test/units/modules/test_iptables.py::TestIptables::test_jump_tee_gateway",
+                  "test/units/modules/test_iptables.py::TestIptables::test_comment_position_at_end",
+                  "test/units/modules/test_iptables.py::TestIptables::test_insert_rule_with_wait",
+                  "test/units/modules/test_iptables.py::TestIptables::test_append_rule",
+                  "test/units/modules/test_iptables.py::TestIptables::test_iprange",
+                  "test/units/modules/test_iptables.py::TestIptables::test_policy_table",
+                  "test/units/modules/test_iptables.py::TestIptables::test_tcp_flags",
+                  "test/units/modules/test_iptables.py::TestIptables::test_remove_rule",
+                  "test/units/modules/test_iptables.py::TestIptables::test_policy_table_changed_false",
+                  "test/units/modules/test_iptables.py::TestIptables::test_flush_table_check_true",
+                  "test/units/modules/test_iptables.py::TestIptables::test_jump_tee_gateway_negative",
+                  "test/units/modules/test_iptables.py::TestIptables::test_insert_rule",
+                  "test/units/modules/test_iptables.py::TestIptables::test_append_rule_check_mode",
+                  "test/units/modules/test_iptables.py::TestIptables::test_remove_rule_check_mode",
+                  "test/units/modules/test_iptables.py::TestIptables::test_flush_table_without_chain",
+                  "test/units/modules/test_iptables.py::TestIptables::test_insert_jump_reject_with_reject",
+                  "test/units/modules/test_iptables.py::TestIptables::test_destination_ports",
+                  "test/units/modules/test_iptables.py::TestIptables::test_insert_with_reject",
+                  "test/units/modules/test_iptables.py::TestIptables::test_without_required_parameters",
+                  "test/units/modules/test_iptables.py::TestIptables::test_policy_table_no_change",
+                  "test/units/modules/test_iptables.py::TestIptables::test_insert_rule_change_false",
+                  "test/units/modules/test_iptables.py::TestIptables::test_log_level"
+                ],
+                "backend": "docker",
+                "image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-be59caa59bf47ca78a4760eb7ff38568372a8260-v1055803c3a812189a1133297f7f5468579283f86",
+                "platform": "linux/amd64",
+                "status": "passed",
+                "exit_code": 0,
+                "timed_out": false,
+                "egress_disabled": true,
+                "detail": "============================= test session starts ==============================\nplatform linux -- Python 3.9.23, pytest-6.2.1, py-1.10.0, pluggy-0.13.1\nrootdir: /app\nplugins: mock-3.5.1, rerunfailures-9.1.1, xdist-2.2.0, cov-2.10.1, forked-1.3.0\ncollected 22 items\n\ntest/units/modules/test_iptables.py ......................               [100%]\n\n============================== 22 passed in <elapsed>s ==============================\n\n"
+              }
+            ]
+          },
+          "resolved": true
+        }
+      }
+    }
+  ]
+}

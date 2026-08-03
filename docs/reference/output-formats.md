@@ -62,6 +62,44 @@ never carries image bytes, a filename, or a path. Historical v4 event fixtures
 and their terminal result remain unchanged; consumers should skip this v5 tag
 when they do not need attachment metadata.
 
+## Run-declared artifacts
+
+A run can declare a product it made: a report, a table, a diff. Before this
+existed the only way to learn that a run had produced something was to parse the
+assistant's prose, so every consumer invented its own convention and none of
+them could be verified.
+
+The declaration is a handle, never inline content, because the evolution
+registry has to be able to verify what it holds. The handle carries everything a
+consumer needs to store, list and reopen the product later:
+
+| what | where it comes from |
+|------|---------------------|
+| the ref and its content address | `artifact.hash` |
+| its kind | `artifact.schema` |
+| its producing turn | the enclosing event's `turn` |
+| the tool or effect that made it | `artifact.producer`, `artifact.provenance.effect_id` |
+| where it lives | `artifact.locator` |
+
+Two rules the producer path enforces rather than documents.
+
+**The content lands before the event does.** Admission takes a durability
+witness and refuses without one, so a handle never names content that is not yet
+readable. An event that preceded its write would hand a consumer a handle to
+nothing.
+
+**Exceeding the per-run ceiling is counted, never silently dropped.** A run may
+declare at most 256 artifacts; beyond that a declaration is refused *and*
+tallied, because a product stream that quietly stops is indistinguishable from a
+run that stopped producing. A duplicate content address is refused the same way,
+so a product gets exactly one event.
+
+On the durable record this is `artifact_produced`, appended under abi.md
+§4.3(b)2: every byte already on disk decodes unchanged, so `PROTOCOL_VERSION`
+does not bump for it. The content address is preserved through redaction —
+masking it would make the product unfindable — while the locator, being a path,
+is scrubbed.
+
 ## Stdout and stderr
 
 For machine formats, stdout remains JSON or JSONL; diagnostics are written to

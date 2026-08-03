@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
+core-evolve = { path = "../evolve" }
 core-sandbox = { path = "../sandbox" }
 core-verify = { path = "../verify" }
 hex = { workspace = true }

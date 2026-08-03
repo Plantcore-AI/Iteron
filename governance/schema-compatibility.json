@@ -1151,6 +1151,99 @@
       "compatibility_shims": []
     },
     {
+      "id": "record.event-kind.artifact_produced",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "artifact_produced"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "artifact",
+          "introduced_release": 1
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.artifact-ref",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-artifact-ref-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "hash",
+          "introduced_release": 1
+        },
+        {
+          "name": "locator",
+          "introduced_release": 1
+        },
+        {
+          "name": "permissions",
+          "introduced_release": 1
+        },
+        {
+          "name": "producer",
+          "introduced_release": 1
+        },
+        {
+          "name": "provenance",
+          "introduced_release": 1
+        },
+        {
+          "name": "schema",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.provenance",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-provenance-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "effect_id",
+          "introduced_release": 1
+        },
+        {
+          "name": "parent_hashes",
+          "introduced_release": 1
+        },
+        {
+          "name": "run_id",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
       "id": "record.event-kind.effect_done",
       "current_version": 1,
       "version_field": null,

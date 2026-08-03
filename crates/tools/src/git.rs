@@ -197,6 +197,15 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn shell_script_command(path: &Path) -> OsString {
+        let path = path
+            .to_str()
+            .expect("Git test fixture paths must be valid UTF-8");
+        let quoted = path.replace('\'', "'\\''");
+        format!("/bin/sh '{quoted}'").into()
+    }
+
+    #[cfg(unix)]
     fn fixture_path(workspace: &Path) -> Option<OsString> {
         let workspace = workspace.canonicalize().ok()?;
         let path = std::env::var_os("PATH")?;
@@ -205,6 +214,27 @@ mod tests {
             .filter_map(|directory| directory.canonicalize().ok())
             .filter(|directory| !directory.starts_with(&workspace));
         std::env::join_paths(directories).ok()
+    }
+
+    /// Serialise the fixture tests that drive real `git` porcelain.
+    ///
+    /// These four build repositories with dozens of real `git` subprocesses, and `git submodule`
+    /// is itself a shell script that spawns more. Run concurrently on a loaded box they compete
+    /// for the same 5-second per-command deadline in `setup_git`, which is the shape of the
+    /// second, macOS-side flake in #55 — a failure nobody can reproduce on demand and which
+    /// teaches readers to re-run a red CI instead of reading it.
+    ///
+    /// The issue admits an explicit serialisation in place of a diagnosis, and that is what this
+    /// is: not a claim about the mechanism, but a refusal to let these four overlap. It costs a
+    /// few seconds of wall clock in one crate and buys a deterministic suite.
+    ///
+    /// The guard is held across `await`, so it has to be the futures-aware lock: a
+    /// `std::sync::MutexGuard` parked across a suspension point is what `clippy::await_holding_lock`
+    /// exists to stop.
+    #[cfg(unix)]
+    fn git_fixture_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        &LOCK
     }
 
     #[cfg(unix)]
@@ -424,6 +454,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn repository_clean_filter_is_neutralized_before_diff() {
+        let _serial = git_fixture_lock().lock().await;
         let temp = TestDir::new("clean-filter");
         let workspace = temp.0.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -447,7 +478,7 @@ mod tests {
             &[
                 OsStr::new("config"),
                 OsStr::new("filter.evil.clean"),
-                filter.as_os_str(),
+                shell_script_command(&filter).as_os_str(),
             ],
         )
         .await;
@@ -482,6 +513,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn malicious_core_worktree_cannot_leak_an_outside_file() {
+        let _serial = git_fixture_lock().lock().await;
         let temp = TestDir::new("core-worktree-escape");
         let workspace = temp.0.join("workspace");
         let outside = temp.0.join("outside");
@@ -592,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn hardened_command_disables_partial_clone_lazy_fetch() {
+    fn hardened_command_environment_disables_partial_clone_lazy_fetch() {
         let temp = TestDir::new("no-lazy-fetch");
         let workspace = temp.0.join("workspace");
         std::fs::create_dir_all(workspace.join(".git")).unwrap();
@@ -616,7 +648,48 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn hardened_git_invocation_disables_partial_clone_lazy_fetch() {
+        // This test used to fabricate a synthetic Git binary, so it never paid the cost of real
+        // Git. Driving the resolved system Git through `setup_git` makes it a fourth real-Git
+        // fixture, and it holds a five-second deadline while doing so, which is exactly the
+        // contention the lock below was introduced to remove. Take the lock too.
+        let _serial = git_fixture_lock().lock().await;
+        let temp = TestDir::new("no-lazy-fetch");
+        let workspace = temp.0.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let git = resolve_git_executable(std::env::var_os("PATH").as_deref(), &workspace).unwrap();
+        setup_git(
+            &git,
+            &workspace,
+            &[OsStr::new("init"), OsStr::new("--quiet")],
+        )
+        .await;
+        let repository = resolve_repository_layout(&workspace).unwrap();
+
+        // Use the stable system Git binary rather than directly executing a freshly written
+        // script. On Linux another test thread can fork while that script still has a writer;
+        // the child briefly inherits the descriptor and execve then returns ETXTBSY. A shell Git
+        // alias observes the same command environment without creating that unrelated race.
+        let args = hardened_args(
+            &[],
+            [
+                OsString::from("-c"),
+                OsString::from("alias.print-env=!printf '%s' \"$GIT_NO_LAZY_FETCH\""),
+                OsString::from("print-env"),
+            ],
+        );
+        let mut command = hardened_git_command(&git, &repository, &args);
+        let captured = run_command_bounded(&mut command, Duration::from_secs(5), 128, 128)
+            .await
+            .unwrap();
+        assert!(captured.status.success());
+        assert_eq!(captured.stdout.render("probe stdout"), "1");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn dirty_submodule_filter_is_not_descended_into() {
+        let _serial = git_fixture_lock().lock().await;
         let temp = TestDir::new("submodule-filter");
         let source = temp.0.join("source");
         let workspace = temp.0.join("workspace");
@@ -706,7 +779,7 @@ mod tests {
             &[
                 OsStr::new("config"),
                 OsStr::new("filter.evil.clean"),
-                filter.as_os_str(),
+                shell_script_command(&filter).as_os_str(),
             ],
         )
         .await;

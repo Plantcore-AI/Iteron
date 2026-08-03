@@ -86,7 +86,10 @@ impl ToolCallAdmission {
         if unsafe_identity(&tool.id) || unsafe_identity(&tool.name) {
             return Err(ToolCallContractError::UnsafeIdentity);
         }
-        if core_record::redact::scrub(&tool.id) != tool.id
+        // The id is asked the question the record path will answer. A structural correlation id
+        // survives redaction verbatim, so admitting it cannot desynchronise the two sides; a
+        // credential-shaped one would still be masked, so it stays refused (#74).
+        if core_record::redact::scrub_correlation_identifier(&tool.id) != tool.id
             || core_record::redact::scrub(&tool.name) != tool.name
         {
             return Err(ToolCallContractError::SecretShapedIdentity);
@@ -110,6 +113,75 @@ impl ToolCallAdmission {
             return Err(ToolCallContractError::ArgumentsTooLarge);
         }
         Ok(())
+    }
+}
+
+/// The most artifacts one run may declare. A product stream is bounded like every other.
+pub const MAX_ARTIFACTS_PER_RUN: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ArtifactContractError {
+    #[error("artifact ref is not admissible: {0}")]
+    Invalid(&'static str),
+    #[error("artifact content is not durable yet; the event may only follow the write")]
+    ContentNotDurable,
+    #[error("run declared more than the hard per-run artifact ceiling")]
+    TooMany,
+    #[error("run declared the same artifact hash twice")]
+    Duplicate,
+}
+
+/// Admission for run-declared artifacts.
+///
+/// Two rules the type enforces rather than documents.
+///
+/// **The content lands before the event does.** An `ArtifactProduced` naming content that is not
+/// yet readable is a promise, and a consumer that stores or reopens the product later would be
+/// holding a handle to nothing. Admission takes a durability witness and refuses without it, so
+/// "emit after the write" is a refusal rather than a convention someone remembers.
+///
+/// **Exceeding the ceiling is counted, never silently dropped.** A run that produces more than the
+/// bound has its excess refused *and* tallied, because a product stream that quietly stops is
+/// indistinguishable from a run that stopped producing.
+#[derive(Debug, Default)]
+pub struct ArtifactAdmission {
+    hashes: BTreeSet<String>,
+    refused: usize,
+}
+
+impl ArtifactAdmission {
+    /// Admit one declared artifact. `durable` answers whether the content is already readable at
+    /// the ref's locator; the caller owns that check because only it knows the store.
+    pub fn admit(
+        &mut self,
+        artifact: &core_protocol::artifact::ArtifactRef,
+        durable: impl FnOnce(&str) -> bool,
+    ) -> Result<(), ArtifactContractError> {
+        artifact
+            .validate()
+            .map_err(ArtifactContractError::Invalid)?;
+        if self.hashes.len() >= MAX_ARTIFACTS_PER_RUN {
+            self.refused = self.refused.saturating_add(1);
+            return Err(ArtifactContractError::TooMany);
+        }
+        if !durable(&artifact.locator) {
+            self.refused = self.refused.saturating_add(1);
+            return Err(ArtifactContractError::ContentNotDurable);
+        }
+        if !self.hashes.insert(artifact.hash.clone()) {
+            self.refused = self.refused.saturating_add(1);
+            return Err(ArtifactContractError::Duplicate);
+        }
+        Ok(())
+    }
+
+    /// How many declarations were refused. Reported, so a truncated product stream is visible.
+    pub fn refused(&self) -> usize {
+        self.refused
+    }
+
+    pub fn admitted(&self) -> usize {
+        self.hashes.len()
     }
 }
 
@@ -498,6 +570,110 @@ mod tests {
                 },
                 effect_id: id.map(|value| EffectId(value.into())),
             },
+        }
+    }
+
+    /// #74: a provider-minted tool-call id is high-entropy by construction, and the generic
+    /// entropy rule masks any 32+ character mixed-case-with-digit run. Admission refused every
+    /// such call, so tool use was unusable on any provider minting ids of this shape while an
+    /// otherwise identical call with a shorter id succeeded.
+    fn artifact(hash_seed: u8) -> core_protocol::artifact::ArtifactRef {
+        use core_protocol::artifact::{ArtifactRef, ArtifactSchema, Producer, Provenance};
+        ArtifactRef {
+            hash: format!("{:064x}", hash_seed),
+            schema: ArtifactSchema::FileDiff,
+            producer: Producer::Tool {
+                tool: "edit".into(),
+            },
+            provenance: Provenance {
+                run_id: core_protocol::RunId("run-1".into()),
+                parent_hashes: Vec::new(),
+                effect_id: None,
+            },
+            // Read is deny-by-default: an artifact requiring no capability would be readable
+            // by anyone, and `validate` refuses it.
+            permissions: core_protocol::capability_set::CapabilitySet::only(Capability::ReadOnly),
+            locator: "reports/summary.md".into(),
+        }
+    }
+
+    /// The event may only follow the write. A handle to content that is not there yet is a promise.
+    #[test]
+    fn an_artifact_declared_before_its_content_is_durable_is_refused() {
+        let mut admission = ArtifactAdmission::default();
+        assert_eq!(
+            admission.admit(&artifact(1), |_| false),
+            Err(ArtifactContractError::ContentNotDurable)
+        );
+        assert_eq!(admission.admitted(), 0);
+        assert_eq!(admission.refused(), 1, "a refusal is counted, not dropped");
+
+        assert_eq!(admission.admit(&artifact(1), |_| true), Ok(()));
+        assert_eq!(admission.admitted(), 1);
+    }
+
+    /// Exactly one event per product: the same hash twice is a duplicate, and it is counted.
+    #[test]
+    fn the_same_artifact_cannot_be_declared_twice() {
+        let mut admission = ArtifactAdmission::default();
+        assert_eq!(admission.admit(&artifact(7), |_| true), Ok(()));
+        assert_eq!(
+            admission.admit(&artifact(7), |_| true),
+            Err(ArtifactContractError::Duplicate)
+        );
+        assert_eq!(admission.admitted(), 1);
+        assert_eq!(admission.refused(), 1);
+    }
+
+    /// A product stream that quietly stops is indistinguishable from a run that stopped producing.
+    #[test]
+    fn exceeding_the_per_run_ceiling_is_counted_and_reported() {
+        let mut admission = ArtifactAdmission::default();
+        for index in 0..MAX_ARTIFACTS_PER_RUN {
+            let mut ref_ = artifact(1);
+            ref_.hash = format!("{index:064x}");
+            assert_eq!(admission.admit(&ref_, |_| true), Ok(()));
+        }
+        let mut overflow = artifact(1);
+        overflow.hash = format!("{:064x}", MAX_ARTIFACTS_PER_RUN + 1);
+        assert_eq!(
+            admission.admit(&overflow, |_| true),
+            Err(ArtifactContractError::TooMany)
+        );
+        assert_eq!(admission.admitted(), MAX_ARTIFACTS_PER_RUN);
+        assert_eq!(admission.refused(), 1);
+    }
+
+    /// A malformed handle never reaches the record.
+    #[test]
+    fn an_inadmissible_ref_is_refused_before_the_bound_is_touched() {
+        let mut admission = ArtifactAdmission::default();
+        let mut bad = artifact(1);
+        bad.hash = "not-a-content-hash".into();
+        assert!(matches!(
+            admission.admit(&bad, |_| true),
+            Err(ArtifactContractError::Invalid(_))
+        ));
+        assert_eq!(admission.admitted(), 0);
+    }
+
+    #[test]
+    fn admission_accepts_provider_minted_correlation_ids() {
+        for id in [
+            "call_00_RFTSn3Qcw4Wu9i4Z276c9895",
+            "chatcmpl-tool-abc123DEF456ghi789",
+            "call_1",
+        ] {
+            let call = ToolUse {
+                id: id.into(),
+                name: "edit".into(),
+                input: serde_json::json!({"path": "f"}),
+            };
+            assert_eq!(
+                ToolCallAdmission::default().admit(&call),
+                Ok(()),
+                "provider correlation id `{id}` must be admitted"
+            );
         }
     }
 

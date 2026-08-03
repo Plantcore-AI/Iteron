@@ -153,6 +153,16 @@ pub struct SamplingControl {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TwoSidedOracleReceipt {
+    pub fail_to_pass_before: crate::provisioner::TestSetReceipt,
+    pub pass_to_pass_before: crate::provisioner::TestSetReceipt,
+    pub fail_to_pass_after: crate::provisioner::TestSetReceipt,
+    pub pass_to_pass_after: crate::provisioner::TestSetReceipt,
+    pub resolved: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct CellKey<'a> {
     pub task: &'a str,
@@ -234,9 +244,14 @@ pub struct EvaluationManifest {
     pub dataset_digest: String,
     pub model: String,
     pub provider: Option<String>,
+    /// SHA-256 of the immutable boot-time policy bundle, or `None` for the untrained/default arm.
+    pub bundle_digest: Option<String>,
     pub purpose: EvaluationPurpose,
     pub seeds: u64,
     pub minimum_seeds: u64,
+    pub workers: u16,
+    /// `None` records an explicitly uncapped run. A capped run never uses zero.
+    pub max_turns: Option<u32>,
     pub run_timeout_secs: u64,
     pub result_path: PathBuf,
     pub cells: Vec<CellResult>,

@@ -196,6 +196,10 @@ esac\n";
             prompt: format!("resolve {id}"),
             verify_command: "true".into(),
             ground_truth_command: "true".into(),
+            dockerhub_tag: None,
+            fail_to_pass: vec!["legacy::true".into()],
+            pass_to_pass: Vec::new(),
+            test_cmd: std::collections::BTreeMap::from([("legacy".into(), "true".into())]),
             partition: Partition::HeldOut,
             provenance: Provenance {
                 source: "d12-03-stdout-contract-not-stderr".into(),

@@ -9,6 +9,8 @@ publish.workspace = true
 core-protocol = { path = "../protocol" }
 core-provider = { path = "../provider" }
 tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 async-trait = "0.1"
 
 [dev-dependencies]

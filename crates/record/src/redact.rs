@@ -36,9 +36,10 @@ pub fn redact_event(event: &Event) -> Event {
             workspace,
         } => EventKind::EffectIntent {
             // Correlation identifiers are structural. Changing one side but not ToolDone would
-            // manufacture a dangling effect during recovery.
+            // manufacture a dangling effect during recovery, so a structural id is kept verbatim
+            // and only a credential-shaped one is masked (#74).
             id: id.clone(),
-            tool_use_id: scrub(tool_use_id),
+            tool_use_id: scrub_correlation_identifier(tool_use_id),
             tool: scrub(tool),
             capability: *capability,
             arguments: scrub_json(arguments),
@@ -106,6 +107,14 @@ pub fn redact_event(event: &Event) -> Event {
                     }),
                 }),
         },
+        // A locator is a path and a producer name is free text, so both are scrubbed. The hash
+        // is a content address and is preserved exactly: masking it would make the handle
+        // unresolvable, which is the same correlation break `tool_use_id` had.
+        EventKind::ArtifactProduced { artifact } => {
+            let mut artifact = artifact.clone();
+            artifact.locator = scrub(&artifact.locator);
+            EventKind::ArtifactProduced { artifact }
+        }
         EventKind::Notice { text } => EventKind::Notice { text: scrub(text) },
         // Route/provenance events are durable control-plane data. They deliberately contain no
         // credential field, but operator-defined ids are still strings and must not become a
@@ -194,7 +203,7 @@ pub fn redact_event(event: &Event) -> Event {
             verdict,
         } => EventKind::Approval {
             id: *id,
-            tool_use_id: scrub(tool_use_id),
+            tool_use_id: scrub_correlation_identifier(tool_use_id),
             tool: scrub(tool),
             capability: *capability,
             arguments: scrub_json(arguments),
@@ -389,6 +398,58 @@ fn is_content_address(value: &str) -> bool {
 /// in-memory provider/model pair.
 pub fn scrub_route_identifier(value: &str) -> String {
     if is_content_address(value) {
+        value.to_owned()
+    } else {
+        scrub(value)
+    }
+}
+
+/// The maximum length of a value that may be exempted as a correlation identifier. Provider
+/// tool-call ids are short; anything longer is treated as content and scanned normally.
+const MAX_CORRELATION_IDENTIFIER_BYTES: usize = 128;
+
+/// Credential formats [`mask_scalar_if_secret`] recognises by prefix. A correlation identifier is
+/// never exempted from these, only from the generic entropy rule below them.
+const CREDENTIAL_PREFIXES: &[&str] = &[
+    "sk-", "ghp_", "gho_", "ghs_", "xoxb-", "xoxp-", "AKIA", "AIza", "eyJ",
+];
+
+/// A provider-minted tool-call correlation identifier.
+///
+/// The generic entropy rule masks any 32+ character mixed-case-with-digit run, which is what a
+/// correlation id looks like by construction: `call_00_RFTSn3Qcw4Wu9i4Z276c9895` is a real
+/// DeepSeek id, is exactly 32 characters, and is indistinguishable from an opaque token by shape.
+///
+/// Masking is not a safe default for this field, because the id is structural rather than content.
+/// `EffectIntent` masked it while `ToolDone` did not, so a masked id desynchronised the two sides
+/// and replay reconstructed a dangling effect. The kernel therefore refused any such call at
+/// admission, which took every provider minting ids of this shape offline (#74). Masking cannot be
+/// applied symmetrically either: the four-character hint collapses distinct ids onto one marker,
+/// so two tool calls in a turn would become indistinguishable in the record.
+///
+/// Exempt the shape that is unambiguously an identifier, and only from the generic entropy rule:
+/// bounded length, `[A-Za-z0-9_-]` only, and never a value carrying a known credential prefix.
+/// `+`, `/`, `=` and `.` stay outside the alphabet, so base64 payloads and JWTs are still masked.
+/// The residual risk is the one this module already states: shape-based redaction catches known
+/// formats, not every secret. An opaque high-entropy secret was already admissible here below 32
+/// characters, so this widens that existing gap rather than opening a new one.
+fn is_correlation_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_CORRELATION_IDENTIFIER_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        && !CREDENTIAL_PREFIXES
+            .iter()
+            .any(|prefix| value.starts_with(prefix))
+}
+
+/// Preserve a structural tool-call correlation identifier; otherwise apply the credential scanner.
+///
+/// Public because the kernel's admission preflight must ask the same question the record path will
+/// answer: an id admitted here is an id the record keeps verbatim, so the two sides cannot drift.
+pub fn scrub_correlation_identifier(value: &str) -> String {
+    if is_correlation_identifier(value) {
         value.to_owned()
     } else {
         scrub(value)
@@ -718,6 +779,131 @@ fn looks_like_hex_or_b64_token(w: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ids in #74. The first two are exactly 32 characters, so the generic entropy rule
+    /// masked them and the kernel refused every call carrying one, taking DeepSeek's tool use
+    /// offline entirely. The rest already worked and must keep working.
+    #[test]
+    fn provider_tool_call_ids_survive_the_record_verbatim() {
+        for id in [
+            "call_00_RFTSn3Qcw4Wu9i4Z276c9895",
+            "chatcmpl-tool-abc123DEF456ghi789",
+        ] {
+            assert_ne!(
+                scrub(id),
+                id,
+                "fixture `{id}` must be one the entropy rule masks"
+            );
+        }
+        for id in [
+            "call_00_RFTSn3Qcw4Wu9i4Z276c9895",
+            "chatcmpl-tool-abc123DEF456ghi789",
+            "call_0_9f8e7d6c5b4a39281706",
+            "call_1",
+            "toolu_01A09q90qw90lq917835lq9",
+            "fc_68a1b2c3d4e5f60718293a4b5c6d7e8f",
+        ] {
+            assert_eq!(
+                scrub_correlation_identifier(id),
+                id,
+                "structural correlation id `{id}` must reach the record unchanged"
+            );
+        }
+    }
+
+    /// The exemption is only from the generic entropy rule. Every credential format the scanner
+    /// recognises by prefix stays both unexempted and masked, so the kernel keeps refusing it.
+    #[test]
+    fn a_credential_shaped_correlation_id_is_still_masked() {
+        for id in [
+            "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx",
+            "ghp_AbCdEf1234567890AbCdEf1234567890",
+            "xoxb-1234567890-ABCDEFGHIJKLMNOPQRST",
+            "AKIAIOSFODNN7EXAMPLE",
+            "AIzaSyA1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r",
+        ] {
+            assert!(
+                !is_correlation_identifier(id),
+                "credential-shaped id `{id}` must not qualify for the exemption"
+            );
+            assert_ne!(
+                scrub_correlation_identifier(id),
+                id,
+                "credential-shaped id `{id}` must still be masked"
+            );
+        }
+    }
+
+    /// The exemption alphabet excludes the characters a base64 payload or a JWT needs, so such a
+    /// value can never take the verbatim path regardless of what the token scanner does with it.
+    #[test]
+    fn the_exemption_alphabet_excludes_payload_characters() {
+        for id in [
+            "AbCd+EfGh/IjKl=MnOpQrStUvWxYz0123456789",
+            "header.payload.signature",
+            "call/../../etc/passwd",
+            "call id with spaces",
+        ] {
+            assert!(
+                !is_correlation_identifier(id),
+                "`{id}` must not qualify for the exemption"
+            );
+        }
+    }
+
+    #[test]
+    fn an_oversized_or_empty_correlation_id_is_not_exempted() {
+        let long = "a".repeat(MAX_CORRELATION_IDENTIFIER_BYTES + 1);
+        assert!(!is_correlation_identifier(&long));
+        assert!(!is_correlation_identifier(""));
+        assert!(is_correlation_identifier(
+            &"a".repeat(MAX_CORRELATION_IDENTIFIER_BYTES)
+        ));
+    }
+
+    /// The defect was a disagreement between two sides of one correlation, not a masking failure.
+    /// `ToolDone` and `ToolReady` always kept the id byte-stable, so `EffectIntent` masking it
+    /// produced an intent that no completion could ever match.
+    #[test]
+    fn both_sides_of_a_correlation_agree_on_the_recorded_id() {
+        use core_protocol::{Capability, ToolResult, Trust};
+        let id = "call_00_RFTSn3Qcw4Wu9i4Z276c9895";
+        let intent = redact_event(&Event {
+            seq: core_protocol::Seq(1),
+            turn: core_protocol::TurnId(1),
+            kind: EventKind::EffectIntent {
+                id: core_protocol::EffectId("fx1-abc".into()),
+                tool_use_id: id.into(),
+                tool: "edit".into(),
+                capability: Capability::ReversibleLocal,
+                arguments: serde_json::json!({}),
+                workspace: "/repo".into(),
+            },
+        });
+        let done = redact_event(&Event {
+            seq: core_protocol::Seq(2),
+            turn: core_protocol::TurnId(1),
+            kind: EventKind::ToolDone {
+                result: ToolResult {
+                    tool_use_id: id.into(),
+                    content: "ok".into(),
+                    is_error: false,
+                    trust: Trust::Workspace,
+                    latency_ms: 0,
+                },
+                effect_id: Some(core_protocol::EffectId("fx1-abc".into())),
+            },
+        });
+        let EventKind::EffectIntent { tool_use_id, .. } = &intent.kind else {
+            panic!("intent kind changed");
+        };
+        let EventKind::ToolDone { result, .. } = &done.kind else {
+            panic!("done kind changed");
+        };
+        assert_eq!(tool_use_id, &result.tool_use_id);
+        assert_eq!(tool_use_id, id);
+    }
 
     #[test]
     fn masks_provider_and_platform_keys() {

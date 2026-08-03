@@ -367,6 +367,7 @@ dependencies = [
  "clap",
  "core-agents",
  "core-ctx",
+ "core-evolve",
  "core-kernel",
  "core-mcp",
  "core-obs",
@@ -415,6 +416,7 @@ name = "core-eval"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "core-evolve",
  "core-sandbox",
  "core-verify",
  "hex",
@@ -533,6 +535,8 @@ dependencies = [
  "async-trait",
  "core-protocol",
  "core-provider",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -564,6 +568,8 @@ dependencies = [
  "core-protocol",
  "core-sandbox",
  "hex",
+ "serde",
+ "serde_json",
  "sha2",
  "tokio",
 ]

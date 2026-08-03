@@ -17,6 +17,11 @@
 
 pub mod oracle;
 pub mod select;
+pub mod strategy;
 
 pub use oracle::{Oracle, OracleStrength, TestOracle, Verdict, VerificationOutcome};
 pub use select::{Candidate, Selection};
+pub use strategy::{
+    GateOutcome, VERIFIER_SLOT_VERSION, VerifierPlan, VerifierScope, VerifierSlotDecision,
+    VerifierSlotError, VerifierSlotObservation, VerifierStrategy, WorkspaceGateVerifier,
+};

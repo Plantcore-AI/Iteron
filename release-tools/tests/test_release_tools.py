@@ -811,7 +811,25 @@ exit 1
         repository = TOOLS.parent
         tools_lock = TOOLS / "tools-lock.json"
         policy = dependency_audit.load_policy(TOOLS / "audit-policy.json")
-        self.assertEqual(policy.ignored_advisories, ())
+        # An exception is allowed, but only as a recorded argument. Asserting the list is empty
+        # would force the next unsound advisory to be silenced somewhere less visible; asserting
+        # the contract keeps "we looked at this" attached to a reason and an issue.
+        raw = json.loads((TOOLS / "audit-policy.json").read_text(encoding="utf-8"))
+        for entry in raw["ignored_advisories"]:
+            self.assertRegex(entry["id"], r"^RUSTSEC-\d{4}-\d{4}$")
+            self.assertGreater(
+                len(entry["reason"]),
+                80,
+                f"{entry['id']} needs an argument, not a shrug",
+            )
+            self.assertRegex(
+                entry["tracking_issue"],
+                r"^https://github\.com/Plantcore-AI/core/issues/\d+$",
+            )
+        self.assertEqual(
+            tuple(entry["id"] for entry in raw["ignored_advisories"]),
+            policy.ignored_advisories,
+        )
         database = fetch_advisory_db.load_entry(tools_lock, policy.advisory_database)
         self.assertRegex(database["commit"], r"^[0-9a-f]{40}$")
         self.assertRegex(database["sha256"], r"^[0-9a-f]{64}$")
@@ -1204,6 +1222,9 @@ exit 1
         ):
             self.write(f"dist/{name}", f"{name}\n")
         output = dist / "release-manifest.json"
+        protocol = self.write(
+            "protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 7;\n"
+        )
         manifest.create_release(
             argparse.Namespace(
                 version="0.0.1",
@@ -1211,11 +1232,32 @@ exit 1
                 dist=dist,
                 targets=[target],
                 output=output,
+                protocol_source=protocol,
             )
         )
         result = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(result["product"], "Core Code")
         self.assertEqual(result["targets"][target]["archive"]["name"], base)
+        # A client pins on the protocol the binary speaks, so the manifest must carry the number
+        # the crate declares rather than one restated here.
+        self.assertEqual(result["protocol_version"], 7)
+        self.assertEqual(result["schema_version"], 2)
+
+    def test_release_manifest_reads_protocol_version_from_the_declaring_crate(self) -> None:
+        # The real crate, not a fixture: if this drifts from the shipped binary the field is a lie.
+        real = manifest.read_protocol_version(TOOLS.parent / "crates/protocol/src/wire.rs")
+        self.assertGreaterEqual(real, 1)
+
+        missing = self.write("no-const/wire.rs", "pub const OTHER: u32 = 1;\n")
+        with self.assertRaises(ReleaseToolError):
+            manifest.read_protocol_version(missing)
+
+        duplicated = self.write(
+            "two-const/wire.rs",
+            "pub const PROTOCOL_VERSION: u32 = 1;\npub const PROTOCOL_VERSION: u32 = 2;\n",
+        )
+        with self.assertRaises(ReleaseToolError):
+            manifest.read_protocol_version(duplicated)
 
     def test_release_manifest_selects_zip_for_windows(self) -> None:
         dist = self.root / "windows-dist"

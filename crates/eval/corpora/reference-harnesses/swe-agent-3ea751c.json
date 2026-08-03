@@ -1,0 +1,26 @@
+{
+  "name": "SWE-agent",
+  "source_url": "https://github.com/SWE-agent/SWE-agent.git",
+  "revision": "3ea751c087f32b16e039a2233dd6eefecef325d5",
+  "launcher": "python3",
+  "entrypoint": "sweagent/run/run.py",
+  "arguments": [
+    "run",
+    "--config",
+    "config/default.yaml",
+    "--agent.model.name={model}",
+    "--env.repo.type=local",
+    "--env.repo.path={workspace}",
+    "--env.deployment.type=docker",
+    "--env.deployment.image={dockerhub_tag}",
+    "--env.deployment.docker_args=--network=none",
+    "--problem_statement.type=text",
+    "--problem_statement.id={task_id}",
+    "--problem_statement.text={prompt}",
+    "--output_dir={artifact_dir}"
+  ],
+  "candidate_output": {
+    "kind": "swe_agent_prediction",
+    "path": "{artifact_dir}/{task_id}/{task_id}.pred"
+  }
+}

@@ -64,11 +64,23 @@ Operator-defined providers also live only in `~/.core/config.json`:
       "key_env": "GATEWAY_API_KEY",
       "enabled": true,
       "catalog": false,
-      "models": ["declared-model-id"]
+      "models": ["declared-model-id"],
+      "model_capabilities": {
+        "declared-model-id": { "context_window_tokens": 1048576 }
+      }
     }
   ]
 }
 ```
+
+`model_capabilities` is optional. Core has no way to discover a context window — a `GET models`
+response is not capability evidence, and the static metadata document only speaks for the vendors
+it ships — so without a declaration the window stays unknown for every provider except the
+built-in GLM. An unknown window is not neutral: compaction falls back to the absolute
+`compaction_trigger_tokens` instead of a share of the window, and the pre-flight admission check
+cannot run. Declaring it is you stating a number you read in your provider's documentation; it is
+not evidence of entitlement, and an official vendor snapshot for the same route still wins. See
+the [configuration reference](../reference/configuration.md#model_capabilities) for the bounds.
 
 The example domain is deliberately non-routable. Replace it with a trusted HTTPS
 API root. Exact loopback hosts may use HTTP; other HTTP roots, embedded

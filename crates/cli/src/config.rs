@@ -19,6 +19,11 @@ use std::path::Path;
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 const MAX_MCP_SERVERS: usize = 32;
 const MAX_MCP_SERVER_ARGS: usize = 128;
+/// Upper bound for an operator-declared context window. Two orders of magnitude above any
+/// window a provider currently documents, and far enough below `u64::MAX / 4` that the
+/// window-relative compaction arithmetic never saturates. It bounds absurd input; it is not a
+/// claim that any model this large exists.
+pub(crate) const MAX_DECLARED_CONTEXT_WINDOW: u64 = 1_000_000_000;
 pub(crate) use retry::{RetryConfig, load_retry_environment, resolve_retry_policy};
 pub(crate) use schema::{FILE_CONFIG_SCHEMA_VERSION, FileConfigSchemaError};
 
@@ -142,6 +147,32 @@ pub struct ProviderConfig {
     /// manifest, not discovery output; the provider composition layer decides how to merge it.
     #[serde(default)]
     pub models: Vec<String>,
+    /// Operator-declared per-model facts that no account-scoped API reports, keyed by model id.
+    /// Same standing as `models`: a manifest the operator authored, not discovery output.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_capabilities: BTreeMap<String, ProviderModelCapabilities>,
+}
+
+/// Operator-declared capabilities for one model of one provider instance.
+///
+/// Core cannot discover a context window: `GET models` responses are not capability evidence
+/// (ADR: listing a model never implicitly grants limits), and the static provider metadata
+/// document is a bounded set of official vendor snapshots, so it can only speak for the vendors
+/// it ships. That left every provider except GLM with an unknown window, which silently costs
+/// the operator real context: with no window, compaction falls back to its absolute trigger
+/// instead of a share of the window, and the pre-flight admission check cannot run at all.
+///
+/// This is the operator saying "I read my provider's documentation, and this is the number".
+/// It is deliberately narrow. `max_output_tokens` is not declarable because the request path
+/// clamps the reservation to 8192 regardless, so a declaration could only mislead; `tool_calling`
+/// and `semantic_effort` are not declarable because they gate a request feature rather than an
+/// arithmetic bound, and a declaration is not an entitlement.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderModelCapabilities {
+    /// Total input+output window the provider documents for this model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -292,6 +323,35 @@ impl FileConfig {
                     if !model_ids.insert(model_id.as_str()) {
                         return Err(format!(
                             "provider `{}` has duplicate model id `{model_id}`",
+                            provider.id
+                        ));
+                    }
+                }
+                if provider.model_capabilities.len() > 256 {
+                    return Err(format!(
+                        "provider `{}` model_capabilities exceeds the 256-entry manifest bound",
+                        provider.id
+                    ));
+                }
+                for (model_id, capabilities) in &provider.model_capabilities {
+                    if model_id.trim().is_empty()
+                        || model_id.len() > 512
+                        || model_id.chars().any(char::is_control)
+                    {
+                        return Err(format!(
+                            "provider `{}` model_capabilities ids must be non-empty, control-free, and at most 512 bytes",
+                            provider.id
+                        ));
+                    }
+                    // A zero window is not "unknown": the admission and compaction paths both
+                    // filter it out, so it would read as a working declaration while doing
+                    // nothing. Refuse it here instead of accepting a no-op.
+                    if capabilities
+                        .context_window_tokens
+                        .is_some_and(|window| window == 0 || window > MAX_DECLARED_CONTEXT_WINDOW)
+                    {
+                        return Err(format!(
+                            "provider `{}` model `{model_id}` context_window_tokens must be 1..={MAX_DECLARED_CONTEXT_WINDOW}",
                             provider.id
                         ));
                     }
@@ -962,6 +1022,7 @@ mod tests {
                 enabled: true,
                 catalog: true,
                 models: Vec::new(),
+                model_capabilities: BTreeMap::new(),
             }]),
             ..FileConfig::default()
         };
@@ -1049,6 +1110,91 @@ mod tests {
         )
         .unwrap();
         assert!(invalid.validate().is_err());
+    }
+
+    fn provider_with_capabilities(capabilities: &str) -> FileConfig {
+        serde_json::from_str::<FileConfig>(&format!(
+            r#"{{"providers":[{{"id":"gateway","adapter":"openai_chat","api_root":"https://gateway.example/v1","key_env":"GATEWAY_KEY","model_capabilities":{capabilities}}}]}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn declared_context_window_is_bounded_and_never_a_no_op() {
+        let valid = provider_with_capabilities(r#"{"k3":{"context_window_tokens":1048576}}"#);
+        assert!(valid.validate().is_ok());
+        let providers = valid.providers.as_ref().unwrap();
+        assert_eq!(
+            providers[0].model_capabilities["k3"].context_window_tokens,
+            Some(1_048_576)
+        );
+
+        // Absent is the honest way to say "unknown". Zero is not: the admission and compaction
+        // paths both filter it out, so accepting it would store a declaration that does nothing.
+        assert!(
+            provider_with_capabilities(r#"{"k3":{"context_window_tokens":0}}"#)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            provider_with_capabilities(&format!(
+                r#"{{"k3":{{"context_window_tokens":{}}}}}"#,
+                MAX_DECLARED_CONTEXT_WINDOW + 1
+            ))
+            .validate()
+            .is_err()
+        );
+        assert!(
+            provider_with_capabilities(&format!(
+                r#"{{"k3":{{"context_window_tokens":{MAX_DECLARED_CONTEXT_WINDOW}}}}}"#
+            ))
+            .validate()
+            .is_ok()
+        );
+
+        // An empty map and an entry that declares nothing are both legal: the second is how an
+        // operator records "I looked and my provider does not document it".
+        assert!(provider_with_capabilities("{}").validate().is_ok());
+        assert!(
+            provider_with_capabilities(r#"{"k3":{}}"#)
+                .validate()
+                .is_ok()
+        );
+
+        assert!(
+            provider_with_capabilities(r#"{"  ":{"context_window_tokens":1}}"#)
+                .validate()
+                .is_err()
+        );
+        let over_bound = (0..257)
+            .map(|index| format!(r#""m{index}":{{"context_window_tokens":1}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(
+            provider_with_capabilities(&format!("{{{over_bound}}}"))
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn declared_capability_keys_are_strict() {
+        // The point of the narrow schema is that a knob Core does not honour cannot be quietly
+        // written into a config and believed. A typo'd or aspirational field is an error.
+        for rejected in [
+            r#"{"k3":{"context_window":1048576}}"#,
+            r#"{"k3":{"max_output_tokens":65536}}"#,
+            r#"{"k3":{"tool_calling":true}}"#,
+            r#"{"k3":{"semantic_effort":true}}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<FileConfig>(&format!(
+                    r#"{{"providers":[{{"id":"gateway","adapter":"openai_chat","api_root":"https://gateway.example/v1","key_env":"GATEWAY_KEY","model_capabilities":{rejected}}}]}}"#
+                ))
+                .is_err(),
+                "{rejected} should be rejected by the strict schema"
+            );
+        }
     }
 
     #[test]
