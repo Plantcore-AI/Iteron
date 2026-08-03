@@ -201,7 +201,7 @@ impl Bubblewrap {
     /// Resolve the executable WITHOUT sleep-polling a child process on an async worker. The probe
     /// blocks for up to `BWRAP_PROBE_TIMEOUT`, which on a multi-threaded runtime parks a worker
     /// thread that is supposed to be driving other tasks; the blocking pool is where that belongs.
-    async fn usable_bwrap_off_worker() -> Option<PathBuf> {
+    pub(crate) async fn usable_bwrap_off_worker() -> Option<PathBuf> {
         tokio::task::spawn_blocking(usable_bwrap).await.ok()?
     }
 

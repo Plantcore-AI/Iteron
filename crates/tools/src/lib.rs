@@ -22,6 +22,7 @@ mod memo;
 mod multi_file_patch;
 mod multi_file_patch_error;
 mod multi_file_patch_input;
+mod process;
 mod schema;
 mod schema_error;
 mod shell;
@@ -172,6 +173,7 @@ impl Registry {
         multi_file_patch::register(&mut r)?;
         write_file::register(&mut r)?;
         shell::register(&mut r)?;
+        process::register(&mut r)?;
         // Web egress (web_fetch/web_search): Effecting/IrreversibleExternal, so the capability gate
         // never auto-approves them (ADR-007 §3) and they are absent from the read_only subagent set.
         web::register(&mut r)?;

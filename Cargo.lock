@@ -558,6 +558,7 @@ dependencies = [
  "core-protocol",
  "core-sandbox",
  "futures-util",
+ "getrandom 0.4.3",
  "ignore",
  "libc",
  "regex",

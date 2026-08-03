@@ -92,6 +92,7 @@
 /crates/cli/src/runtime/** @fr0m-scratch
 /crates/cli/src/theme/** @fr0m-scratch
 /crates/cli/src/tui/** @fr0m-scratch
+/crates/tools/src/process/** @fr0m-scratch
 /crates/agents/src/catalog.rs @fr0m-scratch
 /crates/agents/src/decompose.rs @fr0m-scratch
 /crates/agents/src/def.rs @fr0m-scratch

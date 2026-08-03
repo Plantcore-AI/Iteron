@@ -30,15 +30,16 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
 ];
 
 /// Tool names that write, execute, or dispatch — refused if an `Allow` list names one, because a
-/// fan-out worker is read-only (ADR-001). The first three are core's real effecting tools
-/// (`edit` — `crates/tools/src/edit.rs:52`; `bash` — `crates/tools/src/shell.rs:20`;
-/// `dispatch_agent` — `crates/tools/src/lib.rs:248`). The rest are common frontmatter aliases from
-/// other harnesses (Claude Code / Codex / Cline), refused so importing a foreign definition cannot
-/// smuggle a writer past the narrowing rule.
+/// fan-out worker is read-only (ADR-001). Core's writer vocabulary is listed explicitly before
+/// the common aliases from other harnesses (Claude Code / Codex / Cline), so importing a foreign
+/// definition cannot smuggle a writer past the narrowing rule.
 const WRITE_EXEC_DISPATCH: &[&str] = &[
     "edit",
     "bash",
     "dispatch_agent",
+    "process_start",
+    "process_write",
+    "process_stop",
     "write",
     "notebookedit",
     "multiedit",

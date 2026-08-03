@@ -22,6 +22,7 @@ thiserror = { workspace = true }
 # zero-dependency-first). These are IrreversibleExternal and never run in the bash egress-off cell.
 reqwest = { workspace = true }
 futures-util = { workspace = true }
+getrandom = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
