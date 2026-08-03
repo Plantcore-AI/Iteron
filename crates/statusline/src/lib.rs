@@ -14,9 +14,11 @@
 //! [`safe_text`].
 
 pub mod safe_text;
+pub mod terminal;
 pub mod title;
 
 pub use safe_text::{MAX_FIELD_BYTES, Unsafe, check, lossy};
+pub use terminal::{Capabilities, Color, Presentation, Rgb, contrast_ratio, meets_aa};
 pub use title::{restore_title, set_title, title_stack_pop, title_stack_push};
 
 /// Placeholder for a value that was not measured. Deliberately not `0`, not `-`, and not empty:
