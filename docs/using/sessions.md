@@ -40,6 +40,13 @@ is restored unless an explicit CLI or environment override takes precedence.
 The existing rollout is locked before route and message reconstruction, so a
 second writer cannot append between resume replay and continuation.
 
+This durable session operation is unrelated to the headless transport's
+`resume_from` cursor. The latter only replays missed live EQ frames from an App
+Server process that is already running; if its bounded ring no longer reaches the
+cursor, the server sends durable Rollout evidence under distinct `rollout_seq`
+fields and then resumes the live cursor. Neither form can be passed where the
+other is expected.
+
 ## Fork a session
 
 ```sh

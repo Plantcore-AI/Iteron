@@ -1,7 +1,7 @@
 //! Terminal input demultiplexing for bounded startup capability detection.
 //!
 //! Crossterm turns unknown terminal responses into ordinary key events. This adapter recognizes only
-//! the exact, bounded OSC 11 and keyboard-enhancement grammars, queues every unrelated event
+//! the exact, bounded OSC 11 and Windows keyboard-enhancement grammars, queues every unrelated event
 //! for normal TUI dispatch, and stays armed after a timeout so a late response cannot become
 //! synthetic operator input.
 
@@ -11,14 +11,17 @@ use std::collections::VecDeque;
 use std::ffi::OsStr;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+mod windows_query;
+
 const OSC11_QUERY: &[u8] = b"\x1b]11;?\x1b\\";
 const OSC11_TIMEOUT: Duration = Duration::from_millis(80);
 const MAX_OSC11_BODY_CHARS: usize = 48;
 const MAX_STARTUP_REPLAY_EVENTS: usize = 256;
 const CANDIDATE_TIMEOUT: Duration = Duration::from_millis(40);
-#[cfg(test)]
+#[cfg(any(windows, test))]
 const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
-#[cfg(test)]
+#[cfg(any(windows, test))]
 const KEYBOARD_QUERY_TIMEOUT: Duration = Duration::from_millis(200);
 const MAX_KEYBOARD_RESPONSE_CHARS: usize = 24;
 const MAX_KEYBOARD_RESPONSE_EVENTS: usize = 64;
@@ -36,11 +39,16 @@ pub(crate) struct TerminalInput {
 impl TerminalInput {
     /// Probe progressive keyboard enhancement through the currently supported terminal backend.
     ///
-    /// `crossterm` writes the query and then BLOCKS up to 2000 ms waiting for a reply, so the probe
-    /// is only worth paying for on a terminal the environment already says can answer an
-    /// interactive query. It shares the OSC 11 gate (`interactive_query_supported` excludes
-    /// `TERM=dumb`, tmux and screen, which multiplex the reply away) plus the isatty pair check,
-    /// and an operator can disable it outright with `CORE_NO_KBD_ENHANCEMENT`.
+    /// The probe writes a query and then BLOCKS waiting for a reply, so it is only worth paying for
+    /// on a terminal the environment already says can answer an interactive query. It shares the
+    /// OSC 11 gate (`interactive_query_supported` excludes `TERM=dumb`, tmux and screen, which
+    /// multiplex the reply away) plus the console/isatty pair check, and an operator can disable it
+    /// outright with `CORE_NO_KBD_ENHANCEMENT`.
+    ///
+    /// Crossterm answers the Windows case with a hard-coded `false`, so Windows runs the query
+    /// natively instead: the query bytes and the primary device-attributes sentinel share one
+    /// bounded wait, unrelated startup events are replayed in exact order, and a late terminal
+    /// response stays armed for suppression instead of becoming input.
     pub(crate) fn supports_keyboard_enhancement(&mut self, environment: &Environment) -> bool {
         if !keyboard_enhancement_probe_allowed(
             environment.interactive_query_supported,
@@ -49,11 +57,37 @@ impl TerminalInput {
         ) {
             return false;
         }
+        #[cfg(windows)]
+        {
+            let Some(deadline) = self.begin_keyboard_query(windows_query::write_keyboard_query)
+            else {
+                return false;
+            };
+
+            let mut supported = false;
+            for _ in 0..MAX_STARTUP_REPLAY_EVENTS {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    return supported;
+                };
+                let Ok(true) = event::poll(remaining) else {
+                    return supported;
+                };
+                let Ok(incoming) = event::read() else {
+                    return supported;
+                };
+                match self.route_all(incoming).keyboard {
+                    Some(KeyboardResponse::Enhancement) => supported = true,
+                    Some(KeyboardResponse::DeviceAttributes) => return supported,
+                    None => {}
+                }
+            }
+            supported
+        }
         #[cfg(unix)]
         {
             crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             false
         }
@@ -159,7 +193,7 @@ impl TerminalInput {
         write(deadline).ok().map(|()| deadline)
     }
 
-    #[cfg(test)]
+    #[cfg(any(windows, test))]
     fn begin_keyboard_query(
         &mut self,
         write: impl FnOnce(Instant) -> std::io::Result<()>,
@@ -174,7 +208,7 @@ impl TerminalInput {
 
 #[derive(Debug, Default)]
 struct RoutedResponses {
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     keyboard: Option<KeyboardResponse>,
     background: Option<BackgroundTone>,
 }
@@ -199,7 +233,7 @@ struct KeyboardCandidate {
 }
 
 impl KeyboardResponseDemux {
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     fn arm(&mut self) {
         self.armed = true;
         self.candidate = None;
@@ -499,7 +533,12 @@ fn terminal_pair_is_supported() -> bool {
     unsafe { libc::isatty(libc::STDIN_FILENO) == 1 && libc::isatty(libc::STDOUT_FILENO) == 1 }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn terminal_pair_is_supported() -> bool {
+    windows_query::terminal_pair_is_supported()
+}
+
+#[cfg(not(any(unix, windows)))]
 fn terminal_pair_is_supported() -> bool {
     false
 }
@@ -523,43 +562,106 @@ fn escape_hatch_enabled(value: Option<&OsStr>) -> bool {
     })
 }
 
-#[cfg(test)]
-fn await_keyboard_query_write_until(
-    receiver: std::sync::mpsc::Receiver<std::io::Result<usize>>,
+#[cfg(any(windows, test))]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyboardQueryState {
+    Fresh,
+    Running,
+    Complete,
+    Poisoned,
+}
+
+#[cfg(any(windows, test))]
+struct KeyboardQueryGate(std::sync::atomic::AtomicU8);
+
+#[cfg(any(windows, test))]
+impl KeyboardQueryGate {
+    const fn new() -> Self {
+        Self(std::sync::atomic::AtomicU8::new(
+            KeyboardQueryState::Fresh as u8,
+        ))
+    }
+
+    fn try_start(&self) -> bool {
+        self.0
+            .compare_exchange(
+                KeyboardQueryState::Fresh as u8,
+                KeyboardQueryState::Running as u8,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn complete(&self) {
+        self.finish(KeyboardQueryState::Complete);
+    }
+
+    fn poison(&self) {
+        self.finish(KeyboardQueryState::Poisoned);
+    }
+
+    fn finish(&self, state: KeyboardQueryState) {
+        let _ = self.0.compare_exchange(
+            KeyboardQueryState::Running as u8,
+            state as u8,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
+
+    #[cfg(test)]
+    fn state(&self) -> KeyboardQueryState {
+        match self.0.load(std::sync::atomic::Ordering::Acquire) {
+            value if value == KeyboardQueryState::Fresh as u8 => KeyboardQueryState::Fresh,
+            value if value == KeyboardQueryState::Running as u8 => KeyboardQueryState::Running,
+            value if value == KeyboardQueryState::Complete as u8 => KeyboardQueryState::Complete,
+            value if value == KeyboardQueryState::Poisoned as u8 => KeyboardQueryState::Poisoned,
+            _ => unreachable!("keyboard query gate stores only declared states"),
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone)]
+struct KeyboardQueryRequest {
     deadline: Instant,
-    on_timeout: impl FnOnce(),
-) -> std::io::Result<()> {
-    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-        on_timeout();
-        return Err(keyboard_query_timeout());
-    };
-    match receiver.recv_timeout(remaining) {
-        Ok(Ok(written)) if written == KEYBOARD_ENHANCEMENT_QUERY.len() => Ok(()),
-        Ok(Ok(written)) => Err(std::io::Error::new(
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(any(windows, test))]
+impl KeyboardQueryRequest {
+    fn new(deadline: Instant) -> Self {
+        Self {
+            deadline,
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn should_abort(&self, now: Instant) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::Acquire) || now >= self.deadline
+    }
+}
+
+#[cfg(any(windows, test))]
+fn exact_keyboard_query_write(written: usize) -> std::io::Result<()> {
+    if written == KEYBOARD_ENHANCEMENT_QUERY.len() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
             std::io::ErrorKind::WriteZero,
             format!(
                 "keyboard capability query wrote {written} of {} bytes",
                 KEYBOARD_ENHANCEMENT_QUERY.len()
             ),
-        )),
-        Ok(Err(error)) => Err(error),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            on_timeout();
-            Err(keyboard_query_timeout())
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(std::io::Error::new(
-            std::io::ErrorKind::BrokenPipe,
-            "keyboard capability query writer stopped without a result",
-        )),
+        ))
     }
-}
-
-#[cfg(test)]
-fn keyboard_query_timeout() -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::TimedOut,
-        "keyboard capability query write timed out",
-    )
 }
 
 #[cfg(unix)]
@@ -831,61 +933,51 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_query_write_wait_is_exact_bounded_and_preserves_failures() {
-        let (success_sender, success_receiver) = std::sync::mpsc::sync_channel(1);
-        success_sender
-            .send(Ok(KEYBOARD_ENHANCEMENT_QUERY.len()))
-            .unwrap();
-        let mut cancelled = false;
-        assert!(
-            await_keyboard_query_write_until(
-                success_receiver,
-                Instant::now() + Duration::from_secs(1),
-                || cancelled = true,
-            )
-            .is_ok()
+    fn keyboard_query_gate_is_one_shot_after_completion() {
+        let gate = KeyboardQueryGate::new();
+        assert_eq!(gate.state(), KeyboardQueryState::Fresh);
+        assert!(gate.try_start());
+        assert_eq!(gate.state(), KeyboardQueryState::Running);
+        assert!(!gate.try_start());
+        gate.complete();
+        assert_eq!(gate.state(), KeyboardQueryState::Complete);
+        assert!(!gate.try_start());
+        gate.poison();
+        assert_eq!(gate.state(), KeyboardQueryState::Complete);
+    }
+
+    #[test]
+    fn keyboard_query_gate_poison_is_permanent() {
+        let gate = KeyboardQueryGate::new();
+        assert!(gate.try_start());
+        gate.poison();
+        assert_eq!(gate.state(), KeyboardQueryState::Poisoned);
+        assert!(!gate.try_start());
+        gate.complete();
+        assert_eq!(gate.state(), KeyboardQueryState::Poisoned);
+    }
+
+    #[test]
+    fn keyboard_query_request_stops_before_a_late_worker_can_start() {
+        let caller = KeyboardQueryRequest::new(Instant::now() + Duration::from_secs(1));
+        let delayed_worker = caller.clone();
+        assert!(!delayed_worker.should_abort(Instant::now()));
+        caller.cancel();
+        assert!(delayed_worker.should_abort(Instant::now()));
+
+        let expired = KeyboardQueryRequest::new(Instant::now());
+        assert!(expired.should_abort(Instant::now()));
+    }
+
+    #[test]
+    fn keyboard_query_write_requires_the_exact_frame() {
+        assert!(exact_keyboard_query_write(KEYBOARD_ENHANCEMENT_QUERY.len()).is_ok());
+        assert_eq!(
+            exact_keyboard_query_write(KEYBOARD_ENHANCEMENT_QUERY.len() - 1)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::WriteZero
         );
-        assert!(!cancelled);
-
-        let (partial_sender, partial_receiver) = std::sync::mpsc::sync_channel(1);
-        partial_sender
-            .send(Ok(KEYBOARD_ENHANCEMENT_QUERY.len() - 1))
-            .unwrap();
-        let partial = await_keyboard_query_write_until(
-            partial_receiver,
-            Instant::now() + Duration::from_secs(1),
-            || panic!("a ready partial write must not time out"),
-        )
-        .unwrap_err();
-        assert_eq!(partial.kind(), std::io::ErrorKind::WriteZero);
-
-        let (error_sender, error_receiver) = std::sync::mpsc::sync_channel(1);
-        error_sender
-            .send(Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "injected writer refusal",
-            )))
-            .unwrap();
-        let failure = await_keyboard_query_write_until(
-            error_receiver,
-            Instant::now() + Duration::from_secs(1),
-            || panic!("a ready writer error must not time out"),
-        )
-        .unwrap_err();
-        assert_eq!(failure.kind(), std::io::ErrorKind::PermissionDenied);
-
-        let (_pending_sender, pending_receiver) = std::sync::mpsc::sync_channel(1);
-        let mut timeout_cancelled = false;
-        let timeout = await_keyboard_query_write_until(
-            pending_receiver,
-            Instant::now()
-                .checked_sub(Duration::from_millis(1))
-                .unwrap(),
-            || timeout_cancelled = true,
-        )
-        .unwrap_err();
-        assert_eq!(timeout.kind(), std::io::ErrorKind::TimedOut);
-        assert!(timeout_cancelled);
     }
 
     #[test]

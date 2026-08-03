@@ -10,9 +10,7 @@ use core_protocol::input::{
     MAX_INPUT_IMAGES, MAX_TOTAL_IMAGE_BASE64_BYTES,
 };
 use std::fmt;
-use std::fs::File;
-#[cfg(unix)]
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -403,12 +401,44 @@ fn open_regular_file(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-#[cfg(not(unix))]
-fn open_regular_file(_path: &Path) -> io::Result<File> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "image file attachment is not enabled on this platform",
-    ))
+#[cfg(windows)]
+fn open_regular_file(path: &Path) -> io::Result<File> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+    let lowercase = path.as_os_str().to_string_lossy().to_ascii_lowercase();
+    if lowercase
+        .as_bytes()
+        .get(..2)
+        .is_some_and(|prefix| prefix.iter().all(|byte| matches!(byte, b'\\' | b'/')))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Windows device and network paths are not local image files",
+        ));
+    }
+
+    // This flag makes CreateFile open the final reparse point itself rather than its target. The
+    // attribute check is then made against that same handle, closing the name-check/open race.
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    ensure_windows_regular_file(metadata.file_attributes(), metadata.file_type().is_file())?;
+    Ok(file)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_regular_file(path: &Path) -> io::Result<File> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(not_regular_file_error());
+    }
+    let file = OpenOptions::new().read(true).open(path)?;
+    ensure_regular_file(file.metadata()?.file_type().is_file())?;
+    Ok(file)
 }
 
 fn ensure_regular_file(is_file: bool) -> io::Result<()> {
@@ -416,6 +446,13 @@ fn ensure_regular_file(is_file: bool) -> io::Result<()> {
         return Err(not_regular_file_error());
     }
     Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn ensure_windows_regular_file(file_attributes: u32, is_file: bool) -> io::Result<()> {
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+    ensure_regular_file(is_file && file_attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0)
 }
 
 fn not_regular_file_error() -> io::Error {
@@ -533,7 +570,10 @@ fn run_file_read_helper(
 
 #[cfg(test)]
 mod tests {
-    use super::{FileReadGate, ImageInputErrorKind, read_capped, run_file_read_helper};
+    use super::{
+        FileReadGate, ImageInputErrorKind, ensure_windows_regular_file, read_capped,
+        run_file_read_helper,
+    };
     use std::cell::Cell;
     use std::io::{self, Read};
     use std::rc::Rc;
@@ -568,6 +608,20 @@ mod tests {
         let loaded = read_capped(reader, 31).unwrap();
         assert_eq!(loaded.len(), 32);
         assert_eq!(consumed.get(), 32);
+    }
+
+    #[test]
+    fn windows_opened_handle_filter_rejects_every_reparse_point() {
+        const FILE_ATTRIBUTE_NORMAL: u32 = 0x0000_0080;
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+        assert!(ensure_windows_regular_file(FILE_ATTRIBUTE_NORMAL, true).is_ok());
+        assert!(
+            ensure_windows_regular_file(FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_REPARSE_POINT, true)
+                .is_err()
+        );
+        assert!(ensure_windows_regular_file(FILE_ATTRIBUTE_DIRECTORY, false).is_err());
     }
 
     #[test]

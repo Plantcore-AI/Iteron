@@ -1404,10 +1404,7 @@ fn load_existing_scope_key(path: &Path) -> io::Result<CatalogCacheScopeKey> {
 }
 
 fn default_catalog_cache_path() -> Option<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME")?);
-    if !home.is_absolute() {
-        return None;
-    }
+    let home = core_protocol::home::operator()?;
     Some(core_protocol::home::path(&home, "cache/providers").join(CATALOG_CACHE_FILE))
 }
 
@@ -1417,9 +1414,11 @@ fn probe_cache_path_for(catalog_cache_path: Option<&Path>) -> Option<PathBuf> {
 }
 
 fn default_static_provider_metadata_path() -> Option<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME")?);
-    home.is_absolute()
-        .then(|| core_protocol::home::path(&home, STATIC_PROVIDER_METADATA_FILE))
+    let home = core_protocol::home::operator()?;
+    Some(core_protocol::home::path(
+        &home,
+        STATIC_PROVIDER_METADATA_FILE,
+    ))
 }
 
 /// Operator opt-in that restores fail-closed loading of the metadata override.

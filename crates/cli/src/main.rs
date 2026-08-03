@@ -104,6 +104,12 @@ enum LocalCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Run a local-only versioned App Server for headless clients.
+    Serve {
+        /// Loopback TCP address for bounded JSONL frames. Port 0 asks the OS to choose one.
+        #[arg(long, default_value = "127.0.0.1:0")]
+        listen: std::net::SocketAddr,
+    },
     /// Run an ultracode workflow (.js) end-to-end, streaming progress to stdout.
     Workflow {
         #[command(subcommand)]
@@ -1244,6 +1250,12 @@ async fn run_cli() -> anyhow::Result<u8> {
     })?;
     use std::io::IsTerminal;
     let has_tty = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
+    let headless_serve = matches!(cli.command.as_ref(), Some(LocalCommand::Serve { .. }));
+    if let Some(LocalCommand::Serve { listen }) = &cli.command
+        && !listen.ip().is_loopback()
+    {
+        anyhow::bail!("headless App Server refuses non-loopback listen address {listen}");
+    }
     // One-shot only with -p/--print (which requires a task), or when there is no TTY and a task was
     // given (pipeline use). Otherwise the interactive TUI is the default (user: 默认 TUI 打开).
     let one_shot = cli.print || (!has_tty && cli.task.is_some() && !cli.tui);
@@ -1266,7 +1278,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     };
     // A no-terminal invocation that is NOT one-shot would fall into the interactive TUI and die in
     // raw-mode setup with a cryptic OS error (review LOW). Fail clearly, before opening a rollout.
-    if !one_shot && !has_tty {
+    if !one_shot && !has_tty && !headless_serve {
         anyhow::bail!(
             "no interactive terminal detected; pass -p \"<task>\" for non-interactive use, or run in a terminal for the TUI"
         );
@@ -1802,6 +1814,13 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
 
     eprintln!("permission mode: {}", agent.permission_mode().label());
+
+    if let Some(LocalCommand::Serve { listen }) = &cli.command {
+        let attached = tui::app_server::attach(agent, false, true)?;
+        tui::headless::serve(attached, *listen).await?;
+        diagnostic_drain.flush();
+        return Ok(output::EXIT_SUCCESS);
+    }
 
     if !one_shot {
         let attached = match tui::app_server::attach(agent, true, false) {

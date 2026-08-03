@@ -17,6 +17,7 @@ mod notification;
 mod terminal_input;
 
 pub(crate) mod app_server;
+pub(crate) mod headless;
 use crate::commands::{self, SlashCommand};
 use crate::editor::Editor;
 use crate::image_input::{self, ImageAttachments};
@@ -828,9 +829,9 @@ struct App {
     status: String,
     /// The canonical result-v5 object from the most recently terminalized run.
     ///
-    /// TUI chrome is presentation, but it consumes the same terminal authority as one-shot.
-    /// Keeping the object rather than a Debug-formatted completion string gives tests one typed
-    /// seam to inspect without scraping terminal cells.
+    /// TUI chrome is presentation, but it must consume the same terminal authority as one-shot and
+    /// headless. Keeping the object (rather than a Debug-formatted completion string) also gives
+    /// parity tests one typed seam to inspect without scraping terminal cells.
     last_result: Option<serde_json::Value>,
     running: bool,
     interrupting: bool,
@@ -3995,12 +3996,31 @@ fn clipboard_commands(_environment: &[(OsString, OsString)]) -> Vec<ClipboardCom
     ]
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn clipboard_commands(environment: &[(OsString, OsString)]) -> Vec<ClipboardCommand> {
+    const SCRIPT: &str = "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName \
+        System.Drawing; $i=[System.Windows.Forms.Clipboard]::GetImage(); if($null -eq $i){exit 3}; \
+        $m=New-Object System.IO.MemoryStream; \
+        $i.Save($m,[System.Drawing.Imaging.ImageFormat]::Png); $b=$m.ToArray(); \
+        [Console]::OpenStandardOutput().Write($b,0,$b.Length)";
+    windows_clipboard_powershell_program(environment)
+        .map(|program| {
+            vec![ClipboardCommand {
+                program,
+                args: &["-NoProfile", "-NonInteractive", "-Sta", "-Command", SCRIPT],
+            }]
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(not(any(unix, windows)))]
 fn clipboard_commands(_environment: &[(OsString, OsString)]) -> Vec<ClipboardCommand> {
     Vec::new()
 }
 
 const MAX_CLIPBOARD_ENV_BYTES: usize = 4 * 1024;
+#[cfg(any(windows, test))]
+const MAX_WINDOWS_SYSTEM_ROOT_BYTES: usize = 1_024;
 
 fn bounded_clipboard_environment_value(value: OsString) -> Option<OsString> {
     if value.as_encoded_bytes().len() > MAX_CLIPBOARD_ENV_BYTES
@@ -4040,9 +4060,117 @@ fn clipboard_child_environment_with(
             }
         }
     }
-    #[cfg(not(unix))]
-    let _ = &mut source;
+    #[cfg(windows)]
+    {
+        environment.extend(windows_clipboard_environment_with(
+            trusted_windows_directory(),
+            |name| source(name),
+            native_windows_clipboard_root,
+        ));
+    }
     environment
+}
+
+#[cfg(any(windows, test))]
+fn windows_clipboard_environment_with(
+    trusted_root: Option<OsString>,
+    mut source: impl FnMut(&str) -> Option<OsString>,
+    admissible_root: impl Fn(&Path) -> bool,
+) -> Vec<(OsString, OsString)> {
+    let Some(root) = trusted_root
+        .and_then(bounded_clipboard_environment_value)
+        .filter(|value| value.as_encoded_bytes().len() <= MAX_WINDOWS_SYSTEM_ROOT_BYTES)
+        .filter(|value| {
+            value
+                .to_str()
+                .is_some_and(|text| !text.contains(';') && !text.contains('"'))
+        })
+        .filter(|value| admissible_root(Path::new(value)))
+    else {
+        return Vec::new();
+    };
+
+    let powershell_dir = append_windows_subpath(&root, r"System32\WindowsPowerShell\v1.0");
+    let system32 = append_windows_subpath(&root, "System32");
+    let wbem = append_windows_subpath(&root, r"System32\Wbem");
+    let mut path = OsString::new();
+    for directory in [&powershell_dir, &system32, &root, &wbem] {
+        if !path.is_empty() {
+            path.push(";");
+        }
+        path.push(directory);
+    }
+    let Some(path) = bounded_clipboard_environment_value(path) else {
+        return Vec::new();
+    };
+
+    let mut environment = vec![
+        ("PATH".into(), path),
+        ("SystemRoot".into(), root.clone()),
+        ("WINDIR".into(), root),
+    ];
+    for name in ["TEMP", "TMP"] {
+        if let Some(value) = source(name).and_then(bounded_clipboard_environment_value) {
+            environment.push((name.into(), value));
+        }
+    }
+    environment
+}
+
+#[cfg(any(windows, test))]
+fn append_windows_subpath(root: &std::ffi::OsStr, subpath: &str) -> OsString {
+    let mut path = root.to_os_string();
+    if !root
+        .to_string_lossy()
+        .as_bytes()
+        .last()
+        .is_some_and(|byte| matches!(byte, b'\\' | b'/'))
+    {
+        path.push("\\");
+    }
+    path.push(subpath);
+    path
+}
+
+#[cfg(any(windows, test))]
+fn windows_clipboard_powershell_program(environment: &[(OsString, OsString)]) -> Option<OsString> {
+    let root = environment
+        .iter()
+        .find_map(|(name, value)| (name == "SystemRoot").then_some(value))?;
+    Some(append_windows_subpath(
+        root,
+        r"System32\WindowsPowerShell\v1.0\powershell.exe",
+    ))
+}
+
+#[cfg(windows)]
+fn native_windows_clipboard_root(path: &Path) -> bool {
+    use std::path::Prefix;
+
+    if !path.is_absolute() {
+        return false;
+    }
+    matches!(
+        path.components().next(),
+        Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::UNC(_, _))
+    )
+}
+
+#[cfg(windows)]
+fn trusted_windows_directory() -> Option<OsString> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
+
+    // The OS, not an inherited environment variable, selects the executable trust root. Refuse an
+    // unexpectedly large path instead of allocating from an unbounded native return value.
+    let mut buffer = vec![0_u16; MAX_WINDOWS_SYSTEM_ROOT_BYTES + 1];
+    // SAFETY: `buffer` is writable for its declared length and retained until the call returns.
+    let length = unsafe { GetWindowsDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if length == 0 || length >= buffer.len() {
+        return None;
+    }
+    Some(OsString::from_wide(&buffer[..length]))
 }
 
 /// Read a clipboard image through a fixed platform adapter. The subprocess has no shell, stderr is
@@ -5754,10 +5882,10 @@ async fn handle_registered_command(
             }
         }
         SlashCommand::Agents => {
-            let user = std::env::var_os("HOME")
-                .map(|h| std::path::PathBuf::from(h).join(".core").join("agents"))
-                .unwrap_or_default();
-            let catalog = core_agents::AgentCatalog::discover(&user, session.workspace());
+            let catalog = match core_protocol::home::operator() {
+                Some(home) => core_agents::AgentCatalog::discover(&home, session.workspace()),
+                None => core_agents::AgentCatalog::discover_without_user(session.workspace()),
+            };
             let defs = catalog.defs();
             let mut rows: Vec<block::PanelRow> = defs
                 .iter()
@@ -5777,8 +5905,10 @@ async fn handle_registered_command(
             app.panel("⑂", "agents", rows);
         }
         SlashCommand::Skills => {
-            let user = core_ctx::skills::user_skills_dir().unwrap_or_default();
-            let cat = core_ctx::skills::SkillCatalog::discover(&user, session.workspace());
+            let cat = match core_ctx::skills::user_skills_dir() {
+                Some(user) => core_ctx::skills::SkillCatalog::discover(&user, session.workspace()),
+                None => core_ctx::skills::SkillCatalog::discover_without_user(session.workspace()),
+            };
             let mut rows: Vec<block::PanelRow> = cat
                 .defs()
                 .iter()
@@ -5895,10 +6025,9 @@ async fn handle_registered_command(
             }
         }
         SlashCommand::Hooks => {
-            let home = std::env::var_os("HOME")
-                .map(std::path::PathBuf::from)
+            let hooks = core_protocol::home::operator()
+                .map(|home| crate::runtime::hooks::Hooks::load_user(&home))
                 .unwrap_or_default();
-            let hooks = crate::runtime::hooks::Hooks::load_user(&home);
             if hooks.is_empty() {
                 app.note(
                     block::NoticeLevel::Info,
@@ -9735,6 +9864,174 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
     }
 
+    #[derive(Clone)]
+    struct ClientParityCapture {
+        one_shot: serde_json::Value,
+        headless: serde_json::Value,
+        tui: serde_json::Value,
+        tui_status: String,
+    }
+
+    fn pairwise_result_equality(capture: &ClientParityCapture) -> [bool; 3] {
+        [
+            capture.one_shot == capture.headless,
+            capture.headless == capture.tui,
+            capture.tui == capture.one_shot,
+        ]
+    }
+
+    fn one_shot_terminal_result(summary: &app_server::TerminalSummary) -> serde_json::Value {
+        // This is the exact constructor used by the one-shot client after it receives RunEnded.
+        // Do not route this leg through TerminalSummary::result_v5: an accidental sibling-client
+        // normalizer must remain observable to this parity proof.
+        crate::output::final_result(
+            &summary.outcome,
+            &summary.assistant_text,
+            &summary.run_id,
+            &summary.cost,
+            summary.turns,
+            summary.kernel_tax,
+            summary.error.as_deref(),
+        )
+    }
+
+    fn tui_terminal_result(summary: &app_server::TerminalSummary) -> (serde_json::Value, String) {
+        let mut app = App::new();
+        app.running = true;
+        let (sq, _rx) = tokio::sync::mpsc::channel(1);
+        let mut session = Session::for_test(sq);
+        let event = app_server::ServerEvent::RunEnded {
+            snapshot: Box::new(app_server::SessionSnapshot {
+                mode: PermissionMode::default(),
+                effort: Effort::default(),
+                model: "test-model".into(),
+                cost: summary.cost.clone(),
+                last_turn_usage: None,
+                unadmitted_steers: Vec::new(),
+                permission_rules: PermissionRules::new(),
+                ledger_summary: String::new(),
+                rate_limit: None,
+            }),
+            summary: Box::new(summary.clone()),
+        };
+        let mut notifier = notification::TerminalNotifier::new(false);
+        notifier.begin_run();
+        let mut notification_bytes = Vec::new();
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let drain = Arc::new(AtomicBool::new(false));
+
+        // Exercise the TUI's real RunEnded branch, including its native status projection. The
+        // canonical object is retained internally for parity; it is not printed as machine JSON.
+        apply_server_event(
+            &mut app,
+            &mut session,
+            event,
+            &mut notifier,
+            &mut notification_bytes,
+            &interrupt,
+            &drain,
+        );
+
+        (
+            app.last_result
+                .expect("RunEnded stores the canonical result"),
+            app.status,
+        )
+    }
+
+    fn capture_client_parity(summary: &app_server::TerminalSummary) -> ClientParityCapture {
+        let one_shot = one_shot_terminal_result(summary);
+        // Destructuring the versioned transport frame is the sole normalization in this proof.
+        // Every result-v5 field remains untouched and participates in raw Value equality.
+        let (protocol_version, seq, headless) =
+            headless::capture_terminal_result_frame(41, summary);
+        assert_eq!(protocol_version, core_protocol::PROTOCOL_VERSION);
+        assert_eq!(seq, 41);
+        let (tui, tui_status) = tui_terminal_result(summary);
+        ClientParityCapture {
+            one_shot,
+            headless,
+            tui,
+            tui_status,
+        }
+    }
+
+    #[test]
+    fn three_client_production_paths_are_pairwise_identical_for_every_terminal_outcome() {
+        let cases = [
+            (core_protocol::Outcome::Done, "done", 0_u64),
+            (core_protocol::Outcome::Drained, "drained", 0),
+            (
+                core_protocol::Outcome::BudgetExhausted("max_turns"),
+                "budget_exhausted",
+                3,
+            ),
+            (core_protocol::Outcome::Interrupted, "interrupted", 130),
+            (core_protocol::Outcome::Stuck, "stuck", 4),
+            (core_protocol::Outcome::HarnessError, "harness_error", 2),
+        ];
+
+        for (outcome, expected_outcome, expected_exit_code) in cases {
+            let summary = app_server::TerminalSummary {
+                error: matches!(&outcome, core_protocol::Outcome::HarnessError)
+                    .then(|| "synthetic harness failure".into()),
+                outcome,
+                assistant_text: "parity reply".into(),
+                run_id: "run-client-parity".into(),
+                cost: CostState::default(),
+                turns: 1,
+                kernel_tax: core_obs::KernelTax::default(),
+                memo_hits: 0,
+                memo_misses: 0,
+            };
+            let capture = capture_client_parity(&summary);
+
+            assert_eq!(
+                pairwise_result_equality(&capture),
+                [true, true, true],
+                "{expected_outcome} diverged across production client projections"
+            );
+            for result in [&capture.one_shot, &capture.headless, &capture.tui] {
+                assert_eq!(result["outcome"], expected_outcome);
+                assert_eq!(
+                    result["exit_code"].as_u64(),
+                    Some(expected_exit_code),
+                    "{expected_outcome} changed its process contract"
+                );
+            }
+            assert_eq!(
+                capture.tui_status,
+                format!("idle · last: {expected_outcome}"),
+                "native TUI presentation is checked separately from machine-object parity"
+            );
+
+            // Normalizer canary: a substantive field changed in only one captured result must not
+            // be erased by envelope handling or a presentation-oriented comparison.
+            let mut divergent = capture.clone();
+            divergent.headless["assistant_text"] =
+                serde_json::Value::String("headless-only mutation".into());
+            assert_eq!(
+                pairwise_result_equality(&divergent),
+                [false, false, true],
+                "raw pairwise equality must expose a one-client result-v5 mutation"
+            );
+
+            // Source-mutation canary: changing the shared authority must move all three production
+            // outputs together and preserve parity, proving the assertion is not three literals.
+            let mut changed_summary = summary.clone();
+            changed_summary.assistant_text = "parity reply after summary mutation".into();
+            let changed = capture_client_parity(&changed_summary);
+            assert_eq!(pairwise_result_equality(&changed), [true, true, true]);
+            assert_ne!(changed.one_shot, capture.one_shot);
+            assert_ne!(changed.headless, capture.headless);
+            assert_ne!(changed.tui, capture.tui);
+            assert_eq!(
+                changed.one_shot["assistant_text"],
+                "parity reply after summary mutation"
+            );
+        }
+    }
+
     #[test]
     fn run_terminal_chrome_is_derived_from_the_canonical_result_v5_object() {
         let mut app = App::new();
@@ -10806,6 +11103,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                     "XDG_RUNTIME_DIR" => "/tmp/core-runtime",
                     "DISPLAY" => ":1",
                     "XAUTHORITY" => "/tmp/core-xauthority",
+                    "SystemRoot" | "SYSTEMROOT" | "WINDIR" => r"C:\Windows",
+                    "PATHEXT" => ".EXE;.CMD",
+                    "TEMP" | "TMP" => r"C:\Temp",
                     _ => "must-not-cross",
                 }
                 .into(),
@@ -10822,6 +11122,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "HTTPS_PROXY",
             "HTTP_PROXY",
             "HOME",
+            "USERPROFILE",
+            "HOMEDRIVE",
+            "HOMEPATH",
         ] {
             assert!(
                 !keys.contains(forbidden),
@@ -10885,6 +11188,92 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
         apply_event(&mut app, UiEvent::Phase(core_protocol::Phase::Tools));
         assert!(app.first_token_stall().is_none());
+    }
+
+    #[test]
+    fn windows_clipboard_plan_ignores_parent_roots_and_uses_fixed_stock_powershell_path() {
+        fn simulated_windows_root(path: &Path) -> bool {
+            let text = path.to_string_lossy();
+            if text.starts_with("\\\\?\\") || text.starts_with("\\\\.\\") {
+                return false;
+            }
+            let bytes = text.as_bytes();
+            (bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && matches!(bytes[2], b'\\' | b'/'))
+                || text.starts_with(r"\\")
+        }
+
+        let environment = windows_clipboard_environment_with(
+            Some(r"C:\Windows".into()),
+            |name| {
+                Some(
+                    match name {
+                        "TEMP" | "TMP" => r"C:\Temp",
+                        "SystemRoot" | "SYSTEMROOT" | "WINDIR" => r"D:\attacker",
+                        _ => "must-not-cross",
+                    }
+                    .into(),
+                )
+            },
+            simulated_windows_root,
+        );
+        assert_eq!(
+            windows_clipboard_powershell_program(&environment),
+            Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe".into())
+        );
+        assert_eq!(
+            environment
+                .iter()
+                .find_map(|(name, value)| (name == "PATH").then_some(value))
+                .map(OsString::as_os_str),
+            Some(std::ffi::OsStr::new(
+                r"C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem"
+            ))
+        );
+        let keys = environment
+            .iter()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            keys,
+            ["PATH", "SystemRoot", "TEMP", "TMP", "WINDIR"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        );
+        for forbidden in ["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"] {
+            assert!(!keys.contains(forbidden));
+        }
+
+        let ignored_parent_root = windows_clipboard_environment_with(
+            Some(r"D:\Windows".into()),
+            |name| {
+                matches!(name, "SystemRoot" | "SYSTEMROOT" | "WINDIR")
+                    .then(|| r"C:\attacker".into())
+            },
+            simulated_windows_root,
+        );
+        assert_eq!(
+            windows_clipboard_powershell_program(&ignored_parent_root),
+            Some(r"D:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe".into())
+        );
+        for invalid in [
+            r"relative\Windows",
+            r"\\?\C:\Windows",
+            r"\\.\C:\Windows",
+            r"C:\Windows;C:\attacker",
+        ] {
+            assert!(
+                windows_clipboard_environment_with(
+                    Some(invalid.into()),
+                    |_| None,
+                    simulated_windows_root,
+                )
+                .is_empty()
+            );
+        }
     }
 
     #[test]

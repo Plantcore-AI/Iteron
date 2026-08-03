@@ -289,6 +289,10 @@ mod tests {
             Capability::Osc8
         );
         assert_eq!(
+            detected(&[("WT_SESSION", "native-windows-terminal")]),
+            Capability::Osc8
+        );
+        assert_eq!(
             detected(&[("TERM", "xterm-kitty"), ("TMUX", "/tmp/tmux")]),
             Capability::PlainText,
             "multiplexer passthrough is not assumed"
@@ -333,6 +337,31 @@ mod tests {
                 .is_none()
         );
 
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_paths_canonicalize_to_confined_file_urls() {
+        let workspace = test_workspace("windows-paths");
+        let local = workspace.join("notes with space.md");
+        std::fs::write(&local, "notes").expect("write Windows OSC 8 target");
+        let policy = Policy::new(Capability::Osc8, &workspace);
+
+        let target = policy
+            .admit_target("notes with space.md")
+            .expect("admit workspace-relative Windows path");
+        let url = Url::parse(&target).expect("normalized target is a URL");
+        assert_eq!(url.scheme(), "file");
+        assert_eq!(
+            url.to_file_path()
+                .expect("file URL converts to a Windows path")
+                .canonicalize()
+                .expect("canonicalize URL path"),
+            local.canonicalize().expect("canonicalize fixture path")
+        );
+        assert!(policy.admit_target(r"C:\outside.txt").is_none());
+        assert!(policy.admit_target(r"\\server\share\outside.txt").is_none());
         let _ = std::fs::remove_dir_all(workspace);
     }
 

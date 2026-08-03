@@ -22,9 +22,9 @@ customer data, or proprietary source.
 
 ## Supported versions
 
-Until a stable release exists, only the latest public release and current `main`
-branch receive fixes. Older pre-alpha releases may be superseded without a patch
-release. Supported platforms are documented in the
+Until an accepted release exists, only the current `main` branch receives
+fixes. Source snapshots may be superseded without a patch release. Supported
+platforms and the proposed binary release matrix are documented in the
 [installation guide](docs/getting-started/installation.md).
 
 ## What support does not include

@@ -19,9 +19,10 @@ The repository currently contains:
 - hash-chained local records with sessions, continuation, resume, and fork;
 - four permission modes, capability-based approval, bounded runs, and macOS/Linux
   sandbox backends;
-- machine-validated human ownership boundaries and repository review policy.
-- immutable native macOS/Linux releases with an audited no-sudo installer,
-  checksums, license evidence, SBOMs, provenance, and public curl canaries.
+- machine-validated human ownership boundaries and repository review policy;
+- release tooling for a future native target matrix, installer, checksums,
+  license evidence, SBOMs, provenance, and public-install canaries. No accepted
+  binary release or native receipt currently exists.
 
 ## Not accepted as complete
 

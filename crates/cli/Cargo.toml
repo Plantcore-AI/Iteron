@@ -37,12 +37,22 @@ async-trait = "0.1"
 url = "2"
 sha2 = { workspace = true }
 getrandom = { workspace = true }
+zeroize = { workspace = true }
 libc = "0.2"
 base64 = { workspace = true }
 png = { workspace = true }
 gif = { workspace = true }
 image-webp = { workspace = true }
 zune-jpeg = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_SystemInformation",
+] }
 
 [dev-dependencies]
 portable-pty = "=0.9.0"

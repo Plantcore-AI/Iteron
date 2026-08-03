@@ -43,6 +43,17 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 The only mutating options are `--version vX.Y.Z` and `--bin-dir PATH`. Run the
 downloaded release asset with `--help` to inspect the complete interface.
 
+## Install the Windows one-shot archive
+
+The POSIX `install.sh` does not run on Windows. Download the
+`core-code-vVERSION-x86_64-pc-windows-msvc.zip` asset and `SHA256SUMS` from the
+same immutable release, verify the archive's exact lowercase SHA-256 row with
+`Get-FileHash`, and use `Expand-Archive`. The archive contains
+`core-code-vVERSION-x86_64-pc-windows-msvc\core.exe`; move that executable to a
+directory already on `PATH`. Release acceptance runs the same checksum,
+extraction, `--version`, and `--machine-contract` content canary on
+`windows-2025`.
+
 ## Supported release targets
 
 | Host | Release target | Native release runner |
@@ -89,6 +100,9 @@ gh attestation verify core-code-v0.0.1-aarch64-apple-darwin.tar.gz \
   --repo Plantcore-AI/core
 ```
 
+For the Windows asset, pass its `.zip` name to the same
+`gh attestation verify` command.
+
 A checksum fetched from the same release detects corruption. The GitHub
 attestation additionally binds an artifact to this repository and its release
 workflow. The receipt identifies the exact final manifest bytes; the manifest identifies each
@@ -115,11 +129,17 @@ Run the installer again to upgrade to the latest release, or pass `--version` to
 install a specific release. The existing executable is preserved if download,
 verification, extraction, or smoke testing fails.
 
+On Windows, repeat the verified archive procedure and replace only `core.exe`
+after the downloaded binary passes `core.exe --version`.
+
 To uninstall, remove only the executable from the destination you selected:
 
 ```sh
 rm "$HOME/.local/bin/core"
 ```
+
+On Windows, remove only the `core.exe` file from the directory where you placed
+it.
 
 Core Code does not remove `.core/` session and recovery data automatically.
 Review that evidence before deleting it.

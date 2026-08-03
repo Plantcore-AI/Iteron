@@ -1,0 +1,607 @@
+name: trusted client runtime evidence
+
+on:
+  workflow_call:
+    inputs:
+      repository-id:
+        required: true
+        type: string
+      tested-commit:
+        required: true
+        type: string
+      tested-tree:
+        required: true
+        type: string
+      builder-workflow-commit:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.90.0
+  RUSTUP_TOOLCHAIN: 1.90.0
+
+jobs:
+  native-runtime:
+    name: native client runtime / ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - runner: macos-15
+            host: darwin-arm64
+            target: aarch64-apple-darwin
+            binary: core
+            python: python3
+          - runner: macos-15-intel
+            host: darwin-x86_64
+            target: x86_64-apple-darwin
+            binary: core
+            python: python3
+          - runner: ubuntu-24.04-arm
+            host: linux-arm64
+            target: aarch64-unknown-linux-musl
+            binary: core
+            python: python3
+          - runner: ubuntu-24.04
+            host: linux-x86_64
+            target: x86_64-unknown-linux-musl
+            binary: core
+            python: python3
+          - runner: windows-2022
+            host: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            binary: core.exe
+            python: python
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/runtime-receipt
+      CORE_RUNTIME_WORKSPACE: ${{ github.workspace }}
+      PYTHONNOUSERSITE: 1
+    steps:
+      - name: Check out the tested client source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.tested-commit }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the pinned evidence builder
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.builder-workflow-commit }}
+          path: builder
+          persist-credentials: false
+      - name: Validate the evidence inputs and isolated checkouts
+        shell: bash
+        env:
+          BUILDER_WORKFLOW_COMMIT: ${{ inputs.builder-workflow-commit }}
+          EXPECTED_REPOSITORY_ID: ${{ inputs.repository-id }}
+          TESTED_COMMIT: ${{ inputs.tested-commit }}
+          TESTED_TREE: ${{ inputs.tested-tree }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = Plantcore-AI/core
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = refs/heads/main
+          test "$EXPECTED_REPOSITORY_ID" = "$GITHUB_REPOSITORY_ID"
+          [[ "$EXPECTED_REPOSITORY_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$TESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TESTED_TREE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BUILDER_WORKFLOW_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$TESTED_COMMIT"
+          test "$BUILDER_WORKFLOW_COMMIT" != "$TESTED_COMMIT"
+
+          candidate=$CORE_RUNTIME_WORKSPACE/candidate
+          builder=$CORE_RUNTIME_WORKSPACE/builder
+          test "$(git -C "$candidate" rev-parse 'HEAD^{commit}')" = "$TESTED_COMMIT"
+          test "$(git -C "$candidate" rev-parse 'HEAD^{tree}')" = "$TESTED_TREE"
+          git -C "$candidate" merge-base --is-ancestor "$BUILDER_WORKFLOW_COMMIT" "$TESTED_COMMIT"
+          test "$(git -C "$builder" rev-parse 'HEAD^{commit}')" = \
+            "$BUILDER_WORKFLOW_COMMIT"
+          for required in \
+            .github/workflows/runtime-receipt.yml \
+            release-tools/fetch_tool.py \
+            release-tools/smoke_release_client.py \
+            release-tools/smoke_release_process.py \
+            release-tools/verify_pe.py
+          do
+            test -f "$builder/$required"
+            test ! -L "$builder/$required"
+          done
+          for root in "$candidate" "$builder"; do
+            status=$RUNNER_TEMP/$(basename "$root")-initial-status
+            git -C "$root" status \
+              --porcelain=v1 -z --untracked-files=all > "$status"
+            test ! -s "$status"
+          done
+      - name: Normalize Windows build paths for native tools
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace=$(cygpath -m "$GITHUB_WORKSPACE")
+          {
+            echo "CORE_RUNTIME_WORKSPACE=$workspace"
+            echo "CARGO_TARGET_DIR=$workspace/target/runtime-receipt"
+          } >> "$GITHUB_ENV"
+      - name: Install Linux build and sandbox dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y apparmor apparmor-utils bubblewrap musl-tools
+          sudo tee /etc/apparmor.d/core-ci-bwrap >/dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          profile core-ci-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+          sudo apparmor_parser --replace /etc/apparmor.d/core-ci-bwrap
+      - name: Install the exact Rust target
+        shell: bash
+        run: >-
+          rustup toolchain install "$RUST_VERSION"
+          --profile minimal
+          --target "${{ matrix.target }}"
+      - name: Fetch the checksum-pinned auditable builder
+        working-directory: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/core-runtime-bin"
+          "${{ matrix.python }}" -I - \
+            ../builder/release-tools/fetch_tool.py \
+            cargo-auditable "${{ matrix.host }}" \
+            --output \
+            "$RUNNER_TEMP/core-runtime-bin/cargo-auditable${{ runner.os == 'Windows' && '.exe' || '' }}" \
+            <<'PY'
+          import pathlib
+          import runpy
+          import sys
+
+          script = pathlib.Path(sys.argv[1]).resolve(strict=True)
+          sys.path.insert(0, str(script.parent))
+          sys.argv = [str(script), *sys.argv[2:]]
+          runpy.run_path(str(script), run_name="__main__")
+          PY
+          echo "$RUNNER_TEMP/core-runtime-bin" >> "$GITHUB_PATH"
+      - name: Run the complete target test suite
+        id: target-tests
+        working-directory: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cargo +"$RUST_VERSION" test --locked -p core-cli \
+              --target "${{ matrix.target }}"
+          else
+            cargo +"$RUST_VERSION" test --workspace --all-targets --locked \
+              --target "${{ matrix.target }}"
+          fi
+      - name: Build an auditable release binary
+        id: release-binary
+        working-directory: candidate
+        shell: bash
+        run: >-
+          cargo +"$RUST_VERSION" auditable build
+          --release --locked -p core-cli
+          --target "${{ matrix.target }}"
+      - name: Verify architecture, linkage, and executable smoke tests
+        id: native-binary
+        working-directory: candidate
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          target=${{ matrix.target }}
+          binary="$CARGO_TARGET_DIR/$target/release/${{ matrix.binary }}"
+          builder=$CORE_RUNTIME_WORKSPACE/builder
+          test -f "$binary"
+          test ! -L "$binary"
+
+          expected_version=$("${{ matrix.python }}" -I - <<'PY'
+          import pathlib
+          import re
+          import tomllib
+
+          with pathlib.Path("Cargo.toml").open("rb") as handle:
+              document = tomllib.load(handle)
+          version = document.get("workspace", {}).get("package", {}).get("version")
+          if not isinstance(version, str) or re.fullmatch(
+              r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version
+          ) is None:
+              raise SystemExit("workspace version is not strict numeric SemVer")
+          print(version)
+          PY
+          )
+          [[ "$expected_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          "${{ matrix.python }}" -I - \
+            "$builder" "$binary" "$expected_version" <<'PY'
+          import os
+          import pathlib
+          import sys
+
+          builder = pathlib.Path(sys.argv[1])
+          binary = pathlib.Path(sys.argv[2])
+          expected_version = sys.argv[3]
+          sys.path.insert(0, str(builder / "release-tools"))
+          from smoke_release_process import run_bounded
+
+          environment = os.environ.copy()
+          version = run_bounded(
+              [str(binary), "--version"],
+              environment=environment,
+              cwd=pathlib.Path.cwd(),
+          )
+          if (
+              version.returncode != 0
+              or version.stderr
+              or version.stdout != f"core {expected_version}\n".encode()
+          ):
+              raise SystemExit("native release binary reported an unexpected version")
+          help_result = run_bounded(
+              [str(binary), "--help"],
+              environment=environment,
+              cwd=pathlib.Path.cwd(),
+          )
+          if (
+              help_result.returncode != 0
+              or help_result.stderr
+              or not help_result.stdout
+          ):
+              raise SystemExit("native release binary help smoke failed")
+          PY
+
+          if [[ "$target" == x86_64-pc-windows-msvc ]]; then
+            "${{ matrix.python }}" -I - \
+              "$builder/release-tools/verify_pe.py" \
+              --binary "$binary" \
+              <<'PY'
+          import pathlib
+          import runpy
+          import sys
+
+          script = pathlib.Path(sys.argv[1]).resolve(strict=True)
+          sys.path.insert(0, str(script.parent))
+          sys.argv = [str(script), *sys.argv[2:]]
+          runpy.run_path(str(script), run_name="__main__")
+          PY
+            exit 0
+          fi
+          test -x "$binary"
+          description=$(file "$binary")
+          case "$target" in
+            aarch64-apple-darwin) grep -q 'arm64' <<<"$description" ;;
+            x86_64-apple-darwin) grep -q 'x86_64' <<<"$description" ;;
+            aarch64-unknown-linux-musl) grep -Eq 'ARM aarch64|aarch64' <<<"$description" ;;
+            x86_64-unknown-linux-musl) grep -q 'x86-64' <<<"$description" ;;
+            *) printf 'unexpected native target %s\n' "$target" >&2; exit 1 ;;
+          esac
+          if [[ "$target" == *-unknown-linux-musl ]]; then
+            grep -Eq 'statically linked|static-pie linked' <<<"$description"
+          fi
+      - name: Complete one task with the native release client
+        id: native-client
+        working-directory: candidate
+        shell: bash
+        run: >-
+          "${{ matrix.python }}" -I
+          ../builder/release-tools/smoke_release_client.py
+          --binary
+          "$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
+      - name: Run native version-independence proof
+        id: native-version-independence
+        if: >-
+          success() &&
+          (matrix.target == 'x86_64-unknown-linux-musl' ||
+          matrix.target == 'x86_64-pc-windows-msvc')
+        working-directory: candidate
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          target=${{ matrix.target }}
+          max_log_bytes=1048576
+
+          run_exact() {
+            label=$1
+            shift
+            log="$RUNNER_TEMP/core-native-version-$label.log"
+            test ! -e "$log"
+            set +e
+            "$@" 2>&1 | head -c "$((max_log_bytes + 1))" > "$log"
+            pipeline_status=("${PIPESTATUS[@]}")
+            set -e
+            test "${#pipeline_status[@]}" -eq 2
+            status=${pipeline_status[0]}
+            capture_status=${pipeline_status[1]}
+            test "$capture_status" -eq 0
+            bytes=$(wc -c < "$log" | tr -d '[:space:]')
+            [[ "$bytes" =~ ^[0-9]+$ ]]
+            if [[ "$bytes" -gt "$max_log_bytes" ]]; then
+              printf 'native version proof %s exceeded %s bytes\n' \
+                "$label" "$max_log_bytes" >&2
+              exit 1
+            fi
+            cat "$log"
+            test "$status" -eq 0
+            summaries=$(grep -Ec \
+              '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in .+$' \
+              "$log" || true)
+            test "$summaries" -eq 1
+          }
+
+          run_exact tui \
+            cargo +"$RUST_VERSION" test --locked -p core-cli --bin core \
+              --target "$target" \
+              tui::app_server::tests::version_skew_is_refused_up_front -- --exact
+          run_exact one-shot \
+            cargo +"$RUST_VERSION" test --locked -p core-cli \
+              --test one_shot_output --target "$target" \
+              one_shot_refuses_app_server_version_skew_before_provider_dispatch \
+              -- --exact
+          run_exact headless \
+            cargo +"$RUST_VERSION" test --locked -p core-cli \
+              --test headless_serve --target "$target" \
+              no_tty_skew_reconnect_and_result_v5_share_one_headless_server \
+              -- --exact
+          if [[ "$target" == x86_64-pc-windows-msvc ]]; then
+            run_exact conpty \
+              cargo +"$RUST_VERSION" test --locked -p core-cli \
+                --test windows_conpty --target "$target" \
+                native_conpty_rejects_version_skew_before_terminal_takeover \
+                -- --exact
+          fi
+      - name: Confirm the evidence inputs remain immutable
+        if: always()
+        shell: bash
+        env:
+          BUILDER_WORKFLOW_COMMIT: ${{ inputs.builder-workflow-commit }}
+          TESTED_COMMIT: ${{ inputs.tested-commit }}
+          TESTED_TREE: ${{ inputs.tested-tree }}
+        run: |
+          set -euo pipefail
+          candidate=$CORE_RUNTIME_WORKSPACE/candidate
+          builder=$CORE_RUNTIME_WORKSPACE/builder
+          test "$(git -C "$candidate" rev-parse 'HEAD^{commit}')" = "$TESTED_COMMIT"
+          test "$(git -C "$candidate" rev-parse 'HEAD^{tree}')" = "$TESTED_TREE"
+          test "$(git -C "$builder" rev-parse 'HEAD^{commit}')" = \
+            "$BUILDER_WORKFLOW_COMMIT"
+          for root in "$candidate" "$builder"; do
+            status=$RUNNER_TEMP/$(basename "$root")-final-status
+            git -C "$root" status \
+              --porcelain=v1 -z --untracked-files=all > "$status"
+            test ! -s "$status"
+          done
+
+  receipt:
+    name: trusted client runtime receipt
+    needs: native-runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the pinned receipt collector
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.builder-workflow-commit }}
+          path: builder
+          persist-credentials: false
+      - name: Check out the tested tree without executing it
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.tested-commit }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate the fresh signer checkouts
+        shell: bash
+        env:
+          BUILDER_WORKFLOW_COMMIT: ${{ inputs.builder-workflow-commit }}
+          EXPECTED_REPOSITORY_ID: ${{ inputs.repository-id }}
+          TESTED_COMMIT: ${{ inputs.tested-commit }}
+          TESTED_TREE: ${{ inputs.tested-tree }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = Plantcore-AI/core
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_SHA" = "$TESTED_COMMIT"
+          test "$EXPECTED_REPOSITORY_ID" = "$GITHUB_REPOSITORY_ID"
+          [[ "$EXPECTED_REPOSITORY_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$TESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TESTED_TREE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BUILDER_WORKFLOW_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$BUILDER_WORKFLOW_COMMIT" != "$TESTED_COMMIT"
+          test "$(git -C builder rev-parse 'HEAD^{commit}')" = \
+            "$BUILDER_WORKFLOW_COMMIT"
+          test "$(git -C candidate rev-parse 'HEAD^{commit}')" = "$TESTED_COMMIT"
+          test "$(git -C candidate rev-parse 'HEAD^{tree}')" = "$TESTED_TREE"
+          git -C candidate merge-base --is-ancestor "$BUILDER_WORKFLOW_COMMIT" "$TESTED_COMMIT"
+          test -f builder/release-tools/client_runtime_receipt.py
+          test ! -L builder/release-tools/client_runtime_receipt.py
+          for root in builder candidate; do
+            status=$RUNNER_TEMP/core-runtime-$root-signer-status
+            git -C "$root" status \
+              --porcelain=v1 -z --untracked-files=all > "$status"
+            test ! -s "$status"
+          done
+      - name: Collect bounded native runtime evidence
+        id: collect
+        shell: bash
+        env:
+          BUILDER_WORKFLOW_COMMIT: ${{ inputs.builder-workflow-commit }}
+          GH_TOKEN: ${{ github.token }}
+          TESTED_COMMIT: ${{ inputs.tested-commit }}
+          TESTED_TREE: ${{ inputs.tested-tree }}
+        run: |
+          set -euo pipefail
+          api_version=2026-03-10
+          evidence_dir=$RUNNER_TEMP/core-client-runtime-receipt
+          run_json=$evidence_dir/run.json
+          jobs_json=$evidence_dir/jobs.json
+          receipt=$evidence_dir/runtime-receipt-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}.json
+          test ! -e "$evidence_dir"
+          mkdir "$evidence_dir"
+
+          download_bounded() {
+            endpoint=$1
+            output=$2
+            maximum=$3
+            transfer=$output.transfer
+            sentinel=CORE_RUNTIME_API_TRANSFER_COMPLETE
+            test ! -e "$output"
+            test ! -e "$transfer"
+            set +e
+            gh api \
+              -H "X-GitHub-Api-Version: $api_version" \
+              "$endpoint" \
+              2>&1 \
+              | {
+                  head -c "$((maximum + 1))"
+                  printf '%s' "$sentinel"
+                } > "$transfer"
+            pipeline_status=("${PIPESTATUS[@]}")
+            set -e
+            test "${#pipeline_status[@]}" -eq 2
+            test "${pipeline_status[0]}" -eq 0
+            test "${pipeline_status[1]}" -eq 0
+
+            sentinel_bytes=${#sentinel}
+            transfer_bytes=$(wc -c < "$transfer" | tr -d '[:space:]')
+            [[ "$transfer_bytes" =~ ^[0-9]+$ ]]
+            test "$transfer_bytes" -gt "$sentinel_bytes"
+            test "$(tail -c "$sentinel_bytes" "$transfer")" = "$sentinel"
+            payload_bytes=$((transfer_bytes - sentinel_bytes))
+            test "$payload_bytes" -gt 0
+            test "$payload_bytes" -le "$maximum"
+            head -c "$payload_bytes" "$transfer" > "$output"
+            test "$(wc -c < "$output" | tr -d '[:space:]')" = "$payload_bytes"
+          }
+
+          download_bounded \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            "$run_json" \
+            1048576
+          download_bounded \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" \
+            "$jobs_json" \
+            4194304
+
+          expected_workflow_path="Plantcore-AI/core/.github/workflows/runtime-receipt.yml@$BUILDER_WORKFLOW_COMMIT"
+          workflow_prefix=Plantcore-AI/core/.github/workflows/runtime-receipt.yml@
+          jq -e \
+            --arg builder "$BUILDER_WORKFLOW_COMMIT" \
+            --arg expected_path "$expected_workflow_path" \
+            --arg prefix "$workflow_prefix" \
+            --arg tested "$TESTED_COMMIT" \
+            --argjson attempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson repository_id "$GITHUB_REPOSITORY_ID" \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            '
+              type == "object"
+              and .id == $run_id
+              and .run_attempt == $attempt
+              and .event == "workflow_dispatch"
+              and .head_branch == "main"
+              and .head_sha == $tested
+              and .repository.id == $repository_id
+              and .repository.full_name == "Plantcore-AI/core"
+              and (.referenced_workflows | type == "array")
+              and (.referenced_workflows | length >= 1 and length <= 16)
+              and (
+                [
+                  .referenced_workflows[]
+                  | select(
+                      ((.path | type) == "string")
+                      and (.path | startswith($prefix))
+                    )
+                ]
+                | length == 1
+              )
+              and any(
+                .referenced_workflows[];
+                .path == $expected_path and .sha == $builder
+              )
+            ' "$run_json" >/dev/null
+          jq -e '
+            .total_count as $total
+            |
+            type == "object"
+            and (.total_count | type == "number")
+            and (.total_count >= 1 and .total_count <= 100)
+            and (.jobs | type == "array")
+            and ((.jobs | length) == $total)
+          ' "$jobs_json" >/dev/null
+
+          python3 -I builder/release-tools/client_runtime_receipt.py collect \
+            --jobs "$jobs_json" \
+            --run "$run_json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --repository-id "$GITHUB_REPOSITORY_ID" \
+            --tested-commit "$TESTED_COMMIT" \
+            --tested-tree "$TESTED_TREE" \
+            --builder-workflow-commit "$BUILDER_WORKFLOW_COMMIT" \
+            --output "$receipt"
+          test -f "$receipt"
+          test ! -L "$receipt"
+          receipt_bytes=$(wc -c < "$receipt" | tr -d '[:space:]')
+          [[ "$receipt_bytes" =~ ^[0-9]+$ ]]
+          test "$receipt_bytes" -gt 0
+          test "$receipt_bytes" -le 65536
+          echo "directory=$evidence_dir" >> "$GITHUB_OUTPUT"
+          echo "receipt=$receipt" >> "$GITHUB_OUTPUT"
+      - name: Attest the trusted runtime receipt
+        id: attestation
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.collect.outputs.receipt }}
+      - name: Materialize the offline receipt bundle
+        shell: bash
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attestation.outputs.bundle-path }}
+          EVIDENCE_DIRECTORY: ${{ steps.collect.outputs.directory }}
+        run: |
+          set -euo pipefail
+          test -f "$ATTESTATION_BUNDLE"
+          test ! -L "$ATTESTATION_BUNDLE"
+          bundle=$EVIDENCE_DIRECTORY/runtime-receipt-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}.sigstore.json
+          test ! -e "$bundle"
+          cp "$ATTESTATION_BUNDLE" "$bundle"
+          test -s "$bundle"
+          test ! -L "$bundle"
+          bundle_bytes=$(wc -c < "$bundle" | tr -d '[:space:]')
+          [[ "$bundle_bytes" =~ ^[0-9]+$ ]]
+          test "$bundle_bytes" -gt 0
+          test "$bundle_bytes" -le 2097152
+      - name: Upload the offline runtime receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: core-client-runtime-receipt-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ steps.collect.outputs.directory }}/runtime-receipt-${{ github.run_id }}-attempt-${{ github.run_attempt }}.json
+            ${{ steps.collect.outputs.directory }}/runtime-receipt-${{ github.run_id }}-attempt-${{ github.run_attempt }}.sigstore.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90

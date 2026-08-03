@@ -22,6 +22,7 @@ const LINK_TEST_KEY: &str = "integration-test-placeholder";
 const LINK_TARGET: &str = "https://example.com/core-guide";
 const TERMINAL_BELL: u8 = b'\x07';
 const OSC9_RUN_COMPLETE: &[u8] = b"\x1b]9;Core Code: run complete\x07";
+const CLIENT_PARITY_TASK: &str = include_str!("fixtures/client-parity-task.txt");
 const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
 const KEYBOARD_ENHANCEMENT_PUSH: &[u8] = b"\x1b[>1u";
 const KEYBOARD_ENHANCEMENT_POP: &[u8] = b"\x1b[<1u";
@@ -141,6 +142,10 @@ impl LinkProvider {
 
     fn spawn_missing_usage_notification_fixture() -> Self {
         Self::spawn_with_content("Missing-usage completion still notifies.".into(), false)
+    }
+
+    fn spawn_client_parity_fixture() -> Self {
+        Self::spawn_with_content("parity reply".into(), true)
     }
 
     fn spawn_with_content(content: String, include_usage: bool) -> Self {
@@ -502,7 +507,7 @@ impl PtyHarness {
             command.env("TERM_PROGRAM", "WezTerm");
             command.env("NO_PROXY", "127.0.0.1,localhost");
             command.env(LINK_TEST_KEY_ENV, LINK_TEST_KEY);
-            command.arg("render the deterministic link fixture");
+            command.arg(CLIENT_PARITY_TASK.trim());
         } else {
             command.env("CORE_PROVIDER", "glm");
             command.env("CORE_MODEL", "glm-5.2");
@@ -1007,6 +1012,26 @@ fn capable_terminal_receives_clickable_markdown_link_with_unchanged_visible_text
         "only the admitted fixture target may enter OSC 8"
     );
 
+    pty.send(b"\x1b");
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "normal TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+    provider.finish();
+}
+
+#[test]
+fn client_parity_scripted_task_reaches_tui_done_presentation() {
+    let provider = LinkProvider::spawn_client_parity_fixture();
+    let scratch = Scratch::new("client-parity-tui");
+    scratch.configure_link_provider(&provider.api_root);
+    let mut pty = PtyHarness::spawn_link_fixture(&scratch, 80, 24);
+
+    pty.wait_until("shared client-parity task completion", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("parity reply") && screen.contains("done")
+    });
     pty.send(b"\x1b");
     let status = pty.wait_for_exit();
     assert!(status.success(), "normal TUI exit failed: {status}");
