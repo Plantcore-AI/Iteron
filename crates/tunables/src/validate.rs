@@ -69,6 +69,19 @@ pub enum RegistryError {
         second: &'static str,
         semantic_key: &'static str,
     },
+    #[error(
+        "family declaration ordinal {ordinal} / `{actual_id}` / `{actual_key}` does not match semantic-key ledger ordinal {expected_ordinal} / `{expected_id}` / `{expected_key}`"
+    )]
+    SemanticKeyMappingMismatch {
+        ordinal: u16,
+        actual_id: &'static str,
+        actual_key: &'static str,
+        expected_ordinal: u16,
+        expected_id: &'static str,
+        expected_key: &'static str,
+    },
+    #[error("family `{family}` at ordinal {ordinal} has no semantic-key ledger entry")]
+    MissingSemanticKeyLedgerEntry { ordinal: u16, family: &'static str },
     #[error("registry digest mismatch: expected `{expected}`, computed `{actual}`")]
     RegistryDigestMismatch {
         expected: &'static str,
@@ -146,9 +159,8 @@ fn validate_families(registry: &[crate::Family]) -> Result<(), RegistryError> {
     Ok(())
 }
 
-/// Enforce semantic ownership without consulting ordinals, stable IDs as ownership keys, family
-/// digests, or the global golden digest. This is the check that prevents a renamed or moved entry
-/// from creating a second registry identity for one canonical runtime control.
+/// Enforce unique semantic ownership, then bind every declaration to the exact ordinal/ID/key
+/// ledger association. Neither check consults family digests or the global golden digest.
 pub(crate) fn validate_semantic_ownership(registry: &[crate::Family]) -> Result<(), RegistryError> {
     let mut identities = BTreeMap::<&'static str, &'static str>::new();
     let mut semantic_keys = BTreeMap::<&'static str, &'static str>::new();
@@ -176,6 +188,27 @@ pub(crate) fn validate_semantic_ownership(registry: &[crate::Family]) -> Result<
                     existing,
                 });
             }
+        }
+    }
+    for family in registry {
+        let Some(expected) = crate::semantic_keys::expected_entry(family.ordinal) else {
+            return Err(RegistryError::MissingSemanticKeyLedgerEntry {
+                ordinal: family.ordinal,
+                family: family.id,
+            });
+        };
+        if expected.ordinal != family.ordinal
+            || expected.family_id != family.id
+            || expected.semantic_key != family.semantic_key
+        {
+            return Err(RegistryError::SemanticKeyMappingMismatch {
+                ordinal: family.ordinal,
+                actual_id: family.id,
+                actual_key: family.semantic_key,
+                expected_ordinal: expected.ordinal,
+                expected_id: expected.family_id,
+                expected_key: expected.semantic_key,
+            });
         }
     }
     Ok(())
