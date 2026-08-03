@@ -5,7 +5,7 @@
 //! is the only correct framing, and the length must be honoured exactly -- reading "until it
 //! parses" would resynchronise onto attacker-chosen boundaries after any malformed message.
 
-use crate::{LspError, MAX_CONTENT_BYTES, MAX_HEADER_BYTES};
+use crate::{LspError, MAX_CONTENT_BYTES, MAX_HEADER_BYTES, MAX_JSON_DEPTH};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt};
 
 /// Encode one message. The body is written verbatim; callers pass already-serialised JSON so the
@@ -75,8 +75,50 @@ where
         .map_err(|_| LspError::TruncatedMessage)?;
 
     let text = std::str::from_utf8(&body).map_err(|_| LspError::InvalidUtf8)?;
+    // Depth is checked before the DOM is built, not after. `[[[[...]]]]` inside an otherwise legal
+    // frame costs a couple of bytes per level on the wire and a full `Value` node with its own
+    // allocation per level in memory, so a body that passes the byte ceiling can still amplify well
+    // past it. Scanning the text first is O(n) with no allocation, which is exactly what a check
+    // guarding against allocation should be.
+    check_depth(text)?;
     let value = serde_json::from_str(text).map_err(|e| LspError::Json(e.to_string()))?;
     Ok(Some(value))
+}
+
+/// Reject a body nested deeper than [`MAX_JSON_DEPTH`] before it is turned into a DOM.
+///
+/// Quote-aware, because a `[` inside a string literal is text, not structure -- counting it would
+/// reject legitimate payloads full of code snippets, which is most of what a language server sends.
+fn check_depth(text: &str) -> Result<(), LspError> {
+    let (mut depth, mut max) = (0usize, 0usize);
+    let (mut in_string, mut escaped) = (false, false);
+    for b in text.bytes() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'[' | b'{' => {
+                depth += 1;
+                max = max.max(depth);
+                if max > MAX_JSON_DEPTH {
+                    return Err(LspError::TooDeep {
+                        limit: MAX_JSON_DEPTH,
+                    });
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Accumulate bytes up to the blank line that ends the header block.
@@ -296,6 +338,38 @@ mod tests {
             "refused after consuming {consumed} of {total} bytes; the ceiling must bound the \
              read, not just the verdict"
         );
+    }
+
+    #[tokio::test]
+    async fn a_deeply_nested_body_is_refused_before_a_dom_is_built() {
+        // Two bytes per level on the wire, a whole `Value` node with its own allocation per level
+        // in memory: a body well inside the byte ceiling can still amplify far past it.
+        let deep = format!("{}{}", "[".repeat(500), "]".repeat(500));
+        let mut r = cursor(&encode(&deep));
+        assert_eq!(
+            read_message(&mut r).await,
+            Err(LspError::TooDeep {
+                limit: MAX_JSON_DEPTH
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn brackets_inside_a_string_are_text_not_structure() {
+        // Most of what a language server sends is code, and code is full of brackets. Counting
+        // them would reject legitimate payloads.
+        let body =
+            serde_json::json!({ "snippet": "fn f() { let v = vec![[1],[2]]; }" }).to_string();
+        let mut r = cursor(&encode(&body));
+        let value = read_message(&mut r).await.unwrap().unwrap();
+        assert!(value["snippet"].as_str().unwrap().contains("vec!"));
+    }
+
+    #[tokio::test]
+    async fn an_escaped_quote_does_not_end_the_string_scan() {
+        let body = serde_json::json!({ "s": r#"he said "[[[" and left"# }).to_string();
+        let mut r = cursor(&encode(&body));
+        assert!(read_message(&mut r).await.unwrap().is_some());
     }
 
     #[tokio::test]

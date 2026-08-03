@@ -120,29 +120,60 @@ fn location_from(item: &Value) -> Option<Location> {
     }
     // LocationLink: prefer the selection range (the identifier) over the full target range.
     let uri = item.get("targetUri").and_then(Value::as_str)?;
-    let range = item
-        .get("targetSelectionRange")
-        .and_then(range_from)
-        .or_else(|| item.get("targetRange").and_then(range_from))?;
+    let target = item.get("targetRange").and_then(range_from);
+    let selection = item.get("targetSelectionRange").and_then(range_from);
+
+    // The spec requires the selection range to lie within the target range. A server that violates
+    // it would otherwise have us jump outside the definition it claims to be pointing at, so the
+    // pair is rejected rather than half-believed.
+    if let (Some(t), Some(sel)) = (target, selection)
+        && !contains(&t, &sel)
+    {
+        return None;
+    }
+    let range = selection.or(target)?;
     Some(Location {
         uri: uri.to_owned(),
         range,
     })
 }
 
+fn contains(outer: &Range, inner: &Range) -> bool {
+    (inner.start.line, inner.start.character) >= (outer.start.line, outer.start.character)
+        && (inner.end.line, inner.end.character) <= (outer.end.line, outer.end.character)
+}
+
 fn range_from(value: &Value) -> Option<Range> {
-    Some(Range {
-        start: position_from(value.get("start")?)?,
-        end: position_from(value.get("end")?)?,
-    })
+    let start = position_from(value.get("start")?)?;
+    let end = position_from(value.get("end")?)?;
+    // An inverted range is not a range. Passing one through produces a negative length wherever a
+    // caller subtracts, and silently selects the wrong span wherever it does not.
+    if (end.line, end.character) < (start.line, start.character) {
+        return None;
+    }
+    Some(Range { start, end })
+}
+
+/// LSP `uinteger` is `0 ..= 2^31 - 1`, not the full `u32` range.
+///
+/// Accepting up to `u32::MAX` lets a server hand back a coordinate the protocol cannot express,
+/// which downstream arithmetic (`line + 1`, range containment) then treats as a real position.
+const MAX_UINTEGER: u64 = (1u64 << 31) - 1;
+
+fn uinteger(value: &Value) -> Option<u32> {
+    // `as_u64` rejects negative and fractional values, so `-1` or `1.5` is malformed rather than
+    // wrapped or rounded.
+    let n = value.as_u64()?;
+    if n > MAX_UINTEGER {
+        return None;
+    }
+    u32::try_from(n).ok()
 }
 
 fn position_from(value: &Value) -> Option<Position> {
     Some(Position {
-        // `as_u64` rejects negative and fractional values, so a server sending `-1` or `1.5`
-        // produces a malformed entry rather than a wrapped or rounded coordinate.
-        line: u32::try_from(value.get("line")?.as_u64()?).ok()?,
-        character: u32::try_from(value.get("character")?.as_u64()?).ok()?,
+        line: uinteger(value.get("line")?)?,
+        character: uinteger(value.get("character")?)?,
     })
 }
 
@@ -327,6 +358,67 @@ mod tests {
             assert!(parsed.locations.is_empty(), "{bad} must not parse");
             assert_eq!(parsed.malformed, 1);
         }
+    }
+
+    #[test]
+    fn a_coordinate_beyond_lsp_uinteger_is_malformed() {
+        // LSP `uinteger` is 0..=2^31-1, not the full u32 range. Accepting more lets a server hand
+        // back a coordinate the protocol cannot express, which downstream arithmetic then treats
+        // as a real position.
+        let too_big = (1u64 << 31) as f64;
+        let value = json!([{
+            "uri": "file:///a.rs",
+            "range": { "start": {"line": too_big, "character": 0}, "end": {"line": too_big, "character": 0} }
+        }]);
+        let parsed = parse_locations(&value, 10);
+        assert!(parsed.locations.is_empty());
+        assert_eq!(parsed.malformed, 1);
+
+        // One below the ceiling is still valid.
+        let ok = json!([{
+            "uri": "file:///a.rs",
+            "range": { "start": {"line": (1u64 << 31) - 1, "character": 0}, "end": {"line": (1u64 << 31) - 1, "character": 0} }
+        }]);
+        assert_eq!(parse_locations(&ok, 10).locations.len(), 1);
+    }
+
+    #[test]
+    fn an_inverted_range_is_malformed() {
+        // A negative-length range produces nonsense wherever a caller subtracts, and silently
+        // selects the wrong span wherever it does not.
+        let value = json!([{
+            "uri": "file:///a.rs",
+            "range": { "start": {"line": 9, "character": 0}, "end": {"line": 2, "character": 0} }
+        }]);
+        let parsed = parse_locations(&value, 10);
+        assert!(parsed.locations.is_empty());
+        assert_eq!(parsed.malformed, 1);
+    }
+
+    #[test]
+    fn a_selection_range_outside_its_target_range_is_refused() {
+        // The spec requires containment. Half-believing a server that violates it would have us
+        // jump outside the definition it claims to point at.
+        let value = json!([{
+            "targetUri": "file:///a.rs",
+            "targetRange":          { "start": {"line": 10, "character": 0}, "end": {"line": 20, "character": 0} },
+            "targetSelectionRange": { "start": {"line": 90, "character": 0}, "end": {"line": 91, "character": 0} }
+        }]);
+        let parsed = parse_locations(&value, 10);
+        assert!(parsed.locations.is_empty());
+        assert_eq!(parsed.malformed, 1);
+    }
+
+    #[test]
+    fn a_selection_range_inside_its_target_range_is_accepted() {
+        let value = json!([{
+            "targetUri": "file:///a.rs",
+            "targetRange":          { "start": {"line": 10, "character": 0}, "end": {"line": 20, "character": 0} },
+            "targetSelectionRange": { "start": {"line": 12, "character": 4}, "end": {"line": 12, "character": 9} }
+        }]);
+        let parsed = parse_locations(&value, 10);
+        assert_eq!(parsed.locations.len(), 1);
+        assert_eq!(parsed.locations[0].range.start.line, 12);
     }
 
     #[test]

@@ -20,6 +20,10 @@ pub mod pending;
 /// larger is a peer trying to make us buffer before we have seen a `Content-Length`.
 pub const MAX_HEADER_BYTES: usize = 8 * 1024;
 
+/// Deepest JSON nesting a body may carry. Real LSP payloads are shallow; deep nesting is either a
+/// broken server or an attempt to amplify a byte-bounded frame into an unbounded object graph.
+pub const MAX_JSON_DEPTH: usize = 128;
+
 /// Hard ceiling on one message body. Chosen well above a large `textDocument/publishDiagnostics`
 /// payload and well below a size that would let one message exhaust the agent's memory.
 pub const MAX_CONTENT_BYTES: usize = 16 * 1024 * 1024;
@@ -53,6 +57,8 @@ pub enum LspError {
     InvalidUtf8,
     #[error("body was not valid json: {0}")]
     Json(String),
+    #[error("body nests deeper than {limit} levels")]
+    TooDeep { limit: usize },
     #[error("too many requests in flight (limit {limit})")]
     Backpressure { limit: usize },
     #[error("request id {id} is already in flight")]
