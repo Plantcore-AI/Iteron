@@ -255,7 +255,7 @@ impl SessionProjection {
             EventKind::TurnStart => {
                 self.turns = self.turns.saturating_add(1);
             }
-            EventKind::TurnEnd { usage } => self.usage.add(usage),
+            EventKind::TurnEnd { usage, .. } => self.usage.add(usage),
             EventKind::SubagentFinished { metrics, .. }
             | EventKind::SubagentFinishedV2 { metrics, .. } => {
                 self.turns = self.turns.saturating_add(metrics.provider_attempts);
@@ -1793,6 +1793,9 @@ mod tests {
                     cache_read: 900,
                     thinking: 0,
                 },
+                ttft_ms: None,
+                decode_ms: None,
+                stream_items: None,
             },
         })
         .unwrap();
@@ -1836,6 +1839,9 @@ mod tests {
                         cache_read: 2,
                         thinking: 0,
                     },
+                    ttft_ms: None,
+                    decode_ms: None,
+                    stream_items: None,
                 },
             })
             .unwrap();
@@ -2742,6 +2748,9 @@ mod tests {
                         cache_read: 3,
                         thinking: 1,
                     },
+                    ttft_ms: None,
+                    decode_ms: None,
+                    stream_items: None,
                 },
             })
             .unwrap();
@@ -2765,6 +2774,9 @@ mod tests {
                         cache_read: 1,
                         thinking: 0,
                     },
+                    ttft_ms: None,
+                    decode_ms: None,
+                    stream_items: None,
                 },
             })
             .unwrap();
@@ -2887,6 +2899,9 @@ mod tests {
                         cache_read: 0,
                         thinking: 0,
                     },
+                    ttft_ms: None,
+                    decode_ms: None,
+                    stream_items: None,
                 },
             })
             .unwrap();
@@ -2943,6 +2958,9 @@ mod tests {
                         cache_read: 0,
                         thinking: 0,
                     },
+                    ttft_ms: None,
+                    decode_ms: None,
+                    stream_items: None,
                 },
             })
             .unwrap();
@@ -3010,6 +3028,9 @@ mod tests {
                         cache_read: 0,
                         thinking: 0,
                     },
+                    ttft_ms: None,
+                    decode_ms: None,
+                    stream_items: None,
                 },
             })
             .unwrap();
@@ -3219,6 +3240,9 @@ mod tests {
                             cache_read: 0,
                             thinking: 0,
                         },
+                        ttft_ms: None,
+                        decode_ms: None,
+                        stream_items: None,
                     },
                 })
                 .unwrap();
@@ -3293,6 +3317,9 @@ mod tests {
                         cache_read: 0,
                         thinking: 0,
                     },
+                    ttft_ms: None,
+                    decode_ms: None,
+                    stream_items: None,
                 },
             })
             .unwrap();
@@ -3390,6 +3417,9 @@ mod tests {
                         cache_read: 0,
                         thinking: 0,
                     },
+                    ttft_ms: None,
+                    decode_ms: None,
+                    stream_items: None,
                 },
             })
             .unwrap();
@@ -4026,6 +4056,9 @@ mod tests {
                     turn: TurnId(0),
                     kind: EventKind::TurnEnd {
                         usage: Usage::default(),
+                        ttft_ms: None,
+                        decode_ms: None,
+                        stream_items: None,
                     },
                 })
                 .unwrap();

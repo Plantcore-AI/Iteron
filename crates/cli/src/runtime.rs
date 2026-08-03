@@ -1011,6 +1011,24 @@ fn effect_class_label(class: effect_class::EffectClass) -> &'static str {
         .expect("only registry tools have no durable label, and they record their tool name")
 }
 
+/// One provider attempt's stream timing, measured in the runtime and carried to the durable
+/// `TurnEnd` (#103).
+///
+/// Every field is `Option` and that is load-bearing. A non-streaming adapter, a replayed turn, or
+/// an attempt that failed before its first byte has no time-to-first-token at all, and a `0` would
+/// claim an instantaneous first token rather than admitting the measurement never happened. The
+/// default is therefore "nothing observed", not "zero".
+///
+/// These are NOT a partition of `phase_model_ms`, which stays the outer bound: pure tools are
+/// dispatched mid-stream and overlap decode by design, so `ttft + decode` can be less than the
+/// model phase and the two must never be reconciled by force.
+#[derive(Debug, Clone, Copy, Default)]
+struct StreamTiming {
+    ttft_ms: Option<u64>,
+    decode_ms: Option<u64>,
+    stream_items: Option<u32>,
+}
+
 /// The proven-success terminal for a non-registry effect.
 fn effect_done_terminal(
     turn: TurnId,
@@ -1020,6 +1038,10 @@ fn effect_done_terminal(
     EventKind::EffectDone {
         id: effect_class::effect_id(turn, class, ordinal),
         tool: effect_class_label(class).to_string(),
+        // `None`, deliberately: the effect boundary stamps the measurement in `settle_effect` so
+        // all seven classes are timed at the same two points by the same clock. A number minted
+        // here would be scoped to whatever this caller happened to wrap.
+        duration_ms: None,
     }
 }
 
@@ -1035,6 +1057,8 @@ fn effect_failed_terminal(
         id: effect_class::effect_id(turn, class, ordinal),
         tool: effect_class_label(class).to_string(),
         reason: strict_utf8_head(reason, EFFECT_REASON_MAX_BYTES),
+        // See `effect_done_terminal`: the boundary owns the measurement.
+        duration_ms: None,
     }
 }
 
@@ -2669,6 +2693,7 @@ impl Agent {
         usage: core_protocol::Usage,
         model_ms: u64,
         projected_at_unix_secs: u64,
+        stream: StreamTiming,
     ) -> Result<(), KernelError> {
         let projection_identity = CostProjectionIdentity {
             tenant_id: self.rollout.tenant().0.clone(),
@@ -2686,7 +2711,15 @@ impl Agent {
             )),
             _ => None,
         };
-        if let Err(error) = self.emit_durable(turn, EventKind::TurnEnd { usage }) {
+        if let Err(error) = self.emit_durable(
+            turn,
+            EventKind::TurnEnd {
+                usage,
+                ttft_ms: stream.ttft_ms,
+                decode_ms: stream.decode_ms,
+                stream_items: stream.stream_items,
+            },
+        ) {
             self.mark_usd_unknown();
             return Err(error);
         }
@@ -2761,10 +2794,11 @@ impl Agent {
         report: UsageReport,
         model_ms: u64,
         projected_at_unix_secs: u64,
+        stream: StreamTiming,
     ) -> Result<Option<core_protocol::Usage>, KernelError> {
         match report {
             UsageReport::Complete(usage) => {
-                self.complete_provider_turn(turn, usage, model_ms, projected_at_unix_secs)?;
+                self.complete_provider_turn(turn, usage, model_ms, projected_at_unix_secs, stream)?;
                 Ok(Some(usage))
             }
             UsageReport::Incomplete { .. } => {
@@ -4732,73 +4766,87 @@ impl Agent {
             let mut tool_admission = effects::ToolCallAdmission::default();
             let mut tool_contract_error = None;
             let stream_start = Instant::now();
+            // #103: time to first token and decode time, measured at the ONE place every stream
+            // item already passes through. `first_item_at` is set by whichever variant arrives
+            // first — a `ThinkingDelta` counts, because extended thinking is the model producing
+            // tokens and a TTFT that ignored it would report a reasoning turn as pathologically
+            // slow. `stream_items` stays a raw count so a reader derives inter-token time itself
+            // rather than consuming an average this layer pre-computed.
+            let mut first_item_at: Option<Instant> = None;
+            let mut stream_items: u32 = 0;
 
-            let mut on_item = |item: StreamItem| match item {
-                StreamItem::TextDelta(t) => {
-                    if let Some(tx) = &ui_tx {
-                        // Scrub secrets before the assistant text crosses the UI seam (ADR-015 R1):
-                        // the record already masks the committed Block::Text, but the live UI / /export
-                        // are the same exfiltration surfaces as tool output, which we scrub here too.
-                        // The frontend adds a stateful cross-delta scrubber before rendering.
-                        let _ = tx.send(UiEvent::Text(core_record::redact::scrub(&t)));
-                    }
+            let mut on_item = |item: StreamItem| {
+                if first_item_at.is_none() {
+                    first_item_at = Some(Instant::now());
                 }
-                StreamItem::ThinkingDelta(t) => {
-                    if let Some(tx) = &ui_tx {
-                        let _ = tx.send(UiEvent::Thinking(core_record::redact::scrub(&t)));
-                    }
-                }
-                StreamItem::ToolUseComplete(tu) => {
-                    if tool_contract_error.is_some() {
-                        return;
-                    }
-                    if let Err(error) = tool_admission.admit(&tu) {
-                        tool_contract_error = Some(error);
-                        return;
-                    }
-                    if let Some(tx) = &ui_tx {
-                        // Scrub secret-shaped values out of the args BEFORE they cross the UI seam
-                        // (ADR-015 R1: the UI/ /export / scrollback are new exfiltration surfaces the
-                        // record's redaction does not cover).
-                        let _ = tx.send(UiEvent::ToolStart {
-                            id: tu.id.clone(),
-                            name: tu.name.clone(),
-                            args: scrub_value(&tu.input),
-                        });
-                    }
-                    let idx = order;
-                    order += 1;
-                    let proposal = strategy_runtime::propose_tool(
-                        reg,
-                        tool_policy.as_ref(),
-                        tu.clone(),
-                        argument_trust,
-                    );
-                    let is_pure = proposal
-                        .as_ref()
-                        .is_ok_and(|proposal| proposal.intent.purity == Purity::Pure);
-                    if is_pure && !hook_gates_reads {
-                        let proposal = proposal.expect("checked pure tool-policy proposal");
-                        let tu_ui = proposal.intent.call.clone();
-                        let intent = proposal.admit(CapabilitySet::only(Capability::ReadOnly));
-                        if let Some(permit) = gov.try_acquire() {
-                            // Spawn now — I/O overlaps the remaining decode. The permit is held
-                            // for the task's lifetime and released on completion (bounded).
-                            let fut = reg.dispatch_intent(intent);
-                            let handle = tokio::spawn(async move {
-                                let _permit = permit;
-                                fut.await
-                            });
-                            pure.push((idx, tu_ui, handle, Instant::now()));
-                        } else {
-                            // at the concurrency cap: run inline in the collection phase
-                            overflow_pure.push((idx, intent));
+                stream_items = stream_items.saturating_add(1);
+                match item {
+                    StreamItem::TextDelta(t) => {
+                        if let Some(tx) = &ui_tx {
+                            // Scrub secrets before the assistant text crosses the UI seam (ADR-015 R1):
+                            // the record already masks the committed Block::Text, but the live UI / /export
+                            // are the same exfiltration surfaces as tool output, which we scrub here too.
+                            // The frontend adds a stateful cross-delta scrubber before rendering.
+                            let _ = tx.send(UiEvent::Text(core_record::redact::scrub(&t)));
                         }
-                    } else {
-                        deferred.push((idx, tu));
                     }
+                    StreamItem::ThinkingDelta(t) => {
+                        if let Some(tx) = &ui_tx {
+                            let _ = tx.send(UiEvent::Thinking(core_record::redact::scrub(&t)));
+                        }
+                    }
+                    StreamItem::ToolUseComplete(tu) => {
+                        if tool_contract_error.is_some() {
+                            return;
+                        }
+                        if let Err(error) = tool_admission.admit(&tu) {
+                            tool_contract_error = Some(error);
+                            return;
+                        }
+                        if let Some(tx) = &ui_tx {
+                            // Scrub secret-shaped values out of the args BEFORE they cross the UI seam
+                            // (ADR-015 R1: the UI/ /export / scrollback are new exfiltration surfaces the
+                            // record's redaction does not cover).
+                            let _ = tx.send(UiEvent::ToolStart {
+                                id: tu.id.clone(),
+                                name: tu.name.clone(),
+                                args: scrub_value(&tu.input),
+                            });
+                        }
+                        let idx = order;
+                        order += 1;
+                        let proposal = strategy_runtime::propose_tool(
+                            reg,
+                            tool_policy.as_ref(),
+                            tu.clone(),
+                            argument_trust,
+                        );
+                        let is_pure = proposal
+                            .as_ref()
+                            .is_ok_and(|proposal| proposal.intent.purity == Purity::Pure);
+                        if is_pure && !hook_gates_reads {
+                            let proposal = proposal.expect("checked pure tool-policy proposal");
+                            let tu_ui = proposal.intent.call.clone();
+                            let intent = proposal.admit(CapabilitySet::only(Capability::ReadOnly));
+                            if let Some(permit) = gov.try_acquire() {
+                                // Spawn now — I/O overlaps the remaining decode. The permit is held
+                                // for the task's lifetime and released on completion (bounded).
+                                let fut = reg.dispatch_intent(intent);
+                                let handle = tokio::spawn(async move {
+                                    let _permit = permit;
+                                    fut.await
+                                });
+                                pure.push((idx, tu_ui, handle, Instant::now()));
+                            } else {
+                                // at the concurrency cap: run inline in the collection phase
+                                overflow_pure.push((idx, intent));
+                            }
+                        } else {
+                            deferred.push((idx, tu));
+                        }
+                    }
+                    StreamItem::TurnComplete { .. } => {}
                 }
-                StreamItem::TurnComplete { .. } => {}
             };
 
             // `attempt` means a provider request crossed the dispatch boundary. Local context
@@ -4892,6 +4940,18 @@ impl Agent {
             self.ledger.tool_inline_overflow(overflow_pure.len());
             let model_ms = model_span.elapsed_ms();
             let stream_elapsed = stream_start.elapsed();
+            // Measured only if the stream actually produced an item. An attempt that failed before
+            // its first byte leaves every field `None` rather than reporting a zero it did not see.
+            let stream_timing = match first_item_at {
+                Some(first) => StreamTiming {
+                    ttft_ms: Some(core_obs::duration_ms_ceil(
+                        first.saturating_duration_since(stream_start),
+                    )),
+                    decode_ms: Some(core_obs::duration_ms_ceil(first.elapsed())),
+                    stream_items: Some(stream_items),
+                },
+                None => StreamTiming::default(),
+            };
             self.last_assistant_text = turn_res.text();
 
             let complete_usage = self.record_provider_usage(
@@ -4899,6 +4959,7 @@ impl Agent {
                 turn_res.usage,
                 model_ms,
                 usd_attempt.projected_at_unix_secs(),
+                stream_timing,
             )?;
             if let Some(usage) = complete_usage {
                 usd_attempt.complete();
@@ -6956,7 +7017,19 @@ impl Agent {
             thinking_budget: 0,
             reasoning_effort: core_protocol::ReasoningEffort::Low,
         };
-        let mut sink = |_: StreamItem| {};
+        // These two paths discard the stream's CONTENT but they are still real, paid provider
+        // turns, so they are still timed (#103). A sink that measured nothing would leave two of
+        // core's provider calls permanently invisible for no reason other than that nobody
+        // rendered their tokens.
+        let stream_start = Instant::now();
+        let mut first_item_at: Option<Instant> = None;
+        let mut stream_items: u32 = 0;
+        let mut sink = |_: StreamItem| {
+            if first_item_at.is_none() {
+                first_item_at = Some(Instant::now());
+            }
+            stream_items = stream_items.saturating_add(1);
+        };
         let turn_id = TurnId(self.seq_turn);
         let usd_attempt = self.admit_provider_effect(turn_id, &req)?;
         self.emit(
@@ -6969,11 +7042,22 @@ impl Agent {
         let response = self.brokered_provider_turn(turn_id, &req, &mut sink).await;
         let text = match response {
             Ok(r) => {
+                let stream_timing = match first_item_at {
+                    Some(first) => StreamTiming {
+                        ttft_ms: Some(core_obs::duration_ms_ceil(
+                            first.saturating_duration_since(stream_start),
+                        )),
+                        decode_ms: Some(core_obs::duration_ms_ceil(first.elapsed())),
+                        stream_items: Some(stream_items),
+                    },
+                    None => StreamTiming::default(),
+                };
                 let complete_usage = self.record_provider_usage(
                     turn_id,
                     r.usage,
                     model_started.elapsed().as_millis() as u64,
                     usd_attempt.projected_at_unix_secs(),
+                    stream_timing,
                 )?;
                 if complete_usage.is_some() {
                     usd_attempt.complete();
@@ -7636,7 +7720,19 @@ impl Agent {
             thinking_budget: 0,
             reasoning_effort: core_protocol::ReasoningEffort::Low,
         };
-        let mut sink = |_: StreamItem| {};
+        // These two paths discard the stream's CONTENT but they are still real, paid provider
+        // turns, so they are still timed (#103). A sink that measured nothing would leave two of
+        // core's provider calls permanently invisible for no reason other than that nobody
+        // rendered their tokens.
+        let stream_start = Instant::now();
+        let mut first_item_at: Option<Instant> = None;
+        let mut stream_items: u32 = 0;
+        let mut sink = |_: StreamItem| {
+            if first_item_at.is_none() {
+                first_item_at = Some(Instant::now());
+            }
+            stream_items = stream_items.saturating_add(1);
+        };
         let turn_id = TurnId(self.seq_turn);
         let usd_attempt = self.admit_provider_effect(turn_id, &req)?;
         self.emit(
@@ -7649,11 +7745,22 @@ impl Agent {
         let response = self.brokered_provider_turn(turn_id, &req, &mut sink).await;
         match response {
             Ok(res) => {
+                let stream_timing = match first_item_at {
+                    Some(first) => StreamTiming {
+                        ttft_ms: Some(core_obs::duration_ms_ceil(
+                            first.saturating_duration_since(stream_start),
+                        )),
+                        decode_ms: Some(core_obs::duration_ms_ceil(first.elapsed())),
+                        stream_items: Some(stream_items),
+                    },
+                    None => StreamTiming::default(),
+                };
                 let complete_usage = self.record_provider_usage(
                     turn_id,
                     res.usage,
                     model_started.elapsed().as_millis() as u64,
                     usd_attempt.projected_at_unix_secs(),
+                    stream_timing,
                 )?;
                 if complete_usage.is_some() {
                     usd_attempt.complete();
@@ -15151,6 +15258,7 @@ ant-api03-SuperSecretModelToken12345"
                 },
                 0,
                 attempt.projected_at_unix_secs(),
+                StreamTiming::default(),
             )
             .unwrap();
         attempt.complete();
@@ -15626,7 +15734,13 @@ ant-api03-SuperSecretModelToken12345"
         };
         agent.ledger.attempt();
         agent
-            .complete_provider_turn(TurnId(0), usage, 0, unix_now_secs())
+            .complete_provider_turn(
+                TurnId(0),
+                usage,
+                0,
+                unix_now_secs(),
+                StreamTiming::default(),
+            )
             .unwrap();
 
         // Fault injection: retain the admitted projection counter but corrupt the public turn
@@ -15634,7 +15748,13 @@ ant-api03-SuperSecretModelToken12345"
         agent.ledger.turns = 0;
         agent.ledger.attempt();
         assert!(matches!(
-            agent.complete_provider_turn(TurnId(1), usage, 0, unix_now_secs()),
+            agent.complete_provider_turn(
+                TurnId(1),
+                usage,
+                0,
+                unix_now_secs(),
+                StreamTiming::default()
+            ),
             Err(KernelError::PricingLedger(_))
         ));
         assert!(

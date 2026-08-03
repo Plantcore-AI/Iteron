@@ -147,7 +147,7 @@
     },
     {
       "id": "record.rollout",
-      "current_version": 4,
+      "current_version": 5,
       "version_field": null,
       "fixtures": [
         {
@@ -174,6 +174,11 @@
           "path": "governance/schema-compat/fixtures/record/rollout-event-kinds-v4.jsonl",
           "format": "jsonl",
           "schema_version": 4
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-event-kinds-v5.jsonl",
+          "format": "jsonl",
+          "schema_version": 5
         }
       ],
       "fields": [
@@ -823,13 +828,18 @@
     },
     {
       "id": "record.event-envelope",
-      "current_version": 1,
+      "current_version": 2,
       "version_field": null,
       "fixtures": [
         {
           "path": "governance/schema-compat/fixtures/record/event-envelope-v1.jsonl",
           "format": "jsonl",
           "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-envelope-v2.jsonl",
+          "format": "jsonl",
+          "schema_version": 2
         }
       ],
       "fields": [
@@ -1245,7 +1255,7 @@
     },
     {
       "id": "record.event-kind.effect_done",
-      "current_version": 1,
+      "current_version": 2,
       "version_field": null,
       "selector": {
         "field": "kind",
@@ -1256,9 +1266,18 @@
           "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
           "format": "jsonl",
           "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v2.jsonl",
+          "format": "jsonl",
+          "schema_version": 2
         }
       ],
       "fields": [
+        {
+          "name": "duration_ms",
+          "introduced_release": 1
+        },
         {
           "name": "id",
           "introduced_release": 1
@@ -1276,7 +1295,7 @@
     },
     {
       "id": "record.event-kind.effect_failed",
-      "current_version": 1,
+      "current_version": 2,
       "version_field": null,
       "selector": {
         "field": "kind",
@@ -1287,9 +1306,18 @@
           "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
           "format": "jsonl",
           "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v2.jsonl",
+          "format": "jsonl",
+          "schema_version": 2
         }
       ],
       "fields": [
+        {
+          "name": "duration_ms",
+          "introduced_release": 1
+        },
         {
           "name": "id",
           "introduced_release": 1
@@ -1311,7 +1339,7 @@
     },
     {
       "id": "record.event-kind.turn_end",
-      "current_version": 1,
+      "current_version": 2,
       "version_field": null,
       "selector": {
         "field": "kind",
@@ -1322,11 +1350,28 @@
           "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
           "format": "jsonl",
           "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v2.jsonl",
+          "format": "jsonl",
+          "schema_version": 2
         }
       ],
       "fields": [
         {
+          "name": "decode_ms",
+          "introduced_release": 1
+        },
+        {
           "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "stream_items",
+          "introduced_release": 1
+        },
+        {
+          "name": "ttft_ms",
           "introduced_release": 1
         },
         {

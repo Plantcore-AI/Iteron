@@ -49,7 +49,13 @@ impl Ledger {
     }
 }
 
-fn duration_ms_ceil(duration: Duration) -> u64 {
+/// Whole milliseconds, rounded UP and saturating.
+///
+/// Public because the runtime measures stream timing (#103) against the same definition. Two
+/// roundings for the same kind of quantity would make the ledger and the record disagree by a
+/// millisecond and cost somebody an afternoon. The kernel keeps its own copy on purpose: it is the
+/// TCB and must not take a dependency on the observability crate.
+pub fn duration_ms_ceil(duration: Duration) -> u64 {
     let nanos = duration.as_nanos();
     let millis = nanos.saturating_add(999_999) / 1_000_000;
     u64::try_from(millis).unwrap_or(u64::MAX)
