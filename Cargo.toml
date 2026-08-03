@@ -13,6 +13,7 @@ members = [
     "crates/sandbox",
     "crates/ctx",
     "crates/verify",
+    "crates/lsp",
     "crates/mcp",
     "crates/sched",
     "crates/workflow",

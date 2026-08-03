@@ -35,6 +35,7 @@ Core Code has one human Owner/Project Lead and a non-fixed number of human maint
 | `provider-core` — Provider core | open | elevated | Open | Open | `crates/provider/Cargo.toml`<br>`crates/provider/static-provider-metadata-v1.json`<br>`crates/provider/src/catalog.rs`<br>`crates/provider/src/lib.rs`<br>`crates/provider/src/sse.rs`<br>`crates/provider/src/static_metadata.rs`<br>`crates/provider/src/static_metadata/support.rs`<br>`crates/provider/src/usage.rs` |
 | `provider-adapters` — Provider adapters | open | elevated | Open | Open | `crates/provider/src/anthropic.rs`<br>`crates/provider/src/openai.rs`<br>`crates/provider/src/responses.rs` |
 | `mcp-interop` — MCP interoperability | open | critical | Open | Open | `crates/mcp/**` |
+| `language-server-lifecycle` — Language server lifecycle | open | elevated | Open | Open | `crates/lsp/**` |
 | `context-core` — Context core | open | elevated | Open | Open | `crates/ctx/Cargo.toml`<br>`crates/ctx/src/compact.rs`<br>`crates/ctx/src/context_assembly.rs`<br>`crates/ctx/src/context_port.rs`<br>`crates/ctx/src/context_strategy.rs`<br>`crates/ctx/src/instructions.rs`<br>`crates/ctx/src/lib.rs`<br>`crates/ctx/src/outline.rs`<br>`crates/ctx/src/source.rs` |
 | `context-knowledge` — Context knowledge | open | elevated | Open | Open | `crates/ctx/src/memory.rs`<br>`crates/ctx/src/skills.rs`<br>`crates/ctx/src/skills_metadata.rs`<br>`crates/ctx/tests/skill_frontmatter.rs` |
 | `agent-catalog` — Agent catalog | open | elevated | Open | Open | `crates/agents/Cargo.toml`<br>`crates/agents/src/catalog.rs`<br>`crates/agents/src/def.rs`<br>`crates/agents/src/lib.rs` |
@@ -186,6 +187,13 @@ MCP process lifecycle, framing, tools, deadlines, and definite or unknown outcom
 
 - Contracts: `mcp-framing`, `bounded-mcp-lifecycle`, `unknown-external-effect`
 - Required checks: `cargo test -p core-mcp --locked`
+
+### `language-server-lifecycle` — Language server lifecycle
+
+LSP framing, handshake state, restart budget, document versions, and bounded in-flight requests.
+
+- Contracts: `bounded-lsp-framing`, `versioned-diagnostics`
+- Required checks: `cargo test -p core-lsp --locked`
 
 ### `context-core` — Context core
 
