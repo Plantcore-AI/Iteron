@@ -16,7 +16,7 @@ mod keyboard_enhancement;
 mod mouse_capture;
 mod notification;
 mod terminal_input;
-mod transcript_effect;
+pub(crate) mod transcript_effect;
 mod transcript_export;
 mod transcript_viewer;
 
@@ -3181,23 +3181,29 @@ pub async fn run(
     let drain_available = core_record::checkpoint_supported(&facts.workspace);
     // RAII: the terminal is restored on ANY exit path (error/panic/normal).
     let mut guard = TermGuard::new()?;
-    // Catchable termination signals (kill <pid> = SIGTERM, terminal close = SIGHUP) bypass Drop via
-    // process::exit — restore the terminal explicitly before exiting so a kill never leaves 乱码.
+    // Catchable termination signals restore the terminal immediately, then wake the owned event
+    // loop. The loop reaps any transcript helper before it performs the final process exit.
+    let (termination_tx, mut termination_rx) = tokio::sync::mpsc::channel::<i32>(1);
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
         let keyboard = guard.keyboard_restorer();
-        for kind in [SignalKind::terminate(), SignalKind::hangup()] {
+        // Preserve the frontend's existing catchable-termination contract: both routes restore and
+        // exit 143 after owned cleanup.
+        for (kind, exit_code) in [(SignalKind::terminate(), 143), (SignalKind::hangup(), 143)] {
             if let Ok(mut s) = signal(kind) {
                 let keyboard = keyboard.clone();
+                let termination_tx = termination_tx.clone();
                 tokio::spawn(async move {
                     s.recv().await;
                     restore_terminal(&keyboard);
-                    std::process::exit(143);
+                    let _ = termination_tx.send(exit_code).await;
                 });
             }
         }
     }
+    // Retain one sender so unsupported platforms do not observe an immediately closed channel.
+    let _termination_tx = termination_tx;
     let mut terminal_input = terminal_input::TerminalInput::default();
     // BOTH capability probes are deliberately deferred until after the first frame. The
     // progressive-keyboard query blocks up to 2000 ms and OSC 11 another 80 ms; running them here,
@@ -3291,7 +3297,12 @@ pub async fn run(
     let mut persisted_revision = app.editor.persistence_revision();
     let mut persisted_history_len = app.editor.history_len();
     let mut transcript_effects = transcript_effect::Supervisor::default();
+    let mut termination_exit = None;
 
+    // All interactive-loop exits, including draw/input/editor/dispatch errors, flow through this
+    // result boundary. Cleanup below therefore awaits the effect supervisor before the function can
+    // return; relying on `Drop` would only abort the async shell and could orphan a helper process.
+    let tui_result: anyhow::Result<()> = async {
     loop {
         // Kick off the initial task once the terminal is up.
         if let Some(task) = first_task.take()
@@ -3445,7 +3456,6 @@ pub async fn run(
         let mut next_input = None;
         let effect_active = transcript_effects.is_active();
         tokio::select! {
-            biased;
             result = input_rx.recv(), if input_open => match result {
                 Some(Ok(event)) => next_input = Some(event),
                 Some(Err(error)) => return Err(error.into()),
@@ -3461,13 +3471,25 @@ pub async fn run(
                     redraw = true;
                 }
             },
+            signal = termination_rx.recv() => {
+                if let Some(exit_code) = signal {
+                    termination_exit = Some(exit_code);
+                }
+            },
             () = wake_until(wake) => {}
+        }
+        if termination_exit.is_some() {
+            break;
         }
         if let Some(input_event) = next_input {
             redraw = true;
             match input_event {
                 CEvent::Paste(pasted) if app.transcript_viewer.is_open() => {
-                    app.transcript_viewer.handle_paste(&pasted, &app.transcript);
+                    app.transcript_viewer.handle_paste(
+                        &pasted,
+                        &app.transcript,
+                        app.transcript_revision,
+                    );
                 }
                 // Bracketed paste: insert the WHOLE pasted text (incl. newlines) into the editor
                 // rather than letting each pasted newline submit a partial line (review HIGH).
@@ -3597,7 +3619,12 @@ pub async fn run(
                     if app.transcript_viewer.is_open() && !lifecycle_key {
                         if let Some(effect) =
                             app.transcript_viewer
-                                .key(k.code, k.modifiers, &app.transcript)
+                                .key(
+                                    k.code,
+                                    k.modifiers,
+                                    &app.transcript,
+                                    app.transcript_revision,
+                                )
                         {
                             schedule_transcript_viewer_effect(
                                 &mut app,
@@ -3615,8 +3642,7 @@ pub async fn run(
                     if mapped_action == Some(keymap::Action::TranscriptViewer)
                         && app.pending.is_none()
                     {
-                        app.transcript_viewer
-                            .open("", &app.transcript, app.transcript_revision);
+                        open_transcript_viewer(&mut app, &transcript_effects, "");
                         continue;
                     }
 
@@ -4173,17 +4199,28 @@ pub async fn run(
             persisted_history_len = history_len;
         }
     }
+    Ok(())
+    }
+    .await;
 
     // teardown (the guard also restores on drop; show_cursor is the only extra step).
-    transcript_effects.shutdown().await;
+    let tui_result = transcript_effects.finish(tui_result).await;
+    if termination_exit.is_none() {
+        termination_exit = termination_rx.try_recv().ok();
+    }
     let _ = term.show_cursor();
     history_writer.finish(app.editor.persistence_state());
+    if let Some(exit_code) = termination_exit {
+        drop(session);
+        restore_terminal(&guard.keyboard_restorer());
+        std::process::exit(exit_code);
+    }
     // Dropping the last SQ sender is how the server learns the session is over. Wait for it to run
     // out — the runtime's own shutdown (the final rollout flush) happens in there, and returning
     // before it completes would race the process exit against the record on disk.
     drop(session);
     let _ = server_task.await;
-    Ok(())
+    tui_result
 }
 
 /// Execute one already-submitted slash command. Both ordinary Enter and Enter on a slash
@@ -5686,18 +5723,18 @@ fn transcript_export_body(
     transcript_export::body(blocks, selected_ids)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 fn export_transcript(
     workspace: &Path,
     blocks: &[Arc<block::Block>],
     selected_ids: Option<&[u64]>,
     requested: &str,
 ) -> Result<PathBuf, String> {
-    transcript_export::export(
+    let bytes = transcript_export::body(blocks, selected_ids)?;
+    transcript_export::export_bytes(
         workspace,
-        blocks,
-        selected_ids,
         requested,
+        &bytes,
         transcript_export::CollisionPolicy::Refuse,
     )
 }
@@ -5708,6 +5745,14 @@ fn schedule_transcript_viewer_effect(
     supervisor: &mut transcript_effect::Supervisor,
     effect: transcript_viewer::Effect,
 ) {
+    let snapshot_revision = effect.snapshot_revision();
+    app.transcript_viewer
+        .sync_if_changed(&app.transcript, app.transcript_revision);
+    if snapshot_revision != app.transcript_revision {
+        app.transcript_viewer
+            .set_notice("transcript changed before the effect snapshot was captured");
+        return;
+    }
     if let Some(active) = supervisor.label() {
         app.transcript_viewer.set_notice(format!(
             "{active} already pending; effects are single-flight"
@@ -5715,13 +5760,20 @@ fn schedule_transcript_viewer_effect(
         return;
     }
     let request = match effect {
-        transcript_viewer::Effect::Copy { text, subject } => transcript_effect::Request::Copy {
+        transcript_viewer::Effect::Copy {
+            text,
+            subject,
+            snapshot_revision: _,
+        } => transcript_effect::Request::Copy {
             text,
             subject,
             origin: transcript_effect::Origin::Viewer,
         },
-        transcript_viewer::Effect::Export(scope) => {
-            let ids = match app.transcript_viewer.export_ids(scope) {
+        transcript_viewer::Effect::Export {
+            scope,
+            snapshot_revision,
+        } => {
+            let ids = match app.transcript_viewer.export_ids(scope, snapshot_revision) {
                 Ok(ids) => ids,
                 Err(error) => {
                     app.transcript_viewer.set_notice(error);
@@ -5748,6 +5800,14 @@ fn schedule_transcript_viewer_effect(
     } else {
         app.transcript_viewer
             .set_notice("another transcript effect is already pending");
+    }
+}
+
+fn open_transcript_viewer(app: &mut App, supervisor: &transcript_effect::Supervisor, query: &str) {
+    app.transcript_viewer
+        .open(query, &app.transcript, app.transcript_revision);
+    if let Some(label) = supervisor.label() {
+        app.transcript_viewer.begin_effect(label);
     }
 }
 
@@ -6571,8 +6631,7 @@ async fn handle_registered_command(
             }
         }
         SlashCommand::Transcript => {
-            app.transcript_viewer
-                .open(arg.trim(), &app.transcript, app.transcript_revision);
+            open_transcript_viewer(app, transcript_effects, arg.trim());
         }
         SlashCommand::Export => {
             let (requested, collision) = if arg.trim().is_empty() {
@@ -12133,6 +12192,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(screen.contains("requires a Git worktree"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn export_path_uses_the_shared_capability_snapshot_writer() {
         let nonce = std::time::SystemTime::now()
@@ -12165,7 +12225,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         std::fs::remove_dir_all(root).ok();
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn export_refuses_symlink_target_and_parent_escape() {
         let nonce = std::time::SystemTime::now()
@@ -12268,6 +12328,32 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(effects.is_active());
         assert!(!app.transcript_viewer.is_open());
         assert!(app.pending.is_some());
+        effects.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn reopening_viewer_restores_the_authoritative_pending_effect_marker() {
+        let mut app = App::new();
+        let mut effects = transcript_effect::Supervisor::default();
+        effects
+            .start(transcript_effect::Request::Delay {
+                duration: Duration::from_millis(50),
+                origin: transcript_effect::Origin::Viewer,
+            })
+            .unwrap();
+        open_transcript_viewer(&mut app, &effects, "");
+        assert_eq!(
+            app.transcript_viewer.pending_effect_label(),
+            Some("test effect")
+        );
+
+        app.transcript_viewer.close();
+        open_transcript_viewer(&mut app, &effects, "");
+        assert_eq!(
+            app.transcript_viewer.pending_effect_label(),
+            Some("test effect"),
+            "reopen must derive pending state from the live single-flight supervisor"
+        );
         effects.shutdown().await;
     }
 }

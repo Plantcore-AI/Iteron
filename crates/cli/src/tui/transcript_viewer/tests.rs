@@ -35,15 +35,22 @@ fn navigation_raw_copy_and_filters_are_deterministic_and_bounded() {
     let blocks = vec![user(1, "first"), user(2, "second needle")];
     let mut viewer = Viewer::default();
     viewer.open("needle", &blocks, 1);
-    assert_eq!(viewer.export_ids(ExportScope::Filtered), Ok(Some(vec![2])));
+    assert_eq!(
+        viewer.export_ids(ExportScope::Filtered, 1),
+        Ok(Some(vec![2]))
+    );
     viewer.editing_query = false;
-    viewer.key(KeyCode::Char('r'), KeyModifiers::NONE, &blocks);
-    let copied = viewer.key(KeyCode::Char('y'), KeyModifiers::NONE, &blocks);
+    viewer.key(KeyCode::Char('r'), KeyModifiers::NONE, &blocks, 1);
+    let copied = viewer.key(KeyCode::Char('y'), KeyModifiers::NONE, &blocks, 1);
     assert!(matches!(
         copied,
-        Some(Effect::Copy { text, subject: "selected block" }) if text == "second needle"
+        Some(Effect::Copy {
+            text,
+            subject: "selected block",
+            snapshot_revision: 1,
+        }) if text == "second needle"
     ));
-    viewer.key(KeyCode::Char('n'), KeyModifiers::NONE, &blocks);
+    viewer.key(KeyCode::Char('n'), KeyModifiers::NONE, &blocks, 1);
     assert_eq!(viewer.selected_id, Some(2));
 }
 
@@ -99,11 +106,13 @@ fn search_matches_beyond_the_old_prefix_and_surfaces_any_unindexed_block() {
         viewer.key(
             KeyCode::Char('Y'),
             KeyModifiers::SHIFT,
-            &blocks
+            &blocks,
+            1,
         ),
         Some(Effect::Copy {
             text,
-            subject: "matching block projection"
+            subject: "matching block projection",
+            snapshot_revision: 1,
         }) if text.len() > 1536 && text.contains("late-needle")
     ));
 
@@ -113,7 +122,7 @@ fn search_matches_beyond_the_old_prefix_and_surfaces_any_unindexed_block() {
     assert_eq!(viewer.incomplete_entries, 1);
     assert!(!viewer.entries[0].complete);
     assert!(viewer.entries[0].folded.is_empty());
-    assert!(viewer.export_ids(ExportScope::Filtered).is_err());
+    assert!(viewer.export_ids(ExportScope::Filtered, 2).is_err());
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 10)).unwrap();
     terminal
         .draw(|frame| super::render(frame, &mut viewer, &crate::theme::Theme::dark()))
@@ -214,7 +223,7 @@ fn result_count_and_query_bytes_are_hard_bounded() {
     viewer.refresh_results_if_changed();
     assert_eq!(viewer.results.len(), MAX_RESULTS);
     assert!(viewer.results_truncated);
-    assert!(viewer.export_ids(ExportScope::Filtered).is_err());
+    assert!(viewer.export_ids(ExportScope::Filtered, 1).is_err());
 }
 
 #[test]
@@ -259,6 +268,52 @@ fn one_changed_block_projects_once_while_unchanged_entries_are_reused() {
         "only the changed revision may be scrubbed and folded"
     );
     assert_eq!(viewer.work.result_rebuilds, before.result_rebuilds + 1);
+}
+
+#[test]
+fn key_reconciles_a_no_draw_authority_update_before_emitting_snapshot_ids() {
+    let mut blocks = vec![user(1, "needle before draw"), user(2, "stable")];
+    let mut viewer = Viewer::default();
+    viewer.open("needle", &blocks, 41);
+    viewer.editing_query = false;
+    assert_eq!(viewer.results, vec![1]);
+
+    let changed = Arc::make_mut(&mut blocks[0]);
+    changed.kind = block::BlockKind::User("changed without a draw".into());
+    changed.touch();
+    let effect = viewer
+        .key(KeyCode::Char('e'), KeyModifiers::NONE, &blocks, 42)
+        .expect("export key");
+
+    assert!(matches!(
+        effect,
+        Effect::Export {
+            scope: ExportScope::Filtered,
+            snapshot_revision: 42,
+        }
+    ));
+    assert_eq!(
+        viewer.export_ids(ExportScope::Filtered, 42),
+        Ok(Some(Vec::new())),
+        "stale result id 1 must not be combined with the revision-42 Arc snapshot"
+    );
+    assert!(viewer.export_ids(ExportScope::Filtered, 41).is_err());
+}
+
+#[test]
+fn global_index_budget_stops_projecting_older_block_bytes() {
+    let payload = "x".repeat(1024 * 1024);
+    let blocks = (0..24).map(|id| user(id, &payload)).collect::<Vec<_>>();
+    let mut viewer = Viewer::default();
+
+    viewer.open("x", &blocks, 1);
+
+    assert!(viewer.work.index_projections < blocks.len());
+    assert!(viewer.entries.iter().any(|entry| entry.needs_projection));
+    assert_eq!(
+        viewer.work.index_projections, 16,
+        "only the newest prefix through the first 16 MiB admission failure is projected"
+    );
 }
 
 #[test]

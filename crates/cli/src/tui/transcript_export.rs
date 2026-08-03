@@ -1,19 +1,25 @@
 //! Capability-relative, bounded transcript snapshot export.
 //!
-//! Unix export opens the workspace and each parent directory with `O_NOFOLLOW`, then performs the
-//! temporary create, durable write, exclusive final link, cleanup, and directory fsync relative to
-//! the held parent descriptor. No checked pathname is reopened for the write. Other platforms fail
-//! closed until an equivalent reparse-resistant relative-handle implementation is available.
+//! Linux export opens the workspace and each parent directory with `O_NOFOLLOW`, writes and syncs
+//! an anonymous `O_TMPFILE` inode, and publishes that held inode with an exclusive `linkat` before
+//! syncing the directory. There is no temporary pathname for another process to replace and no
+//! cleanup unlink that could remove somebody else's replacement. Other platforms fail closed until
+//! they provide an equivalent inode-relative, atomically published implementation.
 
 use std::collections::HashSet;
-use std::path::{Component, Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::block;
 
 pub(crate) const MAX_TRANSCRIPT_EXPORT_BYTES: usize = 8 * 1024 * 1024;
+#[cfg(target_os = "linux")]
 const MAX_EXPORT_PATH_BYTES: usize = 4 * 1024;
+#[cfg(target_os = "linux")]
 const MAX_EXPORT_COMPONENTS: usize = 128;
+#[cfg(target_os = "linux")]
 const MAX_VERSION_ATTEMPTS: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,37 +51,27 @@ pub(crate) fn body(
     Ok(body.into_bytes())
 }
 
-pub(crate) fn export(
-    workspace: &Path,
-    blocks: &[Arc<block::Block>],
-    selected_ids: Option<&[u64]>,
-    requested: &str,
-    collision: CollisionPolicy,
-) -> Result<PathBuf, String> {
-    let bytes = body(blocks, selected_ids)?;
-    export_bytes(workspace, requested, &bytes, collision)
-}
-
-#[cfg(unix)]
-fn export_bytes(
+#[cfg(target_os = "linux")]
+pub(super) fn export_bytes(
     workspace: &Path,
     requested: &str,
     bytes: &[u8],
     collision: CollisionPolicy,
 ) -> Result<PathBuf, String> {
-    export_bytes_with_hook(workspace, requested, bytes, collision, || {})
+    export_bytes_with_hooks(workspace, requested, bytes, collision, || {}, || {})
 }
 
-#[cfg(not(unix))]
-fn export_bytes(
+#[cfg(not(target_os = "linux"))]
+pub(super) fn export_bytes(
     _workspace: &Path,
     _requested: &str,
     _bytes: &[u8],
     _collision: CollisionPolicy,
 ) -> Result<PathBuf, String> {
-    Err("secure transcript export is unavailable on this platform".into())
+    Err("secure transcript export requires Linux anonymous-inode publication".into())
 }
 
+#[cfg(target_os = "linux")]
 fn parse_relative(requested: &str) -> Result<(Vec<String>, String), String> {
     if requested.is_empty()
         || requested.len() > MAX_EXPORT_PATH_BYTES
@@ -107,6 +103,7 @@ fn parse_relative(requested: &str) -> Result<(Vec<String>, String), String> {
     Ok((components, leaf))
 }
 
+#[cfg(target_os = "linux")]
 fn versioned_leaf(leaf: &str, attempt: usize) -> String {
     if attempt == 1 {
         return leaf.to_string();
@@ -122,7 +119,7 @@ fn versioned_leaf(leaf: &str, attempt: usize) -> String {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod unix {
     use std::ffi::{CStr, CString, OsStr};
     use std::fs::File;
@@ -130,9 +127,6 @@ mod unix {
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
     use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::fs::MetadataExt as _;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(super) enum WriteError {
@@ -193,23 +187,16 @@ mod unix {
         Ok(left.dev() == right.dev() && left.ino() == right.ino())
     }
 
-    fn unlink(parent: &File, name: &CStr) -> io::Result<()> {
-        // SAFETY: descriptor and component are live; `unlinkat` does not follow a leaf symlink.
-        let result = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
-
-    fn create(parent: &File, name: &CStr) -> io::Result<File> {
-        // SAFETY: descriptor and component are live; flags create one non-followed exclusive file.
+    fn create_anonymous(parent: &File) -> io::Result<File> {
+        let current = c".";
+        // SAFETY: the held directory descriptor and static component remain live for the call.
+        // `O_TMPFILE` creates an inode with no directory entry, so there is no pathname race or
+        // cleanup pathname. Omitting `O_EXCL` deliberately permits the later `linkat` publication.
         let fd = unsafe {
             libc::openat(
                 parent.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                current.as_ptr(),
+                libc::O_WRONLY | libc::O_TMPFILE | libc::O_CLOEXEC,
                 0o600,
             )
         };
@@ -220,76 +207,95 @@ mod unix {
         Ok(unsafe { File::from_raw_fd(fd) })
     }
 
+    fn publish_held_inode(file: &File, parent: &File, leaf: &CStr) -> io::Result<()> {
+        let empty = c"";
+        // SAFETY: both descriptors and C strings remain live. `AT_EMPTY_PATH` names the source by
+        // descriptor, never by a mutable workspace pathname; the destination is exclusive.
+        let direct = unsafe {
+            libc::linkat(
+                file.as_raw_fd(),
+                empty.as_ptr(),
+                parent.as_raw_fd(),
+                leaf.as_ptr(),
+                libc::AT_EMPTY_PATH,
+            )
+        };
+        if direct == 0 {
+            return Ok(());
+        }
+        let direct_error = io::Error::last_os_error();
+        if direct_error.kind() == io::ErrorKind::AlreadyExists {
+            return Err(direct_error);
+        }
+
+        // Unprivileged kernels can reject `AT_EMPTY_PATH`. `/proc/self/fd/N` is still a reference
+        // to this process's held descriptor, not a workspace-controlled name. If procfs is absent
+        // or refuses the operation, fail closed; never fall back to a named temporary file.
+        if !matches!(
+            direct_error.raw_os_error(),
+            Some(libc::EPERM) | Some(libc::EINVAL) | Some(libc::ENOENT)
+        ) {
+            return Err(direct_error);
+        }
+        let descriptor_path = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid descriptor path"))?;
+        // SAFETY: the process-owned procfs descriptor path, destination descriptor, and leaf are
+        // live. Following this symlink resolves exactly to the still-open anonymous inode.
+        let via_proc = unsafe {
+            libc::linkat(
+                libc::AT_FDCWD,
+                descriptor_path.as_ptr(),
+                parent.as_raw_fd(),
+                leaf.as_ptr(),
+                libc::AT_SYMLINK_FOLLOW,
+            )
+        };
+        if via_proc == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
     pub(super) fn write_exclusive(
         parent: &File,
         leaf: &str,
         bytes: &[u8],
+        before_publish: &mut dyn FnMut(),
     ) -> Result<(), WriteError> {
         let leaf = c_string(OsStr::new(leaf)).map_err(|_| WriteError::Known)?;
-        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let temporary = CString::new(format!(
-            ".core-export-{}-{sequence}.tmp",
-            std::process::id()
-        ))
-        .map_err(|_| WriteError::Known)?;
-        let mut file = create(parent, &temporary).map_err(|_| WriteError::Known)?;
+        let mut file = create_anonymous(parent).map_err(|_| WriteError::Known)?;
         if file.write_all(bytes).is_err() || file.sync_all().is_err() {
-            drop(file);
-            return if unlink(parent, &temporary).is_ok() {
-                Err(WriteError::Known)
-            } else {
-                Err(WriteError::OutcomeUnknown)
-            };
+            return Err(WriteError::Known);
         }
-        drop(file);
+        before_publish();
 
-        // A hard link publishes the fully-synced inode atomically and fails with EEXIST rather than
-        // replacing an existing file. Both names are relative to the same held directory handle.
-        // SAFETY: both live C strings and the held descriptor remain valid for the call.
-        let linked = unsafe {
-            libc::linkat(
-                parent.as_raw_fd(),
-                temporary.as_ptr(),
-                parent.as_raw_fd(),
-                leaf.as_ptr(),
-                0,
-            )
-        };
-        if linked != 0 {
-            let error = io::Error::last_os_error();
-            let cleaned = unlink(parent, &temporary).is_ok();
-            return if !cleaned {
-                Err(WriteError::OutcomeUnknown)
-            } else if error.kind() == io::ErrorKind::AlreadyExists {
+        if let Err(error) = publish_held_inode(&file, parent, &leaf) {
+            return if error.kind() == io::ErrorKind::AlreadyExists {
                 Err(WriteError::Exists)
             } else {
                 Err(WriteError::Known)
             };
         }
-        if unlink(parent, &temporary).is_err() || parent.sync_all().is_err() {
+        if parent.sync_all().is_err() {
             return Err(WriteError::OutcomeUnknown);
         }
         Ok(())
     }
-
-    pub(super) fn remove_final(parent: &File, leaf: &str) {
-        if let Ok(leaf) = c_string(OsStr::new(leaf)) {
-            let _ = unlink(parent, &leaf);
-            let _ = parent.sync_all();
-        }
-    }
 }
 
-#[cfg(unix)]
-fn export_bytes_with_hook<F>(
+#[cfg(target_os = "linux")]
+fn export_bytes_with_hooks<A, P>(
     workspace: &Path,
     requested: &str,
     bytes: &[u8],
     collision: CollisionPolicy,
-    acquired: F,
+    acquired: A,
+    mut before_publish: P,
 ) -> Result<PathBuf, String>
 where
-    F: FnOnce(),
+    A: FnOnce(),
+    P: FnMut(),
 {
     let (parents, leaf) = parse_relative(requested)?;
     let root = unix::open_root(workspace)
@@ -310,15 +316,14 @@ where
     };
     for attempt in 1..=attempts {
         let candidate = versioned_leaf(&leaf, attempt);
-        match unix::write_exclusive(&parent, &candidate, bytes) {
+        match unix::write_exclusive(&parent, &candidate, bytes, &mut before_publish) {
             Ok(()) => {
                 let still_bound = unix::traverse(&root, &parents)
                     .and_then(|current| unix::same_directory(&parent, &current))
                     .unwrap_or(false);
                 if !still_bound {
-                    unix::remove_final(&parent, &candidate);
                     return Err(
-                        "export parent changed during dispatch; output was removed and outcome is unknown"
+                        "export parent changed during dispatch; publication outcome is unknown"
                             .into(),
                     );
                 }
@@ -363,13 +368,25 @@ mod tests {
         ))
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
+    fn export_fixture(
+        workspace: &Path,
+        blocks: &[Arc<block::Block>],
+        selected_ids: Option<&[u64]>,
+        requested: &str,
+        collision: CollisionPolicy,
+    ) -> Result<PathBuf, String> {
+        let bytes = body(blocks, selected_ids)?;
+        export_bytes(workspace, requested, &bytes, collision)
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn capability_export_is_exclusive_atomic_and_versions_fixed_names() {
         let root = scratch("exclusive");
         std::fs::create_dir_all(root.join("reports")).unwrap();
         let blocks = vec![user(1, "semantic")];
-        let first = export(
+        let first = export_fixture(
             &root,
             &blocks,
             None,
@@ -377,7 +394,7 @@ mod tests {
             CollisionPolicy::Versioned,
         )
         .unwrap();
-        let second = export(
+        let second = export_fixture(
             &root,
             &blocks,
             None,
@@ -389,7 +406,7 @@ mod tests {
         assert_eq!(second, root.join("reports/session-2.md"));
         assert_eq!(std::fs::read(first).unwrap(), body(&blocks, None).unwrap());
         assert!(
-            export(
+            export_fixture(
                 &root,
                 &blocks,
                 None,
@@ -401,7 +418,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn parent_symlink_swap_cannot_redirect_the_capability() {
         use std::os::unix::fs::symlink;
@@ -424,7 +441,7 @@ mod tests {
             symlink(&attack_outside, attack_root.join("reports")).unwrap();
             done_tx.send(()).unwrap();
         });
-        let result = export_bytes_with_hook(
+        let result = export_bytes_with_hooks(
             &root,
             "reports/session.md",
             b"must stay confined",
@@ -433,6 +450,7 @@ mod tests {
                 start_tx.send(()).unwrap();
                 done_rx.recv().unwrap();
             },
+            || {},
         );
         attacker.join().unwrap();
         assert!(result.is_err());
@@ -440,6 +458,111 @@ mod tests {
         assert!(!root.join("reports-held/session.md").exists());
         std::fs::remove_dir_all(root).ok();
         std::fs::remove_dir_all(outside).ok();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn synced_inode_has_no_temporary_name_for_an_attacker_to_replace() {
+        let root = scratch("anonymous-race");
+        std::fs::create_dir_all(root.join("reports")).unwrap();
+        let predictable = format!(".core-export-{}-0.tmp", std::process::id());
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let attack_parent = root.join("reports");
+        let attack_name = predictable.clone();
+        let attacker = std::thread::spawn(move || {
+            ready_rx.recv().unwrap();
+            assert!(
+                std::fs::read_dir(&attack_parent)
+                    .unwrap()
+                    .all(|entry| !entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".core-export-")),
+                "the fully-synced source inode must not have a workspace pathname"
+            );
+            std::fs::write(
+                attack_parent.join(attack_name),
+                b"attacker-owned replacement",
+            )
+            .unwrap();
+            done_tx.send(()).unwrap();
+        });
+
+        let result = export_bytes_with_hooks(
+            &root,
+            "reports/session.md",
+            b"held-inode bytes",
+            CollisionPolicy::Refuse,
+            || {},
+            || {
+                ready_tx.send(()).unwrap();
+                done_rx.recv().unwrap();
+            },
+        )
+        .unwrap();
+        attacker.join().unwrap();
+
+        assert_eq!(std::fs::read(result).unwrap(), b"held-inode bytes");
+        assert_eq!(
+            std::fs::read(root.join("reports").join(predictable)).unwrap(),
+            b"attacker-owned replacement",
+            "export cleanup must never unlink an attacker replacement"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn final_symlink_installed_at_the_publish_barrier_is_never_followed_or_unlinked() {
+        use std::os::unix::fs::symlink;
+
+        let root = scratch("leaf-race-root");
+        let outside = scratch("leaf-race-outside");
+        std::fs::create_dir_all(root.join("reports")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let outside_target = outside.join("target.md");
+        std::fs::write(&outside_target, b"outside stays intact").unwrap();
+
+        let result = export_bytes_with_hooks(
+            &root,
+            "reports/session.md",
+            b"must not follow the replacement",
+            CollisionPolicy::Refuse,
+            || {},
+            || symlink(&outside_target, root.join("reports/session.md")).unwrap(),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(&outside_target).unwrap(),
+            b"outside stays intact"
+        );
+        assert!(
+            std::fs::symlink_metadata(root.join("reports/session.md"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        std::fs::remove_dir_all(root).ok();
+        std::fs::remove_dir_all(outside).ok();
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn platforms_without_inode_relative_atomic_publication_fail_closed() {
+        let root = scratch("unsupported");
+        std::fs::create_dir_all(&root).unwrap();
+        let result = export_bytes(
+            &root,
+            "session.md",
+            b"not published",
+            CollisionPolicy::Refuse,
+        );
+        assert!(result.is_err());
+        assert!(!root.join("session.md").exists());
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

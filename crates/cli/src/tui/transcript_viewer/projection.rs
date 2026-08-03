@@ -65,6 +65,21 @@ pub(super) fn index_block(block: &block::Block, remaining: usize) -> Entry {
         folded: if complete { folded } else { String::new() },
         complete,
         required_bytes,
+        needs_projection: false,
+    }
+}
+
+/// Metadata-only placeholder once the global budget is exhausted. It deliberately never calls
+/// `Block::to_text`, redaction, normalization, or case folding.
+pub(super) fn unprojected_block(block: &block::Block) -> Entry {
+    Entry {
+        id: block.id,
+        revision: block.revision,
+        label: block_label(&block.kind),
+        folded: String::new(),
+        complete: false,
+        required_bytes: None,
+        needs_projection: true,
     }
 }
 

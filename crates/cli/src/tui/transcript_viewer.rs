@@ -13,6 +13,8 @@ use crate::block;
 
 mod render;
 pub(crate) use render::render;
+mod effect;
+pub(crate) use effect::{Effect, ExportScope};
 mod projection;
 use projection::{
     append_query, bounded_detail, bounded_safe, fold, index_block, move_bounded, move_wrapped,
@@ -31,18 +33,6 @@ const MAX_DETAIL_BYTES: usize = 64 * 1024;
 const MAX_DETAIL_ROWS: usize = 64 * 1024;
 const MAX_NOTICE_BYTES: usize = 512;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExportScope {
-    Filtered,
-    All,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Effect {
-    Copy { text: String, subject: &'static str },
-    Export(ExportScope),
-}
-
 #[derive(Debug)]
 pub(super) struct Entry {
     id: u64,
@@ -54,6 +44,9 @@ pub(super) struct Entry {
     /// permanently per-block-oversized projections, which lets unrelated live updates reuse an
     /// incomplete entry without re-scrubbing megabytes.
     required_bytes: Option<usize>,
+    /// True when the global budget was already exhausted before this block was inspected. Such an
+    /// entry is cheap metadata only and must be projected if a later reconciliation frees budget.
+    needs_projection: bool,
 }
 
 #[derive(Debug)]
@@ -102,6 +95,11 @@ pub(crate) struct Viewer {
 impl Viewer {
     pub(crate) fn is_open(&self) -> bool {
         self.open
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_effect_label(&self) -> Option<&'static str> {
+        self.pending_effect
     }
 
     pub(crate) fn open(
@@ -180,16 +178,27 @@ impl Viewer {
                 }
                 Some(entry)
                     if entry.revision == block.revision
+                        && !entry.needs_projection
                         && entry.required_bytes.is_none_or(|bytes| bytes > remaining) =>
                 {
                     entry
                 }
+                Some(entry) if entry.revision == block.revision && remaining == 0 => entry,
+                _ if remaining == 0 => projection::unprojected_block(block),
                 _ => {
                     self.work.index_projections = self.work.index_projections.saturating_add(1);
                     index_block(block, remaining)
                 }
             };
-            remaining = remaining.saturating_sub(entry.folded.len());
+            if !entry.complete {
+                // The newest-prefix budget is authoritative. Once one complete projection does not
+                // fit (globally or per block), do not scrub/fold every older block merely to
+                // discover that it also loses priority; retain metadata-only placeholders and
+                // revisit them only if a later reconciliation frees budget.
+                remaining = 0;
+            } else {
+                remaining = remaining.saturating_sub(entry.folded.len());
+            }
             rebuilt.push(entry);
         }
         rebuilt.reverse();
@@ -215,7 +224,13 @@ impl Viewer {
         self.ensure_detail(blocks);
     }
 
-    pub(crate) fn handle_paste(&mut self, text: &str, blocks: &[Arc<block::Block>]) {
+    pub(crate) fn handle_paste(
+        &mut self,
+        text: &str,
+        blocks: &[Arc<block::Block>],
+        authority_revision: u64,
+    ) {
+        self.sync_if_changed(blocks, authority_revision);
         if !self.editing_query {
             return;
         }
@@ -256,7 +271,12 @@ impl Viewer {
         code: KeyCode,
         modifiers: KeyModifiers,
         blocks: &[Arc<block::Block>],
+        authority_revision: u64,
     ) -> Option<Effect> {
+        // Input can arrive during frame coalescing after the EQ mutated the transcript but before
+        // the next draw. Reconcile here as an authority gate so result ids and copied/exported Arc
+        // snapshots can never come from different revisions.
+        self.sync_if_changed(blocks, authority_revision);
         if self.editing_query {
             match code {
                 KeyCode::Esc | KeyCode::Enter => self.editing_query = false,
@@ -309,6 +329,7 @@ impl Viewer {
                     return Some(Effect::Copy {
                         text,
                         subject: "matching block projection",
+                        snapshot_revision: authority_revision,
                     });
                 }
             }
@@ -318,32 +339,26 @@ impl Viewer {
                     return Some(Effect::Copy {
                         text: detail.text.clone(),
                         subject: "selected block",
+                        snapshot_revision: authority_revision,
                     });
                 }
             }
             KeyCode::Char('E') | KeyCode::Char('e') if shift => {
-                return Some(Effect::Export(ExportScope::All));
+                return Some(Effect::Export {
+                    scope: ExportScope::All,
+                    snapshot_revision: authority_revision,
+                });
             }
-            KeyCode::Char('e') => return Some(Effect::Export(ExportScope::Filtered)),
+            KeyCode::Char('e') => {
+                return Some(Effect::Export {
+                    scope: ExportScope::Filtered,
+                    snapshot_revision: authority_revision,
+                });
+            }
             _ => {}
         }
         self.ensure_detail(blocks);
         None
-    }
-
-    pub(crate) fn export_ids(&self, scope: ExportScope) -> Result<Option<Vec<u64>>, String> {
-        match scope {
-            ExportScope::All => Ok(None),
-            ExportScope::Filtered if self.query.is_empty() => Ok(None),
-            ExportScope::Filtered if self.incomplete_entries > 0 => Err(format!(
-                "filtered export refused: search is incomplete for {} blocks",
-                self.incomplete_entries
-            )),
-            ExportScope::Filtered if self.results_truncated => {
-                Err("filtered export refused: matching results exceed the 512-result cap".into())
-            }
-            ExportScope::Filtered => Ok(Some(self.results.clone())),
-        }
     }
 
     fn refresh_results_if_changed(&mut self) {
@@ -473,18 +488,5 @@ impl Viewer {
             row_ranges: Vec::new(),
         });
         self.work.detail_rebuilds = self.work.detail_rebuilds.saturating_add(1);
-    }
-
-    fn selected_result_text(&self, blocks: &[Arc<block::Block>]) -> Option<String> {
-        let selected = self.selected_id?;
-        if self.query.is_empty() || !self.results.contains(&selected) {
-            return None;
-        }
-        self.entries
-            .iter()
-            .find(|entry| entry.id == selected)
-            .filter(|entry| entry.complete)?;
-        let source = blocks.iter().find(|block| block.id == selected)?.to_text();
-        Some(bounded_detail(&source).0)
     }
 }

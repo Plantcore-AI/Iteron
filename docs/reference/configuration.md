@@ -124,22 +124,29 @@ through the same writer as `/export`. Filtered export refuses when any block is 
 the 512-result cap was reached, rather than publishing a partial result without a marker.
 
 Copy and export run through one visible, single-flight background effect slot, so redraw, runtime
-events, approvals, Ctrl-C, and Ctrl-D remain responsive. Copy repeats secret and terminal-control
-scrubbing, admits only fixed root-owned, non-writable, non-symlink stock adapters, and reports every
-post-dispatch write/shutdown/wait/exit/timeout failure as outcome-unknown without trying a second
-adapter. Every failure before a successful wait explicitly kills and bounded-waits the child; a
-nonzero exit has already been reaped. Export projects and writes on a blocking worker with a
-five-second UI deadline; a deadline keeps the slot reserved until the worker settles and reports the
-outcome as unknown.
+events, approvals, Ctrl-C, Ctrl-D, SIGTERM, and SIGHUP remain responsive. Copy repeats secret and
+terminal-control scrubbing, admits only fixed root-owned, non-writable, non-symlink stock adapters,
+and reports every post-dispatch write/shutdown/wait/exit/timeout failure as outcome-unknown without
+trying a second adapter. Every failure before a successful wait explicitly kills and bounded-waits
+the child; a nonzero exit has already been reaped. Export runs in a separately killable copy of the
+current Core executable with a cleared environment and bounded stdin/stdout protocol. Its
+five-second deadline, frontend shutdown, and every post-spawn error kill and bounded-wait that
+helper; every normal and error return from the TUI crosses the same cleanup scope before returning.
+A timed-out publication is reported as outcome-unknown, but no detached blocking thread can mutate
+the workspace later.
 
-On Unix, export opens the workspace and every parent with no-follow directory handles, then creates,
-fsyncs, and exclusively publishes the file relative to the held parent capability. Parent symlink
-swaps cannot redirect the write. Existing explicit filenames are refused; default viewer and
-`/export` filenames allocate a bounded `-2`, `-3`, … version instead of overwriting. Secure export
-currently fails closed on non-Unix platforms. Authority revision notifications make stable frames
-perform no index or result rebuild; cached grapheme-aware row starts keep steady-frame work and
-allocation proportional to visible rows. A bounded reflow runs only when the selected block or
-terminal width changes.
+On Linux, export opens the workspace and every parent with no-follow directory handles, writes and
+fsyncs an anonymous `O_TMPFILE` inode, and exclusively publishes that held inode with `linkat` before
+syncing the directory. It creates no temporary workspace pathname and never issues a cleanup unlink,
+so an unlink/replace or symlink race cannot redirect publication or cause Core to remove an
+attacker-owned replacement. Parent symlink swaps cannot redirect the write. Existing explicit
+filenames are refused; default viewer and `/export` filenames allocate a bounded `-2`, `-3`, …
+version instead of overwriting. Filesystems without anonymous-inode publication and non-Linux
+platforms fail closed without creating a target. Authority revision notifications make stable
+frames perform no index or result rebuild; every viewer key and effect first binds its result ids and
+immutable block snapshot to that exact revision, including updates that arrived before a deferred
+draw. Cached grapheme-aware row starts keep steady-frame work and allocation proportional to visible
+rows. A bounded reflow runs only when the selected block or terminal width changes.
 
 Ctrl-G invokes `external_editor` as an exact argv with the current repository as its working
 directory. Core never shell-splits this array. If the field is absent, a single-token `VISUAL` or

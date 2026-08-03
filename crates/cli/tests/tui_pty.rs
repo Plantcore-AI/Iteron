@@ -993,13 +993,22 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
     assert!(!pty.screen_text().contains('�'));
 
     pty.send(b"e");
-    pty.wait_until("filtered atomic transcript export", |pty| {
-        pty.screen_text().contains("exported ->")
+    #[cfg(target_os = "linux")]
+    {
+        pty.wait_until("filtered atomic transcript export", |pty| {
+            pty.screen_text().contains("exported ->")
+        });
+        let filtered = std::fs::read_to_string(scratch.repo().join("core-transcript-filtered.md"))
+            .expect("filtered viewer export is durable in the workspace");
+        assert!(filtered.starts_with("# Core Code transcript\n\n"));
+        assert!(filtered.contains("needle 你好 😀"));
+    }
+    #[cfg(not(target_os = "linux"))]
+    pty.wait_until("truthful fail-closed export diagnostic", |pty| {
+        pty.screen_text()
+            .contains("secure transcript export requires Linux")
+            && !scratch.repo().join("core-transcript-filtered.md").exists()
     });
-    let filtered = std::fs::read_to_string(scratch.repo().join("core-transcript-filtered.md"))
-        .expect("filtered viewer export is durable in the workspace");
-    assert!(filtered.starts_with("# Core Code transcript\n\n"));
-    assert!(filtered.contains("needle 你好 😀"));
 
     pty.send(b"\x1b");
     pty.wait_until("return from fullscreen viewer", |pty| {
@@ -1017,13 +1026,26 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
     let slash_export = scratch.repo().join("core-transcript.md");
     let slash_export_2 = scratch.repo().join("core-transcript-2.md");
     pty.send(b"/export\r");
-    pty.wait_until("slash export completes off the input path", |_| {
-        slash_export.is_file()
-    });
-    pty.send(b"/export\r");
-    pty.wait_until("default export versions instead of overwriting", |_| {
-        slash_export_2.is_file()
-    });
+    #[cfg(target_os = "linux")]
+    {
+        pty.wait_until("slash export completes off the input path", |_| {
+            slash_export.is_file()
+        });
+        pty.send(b"/export\r");
+        pty.wait_until("default export versions instead of overwriting", |_| {
+            slash_export_2.is_file()
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    pty.wait_until(
+        "slash export fails closed without filesystem mutation",
+        |pty| {
+            pty.screen_text()
+                .contains("export failed: secure transcript export requires")
+                && !slash_export.exists()
+                && !slash_export_2.exists()
+        },
+    );
     pty.send(b"\x03");
     let status = pty.wait_for_exit();
     assert!(status.success(), "normal TUI exit failed: {status}");
