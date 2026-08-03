@@ -128,6 +128,31 @@ pub(super) fn validate(file: &syn::File) -> Result<()> {
             })
         }"#,
     )?;
+    require_function(
+        file,
+        "project_schema",
+        r#"pub(crate) fn project_schema(mut value: Value, schema_version: u32) -> io::Result<Value> {
+            if !SUPPORTED_SCHEMA_VERSIONS.contains(&schema_version) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unsupported CLI output schema version {schema_version}"),
+                ));
+            }
+            let fields = value.as_object_mut().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "machine output record must be a JSON object",
+                )
+            })?;
+            fields.insert("schema_version".into(), Value::from(schema_version));
+            if schema_version == LEGACY_SCHEMA_VERSION
+                && fields.get("type").and_then(Value::as_str) == Some("result")
+            {
+                fields.remove("kernel_tax");
+            }
+            Ok(value)
+        }"#,
+    )?;
     validate_emitter(file)
 }
 
@@ -136,9 +161,10 @@ fn validate_emitter(file: &syn::File) -> Result<()> {
         file,
         "Emitter",
         "new",
-        r#"pub fn new(format: OutputFormat) -> Self {
+        r#"pub fn new(format: OutputFormat, schema_version: u32) -> Self {
             Self {
                 format,
+                schema_version,
                 stream_turn: 0,
                 assistant_scrubber: StreamingScrubber::default(),
                 thinking_scrubber: StreamingScrubber::default(),

@@ -1,6 +1,36 @@
 # Output formats
 
-Machine output is available only in one-shot operation.
+Machine output is available for one-shot runs and the bounded session operations below.
+
+The current default is schema v5. A client that pins the retained v4 contract passes
+`--output-schema-version 4` together with `--output-format json` or `stream-json`. On one-shot
+task, continue, and resume operations this projects every stdout record onto the frozen v4 shape;
+in particular, the v5-only `kernel_tax` terminal field and `input_attachment` stream record are
+not emitted. Unsupported selectors fail before a rollout is opened.
+
+`core --machine-contract` is a provider-free capability query. Its JSON reports
+`cli_stream_versions`, `default_cli_stream_version`, and `resident_protocol_version` as distinct
+values; a launcher must not infer the CLI stream version from the resident SQ/EQ protocol.
+
+## Session operations
+
+Schema-selected session operations use direct argv and emit one typed object:
+
+- `--sessions [--session-limit N] [--session-cursor TOKEN] [--agent-definition-tag TAG]` emits
+  `session_list_page { sessions, next_cursor }`;
+- `--transcript RUN_ID [--transcript-cursor TOKEN]` emits
+  `session_transcript_page { run_id, events, older_cursor }`;
+- `--fork RUN_ID` emits
+  `session_fork_result { parent_run_id, child_run_id, fork_point, status: "created" }`.
+
+Cursors are opaque and bounded. List cursors are tied to their tenant and tag filter; transcript
+cursors are tied to their run. A transcript is read newest-page first while events within each
+page remain chronological. A stale, modified, or cross-query cursor is rejected rather than
+returning a page with silent gaps or duplicates.
+
+`--agent-definition-tag` is immutable grouping metadata: at most 128 UTF-8 bytes, non-blank,
+control-free, and rejected when it resembles a credential. A fresh run records it, resume may
+only repeat the recorded value, forks inherit it, and legacy untagged sessions remain readable.
 
 ## Final result
 

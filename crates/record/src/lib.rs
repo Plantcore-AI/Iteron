@@ -34,7 +34,8 @@ pub use session::{
 };
 
 use core_protocol::{
-    Event, EventKind, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, RunId, Seq, TenantId,
+    Event, EventKind, MAX_AGENT_DEFINITION_TAG_BYTES, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, RunId,
+    Seq, TenantId,
 };
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions, TryLockError};
@@ -292,6 +293,19 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
                 max: MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES,
             });
         }
+    }
+    if let EventKind::RunStart {
+        agent_definition_tag: Some(tag),
+        ..
+    } = &event.kind
+        && (tag.trim().is_empty()
+            || tag.len() > MAX_AGENT_DEFINITION_TAG_BYTES
+            || tag.chars().any(char::is_control)
+            || crate::redact::scrub_route_identifier(tag) != *tag)
+    {
+        return Err(RecordError::InvalidEventSchema {
+            reason: "agent_definition_tag must be bounded, non-blank, control-free, and credential-free",
+        });
     }
     Ok(())
 }
@@ -957,6 +971,7 @@ mod tests {
                     forked_at: None,
                     parent_hash_at_seq: None,
                     config_digest: String::new(),
+                    agent_definition_tag: None,
                     max_usd: None,
                 },
             }
@@ -1429,6 +1444,7 @@ mod tests {
                 forked_at: None,
                 parent_hash_at_seq: None,
                 config_digest: String::new(),
+                agent_definition_tag: None,
                 max_usd: None,
             },
         };

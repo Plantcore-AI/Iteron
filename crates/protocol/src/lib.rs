@@ -37,10 +37,10 @@ pub mod text;
 pub use diff::{DiffLine, DiffTag, FileDiff, Hunk};
 pub use event::{
     DurableEnvironmentContext, DurableInstructionContext, Event, EventKind,
-    MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, Phase, RuntimePolicyEventVersion, RuntimePolicySource,
-    RuntimePolicyState, SubmissionRejectionReason, WorkflowChildOutcome, WorkflowCostEvidence,
-    WorkflowEvent, WorkflowEventVersion, WorkflowExecutionMode, WorkflowMetrics, WorkflowOutcome,
-    WorkflowPhase, WorkflowTaskEvidence,
+    MAX_AGENT_DEFINITION_TAG_BYTES, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, Phase,
+    RuntimePolicyEventVersion, RuntimePolicySource, RuntimePolicyState, SubmissionRejectionReason,
+    WorkflowChildOutcome, WorkflowCostEvidence, WorkflowEvent, WorkflowEventVersion,
+    WorkflowExecutionMode, WorkflowMetrics, WorkflowOutcome, WorkflowPhase, WorkflowTaskEvidence,
 };
 pub use ids::{EffectId, RunId, Seq, SubmissionId, TenantId, TurnId};
 pub use message::{
