@@ -7,9 +7,11 @@ import argparse
 import json
 import os
 import ssl
+import stat
 import tarfile
 import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -83,7 +85,7 @@ def load_entry(lock_path: Path, tool: str, host: str) -> dict[str, str]:
     if not SHA256_RE.fullmatch(entry["sha256"]):
         raise ReleaseToolError("tool lock SHA-256 is malformed")
     validate_download_url(entry["url"], initial=True)
-    if entry["archive"] not in ("tar.gz", "tar.xz"):
+    if entry["archive"] not in ("tar.gz", "tar.xz", "zip"):
         raise ReleaseToolError("unsupported tool archive format")
     return entry
 
@@ -126,37 +128,66 @@ def extract_binary(archive_path: Path, binary_name: str, output: Path) -> None:
         expected_size = 0
         written = 0
         with os.fdopen(descriptor, "wb") as destination:
-            # Stream headers instead of materializing getmembers(); a compressed
-            # archive containing millions of empty entries must stay bounded.
-            with tarfile.open(archive_path, mode="r|*") as archive:
-                for member in archive:
-                    member_count += 1
-                    if member_count > MAX_ARCHIVE_MEMBERS:
-                        raise ReleaseToolError("tool archive contains too many members")
-                    if member.size < 0 or member.size > MAX_DECLARED_ARCHIVE_BYTES:
-                        raise ReleaseToolError("tool archive member has an invalid size")
-                    declared_bytes += member.size
-                    if declared_bytes > MAX_DECLARED_ARCHIVE_BYTES:
-                        raise ReleaseToolError("tool archive declared size exceeds the limit")
-                    if Path(member.name).name != binary_name:
-                        continue
-                    if not member.isfile() or member.issym() or member.islnk():
-                        raise ReleaseToolError("tool executable entry is not a regular file")
-                    matches += 1
-                    if matches > 1 or member.size <= 0 or member.size > MAX_DOWNLOAD_BYTES:
-                        raise ReleaseToolError("tool executable has an invalid count or size")
-                    expected_size = member.size
-                    source = archive.extractfile(member)
-                    if source is None:
-                        raise ReleaseToolError("tool executable could not be read")
-                    while True:
-                        chunk = source.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        written += len(chunk)
-                        if written > member.size or written > MAX_DOWNLOAD_BYTES:
-                            raise ReleaseToolError("tool executable exceeds its declared size")
-                        destination.write(chunk)
+            if archive_path.suffix == ".zip":
+                with zipfile.ZipFile(archive_path) as archive:
+                    for member in archive.infolist():
+                        member_count += 1
+                        if member_count > MAX_ARCHIVE_MEMBERS:
+                            raise ReleaseToolError("tool archive contains too many members")
+                        if member.file_size < 0 or member.file_size > MAX_DECLARED_ARCHIVE_BYTES:
+                            raise ReleaseToolError("tool archive member has an invalid size")
+                        declared_bytes += member.file_size
+                        if declared_bytes > MAX_DECLARED_ARCHIVE_BYTES:
+                            raise ReleaseToolError("tool archive declared size exceeds the limit")
+                        if Path(member.filename).name != binary_name:
+                            continue
+                        unix_mode = member.external_attr >> 16
+                        file_type = stat.S_IFMT(unix_mode)
+                        if member.is_dir() or file_type == stat.S_IFLNK or member.flag_bits & 0x1:
+                            raise ReleaseToolError("tool executable entry is not a regular file")
+                        matches += 1
+                        if matches > 1 or member.file_size <= 0 or member.file_size > MAX_DOWNLOAD_BYTES:
+                            raise ReleaseToolError("tool executable has an invalid count or size")
+                        expected_size = member.file_size
+                        with archive.open(member) as source:
+                            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                                written += len(chunk)
+                                if written > member.file_size or written > MAX_DOWNLOAD_BYTES:
+                                    raise ReleaseToolError(
+                                        "tool executable exceeds its declared size"
+                                    )
+                                destination.write(chunk)
+            else:
+                # Stream headers instead of materializing getmembers(); a compressed
+                # archive containing millions of empty entries must stay bounded.
+                with tarfile.open(archive_path, mode="r|*") as archive:
+                    for member in archive:
+                        member_count += 1
+                        if member_count > MAX_ARCHIVE_MEMBERS:
+                            raise ReleaseToolError("tool archive contains too many members")
+                        if member.size < 0 or member.size > MAX_DECLARED_ARCHIVE_BYTES:
+                            raise ReleaseToolError("tool archive member has an invalid size")
+                        declared_bytes += member.size
+                        if declared_bytes > MAX_DECLARED_ARCHIVE_BYTES:
+                            raise ReleaseToolError("tool archive declared size exceeds the limit")
+                        if Path(member.name).name != binary_name:
+                            continue
+                        if not member.isfile() or member.issym() or member.islnk():
+                            raise ReleaseToolError("tool executable entry is not a regular file")
+                        matches += 1
+                        if matches > 1 or member.size <= 0 or member.size > MAX_DOWNLOAD_BYTES:
+                            raise ReleaseToolError("tool executable has an invalid count or size")
+                        expected_size = member.size
+                        source = archive.extractfile(member)
+                        if source is None:
+                            raise ReleaseToolError("tool executable could not be read")
+                        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                            written += len(chunk)
+                            if written > member.size or written > MAX_DOWNLOAD_BYTES:
+                                raise ReleaseToolError(
+                                    "tool executable exceeds its declared size"
+                                )
+                            destination.write(chunk)
             if matches != 1 or written <= 0 or written != expected_size:
                 raise ReleaseToolError(
                     f"tool archive must contain exactly one regular {binary_name!r} executable"
