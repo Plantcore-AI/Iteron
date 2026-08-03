@@ -275,6 +275,36 @@ jobs:
       - name: test
         run: cargo test --workspace --all-targets --locked
 
+  evolution-gate:
+    name: gate / evolution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # The evolution rows cite tests in crates/agents and crates/cli as well as crates/evolve, and
+      # the row validator resolves every citation against the checkout. It reads files, not git
+      # history, so a shallow checkout is sufficient here.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: install pinned Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      # Fails on any row that names no plane placement, cites a test that does not exist, names a
+      # world module that is not on disk, or leaves a proven module or algebra operator unclaimed.
+      # There is no target-only state to suppress: an unbacked row is a red gate.
+      - name: evolution conformance rows
+        run: cargo run --locked -p core-evolve --bin evolve-transcript -- gate rows --repo .
+      # Runs the offline transcript twice under each producer order, verifies both hash chains,
+      # replays each promotion journal, exercises the checkpoint algebra, and proves the evaluator
+      # and promotion roles are not interchangeable. Non-zero exit means a module is unproven.
+      - name: evolution-proven gate artifact
+        run: >-
+          cargo run --locked -p core-evolve --bin evolve-transcript -- gate prove --repo .
+          --scratch "$RUNNER_TEMP/evolution-gate"
+      # The gate's own determinism and no-overclaim assertions. Kept separate from the binary run so
+      # a report that passes for the wrong reason still turns this job red.
+      - name: evolution gate assertions
+        run: cargo test --locked -p core-evolve --all-targets
+
   release-build:
     name: release build / ${{ matrix.os }}
     if: github.event_name == 'push'
