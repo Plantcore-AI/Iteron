@@ -620,6 +620,7 @@
       "reviewers": [],
       "paths": [
         { "kind": "file", "path": "crates/cli/src/editor.rs" },
+        { "kind": "file", "path": "crates/cli/src/prompt_history.rs" },
         { "kind": "file", "path": "crates/cli/src/surface.rs" },
         { "kind": "file", "path": "crates/cli/src/tui.rs" },
         { "kind": "tree", "path": "crates/cli/src/tui" },
@@ -747,6 +748,7 @@
         { "kind": "file", "path": "crates/cli/src/main.rs" },
         { "kind": "file", "path": "crates/cli/src/mcp.rs" },
         { "kind": "file", "path": "crates/cli/src/pricing.rs" },
+        { "kind": "file", "path": "crates/cli/src/prompt_history.rs" },
         { "kind": "tree", "path": "crates/cli/src/runtime" },
         { "kind": "file", "path": "crates/cli/src/runtime.rs" },
         { "kind": "file", "path": "crates/cli/src/tui.rs" }
@@ -773,6 +775,7 @@
         { "kind": "file", "path": "crates/cli/src/environment.rs" },
         { "kind": "file", "path": "crates/cli/src/main.rs" },
         { "kind": "file", "path": "crates/cli/src/output.rs" },
+        { "kind": "file", "path": "crates/cli/src/prompt_history.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime.rs" }
       ]
     },
@@ -796,6 +799,7 @@
         { "kind": "file", "path": "crates/cli/src/mcp.rs" },
         { "kind": "file", "path": "crates/cli/src/output.rs" },
         { "kind": "file", "path": "crates/cli/src/pricing.rs" },
+        { "kind": "file", "path": "crates/cli/src/prompt_history.rs" },
         { "kind": "file", "path": "crates/cli/src/providers.rs" },
         { "kind": "file", "path": "crates/cli/src/tui.rs" },
         { "kind": "file", "path": "crates/record/src/lib.rs" },
@@ -835,6 +839,7 @@
         { "kind": "file", "path": "crates/cli/src/markdown.rs" },
         { "kind": "file", "path": "crates/cli/src/mcp.rs" },
         { "kind": "file", "path": "crates/cli/src/output.rs" },
+        { "kind": "file", "path": "crates/cli/src/prompt_history.rs" },
         { "kind": "file", "path": "crates/cli/src/render.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime.rs" },
         { "kind": "tree", "path": "crates/cli/src/runtime" },
@@ -895,6 +900,7 @@
         { "kind": "file", "path": "crates/cli/src/mcp.rs" },
         { "kind": "file", "path": "crates/cli/src/providers.rs" },
         { "kind": "file", "path": "crates/cli/src/output.rs" },
+        { "kind": "file", "path": "crates/cli/src/prompt_history.rs" },
         { "kind": "file", "path": "crates/cli/src/render.rs" },
         { "kind": "file", "path": "crates/cli/src/surface.rs" },
         { "kind": "file", "path": "crates/cli/src/theme.rs" },

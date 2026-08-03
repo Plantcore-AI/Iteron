@@ -34,6 +34,7 @@ their own user config, but its contents are still bounded and strictly parsed.
 | `compaction_trigger_tokens` | positive integer | allowed | ignored |
 | `retry` | object | operator-owned policy | parsed and ignored |
 | `completion_notifications` | boolean | bounded run/approval/long-idle attention notifications; default `false` | parsed and ignored |
+| `prompt_history` | `project`, `global`, or `disabled` | scrubbed, bounded TUI prompt history and text-draft retention; default `project` | parsed and ignored |
 | `providers` | array | allowed, maximum 64 | ignored |
 | `rate_cards` | array | allowed, maximum 256 | ignored |
 | `mcp_servers` | array | allowed | ignored |
@@ -58,6 +59,7 @@ their own user config, but its contents are still bounded and strictly parsed.
   "allow_code": false,
   "effort": "medium",
   "completion_notifications": false,
+  "prompt_history": "project",
   "compaction_trigger_tokens": 120000,
   "retry": {
     "base_ms": 500,
@@ -77,6 +79,15 @@ or a 30-second quiet period during live work. A positively identified terminal m
 frames; ordinary or nonterminal stdout falls back to one BEL byte. Repository configuration cannot
 enable or disable notifications, and streamed or untrusted text is never copied into terminal
 control output.
+
+`prompt_history` controls the TUI's text-only history and draft restoration. `project` (the
+default) hashes the canonical workspace identity and keeps unrelated repositories in separate
+files; `global` intentionally shares one operator-wide history; `disabled` creates no history path
+or writer. Files live below `~/.core/history/`, retain at most 200 entries, are scrubbed before
+serialization, and use private directory/file permissions where the platform supports them. Image
+attachments and their paths are never serialized. Ctrl-R searches newest-to-oldest; when an empty
+composer has a failed turn, Ctrl-R retains retry compatibility and Ctrl-Shift-R explicitly starts an
+empty-query history walk. Repository configuration cannot choose the operator's retention policy.
 
 `retry` contains only bounded numeric policy: `base_ms` is `1..=30000`, `cap_ms` is between
 `base_ms` and `60000`, and `max_attempts` (including the initial request) is `1..=10`. Numeric

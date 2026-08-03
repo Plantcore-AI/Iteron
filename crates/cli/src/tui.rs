@@ -19,6 +19,7 @@ mod terminal_input;
 pub(crate) mod app_server;
 pub(crate) mod headless;
 use crate::commands::{self, SlashCommand};
+use crate::config::PromptHistoryMode;
 use crate::editor::Editor;
 use crate::image_input::{self, ImageAttachments};
 use crate::providers::{ModelSelection, ProviderDirectory};
@@ -26,7 +27,7 @@ use crate::route::RouteView;
 use crate::runtime::{
     UiEvent, WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi, WorkflowUiEvent,
 };
-use crate::{block, startup, surface, theme};
+use crate::{block, prompt_history, startup, surface, theme};
 use core_ctx::ContextEstimate;
 use core_obs::CostState;
 use core_protocol::{
@@ -2856,6 +2857,7 @@ pub async fn run(
     mut providers: ProviderDirectory,
     route: RouteView,
     completion_notifications: bool,
+    history_mode: PromptHistoryMode,
     mut startup: startup::StartupTiming,
 ) -> anyhow::Result<()> {
     eprintln!(
@@ -2870,6 +2872,29 @@ pub async fn run(
         interrupt,
         drain,
     } = attached;
+    // Resolve and read operator-owned prompt state before entering raw mode. Persistence is
+    // fail-soft: an unavailable or malformed history file cannot prevent an interactive session,
+    // but its diagnostic is retained for the first rendered transcript.
+    let mut history_warning = None;
+    let history_store = match prompt_history::Store::resolve(
+        history_mode,
+        crate::config::config_home(),
+        &facts.workspace,
+    ) {
+        Ok(store) => store,
+        Err(error) => {
+            history_warning = Some(format!("prompt history disabled for this session: {error}"));
+            None
+        }
+    };
+    let history_state = history_store.as_ref().and_then(|store| match store.load() {
+        Ok(state) => Some(state),
+        Err(error) => {
+            history_warning = Some(format!("prompt history could not be restored: {error}"));
+            None
+        }
+    });
+    let history_writer = prompt_history::Writer::new(history_store);
     // Drain promises a real workspace checkpoint. Probe once before raw mode so a non-Git
     // workspace can reject that verb explicitly without blocking or breaking the terminal.
     let drain_available = core_record::checkpoint_supported(&facts.workspace);
@@ -2907,6 +2932,12 @@ pub async fn run(
 
     let repo = facts.workspace.clone();
     let mut app = App::new_with_detected_theme(detected_theme);
+    if let Some(state) = history_state {
+        app.editor.restore_persisted(state.history, state.draft);
+    }
+    if let Some(warning) = history_warning {
+        app.note(block::NoticeLevel::Warn, warning);
+    }
     app.hyperlink_policy = hyperlink::Policy::detect(&repo);
     app.mode = initial_state.mode;
     app.effort = initial_state.effort;
@@ -2969,6 +3000,8 @@ pub async fn run(
     let mut eq_open = true;
     let mut last_spin = Instant::now();
     let mut next_frame_at = Instant::now();
+    let mut persisted_revision = app.editor.persistence_revision();
+    let mut persisted_history_len = app.editor.history_len();
 
     loop {
         // Kick off the initial task once the terminal is up.
@@ -3474,13 +3507,29 @@ pub async fn run(
                         }
                         // ---- one-keystroke retry of a failed turn (I-39) ----
                         KeyCode::Char('r')
-                            if ctrl && !app.running && app.retryable_task.is_some() =>
+                            if ctrl
+                                && !shift
+                                && !app.running
+                                && !menu_open
+                                && app.editor.is_empty()
+                                && app.retryable_task.is_some() =>
                         {
                             let task = app
                                 .retryable_task
                                 .clone()
                                 .expect("guarded by the match arm");
                             submit_turn(&mut app, &session, &mut notifier, task);
+                            refresh = true;
+                        }
+                        // Ctrl-R searches persisted and current-session history. When an empty
+                        // composer also has a failed turn, the compatibility retry arm above wins;
+                        // Ctrl-Shift-R explicitly walks history from an empty query.
+                        KeyCode::Char('r') | KeyCode::Char('R')
+                            if ctrl && !app.running && !menu_open =>
+                        {
+                            if !app.editor.reverse_search_previous() {
+                                app.status = "no older matching prompt".into();
+                            }
                             refresh = true;
                         }
                         // ---- input history (idle, no menu) ----
@@ -3699,10 +3748,21 @@ pub async fn run(
         if app.quit && !app.running {
             break;
         }
+
+        // Keep writes off the key path and bounded. A submitted prompt is scheduled immediately;
+        // unsent drafts are coalesced every 32 mutations and always flushed on normal teardown.
+        let revision = app.editor.persistence_revision();
+        let history_len = app.editor.history_len();
+        if history_len != persisted_history_len || revision.wrapping_sub(persisted_revision) >= 32 {
+            history_writer.schedule(app.editor.persistence_state());
+            persisted_revision = revision;
+            persisted_history_len = history_len;
+        }
     }
 
     // teardown (the guard also restores on drop; show_cursor is the only extra step).
     let _ = term.show_cursor();
+    history_writer.finish(app.editor.persistence_state());
     // Dropping the last SQ sender is how the server learns the session is over. Wait for it to run
     // out — the runtime's own shutdown (the final rollout flush) happens in there, and returning
     // before it completes would race the process exit against the record on disk.

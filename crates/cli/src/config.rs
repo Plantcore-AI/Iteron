@@ -56,6 +56,11 @@ pub struct FileConfig {
     /// Bounded out-of-band attention notifications for completed runs, approval requests, and
     /// long-idle periods. This preference is consumed only from operator-owned user configuration.
     pub completion_notifications: Option<bool>,
+    /// Durable prompt history policy. The default is repository-scoped so prompts from unrelated
+    /// workspaces never share one search corpus; `disabled` is the explicit private-session mode.
+    /// Project configuration is parsed but ignored by the composition root because a cloned
+    /// repository cannot decide whether operator text is retained outside that repository.
+    pub prompt_history: Option<PromptHistoryMode>,
     /// Session effort. The shared schema accepts it for trusted user config; a repository value is
     /// deliberately ignored because effort changes cost and orchestration authority.
     pub effort: Option<String>,
@@ -98,6 +103,7 @@ impl Default for FileConfig {
             compaction_trigger_tokens: None,
             retry: None,
             completion_notifications: None,
+            prompt_history: None,
             effort: None,
             provider: None,
             base_url: None,
@@ -108,6 +114,19 @@ impl Default for FileConfig {
             unknown: BTreeMap::new(),
         }
     }
+}
+
+/// Where the interactive frontend persists scrubbed prompt history and its last text-only draft.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptHistoryMode {
+    /// One file per canonical workspace identity. This is the safe default.
+    #[default]
+    Project,
+    /// One operator-wide history file, useful when prompts intentionally span repositories.
+    Global,
+    /// Keep history only in memory and write no draft or prompt bytes to disk.
+    Disabled,
 }
 
 /// Current-schema repository starter used by `/init`. Keeping the discriminator beside the
@@ -576,6 +595,7 @@ const SETTABLE_KEYS: &[&str] = &[
     "max_wall_secs",
     "allow_code",
     "completion_notifications",
+    "prompt_history",
     "compaction_trigger_tokens",
 ];
 
@@ -615,6 +635,18 @@ pub(crate) fn apply_setting(config: &mut FileConfig, key: &str, value: &str) -> 
         "max_wall_secs" => config.max_wall_secs = Some(parse_u64(value)?),
         "allow_code" => config.allow_code = Some(parse_bool(value)?),
         "completion_notifications" => config.completion_notifications = Some(parse_bool(value)?),
+        "prompt_history" => {
+            config.prompt_history = Some(match value {
+                "project" => PromptHistoryMode::Project,
+                "global" => PromptHistoryMode::Global,
+                "disabled" => PromptHistoryMode::Disabled,
+                other => {
+                    return Err(format!(
+                        "`{key}` must be project, global, or disabled, got `{other}`"
+                    ));
+                }
+            })
+        }
         "compaction_trigger_tokens" => {
             config.compaction_trigger_tokens =
                 Some(value.parse::<usize>().map_err(|_| {
@@ -645,6 +677,11 @@ pub(crate) fn setting_value(config: &FileConfig, key: &str) -> Option<String> {
         "completion_notifications" => config
             .completion_notifications
             .map(|value| value.to_string()),
+        "prompt_history" => config.prompt_history.map(|value| match value {
+            PromptHistoryMode::Project => "project".to_owned(),
+            PromptHistoryMode::Global => "global".to_owned(),
+            PromptHistoryMode::Disabled => "disabled".to_owned(),
+        }),
         "compaction_trigger_tokens" => config
             .compaction_trigger_tokens
             .map(|value| value.to_string()),
@@ -1137,6 +1174,29 @@ mod tests {
         let parsed = FileConfig::parse(r#"{"schema_version":2,"completion_notifications":true}"#)
             .expect("the current strict schema accepts the user preference");
         assert_eq!(parsed.completion_notifications, Some(true));
+    }
+
+    #[test]
+    fn prompt_history_modes_are_strict_and_round_trip_through_config_commands() {
+        let parsed = FileConfig::parse(r#"{"schema_version":2,"prompt_history":"disabled"}"#)
+            .expect("the current strict schema accepts the retention preference");
+        assert_eq!(parsed.prompt_history, Some(PromptHistoryMode::Disabled));
+
+        let mut config = FileConfig::default();
+        for (text, expected) in [
+            ("project", PromptHistoryMode::Project),
+            ("global", PromptHistoryMode::Global),
+            ("disabled", PromptHistoryMode::Disabled),
+        ] {
+            apply_setting(&mut config, "prompt_history", text).unwrap();
+            assert_eq!(config.prompt_history, Some(expected));
+            assert_eq!(
+                setting_value(&config, "prompt_history").as_deref(),
+                Some(text)
+            );
+        }
+        assert!(apply_setting(&mut config, "prompt_history", "forever").is_err());
+        assert!(settable_keys().contains(&"prompt_history"));
     }
 
     #[test]

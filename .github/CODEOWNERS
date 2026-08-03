@@ -116,6 +116,7 @@
 /crates/cli/src/mcp.rs @fr0m-scratch
 /crates/cli/src/output.rs @fr0m-scratch
 /crates/cli/src/pricing.rs @fr0m-scratch
+/crates/cli/src/prompt_history.rs @fr0m-scratch
 /crates/cli/src/providers.rs @fr0m-scratch
 /crates/cli/src/render.rs @fr0m-scratch
 /crates/cli/src/route.rs @fr0m-scratch

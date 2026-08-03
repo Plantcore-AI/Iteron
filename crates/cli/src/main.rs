@@ -15,6 +15,7 @@ mod markdown;
 mod mcp;
 mod output;
 mod pricing;
+mod prompt_history;
 mod providers;
 mod render;
 // The published client-event vocabulary. Nothing in this binary consumes it yet: it is the
@@ -1054,6 +1055,11 @@ async fn run_cli() -> anyhow::Result<u8> {
             "warning: ignoring `completion_notifications` in the project config (untrusted origin); configure terminal notifications in ~/.core/config.json"
         );
     }
+    if file.prompt_history.is_some() {
+        eprintln!(
+            "warning: ignoring `prompt_history` in the project config (untrusted origin); configure prompt retention in ~/.core/config.json"
+        );
+    }
     // Retry tuning is resolved at the composition root with project input structurally ignored.
     // It remains deliberately inactive while `RetryProvider` reports opaque internal attempts:
     // the kernel refuses that decorator until every physical request gets its own durable intent.
@@ -1851,6 +1857,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             provider_directory,
             route,
             completion_notifications.enabled,
+            user_file.prompt_history.unwrap_or_default(),
             startup,
         )
         .await?;
