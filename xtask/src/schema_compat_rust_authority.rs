@@ -20,6 +20,7 @@ const MEMBERS: &[(&str, &str)] = &[
     ("crates/sandbox", "core-sandbox"),
     ("crates/sched", "core-sched"),
     ("crates/tools", "core-tools"),
+    ("crates/tunables", "core-tunables"),
     ("crates/verify", "core-verify"),
     ("crates/workflow", "core-workflow"),
     ("xtask", "core-xtask"),

@@ -1,0 +1,4335 @@
+{
+  "digest": {
+    "algorithm": "sha256",
+    "value": "244ab0cf6b25b3404f35ebc849e079cc52c72656eeac4c06bef72ff55a4f10ea"
+  },
+  "payload": {
+    "schema_version": 1,
+    "registry_id": "core-tunables",
+    "registry_revision": 1,
+    "canonicalization": "core-tunables-json-v1",
+    "family_count": 160,
+    "families": [
+      {
+        "ordinal": 1,
+        "id": "provider",
+        "domain": "provider",
+        "summary": "Select the inference provider instance.",
+        "default": {
+          "kind": "derived",
+          "value": "resolved route provider"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/config.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "configured provider identifier",
+          "constraint": "must resolve to an admitted provider route",
+          "unit": "provider id"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "runtime_adaptive",
+        "availability": "active"
+      },
+      {
+        "ordinal": 2,
+        "id": "model",
+        "domain": "provider",
+        "summary": "Select the model within the admitted provider route.",
+        "default": {
+          "kind": "derived",
+          "value": "provider default or operator selection"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/config.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "model identifier advertised by the selected provider",
+          "constraint": "must satisfy the route capability envelope",
+          "unit": "model id"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "runtime_adaptive",
+        "availability": "active"
+      },
+      {
+        "ordinal": 3,
+        "id": "base_url",
+        "domain": "provider",
+        "summary": "Override the provider API root.",
+        "default": {
+          "kind": "derived",
+          "value": "provider catalog endpoint"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/config.rs"
+        },
+        "value_schema": {
+          "kind": "string",
+          "admissible": "absolute HTTP or HTTPS URI",
+          "constraint": "operator-owned override; credentials and fragments are forbidden",
+          "unit": "URI"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "operator_only",
+        "availability": "active"
+      },
+      {
+        "ordinal": 4,
+        "id": "effort",
+        "domain": "reasoning",
+        "summary": "Choose the public reasoning-effort tier.",
+        "default": {
+          "kind": "literal",
+          "value": "medium"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/config.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "low, medium, high, xhigh, max, ultracode",
+          "constraint": "must not exceed the operator effort ceiling",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "runtime_adaptive",
+        "availability": "active"
+      },
+      {
+        "ordinal": 5,
+        "id": "max_turns",
+        "domain": "budget",
+        "summary": "Bound provider attempts for one run.",
+        "default": {
+          "kind": "literal",
+          "value": "40 turns"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/config.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "positive integer",
+          "constraint": "minimum 1 and bounded by the parent run ceiling",
+          "unit": "turns"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "operator_only",
+        "availability": "active"
+      },
+      {
+        "ordinal": 6,
+        "id": "max_usd",
+        "domain": "budget",
+        "summary": "Bound signed monetary spend for one run.",
+        "default": {
+          "kind": "operator_required",
+          "value": "unbounded unless operator sets a ceiling"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/config.rs"
+        },
+        "value_schema": {
+          "kind": "decimal",
+          "admissible": "non-negative finite decimal",
+          "constraint": "must not exceed the operator monetary ceiling",
+          "unit": "USD"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "operator_only",
+        "availability": "active"
+      },
+      {
+        "ordinal": 7,
+        "id": "max_tokens",
+        "domain": "budget",
+        "summary": "Bound aggregate token use for one run.",
+        "default": {
+          "kind": "operator_required",
+          "value": "unbounded unless operator sets a ceiling"
+        },
+        "source": {
+          "kind": "cli",
+          "locator": "crates/cli/src/main.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "positive integer",
+          "constraint": "must remain within the aggregate run token ceiling",
+          "unit": "tokens"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "operator_only",
+        "availability": "active"
+      },
+      {
+        "ordinal": 8,
+        "id": "max_wall_secs",
+        "domain": "budget",
+        "summary": "Bound run wall-clock duration.",
+        "default": {
+          "kind": "literal",
+          "value": "1800 seconds"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/config.rs"
+        },
+        "value_schema": {
+          "kind": "duration",
+          "admissible": "positive integer seconds",
+          "constraint": "minimum 1 and bounded by the parent run wall ceiling",
+          "unit": "seconds"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "operator_only",
+        "availability": "active"
+      },
+      {
+        "ordinal": 9,
+        "id": "allow_code",
+        "domain": "governance",
+        "summary": "Admit repository code execution when the operator allows it.",
+        "default": {
+          "kind": "literal",
+          "value": "false"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/config.rs"
+        },
+        "value_schema": {
+          "kind": "bool",
+          "admissible": "true or false",
+          "constraint": "true requires explicit operator code-execution authority",
+          "unit": "boolean"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "operator_only",
+        "availability": "active"
+      },
+      {
+        "ordinal": 10,
+        "id": "permission_mode",
+        "domain": "governance",
+        "summary": "Select the operator permission posture.",
+        "default": {
+          "kind": "literal",
+          "value": "default"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/config.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "declared permission-mode identifier",
+          "constraint": "may only preserve or reduce operator authority",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "operator_only",
+        "availability": "active"
+      },
+      {
+        "ordinal": 11,
+        "id": "permission_rules",
+        "domain": "governance",
+        "summary": "Set per-capability allow, ask, or deny rules.",
+        "default": {
+          "kind": "derived",
+          "value": "mode-derived rules"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/config.rs"
+        },
+        "value_schema": {
+          "kind": "map",
+          "admissible": "capability keys to allow, ask, or deny decisions",
+          "constraint": "must be intersected with the selected permission mode",
+          "unit": "rule entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "operator_only",
+        "availability": "active"
+      },
+      {
+        "ordinal": 12,
+        "id": "bypass_permissions",
+        "domain": "governance",
+        "summary": "Explicitly bypass interactive permission prompts.",
+        "default": {
+          "kind": "literal",
+          "value": "false"
+        },
+        "source": {
+          "kind": "cli",
+          "locator": "crates/cli/src/main.rs"
+        },
+        "value_schema": {
+          "kind": "bool",
+          "admissible": "true or false",
+          "constraint": "true requires explicit operator selection and never becomes a learned value",
+          "unit": "boolean"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "operator_only",
+        "availability": "active"
+      },
+      {
+        "ordinal": 13,
+        "id": "compaction_trigger",
+        "domain": "context",
+        "summary": "Choose when context compaction starts.",
+        "default": {
+          "kind": "derived",
+          "value": "model-window adaptive trigger"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/config.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded trigger policy or model-window-derived threshold",
+          "constraint": "must reserve response and verification capacity",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 14,
+        "id": "verify_command",
+        "domain": "verification",
+        "summary": "Choose the operator verification command.",
+        "default": {
+          "kind": "operator_required",
+          "value": "none unless operator supplies a command"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/config.rs"
+        },
+        "value_schema": {
+          "kind": "string",
+          "admissible": "non-empty command string",
+          "constraint": "operator supplied and executed only through the admitted verification sandbox",
+          "unit": "command"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "operator_only",
+        "availability": "active"
+      },
+      {
+        "ordinal": 15,
+        "id": "retry_backoff_base",
+        "domain": "runtime",
+        "summary": "Set the initial provider retry delay.",
+        "default": {
+          "kind": "derived",
+          "value": "adapter retry profile"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/config/retry.rs"
+        },
+        "value_schema": {
+          "kind": "duration",
+          "admissible": "positive integer milliseconds",
+          "constraint": "bounded by retry cap and remaining request deadline",
+          "unit": "milliseconds"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 16,
+        "id": "retry_backoff_cap",
+        "domain": "runtime",
+        "summary": "Cap provider retry delay.",
+        "default": {
+          "kind": "derived",
+          "value": "adapter retry profile"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/config/retry.rs"
+        },
+        "value_schema": {
+          "kind": "duration",
+          "admissible": "positive integer milliseconds",
+          "constraint": "not lower than the base delay or above remaining wall time",
+          "unit": "milliseconds"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 17,
+        "id": "retry_max_attempts",
+        "domain": "runtime",
+        "summary": "Bound staged provider retries.",
+        "default": {
+          "kind": "derived",
+          "value": "adapter retry profile"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/config/retry.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "positive integer",
+          "constraint": "bounded attempts; terminal and post-stream failures are not blindly retried",
+          "unit": "attempts"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 18,
+        "id": "egress_allow",
+        "domain": "governance",
+        "summary": "Declare an egress allow policy surface.",
+        "default": {
+          "kind": "inactive",
+          "value": "declared but inactive"
+        },
+        "source": {
+          "kind": "project_config",
+          "locator": "crates/cli/src/config.rs"
+        },
+        "value_schema": {
+          "kind": "list",
+          "admissible": "normalized admitted egress destinations",
+          "constraint": "empty means no additional egress authority",
+          "unit": "destination entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "none",
+          "swe_bench_pro": "none",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "inactive",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 19,
+        "id": "request_output_cap",
+        "domain": "provider",
+        "summary": "Reserve and cap provider response tokens.",
+        "default": {
+          "kind": "derived",
+          "value": "provider capability bounded"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/cli/src/route.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "positive integer",
+          "constraint": "must fit the selected model output capability and run token ceiling",
+          "unit": "tokens"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 20,
+        "id": "effort_reasoning_map",
+        "domain": "reasoning",
+        "summary": "Map effort tiers onto provider reasoning controls.",
+        "default": {
+          "kind": "derived",
+          "value": "provider adapter mapping"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/providers.rs"
+        },
+        "value_schema": {
+          "kind": "map",
+          "admissible": "effort tier to provider reasoning setting",
+          "constraint": "every public effort tier resolves to a supported bounded setting",
+          "unit": "mapping entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 21,
+        "id": "thinking_map",
+        "domain": "reasoning",
+        "summary": "Map effort onto explicit thinking budgets.",
+        "default": {
+          "kind": "derived",
+          "value": "provider capability mapping"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/providers.rs"
+        },
+        "value_schema": {
+          "kind": "map",
+          "admissible": "effort tier to non-negative thinking budget",
+          "constraint": "budget must fit request output and provider capability ceilings",
+          "unit": "mapping entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 22,
+        "id": "orchestration_map",
+        "domain": "orchestration",
+        "summary": "Map effort onto orchestration eligibility.",
+        "default": {
+          "kind": "derived",
+          "value": "ultracode enables internal orchestration"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "map",
+          "admissible": "effort tier to admitted orchestration mode",
+          "constraint": "may not grant tools, children, or budgets beyond the parent",
+          "unit": "mapping entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 23,
+        "id": "prompt_cache",
+        "domain": "provider",
+        "summary": "Control provider prompt-cache use.",
+        "default": {
+          "kind": "derived",
+          "value": "provider capability default"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/providers.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "disabled or provider-supported cache policy",
+          "constraint": "must preserve provider compatibility and request privacy",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 24,
+        "id": "compaction_adaptive",
+        "domain": "context",
+        "summary": "Adapt compaction to model and transcript state.",
+        "default": {
+          "kind": "derived",
+          "value": "context-window policy"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/ctx/src/compact.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded context-aware compaction policy",
+          "constraint": "must retain required instructions, evidence, and response reserve",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "runtime_adaptive",
+        "availability": "active"
+      },
+      {
+        "ordinal": 25,
+        "id": "compaction_keep_recent",
+        "domain": "context",
+        "summary": "Choose the verbatim recent-turn retention window.",
+        "default": {
+          "kind": "derived",
+          "value": "compaction profile"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/ctx/src/compact.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "non-negative integer",
+          "constraint": "must fit the effective context window after required reserves",
+          "unit": "recent messages"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 26,
+        "id": "token_estimator",
+        "domain": "context",
+        "summary": "Estimate tokens for admission and compaction.",
+        "default": {
+          "kind": "derived",
+          "value": "model tokenizer profile"
+        },
+        "source": {
+          "kind": "catalog",
+          "locator": "crates/ctx/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "registered tokenizer or conservative estimator policy",
+          "constraint": "must never exceed the signed model capability when admitting work",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "active"
+      },
+      {
+        "ordinal": 27,
+        "id": "summary_profile",
+        "domain": "context",
+        "summary": "Choose the compaction summary shape and budget.",
+        "default": {
+          "kind": "derived",
+          "value": "compaction profile"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/ctx/src/compact.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "registered summary shape and budget",
+          "constraint": "summary plus retained history must fit the context ceiling",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 28,
+        "id": "compaction_failure",
+        "domain": "context",
+        "summary": "Choose bounded behavior when compaction fails.",
+        "default": {
+          "kind": "derived",
+          "value": "fail-safe compaction policy"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/ctx/src/compact.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "fail-safe compaction outcome",
+          "constraint": "must not silently discard mandatory context or widen budgets",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "active"
+      },
+      {
+        "ordinal": 29,
+        "id": "instruction_discovery_render",
+        "domain": "context",
+        "summary": "Discover and render repository instruction files.",
+        "default": {
+          "kind": "derived",
+          "value": "bounded nearest-instruction traversal"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/ctx/src/instructions.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded nearest-instruction traversal and render policy",
+          "constraint": "must remain within admitted roots, depth, byte, and file ceilings",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 30,
+        "id": "memory_enable",
+        "domain": "memory",
+        "summary": "Enable durable memory retrieval and writes.",
+        "default": {
+          "kind": "literal",
+          "value": "false unless configured"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/config.rs"
+        },
+        "value_schema": {
+          "kind": "bool",
+          "admissible": "true or false",
+          "constraint": "true requires configured tenant and repository memory authority",
+          "unit": "boolean"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "operator_only",
+        "availability": "active"
+      },
+      {
+        "ordinal": 31,
+        "id": "memory_budgets",
+        "domain": "memory",
+        "summary": "Bound memory retrieval, render, and write work.",
+        "default": {
+          "kind": "derived",
+          "value": "bounded memory policy"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/ctx/src/memory.rs"
+        },
+        "value_schema": {
+          "kind": "map",
+          "admissible": "positive retrieval, render, and write ceilings",
+          "constraint": "every component is bounded by the parent context and effect budgets",
+          "unit": "budget entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 32,
+        "id": "bm25",
+        "domain": "context",
+        "summary": "Tune lexical retrieval scoring.",
+        "default": {
+          "kind": "derived",
+          "value": "built-in BM25 profile"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/ctx/src/memory.rs"
+        },
+        "value_schema": {
+          "kind": "map",
+          "admissible": "finite BM25 coefficients and tokenization choices",
+          "constraint": "coefficients remain within the registered retrieval profile",
+          "unit": "parameter entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 33,
+        "id": "skill_listing_budget",
+        "domain": "context",
+        "summary": "Bound skill catalog text exposed to the model.",
+        "default": {
+          "kind": "derived",
+          "value": "bounded listing budget"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/ctx/src/skills.rs"
+        },
+        "value_schema": {
+          "kind": "bytes",
+          "admissible": "non-negative integer bytes",
+          "constraint": "must fit the model-visible context budget",
+          "unit": "bytes"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 34,
+        "id": "max_consecutive_tool_errors",
+        "domain": "budget",
+        "summary": "Stop a run after repeated tool failures.",
+        "default": {
+          "kind": "derived",
+          "value": "execution budget"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/protocol/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "positive integer",
+          "constraint": "minimum 1 and bounded by the total tool-call budget",
+          "unit": "consecutive errors"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 35,
+        "id": "pure_overlap",
+        "domain": "orchestration",
+        "summary": "Allow eligible pure tools to overlap inference.",
+        "default": {
+          "kind": "derived",
+          "value": "purity-gated scheduler policy"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/tools/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "bool",
+          "admissible": "true or false",
+          "constraint": "overlap is permitted only for effects classified as pure",
+          "unit": "boolean"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 36,
+        "id": "pure_concurrency",
+        "domain": "orchestration",
+        "summary": "Bound concurrent pure tool calls.",
+        "default": {
+          "kind": "derived",
+          "value": "scheduler concurrency ceiling"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/tools/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "positive integer",
+          "constraint": "bounded by scheduler and process concurrency ceilings",
+          "unit": "concurrent calls"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 37,
+        "id": "failed_action_dedup",
+        "domain": "tooling",
+        "summary": "Suppress repeated identical failed actions.",
+        "default": {
+          "kind": "derived",
+          "value": "bounded failure ledger"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded failed-action identity and suppression policy",
+          "constraint": "may suppress only equivalent failed actions within one run",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 38,
+        "id": "pure_memo_cache",
+        "domain": "tooling",
+        "summary": "Memoize deterministic pure tool results.",
+        "default": {
+          "kind": "derived",
+          "value": "bounded in-run memo"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/tools/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded memoization policy for deterministic pure tools",
+          "constraint": "impure or identity-unstable results are never reused",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 39,
+        "id": "shell_timeout_output",
+        "domain": "tooling",
+        "summary": "Bound shell wall time and captured output.",
+        "default": {
+          "kind": "literal",
+          "value": "120 seconds with bounded stdout and stderr"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/tools/src/shell.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive timeout plus stdout and stderr byte ceilings",
+          "constraint": "all components fit the remaining tool and run budgets",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 40,
+        "id": "read_file_limits",
+        "domain": "tooling",
+        "summary": "Bound file-read bytes and line ranges.",
+        "default": {
+          "kind": "derived",
+          "value": "tool safety limits"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/tools/src/fs_tools.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive byte, line, and range ceilings",
+          "constraint": "reads remain inside admitted roots and aggregate tool budgets",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 41,
+        "id": "list_dir_limits",
+        "domain": "tooling",
+        "summary": "Bound directory listing work and output.",
+        "default": {
+          "kind": "derived",
+          "value": "tool safety limits"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/tools/src/fs_tools.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive traversal and result ceilings",
+          "constraint": "listing remains inside admitted roots and aggregate tool budgets",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 42,
+        "id": "glob_limits",
+        "domain": "tooling",
+        "summary": "Bound glob traversal and results.",
+        "default": {
+          "kind": "derived",
+          "value": "tool safety limits"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/tools/src/fs_tools.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive traversal, depth, and result ceilings",
+          "constraint": "glob expansion remains inside admitted roots",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 43,
+        "id": "grep_limits",
+        "domain": "tooling",
+        "summary": "Bound text search traversal and output.",
+        "default": {
+          "kind": "derived",
+          "value": "tool safety limits"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/tools/src/grep_tool.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive traversal, match, and output ceilings",
+          "constraint": "search remains inside admitted roots and aggregate tool budgets",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 44,
+        "id": "repo_map",
+        "domain": "context",
+        "summary": "Bound and shape repository-map construction.",
+        "default": {
+          "kind": "derived",
+          "value": "repository map profile"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/tools/src/fs_tools.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive file, byte, token, and depth ceilings",
+          "constraint": "repository map must fit the model-visible context budget",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 45,
+        "id": "git_limits",
+        "domain": "tooling",
+        "summary": "Bound Git observation and diff output.",
+        "default": {
+          "kind": "derived",
+          "value": "Git tool limits"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/tools/src/git.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive Git traversal, diff, and output ceilings",
+          "constraint": "operations remain observational and inside the admitted repository",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 46,
+        "id": "web_fetch_limits",
+        "domain": "tooling",
+        "summary": "Bound fetched bytes, redirects, and elapsed time.",
+        "default": {
+          "kind": "derived",
+          "value": "web fetch policy"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/tools/src/web.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive byte, redirect, and elapsed-time ceilings",
+          "constraint": "destinations remain inside the admitted network policy",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 47,
+        "id": "web_search_cap",
+        "domain": "tooling",
+        "summary": "Bound web-search results admitted to context.",
+        "default": {
+          "kind": "derived",
+          "value": "web search policy"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/tools/src/web.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "non-negative integer",
+          "constraint": "results must fit the configured search and context ceilings",
+          "unit": "results"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 48,
+        "id": "verifier_attempts",
+        "domain": "verification",
+        "summary": "Bound verification repair attempts.",
+        "default": {
+          "kind": "derived",
+          "value": "verification policy"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/verify/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "non-negative integer",
+          "constraint": "repair attempts remain within turn, token, and wall ceilings",
+          "unit": "attempts"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 49,
+        "id": "verifier_feedback_tails",
+        "domain": "verification",
+        "summary": "Bound failure feedback returned to the model.",
+        "default": {
+          "kind": "derived",
+          "value": "verification policy"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/verify/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive stdout and stderr tail ceilings",
+          "constraint": "feedback must fit the next-turn context reserve",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 50,
+        "id": "verifier_timeout",
+        "domain": "verification",
+        "summary": "Bound each verification command.",
+        "default": {
+          "kind": "derived",
+          "value": "verification policy"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/verify/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "duration",
+          "admissible": "positive integer seconds",
+          "constraint": "must fit the remaining verification and run wall budgets",
+          "unit": "seconds"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 51,
+        "id": "route_topology",
+        "domain": "orchestration",
+        "summary": "Choose direct versus orchestrated run topology.",
+        "default": {
+          "kind": "derived",
+          "value": "route policy"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "direct or admitted orchestrated topology",
+          "constraint": "orchestration requires eligible effort and parent ceilings",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "runtime_adaptive",
+        "availability": "active"
+      },
+      {
+        "ordinal": 52,
+        "id": "decomposition_profile",
+        "domain": "orchestration",
+        "summary": "Choose task decomposition shape.",
+        "default": {
+          "kind": "derived",
+          "value": "workflow profile"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "registered bounded decomposition profile",
+          "constraint": "generated work remains acyclic and inside parent budgets",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 53,
+        "id": "fan_breadth",
+        "domain": "orchestration",
+        "summary": "Bound investigator fan-out breadth.",
+        "default": {
+          "kind": "derived",
+          "value": "workflow profile"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/agents/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "positive integer",
+          "constraint": "bounded by child count and concurrency ceilings",
+          "unit": "agents"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 54,
+        "id": "admission",
+        "domain": "orchestration",
+        "summary": "Admit bounded child work under parent ceilings.",
+        "default": {
+          "kind": "derived",
+          "value": "intersection-only admission"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/kernel/src/admission.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "intersection-only child admission policy",
+          "constraint": "children may only preserve or reduce parent authority and budgets",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "active"
+      },
+      {
+        "ordinal": 55,
+        "id": "writer_fan_turn_split",
+        "domain": "orchestration",
+        "summary": "Split turns between investigators and the writer.",
+        "default": {
+          "kind": "derived",
+          "value": "workflow budget profile"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "ratio",
+          "admissible": "finite ratio from 0 through 1",
+          "constraint": "investigator and writer shares sum within the available turn budget",
+          "unit": "ratio"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 56,
+        "id": "worker_min_turns",
+        "domain": "orchestration",
+        "summary": "Reserve a minimum useful child turn allocation.",
+        "default": {
+          "kind": "derived",
+          "value": "workflow budget profile"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "positive integer",
+          "constraint": "cannot exceed the child allocation or parent turn ceiling",
+          "unit": "turns"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 57,
+        "id": "wall_split",
+        "domain": "orchestration",
+        "summary": "Split remaining wall time across child work.",
+        "default": {
+          "kind": "derived",
+          "value": "parent-bounded allocation"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "ratio",
+          "admissible": "finite ratio from 0 through 1",
+          "constraint": "child allocations sum within remaining parent wall time",
+          "unit": "ratio"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 58,
+        "id": "token_split",
+        "domain": "orchestration",
+        "summary": "Split remaining tokens across child work.",
+        "default": {
+          "kind": "derived",
+          "value": "parent-bounded allocation"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "ratio",
+          "admissible": "finite ratio from 0 through 1",
+          "constraint": "child allocations sum within remaining parent tokens",
+          "unit": "ratio"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 59,
+        "id": "fan_concurrency",
+        "domain": "orchestration",
+        "summary": "Bound simultaneous investigator agents.",
+        "default": {
+          "kind": "derived",
+          "value": "workflow concurrency ceiling"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/agents/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "positive integer",
+          "constraint": "cannot exceed admitted child count or scheduler concurrency",
+          "unit": "agents"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 60,
+        "id": "child_ceiling",
+        "domain": "orchestration",
+        "summary": "Intersect every child with an immutable parent ceiling.",
+        "default": {
+          "kind": "derived",
+          "value": "parent budget and capability intersection"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/kernel/src/admission.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "immutable parent capability and budget envelope",
+          "constraint": "every child value is an intersection with this envelope",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "active"
+      },
+      {
+        "ordinal": 61,
+        "id": "direct_child_allocation",
+        "domain": "orchestration",
+        "summary": "Allocate budget to directly spawned children.",
+        "default": {
+          "kind": "derived",
+          "value": "parent-bounded allocation"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded direct-child turn, token, wall, and cost allocation",
+          "constraint": "aggregate allocations remain within the parent envelope",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 62,
+        "id": "subagent_effort_inheritance",
+        "domain": "orchestration",
+        "summary": "Choose bounded subagent reasoning effort.",
+        "default": {
+          "kind": "derived",
+          "value": "parent effort mapping"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/agents/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "registered child effort tier",
+          "constraint": "must not exceed parent effort or provider capability",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 63,
+        "id": "report_budget",
+        "domain": "orchestration",
+        "summary": "Bound child report size admitted to the writer.",
+        "default": {
+          "kind": "derived",
+          "value": "workflow report budget"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/agents/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "bytes",
+          "admissible": "positive integer bytes",
+          "constraint": "aggregate child reports must fit writer context capacity",
+          "unit": "bytes"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 64,
+        "id": "join_reduce",
+        "domain": "orchestration",
+        "summary": "Choose deterministic join and reduction policy.",
+        "default": {
+          "kind": "derived",
+          "value": "workflow reducer"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/workflow/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "registered deterministic join and reduction policy",
+          "constraint": "preserves declaration order and single-writer authority",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 65,
+        "id": "workflow_aggregate",
+        "domain": "orchestration",
+        "summary": "Bound aggregate workflow calls and resources.",
+        "default": {
+          "kind": "derived",
+          "value": "workflow run budget"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/workflow/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive aggregate calls, tokens, wall, cost, and concurrency ceilings",
+          "constraint": "all workflow tasks share one parent-bounded ledger",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 66,
+        "id": "schema_retry_jitter",
+        "domain": "runtime",
+        "summary": "Bound schema-repair retries and jitter.",
+        "default": {
+          "kind": "derived",
+          "value": "provider schema policy"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded retry count and non-negative jitter window",
+          "constraint": "must fit remaining request deadline and never duplicate terminal effects",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 67,
+        "id": "delegation_depth",
+        "domain": "orchestration",
+        "summary": "Bound recursive delegation depth.",
+        "default": {
+          "kind": "derived",
+          "value": "workflow depth ceiling"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/workflow/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "non-negative integer",
+          "constraint": "cannot exceed the parent delegation-depth ceiling",
+          "unit": "levels"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 68,
+        "id": "multimodal_input_admission_decode_envelope",
+        "domain": "runtime",
+        "summary": "Bound image count, bytes, dimensions, frames, and decode work.",
+        "default": {
+          "kind": "literal",
+          "value": "8 images; 6 MiB raw each; 24 MiB raw aggregate"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/image_input.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive image count, byte, dimension, frame, and decode ceilings",
+          "constraint": "aggregate decode work remains within the fixed admission envelope",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "none",
+          "swe_bench_pro": "none",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 69,
+        "id": "app_server_sq_eq_backpressure",
+        "domain": "runtime",
+        "summary": "Bound submission and event queues with typed drop policy.",
+        "default": {
+          "kind": "literal",
+          "value": "SQ 256; EQ 1024; byte-bounded submissions"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/tui/app_server.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive submission/event entry and byte capacities",
+          "constraint": "queues remain bounded with typed overflow behavior",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 70,
+        "id": "provider_discovery_account_probe_cache_policy",
+        "domain": "provider",
+        "summary": "Bound provider startup discovery, probe freshness, and failure backoff.",
+        "default": {
+          "kind": "literal",
+          "value": "1.5 second eager budget; 15 minute positive TTL"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/providers.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive discovery budget, cache TTL, and failure-backoff values",
+          "constraint": "account probes remain bounded and never invent provider capability",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 71,
+        "id": "operator_prompt_stream",
+        "domain": "context",
+        "summary": "Operator-authored task and steering text.",
+        "default": {
+          "kind": "operator_required",
+          "value": "operator input"
+        },
+        "source": {
+          "kind": "runtime_observation",
+          "locator": "core_protocol::Op"
+        },
+        "value_schema": {
+          "kind": "string",
+          "admissible": "UTF-8 operator-authored text",
+          "constraint": "bounded by submission, context, and protocol size ceilings",
+          "unit": "text bytes"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "operator_only",
+        "availability": "active"
+      },
+      {
+        "ordinal": 72,
+        "id": "builtin_prompt_corpus",
+        "domain": "reasoning",
+        "summary": "Built-in system and workflow prompt corpus.",
+        "default": {
+          "kind": "catalog",
+          "value": "source-controlled prompt set"
+        },
+        "source": {
+          "kind": "catalog",
+          "locator": "crates/cli/src/main.rs"
+        },
+        "value_schema": {
+          "kind": "catalog",
+          "admissible": "source-controlled prompt records",
+          "constraint": "records are versioned and fit their rendering budgets",
+          "unit": "prompt records"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 73,
+        "id": "instruction_bundle",
+        "domain": "context",
+        "summary": "Repository and user instruction content.",
+        "default": {
+          "kind": "catalog",
+          "value": "nearest admitted instruction files"
+        },
+        "source": {
+          "kind": "project_config",
+          "locator": "crates/ctx/src/instructions.rs"
+        },
+        "value_schema": {
+          "kind": "catalog",
+          "admissible": "admitted repository and user instruction records",
+          "constraint": "trust order, roots, depth, count, and bytes remain bounded",
+          "unit": "instruction records"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "active"
+      },
+      {
+        "ordinal": 74,
+        "id": "memory_corpus",
+        "domain": "memory",
+        "summary": "Durable admitted memory records.",
+        "default": {
+          "kind": "catalog",
+          "value": "tenant and repository scoped corpus"
+        },
+        "source": {
+          "kind": "catalog",
+          "locator": "crates/ctx/src/memory.rs"
+        },
+        "value_schema": {
+          "kind": "catalog",
+          "admissible": "tenant- and repository-scoped memory records",
+          "constraint": "scope, trust, count, and rendered bytes remain bounded",
+          "unit": "memory records"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "active"
+      },
+      {
+        "ordinal": 75,
+        "id": "skill_catalog",
+        "domain": "extensibility",
+        "summary": "Discovered skill metadata and instructions.",
+        "default": {
+          "kind": "catalog",
+          "value": "built-in plus configured skills"
+        },
+        "source": {
+          "kind": "catalog",
+          "locator": "crates/ctx/src/skills.rs"
+        },
+        "value_schema": {
+          "kind": "catalog",
+          "admissible": "discovered skill metadata and instruction records",
+          "constraint": "progressive disclosure and listing budgets remain enforced",
+          "unit": "skill records"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "active"
+      },
+      {
+        "ordinal": 76,
+        "id": "agent_catalog",
+        "domain": "extensibility",
+        "summary": "Discover bounded agent definitions for model-visible role selection.",
+        "default": {
+          "kind": "catalog",
+          "value": "built-in plus discovered agent definitions; live role binding remains incomplete"
+        },
+        "source": {
+          "kind": "catalog",
+          "locator": "crates/agents/src/catalog.rs"
+        },
+        "value_schema": {
+          "kind": "catalog",
+          "admissible": "declared agent-definition records",
+          "constraint": "records grant no runtime role or tool authority until admitted",
+          "unit": "agent records"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 77,
+        "id": "provider_model_capability_catalog",
+        "domain": "provider",
+        "summary": "Provider and model capability evidence.",
+        "default": {
+          "kind": "catalog",
+          "value": "embedded, cached, or operator-declared catalog"
+        },
+        "source": {
+          "kind": "catalog",
+          "locator": "crates/cli/src/providers.rs"
+        },
+        "value_schema": {
+          "kind": "catalog",
+          "admissible": "signed or operator-declared provider capability records",
+          "constraint": "route decisions may use only fresh compatible evidence",
+          "unit": "capability records"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "active"
+      },
+      {
+        "ordinal": 78,
+        "id": "mcp_topology_tool_catalog",
+        "domain": "extensibility",
+        "summary": "Configured MCP servers and their tool schemas.",
+        "default": {
+          "kind": "catalog",
+          "value": "trusted stdio server configuration"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/mcp.rs"
+        },
+        "value_schema": {
+          "kind": "catalog",
+          "admissible": "admitted MCP server and tool-schema records",
+          "constraint": "server trust and model-visible schema bytes remain bounded",
+          "unit": "MCP records"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "operator_only",
+        "availability": "active"
+      },
+      {
+        "ordinal": 79,
+        "id": "hooks_map",
+        "domain": "extensibility",
+        "summary": "Lifecycle hook declarations and selectors.",
+        "default": {
+          "kind": "catalog",
+          "value": "operator configuration"
+        },
+        "source": {
+          "kind": "user_config",
+          "locator": "crates/cli/src/runtime/hooks.rs"
+        },
+        "value_schema": {
+          "kind": "map",
+          "admissible": "lifecycle event selectors to bounded hook declarations",
+          "constraint": "hooks require trusted origin, bounded process execution, and redacted evidence",
+          "unit": "hook entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "operator_only",
+        "availability": "active"
+      },
+      {
+        "ordinal": 80,
+        "id": "workflow_graph",
+        "domain": "orchestration",
+        "summary": "Declared workflow task graph.",
+        "default": {
+          "kind": "catalog",
+          "value": "built-in or operator workflow"
+        },
+        "source": {
+          "kind": "catalog",
+          "locator": "crates/workflow/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "map",
+          "admissible": "acyclic workflow tasks and dependency edges",
+          "constraint": "task count, depth, fan-out, and aggregate budgets remain bounded",
+          "unit": "graph entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 81,
+        "id": "tool_action_space",
+        "domain": "tooling",
+        "summary": "Registered tool schemas and capability classes.",
+        "default": {
+          "kind": "catalog",
+          "value": "source-controlled registry plus admitted extensions"
+        },
+        "source": {
+          "kind": "catalog",
+          "locator": "crates/tools/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "catalog",
+          "admissible": "registered tool schemas and capability classes",
+          "constraint": "every tool retains explicit purity, effect, permission, and output bounds",
+          "unit": "tool records"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "active"
+      },
+      {
+        "ordinal": 82,
+        "id": "rate_card_catalog",
+        "domain": "observability",
+        "summary": "Signed provider pricing evidence.",
+        "default": {
+          "kind": "catalog",
+          "value": "embedded or operator-bound rate cards"
+        },
+        "source": {
+          "kind": "catalog",
+          "locator": "crates/obs/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "catalog",
+          "admissible": "signed provider pricing records",
+          "constraint": "unknown or stale prices are never invented",
+          "unit": "rate-card records"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "none",
+          "swe_bench_pro": "none",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "active"
+      },
+      {
+        "ordinal": 83,
+        "id": "router_lexicons",
+        "domain": "reasoning",
+        "summary": "Lexical signals used by routing policy.",
+        "default": {
+          "kind": "catalog",
+          "value": "source-controlled lexicons"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/agents/src/decompose.rs"
+        },
+        "value_schema": {
+          "kind": "catalog",
+          "admissible": "source-controlled routing token and phrase sets",
+          "constraint": "entries remain versioned, bounded, and evaluation-reviewed",
+          "unit": "lexicon records"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 84,
+        "id": "environment_snapshot",
+        "domain": "context",
+        "summary": "Durable bounded repository and process environment facts.",
+        "default": {
+          "kind": "derived",
+          "value": "captured at the run boundary"
+        },
+        "source": {
+          "kind": "runtime_observation",
+          "locator": "crates/protocol/src/context.rs"
+        },
+        "value_schema": {
+          "kind": "map",
+          "admissible": "bounded repository and process environment facts",
+          "constraint": "capture excludes secrets and preserves tenant and working-directory identity",
+          "unit": "fact entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "active"
+      },
+      {
+        "ordinal": 85,
+        "id": "web_search_backend_catalog",
+        "domain": "extensibility",
+        "summary": "Available web-search backend definitions.",
+        "default": {
+          "kind": "catalog",
+          "value": "configured backend catalog"
+        },
+        "source": {
+          "kind": "catalog",
+          "locator": "crates/tools/src/web.rs"
+        },
+        "value_schema": {
+          "kind": "catalog",
+          "admissible": "configured web-search backend definitions",
+          "constraint": "each backend retains explicit trust, egress, timeout, and result ceilings",
+          "unit": "backend records"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "active"
+      },
+      {
+        "ordinal": 86,
+        "id": "model_fallback_chain",
+        "domain": "provider",
+        "summary": "Choose an ordered model fallback chain.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: unset/empty; inference failover is not wired"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "list",
+          "admissible": "ordered admitted model route identifiers",
+          "constraint": "the chain is finite and every route stays inside operator authority and budget ceilings",
+          "unit": "route entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 87,
+        "id": "failover_eligible_error_taxonomy",
+        "domain": "provider",
+        "summary": "Classify provider errors that may admit failover.",
+        "default": {
+          "kind": "literal",
+          "value": "conservative built-in taxonomy; no inference failover consumer yet"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/provider/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "catalog",
+          "admissible": "versioned provider failure classes eligible or ineligible for failover",
+          "constraint": "unknown, post-dispatch, and terminal failures fail closed",
+          "unit": "taxonomy records"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 88,
+        "id": "route_quality_cost_latency_objective_weights",
+        "domain": "reasoning",
+        "summary": "Weight route quality, cost, and latency objectives.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: derived profile; no objective-weight seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "map",
+          "admissible": "finite non-negative quality, cost, and latency weights",
+          "constraint": "weights form one bounded normalized route objective",
+          "unit": "weight entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 89,
+        "id": "provider_health_circuit_breaker_state_policy",
+        "domain": "provider",
+        "summary": "Derive route health and circuit-breaker state.",
+        "default": {
+          "kind": "derived",
+          "value": "provider-health derived state; circuit-breaker control remains incomplete"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/provider/src/catalog.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded health states, failure thresholds, open intervals, and recovery probes",
+          "constraint": "state remains scoped to one admitted provider route",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 90,
+        "id": "hedged_request_policy",
+        "domain": "provider",
+        "summary": "Choose bounded duplicate-request hedging.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: disabled; no hedged-request seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded hedge delay, duplicate count, and eligibility predicates",
+          "constraint": "spend, concurrency, idempotency, and request deadlines remain enforced",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 91,
+        "id": "provider_service_tier",
+        "domain": "provider",
+        "summary": "Select a provider service tier.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: provider dynamic; no service-tier seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "service tiers advertised by the selected provider route",
+          "constraint": "selection remains inside operator cost and priority ceilings",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 92,
+        "id": "response_verbosity",
+        "domain": "reasoning",
+        "summary": "Select response verbosity independently of effort.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: model dynamic; no verbosity seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "registered model verbosity levels",
+          "constraint": "verbosity cannot widen output or token ceilings",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 93,
+        "id": "role_specific_model_map",
+        "domain": "orchestration",
+        "summary": "Map agent roles to admitted model routes.",
+        "default": {
+          "kind": "derived",
+          "value": "inherit primary model; per-agent overrides exist but catalog role binding is incomplete"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/cli/src/runtime/workflow_spawner.rs"
+        },
+        "value_schema": {
+          "kind": "map",
+          "admissible": "agent roles to admitted model route identifiers",
+          "constraint": "each mapping remains within parent provider, cost, effort, and capability ceilings",
+          "unit": "mapping entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 94,
+        "id": "provider_request_total_deadline",
+        "domain": "provider",
+        "summary": "Bound the total duration of one provider request.",
+        "default": {
+          "kind": "derived",
+          "value": "bounded by the remaining run wall time and a 15 minute adapter ceiling"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/provider/src/responses.rs"
+        },
+        "value_schema": {
+          "kind": "duration",
+          "admissible": "positive integer milliseconds",
+          "constraint": "must fit the remaining run wall time and provider transport ceiling",
+          "unit": "milliseconds"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 95,
+        "id": "stream_idle_watchdog",
+        "domain": "provider",
+        "summary": "Abort a provider stream that stops making progress.",
+        "default": {
+          "kind": "derived",
+          "value": "provider-derived policy with a 120 second adapter idle ceiling"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/provider/src/responses.rs"
+        },
+        "value_schema": {
+          "kind": "duration",
+          "admissible": "positive integer milliseconds",
+          "constraint": "must not exceed the provider request total deadline",
+          "unit": "milliseconds"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 96,
+        "id": "context_window_override_reserve",
+        "domain": "context",
+        "summary": "Resolve the effective context window and output reserve.",
+        "default": {
+          "kind": "derived",
+          "value": "model metadata with dynamic output reserve; no unified override object"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/ctx/src/compact.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "signed model window plus non-negative override and reserve fields",
+          "constraint": "effective input plus every reserve cannot exceed the signed model capability",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 97,
+        "id": "system_prefix_budget",
+        "domain": "context",
+        "summary": "Bound the stable system prefix.",
+        "default": {
+          "kind": "derived",
+          "value": "derived fraction represented by instruction, memory, and skill sub-budgets"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/ctx/src/instructions.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "non-negative integer",
+          "constraint": "system prefix plus all other context partitions fit the effective context window",
+          "unit": "tokens"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 98,
+        "id": "conversation_history_budget",
+        "domain": "context",
+        "summary": "Bound conversation history admitted to a request.",
+        "default": {
+          "kind": "derived",
+          "value": "derived fraction enforced through aggregate compaction"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/ctx/src/compact.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "non-negative integer",
+          "constraint": "retained conversation history fits its named context partition",
+          "unit": "tokens"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 99,
+        "id": "tool_result_history_budget",
+        "domain": "context",
+        "summary": "Bound retained tool-result history.",
+        "default": {
+          "kind": "derived",
+          "value": "derived fraction enforced only through aggregate request accounting"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "non-negative integer",
+          "constraint": "retained tool results fit their named context partition",
+          "unit": "tokens"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 100,
+        "id": "multimodal_token_budget",
+        "domain": "context",
+        "summary": "Bound multimodal content admitted to model context.",
+        "default": {
+          "kind": "derived",
+          "value": "capability-derived byte and decode envelope; token partition remains incomplete"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/image_input.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "non-negative integer",
+          "constraint": "multimodal tokens and decode work fit model capability and request ceilings",
+          "unit": "tokens"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 101,
+        "id": "auto_compaction_enable",
+        "domain": "context",
+        "summary": "Enable automatic bounded context compaction.",
+        "default": {
+          "kind": "literal",
+          "value": "on"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/ctx/src/compact.rs"
+        },
+        "value_schema": {
+          "kind": "bool",
+          "admissible": "true or false",
+          "constraint": "disabling cannot bypass a hard context-window admission failure",
+          "unit": "boolean"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 102,
+        "id": "compaction_cooldown_hysteresis",
+        "domain": "context",
+        "summary": "Avoid repeated compaction around the trigger boundary.",
+        "default": {
+          "kind": "derived",
+          "value": "derived turn-end and overflow thresholds; no independent cooldown duration"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/ctx/src/compact.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "non-negative cooldown and bounded enter/exit thresholds",
+          "constraint": "hysteresis cannot compact mandatory or already-protected context",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 103,
+        "id": "multi_stage_summary_topology",
+        "domain": "context",
+        "summary": "Choose a bounded summary-stage topology.",
+        "default": {
+          "kind": "literal",
+          "value": "single stage"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/ctx/src/compact.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "registered bounded summary topologies",
+          "constraint": "all stages preserve the task anchor and fit the context ceiling",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 104,
+        "id": "summary_consistency_coverage_check",
+        "domain": "verification",
+        "summary": "Check summary consistency and evidence coverage.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: off; no summary coverage checker"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "bool",
+          "admissible": "true or false",
+          "constraint": "a failed enabled check never licenses silent context loss",
+          "unit": "boolean"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 105,
+        "id": "hybrid_retrieval_fusion_weights",
+        "domain": "memory",
+        "summary": "Fuse lexical and optional retrieval signals.",
+        "default": {
+          "kind": "literal",
+          "value": "BM25-only baseline; no hybrid signal consumer yet"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/ctx/src/memory.rs"
+        },
+        "value_schema": {
+          "kind": "map",
+          "admissible": "finite non-negative lexical, vector, structural, and reranker weights",
+          "constraint": "fusion remains deterministic and bounded to admitted retrieval sources",
+          "unit": "weight entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 106,
+        "id": "retrieval_recency_decay",
+        "domain": "memory",
+        "summary": "Apply bounded recency decay to retrieval scores.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: neutral; no recency-decay seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "ratio",
+          "admissible": "finite ratio from 0 through 1",
+          "constraint": "decay is monotone and cannot elevate untrusted or out-of-scope records",
+          "unit": "ratio per time bucket"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 107,
+        "id": "context_novelty_dedup_threshold",
+        "domain": "context",
+        "summary": "Suppress duplicate or low-novelty context.",
+        "default": {
+          "kind": "derived",
+          "value": "conservative identity-based dedup; no unified novelty threshold"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/ctx/src/memory.rs"
+        },
+        "value_schema": {
+          "kind": "ratio",
+          "admissible": "finite ratio from 0 through 1",
+          "constraint": "dedup never removes mandatory instructions or required evidence",
+          "unit": "similarity threshold"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 108,
+        "id": "persistent_pty_backend",
+        "domain": "tooling",
+        "summary": "Select a persistent PTY backend.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: disabled with one-shot fallback; no PTY backend"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "disabled, one-shot, or registered persistent PTY backend",
+          "constraint": "backend remains within process, filesystem, network, and wall ceilings",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 109,
+        "id": "concurrent_background_job_cap",
+        "domain": "tooling",
+        "summary": "Bound concurrent background jobs.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: disabled until PTY support; no job table"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "non-negative integer",
+          "constraint": "cannot exceed process and effecting-tool concurrency ceilings",
+          "unit": "background jobs"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 110,
+        "id": "job_idle_stall_timeout",
+        "domain": "tooling",
+        "summary": "Stop a background job that is idle or stalled.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: derived below wall; no background-job seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "duration",
+          "admissible": "positive integer milliseconds",
+          "constraint": "must remain below the job and run wall deadlines",
+          "unit": "milliseconds"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 111,
+        "id": "interactive_stdin_wait_policy",
+        "domain": "tooling",
+        "summary": "Bound waits for interactive process input.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: bounded/dynamic; no interactive-stdin seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded wait, poll, prompt, and timeout rules",
+          "constraint": "interactive input preserves operator ordering and cannot grant authority",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 112,
+        "id": "process_signal_kill_escalation",
+        "domain": "tooling",
+        "summary": "Escalate process-group termination and reap children.",
+        "default": {
+          "kind": "literal",
+          "value": "TERM to KILL built-in escalation"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/sandbox/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "registered TERM, grace, KILL, and reap escalation sequences",
+          "constraint": "unknown effects are reconciled and all descendants are reaped",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "active"
+      },
+      {
+        "ordinal": 113,
+        "id": "process_cwd_continuity",
+        "domain": "tooling",
+        "summary": "Preserve process and working-directory continuity.",
+        "default": {
+          "kind": "literal",
+          "value": "session-scoped workspace with one-shot processes"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/tools/src/shell.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "session, job, process, and working-directory continuity rules",
+          "constraint": "resolved working directories remain inside admitted roots",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 114,
+        "id": "child_process_environment_reuse",
+        "domain": "tooling",
+        "summary": "Reuse a bounded child-process environment snapshot.",
+        "default": {
+          "kind": "literal",
+          "value": "safe environment snapshot per job; no persistent job reuse"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/sandbox/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded child-environment snapshot, reuse, and refresh rules",
+          "constraint": "secrets and blocked variables never enter a reusable snapshot",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 115,
+        "id": "effecting_tool_concurrency",
+        "domain": "orchestration",
+        "summary": "Bound concurrency among admitted effecting tools.",
+        "default": {
+          "kind": "derived",
+          "value": "serial baseline with bounded non-overlapping auto-approved batches"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "positive integer",
+          "constraint": "bounded by scheduler, write-set, permission, process, and effect-ledger ceilings",
+          "unit": "concurrent effecting calls"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 116,
+        "id": "write_set_conflict_admission",
+        "domain": "tooling",
+        "summary": "Admit concurrent writes only when declared write sets do not overlap.",
+        "default": {
+          "kind": "literal",
+          "value": "reject overlapping declared write sets"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "declared write sets and bounded overlap decisions",
+          "constraint": "ambiguous or overlapping authority never admits unsafe concurrent mutation",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "active"
+      },
+      {
+        "ordinal": 117,
+        "id": "tool_output_spill_to_disk_policy",
+        "domain": "tooling",
+        "summary": "Spill bounded tool output outside model context.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: threshold derived; no spill-to-disk seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "non-negative in-memory threshold plus bounded spill storage and cleanup",
+          "constraint": "model-visible output remains capped and spill paths stay private",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 118,
+        "id": "binary_media_inspection_routing",
+        "domain": "tooling",
+        "summary": "Route binary and media inspection by capability.",
+        "default": {
+          "kind": "derived",
+          "value": "capability-derived image admission plus bounded binary refusal"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/cli/src/image_input.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "registered binary and media inspectors with capability predicates",
+          "constraint": "routing never decodes unsupported content or bypasses admission envelopes",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 119,
+        "id": "lsp_server_language_selection",
+        "domain": "tooling",
+        "summary": "Select LSP servers for discovered languages.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: auto discovery; no live LSP seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "catalog",
+          "admissible": "language, workspace, and registered LSP server selectors",
+          "constraint": "only admitted binaries and roots may be discovered or launched",
+          "unit": "server records"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 120,
+        "id": "lsp_timeout_restart_policy",
+        "domain": "tooling",
+        "summary": "Bound LSP requests and server restarts.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: bounded backoff; no live LSP seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive request deadline, restart ceiling, and bounded backoff",
+          "constraint": "restart cannot exceed process, attempt, or wall ceilings",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 121,
+        "id": "lsp_result_context_budget",
+        "domain": "context",
+        "summary": "Bound LSP evidence admitted to context.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: derived; no live LSP result seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "non-negative integer",
+          "constraint": "LSP evidence fits its context partition and preserves provenance",
+          "unit": "tokens"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 122,
+        "id": "tool_result_cache_ttl",
+        "domain": "tooling",
+        "summary": "Bound deterministic tool-result cache reuse.",
+        "default": {
+          "kind": "derived",
+          "value": "generation-scoped and determinism-aware; no independent duration TTL"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/tools/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "duration",
+          "admissible": "non-negative integer seconds",
+          "constraint": "reuse is restricted to deterministic tools and compatible session identities",
+          "unit": "seconds"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 123,
+        "id": "test_selection_strategy",
+        "domain": "verification",
+        "summary": "Select the verification command and evidence scope.",
+        "default": {
+          "kind": "derived",
+          "value": "explicit command over the full known workspace"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/verify/src/oracle.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded explicit, impacted, lane, or workspace test-selection rules",
+          "constraint": "repository-required and regression tests cannot be omitted",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "active"
+      },
+      {
+        "ordinal": 124,
+        "id": "incremental_versus_full_verification",
+        "domain": "verification",
+        "summary": "Choose incremental or full verification by risk.",
+        "default": {
+          "kind": "derived",
+          "value": "workspace-full gating with lane/full strategy seams; risk derivation is incomplete"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/verify/src/strategy.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "incremental, impacted, or full verification scope",
+          "constraint": "selected scope may only strengthen the applicable verification floor",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 125,
+        "id": "flaky_test_detection_quarantine",
+        "domain": "verification",
+        "summary": "Detect disagreement and quarantine flaky evidence.",
+        "default": {
+          "kind": "literal",
+          "value": "off unless repeated evidence; disagreement detection exists without quarantine"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/verify/src/strategy.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded repeat, disagreement, quarantine, and expiry rules",
+          "constraint": "a flake is reported and never silently converted into acceptance",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 126,
+        "id": "failure_classification_taxonomy",
+        "domain": "verification",
+        "summary": "Classify verification failures with a versioned taxonomy.",
+        "default": {
+          "kind": "catalog",
+          "value": "built-in versioned outcome taxonomy"
+        },
+        "source": {
+          "kind": "catalog",
+          "locator": "crates/verify/src/oracle.rs"
+        },
+        "value_schema": {
+          "kind": "catalog",
+          "admissible": "versioned verification failure classes",
+          "constraint": "unknown and infrastructure failures never count as candidate success",
+          "unit": "taxonomy records"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "active"
+      },
+      {
+        "ordinal": 127,
+        "id": "retry_eligibility_policy",
+        "domain": "verification",
+        "summary": "Retry only verification outcomes that are eligible.",
+        "default": {
+          "kind": "derived",
+          "value": "conservative outcome-classified retry"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "failure classes to bounded retry decisions",
+          "constraint": "terminal, unknown-effect, and exhausted failures are not retried",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 128,
+        "id": "rollback_on_verification_failure",
+        "domain": "verification",
+        "summary": "Rollback selected workspace changes after verification failure.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: off/selective; no automatic rollback seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "off or registered selective rollback mode",
+          "constraint": "rollback never undoes external effects or unowned paths",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 129,
+        "id": "workspace_checkpoint_cadence",
+        "domain": "verification",
+        "summary": "Choose durable workspace checkpoint boundaries.",
+        "default": {
+          "kind": "derived",
+          "value": "drain and verification safe points; not every turn boundary"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded turn, verification, or drain checkpoint triggers",
+          "constraint": "cadence cannot weaken the durability floor",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 130,
+        "id": "selective_restore_scope",
+        "domain": "verification",
+        "summary": "Choose an explicit user-authorized restore scope.",
+        "default": {
+          "kind": "literal",
+          "value": "explicit whole-workspace rewind; selective path scope is incomplete"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/record/src/checkpoint.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "explicit user-authorized paths or whole-workspace scope",
+          "constraint": "restore cannot escape the checkpoint, root, or external-effect boundary",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 131,
+        "id": "verification_quorum_consensus",
+        "domain": "verification",
+        "summary": "Require bounded verifier agreement.",
+        "default": {
+          "kind": "literal",
+          "value": "single verifier by default; bounded repeat and ensemble seam is not runtime-complete"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/verify/src/strategy.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive verifier count, repeat ceiling, and agreement rule",
+          "constraint": "a weaker oracle cannot override a stronger veto or required scope",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 132,
+        "id": "recovery_escalation_policy",
+        "domain": "verification",
+        "summary": "Escalate verification recovery from retry to replan to stop.",
+        "default": {
+          "kind": "literal",
+          "value": "retry, replan, then stop"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/runtime.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "bounded retry, replan, stop, or operator-escalation sequence",
+          "constraint": "success cannot be reported with unresolved required failures",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 133,
+        "id": "per_agent_model",
+        "domain": "orchestration",
+        "summary": "Choose a model for one admitted agent.",
+        "default": {
+          "kind": "derived",
+          "value": "inherit parent model unless the workflow call overrides it"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/cli/src/runtime/workflow_spawner.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "model route inherited from the parent or explicitly admitted for one agent",
+          "constraint": "cannot exceed parent provider, cost, and capability ceilings",
+          "unit": "model route"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "active"
+      },
+      {
+        "ordinal": 134,
+        "id": "per_agent_effort_thinking",
+        "domain": "orchestration",
+        "summary": "Choose effort and thinking for one admitted agent.",
+        "default": {
+          "kind": "derived",
+          "value": "inherit parent effort unless the workflow call overrides it"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/cli/src/runtime/workflow_spawner.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "registered effort or thinking tier for one agent",
+          "constraint": "cannot exceed parent effort, output, or provider capability ceilings",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 135,
+        "id": "per_agent_tool_profile",
+        "domain": "orchestration",
+        "summary": "Narrow the tool profile for one admitted agent.",
+        "default": {
+          "kind": "derived",
+          "value": "inherit the parent intersection; writer capability remains explicit"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/cli/src/runtime/workflow_spawner.rs"
+        },
+        "value_schema": {
+          "kind": "map",
+          "admissible": "tool and permission profile for one agent",
+          "constraint": "the effective profile is an intersection with parent authority",
+          "unit": "profile entries"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "active"
+      },
+      {
+        "ordinal": 136,
+        "id": "per_agent_memory_scope",
+        "domain": "memory",
+        "summary": "Choose isolated or explicitly shared agent memory.",
+        "default": {
+          "kind": "literal",
+          "value": "isolated child run state; explicit memory sharing remains incomplete"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/runtime/workflow_spawner.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "isolated or explicitly shared scoped memory rules",
+          "constraint": "records never cross tenant, repository, or session boundaries",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 137,
+        "id": "spawn_depth_control",
+        "domain": "orchestration",
+        "summary": "Bound recursive agent spawning.",
+        "default": {
+          "kind": "literal",
+          "value": "one level"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/runtime/workflow_spawner.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "non-negative integer",
+          "constraint": "cannot exceed the parent delegation-depth ceiling",
+          "unit": "levels"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 138,
+        "id": "per_session_spawn_cap",
+        "domain": "orchestration",
+        "summary": "Bound total agent spawns in one session.",
+        "default": {
+          "kind": "derived",
+          "value": "bounded by the workflow lifetime ceiling"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/workflow/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "non-negative integer",
+          "constraint": "all child attempts count against one immutable session ceiling",
+          "unit": "agents"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 139,
+        "id": "task_priority_scheduling",
+        "domain": "orchestration",
+        "summary": "Schedule ready tasks by bounded priority.",
+        "default": {
+          "kind": "literal",
+          "value": "FIFO and dependency-ready execution; no independent priority field"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/workflow/src/bindings.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded priority classes, FIFO tie-breaks, and dependency readiness",
+          "constraint": "scheduling preserves dependency and parent-budget constraints",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 140,
+        "id": "speculative_sibling_count",
+        "domain": "orchestration",
+        "summary": "Bound speculative sibling agents.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: zero; no speculative-sibling seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "non-negative integer",
+          "constraint": "speculative siblings fit agent, token, cost, wall, and concurrency ceilings",
+          "unit": "agents"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 141,
+        "id": "speculative_sibling_cancellation",
+        "domain": "orchestration",
+        "summary": "Cancel losing speculative siblings from evidence.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: evidence-based; no speculative-sibling seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded evidence, cancellation, join, and cleanup rules",
+          "constraint": "cancellation preserves journals and reconciles unknown effects",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 142,
+        "id": "early_stop_quorum_policy",
+        "domain": "orchestration",
+        "summary": "Stop a fan only after required evidence reaches quorum.",
+        "default": {
+          "kind": "literal",
+          "value": "wait for required ordered evidence; no adaptive quorum"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/agents/src/reduce.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive evidence quorum plus bounded early-stop predicates",
+          "constraint": "required evidence and stronger vetoes cannot be skipped",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 143,
+        "id": "writer_worktree_isolation_mode",
+        "domain": "governance",
+        "summary": "Isolate write-capable agents in worktrees.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: off until supported; no writer-worktree seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "bool",
+          "admissible": "true or false",
+          "constraint": "concurrent write-capable agents require isolated worktrees and explicit ownership",
+          "unit": "boolean"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 144,
+        "id": "merge_conflict_arbitration",
+        "domain": "verification",
+        "summary": "Arbitrate verified child merges and conflicts.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: verify then explicit merge; no merge-arbitration seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "verify, merge, serialize, reject, or explicitly arbitrate conflicts",
+          "constraint": "ambiguous ownership and failed verification stop the merge",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 145,
+        "id": "inter_agent_messaging_topology",
+        "domain": "orchestration",
+        "summary": "Route bounded agent reports through the parent.",
+        "default": {
+          "kind": "literal",
+          "value": "parent-mediated ordered reports"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/agents/src/reduce.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "parent-mediated, peer, broadcast, or registered messaging topology",
+          "constraint": "message count, bytes, trust, and ordering remain bounded",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "active"
+      },
+      {
+        "ordinal": 146,
+        "id": "task_retry_reassignment_policy",
+        "domain": "orchestration",
+        "summary": "Retry or reassign a failed agent task.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: bounded conservative; no task reassignment seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded task retry, replacement, and reassignment decisions",
+          "constraint": "aggregate child and parent budgets remain conserved",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 147,
+        "id": "mcp_transport_selection",
+        "domain": "extensibility",
+        "summary": "Select an admitted MCP transport.",
+        "default": {
+          "kind": "literal",
+          "value": "stdio only"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/mcp/src/client.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "stdio or other registered trusted MCP transport",
+          "constraint": "transport remains inside process, credential, and network authority",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 148,
+        "id": "deferred_discovery_threshold",
+        "domain": "extensibility",
+        "summary": "Defer MCP discovery after a bounded threshold.",
+        "default": {
+          "kind": "literal",
+          "value": "eager baseline; no threshold activation"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/cli/src/mcp.rs"
+        },
+        "value_schema": {
+          "kind": "count",
+          "admissible": "non-negative schema, tool, or server threshold",
+          "constraint": "deferred discovery remains bounded and required servers are not hidden",
+          "unit": "discovery units"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 149,
+        "id": "mcp_reconnect_backoff",
+        "domain": "extensibility",
+        "summary": "Bound MCP reconnect attempts and delay.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: bounded exponential; no reconnect seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "bounded reconnect attempts and exponential delay intervals",
+          "constraint": "terminal authentication and exhausted deadlines are not retried",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 150,
+        "id": "per_server_startup_deadline",
+        "domain": "extensibility",
+        "summary": "Bound MCP server startup and initialization.",
+        "default": {
+          "kind": "derived",
+          "value": "bounded per-server deadline with a 15 second handshake ceiling"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/mcp/src/client.rs"
+        },
+        "value_schema": {
+          "kind": "duration",
+          "admissible": "positive integer milliseconds",
+          "constraint": "bounded by aggregate MCP startup and run wall ceilings",
+          "unit": "milliseconds"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 151,
+        "id": "per_tool_mcp_deadline",
+        "domain": "extensibility",
+        "summary": "Bound one MCP tool exchange.",
+        "default": {
+          "kind": "derived",
+          "value": "bounded per-tool deadline with a 60 second request ceiling"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/mcp/src/client.rs"
+        },
+        "value_schema": {
+          "kind": "duration",
+          "admissible": "positive integer milliseconds",
+          "constraint": "bounded by remaining tool and run wall ceilings",
+          "unit": "milliseconds"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 152,
+        "id": "mcp_result_cap_spill_policy",
+        "domain": "extensibility",
+        "summary": "Cap or spill MCP results before model exposure.",
+        "default": {
+          "kind": "literal",
+          "value": "bounded in memory by the frame ceiling; no spill path"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/mcp/src/client/content.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "non-negative visible-output cap plus bounded spill and cleanup rules",
+          "constraint": "results fit context, storage, trust, and privacy ceilings",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 153,
+        "id": "oauth_auth_lifecycle_policy",
+        "domain": "extensibility",
+        "summary": "Manage MCP OAuth and authentication lifecycle.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: protocol/provider derived; no OAuth lifecycle seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "protocol-derived credentials, refresh, expiry, and revocation rules",
+          "constraint": "authentication material remains outside model-visible state",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "conditional",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 154,
+        "id": "resource_prompt_plugin_capability_exposure",
+        "domain": "extensibility",
+        "summary": "Expose trusted MCP resources, prompts, and plugin capabilities.",
+        "default": {
+          "kind": "literal",
+          "value": "disabled unless trusted; only tools are discovered and non-text resources are omitted"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/mcp/src/client/content.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "trusted resource, prompt, plugin, and capability exposure rules",
+          "constraint": "only admitted bounded capabilities become model-visible",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "catalog_curated",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 155,
+        "id": "request_compression_policy",
+        "domain": "provider",
+        "summary": "Select provider request compression.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: provider capability; no request-compression seam"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "none or provider-supported request compression",
+          "constraint": "compression preserves request semantics, privacy, and provider compatibility",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 156,
+        "id": "http_pool_keepalive_idle_policy",
+        "domain": "provider",
+        "summary": "Bound HTTP pool idle and TCP keepalive behavior.",
+        "default": {
+          "kind": "literal",
+          "value": "300 second pool idle timeout and 30 second TCP keepalive"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/provider/src/catalog.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "positive HTTP pool idle, TCP keepalive, and connection reuse values",
+          "constraint": "transport values fit provider and run deadlines",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "conditional",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "active"
+      },
+      {
+        "ordinal": 157,
+        "id": "rate_limit_aware_admission",
+        "domain": "provider",
+        "summary": "Gate new provider work from observed rate-limit headroom.",
+        "default": {
+          "kind": "inactive",
+          "value": "proposed default: conservative; snapshots are observed but not used for admission"
+        },
+        "source": {
+          "kind": "registry",
+          "locator": "crates/tunables/src/families.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "observed quota headroom, reset time, and bounded admission decisions",
+          "constraint": "admission cannot invent quota or exceed run and provider ceilings",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "declared"
+      },
+      {
+        "ordinal": 158,
+        "id": "prompt_cache_ttl_breakpoint_strategy",
+        "domain": "context",
+        "summary": "Choose prompt-cache lifetime and breakpoints.",
+        "default": {
+          "kind": "derived",
+          "value": "provider-capability breakpoint placement; no independent TTL"
+        },
+        "source": {
+          "kind": "derived_policy",
+          "locator": "crates/provider/src/anthropic.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "provider-supported cache TTL, breakpoint, and invalidation rules",
+          "constraint": "cache identity preserves privacy, scope, and request compatibility",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "offline_search",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 159,
+        "id": "session_isolation_profile",
+        "domain": "governance",
+        "summary": "Choose an isolation profile for sessions and evaluations.",
+        "default": {
+          "kind": "literal",
+          "value": "hermetic for evaluation; production session profile is fixed and incomplete"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/record/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "enum",
+          "admissible": "registered hermetic, durable, or interactive session-isolation profile",
+          "constraint": "profiles cannot weaken tenant, repository, credential, or replay boundaries",
+          "unit": "choice"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "direct",
+          "swe_bench_pro": "direct",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "partial"
+      },
+      {
+        "ordinal": 160,
+        "id": "replay_divergence_detection_policy",
+        "domain": "verification",
+        "summary": "Reject replay state that diverges from durable evidence.",
+        "default": {
+          "kind": "literal",
+          "value": "fail closed"
+        },
+        "source": {
+          "kind": "builtin",
+          "locator": "crates/record/src/lib.rs"
+        },
+        "value_schema": {
+          "kind": "policy",
+          "admissible": "fail-closed replay divergence predicates and evidence",
+          "constraint": "hash, identity, scope, and effect divergence never continue silently",
+          "unit": "policy object"
+        },
+        "benchmark": {
+          "terminal_bench_2_1": "indirect",
+          "swe_bench_pro": "indirect",
+          "rationale": "Causal class only; quantify with a fixed-model held-out A/B run."
+        },
+        "trainability": "fixed_invariant",
+        "availability": "active"
+      }
+    ]
+  }
+}

@@ -7,6 +7,7 @@ mod rust_source;
 mod schema_compat;
 mod seams;
 mod spec_shapes;
+mod tunables;
 mod validate;
 
 use anyhow::{Context, Result, bail};
@@ -34,6 +35,16 @@ fn main() -> Result<()> {
         [group, command] if group == "docs" && command == "generate" => {
             docs_cli::generate(&root)?;
             println!("generated docs/reference/cli.md");
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "check" => {
+            tunables::check(&root)?;
+            println!("core-tunables registry and generated artifacts are canonical");
+            return Ok(());
+        }
+        [group, command] if group == "tunables" && command == "generate" => {
+            tunables::generate(&root)?;
+            println!("generated docs/reference/tunables.json and tunables.md");
             return Ok(());
         }
         [group, command] if group == "schema-compat" && command == "check-bootstrap" => {
@@ -125,7 +136,7 @@ fn main() -> Result<()> {
         }
         _ => {
             bail!(
-                "usage: core-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
+                "usage: core-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | tunables <check|generate> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
             )
         }
     }
