@@ -17,9 +17,10 @@ mod effect;
 pub(crate) use effect::{Effect, ExportScope};
 mod projection;
 use projection::{
-    append_query, bounded_detail, bounded_safe, fold, index_block, move_bounded, move_wrapped,
-    raw_text,
+    append_query, bounded_detail, bounded_safe, fold, move_bounded, move_wrapped, raw_text,
 };
+mod projection_worker;
+use projection_worker::{ProjectionKey, ProjectionWorker, WorkerPoll};
 
 #[cfg(test)]
 mod tests;
@@ -32,9 +33,8 @@ const MAX_RESULTS: usize = 512;
 const MAX_DETAIL_BYTES: usize = 64 * 1024;
 const MAX_DETAIL_ROWS: usize = 64 * 1024;
 const MAX_NOTICE_BYTES: usize = 512;
-/// One projection can consume at most `MAX_INDEX_BLOCK_BYTES`; doing exactly one per loop turn
-/// prevents the former 16 MiB synchronous burst from monopolizing input, effects, signals, or draw.
-const MAX_INDEX_PROJECTIONS_PER_TICK: usize = 1;
+/// Search matching itself is cheap but still advances one entry per loop turn. Expensive block
+/// projection is owned by the single background worker in `projection_worker`.
 const MAX_SEARCH_ENTRIES_PER_TICK: usize = 1;
 
 #[derive(Debug)]
@@ -98,6 +98,8 @@ pub(crate) struct Viewer {
     results_revision: Option<(u64, u64)>,
     index_job: Option<IndexJob>,
     search_job: Option<SearchJob>,
+    projection_worker: ProjectionWorker,
+    next_index_generation: u64,
     work: WorkCounters,
 }
 
@@ -155,7 +157,7 @@ impl Viewer {
         blocks: &[Arc<block::Block>],
         authority_revision: u64,
     ) {
-        self.sync_if_changed(blocks, authority_revision);
+        self.reconcile_if_changed(blocks, authority_revision);
         if !self.editing_query {
             return;
         }
@@ -203,7 +205,7 @@ impl Viewer {
         // Input can arrive during frame coalescing after the EQ mutated the transcript but before
         // the next draw. Reconcile here as an authority gate so result ids and copied/exported Arc
         // snapshots can never come from different revisions.
-        self.sync_if_changed(blocks, authority_revision);
+        self.reconcile_if_changed(blocks, authority_revision);
         if self.editing_query {
             match code {
                 KeyCode::Esc | KeyCode::Enter => self.editing_query = false,

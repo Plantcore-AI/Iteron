@@ -6,13 +6,17 @@ fn user(id: u64, text: &str) -> Arc<block::Block> {
 }
 
 fn settle(viewer: &mut Viewer, blocks: &[Arc<block::Block>], revision: u64) {
-    for _ in 0..(MAX_INDEX_ENTRIES * 2 + 4) {
-        if !viewer.work_pending() {
-            return;
-        }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while viewer.work_pending() {
         viewer.sync_if_changed(blocks, revision);
+        if viewer.projection_worker.is_busy() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "bounded viewer work did not settle before its test deadline"
+        );
     }
-    panic!("bounded viewer work did not settle");
 }
 
 fn replace_query(viewer: &mut Viewer, blocks: &[Arc<block::Block>], revision: u64, query: &str) {
@@ -415,13 +419,17 @@ fn indexing_has_a_deterministic_one_projection_tick_budget_and_keeps_input_live(
 
     viewer.open("", &blocks, 7);
     assert_eq!(viewer.work.index_projections, 1);
-    assert_eq!(viewer.work_progress(), Some(("indexing", 1, 12)));
+    assert_eq!(viewer.work_progress(), Some(("indexing", 0, 12)));
+    assert!(
+        viewer.projection_worker.is_busy(),
+        "the expensive block projection is owned by the sole background worker"
+    );
 
     viewer.key(KeyCode::Char('/'), KeyModifiers::NONE, &blocks, 7);
     let after_search_key = viewer.work.index_projections;
     assert_eq!(
-        after_search_key, 2,
-        "one key turn may project only one block"
+        after_search_key, 1,
+        "a key turn must not advance the loop-owned projection budget"
     );
     viewer.key(KeyCode::Char('n'), KeyModifiers::NONE, &blocks, 7);
     assert_eq!(
@@ -429,9 +437,8 @@ fn indexing_has_a_deterministic_one_projection_tick_budget_and_keeps_input_live(
         "query input remains active while indexing"
     );
     assert_eq!(
-        viewer.work.index_projections,
-        after_search_key + 1,
-        "query input cannot accidentally trigger an unbounded catch-up scan"
+        viewer.work.index_projections, after_search_key,
+        "query input cannot trigger a second projection in the same loop turn"
     );
 
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 10)).unwrap();
@@ -445,9 +452,60 @@ fn indexing_has_a_deterministic_one_projection_tick_budget_and_keeps_input_live(
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(screen.contains("indexing 3/12"));
+    assert!(screen.contains("indexing 0/12"));
     assert!(screen.contains("search> n"));
     assert!(viewer.export_ids(ExportScope::All, 7).is_err());
+}
+
+#[test]
+fn repeated_authority_cancellation_prunes_reuse_to_exact_retained_ids_and_revisions() {
+    let mut viewer = Viewer {
+        authority_revision: Some(1),
+        entries: (0..MAX_INDEX_ENTRIES as u64)
+            .map(|id| Entry {
+                id,
+                revision: 0,
+                label: "user",
+                folded: "retained-payload".repeat(64),
+                complete: true,
+                required_bytes: None,
+                needs_projection: false,
+            })
+            .collect(),
+        ..Viewer::default()
+    };
+
+    let authority_b = (600..1800).map(|id| user(id, "b")).collect::<Vec<_>>();
+    assert!(viewer.reconcile_if_changed(&authority_b, 2));
+    let reusable_b = &viewer.index_job.as_ref().unwrap().reusable;
+    assert_eq!(reusable_b.len(), 600);
+    assert!(reusable_b.keys().all(|id| (600..1200).contains(id)));
+
+    let authority_c = (1100..1200)
+        .chain(1800..2900)
+        .map(|id| user(id, "c"))
+        .collect::<Vec<_>>();
+    assert!(viewer.reconcile_if_changed(&authority_c, 3));
+    let reusable_c = &viewer.index_job.as_ref().unwrap().reusable;
+    assert_eq!(reusable_c.len(), 100);
+    assert!(reusable_c.keys().all(|id| (1100..1200).contains(id)));
+    assert!(
+        reusable_c
+            .values()
+            .map(|entry| entry.folded.len())
+            .sum::<usize>()
+            <= MAX_INDEX_TOTAL_BYTES
+    );
+
+    let mut authority_d = authority_c;
+    for block in &mut authority_d {
+        Arc::make_mut(block).touch();
+    }
+    assert!(viewer.reconcile_if_changed(&authority_d, 4));
+    assert!(
+        viewer.index_job.as_ref().unwrap().reusable.is_empty(),
+        "same ids with stale payload revisions are not reusable authority"
+    );
 }
 
 #[test]

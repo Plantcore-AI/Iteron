@@ -11,7 +11,10 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::super::transcript_export;
 #[cfg(any(target_os = "linux", all(test, unix)))]
+#[cfg(target_os = "linux")]
 use super::ProcessRegistry;
+#[cfg(any(target_os = "linux", all(test, unix)))]
+use super::RegisteredChild;
 
 mod protocol;
 #[cfg(target_os = "linux")]
@@ -133,36 +136,34 @@ pub(super) async fn cancelled(receiver: &mut tokio::sync::watch::Receiver<bool>)
 }
 
 #[cfg(any(target_os = "linux", all(test, unix)))]
-pub(super) async fn kill_and_reap(
-    child: &mut tokio::process::Child,
-    processes: &ProcessRegistry,
-) -> Cleanup {
-    let pid = child.id();
+pub(super) async fn kill_and_reap(child: &mut RegisteredChild) -> Cleanup {
     let _ = child.start_kill();
     match tokio::time::timeout(REAP_DEADLINE, child.wait()).await {
-        Ok(Ok(_)) => {
-            processes.reaped(pid);
-            Cleanup::Reaped
-        }
+        Ok(Ok(_)) => Cleanup::Reaped,
         Ok(Err(_)) => {
-            processes.reap_exact(pid);
-            Cleanup::AlreadyReaped
+            if child.reap_sync() {
+                Cleanup::Reaped
+            } else {
+                Cleanup::AlreadyReaped
+            }
         }
         Err(_) => {
-            processes.reap_exact(pid);
-            Cleanup::Reaped
+            if child.reap_sync() {
+                Cleanup::Reaped
+            } else {
+                Cleanup::AlreadyReaped
+            }
         }
     }
 }
 
 #[cfg(target_os = "linux")]
 async fn outcome_unknown(
-    child: &mut tokio::process::Child,
+    child: &mut RegisteredChild,
     stage: PostDispatchStage,
     detail: impl Into<String>,
-    processes: &ProcessRegistry,
 ) -> WorkerRun {
-    let cleanup = kill_and_reap(child, processes).await;
+    let cleanup = kill_and_reap(child).await;
     WorkerRun::Completed(Err(WorkerFailure::OutcomeUnknown {
         stage,
         detail: detail.into(),
@@ -234,8 +235,7 @@ async fn run_export_worker_inner(
         .env(WORKER_ENV, "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
+        .stderr(Stdio::null());
     // SAFETY: this closure runs after fork and before exec and invokes only async-signal-safe libc
     // syscalls. Rechecking the parent closes the race where it died immediately before `prctl`.
     unsafe {
@@ -259,13 +259,20 @@ async fn run_export_worker_inner(
             )));
         }
     };
-    let child_pid = child.id();
-    let Some(mut stdin) = child.stdin.take() else {
+    let Some(mut stdin) = child.take_stdin() else {
         return outcome_unknown(
             &mut child,
             PostDispatchStage::Stdin,
             "spawned helper had no request pipe",
-            processes,
+        )
+        .await;
+    };
+    let Some(stdout) = child.take_stdout() else {
+        drop(stdin);
+        return outcome_unknown(
+            &mut child,
+            PostDispatchStage::MissingResponse,
+            "spawned helper had no response pipe",
         )
         .await;
     };
@@ -277,7 +284,7 @@ async fn run_export_worker_inner(
     tokio::select! {
         _ = cancelled(cancelled_rx) => {
             drop(stdin);
-            let _ = kill_and_reap(&mut child, processes).await;
+            let _ = kill_and_reap(&mut child).await;
             return WorkerRun::Cancelled;
         }
         result = tokio::time::timeout_at(deadline, write) => match result {
@@ -288,7 +295,6 @@ async fn run_export_worker_inner(
                     &mut child,
                     PostDispatchStage::RequestWriteOrShutdown,
                     "the bounded request could not be written and shut down",
-                    processes,
                 ).await;
             }
             Err(_) => {
@@ -297,7 +303,6 @@ async fn run_export_worker_inner(
                     &mut child,
                     PostDispatchStage::Deadline,
                     "the request pipe exceeded the five-second deadline",
-                    processes,
                 ).await;
             }
         }
@@ -310,14 +315,13 @@ async fn run_export_worker_inner(
             &mut child,
             stage,
             "deterministically injected post-dispatch evidence loss",
-            processes,
         )
         .await;
     }
 
     let status = tokio::select! {
         _ = cancelled(cancelled_rx) => {
-            let _ = kill_and_reap(&mut child, processes).await;
+            let _ = kill_and_reap(&mut child).await;
             return WorkerRun::Cancelled;
         }
         result = tokio::time::timeout_at(deadline, child.wait()) => match result {
@@ -327,7 +331,6 @@ async fn run_export_worker_inner(
                     &mut child,
                     PostDispatchStage::Wait,
                     "the helper wait result was unavailable",
-                    processes,
                 ).await;
             }
             Err(_) => {
@@ -335,12 +338,10 @@ async fn run_export_worker_inner(
                     &mut child,
                     PostDispatchStage::Deadline,
                     "the helper exceeded the five-second deadline",
-                    processes,
                 ).await;
             }
         }
     };
-    processes.reaped(child_pid);
     if !status.success() {
         return WorkerRun::Completed(Err(WorkerFailure::OutcomeUnknown {
             stage: PostDispatchStage::Exit,
@@ -348,13 +349,6 @@ async fn run_export_worker_inner(
             cleanup: Cleanup::AlreadyReaped,
         }));
     }
-    let Some(stdout) = child.stdout.take() else {
-        return WorkerRun::Completed(Err(WorkerFailure::OutcomeUnknown {
-            stage: PostDispatchStage::MissingResponse,
-            detail: "successful helper exit had no response pipe".into(),
-            cleanup: Cleanup::AlreadyReaped,
-        }));
-    };
     let mut response = Vec::new();
     if stdout
         .take((MAX_WORKER_RESPONSE_BYTES + 1) as u64)

@@ -13,7 +13,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt as _;
 
-use super::transcript_effect::ProcessRegistry;
+use super::transcript_effect::{ProcessRegistry, RegisteredChild};
 
 const MAX_CLIPBOARD_BYTES: usize = 64 * 1024;
 const MAX_ENV_BYTES: usize = 4 * 1024;
@@ -173,8 +173,7 @@ async fn run_report(
         .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
+        .stderr(Stdio::null());
     for (name, value) in clipboard_environment() {
         command.env(name, value);
     }
@@ -187,122 +186,97 @@ async fn run_report(
             };
         }
     };
-    let child_pid = child.id();
-
-    let stdin = child.stdin.take();
+    let stdin = child.take_stdin();
     #[cfg(test)]
     let stdin = (fault != InjectedFault::MissingStdin)
         .then_some(stdin)
         .flatten();
     let Some(mut stdin) = stdin else {
-        return post_spawn_error(
-            &mut child,
-            PostSpawnStage::MissingStdin,
-            processes,
-            child_pid,
-        )
-        .await;
+        return post_spawn_error(&mut child, PostSpawnStage::MissingStdin).await;
     };
     let deadline = tokio::time::Instant::now() + deadline;
 
     #[cfg(test)]
     if fault == InjectedFault::Write {
         drop(stdin);
-        return post_spawn_error(&mut child, PostSpawnStage::Write, processes, child_pid).await;
+        return post_spawn_error(&mut child, PostSpawnStage::Write).await;
     }
     match tokio::time::timeout_at(deadline, stdin.write_all(bytes)).await {
         Ok(Ok(())) => {}
         Ok(Err(_)) => {
             drop(stdin);
-            return post_spawn_error(&mut child, PostSpawnStage::Write, processes, child_pid).await;
+            return post_spawn_error(&mut child, PostSpawnStage::Write).await;
         }
         Err(_) => {
             drop(stdin);
-            return post_spawn_error(&mut child, PostSpawnStage::Timeout, processes, child_pid)
-                .await;
+            return post_spawn_error(&mut child, PostSpawnStage::Timeout).await;
         }
     }
 
     #[cfg(test)]
     if fault == InjectedFault::Shutdown {
         drop(stdin);
-        return post_spawn_error(&mut child, PostSpawnStage::Shutdown, processes, child_pid).await;
+        return post_spawn_error(&mut child, PostSpawnStage::Shutdown).await;
     }
     match tokio::time::timeout_at(deadline, stdin.shutdown()).await {
         Ok(Ok(())) => {}
         Ok(Err(_)) => {
             drop(stdin);
-            return post_spawn_error(&mut child, PostSpawnStage::Shutdown, processes, child_pid)
-                .await;
+            return post_spawn_error(&mut child, PostSpawnStage::Shutdown).await;
         }
         Err(_) => {
             drop(stdin);
-            return post_spawn_error(&mut child, PostSpawnStage::Timeout, processes, child_pid)
-                .await;
+            return post_spawn_error(&mut child, PostSpawnStage::Timeout).await;
         }
     }
     drop(stdin);
 
     #[cfg(test)]
     if fault == InjectedFault::Wait {
-        return post_spawn_error(&mut child, PostSpawnStage::Wait, processes, child_pid).await;
+        return post_spawn_error(&mut child, PostSpawnStage::Wait).await;
     }
     match tokio::time::timeout_at(deadline, child.wait()).await {
-        Ok(Ok(status)) if status.success() => {
-            processes.reaped(child_pid);
-            RunReport {
-                result: Ok(()),
-                cleanup: Some(CleanupState::AlreadyReaped),
-            }
-        }
-        Ok(Ok(_)) => {
-            processes.reaped(child_pid);
-            RunReport {
-                result: Err(ClipboardError::DispatchedOutcomeUnknown {
-                    stage: PostSpawnStage::Exit,
-                    cleanup: CleanupState::AlreadyReaped,
-                }),
-                cleanup: Some(CleanupState::AlreadyReaped),
-            }
-        }
-        Ok(Err(_)) => {
-            post_spawn_error(&mut child, PostSpawnStage::Wait, processes, child_pid).await
-        }
-        Err(_) => post_spawn_error(&mut child, PostSpawnStage::Timeout, processes, child_pid).await,
+        Ok(Ok(status)) if status.success() => RunReport {
+            result: Ok(()),
+            cleanup: Some(CleanupState::AlreadyReaped),
+        },
+        Ok(Ok(_)) => RunReport {
+            result: Err(ClipboardError::DispatchedOutcomeUnknown {
+                stage: PostSpawnStage::Exit,
+                cleanup: CleanupState::AlreadyReaped,
+            }),
+            cleanup: Some(CleanupState::AlreadyReaped),
+        },
+        Ok(Err(_)) => post_spawn_error(&mut child, PostSpawnStage::Wait).await,
+        Err(_) => post_spawn_error(&mut child, PostSpawnStage::Timeout).await,
     }
 }
 
-async fn post_spawn_error(
-    child: &mut tokio::process::Child,
-    stage: PostSpawnStage,
-    processes: &ProcessRegistry,
-    child_pid: Option<u32>,
-) -> RunReport {
-    let cleanup = kill_and_reap(child, processes, child_pid).await;
+async fn post_spawn_error(child: &mut RegisteredChild, stage: PostSpawnStage) -> RunReport {
+    let cleanup = kill_and_reap(child).await;
     RunReport {
         result: Err(ClipboardError::DispatchedOutcomeUnknown { stage, cleanup }),
         cleanup: Some(cleanup),
     }
 }
 
-async fn kill_and_reap(
-    child: &mut tokio::process::Child,
-    processes: &ProcessRegistry,
-    child_pid: Option<u32>,
-) -> CleanupState {
+async fn kill_and_reap(child: &mut RegisteredChild) -> CleanupState {
     let _ = child.start_kill();
     match tokio::time::timeout(CLIPBOARD_REAP_TIMEOUT, child.wait()).await {
-        Ok(Ok(_)) => {
-            processes.reaped(child_pid);
-            CleanupState::Reaped
-        }
+        Ok(Ok(_)) => CleanupState::Reaped,
         Ok(Err(_)) => {
-            processes.reap_exact(child_pid);
-            CleanupState::AlreadyReaped
+            if child.reap_sync() {
+                CleanupState::Reaped
+            } else {
+                CleanupState::AlreadyReaped
+            }
         }
         Err(_) => {
-            processes.reap_exact(child_pid);
-            CleanupState::Reaped
+            if child.reap_sync() {
+                CleanupState::Reaped
+            } else {
+                CleanupState::AlreadyReaped
+            }
         }
     }
 }

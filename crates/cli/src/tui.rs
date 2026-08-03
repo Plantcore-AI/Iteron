@@ -3464,10 +3464,12 @@ pub async fn run(
         // Wait on everything that can change the frame at once. There is no fixed poll period any
         // more: a delta is visible one coalescing interval after it arrives, and an idle session
         // sleeps until something actually happens.
-        // Incremental transcript work is an immediate loop source, independent of repaint cadence.
-        // Each turn still performs only one bounded unit and polls signal/effect/input before this
-        // wake, while FRAME_COALESCE prevents a large index from repainting per entry.
-        let wake = if app.transcript_viewer.is_open() && app.transcript_viewer.work_pending() {
+        // Locally cheap transcript work is an immediate loop source. A MiB-scale block projection
+        // runs on the viewer's sole bounded worker and wakes this select explicitly when ready, so
+        // the TUI neither executes it synchronously nor polls it in a hot loop.
+        let viewer_work_notification = app.transcript_viewer.work_notification();
+        let viewer_work_active = viewer_work_notification.is_some();
+        let wake = if app.transcript_viewer.is_open() && app.transcript_viewer.work_ready() {
             Some(Instant::now())
         } else {
             next_wake(
@@ -3501,6 +3503,11 @@ pub async fn run(
                 Some(Err(error)) => return Err(error.into()),
                 None => input_open = false,
             },
+            _ = async {
+                if let Some(notification) = viewer_work_notification {
+                    notification.notified().await;
+                }
+            }, if viewer_work_active => {},
             envelope = events.recv(), if eq_open => match envelope {
                 Some(envelope) => pending_event = Some(envelope),
                 None => eq_open = false,
@@ -5777,7 +5784,7 @@ fn schedule_transcript_viewer_effect(
 ) {
     let snapshot_revision = effect.snapshot_revision();
     app.transcript_viewer
-        .sync_if_changed(&app.transcript, app.transcript_revision);
+        .reconcile_if_changed(&app.transcript, app.transcript_revision);
     if snapshot_revision != app.transcript_revision {
         app.transcript_viewer
             .set_notice("transcript changed before the effect snapshot was captured");

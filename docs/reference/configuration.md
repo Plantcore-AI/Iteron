@@ -116,10 +116,14 @@ incremental over stable block ids/revisions, evicts records with the retained tr
 the newest complete block projections at 16 MiB total and 2 MiB per block, a query at 512 bytes,
 results at 512, and selected pretty/raw detail at 64 KiB. A block excluded by either search budget
 is explicitly marked `search-unindexed`, and the header reports the incomplete block count; no
-prefix-only result is presented as a complete search. Index projection and result matching each
-advance by at most one bounded entry per interactive-loop turn; the header exposes exact progress,
-and copy/export wait until both transcript and query revisions are authoritative. `/` edits the
-filter while indexing remains pending; `j`/`k` and `n`/`N`
+prefix-only result is presented as a complete search. MiB-scale block rendering, redaction, and
+Unicode folding run on one persistent bounded background worker; each interactive-loop turn only
+dispatches or collects one projection result, while result matching advances one entry. Worker
+completion explicitly wakes the event loop without polling. A superseded index keeps reusable
+payload only for the newest 1200 authority IDs with exact matching revisions, so repeated live
+cancellation cannot retain transcript history. The header exposes exact progress, and copy/export
+wait until both transcript and query revisions are authoritative. `/` edits the filter while
+indexing remains pending; `j`/`k` and `n`/`N`
 navigate deterministically; canonical NFC/NFD-equivalent Unicode matches identically. `r` toggles
 pretty/raw; `y` copies the selected block and `Y` the bounded matching-block projection through a
 fixed direct-argv platform adapter; `e` exports the filtered ids and `E` exports all retained blocks
@@ -137,9 +141,11 @@ current Core executable with a cleared environment and bounded stdin/stdout prot
 five-second deadline, frontend shutdown, and every post-spawn error kill that helper, use a
 one-second async reap window, and then synchronously join any remainder; every normal and error
 return from the TUI crosses the same cleanup scope before returning.
-Direct supervisor drop closes the spawn gate and synchronously kills and reaps every registered
-child before returning. A timed-out publication is reported as outcome-unknown, but no detached
-blocking thread can mutate
+The shared process registry owns each real child handle behind a checked monotonic opaque ticket;
+normal wait completion and emergency cleanup claim and remove that handle under one mutex, never by
+a reusable numeric PID. Direct supervisor drop closes the spawn gate and holds that ownership
+barrier through synchronous kill and join of every child before returning. A timed-out publication
+is reported as outcome-unknown, but no detached blocking thread can mutate
 the workspace later.
 
 The interactive loop applies at most 64 ordered runtime events from the 1024-slot EQ per turn.
@@ -149,7 +155,10 @@ therefore retains FIFO ordering and producer backpressure without starving contr
 
 On Linux, export opens the workspace and every parent with no-follow directory handles, writes and
 fsyncs an anonymous `O_TMPFILE` inode, and exclusively publishes that held inode with `linkat` before
-syncing the directory. It creates no temporary workspace pathname and never issues a cleanup unlink,
+syncing the directory. The workspace root itself is bound by its held parent capability plus
+basename and reopened for inode comparison before and after publication; a root rename, unlink, or
+replacement therefore cannot turn detached-inode publication into reported success. It creates no
+temporary workspace pathname and never issues a cleanup unlink,
 so an unlink/replace or symlink race cannot redirect publication or cause Core to remove an
 attacker-owned replacement. Parent symlink swaps cannot redirect the write. Existing explicit
 filenames are refused; default viewer and `/export` filenames allocate a bounded `-2`, `-3`, …

@@ -21,7 +21,7 @@ mod worker;
 use worker::{WorkerFailure, WorkerRun};
 pub(crate) use worker::{worker_main, worker_requested};
 mod process;
-pub(super) use process::ProcessRegistry;
+pub(super) use process::{ProcessRegistry, RegisteredChild};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Origin {
@@ -152,8 +152,8 @@ impl Supervisor {
     }
 
     /// Cancel the active effect and join its owned task only after any child process is reaped.
-    /// Child processes are also `kill_on_drop` and, on Linux, carry a parent-death signal as a final
-    /// containment layer, but neither fallback substitutes for this explicit ownership boundary.
+    /// Each child has a non-cloneable registry ticket and, on Linux, carries a parent-death signal
+    /// as a final containment layer, but neither fallback substitutes for this joined boundary.
     pub(crate) async fn shutdown(&mut self) {
         let Some(task) = self.task.take() else {
             return;
@@ -339,25 +339,21 @@ async fn run_test_process(
         .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
+        .stderr(Stdio::null());
     let mut child = match processes.spawn(&mut command) {
         Ok(child) => child,
         Err(_) => return,
     };
     let Some(pid) = child.id() else {
-        let _ = worker::kill_and_reap(&mut child, processes).await;
+        let _ = worker::kill_and_reap(&mut child).await;
         return;
     };
     let _ = started.send(pid);
     tokio::select! {
         _ = worker::cancelled(cancelled_rx) => {
-            let _ = worker::kill_and_reap(&mut child, processes).await;
+            let _ = worker::kill_and_reap(&mut child).await;
         }
-        result = child.wait() => {
-            if result.is_ok() {
-                processes.reaped(Some(pid));
-            }
+        _ = child.wait() => {
             send(sender, Event {
                 origin,
                 outcome: Disposition::Success,

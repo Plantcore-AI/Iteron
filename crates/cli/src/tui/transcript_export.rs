@@ -155,7 +155,7 @@ fn versioned_leaf(leaf: &str, attempt: usize) -> String {
 
 #[cfg(target_os = "linux")]
 mod unix {
-    use std::ffi::{CStr, CString, OsStr};
+    use std::ffi::{CStr, CString, OsStr, OsString};
     use std::fs::File;
     use std::io::{self, Write as _};
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
@@ -174,7 +174,7 @@ mod unix {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))
     }
 
-    pub(super) fn open_root(path: &std::path::Path) -> io::Result<File> {
+    fn open_path(path: &std::path::Path) -> io::Result<File> {
         let path = c_string(path.as_os_str())?;
         // SAFETY: `path` is a live NUL-terminated string; returned ownership is checked below.
         let fd = unsafe {
@@ -190,8 +190,8 @@ mod unix {
         Ok(unsafe { File::from_raw_fd(fd) })
     }
 
-    pub(super) fn open_dir(parent: &File, name: &str) -> io::Result<File> {
-        let name = c_string(OsStr::new(name))?;
+    fn open_dir(parent: &File, name: &OsStr) -> io::Result<File> {
+        let name = c_string(name)?;
         // SAFETY: both descriptor and NUL-terminated component remain live for the call.
         let fd = unsafe {
             libc::openat(
@@ -210,9 +210,59 @@ mod unix {
     pub(super) fn traverse(root: &File, parents: &[String]) -> io::Result<File> {
         let mut current = root.try_clone()?;
         for component in parents {
-            current = open_dir(&current, component)?;
+            current = open_dir(&current, OsStr::new(component))?;
         }
         Ok(current)
+    }
+
+    /// Stable binding for the workspace pathname's final component. Holding only the workspace
+    /// directory itself is insufficient: it can be renamed, unlinked, or replaced while its file
+    /// descriptor remains valid. The held parent plus basename lets both sides of publication
+    /// reopen the operator-visible root and compare it to the directory capability in use.
+    pub(super) struct RootBinding {
+        root: File,
+        parent: File,
+        basename: OsString,
+    }
+
+    impl RootBinding {
+        pub(super) fn open(path: &std::path::Path) -> io::Result<Self> {
+            if let (Some(parent_path), Some(basename)) = (path.parent(), path.file_name()) {
+                let parent_path = if parent_path.as_os_str().is_empty() {
+                    std::path::Path::new(".")
+                } else {
+                    parent_path
+                };
+                let parent = open_path(parent_path)?;
+                let root = open_dir(&parent, basename)?;
+                return Ok(Self {
+                    root,
+                    parent,
+                    basename: basename.to_os_string(),
+                });
+            }
+
+            // Filesystem roots and `.` cannot be rebound through a distinct basename. Reopening
+            // `.` through the held root is still an exact identity check, and those roots cannot
+            // be renamed or unlinked by replacing a parent-directory entry.
+            let root = open_path(path)?;
+            let parent = root.try_clone()?;
+            Ok(Self {
+                root,
+                parent,
+                basename: OsString::from("."),
+            })
+        }
+
+        pub(super) fn root(&self) -> &File {
+            &self.root
+        }
+
+        pub(super) fn still_bound(&self) -> bool {
+            open_dir(&self.parent, &self.basename)
+                .and_then(|current| same_directory(&self.root, &current))
+                .unwrap_or(false)
+        }
     }
 
     pub(super) fn same_directory(left: &File, right: &File) -> io::Result<bool> {
@@ -332,18 +382,20 @@ where
     P: FnMut(),
 {
     let (parents, leaf) = parse_relative(requested).map_err(ExportError::known)?;
-    let root = unix::open_root(workspace)
+    let root_binding = unix::RootBinding::open(workspace)
         .map_err(|_| ExportError::known("workspace is unavailable or is a symlink"))?;
-    let parent = unix::traverse(&root, &parents).map_err(|_| {
+    let root = root_binding.root();
+    let parent = unix::traverse(root, &parents).map_err(|_| {
         ExportError::known("export parent is unavailable, non-directory, or symlinked")
     })?;
     acquired();
-    let rebound = unix::traverse(&root, &parents)
-        .and_then(|current| unix::same_directory(&parent, &current))
-        .unwrap_or(false);
+    let rebound = root_binding.still_bound()
+        && unix::traverse(root, &parents)
+            .and_then(|current| unix::same_directory(&parent, &current))
+            .unwrap_or(false);
     if !rebound {
         return Err(ExportError::known(
-            "export parent changed after its directory capability was acquired",
+            "workspace root or export parent changed after its directory capability was acquired",
         ));
     }
 
@@ -355,12 +407,13 @@ where
         let candidate = versioned_leaf(&leaf, attempt);
         match unix::write_exclusive(&parent, &candidate, bytes, &mut before_publish) {
             Ok(()) => {
-                let still_bound = unix::traverse(&root, &parents)
-                    .and_then(|current| unix::same_directory(&parent, &current))
-                    .unwrap_or(false);
+                let still_bound = root_binding.still_bound()
+                    && unix::traverse(root, &parents)
+                        .and_then(|current| unix::same_directory(&parent, &current))
+                        .unwrap_or(false);
                 if !still_bound {
                     return Err(ExportError::unknown(
-                        "export parent changed during dispatch; publication outcome is unknown",
+                        "workspace root or export parent changed during dispatch; publication outcome is unknown",
                     ));
                 }
                 let mut display = workspace.to_path_buf();
@@ -502,6 +555,65 @@ mod tests {
         assert!(!root.join("reports-held/session.md").exists());
         std::fs::remove_dir_all(root).ok();
         std::fs::remove_dir_all(outside).ok();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn workspace_root_replacement_before_publication_is_a_known_non_publish() {
+        let root = scratch("root-rebind-before");
+        let detached = scratch("root-rebind-before-detached");
+        std::fs::create_dir_all(root.join("reports")).unwrap();
+        let attack_root = root.clone();
+        let attack_detached = detached.clone();
+
+        let result = export_bytes_with_hooks(
+            &root,
+            "reports/session.md",
+            b"must not publish",
+            CollisionPolicy::Refuse,
+            move || {
+                std::fs::rename(&attack_root, &attack_detached).unwrap();
+                std::fs::create_dir_all(attack_root.join("reports")).unwrap();
+            },
+            || {},
+        );
+
+        assert!(matches!(result, Err(ExportError::KnownFailure(_))));
+        assert!(!root.join("reports/session.md").exists());
+        assert!(!detached.join("reports/session.md").exists());
+        std::fs::remove_dir_all(root).ok();
+        std::fs::remove_dir_all(detached).ok();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn workspace_root_replacement_at_publish_can_never_report_success() {
+        let root = scratch("root-rebind-publish");
+        let detached = scratch("root-rebind-publish-detached");
+        std::fs::create_dir_all(root.join("reports")).unwrap();
+        let attack_root = root.clone();
+        let attack_detached = detached.clone();
+
+        let result = export_bytes_with_hooks(
+            &root,
+            "reports/session.md",
+            b"detached publication evidence",
+            CollisionPolicy::Refuse,
+            || {},
+            move || {
+                std::fs::rename(&attack_root, &attack_detached).unwrap();
+                std::fs::create_dir_all(attack_root.join("reports")).unwrap();
+            },
+        );
+
+        assert!(matches!(result, Err(ExportError::OutcomeUnknown(_))));
+        assert!(!root.join("reports/session.md").exists());
+        assert_eq!(
+            std::fs::read(detached.join("reports/session.md")).unwrap(),
+            b"detached publication evidence"
+        );
+        std::fs::remove_dir_all(root).ok();
+        std::fs::remove_dir_all(detached).ok();
     }
 
     #[cfg(target_os = "linux")]
