@@ -4401,6 +4401,54 @@ fn model_picker_items(
     items
 }
 
+/// Build the `/mode` picker. The code clause is *derived* from the same gate the runtime consults,
+/// never asserted: a session rule (`--allow-code`, `/permissions allow code_executing`) outranks the
+/// mode table, so a hard-coded "code still gated" mislabels every session that carries such a grant.
+fn mode_picker_items(current: PermissionMode, rules: &PermissionRules) -> Vec<PickItem> {
+    let code_clause = |mode: PermissionMode| match core_protocol::gate(
+        mode,
+        rules,
+        "bash",
+        Capability::CodeExecuting,
+    ) {
+        Verdict::Auto => "code auto",
+        Verdict::Deny => "code denied",
+        Verdict::Ask => "code still gated",
+    };
+    let modes = [
+        (
+            PermissionMode::Default,
+            format!(
+                "edits prompt live; {}",
+                code_clause(PermissionMode::Default)
+            ),
+        ),
+        (
+            PermissionMode::AcceptEdits,
+            format!("edits auto; {}", code_clause(PermissionMode::AcceptEdits)),
+        ),
+        (
+            PermissionMode::Plan,
+            "read-only; propose a plan first".to_string(),
+        ),
+        (
+            PermissionMode::Yolo,
+            "auto-approve (still asks for trust-mutating + egress)".to_string(),
+        ),
+    ];
+    modes
+        .into_iter()
+        .map(|(mode, hint)| {
+            PickItem::flat(
+                mode.label(),
+                hint,
+                mode == current,
+                PickAction::SetMode(mode),
+            )
+        })
+        .collect()
+}
+
 fn permission_picker_items(rules: &PermissionRules) -> Vec<PickItem> {
     let caps = [
         (Capability::ReversibleLocal, "Reversible edits"),
@@ -4578,23 +4626,10 @@ fn open_picker(app: &mut App, session: &Session, directory: &ProviderDirectory, 
                 .collect();
             ("Effort", items)
         }
-        "mode" => {
-            let cur = session.permission_mode();
-            let modes = [
-                (PermissionMode::Default, "edits prompt live"),
-                (PermissionMode::AcceptEdits, "edits auto; code still gated"),
-                (PermissionMode::Plan, "read-only; propose a plan first"),
-                (
-                    PermissionMode::Yolo,
-                    "auto-approve (still asks for trust-mutating + egress)",
-                ),
-            ];
-            let items = modes
-                .iter()
-                .map(|(m, h)| PickItem::flat(m.label(), *h, *m == cur, PickAction::SetMode(*m)))
-                .collect();
-            ("Permission mode", items)
-        }
+        "mode" => (
+            "Permission mode",
+            mode_picker_items(session.permission_mode(), session.permission_rules()),
+        ),
         "permissions" => (
             "Permissions",
             permission_picker_items(session.permission_rules()),
@@ -7390,6 +7425,62 @@ mod tests {
         assert_eq!(
             format_resume_command("run with space"),
             "core --resume 'run with space'"
+        );
+    }
+
+    #[test]
+    fn mode_picker_hint_tracks_the_effective_code_grant() {
+        let hint_for = |rules: &PermissionRules, mode: PermissionMode| {
+            mode_picker_items(mode, rules)
+                .into_iter()
+                .find(|item| item.label == mode.label())
+                .expect("every mode is offered")
+                .hint
+        };
+
+        // Deny-by-default: nothing seeded, so acceptEdits really does still gate code.
+        let none = PermissionRules::new();
+        assert_eq!(
+            hint_for(&none, PermissionMode::AcceptEdits),
+            "edits auto; code still gated"
+        );
+        assert_eq!(
+            hint_for(&none, PermissionMode::Default),
+            "edits prompt live; code still gated"
+        );
+
+        // With the operator's code grant in the session the old hard-coded hint lied: the rule
+        // outranks the mode table, so acceptEdits auto-runs bash.
+        let mut allowed = PermissionRules::new();
+        allowed.allow_cap(Capability::CodeExecuting);
+        assert_eq!(
+            hint_for(&allowed, PermissionMode::AcceptEdits),
+            "edits auto; code auto"
+        );
+
+        let mut denied = PermissionRules::new();
+        denied
+            .try_set_cap(Capability::CodeExecuting, Verdict::Deny)
+            .unwrap();
+        assert_eq!(
+            hint_for(&denied, PermissionMode::AcceptEdits),
+            "edits auto; code denied"
+        );
+
+        // The two modes whose posture no session rule can change keep their fixed wording.
+        assert_eq!(
+            hint_for(&allowed, PermissionMode::Plan),
+            "read-only; propose a plan first"
+        );
+        assert_eq!(
+            hint_for(&allowed, PermissionMode::Yolo),
+            "auto-approve (still asks for trust-mutating + egress)"
+        );
+        assert!(
+            mode_picker_items(PermissionMode::Plan, &none)
+                .iter()
+                .any(|item| item.label == PermissionMode::Plan.label() && item.is_current),
+            "the active mode stays pre-selected"
         );
     }
 
