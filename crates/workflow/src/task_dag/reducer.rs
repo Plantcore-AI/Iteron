@@ -260,6 +260,11 @@ impl TaskDag {
                 "previous digest does not match the head".into(),
             ));
         }
+        if entry.command_id.0 == 0 {
+            return Err(DagError::Corrupt(
+                "command id zero is not valid during replay".into(),
+            ));
+        }
         if digest_json(&entry.command)? != entry.command_digest {
             return Err(DagError::Corrupt("command digest mismatch".into()));
         }
@@ -360,6 +365,13 @@ impl TaskDag {
                 detail,
                 ..
             } => {
+                let preserved_cancel_reason = self.tasks.get(task).and_then(|target| {
+                    if let TaskState::Cancelling { reason } = &target.state {
+                        Some(reason.clone())
+                    } else {
+                        None
+                    }
+                });
                 let state = match completion {
                     Completion::Succeeded => TaskState::Succeeded {
                         result_digest: result_digest.clone().expect("validated digest"),
@@ -368,8 +380,13 @@ impl TaskDag {
                         code: code.clone().expect("validated code"),
                         detail: detail.clone().unwrap_or_default(),
                     },
+                    // A cancellation acknowledgement is bound to the durable cause already in
+                    // state. Validation requires the wire reason to match, but projection still
+                    // uses the stored value so a late worker response cannot replace it.
                     Completion::Cancelled => TaskState::Cancelled {
-                        reason: detail.clone().expect("validated cancellation reason"),
+                        reason: preserved_cancel_reason.unwrap_or_else(|| {
+                            detail.clone().expect("validated cancellation reason")
+                        }),
                     },
                 };
                 self.tasks.get_mut(task).expect("validated task").state = state;

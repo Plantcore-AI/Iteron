@@ -115,6 +115,30 @@ fn exact_command_retry_is_idempotent_but_conflicting_reuse_is_refused() {
 }
 
 #[test]
+fn replay_rejects_a_zero_command_id_even_with_valid_hashes() {
+    let mut dag = TaskDag::new(config()).unwrap();
+    let command = create(Actor::Controller, spec(1, None, &[], 30));
+    let command_digest = super::hash::digest_json(&command).unwrap();
+    let mut entry = super::reducer::LogEntry {
+        version: 1,
+        graph_id: dag.config().graph_id.clone(),
+        sequence: 1,
+        previous_digest: dag.head_digest().to_string(),
+        command_id: CommandId(0),
+        command_digest,
+        command,
+        entry_digest: String::new(),
+    };
+    entry.entry_digest = super::hash::entry_digest(&entry).unwrap();
+    assert!(matches!(
+        dag.replay(entry),
+        Err(DagError::Corrupt(reason)) if reason.contains("command id zero")
+    ));
+    assert_eq!(dag.sequence(), 0);
+    assert!(dag.task(id(1)).is_none());
+}
+
+#[test]
 fn dependency_failure_cascades_and_join_order_is_deterministic() {
     let mut dag = TaskDag::new(config()).unwrap();
     dag.apply(cid(1), create(Actor::Controller, spec(1, None, &[], 20)))
@@ -287,10 +311,14 @@ fn cancellation_propagates_and_parent_cannot_finish_before_children() {
             completion: Completion::Cancelled,
             result_digest: None,
             code: None,
-            detail: Some("child cancel observed".into()),
+            detail: Some("operator stopped the graph".into()),
         },
     )
     .unwrap();
+    assert!(matches!(
+        &dag.task(id(2)).unwrap().state,
+        TaskState::Cancelled { reason } if reason == "operator stopped the graph"
+    ));
     dag.apply(
         cid(9),
         Command::CompleteTask {
@@ -299,7 +327,7 @@ fn cancellation_propagates_and_parent_cannot_finish_before_children() {
             completion: Completion::Cancelled,
             result_digest: None,
             code: None,
-            detail: Some("cancel observed".into()),
+            detail: Some("operator stopped the graph".into()),
         },
     )
     .unwrap();
@@ -444,6 +472,103 @@ fn store_never_rewrites_a_nonempty_file_without_a_durable_genesis() {
 }
 
 #[test]
+fn partial_append_is_unknown_then_poisoned_and_same_id_recovers_after_tail_repair() {
+    let temp = TempDir::new("partial-append");
+    let path = temp.join("dag.jsonl");
+    let command = create(Actor::Controller, spec(1, None, &[], 40));
+    let mut store = TaskDagStore::open(&path, config()).unwrap();
+    store.inject_next_append_fault(super::store::TestAppendFault::PartialWrite(23));
+    assert!(matches!(
+        store.submit(cid(1), command.clone()),
+        Err(DagError::DurabilityUnknown(_))
+    ));
+    assert_eq!(store.dag().sequence(), 0);
+    assert!(matches!(
+        store.submit(cid(2), create(Actor::Controller, spec(2, None, &[], 20))),
+        Err(DagError::Poisoned(_))
+    ));
+    drop(store);
+
+    let mut reopened = TaskDagStore::open(&path, config()).unwrap();
+    assert!(reopened.recovered_torn_bytes() > 0);
+    assert_eq!(reopened.dag().sequence(), 0);
+    let receipt = reopened.submit(cid(1), command).unwrap();
+    assert_eq!(receipt.sequence, 1);
+    assert!(!receipt.replayed);
+}
+
+#[test]
+fn full_append_with_sync_failure_replays_instead_of_reexecuting() {
+    let temp = TempDir::new("full-append-sync-failure");
+    let path = temp.join("dag.jsonl");
+    let command = create(Actor::Controller, spec(1, None, &[], 40));
+    let mut store = TaskDagStore::open(&path, config()).unwrap();
+    store.inject_next_append_fault(super::store::TestAppendFault::AfterFullWriteBeforeSync);
+    assert!(matches!(
+        store.submit(cid(1), command.clone()),
+        Err(DagError::DurabilityUnknown(_))
+    ));
+    assert_eq!(store.dag().sequence(), 0);
+    assert!(matches!(
+        store.submit(cid(1), command.clone()),
+        Err(DagError::Poisoned(_))
+    ));
+    drop(store);
+
+    let mut reopened = TaskDagStore::open(&path, config()).unwrap();
+    assert_eq!(reopened.dag().sequence(), 1);
+    assert!(reopened.dag().task(id(1)).is_some());
+    let receipt = reopened.submit(cid(1), command).unwrap();
+    assert_eq!(receipt.sequence, 1);
+    assert!(receipt.replayed);
+}
+
+#[test]
+fn corrupt_durable_prefix_with_a_torn_tail_is_never_truncated() {
+    let temp = TempDir::new("corrupt-prefix-torn-tail");
+    let path = temp.join("dag.jsonl");
+    {
+        let mut store = TaskDagStore::open(&path, config()).unwrap();
+        store
+            .submit(cid(1), create(Actor::Controller, spec(1, None, &[], 40)))
+            .unwrap();
+    }
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(&path, text.replacen("task-1", "task-x", 1)).unwrap();
+    OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(br#"{"record":"command","torn":true}"#)
+        .unwrap();
+    let before = fs::read(&path).unwrap();
+    assert!(matches!(
+        TaskDagStore::open(&path, config()),
+        Err(DagError::Corrupt(_))
+    ));
+    assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn fresh_store_requires_preprovisioned_parent_and_parent_sync_success() {
+    let temp = TempDir::new("namespace-sync");
+    let missing_parent_path = temp.join("missing").join("dag.jsonl");
+    assert!(matches!(
+        TaskDagStore::open(&missing_parent_path, config()),
+        Err(DagError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+    ));
+    assert!(!missing_parent_path.exists());
+
+    let path = temp.join("dag.jsonl");
+    assert!(matches!(
+        TaskDagStore::open_with_parent_sync_failure(&path, config()),
+        Err(DagError::DurabilityUnknown(_))
+    ));
+    let reopened = TaskDagStore::open(&path, config()).unwrap();
+    assert_eq!(reopened.dag().sequence(), 0);
+}
+
+#[test]
 fn store_refuses_config_drift_hash_tampering_and_a_second_writer() {
     let temp = TempDir::new("corrupt");
     let path = temp.join("dag.jsonl");
@@ -498,6 +623,91 @@ fn hard_limits_and_ancestor_dependency_deadlocks_are_refused() {
             create(Actor::Controller, spec(2, Some(1), &[1], 20))
         ),
         Err(DagError::Invalid(_))
+    ));
+}
+
+#[test]
+fn dependency_and_parent_wait_edges_cannot_form_an_admission_cycle() {
+    let mut dag = TaskDag::new(config()).unwrap();
+    dag.apply(cid(1), create(Actor::Controller, spec(1, None, &[], 60)))
+        .unwrap();
+    dag.apply(cid(2), create(Actor::Controller, spec(2, None, &[1], 30)))
+        .unwrap();
+    dag.apply(cid(3), start(1)).unwrap();
+
+    let sequence = dag.sequence();
+    let remaining = dag.remaining_budget(id(1)).unwrap();
+    let rejected = dag.apply(
+        cid(4),
+        create(Actor::Task(id(1)), spec(3, Some(1), &[2], 10)),
+    );
+    assert!(matches!(rejected, Err(DagError::Invalid(_))));
+    assert_eq!(dag.sequence(), sequence);
+    assert_eq!(dag.remaining_budget(id(1)).unwrap(), remaining);
+    assert!(dag.task(id(3)).is_none());
+}
+
+#[test]
+fn cancelling_tasks_only_acknowledge_the_original_cause() {
+    let mut dag = TaskDag::new(config()).unwrap();
+    dag.apply(cid(1), create(Actor::Controller, spec(1, None, &[], 60)))
+        .unwrap();
+    dag.apply(cid(2), create(Actor::Controller, spec(2, None, &[1], 20)))
+        .unwrap();
+    dag.apply(cid(3), start(1)).unwrap();
+    dag.apply(
+        cid(4),
+        Command::RequestCancel {
+            actor: Actor::Controller,
+            task: id(1),
+            reason: "operator cancellation cause".into(),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        dag.apply(cid(5), success(1)),
+        Err(DagError::Transition { .. })
+    ));
+    assert!(matches!(
+        dag.apply(cid(6), fail(1)),
+        Err(DagError::Transition { .. })
+    ));
+    assert!(matches!(
+        dag.apply(
+            cid(7),
+            Command::CompleteTask {
+                actor: Actor::Task(id(1)),
+                task: id(1),
+                completion: Completion::Cancelled,
+                result_digest: None,
+                code: None,
+                detail: Some("worker-provided replacement".into()),
+            }
+        ),
+        Err(DagError::Transition { .. })
+    ));
+    assert_eq!(dag.sequence(), 4);
+
+    dag.apply(
+        cid(8),
+        Command::CompleteTask {
+            actor: Actor::Task(id(1)),
+            task: id(1),
+            completion: Completion::Cancelled,
+            result_digest: None,
+            code: None,
+            detail: Some("operator cancellation cause".into()),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        &dag.task(id(1)).unwrap().state,
+        TaskState::Cancelled { reason } if reason == "operator cancellation cause"
+    ));
+    assert!(matches!(
+        dag.task(id(2)).unwrap().state,
+        TaskState::SkippedDependency { dependency } if dependency == id(1)
     ));
 }
 
@@ -599,6 +809,23 @@ fn durable_store_refuses_a_symlink_target() {
     fs::write(&real, b"").unwrap();
     let link = temp.join("linked.jsonl");
     std::os::unix::fs::symlink(&real, &link).unwrap();
+    assert!(matches!(
+        TaskDagStore::open(link, config()),
+        Err(DagError::Io(_))
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn durable_store_refuses_a_windows_reparse_target() {
+    let temp = TempDir::new("windows-reparse");
+    let real = temp.join("real.jsonl");
+    fs::write(&real, b"").unwrap();
+    let link = temp.join("linked.jsonl");
+    if std::os::windows::fs::symlink_file(&real, &link).is_err() {
+        // Creating a symlink can require Developer Mode or a privilege on older Windows hosts.
+        return;
+    }
     assert!(matches!(
         TaskDagStore::open(link, config()),
         Err(DagError::Io(_))

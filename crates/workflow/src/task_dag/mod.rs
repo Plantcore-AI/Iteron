@@ -10,13 +10,30 @@
 //! than additive across parallel children; the runtime must also enforce the graph's absolute
 //! deadline. The hash chain detects accidental corruption and incomplete writes, but is not a MAC
 //! and therefore is not evidence against an attacker who can rewrite the entire state file.
+//!
+//! # Runtime integration boundary
+//!
+//! `TaskSpec` is a bounded scheduling projection, not a complete or authenticated spawn record.
+//! Before dispatch, a trusted effect broker must durably bind the task to an immutable agent
+//! catalog and `AgentDef` digest, effective tool-set digest, provider/model route, effective
+//! turn/token/cost/wall budgets, input digest, and broker-issued child/runtime identity. A model
+//! must never be allowed to mint `Actor::Controller`; task commands and completion receipts need
+//! authenticated runtime identities rather than self-asserted enum values.
+//!
+//! The composition root must additionally provide write-ahead spawn intent, an explicit
+//! dispatched/unknown outcome, orphan reconciliation, an absolute graph deadline, and durable
+//! effect acknowledgement for cancellation, message delivery, and joins. This pure module records
+//! deterministic requested state only; it does not prove a process was started or stopped, that a
+//! message reached a runtime, or that a completion came from the admitted child.
 
+mod graph;
 mod hash;
 mod reducer;
 mod shape;
 mod store;
 mod types;
 mod validation;
+mod validation_support;
 
 pub use reducer::{ApplyReceipt, Snapshot, TaskDag};
 pub use store::TaskDagStore;

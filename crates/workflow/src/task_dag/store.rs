@@ -33,8 +33,9 @@ enum StoredLine {
 /// only safe recovery path.
 ///
 /// The final path component is opened without following a symlink. Its parent directory remains a
-/// composition-root trust boundary and must be an application-owned state directory, not an
-/// untrusted workspace path.
+/// composition-root trust boundary and must be a durably pre-provisioned, application-owned state
+/// directory, not an untrusted workspace path. For a new file, genesis is synced before the parent
+/// directory entry is synced; failure of either operation is reported as durability-unknown.
 pub struct TaskDagStore {
     path: PathBuf,
     file: File,
@@ -42,15 +43,37 @@ pub struct TaskDagStore {
     bytes: u64,
     recovered_torn_bytes: u64,
     poisoned: Option<String>,
+    #[cfg(test)]
+    next_append_fault: Option<TestAppendFault>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(super) enum TestAppendFault {
+    PartialWrite(usize),
+    AfterFullWriteBeforeSync,
 }
 
 impl TaskDagStore {
     pub fn open(path: impl Into<PathBuf>, config: Config) -> Result<Self, DagError> {
+        Self::open_inner(path.into(), config, false)
+    }
+
+    #[cfg(test)]
+    pub(super) fn open_with_parent_sync_failure(
+        path: impl Into<PathBuf>,
+        config: Config,
+    ) -> Result<Self, DagError> {
+        Self::open_inner(path.into(), config, true)
+    }
+
+    fn open_inner(
+        path: PathBuf,
+        config: Config,
+        inject_parent_sync_failure: bool,
+    ) -> Result<Self, DagError> {
         config.validate().map_err(DagError::InvalidConfig)?;
-        let path = path.into();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        let parent = durable_parent(&path)?;
         reject_non_regular_target(&path)?;
         let mut options = OpenOptions::new();
         options.create(true).read(true).append(true);
@@ -67,6 +90,12 @@ impl TaskDagStore {
         }
         let mut file = options.open(&path)?;
         let opened = file.metadata()?;
+        #[cfg(windows)]
+        if is_windows_reparse_point(&opened) {
+            return Err(DagError::Io(std::io::Error::other(
+                "task-DAG store target must not be a reparse point",
+            )));
+        }
         if opened.file_type().is_symlink() || !opened.is_file() {
             return Err(DagError::Io(std::io::Error::other(
                 "task-DAG store target must be a regular non-symlink file",
@@ -117,6 +146,13 @@ impl TaskDagStore {
             append_synced(&mut file, &encoded).map_err(|error| {
                 DagError::DurabilityUnknown(format!("genesis append failed: {error}"))
             })?;
+            // Syncing the parent unconditionally also recovers an empty file whose creator could
+            // not prove that its namespace update reached stable storage.
+            sync_parent_entry(parent, inject_parent_sync_failure).map_err(|error| {
+                DagError::DurabilityUnknown(format!(
+                    "store namespace sync failed after genesis: {error}"
+                ))
+            })?;
             return Ok(Self {
                 path,
                 file,
@@ -124,6 +160,8 @@ impl TaskDagStore {
                 bytes: encoded.len() as u64,
                 recovered_torn_bytes,
                 poisoned: None,
+                #[cfg(test)]
+                next_append_fault: None,
             });
         }
 
@@ -180,8 +218,16 @@ impl TaskDagStore {
         }
         if retained != bytes.len() {
             file.set_len(retained as u64)?;
-            file.sync_data()?;
         }
+        // Reopening is the recovery boundary for an earlier sync-unknown append. Re-sync the
+        // validated prefix and directory before reporting an exact replay; otherwise a later
+        // crash could lose a command that this process had already treated as durable.
+        file.sync_data().map_err(|error| {
+            DagError::DurabilityUnknown(format!("validated log sync failed on reopen: {error}"))
+        })?;
+        sync_parent_entry(parent, inject_parent_sync_failure).map_err(|error| {
+            DagError::DurabilityUnknown(format!("store namespace sync failed on reopen: {error}"))
+        })?;
         file.seek(SeekFrom::End(0))?;
         Ok(Self {
             path,
@@ -190,6 +236,8 @@ impl TaskDagStore {
             bytes: retained as u64,
             recovered_torn_bytes,
             poisoned: None,
+            #[cfg(test)]
+            next_append_fault: None,
         })
     }
 
@@ -225,7 +273,14 @@ impl TaskDagStore {
         if self.bytes.saturating_add(encoded.len() as u64) > MAX_LOG_BYTES {
             return Err(DagError::Capacity { kind: "log bytes" });
         }
-        if let Err(error) = append_synced(&mut self.file, &encoded) {
+        #[cfg(test)]
+        let append_result = match self.next_append_fault.take() {
+            Some(fault) => append_synced_with_fault(&mut self.file, &encoded, fault),
+            None => append_synced(&mut self.file, &encoded),
+        };
+        #[cfg(not(test))]
+        let append_result = append_synced(&mut self.file, &encoded);
+        if let Err(error) = append_result {
             let reason = error.to_string();
             self.poisoned = Some(reason.clone());
             return Err(DagError::DurabilityUnknown(reason));
@@ -238,12 +293,44 @@ impl TaskDagStore {
         self.dag.commit(entry);
         Ok(receipt)
     }
+
+    #[cfg(test)]
+    pub(super) fn inject_next_append_fault(&mut self, fault: TestAppendFault) {
+        self.next_append_fault = Some(fault);
+    }
+}
+
+fn durable_parent(path: &Path) -> Result<&Path, DagError> {
+    let parent = path
+        .parent()
+        .filter(|candidate| !candidate.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let metadata = fs::metadata(parent).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            DagError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "task-DAG store parent must be pre-provisioned",
+            ))
+        } else {
+            DagError::Io(error)
+        }
+    })?;
+    if !metadata.is_dir() {
+        return Err(DagError::Io(std::io::Error::other(
+            "task-DAG store parent must be a directory",
+        )));
+    }
+    Ok(parent)
 }
 
 fn reject_non_regular_target(path: &Path) -> Result<(), DagError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(DagError::Io(
             std::io::Error::other("task-DAG store target must not be a symlink"),
+        )),
+        #[cfg(windows)]
+        Ok(metadata) if is_windows_reparse_point(&metadata) => Err(DagError::Io(
+            std::io::Error::other("task-DAG store target must not be a reparse point"),
         )),
         Ok(metadata) if !metadata.is_file() => Err(DagError::Io(std::io::Error::other(
             "task-DAG store target must be a regular file",
@@ -252,6 +339,13 @@ fn reject_non_regular_target(path: &Path) -> Result<(), DagError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(DagError::Io(error)),
     }
+}
+
+#[cfg(windows)]
+fn is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 fn complete_prefix_len(bytes: &[u8]) -> usize {
@@ -278,4 +372,57 @@ fn append_synced(file: &mut File, bytes: &[u8]) -> std::io::Result<()> {
     file.write_all(bytes)?;
     file.flush()?;
     file.sync_data()
+}
+
+#[cfg(test)]
+fn append_synced_with_fault(
+    file: &mut File,
+    bytes: &[u8],
+    fault: TestAppendFault,
+) -> std::io::Result<()> {
+    match fault {
+        TestAppendFault::PartialWrite(requested) => {
+            let length = requested.min(bytes.len().saturating_sub(1));
+            file.write_all(&bytes[..length])?;
+            file.flush()?;
+            Err(std::io::Error::other("injected partial append failure"))
+        }
+        TestAppendFault::AfterFullWriteBeforeSync => {
+            file.write_all(bytes)?;
+            file.flush()?;
+            Err(std::io::Error::other(
+                "injected sync failure after a full append",
+            ))
+        }
+    }
+}
+
+fn sync_parent_entry(parent: &Path, inject_failure: bool) -> std::io::Result<()> {
+    if inject_failure {
+        return Err(std::io::Error::other(
+            "injected parent-directory sync failure",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        File::open(parent)?.sync_all()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(parent)?
+            .sync_all()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = parent;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "directory synchronization is unsupported on this platform",
+        ))
+    }
 }
