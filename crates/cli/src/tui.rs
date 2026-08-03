@@ -24,7 +24,7 @@ use crate::providers::{ModelSelection, ProviderDirectory};
 use crate::runtime::{
     UiEvent, WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi, WorkflowUiEvent,
 };
-use crate::{block, surface, theme};
+use crate::{block, startup, surface, theme};
 use core_ctx::ContextEstimate;
 use core_obs::CostState;
 use core_protocol::{
@@ -2042,6 +2042,17 @@ impl App {
         self.render_cache.clear();
     }
 
+    /// Adopt a theme that late terminal evidence detected AFTER the first frame was painted.
+    /// Detection now happens behind the frame, so an identical result must stay a no-op: bumping
+    /// the epoch would throw away a warm render cache for a repaint nobody can see.
+    fn adopt_detected_theme(&mut self, detected: theme::DetectedTheme) -> bool {
+        if detected.theme == self.theme {
+            return false;
+        }
+        self.set_theme(detected.theme);
+        true
+    }
+
     fn prepare_resume_handoff(&mut self, run_id: &str) {
         let command = format_resume_command(run_id);
         self.editor.clear();
@@ -2664,9 +2675,10 @@ impl TermGuard {
     fn negotiate_keyboard(
         &self,
         terminal_input: &mut terminal_input::TerminalInput,
+        environment: &theme::capabilities::Environment,
     ) -> std::io::Result<bool> {
         self.keyboard
-            .negotiate(terminal_input.supports_keyboard_enhancement())
+            .negotiate(terminal_input.supports_keyboard_enhancement(environment))
     }
 
     fn toggle_mouse_capture(&mut self) -> std::io::Result<mouse_capture::State> {
@@ -2757,9 +2769,10 @@ async fn wake_until(deadline: Option<Instant>) {
 pub async fn run(
     attached: app_server::Attached,
     initial_task: Option<String>,
-    providers: ProviderDirectory,
+    mut providers: ProviderDirectory,
     provider_id: String,
     completion_notifications: bool,
+    mut startup: startup::StartupTiming,
 ) -> anyhow::Result<()> {
     eprintln!(
         "app server: TUI attached as a versioned client (SQ/EQ protocol v{})",
@@ -2796,15 +2809,13 @@ pub async fn run(
         }
     }
     let mut terminal_input = terminal_input::TerminalInput::default();
-    // The query is fail-soft: terminals that do not implement the protocol keep the portable
-    // Ctrl-J path and receive neither a push nor a pop. Signal/panic cleanup is installed before
-    // negotiation so even an exit during startup can restore an already-pushed stack frame.
-    let _ = guard.negotiate_keyboard(&mut terminal_input);
-    // OSC 11 runs after raw-mode entry. The input adapter demultiplexes the response from operator
-    // events, replays unrelated startup input, and remains armed to swallow a late reply.
+    // BOTH capability probes are deliberately deferred until after the first frame. The
+    // progressive-keyboard query blocks up to 2000 ms and OSC 11 another 80 ms; running them here,
+    // between EnterAlternateScreen and the first draw, is exactly how a terminal that never answers
+    // held a freshly blanked screen for two seconds. The environment alone decides the first
+    // frame's theme; a background reply only repaints it.
     let environment = theme::capabilities::Environment::capture();
-    let background = terminal_input.query_background(&environment);
-    let detected_theme = theme::Theme::detect_with(environment, background);
+    let detected_theme = theme::Theme::detect_with(environment.clone(), None);
     let (terminal_writer, mut notification_writer) = notification::LiveTerminalWriter::stdout();
     let backend = ratatui::backend::CrosstermBackend::new(terminal_writer);
     let mut term = Terminal::new(backend)?;
@@ -2819,6 +2830,22 @@ pub async fn run(
     app.model_context_window = facts.initial_model_context_window;
     app.provider_id = provider_id;
     let provider_credential_envs = providers.credential_env_names();
+
+    // Paint before probing. Everything the first frame needs is already resolved, and a terminal
+    // that answers neither query must not be able to delay it.
+    term.draw(|f| draw(f, &mut app))?;
+    // The query is fail-soft: terminals that do not implement the protocol keep the portable
+    // Ctrl-J path and receive neither a push nor a pop. Signal/panic cleanup is installed before
+    // negotiation so even an exit during startup can restore an already-pushed stack frame.
+    let _ = guard.negotiate_keyboard(&mut terminal_input, &environment);
+    // OSC 11 runs after raw-mode entry. The input adapter demultiplexes the response from operator
+    // events, replays unrelated startup input, and remains armed to swallow a late reply.
+    if let Some(background) = terminal_input.query_background(&environment) {
+        let probed = theme::Theme::detect_with(environment, Some(background));
+        app.adopt_detected_theme(probed);
+    }
+    startup.mark(startup::StartupPhase::TerminalProbe);
+    startup.flush();
 
     let mut session = Session::new(handle.client, handle.control, initial_state, facts);
     let mut events = handle.events;
@@ -2931,6 +2958,7 @@ pub async fn run(
                 if q.is_empty() {
                     continue;
                 } else if let Some(cmd) = q.strip_prefix('/') {
+                    settle_providers_for(&mut providers, cmd).await;
                     dispatch_slash_command(&mut term, &mut app, &mut session, &providers, cmd)
                         .await?;
                 } else if let Some(bash) = q.strip_prefix('!') {
@@ -3343,6 +3371,7 @@ pub async fn run(
                                 let trimmed = line.trim();
                                 app.completion = None;
                                 if let Some(cmd) = trimmed.strip_prefix('/') {
+                                    settle_providers_for(&mut providers, cmd).await;
                                     dispatch_slash_command(
                                         &mut term,
                                         &mut app,
@@ -3461,6 +3490,7 @@ pub async fn run(
                                     && let Some(cmd) = trimmed.strip_prefix('/')
                                 {
                                     let _ = app.editor.take_submit();
+                                    settle_providers_for(&mut providers, cmd).await;
                                     dispatch_slash_command(
                                         &mut term,
                                         &mut app,
@@ -3588,6 +3618,21 @@ pub async fn run(
 
 /// Execute one already-submitted slash command. Both ordinary Enter and Enter on a slash
 /// completion use this path, so completion activation cannot drift into a second dispatch path.
+/// Join deferred provider discovery for the one command that reads catalogs the launch did not
+/// resolve eagerly. `/model` opens the hierarchical picker over every instance and is therefore the
+/// waiter for the background handle; nothing else pays for providers this session never routes to.
+async fn settle_providers_for(providers: &mut ProviderDirectory, cmd: &str) {
+    let named = commands::dispatch(cmd).is_ok_and(|routed| {
+        matches!(
+            routed.route,
+            commands::DispatchRoute::InProcess(SlashCommand::Model)
+        )
+    });
+    if named {
+        providers.settle().await;
+    }
+}
+
 async fn dispatch_slash_command(
     term: &mut Terminal<
         ratatui::backend::CrosstermBackend<notification::LiveTerminalWriter<std::io::Stdout>>,

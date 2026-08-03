@@ -8,6 +8,7 @@
 use crate::theme::capabilities::{BackgroundTone, Environment, tone_from_osc11_body};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::VecDeque;
+use std::ffi::OsStr;
 use std::time::{Duration, Instant};
 
 const OSC11_QUERY: &[u8] = b"\x1b]11;?\x1b\\";
@@ -21,6 +22,9 @@ const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
 const KEYBOARD_QUERY_TIMEOUT: Duration = Duration::from_millis(200);
 const MAX_KEYBOARD_RESPONSE_CHARS: usize = 24;
 const MAX_KEYBOARD_RESPONSE_EVENTS: usize = 64;
+/// Operator escape hatch for the blocking progressive-keyboard probe. Any value other than empty
+/// or `0` skips the query outright and keeps the portable Ctrl-J path.
+pub(crate) const NO_KEYBOARD_ENHANCEMENT_ENV: &str = "CORE_NO_KBD_ENHANCEMENT";
 
 #[derive(Debug, Default)]
 pub(crate) struct TerminalInput {
@@ -31,7 +35,20 @@ pub(crate) struct TerminalInput {
 
 impl TerminalInput {
     /// Probe progressive keyboard enhancement through the currently supported terminal backend.
-    pub(crate) fn supports_keyboard_enhancement(&mut self) -> bool {
+    ///
+    /// `crossterm` writes the query and then BLOCKS up to 2000 ms waiting for a reply, so the probe
+    /// is only worth paying for on a terminal the environment already says can answer an
+    /// interactive query. It shares the OSC 11 gate (`interactive_query_supported` excludes
+    /// `TERM=dumb`, tmux and screen, which multiplex the reply away) plus the isatty pair check,
+    /// and an operator can disable it outright with `CORE_NO_KBD_ENHANCEMENT`.
+    pub(crate) fn supports_keyboard_enhancement(&mut self, environment: &Environment) -> bool {
+        if !keyboard_enhancement_probe_allowed(
+            environment.interactive_query_supported,
+            terminal_pair_is_supported(),
+            std::env::var_os(NO_KEYBOARD_ENHANCEMENT_ENV).as_deref(),
+        ) {
+            return false;
+        }
         #[cfg(unix)]
         {
             crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
@@ -487,6 +504,25 @@ fn terminal_pair_is_supported() -> bool {
     false
 }
 
+/// Decide whether the blocking progressive-keyboard query may run at all. Kept free of I/O so the
+/// exact gate — not an approximation of it — is what the tests pin.
+fn keyboard_enhancement_probe_allowed(
+    interactive_query_supported: bool,
+    terminal_pair_supported: bool,
+    escape_hatch: Option<&OsStr>,
+) -> bool {
+    interactive_query_supported && terminal_pair_supported && !escape_hatch_enabled(escape_hatch)
+}
+
+/// Absent, empty, whitespace, and `0` all mean "leave the probe on"; anything else disables it.
+fn escape_hatch_enabled(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| {
+        let value = value.to_string_lossy();
+        let value = value.trim();
+        !value.is_empty() && value != "0"
+    })
+}
+
 #[cfg(test)]
 fn await_keyboard_query_write_until(
     receiver: std::sync::mpsc::Receiver<std::io::Result<usize>>,
@@ -657,6 +693,35 @@ mod tests {
                 .map(|character| key(character, KeyModifiers::NONE)),
         );
         events
+    }
+
+    #[test]
+    fn keyboard_probe_is_refused_without_interactive_query_evidence_or_by_the_escape_hatch() {
+        // The probe blocks for up to 2000 ms with no reply, so every negative gate must hold
+        // BEFORE the query is written; a terminal that cannot answer must cost nothing.
+        assert!(keyboard_enhancement_probe_allowed(true, true, None));
+        assert!(keyboard_enhancement_probe_allowed(
+            true,
+            true,
+            Some(OsStr::new("0"))
+        ));
+        assert!(keyboard_enhancement_probe_allowed(
+            true,
+            true,
+            Some(OsStr::new("  "))
+        ));
+        assert!(!keyboard_enhancement_probe_allowed(false, true, None));
+        assert!(!keyboard_enhancement_probe_allowed(true, false, None));
+        assert!(!keyboard_enhancement_probe_allowed(
+            true,
+            true,
+            Some(OsStr::new("1"))
+        ));
+        assert!(!keyboard_enhancement_probe_allowed(
+            true,
+            true,
+            Some(OsStr::new("yes"))
+        ));
     }
 
     #[test]

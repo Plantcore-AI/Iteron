@@ -29,6 +29,7 @@ mod bundle_adapter;
 mod client_event;
 mod runtime;
 mod session_view;
+mod startup;
 mod surface;
 mod theme;
 mod tui;
@@ -375,6 +376,8 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn run_cli() -> anyhow::Result<u8> {
+    // One clock for the whole pre-first-frame path. Off by default, and off means no clock at all.
+    let mut startup = startup::StartupTiming::from_env();
     let cli = Cli::parse();
 
     // `--sessions` and `--fork` predate the one-shot machine contract and intentionally keep their
@@ -612,12 +615,14 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     let pricing_key_env_names =
         pricing::key_env_names(user_file.rate_cards.as_deref().unwrap_or_default());
+    startup.mark(startup::StartupPhase::Config);
     mcp::register_configured_servers(
         &mut registry,
         user_file.mcp_servers.as_deref().unwrap_or_default(),
         &pricing_key_env_names,
     )
     .await?;
+    startup.mark(startup::StartupPhase::ToolServer);
 
     // Routing-sensitive defaults never consult the repository config. A cloned project must not
     // be able to redirect source code (and an operator credential) to another provider or host.
@@ -673,7 +678,20 @@ async fn run_cli() -> anyhow::Result<u8> {
         provider_origin = endpoint_origin;
         provider_was_explicit = true;
     }
-    let provider_directory = providers::ProviderDirectory::discover(&configured_providers).await?;
+    // Only the providers this launch can actually route to are resolved before the first byte is
+    // printed: the selected one, plus any provider named by an explicit model qualifier. The rest
+    // continue in the background and the model picker joins them. Waiting for all of them is why a
+    // launch with five configured providers paid for four it was never going to use.
+    let mut eager_providers = vec![provider_name.clone()];
+    if let Some((model, _)) = model_candidate.as_ref()
+        && let Some((qualifier, _)) = model.split_once(':')
+    {
+        eager_providers.push(qualifier.to_owned());
+    }
+    let mut provider_directory =
+        providers::ProviderDirectory::discover_eagerly(&configured_providers, &eager_providers)
+            .await?;
+    startup.mark(startup::StartupPhase::ProviderDiscover);
     let mut credential_env_names = provider_directory.credential_env_names();
     credential_env_names.extend(pricing_key_env_names);
     credential_env_names.sort();
@@ -871,6 +889,14 @@ async fn run_cli() -> anyhow::Result<u8> {
             requested_model = Some(legacy_model);
             model_origin = Some(config::ConfigOrigin::UserConfig);
         }
+    }
+
+    // Last point before any catalog is read for routing, and the first point at which the routed
+    // provider is final: `--resume` adopts the provider recorded in the rollout just above. Join
+    // the deferred half only for the launches that actually need it — a provider outside the eager
+    // set, or an unqualified model the routed provider does not offer.
+    if provider_directory.needs_settled_catalogs(requested_model.as_deref(), &provider_name) {
+        provider_directory.settle().await;
     }
 
     // Resolve one explicit `(provider, model)` pair from the dynamic catalogs. A trusted provider
@@ -1245,11 +1271,15 @@ async fn run_cli() -> anyhow::Result<u8> {
             provider_directory,
             provider_id,
             completion_notifications.enabled,
+            startup,
         )
         .await?;
         diagnostic_drain.flush();
         return Ok(output::EXIT_SUCCESS);
     }
+    // One-shot has no frame to emit at; the terminal probe never runs, so the breakdown is final
+    // here, before the first paid request.
+    startup.flush();
 
     // ---- one-shot (streaming) mode: requires a task. ----
     let task = cli.task.clone().ok_or_else(|| {
