@@ -1133,6 +1133,27 @@ jobs:
           "${{ matrix.python }}" release-tools/verify_release.py contract \
             --manifest "$canary/download/release-manifest.json" \
             --report "$canary/live-machine-contract.json"
+      - name: Verify the latest Windows archive redirect
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archiveName = "core-code-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive-suffix }}"
+          $exactArchive = Join-Path $env:RUNNER_TEMP "core-content-canary/download/$archiveName"
+          if (-not (Test-Path -LiteralPath $exactArchive)) {
+            throw "content-verified Windows archive missing at $exactArchive"
+          }
+          $archive = Join-Path $env:RUNNER_TEMP 'core-code-latest.zip'
+          curl.exe --proto '=https' --tlsv1.2 -LsSf --retry 6 --retry-all-errors `
+            --retry-delay 2 `
+            "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/$archiveName" `
+            -o $archive
+          if ($LASTEXITCODE -ne 0) { throw "latest Windows archive download exited with $LASTEXITCODE" }
+          $latestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+          $exactHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exactArchive).Hash
+          if ($latestHash -ne $exactHash) {
+            throw 'latest Windows archive does not match the content-verified tag archive'
+          }
 
   curl-canary:
     name: release / curl canary / ${{ matrix.target }}
