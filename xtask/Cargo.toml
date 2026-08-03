@@ -11,6 +11,7 @@ core-agents = { path = "../crates/agents" }
 core-ctx = { path = "../crates/ctx" }
 core-protocol = { path = "../crates/protocol" }
 core-tools = { path = "../crates/tools" }
+core-tunables = { path = "../crates/tunables" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

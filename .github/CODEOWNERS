@@ -43,6 +43,7 @@
 /crates/statusline/** @fr0m-scratch
 /crates/support/** @fr0m-scratch
 /crates/tools/** @fr0m-scratch
+/crates/tunables/** @fr0m-scratch
 /crates/verify/** @fr0m-scratch
 /crates/workflow/** @fr0m-scratch
 /docs/assets/** @fr0m-scratch
@@ -84,6 +85,7 @@
 /crates/sandbox/Cargo.toml @fr0m-scratch
 /crates/sched/Cargo.toml @fr0m-scratch
 /crates/tools/Cargo.toml @fr0m-scratch
+/crates/tunables/Cargo.toml @fr0m-scratch
 /crates/verify/Cargo.toml @fr0m-scratch
 /docs/development/releasing.md @fr0m-scratch
 /docs/development/review-process.md @fr0m-scratch

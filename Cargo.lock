@@ -612,6 +612,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-tunables"
+version = "0.0.1"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "core-verify"
 version = "0.0.1"
 dependencies = [
@@ -635,6 +646,7 @@ dependencies = [
  "core-sched",
  "hex",
  "jsonschema",
+ "libc",
  "rquickjs",
  "serde",
  "serde_json",
@@ -653,6 +665,7 @@ dependencies = [
  "core-ctx",
  "core-protocol",
  "core-tools",
+ "core-tunables",
  "quote",
  "serde",
  "serde_json",

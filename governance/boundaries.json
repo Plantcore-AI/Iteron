@@ -650,6 +650,29 @@
       "checks": ["cargo check -p core-eval --all-targets --locked"]
     },
     {
+      "id": "tunability-registry",
+      "title": "Tunable-family registry",
+      "summary": "Versioned, non-authoritative metadata for stable tuning families, canonical digest, benchmark relevance, and bounded trainability classification.",
+      "status": "open",
+      "risk": "elevated",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "tree", "path": "crates/tunables" }
+      ],
+      "contracts": [
+        "stable-semantic-family-identity",
+        "typed-value-domain",
+        "canonical-registry-digest",
+        "non-authoritative-metadata",
+        "fixed-invariant-nontrainability"
+      ],
+      "checks": [
+        "cargo test -p core-tunables --locked",
+        "cargo run --locked -p core-xtask -- tunables check"
+      ]
+    },
+    {
       "id": "cli-host",
       "title": "CLI host",
       "summary": "Composition root, trusted configuration, provider routing, commands, MCP wiring, and run lifecycle.",
@@ -796,6 +819,7 @@
         { "kind": "tree", "path": "crates/sandbox" },
         { "kind": "tree", "path": "crates/sched" },
         { "kind": "tree", "path": "crates/tools" },
+        { "kind": "tree", "path": "crates/tunables" },
         { "kind": "tree", "path": "crates/verify" },
         { "kind": "tree", "path": "crates/workflow" }
       ]
@@ -1020,6 +1044,7 @@
       "requires_independent_review": true,
       "paths": [
         { "kind": "tree", "path": "crates/eval" },
+        { "kind": "tree", "path": "crates/tunables" },
         { "kind": "tree", "path": "crates/verify" },
         { "kind": "tree", "path": "crates/obs" },
         { "kind": "file", "path": ".github/workflows/ci.yml" }
@@ -1035,6 +1060,7 @@
       "paths": [
         { "kind": "tree", "path": "crates/evolve" },
         { "kind": "tree", "path": "crates/eval" },
+        { "kind": "tree", "path": "crates/tunables" },
         { "kind": "tree", "path": "crates/verify" },
         { "kind": "file", "path": "crates/protocol/src/event.rs" },
         { "kind": "file", "path": "crates/kernel/src/lib.rs" },
@@ -1072,6 +1098,7 @@
         { "kind": "file", "path": "crates/sandbox/Cargo.toml" },
         { "kind": "file", "path": "crates/sched/Cargo.toml" },
         { "kind": "file", "path": "crates/tools/Cargo.toml" },
+        { "kind": "file", "path": "crates/tunables/Cargo.toml" },
         { "kind": "file", "path": "crates/verify/Cargo.toml" },
         { "kind": "file", "path": "docs/_mkdocs_hooks.py" },
         { "kind": "file", "path": "docs/development/releasing.md" },
@@ -1224,6 +1251,11 @@
         "dev": [],
         "build": []
       },
+      "core-tunables": {
+        "normal": [],
+        "dev": [],
+        "build": []
+      },
       "core-verify": {
         "normal": ["core-protocol", "core-sandbox"],
         "dev": [],
@@ -1235,7 +1267,7 @@
         "build": []
       },
       "core-xtask": {
-        "normal": ["core-agents", "core-ctx", "core-protocol", "core-tools"],
+        "normal": ["core-agents", "core-ctx", "core-protocol", "core-tools", "core-tunables"],
         "dev": [],
         "build": []
       }

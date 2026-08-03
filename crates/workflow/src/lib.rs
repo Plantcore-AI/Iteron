@@ -34,6 +34,7 @@ pub mod journal;
 pub mod meta;
 pub mod schema;
 pub mod spawner;
+pub mod task_dag;
 
 pub use bindings::LIFETIME_CAP;
 pub use cachekey::{agent_id, agent_key};
