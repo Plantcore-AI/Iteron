@@ -288,6 +288,12 @@ struct Cli {
     #[arg(long, value_name = "RUN_ID")]
     transcript: Option<String>,
 
+    /// Project one session into its OTel export payload and print it, without sending anything
+    /// anywhere (#105). The offline half of the exporter: same projection the live sink ships, so
+    /// an operator can see exactly what would leave the machine before enabling it.
+    #[arg(long, value_name = "RUN_ID")]
+    otel_export: Option<String>,
+
     /// Read one session's latency timeline and exit: the per-class effect breakdown, the
     /// distribution behind it, and what could not be accounted for. Pair with
     /// `--output-format json` for the machine document. Purely offline -- it reads the
@@ -389,6 +395,19 @@ async fn run_cli() -> anyhow::Result<u8> {
     // MCP server — listing or forking the append-only record needs no API key and must not spawn MCP
     // subprocesses or print connection noise (review: `core --sessions` failed with "no api key"
     // and eagerly started MCP servers, though it never touches the model).
+    if let Some(run) = cli.otel_export.clone() {
+        let run = core_protocol::RunId(run);
+        let timed = core_record::replay_run_timed(&cli.runs_dir, &run)?;
+        let events: Vec<&core_protocol::Event> = timed.iter().map(|entry| &entry.event).collect();
+        let timeline = core_obs::timeline::fold(timed.iter().map(|e| (e.ts_us, &e.event)));
+        let payload = core_obs::otel::project(&run.0, &events, &timeline);
+        println!("{}", serde_json::to_string(&payload)?);
+        if payload.dropped > 0 {
+            eprintln!("{} span(s) dropped at the payload bound", payload.dropped);
+        }
+        return Ok(output::EXIT_SUCCESS);
+    }
+
     if let Some(run) = cli.timeline.clone() {
         let run = core_protocol::RunId(run);
         let timed = core_record::replay_run_timed(&cli.runs_dir, &run)?;
@@ -1179,8 +1198,12 @@ async fn run_cli() -> anyhow::Result<u8> {
     // must never run a command). Empty if there is no ~/.core/config.json hooks block.
     if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
         let mut hooks = runtime::hooks::Hooks::load_user(&home);
+        // USER config only, exactly like the hooks above: an endpoint is an exfiltration target and
+        // a cloned repo must never be able to name one.
+        let telemetry = runtime::telemetry::TelemetrySink::load_user(&home);
         hooks.set_sensitive_env_names(credential_env_names);
         agent.hooks = hooks;
+        agent.telemetry = telemetry;
         if !agent.hooks.is_empty() {
             eprintln!("hooks: loaded from ~/.core/config.json (user config)");
         }
