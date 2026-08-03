@@ -11,6 +11,10 @@ pub struct ProcessSpec {
     pub program: PathBuf,
     pub args: Vec<OsString>,
     pub cwd: Option<PathBuf>,
+    /// Clear the ambient evaluator environment before applying the two explicit lists below.
+    pub clear_env: bool,
+    /// Names whose current values may cross an otherwise-cleared process boundary.
+    pub inherit_env: Vec<OsString>,
     pub env: Vec<(OsString, OsString)>,
     pub timeout: Duration,
     pub max_output_bytes: usize,
@@ -97,25 +101,13 @@ pub async fn run_process(spec: &ProcessSpec) -> Result<ProcessOutput, ProcessErr
     if let Some(cwd) = &spec.cwd {
         command.current_dir(cwd);
     }
-    // Start from an empty environment, then add only what the spec names.
-    //
-    // Without this the benchmarked child inherits the harness's entire environment, which breaks
-    // the two things an eval exists to provide. It is not reproducible -- a result depends on
-    // whatever the operator happened to have exported -- and it is not contained: this process
-    // reads provider credentials from its environment, so every benchmarked run was handed
-    // `ANTHROPIC_API_KEY` and everything beside it. A harness that leaks its own credentials into
-    // the subject under test cannot be used to measure an untrusted subject at all.
-    //
-    // `crates/tools/src/git.rs` and `crates/record/src/checkpoint.rs` already do this for the same
-    // reason; the eval path was the one that did not.
-    command.env_clear();
-    // PATH is re-supplied deliberately rather than inherited wholesale: a program named by a bare
-    // filename cannot be found without it, and an empty PATH turns every such spec into a spawn
-    // error that looks like a missing binary.
-    if !spec.env.iter().any(|(k, _)| k == "PATH")
-        && let Some(path) = std::env::var_os("PATH")
-    {
-        command.env("PATH", path);
+    if spec.clear_env {
+        command.env_clear();
+    }
+    for name in &spec.inherit_env {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
     }
     command.envs(spec.env.iter().cloned());
     core_sandbox::configure_process_group(&mut command);
@@ -259,6 +251,8 @@ mod tests {
             program: PathBuf::from("sh"),
             args: vec!["-c".into(), "printf started; sleep 10".into()],
             cwd: None,
+            clear_env: false,
+            inherit_env: Vec::new(),
             env: Vec::new(),
             timeout: Duration::from_millis(100),
             max_output_bytes: 64,
@@ -272,6 +266,8 @@ mod tests {
             program: PathBuf::from("sh"),
             args: vec!["-c".into(), "yes x | head -c 10000".into()],
             cwd: None,
+            clear_env: false,
+            inherit_env: Vec::new(),
             env: Vec::new(),
             timeout: Duration::from_secs(2),
             max_output_bytes: 32,
@@ -281,6 +277,45 @@ mod tests {
         assert!(noisy.success());
         assert_eq!(noisy.stdout.len(), 32);
         assert!(noisy.stdout_truncated);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cleared_environment_crosses_only_named_and_explicit_values() {
+        let output = run_process(&ProcessSpec {
+            program: PathBuf::from("/bin/sh"),
+            args: vec![
+                "-c".into(),
+                "printf '%s|%s' \"${HOME-unset}\" \"${PATH-unset}\"".into(),
+            ],
+            cwd: None,
+            clear_env: true,
+            inherit_env: vec!["PATH".into()],
+            env: Vec::new(),
+            timeout: Duration::from_secs(2),
+            max_output_bytes: 8 * 1024,
+        })
+        .await
+        .unwrap();
+        assert!(output.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.starts_with("unset|"));
+        assert_ne!(text, "unset|unset");
+
+        let explicit = run_process(&ProcessSpec {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "printf '%s' \"$HOME\"".into()],
+            cwd: None,
+            clear_env: true,
+            inherit_env: Vec::new(),
+            env: vec![("HOME".into(), "/isolated-eval-home".into())],
+            timeout: Duration::from_secs(2),
+            max_output_bytes: 8 * 1024,
+        })
+        .await
+        .unwrap();
+        assert!(explicit.success());
+        assert_eq!(explicit.stdout, b"/isolated-eval-home");
     }
 
     #[test]
@@ -293,47 +328,5 @@ mod tests {
         let missing = std::env::temp_dir().join("definitely-missing-core-eval-binary");
         let error = find_core(Some(&missing)).unwrap_err().to_string();
         assert!(error.contains("not a regular file"));
-    }
-
-    #[tokio::test]
-    async fn a_benchmarked_child_does_not_inherit_the_harness_environment() {
-        // The harness reads provider credentials from its own environment, so an inherited
-        // environment handed every benchmarked run `ANTHROPIC_API_KEY` and everything beside it.
-        // A harness that leaks its credentials into the subject cannot measure an untrusted
-        // subject at all -- and an inherited environment is also why a result could depend on
-        // whatever the operator happened to have exported.
-        unsafe { std::env::set_var("CORE_EVAL_LEAK_PROBE", "must-not-be-inherited") };
-
-        let spec = ProcessSpec {
-            program: "/bin/sh".into(),
-            args: vec!["-c".into(), "printenv CORE_EVAL_LEAK_PROBE || true".into()],
-            cwd: None,
-            env: Vec::new(),
-            timeout: std::time::Duration::from_secs(10),
-            max_output_bytes: 4096,
-        };
-        let out = run_process(&spec).await.expect("spawn");
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(
-            !stdout.contains("must-not-be-inherited"),
-            "harness environment leaked into the child: {stdout:?}"
-        );
-
-        unsafe { std::env::remove_var("CORE_EVAL_LEAK_PROBE") };
-    }
-
-    #[tokio::test]
-    async fn a_spec_named_variable_is_still_delivered() {
-        // env_clear must not become "the child gets nothing"; the spec is the allowlist.
-        let spec = ProcessSpec {
-            program: "/bin/sh".into(),
-            args: vec!["-c".into(), "printenv CORE_EVAL_WANTED".into()],
-            cwd: None,
-            env: vec![("CORE_EVAL_WANTED".into(), "present".into())],
-            timeout: std::time::Duration::from_secs(10),
-            max_output_bytes: 4096,
-        };
-        let out = run_process(&spec).await.expect("spawn");
-        assert!(String::from_utf8_lossy(&out.stdout).contains("present"));
     }
 }
