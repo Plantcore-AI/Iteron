@@ -7,6 +7,15 @@
 //! rewrites the prefix, which breaks the prompt cache from that point (ADR-002: a cache bomb).
 //! So we compact rarely (only at the boundary) and keep the task + the most recent turns
 //! verbatim, summarizing only the middle.
+//!
+//! WHEN has two answers, and only one of them is on the critical path. [`plan_at_turn_end`] is
+//! the routine one: the turn is over, the operator is reading an answer they already have, and
+//! the summary is paid out of their thinking time. [`plan_before_overflow`] is the emergency
+//! valve: this request does not fit the proven window, so the alternative to compacting is a
+//! refused request. Nothing compacts merely because the next request would be *large*.
+//!
+//! [`plan_at_turn_end`]: CompactionPolicy::plan_at_turn_end
+//! [`plan_before_overflow`]: CompactionPolicy::plan_before_overflow
 
 use core_protocol::{Block, Message, Role, ToolSpec};
 
@@ -163,6 +172,71 @@ impl CompactionPolicy {
         self.plan_unconditional(messages)
     }
 
+    /// The end-of-turn trigger: close enough to the real trigger that the next submission would
+    /// otherwise have to pay for the summary before its own request could be built. Three
+    /// quarters, integer-only, so a replay derives the same number from the same facts.
+    pub fn approaching_trigger_tokens(
+        &self,
+        model_context_window: Option<u64>,
+        reserved_output_tokens: u32,
+    ) -> usize {
+        self.effective_trigger_tokens(model_context_window, reserved_output_tokens)
+            .saturating_mul(3)
+            / 4
+    }
+
+    /// The routine path: plan a compaction to run AFTER the turn the operator was waiting on,
+    /// while they read the answer. Triggered early (at [`Self::approaching_trigger_tokens`]) on
+    /// purpose — being a little eager here is free, because nobody is blocked on it.
+    pub fn plan_at_turn_end(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[ToolSpec],
+        model_context_window: Option<u64>,
+        reserved_output_tokens: u32,
+    ) -> Option<CompactionPlan> {
+        let estimate = estimate_request_context(system, messages, tools);
+        let trigger = self.approaching_trigger_tokens(model_context_window, reserved_output_tokens);
+        if messages.len() <= self.keep_recent + 2 || estimate.total_tokens <= trigger {
+            return None;
+        }
+        self.plan_unconditional(messages)
+    }
+
+    /// The emergency valve, inside the turn loop: this projection plus its output reservation no
+    /// longer fits the proven window, so the alternative to compacting is a refused request.
+    /// Without a proven window there is no admission boundary to defend and the documented
+    /// absolute fallback stands in for one.
+    pub fn plan_before_overflow(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[ToolSpec],
+        model_context_window: Option<u64>,
+        reserved_output_tokens: u32,
+    ) -> Option<CompactionPlan> {
+        if messages.len() <= self.keep_recent + 2 {
+            return None;
+        }
+        let estimate = estimate_request_context(system, messages, tools);
+        let fits = match model_context_window.filter(|window| *window > 0) {
+            Some(window) => {
+                u64::try_from(estimate.total_tokens)
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(u64::from(reserved_output_tokens))
+                    <= window
+            }
+            None => {
+                estimate.total_tokens <= self.effective_trigger_tokens(None, reserved_output_tokens)
+            }
+        };
+        if fits {
+            return None;
+        }
+        self.plan_unconditional(messages)
+    }
+
     /// Window-aware kernel path. A missing window uses the documented fallback; a known window
     /// scales the default trigger while preserving an explicit fixed operator override.
     pub fn plan_for_request_with_window(
@@ -234,15 +308,76 @@ impl CompactionPolicy {
     pub fn rebuild(plan: &CompactionPlan, summary: String) -> Vec<Message> {
         let mut out = Vec::with_capacity(2 + plan.keep_verbatim.len());
         out.push(plan.task_anchor.clone());
-        out.push(Message {
-            role: Role::User,
-            content: vec![Block::Text {
-                text: format!("[Compacted history — earlier turns summarized]\n{summary}"),
-            }],
-        });
+        out.push(compaction_summary_message(
+            plan.to_summarize.len(),
+            &summary,
+        ));
         out.extend(plan.keep_verbatim.iter().cloned());
         out
     }
+}
+
+/// The opening of a compaction summary message. What sits between this and
+/// [`COMPACTION_MARKER_CLOSE`] is the plan range: how many messages, counted from just after the
+/// task anchor, this summary replaced.
+const COMPACTION_MARKER_OPEN: &str = "[Compacted history — ";
+const COMPACTION_MARKER_CLOSE: &str = " earlier turns summarized]";
+
+/// The one message a compaction actually produces. The plan range travels in the marker rather
+/// than in a side channel, which is what lets the record carry a summary instead of a rewritten
+/// copy of a transcript it already holds.
+pub fn compaction_summary_message(summarized: usize, summary: &str) -> Message {
+    Message {
+        role: Role::User,
+        content: vec![Block::Text {
+            text: format!(
+                "{COMPACTION_MARKER_OPEN}{summarized}{COMPACTION_MARKER_CLOSE}\n{summary}"
+            ),
+        }],
+    }
+}
+
+/// How many messages this summary folded away, if it is a compaction summary at all.
+pub fn compaction_summary_range(message: &Message) -> Option<usize> {
+    let Some(Block::Text { text }) = message.content.first() else {
+        return None;
+    };
+    let (count, _) = text
+        .strip_prefix(COMPACTION_MARKER_OPEN)?
+        .split_once(COMPACTION_MARKER_CLOSE)?;
+    count.parse().ok()
+}
+
+/// Everything a compaction is worth recording: the summary text, with the plan range in its
+/// marker. The rebuild is a deterministic function of this plus the transcript already on the
+/// record, so writing the rebuilt transcript back out would be writing the same bytes twice —
+/// once measured at 115949 of them, inline, inside the operator's turn.
+pub fn compaction_seed(plan: &CompactionPlan, summary: &str) -> Vec<Message> {
+    vec![compaction_summary_message(plan.to_summarize.len(), summary)]
+}
+
+/// Replay a recorded compaction against the transcript projected so far, reproducing exactly what
+/// [`CompactionPolicy::rebuild`] produced live.
+///
+/// A one-message seed carries the plan range and the rest is reconstructed. Anything else is a
+/// full snapshot from before the seed format and is adopted verbatim, as is a seed whose range
+/// the projected prefix cannot satisfy — a record that does not describe this transcript is not
+/// reconstructable, and guessing would be worse than replaying what was written.
+pub fn replay_compaction(prior: Vec<Message>, recorded: Vec<Message>) -> Vec<Message> {
+    let [seed] = recorded.as_slice() else {
+        return recorded;
+    };
+    let Some(summarized) = compaction_summary_range(seed) else {
+        return recorded;
+    };
+    if prior.len() < summarized + 1 {
+        return recorded;
+    }
+    let mut out = Vec::with_capacity(prior.len() - summarized + 1);
+    out.push(prior[0].clone());
+    out.push(seed.clone());
+    out.extend(prior[summarized + 1..].iter().cloned());
+    out
 }
 
 fn message_content_tokens(m: &Message) -> usize {
@@ -266,6 +401,12 @@ mod tests {
 
     fn big_user(n: usize) -> Message {
         Message::user_text("x".repeat(n))
+    }
+
+    /// `Message` has no `PartialEq`; the wire form is the identity that matters here anyway,
+    /// because that is what the record writes and the replay reads back.
+    fn wire(messages: &[Message]) -> String {
+        serde_json::to_string(messages).expect("messages serialize")
     }
 
     #[test]
@@ -403,6 +544,125 @@ mod tests {
             policy
                 .plan_for_request_with_window("system", &messages, &[], Some(32_768), 8_192,)
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn a_request_that_still_fits_never_compacts_inside_the_turn() {
+        // The audited defect: a transcript over the routine trigger but comfortably inside the
+        // window bought an extra synchronous summary round before the operator's own request.
+        // The emergency valve declines it; only the end-of-turn path takes it.
+        let policy = CompactionPolicy::default();
+        let messages = vec![big_user(9_000); policy.keep_recent + 3];
+        let estimate = estimate_request_context("system", &messages, &[]);
+        assert!(estimate.total_tokens.saturating_add(8_192) < 32_768);
+        assert!(estimate.total_tokens > policy.effective_trigger_tokens(Some(32_768), 8_192));
+        assert!(
+            policy
+                .plan_before_overflow("system", &messages, &[], Some(32_768), 8_192)
+                .is_none(),
+            "a request that fits is admitted as-is; compaction is not a size opinion"
+        );
+        assert!(
+            policy
+                .plan_at_turn_end("system", &messages, &[], Some(32_768), 8_192)
+                .is_some(),
+            "the same transcript compacts once the turn is over"
+        );
+    }
+
+    #[test]
+    fn the_emergency_valve_still_fires_when_the_projection_cannot_be_admitted() {
+        let policy = CompactionPolicy::default();
+        let messages = vec![big_user(10_000); policy.keep_recent + 3];
+        let estimate = estimate_request_context("sys", &messages, &[]);
+        assert!(estimate.total_tokens.saturating_add(8_192) > 32_768);
+        assert!(
+            policy
+                .plan_before_overflow("sys", &messages, &[], Some(32_768), 8_192)
+                .is_some()
+        );
+        // Unknown window: no admission boundary exists, so the absolute fallback stands in.
+        assert!(
+            policy
+                .plan_before_overflow("sys", &messages, &[], None, 8_192)
+                .is_none()
+        );
+        let huge = vec![big_user(500_000); policy.keep_recent + 3];
+        assert!(
+            policy
+                .plan_before_overflow("sys", &huge, &[], None, 8_192)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn the_end_of_turn_trigger_is_three_quarters_of_the_real_one() {
+        let policy = CompactionPolicy::default();
+        assert_eq!(
+            policy.approaching_trigger_tokens(Some(32_768), 8_192),
+            14_745
+        );
+        assert_eq!(policy.approaching_trigger_tokens(None, 8_192), 90_000);
+        let mut fixed = CompactionPolicy::default();
+        fixed.set_fixed_trigger_tokens(40_000);
+        assert_eq!(
+            fixed.approaching_trigger_tokens(Some(1_000_000), 8_192),
+            30_000
+        );
+    }
+
+    #[test]
+    fn the_seed_is_one_message_and_replay_rebuilds_the_identical_transcript() {
+        let mut policy = CompactionPolicy {
+            keep_recent: 2,
+            ..CompactionPolicy::default()
+        };
+        policy.set_fixed_trigger_tokens(100);
+        let prior = vec![
+            Message::user_text("THE TASK"),
+            big_user(500),
+            big_user(500),
+            big_user(500),
+            Message::user_text("recent-1"),
+            Message::user_text("recent-2"),
+        ];
+        let plan = policy.plan(&prior).expect("should compact");
+        let live = CompactionPolicy::rebuild(&plan, "SUMMARY".into());
+
+        let seed = compaction_seed(&plan, "SUMMARY");
+        assert_eq!(
+            seed.len(),
+            1,
+            "the record carries the summary, not the transcript"
+        );
+        assert!(
+            seed[0]
+                .content
+                .iter()
+                .any(|b| matches!(b, Block::Text { text } if text.len() < 200)),
+            "the recorded event is small"
+        );
+        assert_eq!(compaction_summary_range(&seed[0]), Some(3));
+
+        assert_eq!(
+            wire(&replay_compaction(prior.clone(), seed)),
+            wire(&live),
+            "replay reconstructs byte-identically to what ran"
+        );
+        // A pre-seed full snapshot on an existing rollout still replays as itself.
+        assert_eq!(wire(&replay_compaction(prior, live.clone())), wire(&live));
+    }
+
+    #[test]
+    fn a_seed_whose_range_the_prefix_cannot_satisfy_replays_as_written() {
+        let seed = vec![compaction_summary_message(9, "SUMMARY")];
+        let prior = vec![Message::user_text("task"), Message::user_text("one")];
+        assert_eq!(wire(&replay_compaction(prior, seed.clone())), wire(&seed));
+        // Ordinary transcript text is not mistaken for a seed.
+        assert_eq!(
+            compaction_summary_range(&Message::user_text("[Compacted history — x turns]")),
+            None
         );
     }
 }
