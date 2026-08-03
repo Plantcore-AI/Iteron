@@ -18,7 +18,6 @@ use core_evolve::{
     ArtifactKind, BaseModelId, EvolutionMethod, IndependentEvaluator, PolicyRef,
     PromotionAuthorityKey, StrategySlot, VerifiedCandidateInputs,
 };
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -425,15 +424,6 @@ fn uncapped_core(root: &TempRoot) -> PathBuf {
     path
 }
 
-fn bundle_aware_core(root: &TempRoot) -> PathBuf {
-    let path = root.join("bundle-aware-core");
-    executable(
-        &path,
-        "#!/bin/sh\nset -eu\nworkspace=\nbundle=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -C) shift; workspace=$1 ;;\n    --bundle) shift; bundle=$1 ;;\n  esac\n  shift\ndone\ntest -n \"$bundle\"\ntest \"$(cat \"$bundle\")\" = bundle-fixture\nprintf 'good\\n' > \"$workspace/status.txt\"\nprintf '%s\\n' '{\"schema_version\":4,\"type\":\"result\",\"outcome\":\"done\",\"reason\":null,\"success\":true,\"assistant_text\":\"done\",\"run_id\":\"bundle-fixture\",\"cost_usd\":0.25,\"cost_status\":\"known\",\"cost_reason\":null,\"turns\":2,\"exit_code\":0,\"error\":null}'\n",
-    );
-    path
-}
-
 fn eval_options(
     root: &TempRoot,
     corpus_path: PathBuf,
@@ -449,6 +439,7 @@ fn eval_options(
         allow_local_repositories: true,
         model: "model-m".into(),
         provider: Some("fixed-provider".into()),
+        credential_env: None,
         bundle_path: None,
         purpose: EvaluationPurpose::Score,
         seeds: 4,
@@ -528,49 +519,24 @@ async fn explicit_uncapped_mode_omits_the_core_turn_flag_and_is_recorded() {
 }
 
 #[tokio::test]
-async fn trained_bundle_is_passed_at_boot_and_digest_bound_in_manifest() {
+async fn production_runner_refuses_a_simulated_bundle_binding() {
     let root = TempRoot::new("bundle-binding");
     let (url, commit) = fixture_repo(&root);
     let corpus = write_corpus(&root, oracle_task(url, commit));
     let bundle = root.join("policy.bundle");
     std::fs::write(&bundle, "bundle-fixture\n").expect("bundle");
-    let core = bundle_aware_core(&root);
+    let core = fake_core(&root);
     let mut options = eval_options(&root, corpus, core, 2, "bundle");
     options.seeds = 1;
     options.minimum_seeds = 1;
     options.bundle_path = Some(bundle);
-    let manifest = run_evaluation_parallel(&options)
+    let error = run_evaluation_parallel(&options)
         .await
-        .expect("bundle-bound run");
-    assert_eq!(
-        manifest.bundle_digest,
-        Some(format!(
-            "sha256:{}",
-            hex::encode(Sha256::digest(b"bundle-fixture\n"))
-        ))
-    );
+        .expect_err("a fixture-only --bundle flag must not impersonate a production binding");
+    assert!(error.to_string().contains("no policy-bundle input"));
     assert!(
-        manifest
-            .cells
-            .iter()
-            .all(|cell| cell.run_status == RunStatus::Completed && cell.resolved == Some(true))
-    );
-    let run_root = std::fs::read_dir(&options.work_root)
-        .expect("evaluation work root")
-        .next()
-        .expect("one run root")
-        .expect("run root entry")
-        .path();
-    let snapshot = run_root.join("policy.bundle");
-    assert_eq!(
-        std::fs::read_to_string(&snapshot).expect("immutable bundle snapshot"),
-        "bundle-fixture\n"
-    );
-    assert!(
-        std::fs::metadata(snapshot)
-            .expect("bundle snapshot metadata")
-            .permissions()
-            .readonly()
+        !options.work_root.exists(),
+        "rejection occurs before any attempt"
     );
 }
 

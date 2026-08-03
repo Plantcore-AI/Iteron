@@ -240,6 +240,7 @@ esac\n";
             allow_local_repositories: true,
             model: "fixture/model".into(),
             provider: None,
+            credential_env: None,
             purpose: EvaluationPurpose::Score,
             seeds: 1,
             minimum_seeds: 1,

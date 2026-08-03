@@ -289,6 +289,7 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
         allow_local_repositories: true,
         model: "fixture/fixed-model".into(),
         provider: None,
+        credential_env: None,
         purpose: EvaluationPurpose::Score,
         seeds: 1,
         minimum_seeds: 1,

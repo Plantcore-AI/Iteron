@@ -121,6 +121,8 @@ async fn real_core_eval_from_non_workspace_cwd_discovers_core_or_errors_actionab
         // `Command::current_dir` is local to the child; the test process cwd is never mutated, so
         // this remains race-free under the default parallel Rust test runner.
         cwd: Some(outside_cwd),
+        clear_env: false,
+        inherit_env: Vec::new(),
         env: Vec::new(),
         timeout: Duration::from_secs(10),
         max_output_bytes: 128 * 1024,

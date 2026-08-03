@@ -20,6 +20,18 @@ const ORACLE_OUTPUT_LIMIT: usize = 128 * 1024;
 const MAX_CANDIDATE_DIFF_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVAL_CELLS: usize = 1_000_000;
 const MAX_BUNDLE_BYTES: u64 = 16 * 1024 * 1024;
+const BUILTIN_CREDENTIAL_ENVS: [&str; 6] = [
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GLM_API_KEY",
+    "MINIMAX_API_KEY",
+    "FIREWORKS_API_KEY",
+];
+
+fn is_builtin_credential_env(name: &str) -> bool {
+    BUILTIN_CREDENTIAL_ENVS.contains(&name)
+}
 
 #[derive(Debug, Clone)]
 pub struct EvalOptions {
@@ -32,6 +44,9 @@ pub struct EvalOptions {
     pub allow_local_repositories: bool,
     pub model: String,
     pub provider: Option<String>,
+    /// The sole credential environment name permitted to cross into Core. Values are never
+    /// recorded by the evaluator.
+    pub credential_env: Option<String>,
     pub purpose: EvaluationPurpose,
     pub seeds: u64,
     pub minimum_seeds: u64,
@@ -54,6 +69,7 @@ pub struct ParallelEvalOptions {
     pub allow_local_repositories: bool,
     pub model: String,
     pub provider: Option<String>,
+    pub credential_env: Option<String>,
     pub bundle_path: Option<PathBuf>,
     pub purpose: EvaluationPurpose,
     pub seeds: u64,
@@ -78,6 +94,7 @@ impl From<&EvalOptions> for ParallelEvalOptions {
             allow_local_repositories: options.allow_local_repositories,
             model: options.model.clone(),
             provider: options.provider.clone(),
+            credential_env: options.credential_env.clone(),
             bundle_path: None,
             purpose: options.purpose,
             seeds: options.seeds,
@@ -172,6 +189,7 @@ pub async fn run_evaluation_parallel(
         allow_local_repositories: runtime_options.allow_local_repositories,
         model: runtime_options.model.clone(),
         provider: runtime_options.provider.clone(),
+        credential_env: runtime_options.credential_env.clone(),
         purpose: runtime_options.purpose,
         seeds: runtime_options.seeds,
         minimum_seeds: runtime_options.minimum_seeds,
@@ -302,6 +320,18 @@ fn validate_parallel_options(options: &ParallelEvalOptions) -> Result<(), Runner
     if options.model.trim().is_empty() {
         return Err(RunnerError::InvalidOption("model must be explicit".into()));
     }
+    if let Some(name) = options.credential_env.as_deref() {
+        if !is_builtin_credential_env(name) {
+            return Err(RunnerError::InvalidOption(
+                "credential_env must be an exact built-in Core provider credential name".into(),
+            ));
+        }
+        if std::env::var_os(name).is_none_or(|value| value.is_empty()) {
+            return Err(RunnerError::InvalidOption(
+                "credential_env is not present in the evaluator environment".into(),
+            ));
+        }
+    }
     if options.seeds == 0 {
         return Err(RunnerError::InvalidOption(
             "seeds must be at least 1".into(),
@@ -340,6 +370,12 @@ fn validate_parallel_options(options: &ParallelEvalOptions) -> Result<(), Runner
     {
         return Err(RunnerError::InvalidOption(
             "bundle_path must name an existing regular file".into(),
+        ));
+    }
+    if options.bundle_path.is_some() {
+        return Err(RunnerError::InvalidOption(
+            "the production Core CLI has no policy-bundle input; refusing a simulated trained arm"
+                .into(),
         ));
     }
     Ok(())
@@ -832,6 +868,63 @@ async fn apply_candidate_diff(
     Ok(())
 }
 
+#[derive(Debug)]
+struct CoreRuntimePaths {
+    home: PathBuf,
+    config: PathBuf,
+    temporary: PathBuf,
+    runs: PathBuf,
+}
+
+fn create_isolated_runtime_dir(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder
+            .create(path)
+            .map_err(|error| format!("create private Core runtime directory: {error}"))
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir(path)
+            .map_err(|error| format!("create isolated Core runtime directory: {error}"))
+    }
+}
+
+fn create_core_runtime(workspace: &Path) -> Result<CoreRuntimePaths, String> {
+    match std::fs::symlink_metadata(workspace.join(".core")) {
+        Ok(_) => {
+            return Err(
+                "benchmark workspace contains .core project state; refusing a confounded arm"
+                    .into(),
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("inspect benchmark project state: {error}")),
+    }
+    let parent = workspace
+        .parent()
+        .ok_or_else(|| "benchmark workspace has no runtime parent".to_owned())?;
+    let name = workspace
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "benchmark workspace name is not UTF-8".to_owned())?;
+    let root = parent.join(format!("{name}.core-runtime"));
+    create_isolated_runtime_dir(&root)?;
+    let paths = CoreRuntimePaths {
+        home: root.join("home"),
+        config: root.join("config"),
+        temporary: root.join("tmp"),
+        runs: root.join("runs"),
+    };
+    for path in [&paths.home, &paths.config, &paths.temporary, &paths.runs] {
+        create_isolated_runtime_dir(path)?;
+    }
+    Ok(paths)
+}
+
 async fn run_core(
     core: &Path,
     workspace: &Path,
@@ -839,15 +932,23 @@ async fn run_core(
     config: HarnessConfig,
     options: &EvalOptions,
 ) -> Result<ProcessOutput, String> {
+    let runtime = create_core_runtime(workspace)?;
     let mut args: Vec<OsString> = vec![
         "-p".into(),
         "-C".into(),
         workspace.as_os_str().to_owned(),
         "--output-format".into(),
         "json".into(),
+        "--output-schema-version".into(),
+        "5".into(),
         "--model".into(),
         options.model.clone().into(),
+        "--max-wall-secs".into(),
+        options.run_timeout.as_secs().max(1).to_string().into(),
         "--allow-code".into(),
+        "--dangerously-bypass-permissions".into(),
+        "--runs-dir".into(),
+        runtime.runs.as_os_str().to_owned(),
     ];
     if options.max_turns != 0 {
         args.push("--max-turns".into());
@@ -857,24 +958,59 @@ async fn run_core(
         args.push("--provider".into());
         args.push(provider.into());
     }
-    if let Some(bundle) = workspace
-        .parent()
-        .map(|run_root| run_root.join("policy.bundle"))
-        .filter(|path| path.is_file())
-    {
-        args.push("--bundle".into());
-        args.push(bundle.into_os_string());
-    }
     if config.verify_gate {
         args.push("--verify".into());
         args.push(task.verify_command.clone().into());
     }
     args.push(task.prompt.clone().into());
+    let mut inherit_env = vec![OsString::from("PATH")];
+    if let Some(name) = &options.credential_env {
+        inherit_env.push(name.into());
+    }
+    let mut env = vec![
+        (OsString::from("HOME"), runtime.home.as_os_str().to_owned()),
+        (
+            OsString::from("CORE_CONFIG_HOME"),
+            runtime.config.as_os_str().to_owned(),
+        ),
+        (
+            OsString::from("TMPDIR"),
+            runtime.temporary.as_os_str().to_owned(),
+        ),
+        (OsString::from("LANG"), OsString::from("C.UTF-8")),
+        (OsString::from("LC_ALL"), OsString::from("C.UTF-8")),
+        (OsString::from("NO_COLOR"), OsString::from("1")),
+        (OsString::from("GIT_CONFIG_NOSYSTEM"), OsString::from("1")),
+        (
+            OsString::from("GIT_CONFIG_GLOBAL"),
+            if cfg!(windows) { "NUL" } else { "/dev/null" }.into(),
+        ),
+        (OsString::from("GIT_TERMINAL_PROMPT"), OsString::from("0")),
+    ];
+    if cfg!(windows) {
+        env.extend([
+            (
+                OsString::from("USERPROFILE"),
+                runtime.home.as_os_str().to_owned(),
+            ),
+            (
+                OsString::from("TEMP"),
+                runtime.temporary.as_os_str().to_owned(),
+            ),
+            (
+                OsString::from("TMP"),
+                runtime.temporary.as_os_str().to_owned(),
+            ),
+        ]);
+        inherit_env.extend(["SYSTEMROOT".into(), "COMSPEC".into(), "PATHEXT".into()]);
+    }
     run_process(&ProcessSpec {
         program: core.to_owned(),
         args,
-        cwd: None,
-        env: Vec::new(),
+        cwd: Some(workspace.to_owned()),
+        clear_env: true,
+        inherit_env,
+        env,
         timeout: options.run_timeout,
         max_output_bytes: PROCESS_OUTPUT_LIMIT,
     })
@@ -982,6 +1118,8 @@ async fn run_git_with_output_limit(
         program: PathBuf::from("git"),
         args,
         cwd: cwd.map(Path::to_owned),
+        clear_env: false,
+        inherit_env: Vec::new(),
         env: vec![
             ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
             (
@@ -1288,6 +1426,59 @@ mod tests {
                 license: None,
             },
             benchmark: None,
+        }
+    }
+
+    #[test]
+    fn core_runtime_is_private_outside_the_checkout_and_refuses_project_state() {
+        let parent = unique_dir("core-runtime");
+        let workspace = parent.join("cell");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let runtime = create_core_runtime(&workspace).unwrap();
+        for path in [
+            &runtime.home,
+            &runtime.config,
+            &runtime.temporary,
+            &runtime.runs,
+        ] {
+            assert!(path.is_dir());
+            assert!(!path.starts_with(&workspace));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+            }
+        }
+
+        let contaminated = parent.join("contaminated");
+        std::fs::create_dir_all(contaminated.join(".core")).unwrap();
+        assert!(
+            create_core_runtime(&contaminated)
+                .unwrap_err()
+                .contains("refusing a confounded arm")
+        );
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn evaluator_credential_boundary_allows_only_builtin_provider_keys() {
+        for allowed in BUILTIN_CREDENTIAL_ENVS {
+            assert!(is_builtin_credential_env(allowed));
+        }
+        for rejected in [
+            "BASH_ENV",
+            "ENV",
+            "LD_PRELOAD",
+            "DYLD_INSERT_LIBRARIES",
+            "PATH",
+            "HOME",
+            "CORE_CONFIG_HOME",
+            "HTTPS_PROXY",
+            "RUSTC_WRAPPER",
+            "BASH_ENV_API_KEY",
+            "HARBOR_CORE_GATEWAY_API_KEY",
+        ] {
+            assert!(!is_builtin_credential_env(rejected), "{rejected}");
         }
     }
 
