@@ -45,6 +45,20 @@ pub fn agent_id(key: &str) -> String {
     key.strip_prefix("v2:").unwrap_or(key).to_string()
 }
 
+/// Content-address a syntactically decoded call that failed request-metadata validation. Hashing
+/// the original wire JSON preserves deterministic negative replay without placing an oversized,
+/// control-bearing, or credential-shaped metadata value in the journal. It also avoids building a
+/// second canonical JSON value from metadata that has already exceeded its admission bound.
+pub(crate) fn rejected_agent_key(raw_call_json: &str, reason_code: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"core-workflow-rejected-agent-v1");
+    for part in [reason_code.as_bytes(), raw_call_json.as_bytes()] {
+        digest.update((part.len() as u64).to_be_bytes());
+        digest.update(part);
+    }
+    format!("v2:{}", hex::encode(digest.finalize()))
+}
+
 /// Serialize a JSON value with object keys sorted recursively, so logically-equal inputs with
 /// different key insertion order hash identically. (Determinism already fixes byte-order across
 /// runs of the same script; this makes cross-call dedup robust too.)
@@ -112,5 +126,17 @@ mod tests {
         let k1 = agent_key("p", None, None, Some(&s1), None, None, None);
         let k2 = agent_key("p", None, None, Some(&s2), None, None, None);
         assert_eq!(k1, k2, "canonicalization sorts nested object keys");
+    }
+
+    #[test]
+    fn rejected_key_is_stable_and_never_reflects_metadata() {
+        let secret = "ghp_AbCdEf1234567890AbCdEf1234567890\u{1b}[2J";
+        let raw = serde_json::json!({ "agentType": secret }).to_string();
+        let first = rejected_agent_key(&raw, "invalid_agent_type");
+        let second = rejected_agent_key(&raw, "invalid_agent_type");
+        assert_eq!(first, second);
+        assert!(first.starts_with("v2:"));
+        assert_eq!(first.len(), 67);
+        assert!(!first.contains(secret));
     }
 }

@@ -233,6 +233,21 @@ impl Registry {
         self.tools.iter().map(|t| t.spec.clone()).collect()
     }
 
+    /// Retain only the named tools and return the canonical names that remain.
+    ///
+    /// This is the executable-agent narrowing seam. It can only remove existing registrations:
+    /// unknown requested names are ignored and no constructor or registration closure is exposed.
+    /// Callers must start from [`Registry::read_only`] when the resulting registry represents a
+    /// read-only child.
+    pub fn narrow_to(&mut self, allowed: &[String]) -> Vec<String> {
+        self.tools
+            .retain(|tool| allowed.iter().any(|name| name == &tool.spec.name));
+        self.tools
+            .iter()
+            .map(|tool| tool.spec.name.clone())
+            .collect()
+    }
+
     pub fn purity_of(&self, name: &str) -> Option<Purity> {
         self.tools
             .iter()
@@ -713,6 +728,19 @@ mod tests {
             boxfut::box_it(async move { ok_result(c.id, String::new()) })
         });
         assert!(err.is_err(), "Pure+egress must be refused at registration");
+    }
+
+    #[test]
+    fn narrowing_a_read_only_registry_can_remove_but_never_add_tools() {
+        let mut registry = Registry::read_only(".").unwrap();
+        let before: std::collections::BTreeSet<_> =
+            registry.specs().into_iter().map(|spec| spec.name).collect();
+        let kept = registry.narrow_to(&["read_file".into(), "invented_writer".into()]);
+        assert_eq!(kept, vec!["read_file"]);
+        let after: std::collections::BTreeSet<_> =
+            registry.specs().into_iter().map(|spec| spec.name).collect();
+        assert!(after.is_subset(&before));
+        assert!(!after.contains("invented_writer"));
     }
 
     #[test]

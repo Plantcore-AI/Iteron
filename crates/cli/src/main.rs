@@ -1657,7 +1657,9 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     eprintln!("{}", "-".repeat(72));
 
+    let agent_catalog = discover_agent_catalog(&repo);
     let mut agent = Agent::new(provider_arc, registry, rollout, model, base_system, budget);
+    agent.pin_agent_catalog(agent_catalog)?;
     let built_in_policy_capabilities =
         core_protocol::capability_set::CapabilitySet::from_iter_capabilities([
             core_protocol::Capability::ReadOnly,
@@ -1798,6 +1800,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             agent.verify_command.clone().unwrap_or_default(),
             format!("{output_format:?}"),
             agent.system.clone(),
+            agent.agent_catalog_digest(),
         ],
     );
     // Record the session genesis header on a FRESH run (SESS-4): cwd/model/effort/created_at, so
@@ -2085,9 +2088,48 @@ fn parse_workflow_args(args: &Option<String>) -> anyhow::Result<serde_json::Valu
     }
 }
 
+/// Resolve the executable agent catalog once at the composition root. Rejections remain visible,
+/// while the accepted set is moved into an immutable `Arc` by the runtime and never re-read by a
+/// child. `CORE_CONFIG_HOME` uses the same trusted root as the rest of the CLI.
+fn discover_agent_catalog(repo: &std::path::Path) -> core_agents::AgentCatalog {
+    let catalog = match config::config_home() {
+        Some(home) => core_agents::AgentCatalog::discover(&home, repo),
+        None => core_agents::AgentCatalog::discover_without_user(repo),
+    };
+    for error in catalog.errors() {
+        let source = safe_agent_diagnostic(&error.source);
+        let reason = safe_agent_diagnostic(&error.reason);
+        eprintln!("agent definition rejected: {} ({})", source, reason);
+    }
+    catalog
+}
+
+fn safe_agent_diagnostic(value: &str) -> String {
+    const MAX_BYTES: usize = 2 * 1024;
+    const TRUNCATED: &str = "[truncated]";
+    const CONTENT_BYTES: usize = MAX_BYTES - TRUNCATED.len();
+    let scrubbed = core_record::redact::scrub(value);
+    let mut safe = String::with_capacity(scrubbed.len().min(MAX_BYTES));
+    for character in scrubbed.chars() {
+        let rendered = if character.is_control() {
+            character.escape_default().to_string()
+        } else {
+            character.to_string()
+        };
+        if safe.len().saturating_add(rendered.len()) > CONTENT_BYTES {
+            safe.push_str(TRUNCATED);
+            break;
+        }
+        safe.push_str(&rendered);
+    }
+    safe
+}
+
 /// Build the DEFAULT workflow spawner: the real [`runtime::KernelSpawner`], so every `agent()`
 /// call runs a genuine child `Agent` (own context + read-only tool loop) via `run_leaf`. Set
-/// `CORE_WORKFLOW_SPAWNER=provider` to swap in the single-completion `ProviderSpawner` instead.
+/// `CORE_WORKFLOW_SPAWNER=provider` to swap in the generic-only, exact-parent-route
+/// single-completion `ProviderSpawner` instead. The fallback cannot resolve catalog definitions or
+/// alternate models and refuses those requests before a provider turn.
 ///
 /// The context is filled from the SAME resolved values the main agent path records
 /// (`record_model_selection` inputs): provider handle + model + `provider_id` + the catalog/capability
@@ -2132,6 +2174,7 @@ fn build_workflow_spawner(
     cx.model_context_window = caps.context_window_tokens;
     cx.model_max_output_tokens = caps.max_output_tokens;
     cx.context_home_dir = config::config_home();
+    cx.agent_catalog = std::sync::Arc::new(discover_agent_catalog(repo));
     std::sync::Arc::new(runtime::KernelSpawner::new(cx))
 }
 
@@ -2549,6 +2592,20 @@ fn print_timeline(run: &core_protocol::RunId, report: &core_obs::timeline::Timel
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejected_agent_diagnostics_are_redacted_single_line_and_strictly_bounded() {
+        let rendered = safe_agent_diagnostic(&format!(
+            "prefix\ntoken: ghp_AbCdEf1234567890AbCdEf1234567890\r{}",
+            "界".repeat(2_048)
+        ));
+        assert!(rendered.len() <= 2 * 1024, "{} bytes", rendered.len());
+        assert!(rendered.ends_with("[truncated]"), "{rendered}");
+        assert!(!rendered.contains('\n'));
+        assert!(!rendered.contains('\r'));
+        assert!(rendered.contains("\\n"));
+        assert!(!rendered.contains("ghp_AbCdEf1234567890"), "{rendered}");
+    }
 
     /// The wall-clock ceiling was the one budget with no flag: the 1800s default was reachable
     /// only by hand-editing `~/.core/config.json`, even though a single long refactor turn can

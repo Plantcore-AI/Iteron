@@ -170,6 +170,13 @@ fn label_for(prompt: &str, idx: usize) -> String {
     truncate_preview(trimmed, 40)
 }
 
+/// A requested model id is untrusted routing metadata and may itself be credential-shaped. The
+/// engine cannot prove the selected route (that belongs to the spawner), so progress reports only
+/// the presence of an override and never reflects the raw id to a terminal sink.
+fn progress_model(model: Option<&str>) -> Option<String> {
+    model.map(|_| "requested model override".to_string())
+}
+
 /// Emit a finished row derived from a [`Record`] (used by both the live path and cache replay).
 fn emit_finished(env: &AgentEnv, idx: usize, label: String, record: &Record, duration_ms: u64) {
     let (state, result_preview, error) = match &record.outcome {
@@ -213,6 +220,41 @@ fn emit_finished(env: &AgentEnv, idx: usize, label: String, record: &Record, dur
             .map(|s| truncate_preview(s, TOOL_SUMMARY_MAX)),
         error,
     });
+}
+
+/// Terminalize a request-metadata refusal without acquiring a Governor permit or calling the
+/// spawner. Negative outcomes remain journaled for deterministic resume, but neither the progress
+/// row nor the record reflects caller metadata: both carry one static bounded reason and a
+/// harness-minted label.
+fn settle_metadata_refusal(
+    env: &AgentEnv,
+    idx: usize,
+    key: &str,
+    reason: &'static str,
+    journal_miss: bool,
+) -> String {
+    let label = format!("agent {idx}");
+    env.sink.emit(ProgressEvent::AgentQueued {
+        index: idx,
+        label: label.clone(),
+        phase: None,
+        model: None,
+    });
+    let record = Record::null(Some(reason.to_owned()));
+    if journal_miss
+        && env
+            .journal
+            .record(key, &cachekey::agent_id(key), record.clone())
+            .is_err()
+    {
+        env.sink.emit(ProgressEvent::Log {
+            message: "workflow: journal durability failed".into(),
+        });
+        env.cancel.cancel();
+        return null_envelope("journal durability failed");
+    }
+    emit_finished(env, idx, label, &record, 0);
+    null_envelope(reason)
 }
 
 /// Spawn one SEND child, racing the cancel token. `Err` = the child was cancelled (`"stopped"`) or
@@ -344,35 +386,58 @@ async fn run_with_schema(
 async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
     let raw: RawCall = match serde_json::from_str(&arg) {
         Ok(call) => call,
-        Err(error) => return null_envelope(&format!("malformed agent() call: {error}")),
+        Err(_) => return null_envelope("malformed agent() call"),
     };
-    let label = raw
-        .label
-        .clone()
-        .unwrap_or_else(|| label_for(&raw.prompt, idx));
+
+    // Validate routing metadata before catalog lookup, rollout creation, provider dispatch, or a
+    // Governor permit. The error type contains no caller text, so the same static reason is safe in
+    // the envelope, progress row, and durable negative journal record.
+    let metadata = AgentCall::validate_agent_type(raw.agent_type.as_deref())
+        .and_then(|()| AgentCall::validate_model(raw.model.as_deref()));
 
     // --- content key over the CALLER's raw input (deterministic; §2.6) --------------------------
-    let key = cachekey::agent_key(
-        &raw.prompt,
-        raw.label.as_deref(),
-        raw.phase.as_deref(),
-        raw.schema.as_ref(),
-        raw.model.as_deref(),
-        raw.effort.as_deref(),
-        raw.agent_type.as_deref(),
-    );
+    let key = match metadata {
+        Ok(()) => cachekey::agent_key(
+            &raw.prompt,
+            raw.label.as_deref(),
+            raw.phase.as_deref(),
+            raw.schema.as_ref(),
+            raw.model.as_deref(),
+            raw.effort.as_deref(),
+            raw.agent_type.as_deref(),
+        ),
+        Err(error) => cachekey::rejected_agent_key(&arg, error.code()),
+    };
 
     // --- (1) JOURNAL HIT — before Governor / budget / lifetime cap (B2 invariant) ---------------
     if let Some(record) = env.journal.get(&key) {
+        if let Err(error) = metadata {
+            // Ignore the stored prose for a rejected request. Core wrote the same static outcome,
+            // but reconstructing it from the validator also stays safe if a journal was replaced.
+            return settle_metadata_refusal(&env, idx, &key, error.public_reason(), false);
+        }
+        let label = raw
+            .label
+            .clone()
+            .unwrap_or_else(|| label_for(&raw.prompt, idx));
         env.sink.emit(ProgressEvent::AgentStarted {
             index: idx,
             label: label.clone(),
             phase: raw.phase.clone(),
-            model: raw.model.clone(),
+            model: progress_model(raw.model.as_deref()),
         });
         emit_finished(&env, idx, label, &record, 0);
         return envelope_for(&record);
     }
+
+    if let Err(error) = metadata {
+        return settle_metadata_refusal(&env, idx, &key, error.public_reason(), true);
+    }
+
+    let label = raw
+        .label
+        .clone()
+        .unwrap_or_else(|| label_for(&raw.prompt, idx));
 
     // --- (2) build the bounded live call ---------------------------------------------------------
     let call = AgentCall {
@@ -394,7 +459,7 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
         index: idx,
         label: label.clone(),
         phase: raw.phase.clone(),
-        model: raw.model.clone(),
+        model: progress_model(raw.model.as_deref()),
     });
     let permit = env.gov.acquire().await;
     let started = Instant::now();
@@ -402,7 +467,7 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
         index: idx,
         label: label.clone(),
         phase: raw.phase.clone(),
-        model: raw.model.clone(),
+        model: progress_model(raw.model.as_deref()),
     });
 
     // --- (4) run live (schema validate+retry when a schema was supplied) ------------------------
