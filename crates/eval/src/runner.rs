@@ -23,6 +23,11 @@ const MAX_BUNDLE_BYTES: u64 = 16 * 1024 * 1024;
 const CORE_PROCESS_MIN_GRACE_SECS: u64 = 1;
 const CORE_PROCESS_MAX_GRACE_SECS: u64 = 30;
 const CORE_PROCESS_GRACE_DIVISOR: u64 = 20;
+// These are operational limits, not integer-storage limits. Keeping every evaluator deadline at
+// or below one day makes the corresponding std/Tokio Instant additions portable and auditable.
+const MAX_CORE_AGENT_WALL_SECS: u64 = 24 * 60 * 60;
+const MAX_CHECKOUT_TIMEOUT_SECS: u64 = 24 * 60 * 60;
+const MAX_ORACLE_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 const BUILTIN_CREDENTIAL_ENVS: [&str; 6] = [
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
@@ -380,12 +385,20 @@ fn validate_parallel_options(options: &ParallelEvalOptions) -> Result<(), Runner
             "workers must be in 1..=100".into(),
         ));
     }
-    for (name, duration) in [
-        ("run_timeout", options.run_timeout),
-        ("checkout_timeout", options.checkout_timeout),
-        ("oracle_timeout", options.oracle_timeout),
+    for (name, duration, maximum_secs) in [
+        ("run_timeout", options.run_timeout, MAX_CORE_AGENT_WALL_SECS),
+        (
+            "checkout_timeout",
+            options.checkout_timeout,
+            MAX_CHECKOUT_TIMEOUT_SECS,
+        ),
+        (
+            "oracle_timeout",
+            options.oracle_timeout,
+            MAX_ORACLE_TIMEOUT_SECS,
+        ),
     ] {
-        validate_whole_second_duration(name, duration)?;
+        validate_whole_second_duration(name, duration, maximum_secs)?;
     }
     core_process_timing(options.run_timeout).ok_or_else(|| {
         RunnerError::InvalidOption(
@@ -415,10 +428,19 @@ fn validate_parallel_options(options: &ParallelEvalOptions) -> Result<(), Runner
     Ok(())
 }
 
-fn validate_whole_second_duration(name: &str, duration: Duration) -> Result<(), RunnerError> {
+fn validate_whole_second_duration(
+    name: &str,
+    duration: Duration,
+    maximum_secs: u64,
+) -> Result<(), RunnerError> {
     if duration.is_zero() || duration.subsec_nanos() != 0 {
         return Err(RunnerError::InvalidOption(format!(
             "{name} must be a positive whole number of seconds"
+        )));
+    }
+    if duration.as_secs() > maximum_secs {
+        return Err(RunnerError::InvalidOption(format!(
+            "{name} exceeds the operational maximum of {maximum_secs} seconds"
         )));
     }
     Ok(())
@@ -434,7 +456,10 @@ struct CoreProcessTiming {
 /// Keep Core's semantic agent budget distinct from the harness kill switch. The proportional
 /// grace is intentionally small for short tests and capped for production-length evaluations.
 fn core_process_timing(agent_wall: Duration) -> Option<CoreProcessTiming> {
-    if agent_wall.is_zero() || agent_wall.subsec_nanos() != 0 {
+    if agent_wall.is_zero()
+        || agent_wall.subsec_nanos() != 0
+        || agent_wall.as_secs() > MAX_CORE_AGENT_WALL_SECS
+    {
         return None;
     }
     let grace_secs = (agent_wall.as_secs() / CORE_PROCESS_GRACE_DIVISOR)
@@ -1539,6 +1564,29 @@ mod tests {
         }
     }
 
+    fn timeout_validation_options(root: &Path) -> ParallelEvalOptions {
+        ParallelEvalOptions {
+            corpus_path: root.join("missing-corpus.json"),
+            output_path: root.join("result.json"),
+            work_root: root.join("work"),
+            core_bin: Some(root.join("missing-core")),
+            allow_local_repositories: false,
+            model: "timeout-validation-model".into(),
+            provider: None,
+            credential_env: None,
+            bundle_path: None,
+            purpose: EvaluationPurpose::Score,
+            seeds: 1,
+            minimum_seeds: 1,
+            run_timeout: Duration::from_secs(1),
+            checkout_timeout: Duration::from_secs(1),
+            oracle_timeout: Duration::from_secs(1),
+            workers: 1,
+            max_turns: 1,
+            uncapped: false,
+        }
+    }
+
     #[test]
     fn core_runtime_is_private_outside_the_checkout_and_refuses_project_state() {
         let parent = unique_dir("core-runtime");
@@ -1589,8 +1637,16 @@ mod tests {
         assert_eq!(capped.grace, Duration::from_secs(30));
         assert_eq!(capped.process_ceiling, Duration::from_secs(1_830));
 
+        let maximum = core_process_timing(Duration::from_secs(MAX_CORE_AGENT_WALL_SECS)).unwrap();
+        assert_eq!(maximum.grace, Duration::from_secs(30));
+        assert_eq!(
+            maximum.process_ceiling,
+            Duration::from_secs(MAX_CORE_AGENT_WALL_SECS + 30)
+        );
+
         assert!(core_process_timing(Duration::ZERO).is_none());
         assert!(core_process_timing(Duration::from_millis(1_500)).is_none());
+        assert!(core_process_timing(Duration::from_secs(MAX_CORE_AGENT_WALL_SECS + 1)).is_none());
         assert!(core_process_timing(Duration::from_secs(u64::MAX)).is_none());
     }
 
@@ -1603,7 +1659,8 @@ mod tests {
                 Duration::from_millis(999),
                 Duration::from_millis(1_500),
             ] {
-                let error = validate_whole_second_duration(name, invalid).unwrap_err();
+                let error =
+                    validate_whole_second_duration(name, invalid, 24 * 60 * 60).unwrap_err();
                 assert!(error.to_string().contains(name));
                 assert!(
                     error
@@ -1611,7 +1668,53 @@ mod tests {
                         .contains("positive whole number of seconds")
                 );
             }
-            validate_whole_second_duration(name, Duration::from_secs(1)).unwrap();
+            validate_whole_second_duration(name, Duration::from_secs(1), 24 * 60 * 60).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_operational_maxima_accept_boundary_reject_next_and_do_not_mutate() {
+        let root = unique_dir("timeout-operational-maxima");
+        let mut exact = timeout_validation_options(&root);
+        exact.run_timeout = Duration::from_secs(MAX_CORE_AGENT_WALL_SECS);
+        exact.checkout_timeout = Duration::from_secs(MAX_CHECKOUT_TIMEOUT_SECS);
+        exact.oracle_timeout = Duration::from_secs(MAX_ORACLE_TIMEOUT_SECS);
+        validate_parallel_options(&exact).expect("all exact timeout maxima are admitted");
+        assert!(!root.exists(), "pure preflight validation must not mutate");
+
+        for (name, ordinal) in [
+            ("run_timeout", 0_u8),
+            ("checkout_timeout", 1_u8),
+            ("oracle_timeout", 2_u8),
+        ] {
+            let mut rejected = timeout_validation_options(&root);
+            match ordinal {
+                0 => {
+                    rejected.run_timeout = Duration::from_secs(MAX_CORE_AGENT_WALL_SECS + 1);
+                }
+                1 => {
+                    rejected.checkout_timeout = Duration::from_secs(MAX_CHECKOUT_TIMEOUT_SECS + 1);
+                }
+                2 => {
+                    rejected.oracle_timeout = Duration::from_secs(MAX_ORACLE_TIMEOUT_SECS + 1);
+                }
+                _ => unreachable!(),
+            }
+            let error = run_evaluation_parallel(&rejected)
+                .await
+                .expect_err("the first second above each maximum is rejected");
+            assert!(
+                error.to_string().contains(name),
+                "unexpected error: {error}"
+            );
+            assert!(
+                error.to_string().contains("operational maximum"),
+                "unexpected error: {error}"
+            );
+            assert!(
+                !root.exists(),
+                "invalid {name} must fail before filesystem mutation"
+            );
         }
     }
 
