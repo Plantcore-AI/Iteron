@@ -147,7 +147,7 @@
     },
     {
       "id": "record.rollout",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": null,
       "fixtures": [
         {
@@ -179,6 +179,11 @@
           "path": "governance/schema-compat/fixtures/record/rollout-event-kinds-v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -186,7 +191,8 @@
         { "name": "payload", "introduced_release": 1 },
         { "name": "prev", "introduced_release": 1 },
         { "name": "seq", "introduced_release": 1 },
-        { "name": "tenant", "introduced_release": 1 }
+        { "name": "tenant", "introduced_release": 1 },
+        { "name": "ts_us", "introduced_release": 1 }
       ],
       "compatibility_shims": []
     },
