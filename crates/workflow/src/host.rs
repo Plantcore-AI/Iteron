@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, Promise, async_with};
+use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, Promise};
 use tokio_util::sync::CancellationToken;
 
 use crate::bindings::{AgentEnv, RunState};
@@ -104,7 +104,9 @@ pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> 
             let driver = rt.clone();
             tokio::task::spawn_local(async move { driver.drive().await });
 
-            let result: anyhow::Result<String> = async_with!(ctx => |ctx| {
+            // rquickjs 0.12 deprecates `async_with!` now that async closures are stable; the macro
+            // expanded to exactly this call, so the borrow of `env`/`args_js`/`code` is unchanged.
+            let result: anyhow::Result<String> = AsyncContext::async_with(&ctx, async |ctx| {
                 crate::bindings::install(&ctx, &env)
                     .map_err(|error| anyhow::anyhow!("install host fns: {error}"))?;
                 ctx.eval::<(), _>(PRELUDE)
