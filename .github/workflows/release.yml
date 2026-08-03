@@ -483,7 +483,8 @@ jobs:
             aarch64-apple-darwin \
             x86_64-apple-darwin \
             aarch64-unknown-linux-musl \
-            x86_64-unknown-linux-musl
+            x86_64-unknown-linux-musl \
+            x86_64-pc-windows-msvc
           do
             cargo +"$RUST_VERSION" tree --locked -p core-cli \
               --target "$target" -e normal --prefix none --format '{p}' \
@@ -495,6 +496,7 @@ jobs:
             --dependency-tree "$RUNNER_TEMP/cargo-tree-x86_64-apple-darwin.txt" \
             --dependency-tree "$RUNNER_TEMP/cargo-tree-aarch64-unknown-linux-musl.txt" \
             --dependency-tree "$RUNNER_TEMP/cargo-tree-x86_64-unknown-linux-musl.txt" \
+            --dependency-tree "$RUNNER_TEMP/cargo-tree-x86_64-pc-windows-msvc.txt" \
             --licenses "$RUNNER_TEMP/legal/THIRD_PARTY_LICENSES.html" \
             --inventory "$RUNNER_TEMP/cargo-about.json" \
             --output "$RUNNER_TEMP/legal/THIRD_PARTY_NOTICES.txt"
@@ -521,15 +523,38 @@ jobs:
           - runner: macos-15
             host: darwin-arm64
             target: aarch64-apple-darwin
+            python: python3
+            tool-suffix: ""
+            archive-suffix: tar.gz
+            binary: core
           - runner: macos-15-intel
             host: darwin-x86_64
             target: x86_64-apple-darwin
+            python: python3
+            tool-suffix: ""
+            archive-suffix: tar.gz
+            binary: core
           - runner: ubuntu-24.04-arm
             host: linux-arm64
             target: aarch64-unknown-linux-musl
+            python: python3
+            tool-suffix: ""
+            archive-suffix: tar.gz
+            binary: core
           - runner: ubuntu-24.04
             host: linux-x86_64
             target: x86_64-unknown-linux-musl
+            python: python3
+            tool-suffix: ""
+            archive-suffix: tar.gz
+            binary: core
+          - runner: windows-2025
+            host: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            python: python
+            tool-suffix: .exe
+            archive-suffix: zip
+            binary: core.exe
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
@@ -559,6 +584,7 @@ jobs:
           PROFILE
           sudo apparmor_parser --replace /etc/apparmor.d/core-ci-bwrap
       - name: Install the pinned Rust target
+        shell: bash
         run: >-
           rustup toolchain install "$RUST_VERSION"
           --profile minimal
@@ -568,33 +594,53 @@ jobs:
           name: core-release-legal
           path: ${{ runner.temp }}/legal
       - name: Fetch checksum-pinned build and SBOM tools
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/release-bin"
-          python3 release-tools/fetch_tool.py cargo-auditable "${{ matrix.host }}" \
-            --output "$RUNNER_TEMP/release-bin/cargo-auditable"
-          python3 release-tools/fetch_tool.py syft "${{ matrix.host }}" \
-            --output "$RUNNER_TEMP/release-bin/syft"
+          "${{ matrix.python }}" release-tools/fetch_tool.py cargo-auditable "${{ matrix.host }}" \
+            --output "$RUNNER_TEMP/release-bin/cargo-auditable${{ matrix.tool-suffix }}"
+          "${{ matrix.python }}" release-tools/fetch_tool.py syft "${{ matrix.host }}" \
+            --output "$RUNNER_TEMP/release-bin/syft${{ matrix.tool-suffix }}"
           echo "$RUNNER_TEMP/release-bin" >> "$GITHUB_PATH"
       - name: Run the complete target test suite
+        if: matrix.target != 'x86_64-pc-windows-msvc'
         run: >-
           cargo +"$RUST_VERSION" test
           --workspace --all-targets --locked
           --target "${{ matrix.target }}"
+      - name: Run the bounded Windows one-shot compatibility test
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        run: >-
+          cargo +"$RUST_VERSION" test
+          --locked -p core-cli --bin core
+          --target "${{ matrix.target }}"
+          output::tests::explicit_v4_projection_preserves_the_frozen_terminal_bytes
       - name: Build an auditable release binary
+        shell: bash
         run: >-
           cargo +"$RUST_VERSION" auditable build
           --release --locked -p core-cli
           --target "${{ matrix.target }}"
       - name: Verify architecture, linkage, and executable smoke tests
+        if: matrix.target != 'x86_64-pc-windows-msvc'
         shell: bash
         run: |
           set -euo pipefail
-          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/core"
+          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
           target=${{ matrix.target }}
           test -x "$binary"
           test "$("$binary" --version)" = "core ${{ needs.validate.outputs.version }}"
           "$binary" --help >/dev/null
+          "$binary" --machine-contract > "$RUNNER_TEMP/MACHINE-CONTRACT.json"
+          jq -e '
+            .schema_version == 1
+            and .type == "machine_contract"
+            and (.cli_stream_versions | index(4)) != null
+            and (.default_cli_stream_version | type) == "number"
+            and (.resident_protocol_version | type) == "number"
+          ' "$RUNNER_TEMP/MACHINE-CONTRACT.json" >/dev/null
           description=$(file "$binary")
           case "$target" in
             aarch64-apple-darwin) grep -q 'arm64' <<<"$description" ;;
@@ -605,14 +651,38 @@ jobs:
           if [[ "$target" == *-unknown-linux-musl ]]; then
             grep -Eq 'statically linked|static-pie linked' <<<"$description"
           fi
+      - name: Verify native Windows PE and schema-v4 capability
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $binary = Join-Path $env:CARGO_TARGET_DIR "${{ matrix.target }}/release/${{ matrix.binary }}"
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "core.exe missing" }
+          $header = [System.IO.File]::ReadAllBytes($binary)
+          if ($header.Length -lt 2 -or $header[0] -ne 0x4d -or $header[1] -ne 0x5a) {
+            throw "core.exe is not a PE image"
+          }
+          if ((& $binary --version) -ne "core ${{ needs.validate.outputs.version }}") {
+            throw "core.exe reported the wrong version"
+          }
+          & $binary --help | Out-Null
+          $contractPath = Join-Path $env:RUNNER_TEMP "MACHINE-CONTRACT.json"
+          & $binary --machine-contract | Out-File -LiteralPath $contractPath -Encoding utf8NoBOM
+          $contract = Get-Content -LiteralPath $contractPath -Raw | ConvertFrom-Json
+          if ($contract.schema_version -ne 1 -or $contract.type -ne "machine_contract") {
+            throw "core.exe returned the wrong capability schema"
+          }
+          if (-not ($contract.cli_stream_versions -contains 4)) {
+            throw "core.exe does not retain CLI stream schema 4"
+          }
       - name: Generate and normalize the binary SBOM
         shell: bash
         run: |
           set -euo pipefail
-          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/core"
+          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
           mkdir -p dist
           syft scan "$binary" -o "spdx-json=$RUNNER_TEMP/raw.spdx.json"
-          python3 release-tools/sbom.py \
+          "${{ matrix.python }}" release-tools/sbom.py \
             --input "$RUNNER_TEMP/raw.spdx.json" \
             --binary "$binary" \
             --output "$RUNNER_TEMP/SBOM.spdx.json" \
@@ -624,15 +694,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/core"
-          python3 release-tools/manifest.py build-info \
+          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
+          "${{ matrix.python }}" release-tools/manifest.py build-info \
             --version "${{ needs.validate.outputs.version }}" \
             --target "${{ matrix.target }}" \
             --commit "${{ needs.validate.outputs.commit }}" \
             --rustc "$(rustc +"$RUST_VERSION" --version --verbose)" \
             --cargo "$(cargo +"$RUST_VERSION" --version)" \
             --output "$RUNNER_TEMP/BUILD-INFO.json"
-          python3 release-tools/package.py \
+          "${{ matrix.python }}" release-tools/package.py \
             --binary "$binary" \
             --license LICENSE \
             --readme README.md \
@@ -644,8 +714,9 @@ jobs:
             --target "${{ matrix.target }}" \
             --source-date-epoch "$SOURCE_DATE_EPOCH" \
             --output-dir dist
-          archive_name="core-code-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.tar.gz"
+          archive_name="core-code-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive-suffix }}"
           cp "$RUNNER_TEMP/SBOM.spdx.json" "dist/$archive_name.spdx.json"
+          cp "$RUNNER_TEMP/MACHINE-CONTRACT.json" "dist/$archive_name.machine-contract.json"
           echo "archive=dist/$archive_name" >> "$GITHUB_OUTPUT"
           echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
       - name: Generate signed build provenance
@@ -660,6 +731,7 @@ jobs:
           subject-path: ${{ github.workspace }}/${{ steps.package.outputs.archive }}
           sbom-path: ${{ runner.temp }}/SBOM.spdx.json
       - name: Materialize offline attestation bundles
+        shell: bash
         run: |
           set -euo pipefail
           cp "${{ steps.provenance.outputs.bundle-path }}" \
@@ -719,7 +791,8 @@ jobs:
             --commit "${{ needs.validate.outputs.commit }}" \
             --dist dist \
             --protocol-source crates/protocol/src/wire.rs \
-            --output dist/release-manifest.json
+            --output dist/release-manifest.json \
+            --receipt dist/release-manifest.receipt.json
           python3 release-tools/checksums.py \
             --dist dist \
             --output dist/SHA256SUMS
@@ -730,8 +803,10 @@ jobs:
           subject-path: |
             ${{ github.workspace }}/dist/install.sh
             ${{ github.workspace }}/dist/release-manifest.json
+            ${{ github.workspace }}/dist/release-manifest.receipt.json
             ${{ github.workspace }}/dist/SHA256SUMS
       - name: Materialize metadata attestation bundle
+        shell: bash
         run: >-
           cp "${{ steps.metadata-attestation.outputs.bundle-path }}"
           dist/release-metadata.provenance.json
@@ -878,7 +953,8 @@ jobs:
           done
           [[ "$release_verified" == true ]]
 
-          for archive in dist/core-code-v*.tar.gz; do
+          shopt -s nullglob
+          for archive in dist/core-code-v*.tar.gz dist/core-code-v*.zip; do
             gh attestation verify "$archive" \
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
@@ -893,6 +969,73 @@ jobs:
               --predicate-type https://spdx.dev/Document/v2.3 \
               --deny-self-hosted-runners
           done
+
+  content-canary:
+    name: release / content canary / ${{ matrix.target }}
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [validate, publish]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            archive-suffix: tar.gz
+            python: python3
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            archive-suffix: tar.gz
+            python: python3
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            archive-suffix: tar.gz
+            python: python3
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            archive-suffix: tar.gz
+            python: python3
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            archive-suffix: zip
+            python: python
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+      - name: Download, content-verify, extract, and smoke the exact artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          canary="$RUNNER_TEMP/core-content-canary"
+          mkdir -p "$canary/download" "$canary/extract"
+          archive="core-code-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive-suffix }}"
+          report="$archive.machine-contract.json"
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern release-manifest.json \
+            --pattern release-manifest.receipt.json \
+            --pattern "$archive" \
+            --pattern "$report" \
+            --dir "$canary/download"
+          binary=$("${{ matrix.python }}" release-tools/verify_release.py artifact \
+            --manifest "$canary/download/release-manifest.json" \
+            --receipt "$canary/download/release-manifest.receipt.json" \
+            --archive "$canary/download/$archive" \
+            --capability-report "$canary/download/$report" \
+            --target "${{ matrix.target }}" \
+            --extract-dir "$canary/extract")
+          test "$("$binary" --version)" = "core ${{ needs.validate.outputs.version }}"
+          "$binary" --machine-contract > "$canary/live-machine-contract.json"
+          "${{ matrix.python }}" release-tools/verify_release.py contract \
+            --manifest "$canary/download/release-manifest.json" \
+            --report "$canary/live-machine-contract.json"
 
   curl-canary:
     name: release / curl canary / ${{ matrix.target }}

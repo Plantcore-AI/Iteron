@@ -102,6 +102,12 @@
           "binary": "cargo-auditable",
           "sha256": "3374daaf153e6f82028add5e4bf7cc2deab46537dee24f20be80df831193aeb4",
           "url": "https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.5/cargo-auditable-x86_64-unknown-linux-musl.tar.xz"
+        },
+        "windows-x86_64": {
+          "archive": "zip",
+          "binary": "cargo-auditable.exe",
+          "sha256": "83a7d5955c7ac96ede5d896ac9ede5f7ecce9ece0e95d9e47acd766b09e2ef1b",
+          "url": "https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.5/cargo-auditable-x86_64-pc-windows-msvc.zip"
         }
       }
     },
@@ -131,6 +137,12 @@
           "binary": "syft",
           "sha256": "d654f678b709eb53c393d38519d5ed7d2e57205529404018614cfefa0fb2b5ca",
           "url": "https://github.com/anchore/syft/releases/download/v1.46.0/syft_1.46.0_linux_amd64.tar.gz"
+        },
+        "windows-x86_64": {
+          "archive": "zip",
+          "binary": "syft.exe",
+          "sha256": "1e515c1ac4bc65917f8d0a52b6ae0e611082779cbf2da9d470282158dd24ea13",
+          "url": "https://github.com/anchore/syft/releases/download/v1.46.0/syft_1.46.0_windows_amd64.zip"
         }
       }
     }

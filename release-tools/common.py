@@ -21,7 +21,10 @@ SUPPORTED_TARGETS = (
     "x86_64-apple-darwin",
     "aarch64-unknown-linux-musl",
     "x86_64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
 )
+
+WINDOWS_TARGET = "x86_64-pc-windows-msvc"
 
 
 class ReleaseToolError(RuntimeError):
@@ -49,6 +52,19 @@ def validate_target(value: str) -> str:
     if value not in SUPPORTED_TARGETS:
         fail(f"unsupported release target: {value!r}")
     return value
+
+
+def archive_filename(version: str, target: str) -> str:
+    """Return the one canonical archive name for a release target."""
+    validated_version = validate_version(version)
+    validated_target = validate_target(target)
+    suffix = ".zip" if validated_target == WINDOWS_TARGET else ".tar.gz"
+    return f"core-code-v{validated_version}-{validated_target}{suffix}"
+
+
+def binary_filename(target: str) -> str:
+    """Return the shipped command name for a release target."""
+    return "core.exe" if validate_target(target) == WINDOWS_TARGET else "core"
 
 
 def require_regular_file(path: Path, *, max_bytes: int | None = None) -> Path:

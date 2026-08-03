@@ -1,0 +1,119 @@
+{
+  "$id": "https://github.com/Plantcore-AI/core/release-tools/schemas/release-manifest-v3.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "definitions": {
+    "asset": {
+      "additionalProperties": false,
+      "properties": {
+        "name": { "maxLength": 255, "minLength": 1, "type": "string" },
+        "sha256": { "pattern": "^[0-9a-f]{64}$", "type": "string" },
+        "size": { "maximum": 536870912, "minimum": 1, "type": "integer" }
+      },
+      "required": ["name", "sha256", "size"],
+      "type": "object"
+    },
+    "target": {
+      "additionalProperties": false,
+      "properties": {
+        "archive": { "$ref": "#/definitions/asset" },
+        "capability_report": { "$ref": "#/definitions/asset" },
+        "provenance": { "$ref": "#/definitions/asset" },
+        "sbom": { "$ref": "#/definitions/asset" },
+        "sbom_attestation": { "$ref": "#/definitions/asset" },
+        "target": {
+          "enum": [
+            "aarch64-apple-darwin",
+            "aarch64-unknown-linux-musl",
+            "x86_64-apple-darwin",
+            "x86_64-pc-windows-msvc",
+            "x86_64-unknown-linux-musl"
+          ]
+        }
+      },
+      "required": [
+        "archive",
+        "capability_report",
+        "provenance",
+        "sbom",
+        "sbom_attestation",
+        "target"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "cli_stream_versions": {
+      "items": { "maximum": 1000000000, "minimum": 1, "type": "integer" },
+      "maxItems": 16,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "command": { "const": "core" },
+    "commit": { "pattern": "^[0-9a-f]{40}$", "type": "string" },
+    "default_cli_stream_version": {
+      "maximum": 1000000000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "installer": { "$ref": "#/definitions/asset" },
+    "legal": {
+      "additionalProperties": false,
+      "properties": {
+        "licenses": { "$ref": "#/definitions/asset" },
+        "notices": { "$ref": "#/definitions/asset" }
+      },
+      "required": ["licenses", "notices"],
+      "type": "object"
+    },
+    "product": { "const": "Core Code" },
+    "protocol_version": {
+      "maximum": 1000000000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "repository": { "const": "https://github.com/Plantcore-AI/core" },
+    "schema_version": { "const": 3 },
+    "tag": {
+      "pattern": "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "type": "string"
+    },
+    "targets": {
+      "additionalProperties": { "$ref": "#/definitions/target" },
+      "maxProperties": 5,
+      "minProperties": 1,
+      "propertyNames": {
+        "enum": [
+          "aarch64-apple-darwin",
+          "aarch64-unknown-linux-musl",
+          "x86_64-apple-darwin",
+          "x86_64-pc-windows-msvc",
+          "x86_64-unknown-linux-musl"
+        ]
+      },
+      "type": "object"
+    },
+    "version": {
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "cli_stream_versions",
+    "command",
+    "commit",
+    "default_cli_stream_version",
+    "installer",
+    "legal",
+    "product",
+    "protocol_version",
+    "repository",
+    "schema_version",
+    "tag",
+    "targets",
+    "version"
+  ],
+  "title": "Core Code release manifest v3",
+  "type": "object"
+}
