@@ -365,6 +365,15 @@ pub struct EffectTicket {
     turn: TurnId,
     effect_id: EffectId,
     kind: String,
+    /// When the write-ahead intent became durable. The ticket is the only object that already
+    /// survives from admission to terminal, which makes it the correct — and only — carrier for a
+    /// measurement of the whole admitted lifetime. Holding it here is what lets ONE seam measure
+    /// all seven effect classes instead of seven hand-placed timers that would each drift.
+    ///
+    /// This is the effect boundary, not the reducer: the fold stays pure and still takes every
+    /// clock reading as a command field. `Instant` (not `SystemTime`) because a duration must not
+    /// be able to go backwards when the operator's wall clock is stepped.
+    opened_at: std::time::Instant,
 }
 
 impl EffectTicket {
@@ -373,6 +382,19 @@ impl EffectTicket {
     pub fn effect_id(&self) -> &EffectId {
         &self.effect_id
     }
+}
+
+/// Whole milliseconds, rounded UP and saturating.
+///
+/// Rounding up keeps a real sub-millisecond effect observable instead of indistinguishable from one
+/// that never ran, and saturation means observational accounting can never wrap and report a fast
+/// effect where a pathologically slow one happened. This mirrors `core_obs`'s phase conversion
+/// deliberately: two different roundings would make the ledger and the record disagree by a
+/// millisecond and cost somebody an afternoon.
+fn duration_ms_ceil(duration: std::time::Duration) -> u64 {
+    let nanos = duration.as_nanos();
+    let millis = nanos.saturating_add(999_999) / 1_000_000;
+    u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
 /// How an opened effect ends.
@@ -431,6 +453,10 @@ where
         turn,
         effect_id,
         kind,
+        // Started AFTER the intent is durable, so the measurement covers the executor and not the
+        // fsync that authorised it. A reader comparing effects across runs must not see one class
+        // absorb the log's write latency because its intent happened to be larger.
+        opened_at: std::time::Instant::now(),
     })
 }
 
@@ -448,9 +474,42 @@ where
         turn,
         effect_id,
         kind,
+        opened_at,
     } = ticket;
+    let elapsed_ms = duration_ms_ceil(opened_at.elapsed());
     let terminal = match settlement {
+        // The executor supplies the terminal; the BOUNDARY supplies the measurement. Stamping it
+        // here rather than at the nine dispatch sites is the whole point: one seam, seven classes,
+        // one definition of "how long did it take". A caller that already measured is honoured —
+        // `Some` is never overwritten — so a future executor with a better number (a provider that
+        // can report server-side time, say) can still supply it.
+        Settlement::Definite(EventKind::EffectDone {
+            id,
+            tool,
+            duration_ms,
+        }) => EventKind::EffectDone {
+            id,
+            tool,
+            duration_ms: duration_ms.or(Some(elapsed_ms)),
+        },
+        Settlement::Definite(EventKind::EffectFailed {
+            id,
+            tool,
+            reason,
+            duration_ms,
+        }) => EventKind::EffectFailed {
+            id,
+            tool,
+            reason,
+            duration_ms: duration_ms.or(Some(elapsed_ms)),
+        },
+        // A registry tool settles as `ToolDone`, whose `ToolResult` already carries `latency_ms`
+        // measured at the registry. Stamping a second, differently-scoped number onto it would put
+        // two disagreeing durations for one effect into the record, so this arm deliberately does
+        // nothing. Every other `Definite` terminal is likewise passed through untouched.
         Settlement::Definite(terminal) => terminal,
+        // No terminal was observed, so there is no honest duration to report. An `EffectUnknown`
+        // that carried a number would be claiming knowledge the boundary just said it lacks.
         Settlement::Unknown(reason) => EventKind::EffectUnknown {
             id: effect_id,
             tool: kind,

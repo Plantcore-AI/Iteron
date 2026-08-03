@@ -1,0 +1,4 @@
+{"kind":{"kind":"turn_start"},"seq":0,"turn":1}
+{"kind":{"decode_ms":1908,"kind":"turn_end","stream_items":47,"ttft_ms":312,"usage":{"cache_creation":7,"cache_read":41,"input":101,"output":23,"thinking":5}},"seq":1,"turn":1}
+{"kind":{"duration_ms":2213,"id":"effect-4","kind":"effect_done","tool":"provider"},"seq":2,"turn":1}
+{"kind":{"duration_ms":30001,"id":"effect-5","kind":"effect_failed","reason":"hook executor exited non-zero","tool":"hook"},"seq":3,"turn":1}

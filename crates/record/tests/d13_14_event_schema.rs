@@ -793,14 +793,15 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             tool: _,
             reason: _,
         } => "effect_unknown",
-        EventKind::EffectDone { id: _, tool: _ } => "effect_done",
+        EventKind::EffectDone { id: _, tool: _, .. } => "effect_done",
         EventKind::ArtifactProduced { artifact: _ } => "artifact_produced",
         EventKind::EffectFailed {
             id: _,
             tool: _,
             reason: _,
+            ..
         } => "effect_failed",
-        EventKind::TurnEnd { usage: _ } => "turn_end",
+        EventKind::TurnEnd { usage: _, .. } => "turn_end",
         EventKind::Notice { text: _ } => "notice",
         EventKind::SubmissionRejected { reason: _ } => "submission_rejected",
         EventKind::Approval {
@@ -1213,7 +1214,7 @@ fn d13_14_event_schema_corpora_are_exact_exhaustive_and_replayable() {
                     EventKind::ToolDone { result, .. } => {
                         record_named(&mut named_wires, "record.named.tool-result", result);
                     }
-                    EventKind::TurnEnd { usage } => {
+                    EventKind::TurnEnd { usage, .. } => {
                         record_named(&mut named_wires, "record.named.usage", usage);
                     }
                     EventKind::RunStart {
