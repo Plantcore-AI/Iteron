@@ -2079,6 +2079,13 @@ pub struct Agent {
     /// If set, the run resumes from this reconstructed transcript instead of starting fresh
     /// (invariant #2, recoverable). Set via `set_resume`.
     resumed: Option<Vec<Message>>,
+    /// The working message set the last admitted run finished with, kept so an IN-PROCESS follow-up
+    /// continues from what this process already had. Reconstructing it instead means replaying and
+    /// SHA-256-verifying the whole rollout — twice, because `set_resume` replays it again — between
+    /// every pair of operator messages. It is deliberately NOT a substitute for replay on a genuine
+    /// resume (`--resume`, a fork, crash recovery): those cross a process boundary, where the record
+    /// on disk is the only thing that carries authority.
+    working_set: Option<Vec<Message>>,
     /// Route-bound content keys for successfully appended run-level provider notices. Provider
     /// proposals are pure; this bounded set advances only after WAL commit and is restored only
     /// from this physical run, so failure/fork/route changes cannot consume another run's notice.
@@ -2241,6 +2248,7 @@ impl Agent {
             #[cfg(test)]
             pricing_now_unix_secs: None,
             resumed: None,
+            working_set: None,
             committed_provider_run_notices: std::collections::BTreeSet::new(),
             verify_attempts: 0,
             drain_requested: false,
@@ -3791,6 +3799,9 @@ impl Agent {
     /// Load a prior run's transcript so `run` continues it instead of starting fresh.
     pub fn set_resume(&mut self, messages: Vec<Message>) -> Result<(), KernelError> {
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
+        // An explicit resume replaces the transcript outright; a working set left over from an
+        // earlier run in this process must never outrank it on the next follow-up.
+        self.working_set = None;
         // Redaction is applied on the RECORD path (ADR-008 §1). Resuming from that record can
         // therefore give the model masked tool output where the live turn saw the original bytes.
         // Emit only a bounded count through the injected port; neither transcript content nor a
@@ -4299,14 +4310,44 @@ impl Agent {
     }
 
     /// Continue an already-run agent with a new operator message (TUI follow-up). The prior
-    /// transcript is in the rollout; we reload it and run the new instruction. A follow-up is a
-    /// new submission, not a crash-recovery continuation, so Ultracode may orchestrate it.
+    /// transcript is the one this process just produced. A follow-up is a new submission, not a
+    /// crash-recovery continuation, so Ultracode may orchestrate it.
     pub async fn follow_up(&mut self, text: &str) -> Result<Outcome, KernelError> {
-        let path = self.rollout.path().to_path_buf();
-        let prior = Self::messages_from_rollout(&path)?;
-        self.set_resume(prior)?;
+        self.stage_follow_up_transcript()?;
         self.verify_attempts = 0;
         self.run(text).await
+    }
+
+    /// Stage the transcript a follow-up continues from.
+    ///
+    /// A follow-up is not a resume. This process ran the previous turns and still holds the exact
+    /// working set they produced, so it continues from memory. Rebuilding it meant replaying and
+    /// SHA-256-verifying the whole rollout, and then doing it a SECOND time inside `set_resume` — at
+    /// the 64 MiB rollout ceiling roughly half a second of blocking parse and hashing between two
+    /// operator messages, growing with the session. Every piece of state `set_resume` restores from
+    /// the record (ledger, ceilings, runtime policy, turn/approval ids, taint) is already live and
+    /// strictly richer here; the record stays the authority for the paths that cross a process
+    /// boundary — `--resume`, fork, crash recovery — and those still call `set_resume`.
+    fn stage_follow_up_transcript(&mut self) -> Result<(), KernelError> {
+        let Some(working) = self.working_set.take() else {
+            // Nothing has run in this process yet, so the record is the only transcript there is.
+            let path = self.rollout.path().to_path_buf();
+            let prior = Self::messages_from_rollout(&path)?;
+            return self.set_resume(prior);
+        };
+        self.budget.validate().map_err(KernelError::InvalidBudget)?;
+        // Turn ids are canonical effect/correlation identities, not an invocation-local counter, so
+        // the follow-up must open a NEW one exactly as `set_resume` does when it continues after the
+        // greatest durable id. In this process the live counter already IS that greatest id — the
+        // run loop leaves it on the turn it finished — so the successor is one step on, no replay
+        // needed. Skipping this reused the finished turn, and at-most-once dispatch then refused the
+        // follow-up's first provider effect as an identity it had already admitted.
+        self.advance_turn()?;
+        // An interrupted or errored run can leave a trailing assistant message whose tool_use was
+        // never answered. Repair it exactly as the replay path does, or the provider rejects the
+        // next request.
+        self.resumed = Some(reconcile_transcript(working));
+        Ok(())
     }
 
     /// Continue an already-run agent with one validated text-plus-image operator submission.
@@ -4317,9 +4358,7 @@ impl Agent {
         &mut self,
         content: &core_protocol::ContentSegments,
     ) -> Result<Outcome, KernelError> {
-        let path = self.rollout.path().to_path_buf();
-        let prior = Self::messages_from_rollout(&path)?;
-        self.set_resume(prior)?;
+        self.stage_follow_up_transcript()?;
         self.verify_attempts = 0;
         self.run_content(content).await
     }
@@ -4581,9 +4620,28 @@ impl Agent {
         resolved
     }
 
+    /// Run the controller loop and keep the working set it finished with.
+    ///
+    /// The loop leaves through many paths (terminal outcome, control request, record failure, `?`),
+    /// and every one of them ends a turn whose transcript the next follow-up wants. Capturing it
+    /// here, once, is what lets an in-process follow-up skip rebuilding it from the rollout.
     async fn drive_admitted(
         &mut self,
-        mut messages: Vec<Message>,
+        messages: Vec<Message>,
+        relevance_task: &str,
+        input_images: &[core_protocol::ImageContent],
+    ) -> Result<Outcome, KernelError> {
+        let mut messages = messages;
+        let outcome = self
+            .drive_admitted_loop(&mut messages, relevance_task, input_images)
+            .await;
+        self.working_set = Some(messages);
+        outcome
+    }
+
+    async fn drive_admitted_loop(
+        &mut self,
+        mut messages: &mut Vec<Message>,
         relevance_task: &str,
         input_images: &[core_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
@@ -4622,7 +4680,7 @@ impl Agent {
                 // Best-effort: if the summary call fails, continue uncompacted rather than lose
                 // the run (it retries next turn).
                 if let Ok(summary) = self.summarize(&plan.to_summarize, None).await {
-                    messages = CompactionPolicy::rebuild(&plan, summary);
+                    *messages = CompactionPolicy::rebuild(&plan, summary);
                     // Record the compaction as a full snapshot so resume reconstructs the
                     // compacted state, not the pre-compaction history (code review).
                     self.emit(
@@ -9765,6 +9823,116 @@ mod gate_integration_tests {
             "invocation-local image bytes must not enter the durable text transcript"
         );
         drop(requests);
+        drop(agent);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    /// Role plus visible text, so a transcript can be compared without `Message: PartialEq`.
+    fn transcript_shape(messages: &[Message]) -> Vec<String> {
+        messages
+            .iter()
+            .map(|message| {
+                let text = message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        Block::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|");
+                format!("{:?}:{text}", message.role)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn follow_up_continues_from_memory_and_still_matches_what_replay_would_rebuild() {
+        // `follow_up` used to replay and SHA-256-verify the whole rollout, then do it a SECOND time
+        // inside `set_resume`, for a transcript this very process had never let go of. At the 64 MiB
+        // rollout ceiling that is about half a second of blocking parse and hashing between two
+        // operator messages, and it grows with the session. The shortcut is only admissible if it
+        // reproduces the replay exactly, so pin that equality rather than just the speed.
+        let ws = temp_ws("follow-up-in-memory");
+        let provider = std::sync::Arc::new(CaptureSteering::default());
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("follow-up-in-memory".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 6,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 2,
+            },
+        );
+        agent.workspace = ws.clone();
+
+        assert_eq!(agent.run("first task").await.unwrap(), Outcome::Done);
+        let first_turn = agent.seq_turn;
+        assert!(
+            agent.working_set.is_some(),
+            "a finished run hands its working set to the next follow-up"
+        );
+
+        assert_eq!(agent.follow_up("second task").await.unwrap(), Outcome::Done);
+        // A follow-up opens a NEW turn. Turn ids are canonical effect identities, so continuing on
+        // the finished one made at-most-once dispatch refuse the follow-up's first provider effect.
+        assert!(
+            agent.seq_turn > first_turn,
+            "follow-up must advance the turn id exactly as the replay path does"
+        );
+        assert!(
+            agent.working_set.is_some(),
+            "and it keeps its own, so a second follow-up is free as well"
+        );
+
+        let sent = provider
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| transcript_shape(&request.messages))
+            .collect::<Vec<_>>();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0], vec!["User:first task"]);
+        assert_eq!(
+            sent[1],
+            vec!["User:first task", "Assistant:done", "User:second task"],
+            "the in-memory follow-up continues the prior transcript, it does not restart it"
+        );
+
+        // The equivalence that licenses skipping the replay: what this process held is exactly what
+        // reading the record back would have rebuilt.
+        let replayed = Agent::messages_from_rollout(agent.rollout.path()).unwrap();
+        let held = reconcile_transcript(agent.working_set.clone().unwrap());
+        assert_eq!(transcript_shape(&held), transcript_shape(&replayed));
+
+        // The record stays the authority wherever a process boundary is crossed: an explicit resume
+        // replaces the transcript outright, and a stale working set must never outrank it.
+        agent
+            .set_resume(vec![Message::user_text("replayed transcript")])
+            .unwrap();
+        assert!(agent.working_set.is_none());
+        assert_eq!(agent.run("third task").await.unwrap(), Outcome::Done);
+        let last = provider
+            .requests
+            .lock()
+            .unwrap()
+            .last()
+            .map(|request| transcript_shape(&request.messages))
+            .unwrap();
+        assert_eq!(last, vec!["User:replayed transcript|\n\n|third task"]);
+
         drop(agent);
         let _ = std::fs::remove_dir_all(ws);
     }
