@@ -242,9 +242,21 @@ jobs:
         # block a merge until someone decides it should. It exists so Windows breakage is visible
         # instead of being discovered at release time -- `release.yml` skips the full suite on
         # that target and runs a single test.
-        os: [ubuntu-24.04, macos-15, windows-2025]
+        include:
+          - os: ubuntu-24.04
+            advisory: false
+          - os: macos-15
+            advisory: false
+          # Advisory until #38's follow-up lands. Windows has never compiled here, and the
+          # POSIX surface the suite still assumes is large: 9 files reach for /bin/bash, 3 for
+          # /bin/sh, 34 touch symlinks, 8 hardcode /tmp, and 12 golden fixtures are compared
+          # byte-for-byte with no .gitattributes pinning LF. Reporting that list every run is
+          # worth having now; blocking on it before it is fixed is not.
+          - os: windows-2025
+            advisory: true
       fail-fast: false
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.advisory }}
     # Windows is the slowest of the three; a cold cargo build there does not fit in 30.
     timeout-minutes: 50
     defaults:
