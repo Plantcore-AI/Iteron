@@ -143,6 +143,12 @@ fn contains(outer: &Range, inner: &Range) -> bool {
         && (inner.end.line, inner.end.character) <= (outer.end.line, outer.end.character)
 }
 
+/// Validate a `Range` payload. Public so the document store can share exactly this validation
+/// rather than growing a second, subtly different one.
+pub fn range_of(value: &Value) -> Option<Range> {
+    range_from(value)
+}
+
 fn range_from(value: &Value) -> Option<Range> {
     let start = position_from(value.get("start")?)?;
     let end = position_from(value.get("end")?)?;
@@ -177,6 +183,14 @@ fn position_from(value: &Value) -> Option<Position> {
     })
 }
 
+/// Longest hover text carried into the agent's context.
+///
+/// A hover on a generic-heavy symbol legitimately runs to thousands of characters of expanded
+/// types. Forwarding it whole spends the context window on one incidental lookup, so it is bounded
+/// and the elision is marked -- a silently shortened type signature reads as a different, simpler
+/// type, which is worse than an obviously cut one.
+pub const MAX_HOVER_BYTES: usize = 4 * 1024;
+
 /// Flatten hover contents into plain text.
 ///
 /// Handles `MarkupContent`, a bare string, a `{language, value}` pair, and arrays of any of those.
@@ -186,10 +200,18 @@ pub fn parse_hover_text(value: &Value) -> Option<String> {
     let text = hover_fragment(contents);
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_owned())
+        return None;
     }
+    if trimmed.len() <= MAX_HOVER_BYTES {
+        return Some(trimmed.to_owned());
+    }
+    let mut end = MAX_HOVER_BYTES;
+    while end > 0 && !trimmed.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = trimmed[..end].to_owned();
+    out.push_str("\n[hover truncated]");
+    Some(out)
 }
 
 fn hover_fragment(value: &Value) -> String {
@@ -467,6 +489,20 @@ mod tests {
             ]}))
             .unwrap(),
             "fn a()\n\ndocs here"
+        );
+    }
+
+    #[test]
+    fn an_enormous_hover_is_bounded_and_the_cut_is_marked() {
+        // A generic-heavy symbol legitimately hovers to thousands of characters. Forwarding it
+        // whole spends the context window on one incidental lookup; cutting it silently makes a
+        // truncated type signature read as a different, simpler type.
+        let huge = "T".repeat(MAX_HOVER_BYTES * 3);
+        let text = parse_hover_text(&json!({ "contents": huge })).unwrap();
+        assert!(text.len() <= MAX_HOVER_BYTES + "\n[hover truncated]".len());
+        assert!(
+            text.ends_with("[hover truncated]"),
+            "the cut must be visible"
         );
     }
 

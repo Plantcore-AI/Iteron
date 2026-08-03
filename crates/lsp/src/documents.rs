@@ -6,7 +6,62 @@
 //! longer exists and "fix" the wrong line. Every publish is therefore matched against the version
 //! the document is currently at, and anything older is dropped and counted.
 
+use crate::intel::Range;
 use std::collections::HashMap;
+
+/// Diagnostics kept per document. A server in a broken state can publish a diagnostic per token;
+/// storing them all turns a syntax error into unbounded memory held for the life of the session.
+pub const MAX_DIAGNOSTICS_PER_DOC: usize = 1_000;
+
+/// Longest diagnostic message retained.
+pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
+
+/// A validated diagnostic.
+///
+/// Stored typed rather than as raw JSON. An opaque `Value` means no caller can rely on a range or
+/// a message being present, so every consumer re-validates or -- more often -- does not, and reads
+/// `null` as a position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub range: Range,
+    pub message: String,
+    pub severity: Option<u8>,
+    pub source: Option<String>,
+}
+
+impl Diagnostic {
+    /// Validate one payload. Returns `None` when the entry lacks a usable range or message, which
+    /// is counted by the caller rather than silently skipped.
+    pub fn parse(value: &serde_json::Value) -> Option<Self> {
+        let range = crate::intel::range_of(value.get("range")?)?;
+        let message = value.get("message")?.as_str()?;
+        if message.is_empty() {
+            return None;
+        }
+        let mut message = message.to_owned();
+        if message.len() > MAX_MESSAGE_BYTES {
+            let mut end = MAX_MESSAGE_BYTES;
+            while end > 0 && !message.is_char_boundary(end) {
+                end -= 1;
+            }
+            message.truncate(end);
+            message.push_str("[truncated]");
+        }
+        Some(Diagnostic {
+            range,
+            message,
+            severity: value
+                .get("severity")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| u8::try_from(n).ok())
+                .filter(|n| (1..=4).contains(n)),
+            source: value
+                .get("source")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        })
+    }
+}
 
 /// What happened to a `publishDiagnostics` payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +82,7 @@ struct Document {
     /// the file I closed a minute ago" -- and a diagnostic from the previous incarnation would
     /// match on both fields and be accepted as current.
     incarnation: u64,
-    diagnostics: Vec<serde_json::Value>,
+    diagnostics: Vec<Diagnostic>,
 }
 
 /// Tracks open documents and the newest diagnostics that are not stale.
@@ -37,6 +92,8 @@ pub struct DocumentStore {
     next_incarnation: u64,
     stale_drops: u64,
     unknown_drops: u64,
+    invalid_drops: u64,
+    overflow_drops: u64,
 }
 
 impl DocumentStore {
@@ -123,7 +180,17 @@ impl DocumentStore {
         self.docs.get(uri).map(|d| d.version)
     }
 
-    pub fn diagnostics(&self, uri: &str) -> &[serde_json::Value] {
+    /// Diagnostics discarded because they carried no usable range or message.
+    pub fn invalid_drops(&self) -> u64 {
+        self.invalid_drops
+    }
+
+    /// Diagnostics discarded because the document was already at its retention ceiling.
+    pub fn overflow_drops(&self) -> u64 {
+        self.overflow_drops
+    }
+
+    pub fn diagnostics(&self, uri: &str) -> &[Diagnostic] {
         self.docs
             .get(uri)
             .map(|d| d.diagnostics.as_slice())
@@ -164,7 +231,22 @@ impl DocumentStore {
                 incoming,
             };
         }
-        doc.diagnostics = diagnostics;
+
+        // Validated on the way in. One malformed entry does not discard the publish -- a server
+        // with a bug in one diagnostic still has useful ones -- but the loss is counted, and a
+        // caller reading `diagnostics()` can rely on every entry having a range and a message.
+        let mut kept = Vec::new();
+        let (mut invalid, mut overflow) = (0u64, 0u64);
+        for raw in &diagnostics {
+            match Diagnostic::parse(raw) {
+                Some(_) if kept.len() >= MAX_DIAGNOSTICS_PER_DOC => overflow += 1,
+                Some(d) => kept.push(d),
+                None => invalid += 1,
+            }
+        }
+        self.invalid_drops += invalid;
+        self.overflow_drops += overflow;
+        doc.diagnostics = kept;
         Publish::Accepted
     }
 }
@@ -175,7 +257,10 @@ mod tests {
     use serde_json::json;
 
     fn diag(msg: &str) -> serde_json::Value {
-        json!({ "message": msg })
+        json!({
+            "message": msg,
+            "range": { "start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1} }
+        })
     }
 
     #[test]
@@ -240,6 +325,55 @@ mod tests {
             Publish::Unknown
         );
         assert_eq!(store.unknown_drops(), 1);
+    }
+
+    #[test]
+    fn a_diagnostic_without_a_range_or_message_is_dropped_and_counted() {
+        // Stored opaquely, every consumer either re-validates or reads `null` as a position.
+        // One bad entry does not discard the publish -- a server with one buggy diagnostic still
+        // has useful ones -- but the loss is counted rather than silent.
+        let mut store = DocumentStore::new();
+        store.open("file:///a.rs", 1);
+        let outcome = store.publish(
+            "file:///a.rs",
+            Some(1),
+            vec![
+                diag("good"),
+                json!({ "message": "no range" }),
+                json!({ "range": { "start": {"line":0,"character":0}, "end": {"line":0,"character":1} } }),
+            ],
+        );
+        assert_eq!(outcome, Publish::Accepted);
+        assert_eq!(store.diagnostics("file:///a.rs").len(), 1);
+        assert_eq!(store.invalid_drops(), 2);
+        assert_eq!(store.diagnostics("file:///a.rs")[0].message, "good");
+    }
+
+    #[test]
+    fn diagnostics_are_bounded_per_document_and_the_excess_is_counted() {
+        // A server in a broken state can publish one per token; keeping them all turns a syntax
+        // error into unbounded memory held for the life of the session.
+        let mut store = DocumentStore::new();
+        store.open("file:///a.rs", 1);
+        let many: Vec<_> = (0..MAX_DIAGNOSTICS_PER_DOC + 25)
+            .map(|i| diag(&format!("d{i}")))
+            .collect();
+        store.publish("file:///a.rs", Some(1), many);
+        assert_eq!(
+            store.diagnostics("file:///a.rs").len(),
+            MAX_DIAGNOSTICS_PER_DOC
+        );
+        assert_eq!(store.overflow_drops(), 25);
+    }
+
+    #[test]
+    fn an_invalid_severity_is_dropped_rather_than_passed_through() {
+        let mut store = DocumentStore::new();
+        store.open("file:///a.rs", 1);
+        let mut d = diag("x");
+        d["severity"] = json!(99);
+        store.publish("file:///a.rs", Some(1), vec![d]);
+        assert_eq!(store.diagnostics("file:///a.rs")[0].severity, None);
     }
 
     #[test]
