@@ -28,6 +28,7 @@ pub enum SlashCommand {
     Fork,
     Rewind,
     Resume,
+    Transcript,
     Export,
     Agents,
     Skills,
@@ -80,6 +81,7 @@ impl SlashCommand {
             | Self::Fork
             | Self::Rewind
             | Self::Resume
+            | Self::Transcript
             | Self::Export
             | Self::Agents
             | Self::Skills
@@ -219,6 +221,12 @@ pub const COMMANDS: &[Cmd] = &[
         name: "resume",
         args: "",
         help: "how to resume a prior session (lists them)",
+    },
+    Cmd {
+        command: SlashCommand::Transcript,
+        name: "transcript",
+        args: "[query]",
+        help: "open the fullscreen searchable transcript viewer",
     },
     Cmd {
         command: SlashCommand::Export,

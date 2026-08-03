@@ -328,9 +328,9 @@ Composition root, trusted configuration, provider routing, commands, MCP wiring,
 
 ### `cli-tui` — CLI TUI
 
-Interactive state, input routing, composer, permission UX, sessions, terminal lifecycle, and PTY behavior.
+Interactive state, input routing, composer, permission UX, sessions, bounded transcript inspection/export, safe clipboard effects, terminal lifecycle, and PTY behavior.
 
-- Contracts: `single-enter-input`, `terminal-restoration`, `permission-decision-surface`
+- Contracts: `single-enter-input`, `terminal-restoration`, `permission-decision-surface`, `semantic-transcript`, `streaming-redaction`
 - Required checks: `cargo test -p core-cli tui --locked`, `cargo test -p core-cli --test tui_pty --locked`
 
 ### `cli-render` — CLI rendering

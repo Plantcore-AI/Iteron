@@ -651,6 +651,12 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn run_cli() -> anyhow::Result<u8> {
+    // Export effects run in a separately killable copy of this executable. Enter its private,
+    // bounded pipe protocol before CLI/config parsing so the helper cannot load operator state,
+    // providers, hooks, or credentials it neither needs nor has in its cleared environment.
+    if tui::transcript_effect::worker_requested() {
+        return Ok(tui::transcript_effect::worker_main());
+    }
     // One clock for the whole pre-first-frame path, started before anything else so it brackets
     // every phase including the staleness check below. Off by default, and off means no clock at all.
     let mut startup = startup::StartupTiming::from_env();

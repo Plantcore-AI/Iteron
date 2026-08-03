@@ -20,6 +20,11 @@ fn custom_bindings_are_typed_unique_and_cannot_steal_lifecycle_keys() {
         Some(Action::ReverseSearch),
         "Ctrl-Shift-R keeps the explicit empty-query search route"
     );
+    assert_eq!(
+        Keymap::default().action_for(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        Some(Action::TranscriptViewer),
+        "the fullscreen transcript remains keyboard reachable"
+    );
 
     config
         .bindings
