@@ -1600,7 +1600,16 @@ fn project_messages_from_events(events: Vec<Event>) -> Vec<Message> {
             EventKind::Compaction {
                 messages: compacted,
             } => {
-                messages = compacted;
+                // The record carries the summary and its plan range, not a second copy of the
+                // transcript it is already holding; the rebuild is deterministic, so replay
+                // performs it here. A pre-seed full snapshot is adopted verbatim.
+                //
+                // Reconcile FIRST. The range is counted in the coordinates the kernel planned in,
+                // which is always a reconciled projection (`messages_from_rollout`, or the working
+                // set it is kept in lockstep with). Raw events are not those coordinates: a steer
+                // is durable on its own but merges into the user role before it, so counting raw
+                // would cut the range short and resurrect a turn the summary folded away.
+                messages = core_ctx::replay_compaction(reconcile_transcript(messages), compacted);
                 terminal_results.clear();
                 duplicate_terminal_id = false;
                 pending_turn = messages.last().and_then(|message| {
@@ -2057,6 +2066,10 @@ pub struct Agent {
     /// A recorded ContextInjection always wins over this live proposal.
     environment_context: Option<(String, Trust)>,
     pub compaction: CompactionPolicy,
+    /// One compaction per top-level submission. Set by whichever path took it — the emergency
+    /// valve inside the turn loop, or the end-of-turn settle — and cleared when the next
+    /// submission is admitted, so the two can never both fire on one run.
+    compacted_in_run: bool,
     /// The workspace root, for the verification gate's sandbox.
     pub workspace: std::path::PathBuf,
     /// If set, the harness independently runs this test command (strong oracle) when the model
@@ -2234,6 +2247,7 @@ impl Agent {
             instruction_context: None,
             environment_context: None,
             compaction: CompactionPolicy::default(),
+            compacted_in_run: false,
             workspace: std::path::PathBuf::from("."),
             verify_command: None,
             bypass_permissions: false,
@@ -4381,6 +4395,9 @@ impl Agent {
         {
             return Err(KernelError::UnpricedUsdCeiling);
         }
+        // One compaction per top-level submission: an emergency valve taken inside the turn must
+        // not be followed by a second summary at the end of it.
+        self.compacted_in_run = false;
         let owns_deadline = self.run_deadline.is_none();
         if owns_deadline {
             self.run_deadline = Some(
@@ -4416,6 +4433,12 @@ impl Agent {
             let ctx = serde_json::json!({"event":"Stop","outcome":format!("{o:?}")}).to_string();
             self.brokered_hook(TurnId(self.seq_turn), HookEvent::Stop, &ctx)
                 .await?;
+        }
+        // The answer is already durable and already on the operator's screen; this is their
+        // thinking time, and it is where a summary belongs (#I-58). Before the cache refresh, so
+        // the per-run meta cache sees the compaction that just happened.
+        if matches!(&outcome, Ok(Outcome::Done)) {
+            self.settle_compaction().await;
         }
         // Every exit from the admitted run loop is a session boundary, including provider,
         // pricing, transcript, or tool errors after a durable TurnEnd. Keep cache failure
@@ -4608,10 +4631,12 @@ impl Agent {
             let effective_system = self.effective_system();
             let tool_specs = self.registry.specs();
             let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192).min(8192);
-            // ---- compaction at the window boundary (ADR-002): if the transcript approaches
-            // the budget, summarize the middle so a long task does not overflow. Done here, at
-            // a turn boundary, because it rewrites the prefix (a cache bomb — do it rarely). ----
-            if let Some(plan) = self.compaction.plan_for_request_with_window(
+            // ---- compaction, emergency valve only (ADR-002): this projection no longer fits the
+            // proven window, so the alternative to summarizing here is a refused request. The
+            // ROUTINE compaction moved off the critical path to `settle_compaction`, at the end of
+            // the turn: buying an extra synchronous round and a cold prefix inside the turn the
+            // operator is waiting on was the whole defect. ----
+            if let Some(plan) = self.compaction.plan_before_overflow(
                 &effective_system,
                 &messages,
                 &tool_specs,
@@ -4622,21 +4647,8 @@ impl Agent {
                 // Best-effort: if the summary call fails, continue uncompacted rather than lose
                 // the run (it retries next turn).
                 if let Ok(summary) = self.summarize(&plan.to_summarize, None).await {
-                    messages = CompactionPolicy::rebuild(&plan, summary);
-                    // Record the compaction as a full snapshot so resume reconstructs the
-                    // compacted state, not the pre-compaction history (code review).
-                    self.emit(
-                        TurnId(self.seq_turn),
-                        EventKind::Compaction {
-                            messages: messages.clone(),
-                        },
-                    );
-                    self.emit(
-                        TurnId(self.seq_turn),
-                        EventKind::Notice {
-                            text: format!("compacted {before} messages -> {}", messages.len()),
-                        },
-                    );
+                    messages = CompactionPolicy::rebuild(&plan, summary.clone());
+                    self.record_compaction(before, &plan, &summary, messages.len());
                 }
             }
 
@@ -7778,9 +7790,77 @@ impl Agent {
         }
     }
 
+    /// Record one compaction. What lands on the record is the summary and its plan range, NOT the
+    /// rebuilt transcript: the rebuild is a deterministic function of a transcript the record
+    /// already holds, so writing it back out wrote the same bytes twice — one line, audited at
+    /// 115949 of them, fsynced inline, inside the operator's turn. `replay_compaction` puts them
+    /// back together and `messages_from_rollout` proves the result is identical.
+    fn record_compaction(
+        &mut self,
+        before: usize,
+        plan: &core_ctx::CompactionPlan,
+        summary: &str,
+        after: usize,
+    ) {
+        self.compacted_in_run = true;
+        self.emit(
+            TurnId(self.seq_turn),
+            EventKind::Compaction {
+                messages: core_ctx::compaction_seed(plan, summary),
+            },
+        );
+        self.emit(
+            TurnId(self.seq_turn),
+            EventKind::Notice {
+                text: format!("compacted {before} messages -> {after}"),
+            },
+        );
+    }
+
+    /// Compaction at the END of the turn, not inside it (#I-58). The operator already has their
+    /// answer and is reading it; the summary is paid out of that thinking time, and the next
+    /// submission reaches the model in one round against a prefix that is already rebuilt.
+    ///
+    /// Best-effort by construction, and deliberately skippable: if the operator is already back
+    /// (a queued steer, an interrupt, a drain) their submission is worth more than a summary they
+    /// did not ask for, and the emergency valve inside the turn loop still guarantees that
+    /// whatever comes next can be admitted.
+    async fn settle_compaction(&mut self) {
+        if self.compacted_in_run || self.record_failed || self.delegation_depth > 0 {
+            return;
+        }
+        let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+        if !self.pending_steers.is_empty()
+            || !matches!(self.requested_control(), InboundControl::None)
+        {
+            return;
+        }
+        // Plan against the PROJECTED transcript, which is exactly what the next submission will
+        // load, so the plan the record describes is the plan the next turn inherits.
+        let path = self.rollout.path().to_path_buf();
+        let Ok(messages) = Self::messages_from_rollout(&path) else {
+            return;
+        };
+        let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192).min(8192);
+        let Some(plan) = self.compaction.plan_at_turn_end(
+            &self.effective_system(),
+            &messages,
+            &self.registry.specs(),
+            self.model_context_window,
+            request_max_tokens,
+        ) else {
+            return;
+        };
+        let before = messages.len();
+        let after = 2 + plan.keep_verbatim.len();
+        if let Ok(summary) = self.summarize(&plan.to_summarize, None).await {
+            self.record_compaction(before, &plan, &summary, after);
+        }
+    }
+
     /// Force compaction NOW (operator `/compact`), optionally focusing the summary. Reconstructs
     /// the working set from the rollout (same path as follow_up), summarizes the middle, records
-    /// the Compaction snapshot so resume reproduces the compacted state, and returns the delta.
+    /// the compaction so resume reproduces the compacted state, and returns the delta.
     /// Callable while idle (the TUI guarantees this). Records → replay reproduces it.
     pub async fn compact_now(
         &mut self,
@@ -7796,12 +7876,11 @@ impl Agent {
             });
         };
         let summary = self.summarize(&plan.to_summarize, focus.as_deref()).await?;
-        let compacted = CompactionPolicy::rebuild(&plan, summary);
-        let after = compacted.len();
+        let after = 2 + plan.keep_verbatim.len();
         self.emit(
             TurnId(self.seq_turn),
             EventKind::Compaction {
-                messages: compacted,
+                messages: core_ctx::compaction_seed(&plan, &summary),
             },
         );
         self.emit(
@@ -8127,6 +8206,143 @@ mod reconcile_tests {
         assert!(results[1].is_error);
         assert!(results[1].content.contains("did not replay"));
     }
+
+    #[test]
+    fn a_recorded_compaction_seed_projects_exactly_what_the_full_snapshot_projected() {
+        // The compaction event used to carry the entire rebuilt transcript — one line, audited at
+        // 115949 bytes, fsynced inline inside the operator's turn. It now carries the summary and
+        // its plan range. The projection must not be able to tell the two apart, and a rollout
+        // written before the seed format must keep replaying as itself.
+        fn assistant(text: &str) -> Message {
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::Text { text: text.into() }],
+            }
+        }
+        fn history() -> Vec<Message> {
+            vec![
+                Message::user_text("THE TASK"),
+                assistant("first answer"),
+                Message::user_text("second ask"),
+                assistant("second answer"),
+                Message::user_text("third ask"),
+                assistant("third answer"),
+            ]
+        }
+        fn events(compaction: Vec<Message>) -> Vec<Event> {
+            history()
+                .into_iter()
+                .map(|message| Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Message { message },
+                })
+                .chain(std::iter::once(Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Compaction {
+                        messages: compaction,
+                    },
+                }))
+                .collect()
+        }
+        // `Message` has no `PartialEq`; the wire form is the identity that matters, because it is
+        // what the record writes and the replay reads back.
+        fn wire(messages: &[Message]) -> String {
+            serde_json::to_string(messages).expect("messages serialize")
+        }
+
+        let mut policy = core_ctx::CompactionPolicy::default();
+        policy.keep_recent = 2;
+        policy.set_fixed_trigger_tokens(1);
+        let plan = policy.plan(&history()).expect("a plan");
+        let snapshot = core_ctx::CompactionPolicy::rebuild(&plan, "SUMMARY".into());
+        let seed = core_ctx::compaction_seed(&plan, "SUMMARY");
+
+        assert_eq!(seed.len(), 1);
+        assert!(
+            serde_json::to_string(&seed).expect("seed serializes").len() < 200,
+            "the recorded compaction is small"
+        );
+        assert_eq!(
+            wire(&project_messages_from_events(events(seed))),
+            wire(&project_messages_from_events(events(snapshot))),
+            "replay reconstructs the identical transcript from the seed"
+        );
+    }
+
+    #[test]
+    fn a_seed_replays_through_the_adjacent_user_messages_a_steer_records_separately() {
+        // A steer is recorded as its own Message event but merged into the preceding user role
+        // for the request, so the plan the kernel builds counts MERGED messages while the record
+        // holds the unmerged events. Reading the seed's range in the raw coordinate space cuts one
+        // message short and resurrects a turn the summary already folded away.
+        fn assistant(text: &str) -> Message {
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::Text { text: text.into() }],
+            }
+        }
+        fn recorded() -> Vec<Message> {
+            vec![
+                Message::user_text("THE TASK"),
+                assistant("first answer"),
+                Message::user_text("second ask"),
+                // Two adjacent user events: one submission, one steer that arrived behind it.
+                Message::user_text("steer"),
+                assistant("second answer"),
+                Message::user_text("third ask"),
+                assistant("third answer"),
+            ]
+        }
+        fn message_events() -> Vec<Event> {
+            recorded()
+                .into_iter()
+                .map(|message| Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Message { message },
+                })
+                .collect()
+        }
+        fn events(compaction: Vec<Message>) -> Vec<Event> {
+            message_events()
+                .into_iter()
+                .chain(std::iter::once(Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Compaction {
+                        messages: compaction,
+                    },
+                }))
+                .collect()
+        }
+        fn wire(messages: &[Message]) -> String {
+            serde_json::to_string(messages).expect("messages serialize")
+        }
+
+        // What the kernel plans against is the PROJECTION, which has already merged the steer.
+        let projected = project_messages_from_events(message_events());
+        assert_eq!(projected.len(), 6, "the steer merged into the ask before it");
+        let mut policy = core_ctx::CompactionPolicy::default();
+        policy.keep_recent = 2;
+        policy.set_fixed_trigger_tokens(1);
+        let plan = policy.plan(&projected).expect("a plan");
+        let snapshot = core_ctx::CompactionPolicy::rebuild(&plan, "SUMMARY".into());
+        let seed = core_ctx::compaction_seed(&plan, "SUMMARY");
+
+        let replayed = project_messages_from_events(events(seed));
+        assert_eq!(
+            wire(&replayed),
+            wire(&project_messages_from_events(events(snapshot))),
+            "replay reconstructs what actually ran, not one message more"
+        );
+        assert!(
+            !wire(&replayed).contains("second answer"),
+            "the summary folded that turn away; reading the range in raw event coordinates \
+             resurrects it"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -8451,6 +8667,35 @@ mod gate_integration_tests {
         fan_calls: AtomicUsize,
         total_calls: AtomicUsize,
         fan_efforts: std::sync::Mutex<Vec<(core_protocol::ReasoningEffort, u32)>>,
+    }
+
+    /// Answers at a fixed, large size so a transcript grows past a compaction trigger over a few
+    /// ordinary submissions, the way a real session does, instead of being injected wholesale.
+    #[derive(Default)]
+    struct VerboseCapture {
+        requests: std::sync::Mutex<Vec<TurnRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for VerboseCapture {
+        async fn turn(
+            &self,
+            req: &TurnRequest,
+            _on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            self.requests.lock().unwrap().push(req.clone());
+            // A summary request carries no tools; keep that one terse so only the ANSWERS grow.
+            let text = if req.tools.is_empty() {
+                "the earlier turns, in brief".to_string()
+            } else {
+                "y".repeat(30_000)
+            };
+            Ok(TurnResult {
+                blocks: vec![Block::Text { text }],
+                stop_reason: StopReason::EndTurn,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
     }
 
     #[derive(Default)]
@@ -13481,6 +13726,135 @@ ant-api03-SuperSecretModelToken12345"
         );
         drop(large_requests);
         let _ = std::fs::remove_dir_all(&large_ws);
+    }
+
+    /// #I-58. Compaction used to run inside the turn loop, before the model request the operator
+    /// was waiting on: an extra synchronous provider round in front of their own submission, and a
+    /// rewritten prefix that threw away a full cache hit (the audit recorded 111687 uncached
+    /// tokens immediately after one). It now runs at the END of a turn, so the summary is paid out
+    /// of the operator's thinking time, and what it records is the summary rather than a second
+    /// copy of the transcript.
+    #[tokio::test]
+    async fn compaction_settles_after_the_turn_and_records_only_the_summary() {
+        let ws = temp_ws("compaction-settles-after-the-turn");
+        let provider = std::sync::Arc::new(VerboseCapture::default());
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("compaction-settle".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 24,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        agent.workspace = ws.clone();
+        // A window nothing here comes close to overflowing: whatever compacts, compacts because
+        // the transcript is getting long, never because a request could not be admitted.
+        agent.model_context_window = Some(1_000_000);
+        agent.model_max_output_tokens = Some(8_192);
+        agent.compaction.keep_recent = 2;
+        agent.compaction.set_fixed_trigger_tokens(20_000);
+
+        assert_eq!(agent.run("one").await.unwrap(), Outcome::Done);
+        assert_eq!(agent.follow_up("two").await.unwrap(), Outcome::Done);
+        assert_eq!(
+            provider.requests.lock().unwrap().len(),
+            2,
+            "two submissions, two provider rounds, and nothing compacted yet"
+        );
+
+        // The third submission crosses the trigger. Under the defect it paid for a summary first.
+        assert_eq!(agent.follow_up("three").await.unwrap(), Outcome::Done);
+        let requests = provider.requests.lock().unwrap().clone();
+        assert_eq!(
+            requests.len(),
+            4,
+            "one operator round, then one settle round"
+        );
+        assert!(
+            requests[..3].iter().all(|req| !req.tools.is_empty()),
+            "every request the operator waited on went straight to the model"
+        );
+        assert!(
+            requests[3].tools.is_empty(),
+            "the summary is the LAST request of the turn, not the first"
+        );
+        assert!(
+            requests[2].messages.iter().any(|message| message
+                .content
+                .iter()
+                .any(|block| matches!(block, Block::Text { text } if text.len() > 20_000))),
+            "the operator's own request carried the uncompacted history; nothing was rewritten \
+             in front of it"
+        );
+
+        // What the compaction wrote: the summary and its plan range, not the transcript.
+        let events = core_record::replay(agent.rollout.path()).unwrap();
+        let compactions: Vec<&EventKind> = events
+            .iter()
+            .map(|event| &event.kind)
+            .filter(|kind| matches!(kind, EventKind::Compaction { .. }))
+            .collect();
+        assert_eq!(compactions.len(), 1, "one compaction, once per submission");
+        let EventKind::Compaction { messages: seed } = compactions[0] else {
+            unreachable!("filtered to compactions")
+        };
+        assert_eq!(seed.len(), 1);
+        let line = serde_json::to_string(compactions[0]).unwrap();
+        assert!(
+            line.len() < 4_096,
+            "the compaction event is small; the audited one was 115949 bytes, got {}",
+            line.len()
+        );
+
+        // Replay reconstructs the transcript the compaction produced: the middle is gone, the
+        // task anchor and the recent tail survive, and the next submission inherits exactly that.
+        let replayed = Agent::messages_from_rollout(agent.rollout.path()).unwrap();
+        let replayed_text: String = replayed
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                Block::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(replayed_text.contains("one"), "the task anchor survives");
+        assert!(
+            replayed_text.contains("the earlier turns, in brief"),
+            "the summary replaced the middle"
+        );
+        assert!(
+            replayed_text.contains("three"),
+            "the recent tail survives verbatim"
+        );
+
+        // The point of all of it: the next submission reaches the model in one round, against a
+        // transcript that was already rebuilt while the operator was reading.
+        assert_eq!(agent.follow_up("four").await.unwrap(), Outcome::Done);
+        let requests = provider.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 5, "one round, no summary in front of it");
+        assert!(!requests[4].tools.is_empty());
+        assert!(
+            requests[4]
+                .messages
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .any(|block| matches!(block, Block::Text { text }
+                    if text.contains("the earlier turns, in brief"))),
+            "the next turn runs on the compacted prefix"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
     }
 
     #[tokio::test]
