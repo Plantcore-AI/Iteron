@@ -45,8 +45,15 @@ pub fn ceiling_ms(policy: &BackoffPolicy, attempt: u32) -> u64 {
 /// Passing the randomness in keeps this function pure and unit-testable; the caller supplies a
 /// real random source (a nanos-seeded xorshift below, kept out of the decision path).
 pub fn full_jitter(policy: &BackoffPolicy, attempt: u32, rand01: f64) -> Duration {
-    let ceil = ceiling_ms(policy, attempt) as f64;
-    Duration::from_millis((rand01.clamp(0.0, 1.0) * ceil) as u64)
+    // Resolved in microseconds, not milliseconds. `from_millis((rand01 * ceil_ms) as u64)`
+    // truncates toward zero, which quietly removes the backoff exactly where it matters most:
+    // with a 1 ms ceiling *every* draw below 1.0 becomes no delay at all, so the first retry
+    // storms the provider that just rate-limited it. At a 4 ms ceiling one draw in four is still
+    // zero. Microsecond resolution keeps the same uniform distribution over [0, ceiling] while
+    // making a sub-millisecond wait representable -- which is what `RetryAccounting::backoff_us`
+    // already documents itself as measuring, and could not previously observe.
+    let ceil_us = (ceiling_ms(policy, attempt) as f64) * 1_000.0;
+    Duration::from_micros((rand01.clamp(0.0, 1.0) * ceil_us) as u64)
 }
 
 /// A tiny, non-crypto RNG for jitter. Seeded from wall-clock nanos, process id, and a lock-free
@@ -115,6 +122,59 @@ mod tests {
         assert_eq!(ceiling_ms(&p, 3), 4000);
         assert_eq!(ceiling_ms(&p, 4), 4000, "clamped at cap");
         assert_eq!(ceiling_ms(&p, 40), 4000, "no overflow at large attempt");
+    }
+
+    #[test]
+    fn a_one_millisecond_ceiling_still_produces_a_real_delay() {
+        // The defect this pins: resolving in whole milliseconds truncated toward zero, so with a
+        // 1 ms ceiling every draw below 1.0 became *no delay at all* -- a retry that does not
+        // back off, against the provider that just rate-limited it. `workflow::bindings` even
+        // guards with `if !delay.is_zero()`, which is that outcome showing up in production code.
+        let p = BackoffPolicy {
+            base_ms: 1,
+            cap_ms: 2,
+            max_attempts: 6,
+        };
+        let mut zeros = 0;
+        for i in 0..1000 {
+            let r = f64::from(i) / 1000.0;
+            if full_jitter(&p, 0, r).is_zero() {
+                zeros += 1;
+            }
+        }
+        assert!(
+            zeros <= 1,
+            "a 1ms ceiling produced {zeros}/1000 zero delays; whole-millisecond truncation \
+             would produce 1000"
+        );
+    }
+
+    #[test]
+    fn a_sub_millisecond_wait_is_representable_rather_than_free() {
+        // `RetryAccounting::backoff_us` documents itself as microseconds "because a jittered first
+        // backoff is routinely under a millisecond". That was unobservable while the source could
+        // only emit whole milliseconds.
+        let p = BackoffPolicy {
+            base_ms: 4,
+            cap_ms: 8,
+            max_attempts: 6,
+        };
+        let d = full_jitter(&p, 0, 0.1); // 10% of a 4ms ceiling = 400us
+        assert!(!d.is_zero());
+        assert!(d.as_micros() > 0 && d.as_millis() == 0, "{d:?}");
+    }
+
+    #[test]
+    fn the_endpoints_are_unchanged_by_microsecond_resolution() {
+        // Existing callers assert exact ceilings at rand01 = 1.0; those must not move.
+        let p = BackoffPolicy {
+            base_ms: 25,
+            cap_ms: 40,
+            max_attempts: 3,
+        };
+        assert_eq!(full_jitter(&p, 0, 1.0), Duration::from_millis(25));
+        assert_eq!(full_jitter(&p, 1, 1.0), Duration::from_millis(40));
+        assert!(full_jitter(&p, 0, 0.0).is_zero(), "zero draw is still zero");
     }
 
     #[test]
