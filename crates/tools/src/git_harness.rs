@@ -449,3 +449,21 @@ pub(crate) async fn run_command_bounded(
         stderr: stderr_capture,
     })
 }
+
+/// Build a Git command string that runs a fixture script through a stable interpreter.
+///
+/// Fixtures write a script and then ask Git to run it. Naming the script directly makes Git
+/// `execve` an inode this process only just closed, and on Linux `execve` returns `ETXTBSY`
+/// while any process holds a write descriptor to the target — including a descriptor some
+/// unrelated concurrent test binary inherited across a `fork`. Naming `/bin/sh` instead means
+/// the executed image is a file nobody is writing, so the race cannot arise (#54, #55, #97).
+///
+/// Production never writes a program and then executes it, which is why this is test-only.
+#[cfg(test)]
+pub(crate) fn shell_script_command(path: &Path) -> OsString {
+    let path = path
+        .to_str()
+        .expect("Git test fixture paths must be valid UTF-8");
+    let quoted = path.replace('\'', "'\\''");
+    format!("/bin/sh '{quoted}'").into()
+}
