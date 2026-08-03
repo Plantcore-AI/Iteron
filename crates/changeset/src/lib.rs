@@ -12,8 +12,10 @@
 //! bytes and performs no IO, so the harness that already captures git output keeps ownership of
 //! the process boundary.
 
+pub mod hunks;
 pub mod porcelain;
 
+pub use hunks::{DiffError, FileChange, FileDiff, Hunk, parse_unified, parse_unified_default};
 pub use porcelain::{
     ChangeSet, Entry, ParseError, Presence, Status, parse_default, parse_porcelain_v1_z,
 };
