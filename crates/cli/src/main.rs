@@ -684,9 +684,22 @@ async fn run_cli() -> anyhow::Result<u8> {
         {
             anyhow::bail!("--machine-contract is a standalone capability query");
         }
+        // Pretty, two-space, sorted keys — the canonical form, not a style choice.
+        //
+        // `release.yml` pipes this straight into the release's `machine-contract.json`
+        // sidecar, and the internal installer parses BOTH that sidecar and this live
+        // output with a hand-written awk reader that accepts only one key per line at
+        // an even indent. It is written that way on purpose: it runs on a fresh factory
+        // machine and must not depend on python. Compact output made it reject the
+        // capability report of every real release, and the fixture in
+        // `core-internal/internal/test-install-record.sh` hid that by piping its stub
+        // through a canonicaliser.
+        //
+        // `to_string_pretty` already emits two-space indent, and `serde_json`'s map is
+        // a `BTreeMap` here, so the keys are sorted by construction.
         println!(
             "{}",
-            serde_json::to_string(&serde_json::json!({
+            serde_json::to_string_pretty(&serde_json::json!({
                 "schema_version": 1,
                 "type": "machine_contract",
                 "cli_stream_versions": output::SUPPORTED_SCHEMA_VERSIONS,
