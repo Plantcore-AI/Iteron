@@ -7,7 +7,22 @@ pub(super) fn validate(root: &Path) -> Result<()> {
     let file = parse(root, "crates/record/src/lib.rs")?;
     reject_json_shadowing(&file)?;
     validate_append(&file)?;
-    validate_replay(&file)
+    validate_replay(&file)?;
+    // Every replay path, not just the canonical one. `replay_timed` decodes the same payload for
+    // the timeline reader (#104); a second reader that skipped the seq stamp or dropped an event
+    // would produce a timeline that disagreed with the transcript for the same rollout, which is
+    // precisely the divergence this gate exists to make impossible.
+    // Validated only when present. The invariant is "every replay path binds the payload
+    // honestly", not "this particular helper exists" -- and a bootstrap fixture built from an
+    // older record snapshot legitimately has no `replay_timed` to check.
+    if file
+        .items
+        .iter()
+        .any(|item| matches!(item, syn::Item::Fn(function) if function.sig.ident == "replay_timed"))
+    {
+        validate_replay_named(&file, "replay_timed")?;
+    }
+    Ok(())
 }
 
 fn validate_append(file: &syn::File) -> Result<()> {
@@ -34,7 +49,11 @@ fn validate_append(file: &syn::File) -> Result<()> {
 }
 
 fn validate_replay(file: &syn::File) -> Result<()> {
-    let function = unique_function(file, "replay")?;
+    validate_replay_named(file, "replay")
+}
+
+fn validate_replay_named(file: &syn::File, name: &str) -> Result<()> {
+    let function = unique_function(file, name)?;
     if function
         .attrs
         .iter()
@@ -51,7 +70,7 @@ fn validate_replay(file: &syn::File) -> Result<()> {
         || probe.other_pushes != 0
     {
         bail!(
-            "record replay no longer binds ChainLine.payload -> Event -> authoritative seq -> output exactly"
+            "record {name} no longer binds ChainLine.payload -> Event -> authoritative seq -> output exactly"
         );
     }
     Ok(())
@@ -212,6 +231,20 @@ impl<'ast> Visit<'ast> for AppendProbe {
     }
 }
 
+/// `TimedEvent { ts_us, event }` where `event` is exactly the decoded binding, shorthand or not.
+fn timed_event_wrapper(expression: &syn::Expr) -> bool {
+    let syn::Expr::Struct(literal) = expression else {
+        return false;
+    };
+    if !literal.path.is_ident("TimedEvent") || literal.rest.is_some() || literal.fields.len() != 2 {
+        return false;
+    }
+    literal.fields.iter().any(|field| {
+        matches!(&field.member, syn::Member::Named(name) if name == "event")
+            && expr_path(&field.expr, &["event"])
+    })
+}
+
 #[derive(Default)]
 struct ReplayProbe {
     payload_decodes: usize,
@@ -255,7 +288,13 @@ impl<'ast> Visit<'ast> for ReplayProbe {
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
         if expr_path(&call.receiver, &["events"]) && call.method == "push" {
-            if call.args.len() == 1 && expr_path(&call.args[0], &["event"]) {
+            // Either the decoded event itself, or that same binding wrapped verbatim in a
+            // `TimedEvent` beside its chain-line offset (#104). The wrapper is admitted ONLY when
+            // the event field is the untouched `event` binding, so a reader still cannot push
+            // something it built from anything other than the decoded payload.
+            if call.args.len() == 1
+                && (expr_path(&call.args[0], &["event"]) || timed_event_wrapper(&call.args[0]))
+            {
                 self.event_pushes = self.event_pushes.saturating_add(1);
             } else {
                 self.other_pushes = self.other_pushes.saturating_add(1);
