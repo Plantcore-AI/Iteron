@@ -1831,7 +1831,11 @@ mod tests {
         let prev = line["prev"].as_str().unwrap().to_owned();
         let seq = line["seq"].as_u64().unwrap();
         line["hash"] = serde_json::Value::String(hash_line(&prev, seq, &line["payload"]));
-        std::fs::write(&path, format!("{}\n", serde_json::to_string(&line).unwrap())).unwrap();
+        std::fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&line).unwrap()),
+        )
+        .unwrap();
 
         let events = replay(&path).unwrap();
         assert!(matches!(

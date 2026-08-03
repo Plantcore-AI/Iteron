@@ -651,12 +651,8 @@ async fn run_cli() -> anyhow::Result<u8> {
         }
         Some(LocalCommand::Auth { action }) => {
             return match action {
-                AuthAction::Status { provider } => {
-                    setup::run_auth_status(provider.clone()).await
-                }
-                AuthAction::Logout { provider } => {
-                    setup::run_auth_logout(provider.clone()).await
-                }
+                AuthAction::Status { provider } => setup::run_auth_status(provider.clone()).await,
+                AuthAction::Logout { provider } => setup::run_auth_logout(provider.clone()).await,
             };
         }
         Some(LocalCommand::Config { action }) => {
@@ -2347,12 +2343,12 @@ mod tests {
             .expect("--max-wall-secs is a real flag");
         assert_eq!(flagged.max_wall_secs, Some(5400));
         assert_eq!(
-            config::tighten(None, flagged.max_wall_secs.or(Some(1800)).unwrap()),
+            config::tighten(None, flagged.max_wall_secs.unwrap_or(1800)),
             5400,
             "the flag outranks the 1800s default"
         );
         assert_eq!(
-            config::tighten(Some(600), flagged.max_wall_secs.or(Some(1800)).unwrap()),
+            config::tighten(Some(600), flagged.max_wall_secs.unwrap_or(1800)),
             600,
             "an untrusted project config may still only tighten the operator's ceiling"
         );

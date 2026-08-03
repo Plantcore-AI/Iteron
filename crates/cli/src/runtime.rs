@@ -1341,7 +1341,14 @@ mod orchestration_allocation_tests {
         // for EVERY parent with fewer turns left than the 30-turn child ceiling. A five-way
         // `parallel()` then admitted one agent and silently dropped four.
         let child_ceiling = core_agents::subagent_budget_ceiling().max_turns;
-        for remaining_turns in [1u32, 2, 5, child_ceiling - 1, child_ceiling, child_ceiling * 3] {
+        for remaining_turns in [
+            1u32,
+            2,
+            5,
+            child_ceiling - 1,
+            child_ceiling,
+            child_ceiling * 3,
+        ] {
             let collapsed = (remaining_turns / child_ceiling.min(remaining_turns).max(1)).max(1);
             assert!(
                 budget.max_agent_calls() > collapsed as usize,
@@ -5000,7 +5007,7 @@ impl Agent {
 
     async fn drive_admitted_loop(
         &mut self,
-        mut messages: &mut Vec<Message>,
+        messages: &mut Vec<Message>,
         relevance_task: &str,
         input_images: &[core_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
@@ -5017,7 +5024,7 @@ impl Agent {
         loop {
             // Steering is a real submission, not a post-run local queue. Admit it only here, at a
             // turn boundary, before the next request projection is built.
-            self.admit_pending_steers(TurnId(self.seq_turn), &mut messages)?;
+            self.admit_pending_steers(TurnId(self.seq_turn), messages)?;
             let turn_id = TurnId(self.seq_turn);
             if self.record_failed {
                 // The audit record could not be durably written; halt rather than run un-recorded.
@@ -5037,7 +5044,7 @@ impl Agent {
             // actually rewrote the transcript underneath it.
             let mut context_estimate =
                 self.context_estimator
-                    .estimate(&effective_system, &messages, &tool_specs);
+                    .estimate(&effective_system, messages, &tool_specs);
             // ---- compaction, emergency valve only (ADR-002): this projection no longer fits the
             // proven window, so the alternative to summarizing here is a refused request. The
             // ROUTINE compaction moved off the critical path to `settle_compaction`, at the end of
@@ -5047,7 +5054,7 @@ impl Agent {
             // the accounting pass it would save is not on any hot path. ----
             if let Some(plan) = self.compaction.plan_before_overflow(
                 &effective_system,
-                &messages,
+                messages,
                 &tool_specs,
                 self.model_context_window,
                 request_max_tokens,
@@ -5167,7 +5174,7 @@ impl Agent {
             // ---- the flagship: dispatch PURE tools mid-stream. ----
             let reg = &self.registry;
             let tool_policy = self.tool_policy.clone();
-            let argument_trust = self.governing_turn_trust(&messages);
+            let argument_trust = self.governing_turn_trust(messages);
             let ui_tx = self.ui_tx.clone();
             // If a PreToolUse hook is configured, pure tools must NOT early-dispatch — the read
             // would be in flight before the hook could block it (security review MEDIUM #2: an
@@ -5341,7 +5348,7 @@ impl Agent {
                     // Before the error leaves: keep what the model already said (I-39).
                     self.preserve_interrupted_stream(
                         turn_id,
-                        &mut messages,
+                        messages,
                         &streamed_text,
                         &streamed_thinking,
                     );
@@ -5453,7 +5460,7 @@ impl Agent {
                 role: Role::Assistant,
                 content: turn_res.blocks.clone(),
             };
-            self.commit_message(turn_id, &mut messages, assistant)?;
+            self.commit_message(turn_id, messages, assistant)?;
 
             // ---- collect tool results in DETERMINISTIC tool_use order (ADR-006 R7) ----
             let tools_span = PhaseSpan::enter(Phase::Tools);
@@ -5516,7 +5523,7 @@ impl Agent {
                         self.ui(UiEvent::Notice(
                             "model output reached max tokens; continuing".into(),
                         ));
-                        self.commit_message(turn_id, &mut messages, continuation)?;
+                        self.commit_message(turn_id, messages, continuation)?;
                         self.advance_turn()?;
                         continue;
                     }
@@ -5540,7 +5547,7 @@ impl Agent {
                         self.ui(UiEvent::Notice(
                             "provider paused the turn; continuing".into(),
                         ));
-                        self.commit_message(turn_id, &mut messages, continuation)?;
+                        self.commit_message(turn_id, messages, continuation)?;
                         self.advance_turn()?;
                         continue;
                     }
@@ -5551,7 +5558,7 @@ impl Agent {
                         // A message typed while this turn was decoding wins over the model's claim
                         // to be done: durably admit it, then build another turn. This is the
                         // Claude/Codex steering contract at a safe point, never mid-effect.
-                        let steered = self.admit_pending_steers(turn_id, &mut messages)?;
+                        let steered = self.admit_pending_steers(turn_id, messages)?;
                         if let Some(outcome) = self.finish_requested_control(turn_id)? {
                             return Ok(outcome);
                         }
@@ -5650,7 +5657,7 @@ impl Agent {
                                     self.ui(UiEvent::Notice(format!(
                                         "verify gate: `{cmd}` test failure, continuing"
                                     )));
-                                    self.commit_message(turn_id, &mut messages, msg)?;
+                                    self.commit_message(turn_id, messages, msg)?;
                                     self.advance_turn()?;
                                     continue;
                                 }
@@ -5678,7 +5685,7 @@ impl Agent {
                                     // transcript to the provider.
                                     self.commit_message(
                                         turn_id,
-                                        &mut messages,
+                                        messages,
                                         Message::user_text(format!(
                                             "Verification timed out while running `{cmd}`. This was \
                                              not classified as a test failure and consumed no \
@@ -5705,7 +5712,7 @@ impl Agent {
                                     self.ui(UiEvent::Notice(notice));
                                     self.commit_message(
                                         turn_id,
-                                        &mut messages,
+                                        messages,
                                         Message::user_text(format!(
                                             "Verification infrastructure could not run `{cmd}`. \
                                              This was not a candidate test failure and consumed no \
@@ -5728,7 +5735,7 @@ impl Agent {
                                     self.ui(UiEvent::Notice(notice));
                                     self.commit_message(
                                         turn_id,
-                                        &mut messages,
+                                        messages,
                                         Message::user_text(format!(
                                             "Verification of `{cmd}` was cancelled before a verdict. \
                                              It consumed no candidate-fix retry. On resume, re-check \
@@ -5744,7 +5751,7 @@ impl Agent {
                         }
                         // Verification can be long-running. Re-check the ordered submission queue
                         // before committing Done so guidance typed during the oracle is not lost.
-                        let steered = self.admit_pending_steers(turn_id, &mut messages)?;
+                        let steered = self.admit_pending_steers(turn_id, messages)?;
                         if let Some(outcome) = self.finish_requested_control(turn_id)? {
                             return Ok(outcome);
                         }
@@ -5859,7 +5866,7 @@ impl Agent {
             // gate auto-approves, with no declared write path in common, executes concurrently
             // under the same governor the pure path uses; the loop below then owns every call that
             // group did not take, in the order it always ran them.
-            let batch = self.select_concurrent_deferred_batch(&deferred, argument_trust, &messages);
+            let batch = self.select_concurrent_deferred_batch(&deferred, argument_trust, messages);
             if batch.len() > 1 {
                 self.run_concurrent_deferred_batch(
                     turn_id,
@@ -5992,7 +5999,7 @@ impl Agent {
                 // Elevate a trust-mutating write (.git/CI/instruction/.core paths) so the gate
                 // cannot auto-approve it (code review: the carve-out was otherwise unreachable).
                 let cap = effective_capability(&tu.input, base_cap);
-                let governing_trust = self.governing_turn_trust(&messages);
+                let governing_trust = self.governing_turn_trust(messages);
                 let admitted_capabilities =
                     self.authority_ceiling.intersect(self.policy_capabilities);
                 let ceiling_blocks_capability = !admitted_capabilities.contains(cap);
@@ -6310,7 +6317,7 @@ impl Agent {
                 role: Role::User,
                 content: blocks,
             };
-            self.commit_message(turn_id, &mut messages, tool_msg)?;
+            self.commit_message(turn_id, messages, tool_msg)?;
 
             if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
                 return Ok(outcome);
@@ -9303,7 +9310,11 @@ mod reconcile_tests {
 
         // What the kernel plans against is the PROJECTION, which has already merged the steer.
         let projected = project_messages_from_events(message_events());
-        assert_eq!(projected.len(), 6, "the steer merged into the ask before it");
+        assert_eq!(
+            projected.len(),
+            6,
+            "the steer merged into the ask before it"
+        );
         let mut policy = core_ctx::CompactionPolicy::default();
         policy.keep_recent = 2;
         policy.set_fixed_trigger_tokens(1);
@@ -11338,12 +11349,8 @@ mod gate_integration_tests {
             2,
         );
         let run = core_protocol::RunId("stop-hook-keeps-overlap".into());
-        let mut agent = concurrency_agent(
-            &ws,
-            &run,
-            registry,
-            burst_calls("rendezvous_read", 2, &[]),
-        );
+        let mut agent =
+            concurrency_agent(&ws, &run, registry, burst_calls("rendezvous_read", 2, &[]));
         agent.hooks = Hooks::load_user(&home);
         assert!(!agent.hooks.is_empty());
         assert!(agent.hooks.commands(HookEvent::PreToolUse).is_empty());
@@ -11390,8 +11397,7 @@ mod gate_integration_tests {
             Capability::ReadOnly,
         );
         let run = core_protocol::RunId("pretooluse-hook-defers".into());
-        let mut agent =
-            concurrency_agent(&ws, &run, registry, burst_calls("gated_read", 2, &[]));
+        let mut agent = concurrency_agent(&ws, &run, registry, burst_calls("gated_read", 2, &[]));
         agent.hooks = Hooks::load_user(&home);
         assert!(!agent.hooks.commands(HookEvent::PreToolUse).is_empty());
 
@@ -11429,12 +11435,8 @@ mod gate_integration_tests {
             2,
         );
         let run = core_protocol::RunId("cap-overflow-queues".into());
-        let mut agent = concurrency_agent(
-            &ws,
-            &run,
-            registry,
-            burst_calls("rendezvous_read", 4, &[]),
-        );
+        let mut agent =
+            concurrency_agent(&ws, &run, registry, burst_calls("rendezvous_read", 4, &[]));
         agent.max_tool_concurrency = 2;
 
         assert_eq!(agent.run("read four sources").await.unwrap(), Outcome::Done);
@@ -11465,12 +11467,8 @@ mod gate_integration_tests {
             4,
         );
         let run = core_protocol::RunId("effecting-batch-overlaps".into());
-        let mut agent = concurrency_agent(
-            &ws,
-            &run,
-            registry,
-            burst_calls("rendezvous_exec", 4, &[]),
-        );
+        let mut agent =
+            concurrency_agent(&ws, &run, registry, burst_calls("rendezvous_exec", 4, &[]));
         // Yolo auto-approves CodeExecuting; without an Auto verdict nothing may be grouped.
         agent.permission_mode = PermissionMode::Yolo;
 
@@ -11660,8 +11658,7 @@ mod gate_integration_tests {
         );
         let run = core_protocol::RunId("effecting-batch-asks".into());
         // PermissionMode::Default asks for ReversibleLocal, and no approval channel is installed.
-        let mut agent =
-            concurrency_agent(&ws, &run, registry, burst_calls("touch_path", 2, &[]));
+        let mut agent = concurrency_agent(&ws, &run, registry, burst_calls("touch_path", 2, &[]));
 
         assert_eq!(agent.run("write twice").await.unwrap(), Outcome::Done);
         assert!(
@@ -19902,7 +19899,10 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent.hooks = hooks::Hooks::load_user(&home);
-        assert!(!agent.hooks.is_empty(), "the run must have a hook configured");
+        assert!(
+            !agent.hooks.is_empty(),
+            "the run must have a hook configured"
+        );
         agent.run("read secret.txt").await.unwrap();
 
         let events = core_record::replay(&runs.join(format!("{run}.jsonl"))).unwrap();

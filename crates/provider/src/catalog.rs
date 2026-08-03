@@ -511,7 +511,9 @@ fn read_credential_file(path: &std::path::Path) -> LoadedCredential {
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o077 != 0 {
-            return absent("credential file must not be group- or world-accessible (chmod 600)".into());
+            return absent(
+                "credential file must not be group- or world-accessible (chmod 600)".into(),
+            );
         }
     }
     let Ok(bytes) = std::fs::read(path) else {
@@ -537,9 +539,9 @@ fn read_credential_file(path: &std::path::Path) -> LoadedCredential {
                 error: None,
             },
             Ok(_) => absent("credential document has an empty `token`".into()),
-            Err(_) => absent(
-                "credential document must be {\"token\":\"…\",\"expires_at_unix\":…}".into(),
-            ),
+            Err(_) => {
+                absent("credential document must be {\"token\":\"…\",\"expires_at_unix\":…}".into())
+            }
         };
     }
     if trimmed.lines().count() != 1 || trimmed.chars().any(char::is_whitespace) {
@@ -4435,7 +4437,8 @@ mod tests {
             "the composition root needs the path to add it to the redaction set"
         );
 
-        let env = instance_with_source(CredentialSource::env("GATEWAY_KEY", Some("sk-live".into())));
+        let env =
+            instance_with_source(CredentialSource::env("GATEWAY_KEY", Some("sk-live".into())));
         let rendered = format!("{env:?}");
         assert!(
             !rendered.contains("sk-live"),

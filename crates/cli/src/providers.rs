@@ -769,7 +769,8 @@ impl ProbeCache {
             return;
         }
         let identity = record.identity();
-        self.entries.retain(|existing| existing.identity() != identity);
+        self.entries
+            .retain(|existing| existing.identity() != identity);
         self.entries.push(record);
         while self.entries.len() > MAX_PROBE_CACHE_ENTRIES {
             self.entries.remove(0);
@@ -861,7 +862,12 @@ struct ProbeUpdates {
 }
 
 impl ProbeUpdates {
-    fn record(&self, identity: ProbeIdentity, observed_at_unix_secs: u64, outcome: CachedProbeOutcome) {
+    fn record(
+        &self,
+        identity: ProbeIdentity,
+        observed_at_unix_secs: u64,
+        outcome: CachedProbeOutcome,
+    ) {
         let (provider_id, api_root, probe, credential_scope) = identity;
         let record = CachedProbe {
             provider_id,
@@ -1867,12 +1873,17 @@ impl ProviderDirectory {
         };
         let budget = eager.map(|_| EAGER_DISCOVERY_BUDGET);
         let mut resolved: Vec<(usize, ProviderEntry)> = Vec::new();
-        for (index, entry, served, settled) in join_all(eager_entries.into_iter().map(
-            |(index, entry, served)| {
+        for (index, entry, served, settled) in
+            join_all(eager_entries.into_iter().map(|(index, entry, served)| {
                 let context = context.clone();
                 async move {
                     let Some(budget) = budget else {
-                        return (index, resolve_entry(entry, served, &context).await, served, true);
+                        return (
+                            index,
+                            resolve_entry(entry, served, &context).await,
+                            served,
+                            true,
+                        );
                     };
                     // The bound is the whole point: keep whatever the cache already proved and let
                     // the slow endpoint finish behind the frame with the deferred instances.
@@ -1883,9 +1894,8 @@ impl ProviderDirectory {
                         Err(_) => (index, fallback, served, false),
                     }
                 }
-            },
-        ))
-        .await
+            }))
+            .await
         {
             if settled {
                 resolved.push((index, entry));
@@ -1918,7 +1928,11 @@ impl ProviderDirectory {
             resolved
                 .iter()
                 .cloned()
-                .chain(pending.iter().map(|(index, entry, _)| (*index, entry.clone())))
+                .chain(
+                    pending
+                        .iter()
+                        .map(|(index, entry, _)| (*index, entry.clone())),
+                )
                 .collect(),
         );
         let deferred_ids: BTreeSet<String> = pending
@@ -2987,7 +3001,10 @@ fn is_openai_fine_tuned_text_model(model_id: &str) -> bool {
 /// and refuses anything else, so a typo is caught before a credential is written for a route that
 /// does not exist.
 pub(crate) fn configured_provider_ids(user: &[ProviderConfig]) -> Vec<String> {
-    let mut ids: Vec<String> = BUILTINS.iter().map(|builtin| builtin.id.to_owned()).collect();
+    let mut ids: Vec<String> = BUILTINS
+        .iter()
+        .map(|builtin| builtin.id.to_owned())
+        .collect();
     for configured in user {
         if !ids.iter().any(|id| id == &configured.id) {
             ids.push(configured.id.clone());
@@ -4404,10 +4421,7 @@ mod tests {
         assert!(text.contains(CATALOG_CACHE_SCOPE_PREFIX));
         let loaded = ProbeCache::load(&probe_path);
         assert_eq!(loaded.entries.len(), 1);
-        assert_eq!(
-            loaded.decide(&identity, 1_800_000_001),
-            ProbeDecision::Skip
-        );
+        assert_eq!(loaded.decide(&identity, 1_800_000_001), ProbeDecision::Skip);
 
         fs::write(&probe_path, br#"{"version":999,"entries":[]}"#).unwrap();
         assert!(ProbeCache::load(&probe_path).entries.is_empty());
@@ -4738,12 +4752,10 @@ mod tests {
         );
 
         // A rejected key is a different state and says so, naming the credential to replace.
-        let directory = ProviderDirectory::discover_entries(
-            vec![glm_static_entry(Some("wrong".into()))],
-            None,
-        )
-        .await
-        .unwrap();
+        let directory =
+            ProviderDirectory::discover_entries(vec![glm_static_entry(Some("wrong".into()))], None)
+                .await
+                .unwrap();
         directory.health.update_from_error(
             "glm",
             &ProviderError::ApiResponse(core_provider::ApiResponseError {
@@ -4795,7 +4807,10 @@ mod tests {
             .await
             .unwrap();
         let message_stale = stale.resolution_error("stale");
-        assert!(message_stale.contains("stale cached catalog"), "{message_stale}");
+        assert!(
+            message_stale.contains("stale cached catalog"),
+            "{message_stale}"
+        );
         assert_ne!(message_stale, message);
 
         // A provider that is not configured at all lists what IS configured.

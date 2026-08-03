@@ -135,9 +135,9 @@ impl RouteView {
             context_window_tokens: capabilities.context_window_tokens,
             max_output_tokens: capabilities.max_output_tokens,
             capability_source: capabilities.source.clone(),
-            blocked_reason: directory
-                .blocked_reason(entry)
-                .or_else(|| directory.model_blocked_reason(&selection.provider_id, &selection.model_id)),
+            blocked_reason: directory.blocked_reason(entry).or_else(|| {
+                directory.model_blocked_reason(&selection.provider_id, &selection.model_id)
+            }),
             limits,
         }
     }

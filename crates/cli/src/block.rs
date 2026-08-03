@@ -362,18 +362,17 @@ impl WorkflowRunCard {
             // A reached `phase()` binds to a DECLARED box by title first, so seeding the tree from
             // `meta.phases` never produces a second box for the same phase.
             ProgressEvent::Phase { index, title } => {
-                self.current_phase = if let Some(existing) =
-                    self.phases.iter().find(|phase| phase.title == title)
-                {
-                    existing.index
-                } else if self.phases.iter().any(|phase| phase.index == index) {
-                    let next = self.phases.iter().map(|p| p.index).max().unwrap_or(0) + 1;
-                    self.phases.push(WorkflowRunPhase { index: next, title });
-                    next
-                } else {
-                    self.phases.push(WorkflowRunPhase { index, title });
-                    index
-                };
+                self.current_phase =
+                    if let Some(existing) = self.phases.iter().find(|phase| phase.title == title) {
+                        existing.index
+                    } else if self.phases.iter().any(|phase| phase.index == index) {
+                        let next = self.phases.iter().map(|p| p.index).max().unwrap_or(0) + 1;
+                        self.phases.push(WorkflowRunPhase { index: next, title });
+                        next
+                    } else {
+                        self.phases.push(WorkflowRunPhase { index, title });
+                        index
+                    };
             }
             ProgressEvent::Log { message } => self.logs.push(message),
             ProgressEvent::AgentQueued {
@@ -3801,7 +3800,10 @@ mod tests {
         let arm = SPINNER[spin % SPINNER.len()];
         let text = plain(workflow.render(120, &theme, spin));
         for label in labels {
-            assert!(text.contains(label), "row for `{label}` is missing:\n{text}");
+            assert!(
+                text.contains(label),
+                "row for `{label}` is missing:\n{text}"
+            );
         }
         // One arm per branch row (the card's own header marker also spins, hence the `+ 1`).
         assert_eq!(
@@ -3972,7 +3974,10 @@ mod tests {
         // Every declared phase is a box on the very first frame, before any agent exists.
         let empty = plain(render_workflow_run(&c, width, &theme, 0));
         for title in ["Explore", "Synthesize", "Write"] {
-            assert!(empty.contains(title), "declared phase `{title}` is invisible");
+            assert!(
+                empty.contains(title),
+                "declared phase `{title}` is invisible"
+            );
         }
         assert!(empty.contains("0/0 agents"));
 
@@ -4031,7 +4036,10 @@ mod tests {
         });
         assert_eq!(c.phases.len(), 3);
         for line in render_workflow_run(&c, width, &theme, 0) {
-            assert!(line_width(&line) <= width, "queued row over width: {line:?}");
+            assert!(
+                line_width(&line) <= width,
+                "queued row over width: {line:?}"
+            );
         }
     }
 }

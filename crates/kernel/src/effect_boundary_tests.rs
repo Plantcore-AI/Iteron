@@ -600,7 +600,11 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     },
     EffectPrimitive {
         needle: "registry.run_admitted_intent(",
-        allowed_in: &["drive_admitted", "drive_admitted_loop", "run_concurrent_deferred_batch"],
+        allowed_in: &[
+            "drive_admitted",
+            "drive_admitted_loop",
+            "run_concurrent_deferred_batch",
+        ],
         guidance: "an admitted registry intent must be dispatched by \
                    effects::execute_registry_tool, or opened and settled around it the way \
                    run_concurrent_deferred_batch does when a batch runs concurrently — one \
@@ -609,7 +613,11 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     },
     EffectPrimitive {
         needle: "self.bounded_provider_turn(",
-        allowed_in: &["brokered_provider_turn", "drive_admitted", "drive_admitted_loop"],
+        allowed_in: &[
+            "brokered_provider_turn",
+            "drive_admitted",
+            "drive_admitted_loop",
+        ],
         guidance: "a provider request is a paid, externally visible effect; dispatch it through \
                    Agent::brokered_provider_turn, or open/settle around it as drive_admitted does",
     },

@@ -48,7 +48,12 @@ pub(crate) struct SetupAnswers {
 /// The question-asking side of the wizard, so the state machine can be exercised without a TTY.
 pub(crate) trait Ask {
     /// Ask a question with a closed answer set. An empty answer selects `default`.
-    fn choose(&mut self, question: &str, options: &[String], default: &str) -> anyhow::Result<String>;
+    fn choose(
+        &mut self,
+        question: &str,
+        options: &[String],
+        default: &str,
+    ) -> anyhow::Result<String>;
     /// Ask for a credential. Implementations must not echo it.
     fn secret(&mut self, question: &str) -> anyhow::Result<String>;
     /// Ask for an optional plain line.
@@ -221,10 +226,7 @@ pub(crate) async fn run_setup(
                         "ready: {}:{} — run `core` to start",
                         selection.provider_id, selection.model_id
                     ),
-                    None => eprintln!(
-                        "{}",
-                        directory.resolution_error(&answers.provider_id)
-                    ),
+                    None => eprintln!("{}", directory.resolution_error(&answers.provider_id)),
                 },
             }
         }
@@ -353,8 +355,7 @@ pub(crate) fn run_config_get(key: Option<String>) -> anyhow::Result<u8> {
             for key in config::settable_keys() {
                 println!(
                     "{key} = {}",
-                    config::setting_value(&user_file, key)
-                        .unwrap_or_else(|| "(unset)".into())
+                    config::setting_value(&user_file, key).unwrap_or_else(|| "(unset)".into())
                 );
             }
         }
@@ -525,7 +526,10 @@ mod tests {
         assert_eq!(answers.kind, SetupKind::HostedPlan);
         assert_eq!(answers.expires_at_unix, Some(1_893_456_000));
         let document = credential_document(&answers);
-        assert!(document.contains("\"expires_at_unix\":1893456000"), "{document}");
+        assert!(
+            document.contains("\"expires_at_unix\":1893456000"),
+            "{document}"
+        );
         assert!(
             document.starts_with('{'),
             "an expiring token must be stored as a document so the expiry travels with it"
@@ -536,8 +540,13 @@ mod tests {
     #[test]
     fn i27_supplied_answers_are_not_asked_again() {
         let mut ask = Scripted::new(&["sk-1"]);
-        let answers =
-            collect_answers(&mut ask, Some(SetupKind::Byok), Some("glm".into()), &known()).unwrap();
+        let answers = collect_answers(
+            &mut ask,
+            Some(SetupKind::Byok),
+            Some("glm".into()),
+            &known(),
+        )
+        .unwrap();
         assert_eq!(answers.provider_id, "glm");
         assert_eq!(ask.asked.len(), 1, "asked: {:?}", ask.asked);
     }
@@ -556,7 +565,10 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("`nope` is not configured"), "{error}");
-        assert!(error.contains("glm"), "the error must list the real ids: {error}");
+        assert!(
+            error.contains("glm"),
+            "the error must list the real ids: {error}"
+        );
     }
 
     /// An empty paste is not a credential. Writing it would produce a config that looks complete

@@ -52,7 +52,8 @@ async fn the_example_workflow_script_runs_as_written() {
     );
 
     let sink = Arc::new(VecSink::default());
-    let spec = RunSpec::new(EXAMPLE).with_args(serde_json::json!({ "topic": "the rollout writer" }));
+    let spec =
+        RunSpec::new(EXAMPLE).with_args(serde_json::json!({ "topic": "the rollout writer" }));
     let report = WorkflowEngine::execute(spec, Arc::new(ScriptedSpawner), sink.clone())
         .await
         .expect("the shipped example runs");
@@ -62,8 +63,7 @@ async fn the_example_workflow_script_runs_as_written() {
     assert_eq!(report.value["investigators"], 3);
     assert_eq!(report.value["answered"], 3);
     assert_eq!(
-        report.value["findings"]["summary"],
-        "the rollout writer owns append",
+        report.value["findings"]["summary"], "the rollout writer owns append",
         "the schema-forced reduction returns a validated object, not prose"
     );
     // 3 investigators x 5 tokens + the 11-token reduction, summed for the run.

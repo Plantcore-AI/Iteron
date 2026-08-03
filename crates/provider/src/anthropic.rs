@@ -985,7 +985,9 @@ mod tests {
         let provider =
             Anthropic::with_root("key".into(), ApiRoot::parse(DEFAULT_API_ROOT).unwrap()).unwrap();
 
-        let body = provider.body(&conversation("claude-sonnet-4-5", 5)).unwrap();
+        let body = provider
+            .body(&conversation("claude-sonnet-4-5", 5))
+            .unwrap();
         assert_eq!(
             breakpoint_indices(&body),
             vec![3],
@@ -1003,11 +1005,15 @@ mod tests {
         );
 
         // It rolls: one more turn moves the breakpoint forward by one message.
-        let next = provider.body(&conversation("claude-sonnet-4-5", 6)).unwrap();
+        let next = provider
+            .body(&conversation("claude-sonnet-4-5", 6))
+            .unwrap();
         assert_eq!(breakpoint_indices(&next), vec![4]);
 
         // Nothing sits behind a single-message transcript, so it carries no breakpoint.
-        let first = provider.body(&conversation("claude-sonnet-4-5", 1)).unwrap();
+        let first = provider
+            .body(&conversation("claude-sonnet-4-5", 1))
+            .unwrap();
         assert_eq!(breakpoint_indices(&first), Vec::<usize>::new());
         assert_eq!(first.to_string().matches("cache_control").count(), 1);
 
@@ -1040,7 +1046,10 @@ mod tests {
         let body = provider.body(&request).unwrap();
         assert_eq!(breakpoint_indices(&body), vec![1]);
         // Marking the breakpoint must not disturb the replayed blocks themselves.
-        assert_eq!(body["messages"][1]["content"][0]["thinking"], "private reasoning");
+        assert_eq!(
+            body["messages"][1]["content"][0]["thinking"],
+            "private reasoning"
+        );
         assert_eq!(
             body["messages"][1]["content"][1],
             serde_json::json!({

@@ -82,8 +82,10 @@ impl StartupTiming {
             return;
         }
         let now = Instant::now();
-        self.spans
-            .push((phase, core_obs::duration_ms_ceil(now.duration_since(previous))));
+        self.spans.push((
+            phase,
+            core_obs::duration_ms_ceil(now.duration_since(previous)),
+        ));
         self.previous = Some(now);
     }
 

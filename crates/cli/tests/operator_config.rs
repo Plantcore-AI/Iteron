@@ -158,7 +158,10 @@ fn i25_a_malformed_document_is_never_silently_rewritten() {
         &scratch.repo(),
         &["config", "set", "provider", "kimi"],
     );
-    assert!(!status.success(), "a malformed config must refuse the write");
+    assert!(
+        !status.success(),
+        "a malformed config must refuse the write"
+    );
     assert!(
         stderr.contains("refusing to rewrite"),
         "the refusal must say what it refused: {stderr}"
@@ -249,7 +252,11 @@ fn i24_an_unknown_key_inside_providers_still_fails() {
 fn i24_core_config_home_selects_the_config_root() {
     let scratch = Scratch::new("config-home");
     scratch.write_config(r#"{"schema_version":2,"model":"from-core-config-home"}"#);
-    let (status, stdout, stderr) = run(&scratch.home(), &scratch.repo(), &["config", "get", "model"]);
+    let (status, stdout, stderr) = run(
+        &scratch.home(),
+        &scratch.repo(),
+        &["config", "get", "model"],
+    );
     assert!(status.success(), "{stdout}{stderr}");
     assert_eq!(stdout.trim(), "from-core-config-home");
 }
@@ -303,7 +310,8 @@ fn i28_auth_status_distinguishes_env_file_and_absent() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let (status, stdout, stderr) = run(&scratch.home(), &scratch.repo(), &["auth", "status", "glm"]);
+    let (status, stdout, stderr) =
+        run(&scratch.home(), &scratch.repo(), &["auth", "status", "glm"]);
     assert!(status.success(), "{stdout}{stderr}");
     assert!(stdout.contains("api_root:"), "{stdout}");
     assert!(stdout.contains("credential:  file"), "{stdout}");
@@ -317,7 +325,10 @@ fn i28_auth_status_distinguishes_env_file_and_absent() {
         &["auth", "status", "deepseek"],
     );
     assert!(status.success());
-    assert!(stdout.contains("credential:  env DEEPSEEK_API_KEY"), "{stdout}");
+    assert!(
+        stdout.contains("credential:  env DEEPSEEK_API_KEY"),
+        "{stdout}"
+    );
     assert!(stdout.contains("present:     no"), "{stdout}");
 }
 
@@ -391,7 +402,10 @@ fn i29_key_env_without_base_url_is_refused() {
         &["-p", "hello", "--key-env", "SOME_KEY"],
     );
     assert!(!status.success());
-    assert!(stderr.contains("--key-env only names the credential"), "{stderr}");
+    assert!(
+        stderr.contains("--key-env only names the credential"),
+        "{stderr}"
+    );
 }
 
 /// I-05 — a clean environment reported `provider glm has no selectable discovered model` while the

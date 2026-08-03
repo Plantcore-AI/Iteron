@@ -271,9 +271,7 @@ impl ProviderConfig {
     pub fn resolved_credential(&self) -> Result<ProviderCredential, String> {
         match (&self.credential, &self.key_env) {
             (Some(credential), None) => Ok(credential.clone()),
-            (None, Some(name)) => Ok(ProviderCredential::Env {
-                name: name.clone(),
-            }),
+            (None, Some(name)) => Ok(ProviderCredential::Env { name: name.clone() }),
             (Some(credential), Some(name)) => {
                 if credential.env_name() == Some(name.as_str()) {
                     Ok(credential.clone())
@@ -581,11 +579,7 @@ const SETTABLE_KEYS: &[&str] = &[
 /// Apply one settable key to an in-memory document. Callers that need several keys to land
 /// together (a `/model` choice is a provider AND a model) compose them inside one
 /// [`update_user_config`] transaction rather than issuing two writes.
-pub(crate) fn apply_setting(
-    config: &mut FileConfig,
-    key: &str,
-    value: &str,
-) -> Result<(), String> {
+pub(crate) fn apply_setting(config: &mut FileConfig, key: &str, value: &str) -> Result<(), String> {
     let parse_u32 = |value: &str| {
         value
             .parse::<u32>()
@@ -619,11 +613,10 @@ pub(crate) fn apply_setting(
         "allow_code" => config.allow_code = Some(parse_bool(value)?),
         "completion_notifications" => config.completion_notifications = Some(parse_bool(value)?),
         "compaction_trigger_tokens" => {
-            config.compaction_trigger_tokens = Some(
-                value
-                    .parse::<usize>()
-                    .map_err(|_| format!("`{key}` must be a non-negative integer, got `{value}`"))?,
-            )
+            config.compaction_trigger_tokens =
+                Some(value.parse::<usize>().map_err(|_| {
+                    format!("`{key}` must be a non-negative integer, got `{value}`")
+                })?)
         }
         other => {
             return Err(format!(
@@ -1535,7 +1528,10 @@ mod tests {
             ))
             .unwrap_err()
             .to_string();
-            assert!(error.contains("credential file path"), "`{rejected}`: {error}");
+            assert!(
+                error.contains("credential file path"),
+                "`{rejected}`: {error}"
+            );
         }
     }
 

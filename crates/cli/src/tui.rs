@@ -7363,8 +7363,7 @@ fn draw(f: &mut Frame, app: &mut App) {
             }
             let rows = if b.cacheable() {
                 if render_cache.get(&b.id).map(|(revision, _)| *revision) != Some(b.revision) {
-                    let rendered =
-                        b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy);
+                    let rendered = b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy);
                     render_cache.insert(b.id, (b.revision, rendered));
                 }
                 let count = render_cache
@@ -7458,7 +7457,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     // that is the coordinate `apply_to_buffer` subtracts the scroll from — while `row_map` is now
     // viewport-relative, because the hit-test already knows which row the viewport starts at.
     let first_row = usize::from(scroll);
-    let last_row = first_row.saturating_add(usize::from(view_h)).min(total_rows);
+    let last_row = first_row
+        .saturating_add(usize::from(view_h))
+        .min(total_rows);
     let window = last_row.saturating_sub(first_row);
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(window);
     let mut row_map: Vec<usize> = Vec::with_capacity(window); // block index per VISIBLE row (usize::MAX = spacer/stream)
@@ -9424,7 +9425,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let mut app = App::new();
         for index in 0..40 {
-            app.note(block::NoticeLevel::Info, format!("historical row {index:03}"));
+            app.note(
+                block::NoticeLevel::Info,
+                format!("historical row {index:03}"),
+            );
         }
         // A terminal tall enough to hold the whole transcript needs no window, so its frame is the
         // reference the windowed frame has to reproduce exactly.
@@ -9438,7 +9442,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut short = Terminal::new(TestBackend::new(60, 14)).unwrap();
         short.draw(|frame| draw(frame, &mut app)).unwrap();
         let view_h = usize::from(app.view_h);
-        assert!(total > view_h, "the transcript has to overflow to be a test");
+        assert!(
+            total > view_h,
+            "the transcript has to overflow to be a test"
+        );
         assert_eq!(
             usize::from(app.last_total_rows),
             total,
@@ -9491,7 +9498,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // Frame cost is independent of session length: ten times the history, same materialisation.
         app.follow_latest();
         for index in 40..440 {
-            app.note(block::NoticeLevel::Info, format!("historical row {index:03}"));
+            app.note(
+                block::NoticeLevel::Info,
+                format!("historical row {index:03}"),
+            );
         }
         short.draw(|frame| draw(frame, &mut app)).unwrap();
         assert!(usize::from(app.last_total_rows) > total * 5);
