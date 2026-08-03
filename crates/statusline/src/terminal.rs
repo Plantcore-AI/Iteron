@@ -62,8 +62,14 @@ impl Capabilities {
             Color::TrueColor
         } else if term.contains("256color") {
             Color::Ansi256
-        } else {
+        } else if is_known_color_term(&term) {
             Color::Ansi16
+        } else {
+            // Conservative for a TERM nobody recognises. The two failure directions are not
+            // symmetric: assuming colour on a terminal that lacks it prints literal `\x1b[32m`
+            // garbage into the operator's session, while assuming no colour on one that has it is
+            // merely plain. Unknown therefore means monochrome.
+            Color::None
         };
 
         let screen_reader = get("CORE_SCREEN_READER").is_some_and(|v| !v.is_empty());
@@ -90,6 +96,50 @@ impl Capabilities {
     pub fn may_use_layout(&self) -> bool {
         self.presentation == Presentation::Visual
     }
+
+    /// Whether the terminal's title stack may be relied on to *restore* the previous title.
+    ///
+    /// Accepting `OSC 2` says nothing about `CSI 22/23 t`: many terminals set a title happily and
+    /// ignore the stack, and a multiplexer may swallow the sequence entirely. There is no way to
+    /// find out without a round-trip this crate does not perform.
+    ///
+    /// So this is deliberately conservative, and the consequence is stated rather than hidden: when
+    /// it returns false, a caller that sets a title **cannot give it back**, and should therefore
+    /// not set one. Leaving an operator's tab permanently renamed after the session ends is a worse
+    /// outcome than showing no title at all.
+    pub fn title_stack_restores(&self) -> bool {
+        // A multiplexer re-emits what it chooses to its outer terminal, so the stack is not ours
+        // to depend on. An unrecognised TERM is treated the same way as for colour.
+        !self.multiplexed && self.color != Color::None
+    }
+}
+
+/// Terminals whose families are known to handle SGR colour.
+///
+/// A list rather than a guess. Membership is checked by prefix because these names carry suffixes
+/// (`xterm-kitty`, `screen.linux`), and the absence of a name means "unknown", not "incapable".
+fn is_known_color_term(term: &str) -> bool {
+    const KNOWN: &[&str] = &[
+        "xterm",
+        "screen",
+        "tmux",
+        "rxvt",
+        "vt100",
+        "vt220",
+        "linux",
+        "ansi",
+        "alacritty",
+        "kitty",
+        "wezterm",
+        "foot",
+        "konsole",
+        "gnome",
+        "iterm",
+        "putty",
+        "eterm",
+        "cygwin",
+    ];
+    KNOWN.iter().any(|k| term.starts_with(k))
 }
 
 /// sRGB colour, for contrast checking.
@@ -220,6 +270,51 @@ mod tests {
         let ssh = Capabilities::detect(env(&[("TERM", "xterm"), ("SSH_TTY", "/dev/pts/0")]));
         assert!(ssh.remote);
         assert!(!tmux.remote);
+    }
+
+    #[test]
+    fn an_unrecognised_term_gets_no_colour_rather_than_assumed_colour() {
+        // The two failure directions are not symmetric: guessing colour on a terminal that lacks
+        // it prints literal escape bytes into the operator's session; guessing none is just plain.
+        for term in ["some-vendor-thing", "unknown", "myterm-2000"] {
+            let caps = Capabilities::detect(env(&[("TERM", term)]));
+            assert_eq!(
+                caps.color,
+                Color::None,
+                "TERM={term} must not assume colour"
+            );
+        }
+    }
+
+    #[test]
+    fn known_terminal_families_still_get_colour_including_suffixed_names() {
+        for term in [
+            "xterm",
+            "xterm-kitty",
+            "screen.linux",
+            "tmux-256color",
+            "alacritty",
+        ] {
+            let caps = Capabilities::detect(env(&[("TERM", term)]));
+            assert!(caps.may_use_color(), "TERM={term} must keep colour");
+        }
+    }
+
+    #[test]
+    fn the_title_stack_is_not_assumed_to_restore() {
+        // Accepting OSC 2 says nothing about CSI 22/23 t. A caller that cannot give the title back
+        // should not take it: a permanently renamed tab outlives the session.
+        let plain = Capabilities::detect(env(&[("TERM", "xterm")]));
+        assert!(plain.title_stack_restores());
+
+        let muxed = Capabilities::detect(env(&[("TERM", "xterm"), ("TMUX", "/tmp/x")]));
+        assert!(
+            !muxed.title_stack_restores(),
+            "a multiplexer owns the outer title"
+        );
+
+        let unknown = Capabilities::detect(env(&[("TERM", "some-vendor-thing")]));
+        assert!(!unknown.title_stack_restores());
     }
 
     #[test]
