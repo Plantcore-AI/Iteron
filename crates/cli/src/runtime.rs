@@ -2106,12 +2106,10 @@ pub struct Agent {
     /// A recorded ContextInjection always wins over this live proposal.
     environment_context: Option<(String, Trust)>,
     pub compaction: CompactionPolicy,
-<<<<<<< HEAD
     /// One compaction per top-level submission. Set by whichever path took it — the emergency
     /// valve inside the turn loop, or the end-of-turn settle — and cleared when the next
     /// submission is admitted, so the two can never both fire on one run.
     compacted_in_run: bool,
-=======
     /// Session-scoped context accounting (I-60). Keeps a per-message token estimate with a running
     /// total and one cached tool-schema estimate so a turn does not re-serialise the whole
     /// transcript once per consumer. Every path that rewrites an already-counted message instead of
@@ -2121,7 +2119,6 @@ pub struct Agent {
     /// blocking pool (I-62). Routing does not need a fresh walk per submission, and a synchronous
     /// directory traversal has no business on an async worker.
     workspace_file_count: Option<usize>,
->>>>>>> gap/pr06
     /// The workspace root, for the verification gate's sandbox.
     pub workspace: std::path::PathBuf,
     /// If set, the harness independently runs this test command (strong oracle) when the model
@@ -2299,12 +2296,9 @@ impl Agent {
             instruction_context: None,
             environment_context: None,
             compaction: CompactionPolicy::default(),
-<<<<<<< HEAD
             compacted_in_run: false,
-=======
             context_estimator: core_ctx::RequestEstimator::new(),
             workspace_file_count: None,
->>>>>>> gap/pr06
             workspace: std::path::PathBuf::from("."),
             verify_command: None,
             bypass_permissions: false,
@@ -4796,35 +4790,28 @@ impl Agent {
                 return Ok(outcome);
             }
             let effective_system = self.effective_system();
-<<<<<<< HEAD
-            let tool_specs = self.registry.specs();
+            let tool_specs = self.advertised_tool_specs();
             // A declared capability is the route's own documented ceiling, so it is used as
             // declared. 8192 remains the conservative default for an UNKNOWN capability only —
             // clamping the declared value froze every provider at that default (I-02).
             let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192);
+            // One context accounting pass per turn, shared by the kernel token ledger and the
+            // context-window admission check below (I-60). Recomputed only when compaction
+            // actually rewrote the transcript underneath it.
+            let mut context_estimate =
+                self.context_estimator
+                    .estimate(&effective_system, &messages, &tool_specs);
             // ---- compaction, emergency valve only (ADR-002): this projection no longer fits the
             // proven window, so the alternative to summarizing here is a refused request. The
             // ROUTINE compaction moved off the critical path to `settle_compaction`, at the end of
             // the turn: buying an extra synchronous round and a cold prefix inside the turn the
-            // operator is waiting on was the whole defect. ----
+            // operator is waiting on was the whole defect. The cached estimate is deliberately NOT
+            // threaded into this decision: on the overflow path it fires at most once per run, so
+            // the accounting pass it would save is not on any hot path. ----
             if let Some(plan) = self.compaction.plan_before_overflow(
                 &effective_system,
-=======
-            let tool_specs = self.advertised_tool_specs();
-            let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192).min(8192);
-            // One context accounting pass per turn, shared by the compaction decision, the kernel
-            // token ledger, and the context-window admission check below (I-60). It is recomputed
-            // only when compaction actually rewrote the transcript underneath it.
-            let mut context_estimate =
-                self.context_estimator
-                    .estimate(&effective_system, &messages, &tool_specs);
-            // ---- compaction at the window boundary (ADR-002): if the transcript approaches
-            // the budget, summarize the middle so a long task does not overflow. Done here, at
-            // a turn boundary, because it rewrites the prefix (a cache bomb — do it rarely). ----
-            if let Some(plan) = self.compaction.plan_for_estimated_request_with_window(
-                &context_estimate,
->>>>>>> gap/pr06
                 &messages,
+                &tool_specs,
                 self.model_context_window,
                 request_max_tokens,
             ) {
@@ -4832,32 +4819,14 @@ impl Agent {
                 // Best-effort: if the summary call fails, continue uncompacted rather than lose
                 // the run (it retries next turn).
                 if let Ok(summary) = self.summarize(&plan.to_summarize, None).await {
-<<<<<<< HEAD
                     messages = CompactionPolicy::rebuild(&plan, summary.clone());
                     self.record_compaction(before, &plan, &summary, messages.len());
-=======
-                    messages = CompactionPolicy::rebuild(&plan, summary);
-                    // Record the compaction as a full snapshot so resume reconstructs the
-                    // compacted state, not the pre-compaction history (code review).
-                    self.emit(
-                        TurnId(self.seq_turn),
-                        EventKind::Compaction {
-                            messages: messages.clone(),
-                        },
-                    );
-                    self.emit(
-                        TurnId(self.seq_turn),
-                        EventKind::Notice {
-                            text: format!("compacted {before} messages -> {}", messages.len()),
-                        },
-                    );
                     // The transcript was rewritten, not appended to: drop the cached per-message
                     // estimates and re-account this turn against the compacted history.
                     self.context_estimator.invalidate_transcript();
                     context_estimate =
                         self.context_estimator
                             .estimate(&effective_system, &messages, &tool_specs);
->>>>>>> gap/pr06
                 }
             }
 
