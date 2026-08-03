@@ -39,11 +39,14 @@ fn ids_are_monotonic_and_never_reused_after_retirement() {
     let first = pending.issue("definition", 0, 1_000).unwrap();
     assert_eq!(
         pending.resolve(41, first.id, 1).unwrap(),
-        ReplyDisposition::Accepted(CompletedRequest { correlation: first })
+        ReplyDisposition::Accepted(CompletedRequest {
+            correlation: first,
+            document_snapshot: None,
+        })
     );
     let second = pending.issue("hover", 1, 1_000).unwrap();
     assert_eq!(second.id, first.id + 1);
-    assert_eq!(second.generation, 41);
+    assert_eq!(second.generation(), 41);
     assert_eq!(second.method, "hover");
 }
 
@@ -53,7 +56,10 @@ fn a_duplicate_reply_is_typed_and_cannot_resolve_a_new_request() {
     let first = pending.issue("definition", 0, 100).unwrap();
     assert_eq!(
         pending.resolve(9, first.id, 1).unwrap(),
-        ReplyDisposition::Accepted(CompletedRequest { correlation: first })
+        ReplyDisposition::Accepted(CompletedRequest {
+            correlation: first,
+            document_snapshot: None,
+        })
     );
     let second = pending.issue("hover", 1, 100).unwrap();
 
@@ -65,7 +71,8 @@ fn a_duplicate_reply_is_typed_and_cannot_resolve_a_new_request() {
     assert_eq!(
         pending.resolve(9, second.id, 2).unwrap(),
         ReplyDisposition::Accepted(CompletedRequest {
-            correlation: second
+            correlation: second,
+            document_snapshot: None,
         })
     );
 }
@@ -90,7 +97,8 @@ fn an_old_generation_cannot_alias_the_same_wire_id_in_a_new_generation() {
     assert_eq!(
         current.resolve(11, current_request.id, 1).unwrap(),
         ReplyDisposition::Accepted(CompletedRequest {
-            correlation: current_request
+            correlation: current_request,
+            document_snapshot: None,
         })
     );
 }

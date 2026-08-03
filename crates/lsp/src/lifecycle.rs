@@ -6,7 +6,7 @@
 
 use crate::{
     HEALTHY_RESTART_RESET_AFTER_MS, HEALTHY_RESTART_RESET_AFTER_SUCCESSES, LspError,
-    MAX_RESTART_ATTEMPTS, MAX_RESTART_BACKOFF_MS, MIN_RESTART_BACKOFF_MS,
+    MAX_RESTART_ATTEMPTS, MAX_RESTART_BACKOFF_MS, MIN_RESTART_BACKOFF_MS, ServerEpoch,
     pending::CompletedRequest,
 };
 use std::collections::HashSet;
@@ -47,9 +47,9 @@ impl State {
 /// observed process failure; neither is inferred from a string or exit timing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
-    InitializeSent,
+    InitializeSent(ServerEpoch),
     /// Initialize result received and `initialized` notification sent.
-    Initialized,
+    Initialized(ServerEpoch),
     ShutdownSent,
     /// Shutdown result received and the one-way `exit` notification sent.
     ExitSent,
@@ -147,8 +147,9 @@ pub struct Session {
     last_now_ms: Option<u64>,
     restart_not_before_ms: Option<u64>,
     ready_since_ms: Option<u64>,
-    successful_requests: HashSet<(u64, u32)>,
-    last_success_generation: Option<u64>,
+    initializing_epoch: Option<ServerEpoch>,
+    ready_epoch: Option<ServerEpoch>,
+    successful_requests: HashSet<u32>,
     last_success_id: u32,
 }
 
@@ -161,10 +162,11 @@ impl Session {
             last_now_ms: None,
             restart_not_before_ms: None,
             ready_since_ms: None,
+            initializing_epoch: None,
+            ready_epoch: None,
             successful_requests: HashSet::with_capacity(
                 HEALTHY_RESTART_RESET_AFTER_SUCCESSES as usize,
             ),
-            last_success_generation: None,
             last_success_id: 0,
         }
     }
@@ -175,6 +177,10 @@ impl Session {
 
     pub fn restarts(&self) -> u32 {
         self.restarts
+    }
+
+    pub fn ready_generation(&self) -> Option<u64> {
+        self.ready_epoch.map(ServerEpoch::generation)
     }
 
     pub fn accepts_requests(&self) -> bool {
@@ -194,8 +200,24 @@ impl Session {
     /// Apply a timestamped event. Illegal peer transitions remain inert, while early restart is a
     /// typed error because it would bypass a security-relevant spawn-storm bound.
     pub fn apply(&mut self, event: Event, now_ms: u64) -> Result<State, LspError> {
+        if self.state == State::Initializing {
+            let received = match event {
+                Event::InitializeSent(epoch) | Event::Initialized(epoch) => Some(epoch),
+                _ => None,
+            };
+            if let (Some(expected), Some(received)) = (self.initializing_epoch, received)
+                && expected != received
+            {
+                return Err(LspError::ServerEpochMismatch {
+                    expected: expected.generation(),
+                    received: received.generation(),
+                });
+            }
+        }
         self.observe_clock(now_ms)?;
-        if self.state == State::RestartBackoff && event == Event::InitializeSent {
+        if self.state == State::RestartBackoff
+            && let Event::InitializeSent(epoch) = event
+        {
             let not_before = self
                 .restart_not_before_ms
                 .expect("restart backoff state has a deadline");
@@ -205,13 +227,17 @@ impl Session {
                 });
             }
             self.state = State::Initializing;
+            self.initializing_epoch = Some(epoch);
             self.restart_not_before_ms = None;
             return Ok(self.state);
         }
 
         let next = match (self.state, event) {
-            (State::Uninitialized, Event::InitializeSent) => State::Initializing,
-            (State::Initializing, Event::Initialized) => State::Ready,
+            (State::Uninitialized, Event::InitializeSent(epoch)) => {
+                self.initializing_epoch = Some(epoch);
+                State::Initializing
+            }
+            (State::Initializing, Event::Initialized(_)) => State::Ready,
             (State::Ready, Event::ShutdownSent) => State::ShuttingDown,
             (State::ShuttingDown, Event::ExitSent) => State::Exiting,
             (State::Exiting, Event::StreamClosed) => State::AwaitingExitStatus,
@@ -274,28 +300,26 @@ impl Session {
     /// Returns true exactly when credit was restored.
     pub fn note_request_succeeded(
         &mut self,
-        request: CompletedRequest,
+        request: &CompletedRequest,
         now_ms: u64,
     ) -> Result<bool, LspError> {
-        self.observe_clock(now_ms)?;
         self.guard_request()?;
-        let generation = request.generation();
+        let expected = self.ready_epoch.expect("ready state has a server epoch");
+        let received = request.correlation().server_epoch();
+        if received != expected {
+            return Err(LspError::ServerEpochMismatch {
+                expected: expected.generation(),
+                received: received.generation(),
+            });
+        }
+        self.observe_clock(now_ms)?;
         let id = request.id();
-        let is_new = match self.last_success_generation {
-            None => true,
-            Some(previous_generation) if generation > previous_generation => true,
-            Some(previous_generation) if generation == previous_generation => {
-                id > self.last_success_id
-            }
-            Some(_) => false,
-        };
-        if !is_new {
+        if id <= self.last_success_id {
             return Ok(false);
         }
-        self.last_success_generation = Some(generation);
         self.last_success_id = id;
         if self.successful_requests.len() < HEALTHY_RESTART_RESET_AFTER_SUCCESSES as usize {
-            self.successful_requests.insert((generation, id));
+            self.successful_requests.insert(id);
         }
         let ready_since = self.ready_since_ms.expect("ready state has an epoch");
         let stable = now_ms.saturating_sub(ready_since) >= HEALTHY_RESTART_RESET_AFTER_MS
@@ -314,10 +338,16 @@ impl Session {
         self.state = next;
         if next == State::Ready {
             self.ready_since_ms = Some(now_ms);
+            self.ready_epoch = self.initializing_epoch.take();
             self.successful_requests.clear();
+            self.last_success_id = 0;
         } else {
             self.ready_since_ms = None;
+            self.ready_epoch = None;
             self.successful_requests.clear();
+            if next != State::Initializing {
+                self.initializing_epoch = None;
+            }
         }
         if next == State::Crashed || next == State::Exited {
             self.restart_not_before_ms = None;

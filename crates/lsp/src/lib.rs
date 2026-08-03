@@ -12,9 +12,30 @@
 
 pub mod documents;
 pub mod framing;
+mod headers;
 pub mod intel;
 pub mod lifecycle;
 pub mod pending;
+
+/// Supervisor-assigned identity of one language-server process/transport lifetime.
+///
+/// Readers, pending requests, document state, and lifecycle state must all carry the epoch they
+/// were created for. Requiring this newtype at ingress keeps delayed work from being silently
+/// relabelled as belonging to the current server after a restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ServerEpoch(u64);
+
+impl ServerEpoch {
+    /// Mint an epoch at the process supervisor boundary. Supervisors must never reuse a generation
+    /// for another process lifetime.
+    pub const fn new(generation: u64) -> Self {
+        Self(generation)
+    }
+
+    pub const fn generation(self) -> u64 {
+        self.0
+    }
+}
 
 /// A single header block may not exceed this. Real servers send two short headers; anything
 /// larger is a peer trying to make us buffer before we have seen a `Content-Length`.
@@ -171,6 +192,8 @@ pub enum LspError {
     MalformedDiagnostic { index: usize, reason: &'static str },
     #[error("server is {state}, which cannot accept requests")]
     NotReady { state: &'static str },
+    #[error("server epoch mismatch: expected generation {expected}, received {received}")]
+    ServerEpochMismatch { expected: u64, received: u64 },
     #[error("restart backoff has {remaining_ms}ms remaining")]
     RestartBackoffActive { remaining_ms: u64 },
     #[error("server exhausted its restart budget after {attempts} attempts")]
@@ -206,4 +229,6 @@ pub enum LspError {
     InvalidPosition { line: u32, character: u32, max: u32 },
     #[error("range start follows range end")]
     InvalidRange,
+    #[error("completed request was not issued against a document snapshot")]
+    ResultNotBoundToDocument,
 }

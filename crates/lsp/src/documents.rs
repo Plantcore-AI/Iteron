@@ -12,7 +12,7 @@ use crate::{
     MAX_DIAGNOSTIC_JSON_NODES_TOTAL, MAX_DIAGNOSTIC_MESSAGE_BYTES,
     MAX_DIAGNOSTIC_RELATED_INFORMATION, MAX_DIAGNOSTIC_RELATED_MESSAGE_BYTES,
     MAX_DIAGNOSTIC_SOURCE_BYTES, MAX_DIAGNOSTICS_PER_DOCUMENT, MAX_DOCUMENT_URI_BYTES,
-    MAX_LSP_POSITION, MAX_OPEN_DOCUMENTS,
+    MAX_LSP_POSITION, MAX_OPEN_DOCUMENTS, ServerEpoch,
 };
 use serde_json::Value;
 use std::{collections::HashMap, io::Write};
@@ -20,11 +20,37 @@ use std::{collections::HashMap, io::Write};
 /// Complete identity of text against which a positional request was issued.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DocumentSnapshot {
-    pub uri: String,
-    pub server_generation: u64,
-    pub incarnation: u64,
-    pub source_revision: i32,
-    pub wire_version: i32,
+    uri: String,
+    server_epoch: ServerEpoch,
+    incarnation: u64,
+    source_revision: i32,
+    wire_version: i32,
+}
+
+impl DocumentSnapshot {
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    pub fn server_generation(&self) -> u64 {
+        self.server_epoch.generation()
+    }
+
+    pub fn incarnation(&self) -> u64 {
+        self.incarnation
+    }
+
+    pub fn source_revision(&self) -> i32 {
+        self.source_revision
+    }
+
+    pub fn wire_version(&self) -> i32 {
+        self.wire_version
+    }
+
+    pub(crate) fn server_epoch(&self) -> ServerEpoch {
+        self.server_epoch
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,8 +110,19 @@ impl DiagnosticSet {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Publish {
     Accepted(DiagnosticFreshness),
-    Stale { have: i32, incoming: i32 },
-    Future { have: i32, incoming: i32 },
+    /// The notification came from a reader owned by another supervised server lifetime.
+    ForeignGeneration {
+        expected: u64,
+        received: u64,
+    },
+    Stale {
+        have: i32,
+        incoming: i32,
+    },
+    Future {
+        have: i32,
+        incoming: i32,
+    },
     Desynchronized,
     Unknown,
 }
@@ -102,7 +139,7 @@ struct Document {
 /// Tracks documents for exactly one supervised language-server generation.
 #[derive(Debug, Clone)]
 pub struct DocumentStore {
-    server_generation: u64,
+    server_epoch: ServerEpoch,
     docs: HashMap<String, Document>,
     next_incarnation: Option<u64>,
     next_wire_version: Option<i32>,
@@ -114,13 +151,14 @@ pub struct DocumentStore {
     desynchronized_drops: u64,
     unversioned_accepts: u64,
     unknown_drops: u64,
+    foreign_generation_drops: u64,
     limit_rejections: u64,
 }
 
 impl DocumentStore {
-    pub fn new(server_generation: u64) -> Self {
+    pub fn new(server_epoch: ServerEpoch) -> Self {
         Self {
-            server_generation,
+            server_epoch,
             docs: HashMap::new(),
             next_incarnation: Some(1),
             next_wire_version: Some(1),
@@ -132,12 +170,13 @@ impl DocumentStore {
             desynchronized_drops: 0,
             unversioned_accepts: 0,
             unknown_drops: 0,
+            foreign_generation_drops: 0,
             limit_rejections: 0,
         }
     }
 
     pub fn server_generation(&self) -> u64 {
-        self.server_generation
+        self.server_epoch.generation()
     }
 
     /// Begin a new open lifetime and allocate the version that must be sent in `didOpen`.
@@ -333,7 +372,7 @@ impl DocumentStore {
             DiagnosticFreshness::Exact {
                 server_generation,
                 wire_version,
-            } if server_generation == self.server_generation
+            } if server_generation == self.server_epoch.generation()
                 && wire_version == doc.wire_version =>
             {
                 Ok(&set.diagnostics)
@@ -378,6 +417,10 @@ impl DocumentStore {
         self.unknown_drops
     }
 
+    pub fn foreign_generation_drops(&self) -> u64 {
+        self.foreign_generation_drops
+    }
+
     pub fn limit_rejections(&self) -> u64 {
         self.limit_rejections
     }
@@ -385,10 +428,18 @@ impl DocumentStore {
     /// Apply the actual wire fields from `textDocument/publishDiagnostics` atomically.
     pub fn publish(
         &mut self,
+        reader_epoch: ServerEpoch,
         uri: &str,
         version: Option<i32>,
         diagnostics: Vec<Value>,
     ) -> Result<Publish, LspError> {
+        if reader_epoch != self.server_epoch {
+            self.foreign_generation_drops = self.foreign_generation_drops.saturating_add(1);
+            return Ok(Publish::ForeignGeneration {
+                expected: self.server_epoch.generation(),
+                received: reader_epoch.generation(),
+            });
+        }
         validate_document_uri(uri)?;
         let Some(doc) = self.docs.get(uri) else {
             self.unknown_drops = self.unknown_drops.saturating_add(1);
@@ -447,14 +498,14 @@ impl DocumentStore {
 
         let freshness = match version {
             Some(_) => DiagnosticFreshness::Exact {
-                server_generation: self.server_generation,
+                server_generation: self.server_epoch.generation(),
                 wire_version: have,
             },
             None => {
                 let arrival = allocate_sequence(&mut self.next_arrival, "diagnostic arrival")?;
                 self.unversioned_accepts = self.unversioned_accepts.saturating_add(1);
                 DiagnosticFreshness::Unknown {
-                    server_generation: self.server_generation,
+                    server_generation: self.server_epoch.generation(),
                     wire_version_at_arrival: have,
                     arrival,
                 }
@@ -508,7 +559,7 @@ impl DocumentStore {
             .expect("snapshot construction requires an open document");
         DocumentSnapshot {
             uri: uri.to_owned(),
-            server_generation: self.server_generation,
+            server_epoch: self.server_epoch,
             incarnation: doc.incarnation,
             source_revision: doc.source_revision,
             wire_version: doc.wire_version,

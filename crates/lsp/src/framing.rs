@@ -1,9 +1,11 @@
 //! LSP base protocol framing: `Content-Length: N\r\n\r\n` followed by exactly N bytes.
 //!
-//! This is deliberately not the newline-delimited transport the tool-server client uses. A
-//! language server sends payloads containing raw newlines inside JSON strings, so length-prefixing
-//! is the only correct framing, and the length must be honoured exactly -- reading "until it
-//! parses" would resynchronise onto attacker-chosen boundaries after any malformed message.
+//! This is deliberately not the newline-delimited transport the tool-server client uses. JSON
+//! strings encode a newline as the two wire bytes `\n` (a raw newline inside a JSON string is
+//! illegal), while a JSON text may contain raw formatting newlines between tokens. The protocol's
+//! length prefix is therefore the only authoritative message boundary, and it must be honoured
+//! exactly -- reading "until it parses" could resynchronise onto attacker-chosen boundaries after
+//! any malformed message.
 
 use crate::{
     DEFAULT_BODY_READ_TIMEOUT_MS, DEFAULT_HEADER_READ_TIMEOUT_MS, LspError, MAX_CONTENT_BYTES,
@@ -14,6 +16,8 @@ use crate::{
 use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::{fmt, time::Duration};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt};
+
+pub use crate::headers::parse_headers;
 
 const HEADER_TERMINATOR: &[u8] = b"\r\n\r\n";
 
@@ -75,60 +79,6 @@ pub fn encode(body: &str) -> Result<Vec<u8>, LspError> {
     out.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
     out.extend_from_slice(body.as_bytes());
     Ok(out)
-}
-
-/// Parse a header block that has already been split off the stream.
-///
-/// Only `Content-Length` is load-bearing. `Content-Type` is accepted and ignored, and unknown
-/// headers are ignored rather than rejected, because the spec permits them and a strict parser
-/// here would break against servers that add their own.
-pub fn parse_headers(block: &str) -> Result<usize, LspError> {
-    if block.len() > MAX_HEADER_BYTES {
-        return Err(LspError::HeaderTooLarge {
-            limit: MAX_HEADER_BYTES,
-        });
-    }
-    if !block.is_ascii() {
-        return Err(LspError::Header("header block was not ASCII".into()));
-    }
-    let mut content_length = None;
-    for line in block.split("\r\n") {
-        if line.is_empty() {
-            continue;
-        }
-        let (name, value) = line
-            .split_once(':')
-            .ok_or_else(|| LspError::Header(format!("no colon in {line:?}")))?;
-        if name.is_empty()
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        {
-            return Err(LspError::Header("invalid header name".into()));
-        }
-        if value
-            .bytes()
-            .any(|byte| (byte < b' ' && byte != b'\t') || byte == 0x7f)
-        {
-            return Err(LspError::Header("control byte in header value".into()));
-        }
-        if name.eq_ignore_ascii_case("content-length") {
-            let value = value.trim();
-            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err(LspError::Header(format!("Content-Length {value:?}")));
-            }
-            let parsed: usize = value
-                .parse()
-                .map_err(|_| LspError::Header(format!("Content-Length {value:?}")))?;
-            // Even identical duplicates are refused so this parser and any intermediary cannot
-            // disagree about whether the first or last field is authoritative.
-            if content_length.is_some() {
-                return Err(LspError::Header("multiple Content-Length fields".into()));
-            }
-            content_length = Some(parsed);
-        }
-    }
-    content_length.ok_or(LspError::MissingContentLength)
 }
 
 /// Read one framed message body as a JSON value.
@@ -541,58 +491,23 @@ mod tests {
         assert!(text.starts_with("Content-Length: 14\r\n\r\n"), "{text}");
     }
 
-    #[test]
-    fn headers_are_case_insensitive_and_ignore_unknowns() {
-        let block =
-            "content-length: 42\r\nContent-Type: application/vscode-jsonrpc\r\nX-Odd: 1\r\n";
-        assert_eq!(parse_headers(block).unwrap(), 42);
-    }
-
-    #[test]
-    fn conflicting_content_length_is_refused() {
-        let block = "Content-Length: 10\r\nContent-Length: 20\r\n";
-        assert_eq!(
-            parse_headers(block),
-            Err(LspError::Header("multiple Content-Length fields".into()))
-        );
-    }
-
-    #[test]
-    fn repeated_identical_content_length_is_also_refused() {
-        assert_eq!(
-            parse_headers("Content-Length: 10\r\nContent-Length: 10\r\n"),
-            Err(LspError::Header("multiple Content-Length fields".into()))
-        );
-    }
-
-    #[test]
-    fn header_grammar_rejects_parser_ambiguity() {
-        for block in [
-            "Content-Length: +1",
-            "Content Length: 1",
-            "Content-Length: 1\nX-Test: yes",
-            "Content-Length: 1\0",
-            "Content-Length: 1界",
-        ] {
-            assert!(matches!(parse_headers(block), Err(LspError::Header(_))));
-        }
-    }
-
-    #[test]
-    fn missing_content_length_is_typed() {
-        assert_eq!(
-            parse_headers("Content-Type: x\r\n"),
-            Err(LspError::MissingContentLength)
-        );
+    #[tokio::test]
+    async fn decodes_an_escaped_newline_in_a_json_string() {
+        // The wire JSON contains backslash+n, not a raw newline inside the string. The decoded
+        // value contains the newline character.
+        let body = "{\"text\":\"a\\nb\"}";
+        assert!(!body.contains('\n'));
+        let mut r = cursor(&encode(body).unwrap());
+        let value = read_message(&mut r).await.unwrap().unwrap();
+        assert_eq!(value["text"], "a\nb");
     }
 
     #[tokio::test]
-    async fn reads_a_body_containing_newlines_verbatim() {
-        // The payload holds a literal newline inside a JSON string. Newline-delimited framing
-        // would split this message in half; length-prefixed framing must not.
-        let body = "{\"text\":\"a\\nb\"}";
-        let mut r = cursor(&encode(body).unwrap());
-        let value = read_message(&mut r).await.unwrap().unwrap();
+    async fn reads_raw_formatting_newlines_between_json_tokens() {
+        let body = "{\n  \"text\": \"a\\nb\"\n}";
+        assert!(body.contains('\n'));
+        let mut reader = cursor(&encode(body).unwrap());
+        let value = read_message(&mut reader).await.unwrap().unwrap();
         assert_eq!(value["text"], "a\nb");
     }
 

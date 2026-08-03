@@ -1,5 +1,9 @@
 use super::*;
-use crate::{MAX_DOCUMENT_URI_BYTES, MAX_LSP_POSITION, documents::Change};
+use crate::{
+    MAX_DOCUMENT_URI_BYTES, MAX_LSP_POSITION, ServerEpoch,
+    documents::Change,
+    pending::{PendingRequests, ReplyDisposition},
+};
 
 fn loc(uri: &str, line: u32) -> Value {
     json!({
@@ -186,6 +190,36 @@ fn query_params_are_exact_and_uri_bounded() {
 }
 
 #[test]
+fn location_construction_and_deserialization_validate_uri_and_range() {
+    let location: Location = serde_json::from_value(loc("file:///valid.rs", 4)).unwrap();
+    assert_eq!(location.uri(), "file:///valid.rs");
+    assert_eq!(location.range().start().line(), 4);
+    assert_eq!(
+        serde_json::to_value(&location).unwrap()["uri"],
+        "file:///valid.rs"
+    );
+
+    assert!(serde_json::from_value::<Location>(loc("raw/path.rs", 1)).is_err());
+    assert!(
+        serde_json::from_value::<Location>(json!({
+            "uri": "file:///a.rs",
+            "range": {
+                "start": {"line": 2, "character": 0},
+                "end": {"line": 1, "character": 0}
+            }
+        }))
+        .is_err()
+    );
+    assert_eq!(
+        Location::new(
+            "not-a-uri",
+            Range::new(Position::new(0, 0).unwrap(), Position::new(0, 1).unwrap()).unwrap()
+        ),
+        Err(LspError::InvalidDocumentUri)
+    );
+}
+
+#[test]
 fn hover_handles_supported_union_shapes_and_reports_bad_fragments() {
     assert_eq!(
         parse_hover_text(&json!({"contents": {"kind":"markdown","value":"fn a()"}}))
@@ -268,77 +302,95 @@ fn hover_validates_optional_range_and_accounts_only_source_as_truncated() {
 }
 
 #[test]
-fn answer_snapshot_must_match_uri_incarnation_and_version() {
-    let mut store = DocumentStore::new(44);
+fn answer_snapshot_is_bound_to_completion_and_must_remain_current() {
+    let mut store = DocumentStore::new(ServerEpoch::new(44));
     let issued = store.open("file:///a.rs", 2).unwrap();
-    assert!(ensure_fresh(&store, &issued).is_ok());
-    let stale = DocumentSnapshot {
-        wire_version: issued.wire_version - 1,
-        ..issued.clone()
+    assert_eq!(issued.uri(), "file:///a.rs");
+    assert_eq!(issued.server_generation(), 44);
+    assert_eq!(issued.source_revision(), 2);
+    assert_eq!(issued.wire_version(), 1);
+
+    let mut pending = PendingRequests::new(44);
+    let correlation = pending
+        .issue_for_document("textDocument/definition", issued.clone(), 0, 1_000)
+        .unwrap();
+    let ReplyDisposition::Accepted(completed) = pending.resolve(44, correlation.id(), 1).unwrap()
+    else {
+        panic!("document request should complete");
+    };
+    assert!(ensure_fresh(&store, &completed).is_ok());
+
+    let generic = pending.issue("workspace/symbol", 1, 1_000).unwrap();
+    let ReplyDisposition::Accepted(generic) = pending.resolve(44, generic.id(), 2).unwrap() else {
+        panic!("generic request should complete");
     };
     assert_eq!(
-        ensure_fresh(&store, &stale),
-        Err(LspError::StaleResult { have: 1, issued: 0 })
+        ensure_fresh(&store, &generic),
+        Err(LspError::ResultNotBoundToDocument)
     );
-    let future = DocumentSnapshot {
-        wire_version: issued.wire_version + 1,
-        ..issued.clone()
+
+    let changed = match store.change("file:///a.rs", 3).unwrap() {
+        Change::Accepted(snapshot) => snapshot,
+        other => panic!("unexpected change: {other:?}"),
     };
     assert_eq!(
-        ensure_fresh(&store, &future),
-        Err(LspError::FutureResult { have: 1, issued: 2 })
+        ensure_fresh(&store, &completed),
+        Err(LspError::StaleResult { have: 2, issued: 1 })
     );
-    let gone = DocumentSnapshot {
-        uri: "file:///gone.rs".into(),
-        ..issued.clone()
+
+    let correlation = pending
+        .issue_for_document("textDocument/hover", changed.clone(), 2, 1_000)
+        .unwrap();
+    let ReplyDisposition::Accepted(changed_completion) =
+        pending.resolve(44, correlation.id(), 3).unwrap()
+    else {
+        panic!("changed document request should complete");
     };
+    store.close("file:///a.rs");
     assert_eq!(
-        ensure_fresh(&store, &gone),
+        ensure_fresh(&store, &changed_completion),
         Err(LspError::UnknownDocument {
-            uri: "file:///gone.rs".into()
-        })
-    );
-
-    let long_uri = "u".repeat(MAX_DOCUMENT_URI_BYTES + 1);
-    let invalid = DocumentSnapshot {
-        uri: long_uri,
-        ..issued.clone()
-    };
-    assert!(matches!(
-        ensure_fresh(&store, &invalid),
-        Err(LspError::DocumentUriTooLong { .. })
-    ));
-
-    let foreign = DocumentSnapshot {
-        server_generation: 43,
-        ..issued.clone()
-    };
-    assert_eq!(
-        ensure_fresh(&store, &foreign),
-        Err(LspError::StaleServerGeneration {
-            have: 44,
-            issued: 43
-        })
-    );
-
-    assert!(matches!(
-        store.change("file:///a.rs", 2),
-        Ok(Change::Desynchronized { .. })
-    ));
-    assert_eq!(
-        ensure_fresh(&store, &issued),
-        Err(LspError::DocumentDesynchronized {
             uri: "file:///a.rs".into()
         })
     );
 
+    let reopened = store.open("file:///a.rs", 3).unwrap();
+    let mut pending = PendingRequests::new(44);
+    let correlation = pending
+        .issue_for_document("textDocument/references", reopened.clone(), 0, 1_000)
+        .unwrap();
+    let ReplyDisposition::Accepted(reopened_completion) =
+        pending.resolve(44, correlation.id(), 1).unwrap()
+    else {
+        panic!("reopened document request should complete");
+    };
     store.close("file:///a.rs");
-    let reopened = store.open("file:///a.rs", 2).unwrap();
+    let next_incarnation = store.open("file:///a.rs", 3).unwrap();
     assert_eq!(
-        ensure_fresh(&store, &issued),
+        ensure_fresh(&store, &reopened_completion),
         Err(LspError::StaleDocumentIncarnation {
-            have: reopened.incarnation,
-            issued: issued.incarnation
+            have: next_incarnation.incarnation(),
+            issued: reopened.incarnation()
+        })
+    );
+
+    let mut next_store = DocumentStore::new(ServerEpoch::new(45));
+    next_store.open("file:///a.rs", 3).unwrap();
+    assert_eq!(
+        ensure_fresh(&next_store, &reopened_completion),
+        Err(LspError::StaleServerGeneration {
+            have: 45,
+            issued: 44
+        })
+    );
+
+    let foreign_snapshot = next_store.snapshot("file:///a.rs").unwrap();
+    let mut old_pending = PendingRequests::new(44);
+    assert_eq!(
+        old_pending.issue_for_document("textDocument/hover", foreign_snapshot, 0, 1_000),
+        Err(LspError::ServerEpochMismatch {
+            expected: 44,
+            received: 45
         })
     );
 }

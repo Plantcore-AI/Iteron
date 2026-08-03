@@ -1,11 +1,41 @@
 use super::*;
-use crate::pending::{PendingRequests, ReplyDisposition};
+use crate::pending::{CompletedRequest, PendingRequests, ReplyDisposition};
+
+fn initialize(generation: u64) -> Event {
+    Event::InitializeSent(ServerEpoch::new(generation))
+}
+
+fn initialized(generation: u64) -> Event {
+    Event::Initialized(ServerEpoch::new(generation))
+}
+
+fn ready_for(at_ms: u64, generation: u64) -> Session {
+    let mut session = Session::new(RestartPolicy::default());
+    session.apply(initialize(generation), at_ms).unwrap();
+    session.apply(initialized(generation), at_ms).unwrap();
+    session
+}
 
 fn ready(at_ms: u64) -> Session {
-    let mut session = Session::new(RestartPolicy::default());
-    session.apply(Event::InitializeSent, at_ms).unwrap();
-    session.apply(Event::Initialized, at_ms).unwrap();
-    session
+    ready_for(at_ms, 1)
+}
+
+fn completions(generation: u64, count: usize) -> Vec<CompletedRequest> {
+    let mut pending = PendingRequests::new(generation);
+    let requests: Vec<_> = (0..count)
+        .map(|_| pending.issue("textDocument/hover", 0, 1_000).unwrap())
+        .collect();
+    requests
+        .into_iter()
+        .map(|request| {
+            let ReplyDisposition::Accepted(completed) =
+                pending.resolve(generation, request.id(), 1).unwrap()
+            else {
+                panic!("request should complete");
+            };
+            completed
+        })
+        .collect()
 }
 
 #[test]
@@ -17,14 +47,14 @@ fn requests_are_refused_until_the_handshake_completes() {
             state: "uninitialized"
         })
     ));
-    session.apply(Event::InitializeSent, 0).unwrap();
+    session.apply(initialize(1), 0).unwrap();
     assert!(matches!(
         session.guard_request(),
         Err(LspError::NotReady {
             state: "initializing"
         })
     ));
-    session.apply(Event::Initialized, 1).unwrap();
+    session.apply(initialized(1), 1).unwrap();
     assert!(session.guard_request().is_ok());
 }
 
@@ -89,7 +119,7 @@ fn unexpected_stream_close_crashes_every_live_protocol_phase() {
     );
 
     let mut initializing = Session::new(RestartPolicy::default());
-    initializing.apply(Event::InitializeSent, 0).unwrap();
+    initializing.apply(initialize(1), 0).unwrap();
     assert_eq!(
         initializing.apply(Event::StreamClosed, 1).unwrap(),
         State::Crashed
@@ -103,6 +133,7 @@ fn unexpected_stream_close_crashes_every_live_protocol_phase() {
 fn restart_budget_and_backoff_are_both_enforced() {
     let mut session = ready(0);
     let mut now = 1u64;
+    let mut generation = 2u64;
     let mut delays = Vec::new();
     for expected in [250u64, 500, 1_000] {
         session.apply(Event::ProcessFailed, now).unwrap();
@@ -111,12 +142,13 @@ fn restart_budget_and_backoff_are_both_enforced() {
         assert_eq!(delay, expected);
         assert_eq!(session.state(), State::RestartBackoff);
         assert_eq!(
-            session.apply(Event::InitializeSent, now + delay - 1),
+            session.apply(initialize(generation), now + delay - 1),
             Err(LspError::RestartBackoffActive { remaining_ms: 1 })
         );
         now += delay;
-        session.apply(Event::InitializeSent, now).unwrap();
-        session.apply(Event::Initialized, now).unwrap();
+        session.apply(initialize(generation), now).unwrap();
+        session.apply(initialized(generation), now).unwrap();
+        generation += 1;
         now += 1;
     }
     assert_eq!(delays, vec![250, 500, 1_000]);
@@ -133,44 +165,48 @@ fn only_distinct_successful_requests_restore_restart_credit() {
     let mut session = ready(0);
     session.apply(Event::ProcessFailed, 1).unwrap();
     let delay = session.plan_restart(1).unwrap();
-    session.apply(Event::InitializeSent, 1 + delay).unwrap();
-    session.apply(Event::Initialized, 1 + delay).unwrap();
+    session.apply(initialize(2), 1 + delay).unwrap();
+    session.apply(initialized(2), 1 + delay).unwrap();
     let ready_at = 1 + delay;
-    let mut pending = PendingRequests::new(1);
+    let mut pending = PendingRequests::new(2);
     let first_correlation = pending.issue("textDocument/hover", 0, 1_000).unwrap();
     let second_correlation = pending.issue("textDocument/definition", 0, 1_000).unwrap();
     let third_correlation = pending.issue("textDocument/references", 0, 1_000).unwrap();
-    let ReplyDisposition::Accepted(first) = pending.resolve(1, first_correlation.id(), 1).unwrap()
+    let ReplyDisposition::Accepted(first) = pending.resolve(2, first_correlation.id(), 1).unwrap()
     else {
         panic!("first request should complete");
     };
     let ReplyDisposition::Accepted(second) =
-        pending.resolve(1, second_correlation.id(), 1).unwrap()
+        pending.resolve(2, second_correlation.id(), 1).unwrap()
     else {
         panic!("second request should complete");
     };
-    let ReplyDisposition::Accepted(third) = pending.resolve(1, third_correlation.id(), 1).unwrap()
+    let ReplyDisposition::Accepted(third) = pending.resolve(2, third_correlation.id(), 1).unwrap()
     else {
         panic!("third request should complete");
     };
 
-    assert!(!session.note_request_succeeded(first, ready_at + 1).unwrap());
+    assert!(
+        !session
+            .note_request_succeeded(&first, ready_at + 1)
+            .unwrap()
+    );
     assert_eq!(session.restarts(), 1);
     assert!(
         !session
-            .note_request_succeeded(first, ready_at + HEALTHY_RESTART_RESET_AFTER_MS)
+            .note_request_succeeded(&first, ready_at + HEALTHY_RESTART_RESET_AFTER_MS)
             .unwrap()
     );
     assert_eq!(session.restarts(), 1, "a replayed success cannot heal");
     assert!(
         !session
-            .note_request_succeeded(second, ready_at + HEALTHY_RESTART_RESET_AFTER_MS)
+            .note_request_succeeded(&second, ready_at + HEALTHY_RESTART_RESET_AFTER_MS)
             .unwrap()
     );
     assert_eq!(session.restarts(), 1);
     assert!(
         session
-            .note_request_succeeded(third, ready_at + HEALTHY_RESTART_RESET_AFTER_MS)
+            .note_request_succeeded(&third, ready_at + HEALTHY_RESTART_RESET_AFTER_MS)
             .unwrap()
     );
     assert_eq!(session.restarts(), 0);
@@ -179,13 +215,15 @@ fn only_distinct_successful_requests_restore_restart_credit() {
     session.apply(Event::ProcessFailed, crashed_at).unwrap();
     let delay = session.plan_restart(crashed_at).unwrap();
     let next_ready = crashed_at + delay;
-    session.apply(Event::InitializeSent, next_ready).unwrap();
-    session.apply(Event::Initialized, next_ready).unwrap();
+    session.apply(initialize(3), next_ready).unwrap();
+    session.apply(initialized(3), next_ready).unwrap();
     for replay in [first, second, third] {
-        assert!(
-            !session
-                .note_request_succeeded(replay, next_ready + HEALTHY_RESTART_RESET_AFTER_MS)
-                .unwrap()
+        assert_eq!(
+            session.note_request_succeeded(&replay, next_ready + HEALTHY_RESTART_RESET_AFTER_MS),
+            Err(LspError::ServerEpochMismatch {
+                expected: 3,
+                received: 2
+            })
         );
     }
     assert_eq!(
@@ -196,11 +234,82 @@ fn only_distinct_successful_requests_restore_restart_credit() {
 }
 
 #[test]
+fn ready_epoch_rejects_old_and_future_completions_without_healing_credit() {
+    let mut session = ready_for(0, 7);
+    session.apply(Event::ProcessFailed, 1).unwrap();
+    let delay = session.plan_restart(1).unwrap();
+    let ready_at = 1 + delay;
+    session.apply(initialize(8), ready_at).unwrap();
+    session.apply(initialized(8), ready_at).unwrap();
+    assert_eq!(session.ready_generation(), Some(8));
+    assert_eq!(session.restarts(), 1);
+
+    // These are deliberately the unreported ids 4-6 from the preceding server lifetime: their
+    // numerically newer ids must not count as health evidence for generation eight.
+    let old: Vec<_> = completions(7, 6).into_iter().skip(3).collect();
+    let future = completions(9, 3);
+    let stable_at = ready_at + HEALTHY_RESTART_RESET_AFTER_MS;
+    for completion in &old {
+        assert_eq!(
+            session.note_request_succeeded(completion, stable_at),
+            Err(LspError::ServerEpochMismatch {
+                expected: 8,
+                received: 7,
+            })
+        );
+    }
+    for completion in &future {
+        assert_eq!(
+            session.note_request_succeeded(completion, stable_at),
+            Err(LspError::ServerEpochMismatch {
+                expected: 8,
+                received: 9,
+            })
+        );
+    }
+    assert_eq!(session.restarts(), 1);
+
+    let current = completions(8, HEALTHY_RESTART_RESET_AFTER_SUCCESSES as usize);
+    assert!(
+        !session
+            .note_request_succeeded(&current[0], stable_at)
+            .unwrap()
+    );
+    assert!(
+        !session
+            .note_request_succeeded(&current[1], stable_at)
+            .unwrap()
+    );
+    assert!(
+        session
+            .note_request_succeeded(&current[2], stable_at)
+            .unwrap()
+    );
+    assert_eq!(session.restarts(), 0);
+}
+
+#[test]
+fn initialize_acknowledgement_must_match_the_started_epoch() {
+    let mut session = Session::new(RestartPolicy::default());
+    session.apply(initialize(8), 0).unwrap();
+    assert_eq!(
+        session.apply(initialized(7), 1),
+        Err(LspError::ServerEpochMismatch {
+            expected: 8,
+            received: 7,
+        })
+    );
+    assert_eq!(session.state(), State::Initializing);
+    session.apply(initialized(8), 1).unwrap();
+    assert_eq!(session.ready_generation(), Some(8));
+}
+
+#[test]
 fn restart_policy_rejects_unbounded_or_inverted_configuration() {
     let disabled = RestartPolicy::new(0, 1, 1).unwrap();
     let mut no_restart = Session::new(disabled);
-    no_restart.apply(Event::InitializeSent, 0).unwrap();
-    no_restart.apply(Event::Initialized, 0).unwrap();
+    no_restart.apply(initialize(1), 0).unwrap();
+    no_restart.apply(initialized(1), 0).unwrap();
     no_restart.apply(Event::ProcessFailed, 1).unwrap();
     assert_eq!(
         no_restart.plan_restart(1),
@@ -258,6 +367,6 @@ fn restart_backoff_deadline_overflow_is_typed_without_state_mutation() {
 #[test]
 fn duplicate_or_out_of_order_peer_events_are_inert() {
     let mut session = ready(0);
-    assert_eq!(session.apply(Event::Initialized, 1).unwrap(), State::Ready);
+    assert_eq!(session.apply(initialized(1), 1).unwrap(), State::Ready);
     assert_eq!(session.apply(Event::ExitSent, 2).unwrap(), State::Ready);
 }

@@ -1,26 +1,29 @@
 //! Bounded in-flight request registry: allocation, correlation, cancellation, and expiry.
 //!
-//! Request ids are allocated monotonically inside one explicit host/session generation.  A caller
-//! cannot recycle an id after a request completes, so a delayed reply can never resolve a newer
-//! request.  Cancellation keeps the request charged until the server replies or its deadline
-//! expires, matching the LSP rule that `$/cancelRequest` does not suppress the response.
-
+//! Request ids are monotonic within one explicit host/session generation and never recycle.
+//! Cancellation stays charged until reply or expiry because `$/cancelRequest` does not suppress
+//! the response.
 use crate::{
-    LspError, MAX_IN_FLIGHT, MAX_JSONRPC_NUMERIC_ID, MAX_REQUEST_TIMEOUT_MS, MIN_REQUEST_TIMEOUT_MS,
+    LspError, MAX_IN_FLIGHT, MAX_JSONRPC_NUMERIC_ID, MAX_REQUEST_TIMEOUT_MS,
+    MIN_REQUEST_TIMEOUT_MS, ServerEpoch, documents::DocumentSnapshot,
 };
 use std::collections::{HashMap, VecDeque};
 
 /// Identity carried from admission through every terminal disposition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RequestCorrelation {
-    generation: u64,
+    server_epoch: ServerEpoch,
     id: u32,
     method: &'static str,
 }
 
 impl RequestCorrelation {
     pub fn generation(self) -> u64 {
-        self.generation
+        self.server_epoch.generation()
+    }
+
+    pub fn server_epoch(self) -> ServerEpoch {
+        self.server_epoch
     }
 
     pub fn id(self) -> u32 {
@@ -38,26 +41,33 @@ impl RequestCorrelation {
 }
 
 /// Capability minted only when a live, non-cancelled request resolves on time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CompletedRequest {
     correlation: RequestCorrelation,
+    document_snapshot: Option<DocumentSnapshot>,
 }
 
 impl CompletedRequest {
-    pub fn correlation(self) -> RequestCorrelation {
+    pub fn correlation(&self) -> RequestCorrelation {
         self.correlation
     }
 
-    pub fn generation(self) -> u64 {
+    pub fn generation(&self) -> u64 {
         self.correlation.generation()
     }
 
-    pub fn id(self) -> u32 {
+    pub fn id(&self) -> u32 {
         self.correlation.id()
     }
 
-    pub fn method(self) -> &'static str {
+    pub fn method(&self) -> &'static str {
         self.correlation.method()
+    }
+
+    /// Snapshot captured when a positional request entered the pending registry.
+    /// Generic requests deliberately return `None` and cannot pass the freshness gate.
+    pub fn document_snapshot(&self) -> Option<&DocumentSnapshot> {
+        self.document_snapshot.as_ref()
     }
 }
 
@@ -67,9 +77,10 @@ enum EntryState {
     Cancelling,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Entry {
     correlation: RequestCorrelation,
+    document_snapshot: Option<DocumentSnapshot>,
     issued_ms: u64,
     deadline_ms: u64,
     state: EntryState,
@@ -85,7 +96,7 @@ pub struct Expired {
     pub elapsed_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplyDisposition {
     /// An ordinary request completed on time.
     Accepted(CompletedRequest),
@@ -142,7 +153,7 @@ struct Tombstone {
 
 #[derive(Debug, Clone)]
 pub struct PendingRequests {
-    generation: u64,
+    server_epoch: ServerEpoch,
     entries: HashMap<u32, Entry>,
     tombstones: VecDeque<Tombstone>,
     capacity: usize,
@@ -155,13 +166,13 @@ pub struct PendingRequests {
 
 impl PendingRequests {
     /// Construct a registry for one explicit host/document-session generation.
-    pub fn new(generation: u64) -> Self {
-        Self::with_capacity(generation, MAX_IN_FLIGHT)
+    pub fn new(server_generation: u64) -> Self {
+        Self::with_capacity(server_generation, MAX_IN_FLIGHT)
             .expect("the crate's maximum in-flight capacity is valid")
     }
 
-    /// Construct a tighter registry. Capacity is never silently clamped.
-    pub fn with_capacity(generation: u64, capacity: usize) -> Result<Self, LspError> {
+    /// Construct a tighter registry without silently clamping capacity.
+    pub fn with_capacity(server_generation: u64, capacity: usize) -> Result<Self, LspError> {
         if !(1..=MAX_IN_FLIGHT).contains(&capacity) {
             return Err(LspError::InvalidPendingCapacity {
                 value: capacity,
@@ -169,7 +180,7 @@ impl PendingRequests {
             });
         }
         Ok(Self {
-            generation,
+            server_epoch: ServerEpoch::new(server_generation),
             entries: HashMap::with_capacity(capacity),
             tombstones: VecDeque::with_capacity(capacity),
             capacity,
@@ -182,7 +193,7 @@ impl PendingRequests {
     }
 
     pub fn generation(&self) -> u64 {
-        self.generation
+        self.server_epoch.generation()
     }
 
     pub fn capacity(&self) -> usize {
@@ -223,6 +234,34 @@ impl PendingRequests {
         now_ms: u64,
         timeout_ms: u64,
     ) -> Result<RequestCorrelation, LspError> {
+        self.issue_inner(method, None, now_ms, timeout_ms)
+    }
+
+    /// Retain a positional request's exact document identity through accepted completion.
+    pub fn issue_for_document(
+        &mut self,
+        method: &'static str,
+        document_snapshot: DocumentSnapshot,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> Result<RequestCorrelation, LspError> {
+        if document_snapshot.server_epoch() != self.server_epoch {
+            self.rejected = self.rejected.saturating_add(1);
+            return Err(LspError::ServerEpochMismatch {
+                expected: self.server_epoch.generation(),
+                received: document_snapshot.server_generation(),
+            });
+        }
+        self.issue_inner(method, Some(document_snapshot), now_ms, timeout_ms)
+    }
+
+    fn issue_inner(
+        &mut self,
+        method: &'static str,
+        document_snapshot: Option<DocumentSnapshot>,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> Result<RequestCorrelation, LspError> {
         self.observe_clock(now_ms)?;
         if !(MIN_REQUEST_TIMEOUT_MS..=MAX_REQUEST_TIMEOUT_MS).contains(&timeout_ms) {
             self.rejected = self.rejected.saturating_add(1);
@@ -253,12 +292,12 @@ impl PendingRequests {
         let Some(id) = self.next_id else {
             self.rejected = self.rejected.saturating_add(1);
             return Err(LspError::RequestIdExhausted {
-                generation: self.generation,
+                generation: self.server_epoch.generation(),
             });
         };
         self.next_id = (id < MAX_JSONRPC_NUMERIC_ID).then_some(id + 1);
         let correlation = RequestCorrelation {
-            generation: self.generation,
+            server_epoch: self.server_epoch,
             id,
             method,
         };
@@ -266,6 +305,7 @@ impl PendingRequests {
             id,
             Entry {
                 correlation,
+                document_snapshot,
                 issued_ms: now_ms,
                 deadline_ms,
                 state: EntryState::Active,
@@ -277,21 +317,21 @@ impl PendingRequests {
     /// Retire a reply under the same deadline rule used by the sweeper.
     pub fn resolve(
         &mut self,
-        generation: u64,
+        reader_generation: u64,
         id: u32,
         now_ms: u64,
     ) -> Result<ReplyDisposition, LspError> {
-        if generation != self.generation {
+        if reader_generation != self.server_epoch.generation() {
             return Ok(ReplyDisposition::ForeignGeneration {
-                expected: self.generation,
-                received: generation,
+                expected: self.server_epoch.generation(),
+                received: reader_generation,
                 id,
             });
         }
         self.observe_clock(now_ms)?;
         if let Some(entry) = self.entries.remove(&id) {
             if entry.deadline_ms <= now_ms {
-                let expired = expired(entry, now_ms);
+                let expired = expired(&entry, now_ms);
                 self.timed_out = self.timed_out.saturating_add(1);
                 self.remember(
                     entry.correlation,
@@ -305,6 +345,7 @@ impl PendingRequests {
             return Ok(match entry.state {
                 EntryState::Active => ReplyDisposition::Accepted(CompletedRequest {
                     correlation: entry.correlation,
+                    document_snapshot: entry.document_snapshot,
                 }),
                 EntryState::Cancelling => ReplyDisposition::Cancelled(entry.correlation),
             });
@@ -315,28 +356,31 @@ impl PendingRequests {
     /// Mark a request cancelling without releasing its admission slot.
     pub fn cancel(
         &mut self,
-        generation: u64,
+        reader_generation: u64,
         id: u32,
         now_ms: u64,
     ) -> Result<CancelDisposition, LspError> {
-        if generation != self.generation {
+        if reader_generation != self.server_epoch.generation() {
             return Ok(CancelDisposition::ForeignGeneration {
-                expected: self.generation,
-                received: generation,
+                expected: self.server_epoch.generation(),
+                received: reader_generation,
                 id,
             });
         }
         self.observe_clock(now_ms)?;
-        let Some(entry) = self.entries.get(&id).copied() else {
+        let Some(entry) = self.entries.get(&id).cloned() else {
             return Ok(if self.was_issued(id) {
-                CancelDisposition::Retired { generation, id }
+                CancelDisposition::Retired {
+                    generation: reader_generation,
+                    id,
+                }
             } else {
                 CancelDisposition::Unknown
             });
         };
         if entry.deadline_ms <= now_ms {
             self.entries.remove(&id);
-            let expired = expired(entry, now_ms);
+            let expired = expired(&entry, now_ms);
             self.timed_out = self.timed_out.saturating_add(1);
             self.remember(
                 entry.correlation,
@@ -376,7 +420,7 @@ impl PendingRequests {
                 .entries
                 .remove(&id)
                 .expect("expired id came from the live map");
-            let expired = expired(entry, now_ms);
+            let expired = expired(&entry, now_ms);
             self.remember(
                 entry.correlation,
                 RetiredKind::TimedOut {
@@ -399,7 +443,7 @@ impl PendingRequests {
             return match tombstone.kind {
                 RetiredKind::Replied => ReplyDisposition::Duplicate(tombstone.correlation),
                 RetiredKind::TimedOut { issued_ms } => ReplyDisposition::Late(Expired {
-                    generation: tombstone.correlation.generation,
+                    generation: tombstone.correlation.generation(),
                     id,
                     method: tombstone.correlation.method,
                     elapsed_ms: now_ms.saturating_sub(issued_ms),
@@ -408,7 +452,7 @@ impl PendingRequests {
         }
         if self.was_issued(id) {
             ReplyDisposition::Retired {
-                generation: self.generation,
+                generation: self.server_epoch.generation(),
                 id,
             }
         } else {
@@ -441,9 +485,9 @@ impl PendingRequests {
     }
 }
 
-fn expired(entry: Entry, now_ms: u64) -> Expired {
+fn expired(entry: &Entry, now_ms: u64) -> Expired {
     Expired {
-        generation: entry.correlation.generation,
+        generation: entry.correlation.generation(),
         id: entry.correlation.id,
         method: entry.correlation.method,
         elapsed_ms: now_ms.saturating_sub(entry.issued_ms),

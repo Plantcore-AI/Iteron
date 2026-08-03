@@ -7,7 +7,8 @@
 use crate::{
     LspError, MAX_HOVER_BYTES, MAX_HOVER_FRAGMENTS, MAX_LOCATION_INPUTS, MAX_LOCATIONS,
     MAX_LSP_POSITION,
-    documents::{DocumentSnapshot, DocumentStore, range_components, validate_document_uri},
+    documents::{DocumentStore, range_components, validate_document_uri},
+    pending::CompletedRequest,
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::{Value, json};
@@ -101,10 +102,42 @@ impl<'de> Deserialize<'de> for Range {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Location {
-    pub uri: String,
-    pub range: Range,
+    uri: String,
+    range: Range,
+}
+
+impl Location {
+    pub fn new(uri: impl Into<String>, range: Range) -> Result<Self, LspError> {
+        let uri = uri.into();
+        validate_document_uri(&uri)?;
+        Ok(Self { uri, range })
+    }
+
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    pub fn range(&self) -> Range {
+        self.range
+    }
+}
+
+impl<'de> Deserialize<'de> for Location {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WireLocation {
+            uri: String,
+            range: Range,
+        }
+
+        let wire = WireLocation::deserialize(deserializer)?;
+        Self::new(wire.uri, wire.range).map_err(de::Error::custom)
+    }
 }
 
 /// What a caller asked for. The method string is derived here so a typo cannot produce a request
@@ -211,13 +244,7 @@ fn location_from(item: &Value) -> Option<Location> {
 }
 
 fn location(uri: &str, range: Range) -> Option<Location> {
-    if validate_document_uri(uri).is_err() {
-        return None;
-    }
-    Some(Location {
-        uri: uri.to_owned(),
-        range,
-    })
+    Location::new(uri, range).ok()
 }
 
 fn range_from(value: &Value) -> Option<Range> {
@@ -341,34 +368,45 @@ fn utf8_prefix_len(text: &str, max_bytes: usize) -> usize {
     end
 }
 
-/// Snapshot freshness check for a positional answer. A future driver must repeat this check at the
-/// effect/commit boundary; this pure helper does not make a later edit atomic with the check.
-pub fn ensure_fresh(store: &DocumentStore, issued: &DocumentSnapshot) -> Result<(), LspError> {
-    validate_document_uri(&issued.uri)?;
-    let current = store.snapshot(&issued.uri)?;
-    if current.server_generation != issued.server_generation {
+/// Freshness check for a completed positional answer. The pending registry captured the snapshot
+/// at admission and returned it inside this unforgeable completion capability. A future driver
+/// must repeat this check at the effect/commit boundary; this pure helper does not make a later
+/// edit atomic with the check.
+pub fn ensure_fresh(store: &DocumentStore, completed: &CompletedRequest) -> Result<(), LspError> {
+    let issued = completed
+        .document_snapshot()
+        .ok_or(LspError::ResultNotBoundToDocument)?;
+    if completed.generation() != issued.server_generation() {
+        return Err(LspError::ServerEpochMismatch {
+            expected: issued.server_generation(),
+            received: completed.generation(),
+        });
+    }
+    validate_document_uri(issued.uri())?;
+    let current = store.snapshot(issued.uri())?;
+    if current.server_epoch() != issued.server_epoch() {
         return Err(LspError::StaleServerGeneration {
-            have: current.server_generation,
-            issued: issued.server_generation,
+            have: current.server_generation(),
+            issued: issued.server_generation(),
         });
     }
-    if current.incarnation != issued.incarnation {
+    if current.incarnation() != issued.incarnation() {
         return Err(LspError::StaleDocumentIncarnation {
-            have: current.incarnation,
-            issued: issued.incarnation,
+            have: current.incarnation(),
+            issued: issued.incarnation(),
         });
     }
-    if current.wire_version == issued.wire_version {
+    if current.wire_version() == issued.wire_version() {
         Ok(())
-    } else if issued.wire_version < current.wire_version {
+    } else if issued.wire_version() < current.wire_version() {
         Err(LspError::StaleResult {
-            have: current.wire_version,
-            issued: issued.wire_version,
+            have: current.wire_version(),
+            issued: issued.wire_version(),
         })
     } else {
         Err(LspError::FutureResult {
-            have: current.wire_version,
-            issued: issued.wire_version,
+            have: current.wire_version(),
+            issued: issued.wire_version(),
         })
     }
 }
