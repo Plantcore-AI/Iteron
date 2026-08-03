@@ -170,6 +170,11 @@ async fn drain_bounded<R: AsyncRead + Unpin>(
 pub fn configure_process_group(command: &mut tokio::process::Command) {
     #[cfg(unix)]
     command.process_group(0);
+    // No Windows equivalent is wired yet: process groups there mean job objects, which is #39's
+    // territory and unbuilt. Bind the parameter so a `-D warnings` build on windows-msvc does not
+    // fail on an unused argument.
+    #[cfg(not(unix))]
+    let _ = command;
 }
 
 #[cfg(unix)]
