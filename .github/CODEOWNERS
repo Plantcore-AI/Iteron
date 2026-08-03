@@ -26,11 +26,13 @@
 /.github/ISSUE_TEMPLATE/** @fr0m-scratch
 /.github/workflows/** @fr0m-scratch
 /crates/agents/** @fr0m-scratch
+/crates/changeset/** @fr0m-scratch
 /crates/ctx/** @fr0m-scratch
 /crates/eval/** @fr0m-scratch
 /crates/evolve/** @fr0m-scratch
 /crates/kernel/** @fr0m-scratch
 /crates/lsp/** @fr0m-scratch
+/crates/marketplace/** @fr0m-scratch
 /crates/mcp/** @fr0m-scratch
 /crates/obs/** @fr0m-scratch
 /crates/protocol/** @fr0m-scratch
@@ -38,6 +40,8 @@
 /crates/record/** @fr0m-scratch
 /crates/sandbox/** @fr0m-scratch
 /crates/sched/** @fr0m-scratch
+/crates/statusline/** @fr0m-scratch
+/crates/support/** @fr0m-scratch
 /crates/tools/** @fr0m-scratch
 /crates/verify/** @fr0m-scratch
 /crates/workflow/** @fr0m-scratch

@@ -367,6 +367,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-changeset"
+version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "core-cli"
 version = "0.0.1"
 dependencies = [
@@ -475,6 +482,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-marketplace"
+version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "core-mcp"
 version = "0.0.1"
 dependencies = [
@@ -559,6 +573,21 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "core-statusline"
+version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "core-support"
+version = "0.0.1"
+dependencies = [
+ "core-record",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

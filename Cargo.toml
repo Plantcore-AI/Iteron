@@ -5,6 +5,10 @@
 resolver = "3"
 members = [
     "xtask",
+    "crates/changeset",
+    "crates/marketplace",
+    "crates/statusline",
+    "crates/support",
     "crates/protocol",
     "crates/record",
     "crates/obs",

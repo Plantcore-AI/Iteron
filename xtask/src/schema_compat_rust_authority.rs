@@ -6,12 +6,14 @@ use std::path::{Component, Path};
 
 const MEMBERS: &[(&str, &str)] = &[
     ("crates/agents", "core-agents"),
+    ("crates/changeset", "core-changeset"),
     ("crates/cli", "core-cli"),
     ("crates/ctx", "core-ctx"),
     ("crates/eval", "core-eval"),
     ("crates/evolve", "core-evolve"),
     ("crates/kernel", "core-kernel"),
     ("crates/lsp", "core-lsp"),
+    ("crates/marketplace", "core-marketplace"),
     ("crates/mcp", "core-mcp"),
     ("crates/obs", "core-obs"),
     ("crates/protocol", "core-protocol"),
@@ -19,6 +21,8 @@ const MEMBERS: &[(&str, &str)] = &[
     ("crates/record", "core-record"),
     ("crates/sandbox", "core-sandbox"),
     ("crates/sched", "core-sched"),
+    ("crates/statusline", "core-statusline"),
+    ("crates/support", "core-support"),
     ("crates/tools", "core-tools"),
     ("crates/verify", "core-verify"),
     ("crates/workflow", "core-workflow"),
