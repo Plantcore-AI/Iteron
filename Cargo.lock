@@ -575,6 +575,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-support"
+version = "0.0.1"
+dependencies = [
+ "core-record",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "core-tools"
 version = "0.0.1"
 dependencies = [

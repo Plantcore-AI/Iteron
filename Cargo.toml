@@ -12,6 +12,7 @@ members = [
     "crates/record",
     "crates/obs",
     "crates/provider",
+    "crates/support",
     "crates/tools",
     "crates/sandbox",
     "crates/ctx",

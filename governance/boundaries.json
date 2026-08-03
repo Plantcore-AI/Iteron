@@ -407,6 +407,20 @@
       "checks": ["cargo test -p core-statusline --locked"]
     },
     {
+      "id": "support-bundle",
+      "title": "Support bundle",
+      "summary": "Deterministic, allowlisted, redacted diagnostic bundle with no transmit path.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "tree", "path": "crates/support" }
+      ],
+      "contracts": ["allowlisted-environment-capture", "deterministic-redacted-bundle"],
+      "checks": ["cargo test -p core-support --locked"]
+    },
+    {
       "id": "context-core",
       "title": "Context core",
       "summary": "Compaction, instruction trust, source access, outline, and stable context estimation.",
@@ -1161,6 +1175,11 @@
       },
       "core-statusline": {
         "normal": [],
+        "dev": [],
+        "build": []
+      },
+      "core-support": {
+        "normal": ["core-record"],
         "dev": [],
         "build": []
       },

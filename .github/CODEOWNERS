@@ -40,6 +40,7 @@
 /crates/sandbox/** @fr0m-scratch
 /crates/sched/** @fr0m-scratch
 /crates/statusline/** @fr0m-scratch
+/crates/support/** @fr0m-scratch
 /crates/tools/** @fr0m-scratch
 /crates/verify/** @fr0m-scratch
 /crates/workflow/** @fr0m-scratch
