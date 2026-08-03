@@ -224,6 +224,20 @@
       ]
     },
     {
+      "id": "telemetry-export",
+      "title": "Telemetry export sink",
+      "summary": "Operator-authorised OTel egress: user-config-only endpoint, brokered network effect, bounded and reaped like any other world effect.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "file", "path": "crates/cli/src/runtime/telemetry.rs" }
+      ],
+      "contracts": ["trusted-hook-origin", "bounded-hook-process"],
+      "checks": ["cargo test -p core-cli telemetry --locked"]
+    },
+    {
       "id": "kernel-hooks",
       "title": "Runtime lifecycle hooks",
       "summary": "CLI-hosted lifecycle hook admission, bounded child processes, environment policy, and hook evidence.",

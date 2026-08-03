@@ -18,6 +18,7 @@ pub use core_kernel::{diagnostics, effect_admission, effect_class, effect_journa
 pub mod hooks;
 mod pricing;
 mod strategy_runtime;
+pub mod telemetry;
 mod workflow_spawner;
 use core_ctx::{CompactionPolicy, ContextEstimate, estimate_request_context};
 use core_obs::{
@@ -2182,6 +2183,10 @@ pub struct Agent {
     failed_actions: std::collections::HashMap<String, String>,
     /// Lifecycle hooks (R5), loaded from the USER config only (trust-by-origin). Empty by default.
     pub hooks: Hooks,
+    /// The operator-authorised telemetry export target (#105). `None` -- the default -- means no
+    /// effect is ever admitted, so an unconfigured run is byte-identical to one in a build without
+    /// the exporter.
+    pub telemetry: Option<telemetry::TelemetrySink>,
     /// One absolute wall deadline shared by decomposition, fan-out, compaction, retries, and the
     /// writer loop. `drive()` must never reset it after orchestration has already spent time.
     run_deadline: Option<Instant>,
@@ -2279,6 +2284,7 @@ impl Agent {
             delegation_depth: 0,
             failed_actions: std::collections::HashMap::new(),
             hooks: Hooks::default(),
+            telemetry: None,
             run_deadline: None,
         }
     }
@@ -3721,6 +3727,80 @@ impl Agent {
         }
     }
 
+    /// Export the run's telemetry projection across the effect boundary (#105).
+    ///
+    /// Returns immediately when no sink is configured, which is the default: no config, no effect,
+    /// no journal entry, no measurable difference. That is the whole meaning of "off".
+    ///
+    /// When it IS configured, the egress crosses the same broker as every other world effect, so a
+    /// stalled collector is bounded and reaped, and a crash mid-POST leaves an `EffectUnknown` that
+    /// recovery refuses to replay -- a retried export would duplicate spans, and a duplicated span
+    /// is a wrong dashboard rather than a missing one.
+    ///
+    /// The payload is a PROJECTION: `core_obs::otel::project` reads events the record already
+    /// holds and measures nothing, so the exporter cannot disagree with the audit log it exports.
+    async fn brokered_telemetry_export(&mut self, turn: TurnId) -> Result<(), KernelError> {
+        let Some(sink) = self.telemetry.clone() else {
+            return Ok(());
+        };
+        let Ok(timed) = core_record::replay_timed(self.rollout.path()) else {
+            // A rollout that will not replay is an audit problem, not a telemetry problem, and it
+            // is already reported by every other reader. Exporting a partial projection from bytes
+            // the audit path rejected is the one thing this must not do.
+            return Ok(());
+        };
+        let events: Vec<&core_protocol::Event> = timed.iter().map(|entry| &entry.event).collect();
+        let timeline = core_obs::timeline::fold(timed.iter().map(|e| (e.ts_us, &e.event)));
+        let payload = core_obs::otel::project(&self.rollout.run_id().0, &events, &timeline);
+        if payload.dropped > 0 {
+            // Counted, never silent. A consumer that saw the cap and no drop count would believe
+            // it had seen the whole run.
+            self.ui(UiEvent::Notice(format!(
+                "telemetry export dropped {} span(s) at the payload bound",
+                payload.dropped
+            )));
+        }
+
+        let class = effect_class::EffectClass::Telemetry;
+        let ordinal = self.next_effect_ordinal(turn, class);
+        let effect = KernelEffect {
+            turn,
+            class,
+            ordinal,
+            capability: Capability::IrreversibleExternal,
+            audit_arguments: serde_json::json!({
+                "endpoint": sink.endpoint(),
+                "spans": payload.spans.len(),
+                "metrics": payload.metrics.len(),
+                "dropped": payload.dropped,
+            }),
+            workspace: self.workspace.as_path(),
+        };
+        let Agent {
+            rollout,
+            effect_admissions,
+            ..
+        } = self;
+        let outcome = broker_kernel_effect(rollout, effect_admissions, effect, || async move {
+            match sink.send(&payload).await {
+                Some(_) => effects::EffectDisposition::Definite {
+                    terminal: effect_done_terminal(turn, class, ordinal),
+                    value: (),
+                },
+                // Dispatched, no authoritative terminal observed. Never retried.
+                None => effects::EffectDisposition::Unknown {
+                    reason: "telemetry collector returned no observable terminal".into(),
+                    value: (),
+                },
+            }
+        })
+        .await;
+        match outcome {
+            Ok(_) => Ok(()),
+            Err(error) => Err(self.effect_boundary_failed(error)),
+        }
+    }
+
     /// Refuse blind replay across the edit/process crash window. A durable intent without a
     /// correlated ToolDone is conservatively materialized as EffectUnknown; an existing Unknown
     /// remains blocking until a future broker/reconciler appends authoritative completion.
@@ -4482,6 +4562,10 @@ impl Agent {
             self.brokered_hook(TurnId(self.seq_turn), HookEvent::Stop, &ctx)
                 .await?;
         }
+        // After the Stop hook, so the export includes the hook's own effect: the exporter is the
+        // last thing the run does, and it exports what the run actually did.
+        self.brokered_telemetry_export(TurnId(self.seq_turn))
+            .await?;
         let _ = self.rollout.refresh_session_cache();
         outcome
     }

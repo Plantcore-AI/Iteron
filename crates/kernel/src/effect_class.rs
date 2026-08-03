@@ -37,6 +37,10 @@ pub enum EffectClass {
     Checkpoint,
     /// One in-turn workflow launch.
     Workflow,
+    /// One telemetry export (#105). Projecting the record outward is a network/file effect like any
+    /// other, so it crosses the same boundary: a stalled collector is bounded and reaped, and a run
+    /// with the exporter on still has a complete effect journal.
+    Telemetry,
 }
 
 /// Namespace prefix for correlation ids the harness mints for itself.
@@ -54,7 +58,7 @@ pub const EFFECT_ID_PREFIX: &str = "fx1-";
 impl EffectClass {
     /// Every class, for exhaustive conformance tests. Kept beside the enum so a new class that
     /// forgets to register itself fails the boundary test rather than silently escaping it.
-    pub const ALL: [EffectClass; 7] = [
+    pub const ALL: [EffectClass; 8] = [
         EffectClass::RegistryTool,
         EffectClass::Provider,
         EffectClass::Hook,
@@ -62,6 +66,7 @@ impl EffectClass {
         EffectClass::Verify,
         EffectClass::Checkpoint,
         EffectClass::Workflow,
+        EffectClass::Telemetry,
     ];
 
     /// Stable, human-readable kind recorded in the durable intent and in any terminal.
@@ -77,6 +82,7 @@ impl EffectClass {
             EffectClass::Verify => Some("verify"),
             EffectClass::Checkpoint => Some("checkpoint"),
             EffectClass::Workflow => Some("workflow"),
+            EffectClass::Telemetry => Some("telemetry"),
         }
     }
 
@@ -93,6 +99,7 @@ impl EffectClass {
             EffectClass::Verify => Some("vf"),
             EffectClass::Checkpoint => Some("cp"),
             EffectClass::Workflow => Some("wf"),
+            EffectClass::Telemetry => Some("tm"),
         }
     }
 }

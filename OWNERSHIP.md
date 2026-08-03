@@ -26,6 +26,7 @@ Core Code has one human Owner/Project Lead and a non-fixed number of human maint
 | `kernel-reduction` — Kernel reduction and driver | open | critical | Open | Open | `crates/kernel/src/driver.rs`<br>`crates/kernel/src/driver_tests.rs`<br>`crates/kernel/src/reducer.rs`<br>`crates/kernel/src/reducer_tests.rs`<br>`crates/kernel/src/turn_action.rs`<br>`crates/kernel/src/turn_command.rs`<br>`crates/kernel/src/turn_protocol.rs`<br>`crates/kernel/src/turn_state.rs` |
 | `kernel-runtime` — Kernel runtime | open | critical | Open | Open | `crates/kernel/Cargo.toml`<br>`crates/kernel/src/admission.rs`<br>`crates/kernel/src/diagnostics.rs`<br>`crates/kernel/src/lib.rs`<br>`crates/kernel/src/ports.rs` |
 | `kernel-effects` — Kernel effects | open | critical | Open | Open | `crates/kernel/src/effect_admission.rs`<br>`crates/kernel/src/effect_boundary_tests.rs`<br>`crates/kernel/src/effect_class.rs`<br>`crates/kernel/src/effect_journal.rs`<br>`crates/kernel/src/effects.rs` |
+| `telemetry-export` — Telemetry export sink | open | critical | Open | Open | `crates/cli/src/runtime/telemetry.rs` |
 | `kernel-hooks` — Runtime lifecycle hooks | open | critical | Open | Open | `crates/cli/src/runtime/hooks.rs` |
 | `record-core` — Record core | open | critical | Open | Open | `crates/record/Cargo.toml`<br>`crates/record/src/checkpoint.rs`<br>`crates/record/src/lib.rs`<br>`crates/record/src/redact.rs`<br>`crates/record/tests/**` |
 | `record-sessions` — Record sessions | open | elevated | Open | Open | `crates/record/src/cache_io.rs`<br>`crates/record/src/session.rs` |
@@ -122,6 +123,13 @@ Effect admission, durable intent ordering, terminal or unknown outcome, and reco
 
 - Contracts: `intent-execute-terminal`, `unknown-effect-block`
 - Required checks: `cargo test -p core-kernel effect --locked`
+
+### `telemetry-export` — Telemetry export sink
+
+Operator-authorised OTel egress: user-config-only endpoint, brokered network effect, bounded and reaped like any other world effect.
+
+- Contracts: `trusted-hook-origin`, `bounded-hook-process`
+- Required checks: `cargo test -p core-cli telemetry --locked`
 
 ### `kernel-hooks` — Runtime lifecycle hooks
 
