@@ -18,7 +18,7 @@ use crate::{Confinement, RunOutput, Sandbox, SandboxError};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const BWRAP_CANDIDATES: &[&str] = &["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap"];
@@ -26,7 +26,34 @@ const BWRAP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const BWRAP_PROBE_POLL: Duration = Duration::from_millis(10);
 const BWRAP_PROBE_MAX_POLLS: usize = 500;
 const BWRAP_PROBE_REAP_POLLS: usize = 100;
-static USABLE_BWRAP: OnceLock<PathBuf> = OnceLock::new();
+/// How long a FAILED probe stays authoritative. An operator may install an AppArmor profile or
+/// enable user namespaces while a long-lived harness is running, so a refusal must expire — but
+/// re-running a 5s process probe on every single `bash` call turned one restricted host into a
+/// five-second tax per tool call. One probe per TTL is the bounded compromise.
+const BWRAP_PROBE_NEGATIVE_TTL: Duration = Duration::from_secs(60);
+static PROBE_CACHE: Mutex<Option<ProbeOutcome>> = Mutex::new(None);
+
+/// The last completed probe: which executable it tested, what it decided, and when.
+#[derive(Debug, Clone)]
+struct ProbeOutcome {
+    binary: PathBuf,
+    usable: bool,
+    at: Instant,
+}
+
+/// Is the cached outcome still authoritative for `binary` at `now`? A success never expires (the
+/// capability cannot be revoked under us without the executable's identity changing, which
+/// `trusted_bwrap` re-checks anyway); a failure expires after `BWRAP_PROBE_NEGATIVE_TTL`.
+fn cached_probe(entry: Option<&ProbeOutcome>, binary: &Path, now: Instant) -> Option<bool> {
+    let entry = entry?;
+    if entry.binary != binary {
+        return None;
+    }
+    if entry.usable {
+        return Some(true);
+    }
+    (now.duration_since(entry.at) < BWRAP_PROBE_NEGATIVE_TTL).then_some(false)
+}
 
 /// Credential-free, user-scoped toolchain roots that may be exposed read-only inside the Linux
 /// namespace. Keep these narrower than their parent configuration directories: for example,
@@ -96,20 +123,28 @@ fn trusted_bwrap() -> Option<PathBuf> {
     })
 }
 
+/// Resolve the backend's executable, probing the namespace capability at most once per TTL.
+///
+/// SYNCHRONOUS by construction: it spawns a process and sleep-polls it. Never call it from an
+/// async context — `run_inner` routes it through the blocking pool.
 fn usable_bwrap() -> Option<PathBuf> {
     let binary = trusted_bwrap()?;
-    if USABLE_BWRAP.get().is_some_and(|probed| probed == &binary) {
-        // Keep revalidating ownership and mode through `trusted_bwrap`; cache only the expensive
-        // successful namespace process, never the executable's trust decision.
-        return Some(binary);
+    // Keep revalidating ownership and mode through `trusted_bwrap`; cache only the expensive
+    // namespace process, never the executable's trust decision.
+    if let Ok(cache) = PROBE_CACHE.lock()
+        && let Some(decision) = cached_probe(cache.as_ref(), &binary, Instant::now())
+    {
+        return decision.then_some(binary);
     }
-    let mut child = std::process::Command::new(&binary)
+    let child = std::process::Command::new(&binary)
         .args(BWRAP_PROBE_ARGS)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .spawn();
+    let Ok(mut child) = child else {
+        return record_probe(binary, false);
+    };
     let deadline = Instant::now() + BWRAP_PROBE_TIMEOUT;
     let mut success = false;
     let mut completed = false;
@@ -134,13 +169,20 @@ fn usable_bwrap() -> Option<PathBuf> {
             }
         }
     }
-    if !success {
-        // Do not cache a negative result: an operator may install an AppArmor profile or enable
-        // user namespaces while a long-lived harness process is still running.
-        return None;
+    record_probe(binary, success)
+}
+
+/// Store this probe's verdict and answer with it. A refusal is cached too, but only for
+/// `BWRAP_PROBE_NEGATIVE_TTL`, so an operator who fixes the host is still picked up automatically.
+fn record_probe(binary: PathBuf, usable: bool) -> Option<PathBuf> {
+    if let Ok(mut cache) = PROBE_CACHE.lock() {
+        *cache = Some(ProbeOutcome {
+            binary: binary.clone(),
+            usable,
+            at: Instant::now(),
+        });
     }
-    let _ = USABLE_BWRAP.set(binary.clone());
-    Some(binary)
+    usable.then_some(binary)
 }
 
 pub struct Bubblewrap;
@@ -156,13 +198,20 @@ impl Bubblewrap {
         usable_bwrap().is_some()
     }
 
+    /// Resolve the executable WITHOUT sleep-polling a child process on an async worker. The probe
+    /// blocks for up to `BWRAP_PROBE_TIMEOUT`, which on a multi-threaded runtime parks a worker
+    /// thread that is supposed to be driving other tasks; the blocking pool is where that belongs.
+    async fn usable_bwrap_off_worker() -> Option<PathBuf> {
+        tokio::task::spawn_blocking(usable_bwrap).await.ok()?
+    }
+
     async fn run_inner(
         &self,
         command: &str,
         conf: &Confinement,
         pre_sanitization_env: &[(&str, &str)],
     ) -> Result<RunOutput, SandboxError> {
-        let Some(binary) = usable_bwrap() else {
+        let Some(binary) = Self::usable_bwrap_off_worker().await else {
             // Deny-by-default: missing *or unusable* bwrap means we refuse, never run unconfined.
             // This covers hosts where an LSM/kernel policy permits `--version` but rejects the
             // user namespace that actually provides confinement.
@@ -301,8 +350,9 @@ fn bwrap_args_with_home(conf: &Confinement, command: &str, home: Option<&Path>) 
     // Working directory inside the sandbox = the workspace.
     a.push("--chdir".into());
     a.push(ws);
-    // The command.
-    a.push("/bin/bash".into());
+    // The command. `/bin` is bound read-only above, so the host's interpreter is the namespace's
+    // interpreter — including on a BusyBox image that only has `/bin/sh`.
+    a.push(crate::confined_shell().into());
     a.push("-c".into());
     a.push(command.into());
     a

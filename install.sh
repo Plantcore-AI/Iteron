@@ -32,6 +32,56 @@ core_code_die() {
     exit 1
 }
 
+core_code_warn() {
+    printf 'core-code: warning: %s\n' "$*" >&2
+}
+
+# Code execution is confined by bubblewrap on Linux, and the backend fails CLOSED: no usable
+# `bwrap`, no bash/build/test tool at all. Two things break it, and neither was mentioned anywhere
+# a new user would look. The package may simply be absent, and Ubuntu 24.04 restricts unprivileged
+# user namespaces unless the invoking binary has an AppArmor profile — the project's own CI has to
+# install one. Run the same probe the backend runs and print the exact remedy. A WARNING, never a
+# hard failure: `core` is perfectly usable for reading and editing without a sandbox.
+core_code_linux_preflight() {
+    [ "$1" = Linux ] || return 0
+
+    core_code_bwrap=
+    for core_code_candidate in /usr/bin/bwrap /bin/bwrap /usr/local/bin/bwrap; do
+        if [ -f "$core_code_candidate" ] && [ ! -L "$core_code_candidate" ]; then
+            core_code_bwrap=$core_code_candidate
+            break
+        fi
+    done
+
+    if [ -z "$core_code_bwrap" ]; then
+        core_code_warn 'code execution (bash/build/test) will refuse to run: bubblewrap is not installed'
+        cat <<'EOF' >&2
+Install it, then re-run `core`:
+  Debian/Ubuntu:  sudo apt-get install -y bubblewrap
+  Fedora/RHEL:    sudo dnf install -y bubblewrap
+  Alpine:         sudo apk add bubblewrap
+  Arch:           sudo pacman -S bubblewrap
+EOF
+        return 0
+    fi
+
+    if "$core_code_bwrap" --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
+        --die-with-parent --new-session --unshare-pid --unshare-ipc --unshare-uts \
+        --unshare-net /bin/true >/dev/null 2>&1; then
+        return 0
+    fi
+
+    core_code_warn "code execution (bash/build/test) will refuse to run: $core_code_bwrap cannot create the required namespaces"
+    cat <<EOF >&2
+This is the Ubuntu 24.04 unprivileged-user-namespace restriction. Grant it to this
+one binary rather than disabling the system-wide control:
+  sudo apt-get install -y apparmor apparmor-utils
+  printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile core-bwrap $core_code_bwrap flags=(unconfined) {\n  userns,\n}\n' | sudo tee /etc/apparmor.d/core-bwrap >/dev/null
+  sudo apparmor_parser --replace /etc/apparmor.d/core-bwrap
+See https://plantcore-ai.github.io/core/reference/platforms/ for the full contract.
+EOF
+}
+
 core_code_require() {
     command -v "$1" >/dev/null 2>&1 || core_code_die "required command not found: $1"
 }
@@ -295,7 +345,9 @@ core_code_main() {
     fi
     chmod 0755 "$core_code_binary"
 
-    core_code_reported_version=$("$core_code_binary" --version 2>&1) \
+    # `-V` is the bare `core <semver>`; `--version` additionally carries the commit and build date,
+    # so the exact-match smoke tests below deliberately use the short form.
+    core_code_reported_version=$("$core_code_binary" -V 2>&1) \
         || core_code_die 'downloaded binary failed its version smoke test'
     [ "$core_code_reported_version" = "core $core_code_version_number" ] \
         || core_code_die "downloaded binary reported an unexpected version: $core_code_reported_version"
@@ -313,7 +365,7 @@ core_code_main() {
     if [ ! -f "$core_code_install_tmp" ] || [ -L "$core_code_install_tmp" ]; then
         core_code_die 'staged installation is not a regular file'
     fi
-    core_code_staged_version=$("$core_code_install_tmp" --version 2>&1) \
+    core_code_staged_version=$("$core_code_install_tmp" -V 2>&1) \
         || core_code_die 'staged binary failed its version smoke test'
     [ "$core_code_staged_version" = "core $core_code_version_number" ] \
         || core_code_die 'staged binary reported an unexpected version'
@@ -322,7 +374,7 @@ core_code_main() {
     if [ ! -f "$core_code_bin_dir/core" ] || [ -L "$core_code_bin_dir/core" ]; then
         core_code_die 'atomic install did not produce a regular destination file'
     fi
-    core_code_installed_version=$("$core_code_bin_dir/core" --version 2>&1) \
+    core_code_installed_version=$("$core_code_bin_dir/core" -V 2>&1) \
         || core_code_die 'installed binary failed its final version smoke test'
     [ "$core_code_installed_version" = "core $core_code_version_number" ] \
         || core_code_die 'installed binary reported an unexpected final version'
@@ -333,6 +385,7 @@ core_code_main() {
         *:"$core_code_bin_dir":*) ;;
         *) printf 'Add %s to PATH to run the core command.\n' "$core_code_bin_dir" ;;
     esac
+    core_code_linux_preflight "$core_code_os"
 }
 
 core_code_main "$@"
