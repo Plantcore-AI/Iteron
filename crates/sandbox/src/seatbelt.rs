@@ -13,6 +13,8 @@
 use crate::{Confinement, RunOutput, Sandbox, SandboxError};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// High-value user directories that build toolchains do not need to read. This is deliberately
 /// explicit rather than denying all of HOME: language runtimes commonly live in `.cargo`,
@@ -253,16 +255,155 @@ pub fn profile(conf: &Confinement) -> Result<String, SandboxError> {
     profile_for_home(conf, &home)
 }
 
+/// The profile fragments that depend only on the operator's HOME. Building them canonicalizes
+/// close to ninety paths, measured at about 7.5ms over a bare shell, and the strictly serial
+/// effecting-tool loop paid that on every single shell and git call. HOME does not change inside a
+/// session, so the fragments are built once and spliced into each rendered profile in their
+/// original order (SBPL is order-sensitive: the denies must stay after the workspace grants).
+///
+/// Honest limit: a memoized fragment is a snapshot of the filesystem at first use. A credential
+/// directory that becomes a symlink *after* the first profile was built keeps its declared deny but
+/// does not gain a deny on the newly resolved target until the process restarts. The declared path
+/// stays denied either way and no allow rule is ever widened by the memo.
+struct HomeRules {
+    read_metadata: String,
+    read_roots: String,
+    denies: String,
+}
+
+fn build_home_rules(home: &Path) -> Result<HomeRules, SandboxError> {
+    let mut read_metadata = String::new();
+    if let Some(parent) = home.parent() {
+        let parent = sbpl_path(parent, "HOME parent")?;
+        read_metadata.push_str(&format!(
+            "(allow file-read-metadata (literal \"{parent}\"))\n"
+        ));
+    }
+    let home_literal = sbpl_path(home, "HOME")?;
+    read_metadata.push_str(&format!(
+        "(allow file-read-metadata (literal \"{home_literal}\"))\n"
+    ));
+
+    let mut read_roots = String::new();
+    for relative in READABLE_HOME_SUBPATHS {
+        for path in sbpl_path_variants(&home.join(relative), "user toolchain read root")? {
+            read_roots.push_str(&format!("(allow file-read* (subpath \"{path}\"))\n"));
+        }
+    }
+
+    // Credential and agent-state carve-outs. Deny writes too: if an operator accidentally points
+    // the workspace inside one of these trees, the workspace grant must not authorize mutation.
+    let mut denies = String::new();
+    for relative in PROTECTED_HOME_SUBPATHS {
+        for path in sbpl_path_variants(&home.join(relative), "protected HOME subpath")? {
+            denies.push_str(&format!("(deny file-read* (subpath \"{path}\"))\n"));
+            denies.push_str(&format!("(deny file-write* (subpath \"{path}\"))\n"));
+        }
+    }
+    for relative in PROTECTED_HOME_FILES {
+        for path in sbpl_path_variants(&home.join(relative), "protected HOME file")? {
+            denies.push_str(&format!("(deny file-read* (literal \"{path}\"))\n"));
+            denies.push_str(&format!("(deny file-write* (literal \"{path}\"))\n"));
+        }
+    }
+    Ok(HomeRules {
+        read_metadata,
+        read_roots,
+        denies,
+    })
+}
+
+/// Everything the rendered profile text depends on. Nothing else in `Confinement` reaches SBPL.
+#[derive(PartialEq, Eq)]
+struct ProfileKey {
+    workspace: PathBuf,
+    scratch: PathBuf,
+    home: PathBuf,
+    allow_egress: bool,
+}
+
+impl ProfileKey {
+    fn of(conf: &Confinement, home: &Path) -> Self {
+        Self {
+            workspace: conf.workspace.clone(),
+            scratch: conf.scratch.clone(),
+            home: home.to_path_buf(),
+            allow_egress: conf.allow_egress,
+        }
+    }
+}
+
+/// Per-process profile memo. One slot each is enough and keeps the memo bounded: a session runs one
+/// workspace under one HOME, while `Confinement::egress_off` mints a fresh scratch path per call, so
+/// retaining more than the last rendered profile would grow without limit across a long run.
+struct ProfileCache {
+    profile: Mutex<Option<(ProfileKey, Arc<str>)>>,
+    home_rules: Mutex<Option<(PathBuf, Arc<HomeRules>)>>,
+    renders: AtomicUsize,
+    home_builds: AtomicUsize,
+}
+
+impl ProfileCache {
+    const fn new() -> Self {
+        Self {
+            profile: Mutex::new(None),
+            home_rules: Mutex::new(None),
+            renders: AtomicUsize::new(0),
+            home_builds: AtomicUsize::new(0),
+        }
+    }
+
+    fn home_rules(&self, home: &Path) -> Result<Arc<HomeRules>, SandboxError> {
+        if let Ok(slot) = self.home_rules.lock()
+            && let Some((cached, rules)) = slot.as_ref()
+            && cached == home
+        {
+            return Ok(Arc::clone(rules));
+        }
+        self.home_builds.fetch_add(1, Ordering::Relaxed);
+        let rules = Arc::new(build_home_rules(home)?);
+        if let Ok(mut slot) = self.home_rules.lock() {
+            *slot = Some((home.to_path_buf(), Arc::clone(&rules)));
+        }
+        Ok(rules)
+    }
+}
+
+static PROFILE_CACHE: ProfileCache = ProfileCache::new();
+
 fn profile_for_home(conf: &Confinement, home: &Path) -> Result<String, SandboxError> {
-    let workspaces = sbpl_path_variants(&conf.workspace, "workspace")?;
-    let scratch_paths = sbpl_path_variants(&conf.scratch, "private scratch")?;
-    let home = if home.is_absolute() {
-        home
-    } else {
+    profile_with_cache(&PROFILE_CACHE, conf, home)
+}
+
+fn profile_with_cache(
+    cache: &ProfileCache,
+    conf: &Confinement,
+    home: &Path,
+) -> Result<String, SandboxError> {
+    if !home.is_absolute() {
         return Err(SandboxError::Profile(
             "HOME must be an absolute path".into(),
         ));
-    };
+    }
+    let key = ProfileKey::of(conf, home);
+    if let Ok(slot) = cache.profile.lock()
+        && let Some((cached, profile)) = slot.as_ref()
+        && *cached == key
+    {
+        return Ok(profile.to_string());
+    }
+    let rules = cache.home_rules(home)?;
+    let profile = render_profile(conf, &rules)?;
+    cache.renders.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut slot) = cache.profile.lock() {
+        *slot = Some((key, Arc::from(profile.as_str())));
+    }
+    Ok(profile)
+}
+
+fn render_profile(conf: &Confinement, home_rules: &HomeRules) -> Result<String, SandboxError> {
+    let workspaces = sbpl_path_variants(&conf.workspace, "workspace")?;
+    let scratch_paths = sbpl_path_variants(&conf.scratch, "private scratch")?;
     let mut p = String::new();
     p.push_str("(version 1)\n");
     p.push_str("(deny default)\n");
@@ -285,16 +426,7 @@ fn profile_for_home(conf: &Confinement, home: &Path) -> Result<String, SandboxEr
         let alias = sbpl_path(Path::new(alias), "system root alias")?;
         p.push_str(&format!("(allow file-read* (literal \"{alias}\"))\n"));
     }
-    if let Some(parent) = home.parent() {
-        let parent = sbpl_path(parent, "HOME parent")?;
-        p.push_str(&format!(
-            "(allow file-read-metadata (literal \"{parent}\"))\n"
-        ));
-    }
-    let home_literal = sbpl_path(home, "HOME")?;
-    p.push_str(&format!(
-        "(allow file-read-metadata (literal \"{home_literal}\"))\n"
-    ));
+    p.push_str(&home_rules.read_metadata);
     for workspace in &workspaces {
         p.push_str(&format!("(allow file-read* (subpath \"{workspace}\"))\n"));
     }
@@ -305,11 +437,7 @@ fn profile_for_home(conf: &Confinement, home: &Path) -> Result<String, SandboxEr
         let root = sbpl_path(Path::new(root), "system read root")?;
         p.push_str(&format!("(allow file-read* (subpath \"{root}\"))\n"));
     }
-    for relative in READABLE_HOME_SUBPATHS {
-        for path in sbpl_path_variants(&home.join(relative), "user toolchain read root")? {
-            p.push_str(&format!("(allow file-read* (subpath \"{path}\"))\n"));
-        }
-    }
+    p.push_str(&home_rules.read_roots);
     // Writes: confined to the workspace and temp only.
     for workspace in &workspaces {
         p.push_str(&format!("(allow file-write* (subpath \"{workspace}\"))\n"));
@@ -321,20 +449,7 @@ fn profile_for_home(conf: &Confinement, home: &Path) -> Result<String, SandboxEr
     p.push_str("(allow file-write-data (literal \"/dev/stdout\"))\n");
     p.push_str("(allow file-write-data (literal \"/dev/stderr\"))\n");
 
-    // Credential and agent-state carve-outs. Deny writes too: if an operator accidentally points
-    // the workspace inside one of these trees, the workspace grant must not authorize mutation.
-    for relative in PROTECTED_HOME_SUBPATHS {
-        for path in sbpl_path_variants(&home.join(relative), "protected HOME subpath")? {
-            p.push_str(&format!("(deny file-read* (subpath \"{path}\"))\n"));
-            p.push_str(&format!("(deny file-write* (subpath \"{path}\"))\n"));
-        }
-    }
-    for relative in PROTECTED_HOME_FILES {
-        for path in sbpl_path_variants(&home.join(relative), "protected HOME file")? {
-            p.push_str(&format!("(deny file-read* (literal \"{path}\"))\n"));
-            p.push_str(&format!("(deny file-write* (literal \"{path}\"))\n"));
-        }
-    }
+    p.push_str(&home_rules.denies);
     // File rules alone do not protect Keychain: `/usr/bin/security` talks to securityd over Mach.
     for service in PROTECTED_MACH_SERVICES {
         p.push_str(&format!("(deny mach-lookup (global-name \"{service}\"))\n"));
@@ -610,6 +725,65 @@ mod tests {
                 "missing Keychain IPC deny for {service}"
             );
         }
+    }
+
+    #[test]
+    fn profile_is_memoized_per_session_and_rebuilt_when_a_key_changes() {
+        // I-59: the profile was rebuilt for every shell and git call, including ~90 path
+        // canonicalisations measured at about 7.5ms, multiplied by the serial effecting-tool loop.
+        let cache = ProfileCache::new();
+        let home = Path::new("/Users/tester");
+        let conf = Confinement::egress_off(PathBuf::from("/repo"));
+
+        let first = profile_with_cache(&cache, &conf, home).unwrap();
+        let second = profile_with_cache(&cache, &conf, home).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            cache.renders.load(Ordering::Relaxed),
+            1,
+            "repeated calls with the same key must build the profile once"
+        );
+        assert_eq!(
+            first,
+            profile_with_cache(&ProfileCache::new(), &conf, home).unwrap(),
+            "a memoized profile must be byte-identical to a freshly built one"
+        );
+
+        // A changed egress decision is a changed key and must rebuild.
+        let mut escalated = conf.clone();
+        escalated.allow_egress = true;
+        let escalated_profile = profile_with_cache(&cache, &escalated, home).unwrap();
+        assert!(escalated_profile.contains("(allow network*)"));
+        assert!(!escalated_profile.contains("(deny network*)"));
+        assert_eq!(cache.renders.load(Ordering::Relaxed), 2);
+
+        // A changed workspace is a changed key and must rebuild.
+        let elsewhere = Confinement::egress_off(PathBuf::from("/other-repo"));
+        let elsewhere_profile = profile_with_cache(&cache, &elsewhere, home).unwrap();
+        assert!(elsewhere_profile.contains("(allow file-write* (subpath \"/other-repo\"))"));
+        assert!(!elsewhere_profile.contains("(allow file-write* (subpath \"/repo\"))"));
+        assert_eq!(cache.renders.load(Ordering::Relaxed), 3);
+
+        // Every `Confinement` mints a fresh scratch path, so the rendered text must follow it while
+        // the HOME canonicalisations — the actual cost — stay paid exactly once per session.
+        let rotated = Confinement::egress_off(PathBuf::from("/repo"));
+        assert_ne!(rotated.scratch, conf.scratch);
+        let rotated_profile = profile_with_cache(&cache, &rotated, home).unwrap();
+        assert!(rotated_profile.contains(&format!(
+            "(allow file-write* (subpath \"{}\"))",
+            rotated.scratch.display()
+        )));
+        assert_eq!(
+            cache.home_builds.load(Ordering::Relaxed),
+            1,
+            "the HOME canonicalisations must not be repeated for a rotated scratch or egress flip"
+        );
+
+        // A changed HOME does rebuild them, and the new secret denies are present.
+        let other_home = profile_with_cache(&cache, &conf, Path::new("/Users/other")).unwrap();
+        assert!(other_home.contains("(deny file-read* (subpath \"/Users/other/.ssh\"))"));
+        assert!(!other_home.contains("/Users/tester/.ssh"));
+        assert_eq!(cache.home_builds.load(Ordering::Relaxed), 2);
     }
 
     #[test]

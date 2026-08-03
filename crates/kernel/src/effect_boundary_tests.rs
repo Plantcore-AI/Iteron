@@ -591,9 +591,12 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     },
     EffectPrimitive {
         needle: "registry.run_admitted_intent(",
-        allowed_in: &["drive_admitted"],
+        allowed_in: &["drive_admitted", "run_concurrent_deferred_batch"],
         guidance: "an admitted registry intent must be dispatched by \
-                   effects::execute_registry_tool, never called directly",
+                   effects::execute_registry_tool, or opened and settled around it the way \
+                   run_concurrent_deferred_batch does when a batch runs concurrently — one \
+                   intent appended before the executor is entered, exactly one terminal after, \
+                   and the correlation id restored from the admitted call, never from the result",
     },
     EffectPrimitive {
         needle: "self.bounded_provider_turn(",

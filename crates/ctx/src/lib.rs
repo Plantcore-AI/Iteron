@@ -25,9 +25,14 @@ pub mod skills;
 pub mod source;
 
 pub use compact::{
+<<<<<<< HEAD
     CompactionPlan, CompactionPolicy, ContextEstimate, TokenEstimateProvenance, compaction_seed,
     compaction_summary_message, compaction_summary_range, estimate_request_context,
     replay_compaction,
+=======
+    CompactionPlan, CompactionPolicy, ContextEstimate, RequestEstimator, TokenEstimateProvenance,
+    estimate_request_context,
+>>>>>>> gap/pr06
 };
 pub use context_assembly::{assemble_recorded_context, assemble_system_prompt};
 pub use context_port::{
