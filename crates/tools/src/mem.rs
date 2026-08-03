@@ -39,7 +39,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                 // because only the Project store was built here). User (~/.core/memory) is
                 // Trusted; Project (this repo) is Workspace.
                 let mut stores = Vec::new();
-                if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from)
+                if let Some(home) = core_protocol::home::operator()
                     && core_protocol::home::path(&home, "memory").exists()
                 {
                     stores.push(MemStore::user(&home));

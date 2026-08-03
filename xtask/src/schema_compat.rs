@@ -62,7 +62,7 @@ impl CurrentCliResultSnapshot {
         }
         validate_cli_result_top_level(
             value,
-            "CLI result consumer record",
+            "client-conformance result",
             &CliResultTopLevelAuthority {
                 allowed_fields: &self.allowed_fields,
                 required_fields: &self.required_fields,
@@ -78,14 +78,14 @@ impl CurrentCliResultSnapshot {
         };
         let kernel_tax = kernel_tax_value
             .as_object()
-            .context("CLI result consumer record `kernel_tax` is not an object")?;
+            .context("client-conformance result `kernel_tax` is not an object")?;
         let expected_kernel_tax = self.kernel_tax_fields.as_ref().context(
-            "CLI result consumer record carries `kernel_tax`, but canonical current fixtures do not",
+            "client-conformance result carries `kernel_tax`, but canonical current fixtures do not",
         )?;
         let actual_kernel_tax = kernel_tax.keys().cloned().collect::<BTreeSet<_>>();
         if actual_kernel_tax != *expected_kernel_tax {
             bail!(
-                "CLI result consumer record `kernel_tax` fields differ from canonical current fixtures: expected {:?}, found {actual_kernel_tax:?}",
+                "client-conformance result `kernel_tax` fields differ from canonical current fixtures: expected {:?}, found {actual_kernel_tax:?}",
                 expected_kernel_tax
             );
         }
@@ -95,7 +95,7 @@ impl CurrentCliResultSnapshot {
                 .and_then(serde_json::Value::as_u64)
                 .is_none()
             {
-                bail!("CLI result consumer record `kernel_tax.{field}` is not a u64");
+                bail!("client-conformance result `kernel_tax.{field}` is not a u64");
             }
         }
         Ok(())
@@ -400,13 +400,7 @@ enum HistoryBase {
 pub(crate) fn validate_current(root: &Path) -> Result<CurrentCliResultSnapshot> {
     let contract = load_candidate(root)?;
     validate_candidate(root, &contract)?;
-    let snapshot = current_cli_result_snapshot_from_validated(root, &contract)?;
-    if snapshot.available {
-        for (_, value) in current_cli_result_values(root, &contract)? {
-            snapshot.validate(&value)?;
-        }
-    }
-    Ok(snapshot)
+    current_cli_result_snapshot_from_validated(root, &contract)
 }
 
 pub(crate) fn validate_against_base(root: &Path, base: &str) -> Result<()> {

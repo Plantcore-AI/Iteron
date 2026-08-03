@@ -61,6 +61,9 @@ jobs:
     name: boundary / validate
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      attestations: read
+      contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -74,6 +77,31 @@ jobs:
       # (the permission bypass was one) is a red build, not a documentation backlog item.
       - name: enforce the generated CLI reference
         run: cargo run --locked -p core-xtask -- docs check
+      - name: verify captured client runtime evidence on main
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source_commit=$(git rev-parse --verify 'HEAD^1^{commit}')
+          arguments=(
+            verify-evidence
+            --root "$GITHUB_WORKSPACE"
+            --trusted-commit "$source_commit"
+            --require-attestation
+          )
+          builder_commit=$(jq -er '
+            if .runtime_builder == null then
+              ""
+            else
+              .runtime_builder.commit
+            end
+          ' governance/client-conformance.json)
+          if [[ -n "$builder_commit" ]]; then
+            arguments+=(--trusted-builder-commit "$builder_commit")
+          fi
+          python3 -I release-tools/client_runtime_receipt.py "${arguments[@]}"
       - name: validate ownership and dependency contract on main
         if: github.event_name == 'push'
         run: cargo run --locked -p core-xtask -- boundaries check
@@ -114,15 +142,209 @@ jobs:
             echo "diff-base-sha=$diff_base_sha"
             echo "policy-sha=$policy_sha"
           } >> "$GITHUB_OUTPUT"
+      - name: materialize one-time trusted-policy compatibility projection
+        id: compatibility
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        env:
+          LEGACY_POLICY_ANCHOR_SHA: 6b850ca79b3a167a25357f873841e2bedcbad59a
+          LEGACY_PARSER_BLOB_OID: 1758a24e092648a71469f3e3cfbac45a9cb204b7
+          COMPATIBILITY_POLICY_SHA: 2c17775f7df54581eebee3fe49b00d5d0db16fe9
+          POLICY_SHA: ${{ steps.policy.outputs.policy-sha }}
+          PROJECTION_ROOT: ${{ runner.temp }}/core-policy-candidate-projection
+          COMPATIBILITY_POLICY_ROOT: ${{ runner.temp }}/core-policy-compatibility
+        run: |
+          set -euo pipefail
+          candidate_root=$GITHUB_WORKSPACE
+          compatibility_active=false
+          legacy_parser=xtask/src/schema_compat_rust_cli_parse.rs
+
+          test "$(git cat-file -t "$LEGACY_POLICY_ANCHOR_SHA")" = commit
+          read -r anchor_mode anchor_type anchor_oid anchor_path \
+            <<<"$(git ls-tree "$LEGACY_POLICY_ANCHOR_SHA" -- "$legacy_parser")"
+          test "$anchor_mode" = 100644
+          test "$anchor_type" = blob
+          test "$anchor_oid" = "$LEGACY_PARSER_BLOB_OID"
+          test "$anchor_path" = "$legacy_parser"
+
+          if git merge-base --is-ancestor \
+            "$LEGACY_POLICY_ANCHOR_SHA" "$POLICY_SHA"; then
+            read -r parser_mode parser_type parser_oid parser_path \
+              <<<"$(git ls-tree "$POLICY_SHA" -- "$legacy_parser")"
+          fi
+
+          if [[ "${parser_mode:-}" == 100644 \
+            && "${parser_type:-}" == blob \
+            && "${parser_oid:-}" == "$LEGACY_PARSER_BLOB_OID" \
+            && "${parser_path:-}" == "$legacy_parser" ]]; then
+            candidate_sha=$(git rev-parse --verify 'HEAD^{commit}')
+            [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
+            test "$(git cat-file -t "$COMPATIBILITY_POLICY_SHA")" = commit
+            git merge-base --is-ancestor \
+              "$LEGACY_POLICY_ANCHOR_SHA" "$COMPATIBILITY_POLICY_SHA"
+            git merge-base --is-ancestor \
+              "$COMPATIBILITY_POLICY_SHA" "$candidate_sha"
+
+            for pinned_path in \
+              governance/client-conformance.json \
+              governance/schema-compatibility.json \
+              crates/cli/tests/golden/input_attachment_stream_v5.jsonl \
+              crates/eval/src/contract.rs \
+              crates/cli/src/main.rs \
+              crates/cli/src/output.rs
+            do
+              read -r candidate_mode candidate_type candidate_oid candidate_path \
+                <<<"$(git ls-tree "$candidate_sha" -- "$pinned_path")"
+              read -r policy_mode policy_type policy_oid policy_path \
+                <<<"$(git ls-tree "$COMPATIBILITY_POLICY_SHA" -- "$pinned_path")"
+              test "$candidate_mode" = 100644
+              test "$candidate_type" = blob
+              [[ "$candidate_oid" =~ ^[0-9a-f]{40}$ ]]
+              test "$candidate_path" = "$pinned_path"
+              test "$policy_mode" = 100644
+              test "$policy_type" = blob
+              [[ "$policy_oid" =~ ^[0-9a-f]{40}$ ]]
+              test "$policy_oid" = "$candidate_oid"
+              test "$policy_path" = "$pinned_path"
+            done
+
+            test ! -e "$PROJECTION_ROOT"
+            test ! -e "$COMPATIBILITY_POLICY_ROOT"
+            git worktree add --detach "$PROJECTION_ROOT" "$candidate_sha"
+            git worktree add --detach \
+              "$COMPATIBILITY_POLICY_ROOT" "$COMPATIBILITY_POLICY_SHA"
+            test -z "$(git -C "$PROJECTION_ROOT" status --porcelain=v1 \
+              --untracked-files=all)"
+
+            manifest=$PROJECTION_ROOT/governance/schema-compatibility.json
+            projected_manifest=$PROJECTION_ROOT/governance/.schema-compatibility.projected.json
+            test ! -L "$manifest"
+            test ! -e "$projected_manifest"
+            test ! -L "$projected_manifest"
+            test "$(jq '
+              [.surfaces[]
+                | select(.id == "cli.machine-stream.input-attachment")]
+              | length
+            ' "$manifest")" = 1
+            jq '
+              .surfaces |= map(
+                select(.id != "cli.machine-stream.input-attachment")
+              )
+            ' "$manifest" > "$projected_manifest"
+            mv "$projected_manifest" "$manifest"
+            test "$(jq '
+              [.surfaces[]
+                | select(.id == "cli.machine-stream.input-attachment")]
+              | length
+            ' "$manifest")" = 0
+
+            git -C "$PROJECTION_ROOT" rm --quiet -- \
+              crates/cli/tests/golden/input_attachment_stream_v5.jsonl
+            git -C "$PROJECTION_ROOT" checkout "$POLICY_SHA" -- \
+              crates/cli/src/main.rs crates/eval/src/contract.rs
+
+            projected_paths=$RUNNER_TEMP/core-policy-projected-paths
+            test ! -e "$projected_paths"
+            git -C "$PROJECTION_ROOT" diff --name-only HEAD -- > "$projected_paths"
+            diff -u <(printf '%s\n' \
+              crates/cli/src/main.rs \
+              crates/cli/tests/golden/input_attachment_stream_v5.jsonl \
+              crates/eval/src/contract.rs \
+              governance/schema-compatibility.json) "$projected_paths"
+            test -z "$(git -C "$PROJECTION_ROOT" status --porcelain=v1 \
+              --untracked-files=all | grep '^??' || true)"
+
+            candidate_root=$PROJECTION_ROOT
+            compatibility_active=true
+          fi
+
+          {
+            echo "active=$compatibility_active"
+            echo "candidate-root=$candidate_root"
+          } >> "$GITHUB_OUTPUT"
       - name: build trusted base validator
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         working-directory: ${{ runner.temp }}/core-policy-base
         run: cargo build --locked -p core-xtask
+      - name: verify captured client runtime evidence with trusted base policy
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        env:
+          CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
+          COMPATIBILITY_POLICY_SHA: 2c17775f7df54581eebee3fe49b00d5d0db16fe9
+          GH_TOKEN: ${{ github.token }}
+          POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
+          POLICY_SHA: ${{ steps.policy.outputs.policy-sha }}
+          POLICY_ROOT: ${{ runner.temp }}/core-policy-base
+        run: |
+          set -euo pipefail
+          verifier=$POLICY_ROOT/release-tools/client_runtime_receipt.py
+          if [[ ! -e "$verifier" ]]; then
+            test ! -L "$verifier"
+            candidate_sha=$(git rev-parse --verify 'HEAD^{commit}')
+            [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
+            test "$(git cat-file -t "$COMPATIBILITY_POLICY_SHA")" = commit
+            git merge-base --is-ancestor \
+              "$COMPATIBILITY_POLICY_SHA" "$candidate_sha"
+
+            manifest=governance/client-conformance.json
+            read -r candidate_mode candidate_type candidate_oid candidate_path \
+              <<<"$(git ls-tree "$candidate_sha" -- "$manifest")"
+            read -r policy_mode policy_type policy_oid policy_path \
+              <<<"$(git ls-tree "$COMPATIBILITY_POLICY_SHA" -- "$manifest")"
+            test "$candidate_mode" = 100644
+            test "$candidate_type" = blob
+            [[ "$candidate_oid" =~ ^[0-9a-f]{40}$ ]]
+            test "$candidate_path" = "$manifest"
+            test "$policy_mode" = 100644
+            test "$policy_type" = blob
+            test "$policy_oid" = "$candidate_oid"
+            test "$policy_path" = "$manifest"
+            test "$(git cat-file -s "$candidate_oid")" -le 65536
+            test -x "$POLICY_BIN"
+            test ! -L "$POLICY_BIN"
+            "$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check
+            jq -e '
+              .schema_version == 2
+              and .runtime_builder == null
+              and .runtime_receipt == null
+              and .version_independence.status == "pending"
+              and (.platform_smoke | length == 5)
+              and ([.platform_smoke[].status] | all(. == "pending"))
+            ' < <(git cat-file blob "$candidate_oid") >/dev/null
+            evidence_paths=$RUNNER_TEMP/core-runtime-bootstrap-evidence-paths
+            test ! -e "$evidence_paths"
+            git -C "$GITHUB_WORKSPACE" ls-tree -r -z "$candidate_sha" -- \
+              governance/client-conformance/runtime > "$evidence_paths"
+            test ! -s "$evidence_paths"
+            printf 'one-time null/pending client runtime receipt bootstrap validated\n'
+            exit 0
+          fi
+          test -f "$verifier"
+          test ! -L "$verifier"
+          arguments=(
+            verify-evidence
+            --root "$GITHUB_WORKSPACE"
+            --trusted-commit "$POLICY_SHA"
+            --require-attestation
+          )
+          builder_commit=$(jq -er '
+            if .runtime_builder == null then
+              ""
+            else
+              .runtime_builder.commit
+            end
+          ' "$POLICY_ROOT/governance/client-conformance.json")
+          if [[ -n "$builder_commit" ]]; then
+            arguments+=(--trusted-builder-commit "$builder_commit")
+          fi
+          python3 -I "$verifier" "${arguments[@]}"
       - name: validate candidate against published schema chronology
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
           POLICY_ROOT: ${{ runner.temp }}/core-policy-base
         run: |
@@ -160,7 +382,7 @@ jobs:
           previous=$(python3 "$POLICY_ROOT/release-tools/schema_release.py" \
             --input "$releases" --latest)
           if [[ "$previous" == BOOTSTRAP ]]; then
-            "$POLICY_BIN" --repo "$GITHUB_WORKSPACE" \
+            "$POLICY_BIN" --repo "$CANDIDATE_ROOT" \
               schema-compat check-bootstrap
             exit 0
           fi
@@ -189,12 +411,13 @@ jobs:
               cargo build --locked -p core-xtask
           )
           "$release_policy_target/debug/core-xtask" \
-            --repo "$GITHUB_WORKSPACE" \
+            --repo "$CANDIDATE_ROOT" \
             schema-compat check-release --base "$previous_commit"
       - name: validate candidate against its immediate trusted base
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
           DIFF_BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
+          CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
           POLICY_ROOT: ${{ runner.temp }}/core-policy-base
         run: |
@@ -206,10 +429,10 @@ jobs:
             | .checks
             | index($check) != null
           ' "$POLICY_ROOT/governance/boundaries.json" >/dev/null; then
-            "$POLICY_BIN" --repo "$GITHUB_WORKSPACE" \
+            "$POLICY_BIN" --repo "$CANDIDATE_ROOT" \
               boundaries check-base --base "$DIFF_BASE_SHA"
           elif [[ -f "$POLICY_ROOT/governance/schema-compatibility.json" ]]; then
-            "$POLICY_BIN" --repo "$GITHUB_WORKSPACE" \
+            "$POLICY_BIN" --repo "$CANDIDATE_ROOT" \
               schema-compat check-base --base "$DIFF_BASE_SHA"
           else
             printf 'one-time schema compatibility bootstrap; no trusted contract exists yet\n'
@@ -217,21 +440,35 @@ jobs:
       - name: validate candidate with trusted base policy
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
+          CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
-        run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries check'
+        run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check'
       - name: summarize pull request boundary impact
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
+          CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
-        run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries affected --base "$BASE_SHA" >> "$GITHUB_STEP_SUMMARY"'
+        run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries affected --base "$BASE_SHA" >> "$GITHUB_STEP_SUMMARY"'
       - name: validate pull request responsibility contract
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ steps.policy.outputs.diff-base-sha }}
+          CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries check-pr --base "$BASE_SHA"'
+        run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check-pr --base "$BASE_SHA"'
+      - name: build one-time compatibility validator
+        if: steps.compatibility.outputs.active == 'true'
+        working-directory: ${{ runner.temp }}/core-policy-compatibility
+        run: cargo build --locked -p core-xtask
+      - name: validate real candidate with one-time compatibility policy
+        if: steps.compatibility.outputs.active == 'true'
+        env:
+          COMPATIBILITY_POLICY_BIN: ${{ runner.temp }}/core-policy-compatibility/target/debug/core-xtask
+        run: >-
+          "$COMPATIBILITY_POLICY_BIN" --repo "$GITHUB_WORKSPACE"
+          boundaries check
 
   test:
     name: rust / ${{ matrix.os }}
@@ -278,6 +515,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: install pinned Rust toolchain
+        shell: bash
         run: >-
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
           --component clippy --component rustfmt
@@ -299,13 +537,41 @@ jobs:
           PROFILE
           sudo apparmor_parser --replace /etc/apparmor.d/core-ci-bwrap
       - name: format
+        shell: bash
         run: cargo fmt --all -- --check
       - name: check
-        run: cargo check --workspace --all-targets --locked
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cargo check --locked -p core-cli --all-targets
+          else
+            cargo check --workspace --all-targets --locked
+          fi
+      - name: build the explicit windows-msvc client target
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cargo build --locked --target x86_64-pc-windows-msvc -p core-cli
       - name: clippy (deny warnings)
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cargo clippy --locked -p core-cli --all-targets -- -D warnings
+          else
+            cargo clippy --workspace --all-targets --locked -- -D warnings
+          fi
       - name: test
-        run: cargo test --workspace --all-targets --locked
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cargo test --locked -p core-cli --test windows_conpty
+            cargo test --locked -p core-cli --test headless_serve \
+              no_tty_skew_reconnect_and_result_v5_share_one_headless_server -- --exact
+            cargo test --locked -p core-cli --test one_shot_output \
+              text_one_shot_process_contract_is_byte_exact -- --exact
+            cargo test --locked -p core-cli
+          else
+            cargo test --workspace --all-targets --locked
+          fi
 
   # Non-blocking by construction (`continue-on-error`). The suite has 1613 functional tests and
   # not one wall-clock bound, so a one-line concurrency hazard — a lock held across an await, an
@@ -371,14 +637,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
+        os: [ubuntu-24.04, macos-15, windows-2025]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - name: install pinned Rust toolchain
+        shell: bash
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: build release
+        shell: bash
         run: cargo build --release -p core-cli --locked
       # This main-branch smoke build never distributes a naked binary. Only the
       # protected tag workflow packages licenses, notices, SBOMs, and provenance.

@@ -105,6 +105,7 @@ fn parse_path_candidate(candidate: &str) -> Result<Option<ParsedImagePath>, Imag
             || candidate.starts_with('-')
             || candidate.starts_with("~/")
             || candidate.contains("://")
+            || (cfg!(windows) && is_windows_device_or_network_path(candidate))
             || candidate.chars().any(char::is_control)
         {
             return Ok(None);
@@ -118,6 +119,13 @@ fn parse_path_candidate(candidate: &str) -> Result<Option<ParsedImagePath>, Imag
         display_name: SafeDisplayName::from_path(&path),
         path,
     }))
+}
+
+fn is_windows_device_or_network_path(candidate: &str) -> bool {
+    candidate
+        .as_bytes()
+        .get(..2)
+        .is_some_and(|prefix| prefix.iter().all(|byte| matches!(byte, b'\\' | b'/')))
 }
 
 fn decode_single_path_token(input: &str) -> Option<String> {
@@ -135,12 +143,25 @@ fn decode_single_path_token(input: &str) -> Option<String> {
         if quote == '\'' {
             return (!inner.contains('\'')).then(|| inner.to_owned());
         }
-        return decode_backslash_token(inner, true);
+        return decode_backslash_token(inner, true, cfg!(windows));
     }
-    decode_backslash_token(input, false)
+    decode_backslash_token(input, false, cfg!(windows))
 }
 
-fn decode_backslash_token(input: &str, quoted: bool) -> Option<String> {
+fn decode_backslash_token(
+    input: &str,
+    quoted: bool,
+    preserve_windows_separators: bool,
+) -> Option<String> {
+    if preserve_windows_separators {
+        return input
+            .chars()
+            .all(|character| {
+                character != '"' && (quoted || (!character.is_whitespace() && character != '\''))
+            })
+            .then(|| input.to_owned());
+    }
+
     let mut output = String::with_capacity(input.len());
     let mut escaped = false;
     for character in input.chars() {
@@ -170,14 +191,39 @@ fn mention_boundary(input: &str, at: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::decode_backslash_token;
+    use super::{decode_backslash_token, is_windows_device_or_network_path};
+
+    #[test]
+    fn native_windows_separators_are_paths_not_escape_prefixes() {
+        assert_eq!(
+            decode_backslash_token(r"C:\Users\operator\shot.png", false, true).as_deref(),
+            Some(r"C:\Users\operator\shot.png")
+        );
+        assert_eq!(
+            decode_backslash_token(r"C:\Users\operator\My Screenshot.jpeg", true, true).as_deref(),
+            Some(r"C:\Users\operator\My Screenshot.jpeg")
+        );
+        assert!(decode_backslash_token(r"C:\My Screenshot.png", false, true).is_none());
+        assert!(decode_backslash_token(r#"C:\bad"name.png"#, false, true).is_none());
+        assert!(is_windows_device_or_network_path(
+            r"\\server\share\shot.png"
+        ));
+        assert!(is_windows_device_or_network_path("//server/share/shot.png"));
+        assert!(is_windows_device_or_network_path(
+            r"\/server/share/shot.png"
+        ));
+        assert!(is_windows_device_or_network_path(r"\\.\pipe\shot.png"));
+        assert!(!is_windows_device_or_network_path(
+            r"C:\Users\operator\shot.png"
+        ));
+    }
 
     #[test]
     fn unix_drag_drop_escapes_remain_conservative() {
         assert_eq!(
-            decode_backslash_token(r"My\ Screenshot.webp", false).as_deref(),
+            decode_backslash_token(r"My\ Screenshot.webp", false, false).as_deref(),
             Some("My Screenshot.webp")
         );
-        assert!(decode_backslash_token(r"bad\q.png", false).is_none());
+        assert!(decode_backslash_token(r"bad\q.png", false, false).is_none());
     }
 }

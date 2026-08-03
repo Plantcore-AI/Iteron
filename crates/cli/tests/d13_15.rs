@@ -8,7 +8,7 @@
 //! hermetic and byte-stable.
 //!
 //! Three checks, one per contract facet the gap spans:
-//!   1. `cli-output`  — the `json` terminal equals a frozen schema-v4 golden object.
+//!   1. `cli-output`  — the `json` terminal equals a frozen current-schema golden object.
 //!   2. `cli-tui`     — `stream-json` shares one authoritative terminal with `json` and every
 //!      streamed record is a versioned machine record.
 //!   3. `evaluation`  — the terminal `exit_code` equals the real OS exit status and
@@ -103,7 +103,15 @@ fn run_budget(scratch: &Scratch, format: &str) -> Output {
     command
         .env_clear()
         .env("HOME", scratch.home())
-        .env("PATH", "/usr/bin:/bin")
+        .env("USERPROFILE", scratch.home())
+        .env(
+            "PATH",
+            if cfg!(windows) {
+                std::env::var_os("PATH").unwrap_or_default()
+            } else {
+                "/usr/bin:/bin".into()
+            },
+        )
         .env("LANG", "C.UTF-8")
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env(TEST_KEY_ENV, TEST_KEY)
@@ -129,6 +137,13 @@ fn run_budget(scratch: &Scratch, format: &str) -> Output {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if cfg!(windows) {
+        for name in ["SystemRoot", "WINDIR"] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+    }
 
     let mut child = command.spawn().expect("spawn the real core binary");
     let deadline = Instant::now() + PROCESS_TIMEOUT;

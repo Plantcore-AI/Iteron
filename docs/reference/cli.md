@@ -68,6 +68,7 @@ This page is generated from the argument parser, so every shipped flag and subco
 | --- | --- |
 | `core reindex` | Rebuild session metadata and the sessions index from hash-chained rollout truth. |
 | `core prune [--older-than-days <DAYS>] [--keep-last <N>] [--dry-run]` | Delete old run journals under the runs dir according to an explicit retention policy. Journals are append-only and nothing else ever removes them. |
+| `core serve [--listen <LISTEN>]` | Run a local-only versioned App Server for headless clients. |
 | `core workflow <SUBCOMMAND>` | Run an ultracode workflow (.js) end-to-end, streaming progress to stdout. |
 | `core workflow run <SCRIPT> [--args <ARGS>]` | Execute a workflow script now (agent()/parallel()/pipeline()/phase()/log()). |
 | `core workflow list` | List persisted workflow runs (id, status, agents, model) under the workflows dir. |

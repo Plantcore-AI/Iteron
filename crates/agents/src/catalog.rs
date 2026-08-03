@@ -66,6 +66,15 @@ impl AgentCatalog {
     /// (Workspace, or Untrusted-and-stripped under a vendor path). Discovery order is sorted for a
     /// stable, reproducible catalog (ADR-006). Built-ins are added first and win name collisions.
     pub fn discover(user: &Path, repo: &Path) -> Self {
+        Self::discover_with_user(Some(user), repo)
+    }
+
+    /// Discover built-in and repository agents when no validated operator home is available.
+    pub fn discover_without_user(repo: &Path) -> Self {
+        Self::discover_with_user(None, repo)
+    }
+
+    fn discover_with_user(user: Option<&Path>, repo: &Path) -> Self {
         let mut cat = AgentCatalog {
             defs: Vec::new(),
             errors: Vec::new(),
@@ -76,8 +85,10 @@ impl AgentCatalog {
         cat.defs.push(AgentDef::generic());
 
         // User definitions: read directly (do not scan the whole home tree). Trusted.
-        let user_dir = core_protocol::home::path(user, "agents");
-        cat.load_dir(&user_dir, &user_dir, Trust::Trusted, SourceScope::User);
+        if let Some(user) = user {
+            let user_dir = core_protocol::home::path(user, "agents");
+            cat.load_dir(&user_dir, &user_dir, Trust::Trusted, SourceScope::User);
+        }
 
         // Repo definitions: a bounded scan finds the workspace's own `.core/agents` (Workspace)
         // and any nested dependency ones (Untrusted → stripped).

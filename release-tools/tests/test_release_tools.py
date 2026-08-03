@@ -28,6 +28,7 @@ import package  # noqa: E402
 import render_installer  # noqa: E402
 import sbom  # noqa: E402
 import schema_release  # noqa: E402
+import verify_pe  # noqa: E402
 import verify_release  # noqa: E402
 from common import ReleaseToolError, sha256_file  # noqa: E402
 
@@ -139,6 +140,23 @@ class ReleaseToolsTest(unittest.TestCase):
                 ],
             )
             self.assertTrue(all(not member.is_dir() for member in archive.infolist()[1:]))
+
+    def test_windows_pe_verifier_requires_amd64_pe32_plus_executable(self) -> None:
+        binary = self.root / "core.exe"
+        image = bytearray(512)
+        image[:2] = b"MZ"
+        image[0x3C:0x40] = (128).to_bytes(4, "little")
+        image[128:132] = b"PE\0\0"
+        image[132:134] = verify_pe.AMD64_MACHINE.to_bytes(2, "little")
+        image[150:152] = verify_pe.IMAGE_FILE_EXECUTABLE_IMAGE.to_bytes(2, "little")
+        image[152:154] = verify_pe.PE32_PLUS_MAGIC.to_bytes(2, "little")
+        binary.write_bytes(image)
+        verify_pe.verify(binary)
+
+        image[132:134] = (0x014C).to_bytes(2, "little")
+        binary.write_bytes(image)
+        with self.assertRaisesRegex(ReleaseToolError, "not AMD64"):
+            verify_pe.verify(binary)
 
     def test_fetch_tool_extracts_only_one_regular_binary(self) -> None:
         archive_path = self.root / "tool.tar.gz"
@@ -505,6 +523,399 @@ exit 1
             'elif [[ -f "$POLICY_ROOT/governance/schema-compatibility.json" ]]', ci
         )
         self.assertIn("github.event_name == 'merge_group'", ci)
+
+    def test_release_manual_dispatch_preserves_selected_ref_preflight_and_exports_tree(
+        self,
+    ) -> None:
+        release = (TOOLS.parent / ".github/workflows/release.yml").read_text(
+            encoding="utf-8"
+        )
+        dispatch = release.split("workflow_dispatch:", 1)[1].split("permissions:", 1)[0]
+        self.assertNotIn("inputs:", dispatch)
+        metadata = release.split(
+            "- name: Validate version and release source commit", 1
+        )[1].split(
+            "- name: Validate against the previous immutable schema release", 1
+        )[0]
+        self.assertIn('test "$GITHUB_EVENT_NAME" = workflow_dispatch', metadata)
+        self.assertIn("tag_commit=$event_commit", metadata)
+        self.assertNotIn('test "$GITHUB_REF" = refs/heads/main', metadata)
+        self.assertIn('tested_tree=$(git rev-parse "$tag_commit^{tree}")', metadata)
+        self.assertIn('[[ "$tested_tree" =~ ^[0-9a-f]{40}$ ]]', metadata)
+        self.assertIn('echo "tree=$tested_tree"', metadata)
+        self.assertIn("tree: ${{ steps.metadata.outputs.tree }}", release)
+
+    def test_runtime_receipt_is_a_dormant_pinnable_builder_and_signer(self) -> None:
+        repository = TOOLS.parent
+        release = (repository / ".github/workflows/release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("\n  runtime-receipt:", release)
+        self.assertNotIn("uses: ./.github/workflows/runtime-receipt.yml", release)
+
+        receipt = (
+            repository / ".github/workflows/runtime-receipt.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("workflow_call:", receipt)
+        self.assertEqual(receipt.count("type: string"), 4)
+        self.assertEqual(receipt.count("required: true"), 4)
+        for input_name in (
+            "repository-id",
+            "tested-commit",
+            "tested-tree",
+            "builder-workflow-commit",
+        ):
+            self.assertIn(f"{input_name}:", receipt)
+        for target, runner in (
+            ("aarch64-apple-darwin", "macos-15"),
+            ("x86_64-apple-darwin", "macos-15-intel"),
+            ("aarch64-unknown-linux-musl", "ubuntu-24.04-arm"),
+            ("x86_64-unknown-linux-musl", "ubuntu-24.04"),
+            ("x86_64-pc-windows-msvc", "windows-2022"),
+        ):
+            self.assertIn(f"target: {target}", receipt)
+            self.assertIn(f"runner: {runner}", receipt)
+        self.assertIn(
+            "name: native client runtime / ${{ matrix.target }}", receipt
+        )
+        self.assertIn("needs: native-runtime", receipt)
+        self.assertIn("actions: read", receipt)
+        self.assertIn("attestations: write", receipt)
+        self.assertIn("contents: read", receipt)
+        self.assertIn("id-token: write", receipt)
+        self.assertNotIn("contents: write", receipt)
+        self.assertIn(
+            "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+            receipt,
+        )
+        self.assertIn("ref: ${{ inputs.builder-workflow-commit }}", receipt)
+        self.assertIn("ref: ${{ inputs.tested-commit }}", receipt)
+        self.assertIn("fetch-depth: 0", receipt)
+        self.assertIn('test "$GITHUB_REF" = refs/heads/main', receipt)
+        self.assertIn(
+            'test "$BUILDER_WORKFLOW_COMMIT" != "$TESTED_COMMIT"',
+            receipt,
+        )
+        self.assertIn(
+            'git -C "$candidate" merge-base --is-ancestor', receipt
+        )
+        self.assertIn('"$BUILDER_WORKFLOW_COMMIT"', receipt)
+        self.assertIn('"$TESTED_COMMIT"', receipt)
+        self.assertIn("--porcelain=v1 -z --untracked-files=all", receipt)
+        for step in (
+            "Run the complete target test suite",
+            "Build an auditable release binary",
+            "Verify architecture, linkage, and executable smoke tests",
+            "Complete one task with the native release client",
+            "Run native version-independence proof",
+        ):
+            self.assertIn(f"- name: {step}", receipt)
+        self.assertIn("../builder/release-tools/smoke_release_client.py", receipt)
+        self.assertIn("$builder/release-tools/verify_pe.py", receipt)
+        self.assertIn(
+            "actions/attest@a1948c3f048ba23858d222213b7c278aabede763",
+            receipt,
+        )
+        self.assertIn(
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+            receipt,
+        )
+        self.assertIn("filter=latest&per_page=100", receipt)
+        self.assertIn('head -c "$((maximum + 1))"', receipt)
+        self.assertIn('pipeline_status=("${PIPESTATUS[@]}")', receipt)
+        self.assertIn("gh api \\", receipt)
+        self.assertIn("2>&1", receipt)
+        self.assertIn(
+            "Plantcore-AI/core/.github/workflows/runtime-receipt.yml@",
+            receipt,
+        )
+        self.assertIn(
+            "python3 -I builder/release-tools/client_runtime_receipt.py collect",
+            receipt,
+        )
+        self.assertIn(
+            '--builder-workflow-commit "$BUILDER_WORKFLOW_COMMIT"', receipt
+        )
+        self.assertIn('test "$receipt_bytes" -le 65536', receipt)
+        self.assertIn('test "$bundle_bytes" -le 2097152', receipt)
+        self.assertIn(
+            "receipt=$evidence_dir/runtime-receipt-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}.json",
+            receipt,
+        )
+        self.assertIn(
+            "runtime-receipt-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}.sigstore.json",
+            receipt,
+        )
+        self.assertIn(
+            "name: core-client-runtime-receipt-attempt-${{ github.run_attempt }}",
+            receipt,
+        )
+        self.assertIn("retention-days: 90", receipt)
+
+    def test_ci_verifies_receipts_with_the_materialized_trusted_base(self) -> None:
+        ci = (TOOLS.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        boundary = ci.split("\n  boundary:", 1)[1].split("\n  test:", 1)[0]
+        self.assertIn("attestations: read", boundary)
+        verification = boundary.split(
+            "- name: verify captured client runtime evidence with trusted base policy",
+            1,
+        )[1].split(
+            "- name: validate candidate against published schema chronology", 1
+        )[0]
+        self.assertIn(
+            "if: github.event_name == 'pull_request' || "
+            "github.event_name == 'merge_group'",
+            verification,
+        )
+        self.assertIn("GH_TOKEN: ${{ github.token }}", verification)
+        self.assertIn(
+            "$POLICY_ROOT/release-tools/client_runtime_receipt.py", verification
+        )
+        self.assertIn(
+            "CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}",
+            verification,
+        )
+        self.assertIn(
+            "COMPATIBILITY_POLICY_SHA: "
+            "2c17775f7df54581eebee3fe49b00d5d0db16fe9",
+            verification,
+        )
+        self.assertIn(
+            "POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask",
+            verification,
+        )
+        self.assertIn(
+            "POLICY_SHA: ${{ steps.policy.outputs.policy-sha }}", verification
+        )
+        self.assertIn('if [[ ! -e "$verifier" ]]', verification)
+        self.assertIn('test ! -L "$verifier"', verification)
+        self.assertIn('test -f "$verifier"', verification)
+        self.assertIn(
+            '"$COMPATIBILITY_POLICY_SHA" "$candidate_sha"', verification
+        )
+        self.assertIn(
+            'manifest=governance/client-conformance.json', verification
+        )
+        self.assertIn('test "$candidate_mode" = 100644', verification)
+        self.assertIn('test "$candidate_type" = blob', verification)
+        self.assertIn('test "$policy_oid" = "$candidate_oid"', verification)
+        self.assertIn(
+            '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check',
+            verification,
+        )
+        self.assertIn(
+            'git cat-file blob "$candidate_oid"', verification
+        )
+        self.assertIn(".runtime_builder == null", verification)
+        self.assertIn(".runtime_receipt == null", verification)
+        self.assertIn(
+            "one-time null/pending client runtime receipt bootstrap validated",
+            verification,
+        )
+        self.assertIn('ls-tree -r -z "$candidate_sha"', verification)
+        self.assertIn("verify-evidence", verification)
+        self.assertIn('--root "$GITHUB_WORKSPACE"', verification)
+        self.assertIn('--trusted-commit "$POLICY_SHA"', verification)
+        self.assertIn(
+            'arguments+=(--trusted-builder-commit "$builder_commit")',
+            verification,
+        )
+        self.assertIn("--require-attestation", verification)
+        push_verification = boundary.split(
+            "- name: verify captured client runtime evidence on main", 1
+        )[1].split(
+            "- name: validate ownership and dependency contract on main", 1
+        )[0]
+        self.assertIn("if: github.event_name == 'push'", push_verification)
+        self.assertIn(
+            "source_commit=$(git rev-parse --verify 'HEAD^1^{commit}')",
+            push_verification,
+        )
+        self.assertIn(
+            "python3 -I release-tools/client_runtime_receipt.py",
+            push_verification,
+        )
+        self.assertIn("--require-attestation", push_verification)
+        # The boundary job runs the microkernel conformance matrix first, so the receipt
+        # verification is pinned by membership in that job rather than by step ordering.
+        self.assertIn(
+            "- name: enforce the complete microkernel conformance matrix", boundary
+        )
+        self.assertIn("- name: validate candidate with trusted base policy", boundary)
+
+    def test_trusted_base_bootstrap_uses_an_exact_compatibility_projection(
+        self,
+    ) -> None:
+        repository = TOOLS.parent
+        workflows = {
+            "ci": (repository / ".github/workflows/ci.yml").read_text(
+                encoding="utf-8"
+            ),
+            "review": (
+                repository / ".github/workflows/review-policy.yml"
+            ).read_text(encoding="utf-8"),
+        }
+        anchor = "6b850ca79b3a167a25357f873841e2bedcbad59a"
+        parser_blob = "1758a24e092648a71469f3e3cfbac45a9cb204b7"
+        compatibility = "2c17775f7df54581eebee3fe49b00d5d0db16fe9"
+        pinned_paths = (
+            "governance/client-conformance.json",
+            "governance/schema-compatibility.json",
+            "crates/cli/tests/golden/input_attachment_stream_v5.jsonl",
+            "crates/eval/src/contract.rs",
+            "crates/cli/src/main.rs",
+            "crates/cli/src/output.rs",
+        )
+
+        for label, workflow in workflows.items():
+            with self.subTest(workflow=label):
+                projection = workflow.split(
+                    "- name: materialize one-time trusted-policy "
+                    "compatibility projection",
+                    1,
+                )[1].split("- name: build trusted base validator", 1)[0]
+                self.assertIn(
+                    f"LEGACY_POLICY_ANCHOR_SHA: {anchor}", projection
+                )
+                self.assertIn(
+                    f"LEGACY_PARSER_BLOB_OID: {parser_blob}", projection
+                )
+                self.assertIn(
+                    f"COMPATIBILITY_POLICY_SHA: {compatibility}", projection
+                )
+                self.assertIn(
+                    'test "$(git cat-file -t "$LEGACY_POLICY_ANCHOR_SHA")" '
+                    "= commit",
+                    projection,
+                )
+                self.assertIn('test "$anchor_mode" = 100644', projection)
+                self.assertIn('test "$anchor_type" = blob', projection)
+                self.assertIn(
+                    'test "$anchor_oid" = "$LEGACY_PARSER_BLOB_OID"',
+                    projection,
+                )
+                self.assertIn(
+                    'test "$anchor_path" = "$legacy_parser"', projection
+                )
+                self.assertIn(
+                    '"$LEGACY_POLICY_ANCHOR_SHA" "$POLICY_SHA"', projection
+                )
+                self.assertIn(
+                    'git ls-tree "$POLICY_SHA" -- "$legacy_parser"', projection
+                )
+                self.assertIn('"${parser_mode:-}" == 100644', projection)
+                self.assertIn('"${parser_type:-}" == blob', projection)
+                self.assertIn(
+                    '"${parser_oid:-}" == "$LEGACY_PARSER_BLOB_OID"',
+                    projection,
+                )
+                self.assertIn(
+                    '"${parser_path:-}" == "$legacy_parser"', projection
+                )
+                self.assertIn(
+                    'test "$(git cat-file -t "$COMPATIBILITY_POLICY_SHA")" = commit',
+                    projection,
+                )
+                self.assertEqual(
+                    projection.count("git merge-base --is-ancestor"), 3
+                )
+                self.assertIn(
+                    '"$LEGACY_POLICY_ANCHOR_SHA" '
+                    '"$COMPATIBILITY_POLICY_SHA"',
+                    projection,
+                )
+                self.assertNotIn(
+                    '"$POLICY_SHA" "$COMPATIBILITY_POLICY_SHA"', projection
+                )
+                for path in pinned_paths:
+                    self.assertIn(path, projection)
+                self.assertIn('test "$candidate_mode" = 100644', projection)
+                self.assertIn('test "$candidate_type" = blob', projection)
+                self.assertIn('test "$policy_type" = blob', projection)
+                self.assertIn(
+                    'test "$policy_oid" = "$candidate_oid"', projection
+                )
+                self.assertIn(
+                    'select(.id != "cli.machine-stream.input-attachment")',
+                    projection,
+                )
+                self.assertIn(
+                    'test ! -L "$projected_manifest"', projection
+                )
+                self.assertIn(
+                    'git -C "$PROJECTION_ROOT" diff --name-only HEAD',
+                    projection,
+                )
+                self.assertIn(
+                    'git -C "$PROJECTION_ROOT" checkout "$POLICY_SHA"',
+                    projection,
+                )
+                self.assertIn("compatibility_active=true", projection)
+                self.assertIn("candidate-root=$candidate_root", projection)
+
+                build = workflow.split(
+                    "- name: build one-time compatibility validator", 1
+                )[1].split(
+                    "- name: validate real candidate with one-time "
+                    "compatibility policy",
+                    1,
+                )[0]
+                self.assertIn(
+                    "steps.compatibility.outputs.active == 'true'", build
+                )
+                real_validation = workflow.split(
+                    "- name: validate real candidate with one-time "
+                    "compatibility policy",
+                    1,
+                )[1]
+                self.assertIn('--repo "$GITHUB_WORKSPACE"', real_validation)
+                trusted_final = (
+                    "- name: validate pull request responsibility contract"
+                    if label == "ci"
+                    else "- name: enforce registered human review groups"
+                )
+                self.assertLess(
+                    workflow.index(trusted_final),
+                    workflow.index(
+                        "- name: build one-time compatibility validator"
+                    ),
+                )
+
+        ci = workflows["ci"]
+        receipt_verification = ci.split(
+            "- name: verify captured client runtime evidence with trusted base policy",
+            1,
+        )[1].split(
+            "- name: validate candidate against published schema chronology", 1
+        )[0]
+        self.assertIn('--root "$GITHUB_WORKSPACE"', receipt_verification)
+        for name in (
+            "validate candidate against published schema chronology",
+            "validate candidate against its immediate trusted base",
+            "validate candidate with trusted base policy",
+            "summarize pull request boundary impact",
+            "validate pull request responsibility contract",
+        ):
+            step = ci.split(f"- name: {name}", 1)[1].split("\n      - name:", 1)[
+                0
+            ]
+            self.assertIn(
+                "CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}",
+                step,
+            )
+
+        review = workflows["review"]
+        for name in (
+            "validate candidate ownership contract",
+            "enforce registered human review groups",
+        ):
+            step = review.split(f"- name: {name}", 1)[1].split(
+                "\n      - name:", 1
+            )[0]
+            self.assertIn(
+                "CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}",
+                step,
+            )
 
     def test_release_metadata_python_cannot_import_candidate_shadow_modules(self) -> None:
         self.write("pathlib.py", "raise RuntimeError('candidate module executed')\n")

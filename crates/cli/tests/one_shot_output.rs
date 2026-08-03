@@ -32,6 +32,7 @@ const MODEL_ID: &str = "golden-model";
 const TEST_KEY_ENV: &str = "CORE_GOLDEN_TEST_KEY";
 const TEST_KEY: &str = "integration-test-placeholder";
 const DEFAULT_TASK: &str = "return the deterministic fixture response";
+const CLIENT_PARITY_TASK: &str = include_str!("fixtures/client-parity-task.txt");
 
 static NEXT_SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -367,6 +368,7 @@ impl Drop for Scratch {
 #[derive(Clone, Copy)]
 enum Reply {
     Success,
+    ParitySuccess,
     InvalidStream,
     FailingRead { index: u32 },
 }
@@ -594,6 +596,13 @@ fn write_reply(stream: &mut TcpStream, reply: Reply) {
             "data: [DONE]\n\n",
         )
         .to_string(),
+        Reply::ParitySuccess => concat!(
+            "data: {\"id\":\"chatcmpl-parity\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"parity reply\"},\"finish_reason\":null}],\"usage\":null}\n\n",
+            "data: {\"id\":\"chatcmpl-parity\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+            "data: {\"id\":\"chatcmpl-parity\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":2,\"total_tokens\":13,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n",
+            "data: [DONE]\n\n",
+        )
+        .to_string(),
         Reply::InvalidStream => "data: this-is-not-json\n\n".to_string(),
         Reply::FailingRead { index } => format!(
             concat!(
@@ -630,19 +639,30 @@ fn write_reply(stream: &mut TcpStream, reply: Reply) {
 }
 
 fn core_command(scratch: &Scratch, format: &str, max_turns: u32, extra_args: &[&str]) -> Command {
+    core_command_with_task(scratch, format, max_turns, extra_args, DEFAULT_TASK)
+}
+
+fn core_command_with_task(
+    scratch: &Scratch,
+    format: &str,
+    max_turns: u32,
+    extra_args: &[&str],
+    task: &str,
+) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_core"));
     // Never inherit a developer credential, proxy, user config, or launcher. The only credential
     // visible to the child is the inert placeholder consumed by the loopback-only provider.
     command
         .env_clear()
         .env("HOME", scratch.home())
-        .env("PATH", "/usr/bin:/bin")
+        .env("USERPROFILE", scratch.home())
+        .env("PATH", isolated_process_path())
         .env("LANG", "C.UTF-8")
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env(TEST_KEY_ENV, TEST_KEY)
         .current_dir(scratch.repo())
         .arg("-p")
-        .arg(DEFAULT_TASK)
+        .arg(task)
         .arg("--output-format")
         .arg(format)
         .arg("--repo")
@@ -661,6 +681,8 @@ fn core_command(scratch: &Scratch, format: &str, max_turns: u32, extra_args: &[&
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    preserve_windows_process_environment(&mut command);
+
     #[cfg(unix)]
     command.process_group(0);
 
@@ -672,7 +694,8 @@ fn sessions_command(scratch: &Scratch) -> Command {
     command
         .env_clear()
         .env("HOME", scratch.home())
-        .env("PATH", "/usr/bin:/bin")
+        .env("USERPROFILE", scratch.home())
+        .env("PATH", isolated_process_path())
         .env("LANG", "C.UTF-8")
         .current_dir(scratch.repo())
         .arg("--repo")
@@ -683,10 +706,34 @@ fn sessions_command(scratch: &Scratch) -> Command {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    preserve_windows_process_environment(&mut command);
+
     #[cfg(unix)]
     command.process_group(0);
 
     command
+}
+
+fn isolated_process_path() -> std::ffi::OsString {
+    #[cfg(windows)]
+    {
+        std::env::var_os("PATH").unwrap_or_default()
+    }
+    #[cfg(not(windows))]
+    {
+        "/usr/bin:/bin".into()
+    }
+}
+
+fn preserve_windows_process_environment(command: &mut Command) {
+    #[cfg(windows)]
+    for name in ["SystemRoot", "WINDIR"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = command;
 }
 
 #[cfg(unix)]
@@ -1122,6 +1169,25 @@ fn json_one_shot_process_contract_matches_golden() {
             include_str!("golden/one_shot_json_success_v5.json")
         )
     );
+}
+
+#[test]
+fn client_parity_scripted_task_completes_in_one_shot() {
+    let server = MockProvider::spawn(Reply::ParitySuccess);
+    let scratch = Scratch::new("client-parity-one-shot", &server.api_root);
+    let output = collect_core(
+        core_command_with_task(&scratch, "json", 1, &[], CLIENT_PARITY_TASK.trim())
+            .spawn()
+            .expect("spawn the real one-shot parity client"),
+    );
+    server.finish();
+
+    assert_eq!(output.status.code(), Some(0));
+    let results = json_lines(&output.stdout);
+    assert_eq!(results.len(), 1);
+    assert_terminal_result(&results[0], 0, "done");
+    assert_eq!(results[0]["assistant_text"], "parity reply");
+    assert_eq!(results[0]["turns"], 1);
 }
 
 #[test]

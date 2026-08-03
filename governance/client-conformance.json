@@ -1,0 +1,261 @@
+{
+  "schema_version": 2,
+  "placement_reference": "docs/spec/capability-mapping.md#71-三个安置类别与一个前端平面",
+  "runtime_builder": null,
+  "runtime_receipt": null,
+  "rows": [
+    {
+      "capability": "streaming_render",
+      "placement": "D",
+      "status": "green",
+      "clients": ["tui", "one-shot", "headless"],
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "crates/cli/src/markdown.rs",
+          "selector": "fn delimiter_split_stream_and_width_resize_converge_to_single_shot_grid()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/cli/src/output.rs",
+          "selector": "fn stream_events_have_stable_names_and_correlations()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/cli/tests/headless_serve.rs",
+          "selector": "fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server()"
+        }
+      ]
+    },
+    {
+      "capability": "osc8_links",
+      "placement": "D",
+      "status": "green",
+      "clients": ["tui"],
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "crates/cli/tests/tui_pty.rs",
+          "selector": "fn capable_terminal_receives_clickable_markdown_link_with_unchanged_visible_text()"
+        }
+      ]
+    },
+    {
+      "capability": "notifications",
+      "placement": "D",
+      "status": "green",
+      "clients": ["tui"],
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "crates/cli/src/tui/notification.rs",
+          "selector": "fn provider_turns_and_done_are_silent_until_one_authoritative_run_boundary()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/cli/tests/tui_pty.rs",
+          "selector": "fn capable_terminal_receives_one_bounded_osc9_notification_per_run()"
+        }
+      ]
+    },
+    {
+      "capability": "image_input",
+      "placement": "D",
+      "status": "green",
+      "clients": ["tui", "one-shot", "headless"],
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "crates/cli/tests/image_input.rs",
+          "selector": "fn loads_all_supported_magic_and_builds_neutral_segments()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/cli/src/tui.rs",
+          "selector": "fn composer_attachment_submits_one_multimodal_sq_envelope()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/cli/tests/one_shot_output.rs",
+          "selector": "fn image_one_shot_emits_metadata_then_degrades_cleanly_for_a_text_only_provider()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/cli/tests/headless_serve.rs",
+          "selector": "fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server()"
+        }
+      ]
+    },
+    {
+      "capability": "reconnect_resume",
+      "placement": "D",
+      "status": "green",
+      "clients": ["headless"],
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "crates/cli/tests/headless_serve.rs",
+          "selector": "fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server()"
+        }
+      ]
+    },
+    {
+      "capability": "machine_output_contract",
+      "placement": "D",
+      "status": "green",
+      "clients": ["tui", "one-shot", "headless"],
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "xtask/src/schema_compat_tests.rs",
+          "selector": "fn d13_14_repository_corpus_contract_is_self_consistent()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/eval/src/contract.rs",
+          "selector": "fn d13_14_every_frozen_machine_output_is_accepted_by_the_real_eval_consumer()"
+        },
+        {
+          "kind": "test",
+          "path": "xtask/src/schema_compat_rust_cli.rs",
+          "selector": "fn current_cli_machine_result_manifest_field_rename_fails_canonical_source_bound_gate()"
+        }
+      ]
+    },
+    {
+      "capability": "versioned_handshake",
+      "placement": "D",
+      "status": "green",
+      "clients": ["tui", "one-shot", "headless"],
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "crates/cli/src/tui/app_server.rs",
+          "selector": "fn version_skew_is_refused_up_front()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/cli/tests/headless_serve.rs",
+          "selector": "fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server()"
+        }
+      ]
+    },
+    {
+      "capability": "bounded_backpressure",
+      "placement": "D",
+      "status": "green",
+      "clients": ["tui", "one-shot", "headless"],
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "crates/cli/src/tui/app_server.rs",
+          "selector": "fn a_lossless_client_backpressures_instead_of_dropping_cosmetic_events()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/cli/src/tui/headless.rs",
+          "selector": "fn client_frame_bound_covers_the_protocol_image_and_escaped_text_ceilings()"
+        }
+      ]
+    }
+  ],
+  "client_parity": {
+    "status": "green",
+    "clients": ["tui", "one-shot", "headless"],
+    "transcript": "governance/client-conformance/client-parity-v5.json",
+    "test": {
+      "kind": "test",
+      "path": "crates/cli/src/tui.rs",
+      "selector": "fn three_client_production_paths_are_pairwise_identical_for_every_terminal_outcome()"
+    }
+  },
+  "version_independence": {
+    "status": "pending",
+    "clients": ["tui", "one-shot", "headless"],
+    "operating_systems": ["unix", "windows-msvc"],
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/cli/src/tui/app_server.rs",
+        "selector": "fn version_skew_is_refused_up_front()"
+      },
+      {
+        "kind": "test",
+        "path": "crates/cli/tests/headless_serve.rs",
+        "selector": "fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server()"
+      },
+      {
+        "kind": "test",
+        "path": "crates/cli/tests/one_shot_output.rs",
+        "selector": "fn one_shot_refuses_app_server_version_skew_before_provider_dispatch()"
+      },
+      {
+        "kind": "test",
+        "path": "crates/cli/tests/windows_conpty.rs",
+        "selector": "fn native_conpty_rejects_version_skew_before_terminal_takeover()"
+      }
+    ]
+  },
+  "platform_smoke": [
+    {
+      "platform": "macos-arm64",
+      "target": "aarch64-apple-darwin",
+      "runner": "macos-15",
+      "status": "pending",
+      "native": true,
+      "workflow": {
+        "kind": "workflow",
+        "path": ".github/workflows/release.yml",
+        "selector": "aarch64-apple-darwin"
+      }
+    },
+    {
+      "platform": "macos-x86_64",
+      "target": "x86_64-apple-darwin",
+      "runner": "macos-15-intel",
+      "status": "pending",
+      "native": true,
+      "workflow": {
+        "kind": "workflow",
+        "path": ".github/workflows/release.yml",
+        "selector": "x86_64-apple-darwin"
+      }
+    },
+    {
+      "platform": "linux-arm64",
+      "target": "aarch64-unknown-linux-musl",
+      "runner": "ubuntu-24.04-arm",
+      "status": "pending",
+      "native": true,
+      "workflow": {
+        "kind": "workflow",
+        "path": ".github/workflows/release.yml",
+        "selector": "aarch64-unknown-linux-musl"
+      }
+    },
+    {
+      "platform": "linux-x86_64",
+      "target": "x86_64-unknown-linux-musl",
+      "runner": "ubuntu-24.04",
+      "status": "pending",
+      "native": true,
+      "workflow": {
+        "kind": "workflow",
+        "path": ".github/workflows/release.yml",
+        "selector": "x86_64-unknown-linux-musl"
+      }
+    },
+    {
+      "platform": "windows-x86_64",
+      "target": "x86_64-pc-windows-msvc",
+      "runner": "windows-2022",
+      "status": "pending",
+      "native": true,
+      "workflow": {
+        "kind": "workflow",
+        "path": ".github/workflows/release.yml",
+        "selector": "x86_64-pc-windows-msvc"
+      }
+    }
+  ]
+}
