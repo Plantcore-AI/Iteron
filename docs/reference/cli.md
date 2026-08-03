@@ -29,41 +29,23 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `--max-turns <MAX_TURNS>` | Max turns (bounded invariant; overrides config / default). |
 | `--max-usd <MAX_USD>` | Max spend in USD (bounded invariant; overrides config / default). |
 | `--max-tokens <MAX_TOKENS>` | Aggregate provider-token ceiling across this run and all descendants. |
-| `--allow-code` | Force-enable code execution (bash/build/test). Code execution is already ON by default (Owner-directed lenient posture); a project `.core/config.json` "allow_code": false or `--mode plan` disables it. Code runs in an egress-off sandbox: network denied, writes confined to the workspace (ADR-007). |
+| `--max-wall-secs <MAX_WALL_SECS>` | Wall-clock ceiling for ONE submission, in seconds (bounded invariant; overrides config / default). One long refactor turn can reach the 1800s default, which was previously settable only by hand-editing the user config. |
+| `--allow-code` | Enable code execution (bash/build/test). OFF by default; only this flag or a trusted `~/.core/config.json` "allow_code": true may grant it, and a project `.core/config.json` "allow_code": false or `--mode plan` still tightens it back off. Code runs in an egress-off sandbox: network denied, writes confined to the workspace (ADR-007). |
 | `--dangerously-bypass-permissions` | DANGEROUS: auto-approve EVERY tool so the agent never prompts (used by the internal team edition). Skips the whole capability gate; Plan mode still hard-denies and an explicit `/permissions deny` is still honored. Off by default. |
-| `--mode <MODE>` | Permission mode: default \| acceptEdits \| plan \| yolo (ADR-007 §3). Reads always auto; the mode governs edits/code/etc. Defaults to acceptEdits (edits auto) in BOTH one-shot and the TUI (Owner-directed lenient posture); pass `--mode default` for per-edit prompts or `--mode plan` for read-only. |
+| `--mode <MODE>` | Permission mode: default \| acceptEdits \| plan \| yolo (ADR-007 §3). Reads always auto; the mode governs edits/code/etc. Defaults to `default` (edits ask) in the interactive TUI and to `acceptEdits` in one-shot, which has no approval channel; pass `--mode plan` for read-only. |
 | `--runs-dir <RUNS_DIR>` | Directory for the append-only rollout (the audit record). Default `.core/runs`. |
 | `--resume <RESUME>` | Resume a prior run by id: reconstruct its transcript from the rollout and continue (invariant #2, recoverable). When set, the task argument may be a follow-up instruction. |
 | `-c`, `--continue` | Continue the most recent session in this repo (like `claude --continue`). |
 | `--sessions` | List sessions in this repo (id, turns, model, cost, title) and exit. |
+| `--limit <N>` | How many sessions `--sessions` lists. Defaults to one page (200); the machine document keeps its published page ceiling and reports `truncated` instead. |
 | `--transcript <RUN_ID>` | Read one session's transcript and exit. Pair with `--output-format json` for the machine document; a client should never open a file under `.core/runs` itself. |
 | `--timeline <RUN_ID>` | Read one session's latency timeline and exit: the per-class effect breakdown, the distribution behind it, and what could not be accounted for. Pair with `--output-format json` for the machine document. Purely offline -- it reads the hash-verified record and measures nothing itself. |
 | `--fork <FORK>` | Fork a prior run at its tail into a new branch (shared past, divergent future) and print the new run id. The fork is tamper-evident: its genesis pins the parent chain's hash at the fork point (ADR-008 §4), so a later edit to the parent prefix is detected on resume. |
 | `--verify <VERIFY>` | Verification gate: a test command the harness runs itself when the agent claims done. If it fails, "done" is refused and the failure is fed back (don't trust the self-report). e.g. --verify "python3 -m pytest -q". Requires --allow-code. |
 | `--effort <EFFORT>` | Effort level: low \| medium \| high \| xhigh \| max \| ultracode. Higher = more model reasoning budget; ultracode additionally enables internal workflow/subagent orchestration. |
 | `--provider <PROVIDER>` | Provider instance id. Built-ins: anthropic, openai, deepseek, glm, minimax, fireworks. |
-| `--base-url <BASE_URL>` | Trusted one-run OpenAI-compatible API root, including its full path/version prefix. Prefer a named provider in ~/.core/config.json for persistent configuration. |
-
-## Workflows
-
-`core workflow` runs a JavaScript workflow script through the embedded engine.
-Scripts call `agent()`, `parallel()`, `pipeline()`, `phase()`, and `log()`; an
-optional leading `export const meta = { name, description, phases }` names the
-run and lays its phase boxes out in advance. An example script ships at
-`crates/workflow/examples/repo-audit.js`.
-
-| Subcommand | Meaning |
-| --- | --- |
-| `core workflow run SCRIPT [--args JSON]` | Execute a script now and print its return value |
-| `core workflow list` | List persisted runs (id, status, agents, model) |
-| `core workflow resume RUN_ID [--script PATH] [--args JSON]` | Replay a prior run's journaled agent outcomes and continue |
-| `core workflow watch RUN_ID [--args JSON]` | Re-launch a prior run in the background and attach the live tree |
-
-On a TTY the run renders a live phase and agent tree; piped or in CI it prints
-one line per event. Every run persists `script.js`, `run.json`, `journal.jsonl`,
-and `result.json` under `<runs-dir>/subagents/workflows/<run-id>/`, so `list`,
-`resume`, and `watch` work from a later process. `--repo` and `--runs-dir` apply
-as they do to a normal run.
+| `--base-url <BASE_URL>` | Trusted one-run OpenAI-compatible API root, including its full path/version prefix. Prefer a named provider in ~/.core/config.json for persistent configuration. Requires --key-env. |
+| `--key-env <NAME>` | Environment variable holding the credential for --base-url. Required alongside it: without it a gateway would silently receive the default provider's key. |
 
 ## Standard options
 
@@ -78,11 +60,22 @@ as they do to a normal run.
 | Command | Meaning |
 | --- | --- |
 | `core reindex` | Rebuild session metadata and the sessions index from hash-chained rollout truth. |
+| `core prune [--older-than-days <DAYS>] [--keep-last <N>] [--dry-run]` | Delete old run journals under the runs dir according to an explicit retention policy. Journals are append-only and nothing else ever removes them. |
 | `core workflow <SUBCOMMAND>` | Run an ultracode workflow (.js) end-to-end, streaming progress to stdout. |
 | `core workflow run <SCRIPT> [--args <ARGS>]` | Execute a workflow script now (agent()/parallel()/pipeline()/phase()/log()). |
 | `core workflow list` | List persisted workflow runs (id, status, agents, model) under the workflows dir. |
 | `core workflow resume <RUN_ID> [--script <SCRIPT>] [--args <ARGS>]` | Resume a prior run by id, replaying its journaled agent outcomes and continuing (blocking). |
 | `core workflow watch <RUN_ID> [--args <ARGS>]` | Re-launch a prior run in the BACKGROUND (RunHandle) and attach the live tree to it. |
+| `core setup [--plan] [--byok <PROVIDER>]` | First-run setup: choose a hosted plan or your own provider key, and validate it. |
+| `core auth <SUBCOMMAND>` | Inspect or drop the credential in use. |
+| `core auth status [PROVIDER]` | Print provider, api_root, credential source, validation state, and expiry. |
+| `core auth logout [PROVIDER]` | Remove the stored credential, leaving the provider entry intact. |
+| `core config <SUBCOMMAND>` | Read or write one operator setting in the user config. |
+| `core config get [KEY]` | Print one persisted setting, or every settable key. |
+| `core config set <KEY> <VALUE>` | Persist one setting atomically at mode 0600. |
+| `core pricing <SUBCOMMAND>` | Produce the operator pricing material a USD ceiling and a cost display require. |
+| `core pricing print-digests` | Print the exact route a rate card must pin for the selected provider and model. |
+| `core pricing sign <CARD> [--key-env <KEY_ENV>] [--signer-id <SIGNER_ID>]` | Sign an operator-authored rate card and print the `rate_cards[]` entry that installs it. |
 
 Local validation runs before a new rollout is opened, so malformed mode, effort,
 verification, or TUI/one-shot combinations should fail without creating a
