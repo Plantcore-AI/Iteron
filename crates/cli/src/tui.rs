@@ -3371,6 +3371,15 @@ pub async fn run(
         {
             redraw = true;
         }
+        if let Some(effect) = app.transcript_viewer.take_ready_effect() {
+            schedule_transcript_viewer_effect(
+                &mut app,
+                session.workspace(),
+                &mut transcript_effects,
+                effect,
+            );
+            redraw = true;
+        }
         if app.advance_tool_presentations(Instant::now()) {
             redraw = true;
         }

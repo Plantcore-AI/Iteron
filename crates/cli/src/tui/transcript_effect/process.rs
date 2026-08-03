@@ -1,18 +1,31 @@
-//! Exact subprocess ownership and joined owner-drop cleanup.
+//! Exact subprocess ownership with finite, truthful owner-drop cleanup.
 
 use std::collections::HashMap;
 use std::future::{Future as _, poll_fn};
 use std::io;
 use std::process::ExitStatus;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const SYNC_REAP_POLLS: usize = 64;
+const SYNC_REAP_PAUSE: Duration = Duration::from_millis(1);
+const CLOSE_REAP_WAIT: Duration = Duration::from_millis(100);
+const CLOSE_REAP_WAKE_LIMIT: usize = 64;
 
 #[derive(Default)]
 struct ProcessState {
     closing: bool,
     next_registration: u64,
     children: HashMap<u64, tokio::process::Child>,
+    active_reaps: usize,
+    completed_unknown_reaps: usize,
+}
+
+#[derive(Default)]
+struct ProcessRegistryInner {
+    state: Mutex<ProcessState>,
+    reaps_settled: Condvar,
 }
 
 /// Spawn/reap authority shared by every subprocess owned by one effect supervisor.
@@ -22,10 +35,24 @@ struct ProcessState {
 /// owner-drop remove the exact child under the same mutex, so there is no interval in which one
 /// path can reap a process and the other can signal a newly reused pid.
 #[derive(Clone, Default)]
-pub(in crate::tui) struct ProcessRegistry(Arc<Mutex<ProcessState>>);
+pub(in crate::tui) struct ProcessRegistry(Arc<ProcessRegistryInner>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::tui) enum ReapOutcome {
+    Reaped,
+    AlreadySettled,
+    OutcomeUnknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::tui) struct CloseReport {
+    pub(in crate::tui) claimed: usize,
+    pub(in crate::tui) reaped: usize,
+    pub(in crate::tui) unknown: usize,
+}
 
 /// Non-cloneable authority for one child stored in [`ProcessRegistry`]. Dropping a live ticket
-/// synchronously kills and joins that exact stored `Child`.
+/// signals and bounded-waits that exact stored `Child`; lack of exit evidence remains unknown.
 pub(in crate::tui) struct RegisteredChild {
     registry: ProcessRegistry,
     registration: u64,
@@ -37,6 +64,7 @@ pub(in crate::tui) struct RegisteredChild {
 impl ProcessRegistry {
     fn lock(&self) -> MutexGuard<'_, ProcessState> {
         self.0
+            .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -94,33 +122,89 @@ impl ProcessRegistry {
         polled
     }
 
-    fn reap_registration(&self, registration: u64) -> bool {
-        let mut state = self.lock();
-        let Some(child) = state.children.remove(&registration) else {
-            return false;
+    fn reap_registration(&self, registration: u64) -> ReapOutcome {
+        let child = {
+            let mut state = self.lock();
+            let Some(child) = state.children.remove(&registration) else {
+                return ReapOutcome::AlreadySettled;
+            };
+            state.active_reaps = state.active_reaps.saturating_add(1);
+            child
         };
-        // Keep the ownership mutex through physical join. `Supervisor::drop` therefore cannot see
-        // an empty registry and return while a ticket is still reaping the claimed child.
-        kill_and_join(child);
-        drop(state);
-        true
+        // The exact `Child` moves out under the ownership mutex, but the bounded OS wait never
+        // holds that mutex. A concurrent supervisor can observe `active_reaps` and wait on the
+        // condition variable instead of deadlocking every other ticket behind a stuck syscall.
+        let outcome = kill_and_reap_bounded(child);
+        let mut state = self.lock();
+        state.active_reaps = state.active_reaps.saturating_sub(1);
+        if outcome == ReapOutcome::OutcomeUnknown {
+            state.completed_unknown_reaps = state.completed_unknown_reaps.saturating_add(1);
+            // A still-live exact handle may have been dropped after the finite evidence budget.
+            // Refuse every later spawn so an unknown side effect can never overlap a new one.
+            state.closing = true;
+        }
+        self.0.reaps_settled.notify_all();
+        outcome
     }
 
-    /// Close the spawn gate, take exclusive ownership of every remaining child, and synchronously
-    /// kill and join them before returning. Returning the count makes the exclusivity invariant
-    /// directly testable without observing or signalling a numeric pid.
-    pub(in crate::tui) fn close_and_reap(&self) -> usize {
-        let mut state = self.lock();
-        state.closing = true;
-        let children = std::mem::take(&mut state.children);
+    /// Close the spawn gate and make one finite cleanup attempt for every exact child handle.
+    ///
+    /// `unknown` is deliberately truthful: a kernel that does not confirm exit inside the fixed
+    /// reap budget is never described as joined. The child handle is dropped only after the one
+    /// stable-identity kill attempt and no later cleanup path retains a numeric pid that could be
+    /// reused. Concurrent ticket reapers are observed through a finite condition-variable barrier;
+    /// the registry mutex is never held during an OS wait.
+    pub(in crate::tui) fn close_and_reap(&self) -> CloseReport {
+        let (children, prior_unknown_reaps) = {
+            let mut state = self.lock();
+            state.closing = true;
+            let children = std::mem::take(&mut state.children);
+            state.active_reaps = state.active_reaps.saturating_add(children.len());
+            (children, state.completed_unknown_reaps)
+        };
         let count = children.len();
+        let mut reaped = 0usize;
+        let mut unknown = 0usize;
         for (_, child) in children {
-            kill_and_join(child);
+            match kill_and_reap_bounded(child) {
+                ReapOutcome::Reaped => reaped = reaped.saturating_add(1),
+                ReapOutcome::OutcomeUnknown => unknown = unknown.saturating_add(1),
+                ReapOutcome::AlreadySettled => unreachable!("close owned an exact child handle"),
+            }
         }
-        // A concurrent ticket cleanup uses this same lock through physical join, so acquiring it
-        // was also a join barrier for a child it had already claimed.
-        drop(state);
-        count
+        let mut state = self.lock();
+        state.active_reaps = state.active_reaps.saturating_sub(count);
+        self.0.reaps_settled.notify_all();
+        let deadline = Instant::now() + CLOSE_REAP_WAIT;
+        for _ in 0..CLOSE_REAP_WAKE_LIMIT {
+            if state.active_reaps == 0 {
+                break;
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            let waited = self
+                .0
+                .reaps_settled
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = waited.0;
+            if waited.1.timed_out() {
+                break;
+            }
+        }
+        unknown = unknown
+            .saturating_add(
+                state
+                    .completed_unknown_reaps
+                    .saturating_sub(prior_unknown_reaps),
+            )
+            .saturating_add(state.active_reaps);
+        CloseReport {
+            claimed: count,
+            reaped,
+            unknown,
+        }
     }
 
     #[cfg(all(test, target_os = "linux"))]
@@ -172,9 +256,9 @@ impl RegisteredChild {
 
     /// Emergency ownership transfer used after an async wait deadline or wait error. Only one of
     /// this method, normal wait completion, or supervisor close can take the stored child.
-    pub(in crate::tui) fn reap_sync(&mut self) -> bool {
+    pub(in crate::tui) fn reap_sync(&mut self) -> ReapOutcome {
         if !self.active {
-            return false;
+            return ReapOutcome::AlreadySettled;
         }
         self.active = false;
         self.registry.reap_registration(self.registration)
@@ -210,18 +294,38 @@ impl Drop for RegisteredChild {
     }
 }
 
-fn kill_and_join(mut child: tokio::process::Child) {
+fn kill_and_reap_bounded(mut child: tokio::process::Child) -> ReapOutcome {
+    // This signal is issued while the registry still owns the exact unreaped child handle, so its
+    // numeric pid cannot have been reused. After this function returns no pid or handle is retained
+    // for a later signal. Failure to observe exit is therefore Unknown, never a false Reaped claim.
     let _ = child.start_kill();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return,
-            Ok(None) => std::thread::sleep(Duration::from_millis(1)),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            // Exclusive ownership makes `ECHILD`/invalid-handle impossible in a conforming
-            // implementation. Retry rather than returning across an unjoined ownership boundary.
-            Err(_) => std::thread::sleep(Duration::from_millis(1)),
+    bounded_reap_poll(
+        || child.try_wait().map(|status| status.is_some()),
+        || std::thread::sleep(SYNC_REAP_PAUSE),
+    )
+}
+
+fn bounded_reap_poll(
+    mut poll: impl FnMut() -> io::Result<bool>,
+    mut pause: impl FnMut(),
+) -> ReapOutcome {
+    for attempt in 0..SYNC_REAP_POLLS {
+        match poll() {
+            Ok(true) => return ReapOutcome::Reaped,
+            Ok(false) => {
+                if attempt + 1 < SYNC_REAP_POLLS {
+                    pause();
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                if attempt + 1 < SYNC_REAP_POLLS {
+                    pause();
+                }
+            }
+            Err(_) => return ReapOutcome::OutcomeUnknown,
         }
     }
+    ReapOutcome::OutcomeUnknown
 }
 
 #[cfg(all(test, unix))]
@@ -289,7 +393,10 @@ mod tests {
         release_tx.send(()).expect("release waiter");
         waiter.join().expect("waiter thread");
         assert_eq!(
-            closed_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            closed_rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .claimed,
             0,
             "normal wait removed the child before emergency close acquired ownership"
         );
@@ -331,7 +438,10 @@ mod tests {
         attempted_rx.recv().expect("close attempted ownership");
         release_tx.send(()).expect("release pending poll");
         waiter_poll.join().expect("pending poll thread");
-        assert_eq!(closer.join().expect("close thread"), 1);
+        let report = closer.join().expect("close thread");
+        assert_eq!(report.claimed, 1);
+        assert_eq!(report.reaped, 1);
+        assert_eq!(report.unknown, 0);
         drop(child);
         // SAFETY: signal 0 observes only whether the exact just-joined child still exists.
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
@@ -356,9 +466,12 @@ mod tests {
             close_registry.close_and_reap()
         });
         barrier.wait();
-        let ticket_claimed = usize::from(ticket.join().expect("ticket reaper"));
+        let ticket_claimed = usize::from(matches!(
+            ticket.join().expect("ticket reaper"),
+            ReapOutcome::Reaped | ReapOutcome::OutcomeUnknown
+        ));
         let close_claimed = closer.join().expect("owner close");
-        assert_eq!(ticket_claimed + close_claimed, 1);
+        assert_eq!(ticket_claimed + close_claimed.claimed, 1);
     }
 
     #[tokio::test]
@@ -390,8 +503,53 @@ mod tests {
             pid: second.pid,
             active: true,
         };
-        assert!(!stale_ticket.reap_sync());
+        assert_eq!(stale_ticket.reap_sync(), ReapOutcome::AlreadySettled);
         assert!(registry.lock().children.contains_key(&second.registration));
-        assert!(second.reap_sync());
+        assert_eq!(second.reap_sync(), ReapOutcome::Reaped);
+    }
+
+    #[test]
+    fn bounded_reap_poll_stops_after_the_exact_pending_budget() {
+        let mut polls = 0usize;
+        let mut pauses = 0usize;
+        let outcome = bounded_reap_poll(
+            || {
+                polls += 1;
+                Ok(false)
+            },
+            || pauses += 1,
+        );
+        assert_eq!(outcome, ReapOutcome::OutcomeUnknown);
+        assert_eq!(polls, SYNC_REAP_POLLS);
+        assert_eq!(pauses, SYNC_REAP_POLLS - 1);
+    }
+
+    #[test]
+    fn bounded_reap_poll_does_not_retry_a_persistent_error() {
+        let mut polls = 0usize;
+        let outcome = bounded_reap_poll(
+            || {
+                polls += 1;
+                Err(io::Error::other("persistent wait failure"))
+            },
+            || panic!("persistent errors have no retry sleep"),
+        );
+        assert_eq!(outcome, ReapOutcome::OutcomeUnknown);
+        assert_eq!(polls, 1);
+    }
+
+    #[test]
+    fn close_barrier_is_finite_and_truthful_for_a_stalled_concurrent_claimant() {
+        let registry = ProcessRegistry::default();
+        registry.lock().active_reaps = 1;
+        let started = Instant::now();
+        let report = registry.close_and_reap();
+        assert_eq!(report.claimed, 0);
+        assert_eq!(report.reaped, 0);
+        assert_eq!(report.unknown, 1);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the condition-variable join barrier has a fixed deadline"
+        );
     }
 }

@@ -2,9 +2,9 @@
 //!
 //! Export is isolated in a separately killable instance of the current executable. The child gets
 //! a bounded binary request on stdin, an empty environment, and no terminal handles. Cancellation,
-//! deadline, and every post-spawn error explicitly kill and reap it; the Linux child also requests
-//! `SIGKILL` if its parent dies. This keeps a blocked filesystem syscall out of the TUI process and
-//! prevents a detached blocking thread from publishing after frontend shutdown returns.
+//! deadline, and every post-spawn error signal and bounded-wait it; the Linux child also requests
+//! `SIGKILL` if its parent dies. Reap confirmation is typed separately from an unknown result, so a
+//! kernel wait failure can never become a false joined-success claim.
 
 use std::path::PathBuf;
 #[cfg(all(test, unix))]
@@ -21,7 +21,7 @@ mod worker;
 use worker::{WorkerFailure, WorkerRun};
 pub(crate) use worker::{worker_main, worker_requested};
 mod process;
-pub(super) use process::{ProcessRegistry, RegisteredChild};
+pub(super) use process::{ProcessRegistry, ReapOutcome, RegisteredChild};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Origin {
@@ -151,9 +151,9 @@ impl Supervisor {
         Some(event)
     }
 
-    /// Cancel the active effect and join its owned task only after any child process is reaped.
+    /// Cancel the active effect and join its owned task after its finite exact-handle cleanup path.
     /// Each child has a non-cloneable registry ticket and, on Linux, carries a parent-death signal
-    /// as a final containment layer, but neither fallback substitutes for this joined boundary.
+    /// as a final containment layer; lack of reap evidence is retained as outcome-unknown.
     pub(crate) async fn shutdown(&mut self) {
         let Some(task) = self.task.take() else {
             return;
@@ -161,9 +161,9 @@ impl Supervisor {
         if let Some(cancel) = self.cancel.take() {
             let _ = cancel.send(true);
         }
-        // Every production branch owns its own bounded deadline and kill/reap path. Awaiting the
-        // task here is the joined ownership boundary; aborting it would drop a `Child` after kill
-        // without evidence that the kernel reaped it.
+        // Every production branch owns its own bounded deadline and typed kill/reap attempt.
+        // Await the task so it can preserve Reaped versus OutcomeUnknown instead of aborting the
+        // cleanup state machine between signal and its finite evidence window.
         let _ = task.await;
         self.label = None;
         while self.receiver.try_recv().is_ok() {}

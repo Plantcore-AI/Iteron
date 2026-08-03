@@ -13,7 +13,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt as _;
 
-use super::transcript_effect::{ProcessRegistry, RegisteredChild};
+use super::transcript_effect::{ProcessRegistry, ReapOutcome, RegisteredChild};
 
 const MAX_CLIPBOARD_BYTES: usize = 64 * 1024;
 const MAX_ENV_BYTES: usize = 4 * 1024;
@@ -64,6 +64,7 @@ impl fmt::Display for PostSpawnStage {
 pub(crate) enum CleanupState {
     Reaped,
     AlreadyReaped,
+    OutcomeUnknown,
 }
 
 impl fmt::Display for CleanupState {
@@ -71,6 +72,7 @@ impl fmt::Display for CleanupState {
         formatter.write_str(match self {
             Self::Reaped => "was explicitly killed and reaped",
             Self::AlreadyReaped => "had already been reaped",
+            Self::OutcomeUnknown => "was killed but its reap outcome is unknown",
         })
     }
 }
@@ -264,20 +266,11 @@ async fn kill_and_reap(child: &mut RegisteredChild) -> CleanupState {
     let _ = child.start_kill();
     match tokio::time::timeout(CLIPBOARD_REAP_TIMEOUT, child.wait()).await {
         Ok(Ok(_)) => CleanupState::Reaped,
-        Ok(Err(_)) => {
-            if child.reap_sync() {
-                CleanupState::Reaped
-            } else {
-                CleanupState::AlreadyReaped
-            }
-        }
-        Err(_) => {
-            if child.reap_sync() {
-                CleanupState::Reaped
-            } else {
-                CleanupState::AlreadyReaped
-            }
-        }
+        Ok(Err(_)) | Err(_) => match child.reap_sync() {
+            ReapOutcome::Reaped => CleanupState::Reaped,
+            ReapOutcome::AlreadySettled => CleanupState::AlreadyReaped,
+            ReapOutcome::OutcomeUnknown => CleanupState::OutcomeUnknown,
+        },
     }
 }
 

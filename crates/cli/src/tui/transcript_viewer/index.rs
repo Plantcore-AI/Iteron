@@ -84,6 +84,11 @@ impl Viewer {
             return false;
         }
 
+        self.projection_worker.cancel_in_flight();
+        self.desired_detail = None;
+        self.pending_copy = None;
+        self.ready_effect = None;
+
         let mut reusable = self
             .index_job
             .take()
@@ -125,33 +130,35 @@ impl Viewer {
     }
 
     fn advance_work(&mut self, live_blocks: &[Arc<block::Block>]) -> bool {
-        if self.index_job.is_some() {
-            match self.projection_worker.poll() {
-                WorkerPoll::Ready(result) => {
-                    let matches_current =
-                        self.index_job.as_ref().and_then(IndexJob::projection_key)
-                            == Some(result.key);
-                    if matches_current {
-                        let block = self
-                            .index_job
-                            .as_ref()
-                            .and_then(|job| job.blocks.get(job.next.saturating_sub(1)))
-                            .expect("matching projection has a block")
-                            .clone();
-                        let entry = result
-                            .entry
-                            .unwrap_or_else(|()| projection::unprojected_block(&block));
-                        self.commit_index_entry(entry);
-                        self.finish_index_if_ready(live_blocks);
-                    }
-                    // A superseded worker result is discarded as its one bounded unit. The next
-                    // loop turn can dispatch the current authority without doing two units here.
-                    return true;
+        match self.projection_worker.poll() {
+            WorkerPoll::Ready(ProjectionResult::Index { key, entry }) => {
+                let matches_current =
+                    self.index_job.as_ref().and_then(IndexJob::projection_key) == Some(key);
+                if matches_current {
+                    let block = self
+                        .index_job
+                        .as_ref()
+                        .and_then(|job| job.blocks.get(job.next.saturating_sub(1)))
+                        .expect("matching projection has a block")
+                        .clone();
+                    self.commit_index_entry(
+                        entry.unwrap_or_else(|()| projection::unprojected_block(&block)),
+                    );
+                    self.finish_index_if_ready(live_blocks);
                 }
-                WorkerPoll::Pending => return false,
-                WorkerPoll::Idle => {}
+                // A superseded or cancelled result is discarded as its one bounded unit. The next
+                // loop turn can dispatch current authority/detail work without doing two units.
+                return true;
             }
+            WorkerPoll::Ready(ProjectionResult::Detail { key, detail }) => {
+                self.commit_detail_result(key, detail, live_blocks);
+                return true;
+            }
+            WorkerPoll::Pending => return false,
+            WorkerPoll::Idle => {}
+        }
 
+        if self.index_job.is_some() {
             if self.index_job.as_ref().is_some_and(|job| job.next == 0) {
                 self.finish_index_if_ready(live_blocks);
                 return true;
@@ -197,7 +204,11 @@ impl Viewer {
             }
 
             self.work.index_projections = self.work.index_projections.saturating_add(1);
-            if self.projection_worker.start(key, block.clone()).is_err() {
+            if self
+                .projection_worker
+                .start_index(key, block.clone())
+                .is_err()
+            {
                 self.commit_index_entry(projection::unprojected_block(&block));
                 self.finish_index_if_ready(live_blocks);
                 return true;
@@ -205,31 +216,96 @@ impl Viewer {
             return false;
         }
 
-        let Some(job) = self.search_job.as_mut() else {
+        if let Some(job) = self.search_job.as_mut() {
+            for _ in 0..MAX_SEARCH_ENTRIES_PER_TICK {
+                if job.cursor == self.entries.len() || job.truncated {
+                    break;
+                }
+                let entry = &self.entries[job.cursor];
+                job.cursor += 1;
+                if entry.complete && entry.folded.contains(&job.folded_query) {
+                    if job.results.len() == MAX_RESULTS {
+                        job.truncated = true;
+                    } else {
+                        job.results.push(entry.id);
+                    }
+                }
+            }
+            if self
+                .search_job
+                .as_ref()
+                .is_some_and(|job| job.cursor == self.entries.len() || job.truncated)
+            {
+                self.finish_search(live_blocks);
+            }
+            return true;
+        }
+
+        let Some(request) = self.desired_detail.take() else {
             return false;
         };
-        for _ in 0..MAX_SEARCH_ENTRIES_PER_TICK {
-            if job.cursor == self.entries.len() || job.truncated {
-                break;
+        let key = request.key;
+        if self
+            .projection_worker
+            .start_detail(key, request.block)
+            .is_err()
+        {
+            if self.pending_copy.is_some_and(|pending| pending.key == key) {
+                self.pending_copy = None;
             }
-            let entry = &self.entries[job.cursor];
-            job.cursor += 1;
-            if entry.complete && entry.folded.contains(&job.folded_query) {
-                if job.results.len() == MAX_RESULTS {
-                    job.truncated = true;
-                } else {
-                    job.results.push(entry.id);
+            self.set_notice("detail projection worker is unavailable");
+            return true;
+        }
+        false
+    }
+
+    fn commit_detail_result(
+        &mut self,
+        key: DetailKey,
+        result: Result<projection::DetailProjection, ()>,
+        live_blocks: &[Arc<block::Block>],
+    ) {
+        let current = self.authority_revision == Some(key.authority_revision)
+            && self.selected_id == Some(key.id)
+            && live_blocks
+                .iter()
+                .find(|block| block.id == key.id)
+                .is_some_and(|block| block.revision == key.revision);
+        match result {
+            Ok(projected) if current => {
+                if key.raw == self.raw {
+                    self.detail = Some(Detail {
+                        id: key.id,
+                        revision: key.revision,
+                        raw: key.raw,
+                        text: projected.text.clone(),
+                        truncated: projected.truncated,
+                        layout_width: 0,
+                        row_ranges: Vec::new(),
+                    });
+                    self.work.detail_rebuilds = self.work.detail_rebuilds.saturating_add(1);
+                }
+                if let Some(pending) = self.pending_copy.filter(|pending| pending.key == key) {
+                    self.ready_effect = Some(Effect::Copy {
+                        text: projected.text,
+                        subject: pending.subject,
+                        snapshot_revision: key.authority_revision,
+                    });
+                    self.pending_copy = None;
+                }
+            }
+            Ok(_) => {}
+            Err(()) => {
+                if self.pending_copy.is_some_and(|pending| pending.key == key) {
+                    self.pending_copy = None;
+                    self.set_notice("detail projection was cancelled or failed");
                 }
             }
         }
-        if self
-            .search_job
-            .as_ref()
-            .is_some_and(|job| job.cursor == self.entries.len() || job.truncated)
-        {
-            self.finish_search(live_blocks);
-        }
-        true
+        self.queue_display_detail(
+            live_blocks,
+            self.authority_revision.unwrap_or(key.authority_revision),
+        );
     }
 
     fn commit_index_entry(&mut self, entry: Entry) {
@@ -269,7 +345,7 @@ impl Viewer {
         self.index_revision = self.index_revision.wrapping_add(1);
         self.start_search();
         if self.search_job.is_none() {
-            self.ensure_detail(live_blocks);
+            self.queue_display_detail(live_blocks, job.authority_revision);
         }
     }
 
@@ -326,7 +402,9 @@ impl Viewer {
                 .unwrap_or(0);
             self.selected_id = self.results.get(self.result_position).copied();
         }
-        self.ensure_detail(blocks);
+        if let Some(authority_revision) = self.authority_revision {
+            self.queue_display_detail(blocks, authority_revision);
+        }
     }
 
     pub(super) fn query_changed(&mut self) {
@@ -334,6 +412,15 @@ impl Viewer {
         self.results.clear();
         self.results_truncated = false;
         self.detail = None;
+        self.desired_detail = None;
+        self.pending_copy = None;
+        self.ready_effect = None;
+        if matches!(
+            self.projection_worker.in_flight_key(),
+            Some(WorkKey::Detail(_))
+        ) {
+            self.projection_worker.cancel_in_flight();
+        }
         if self.index_job.is_none() {
             self.start_search();
         } else {
@@ -347,13 +434,16 @@ impl Viewer {
 
     /// True when another loop turn can advance work without waiting for the background projection.
     pub(crate) fn work_ready(&self) -> bool {
-        self.work_pending() && !self.projection_worker.is_busy()
+        (self.work_pending() || self.desired_detail.is_some()) && !self.projection_worker.is_busy()
     }
 
     pub(crate) fn work_notification(&self) -> Option<Arc<tokio::sync::Notify>> {
-        self.index_job
-            .as_ref()
-            .and(self.projection_worker.notification())
+        self.projection_worker.notification()
+    }
+
+    #[cfg(test)]
+    pub(super) fn background_work_pending(&self) -> bool {
+        self.work_pending() || self.desired_detail.is_some() || self.projection_worker.is_busy()
     }
 
     pub(super) fn work_progress(&self) -> Option<(&'static str, usize, usize)> {
@@ -361,9 +451,14 @@ impl Viewer {
             let (done, total) = job.progress();
             return Some(("indexing", done, total));
         }
-        self.search_job.as_ref().map(|job| {
+        if let Some(job) = &self.search_job {
             let (done, total) = job.progress(self.entries.len());
-            ("searching", done, total)
-        })
+            return Some(("searching", done, total));
+        }
+        (self.desired_detail.is_some() || self.projection_worker.is_busy()).then_some((
+            "projecting detail",
+            0,
+            1,
+        ))
     }
 }

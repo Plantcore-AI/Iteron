@@ -1,10 +1,13 @@
-//! Single bounded background worker for expensive per-block search projection.
+//! Single-owner bounded worker for transcript index and detail projections.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
+use std::thread::JoinHandle;
 
 use crate::block;
 
+use super::projection::DetailProjection;
 use super::{Entry, projection};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,24 +19,59 @@ pub(super) struct ProjectionKey {
     pub(super) remaining: usize,
 }
 
-struct ProjectionRequest {
-    key: ProjectionKey,
-    block: Arc<block::Block>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct DetailKey {
+    pub(super) authority_revision: u64,
+    pub(super) id: u64,
+    pub(super) revision: u64,
+    pub(super) raw: bool,
 }
 
-pub(super) struct ProjectionResult {
-    pub(super) key: ProjectionKey,
-    pub(super) entry: Result<Entry, ()>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WorkKey {
+    Index(ProjectionKey),
+    Detail(DetailKey),
+}
+
+enum ProjectionRequest {
+    Index {
+        key: ProjectionKey,
+        block: Arc<block::Block>,
+        cancel: Arc<AtomicBool>,
+    },
+    Detail {
+        key: DetailKey,
+        block: Arc<block::Block>,
+        cancel: Arc<AtomicBool>,
+    },
+}
+
+pub(super) enum ProjectionResult {
+    Index {
+        key: ProjectionKey,
+        entry: Result<Entry, ()>,
+    },
+    Detail {
+        key: DetailKey,
+        detail: Result<DetailProjection, ()>,
+    },
 }
 
 struct Channels {
     requests: mpsc::SyncSender<ProjectionRequest>,
     results: mpsc::Receiver<ProjectionResult>,
+    shutdown: Arc<AtomicBool>,
+    join: Option<JoinHandle<()>>,
+}
+
+struct InFlight {
+    key: WorkKey,
+    cancel: Arc<AtomicBool>,
 }
 
 pub(super) struct ProjectionWorker {
     channels: Option<Channels>,
-    in_flight: Option<ProjectionKey>,
+    in_flight: Option<InFlight>,
     notification: Arc<tokio::sync::Notify>,
 }
 
@@ -61,57 +99,113 @@ impl ProjectionWorker {
         let (request_tx, request_rx) = mpsc::sync_channel::<ProjectionRequest>(1);
         let (result_tx, result_rx) = mpsc::sync_channel::<ProjectionResult>(1);
         let notification = self.notification.clone();
-        std::thread::Builder::new()
-            .name("core-transcript-index".into())
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let worker_shutdown = shutdown.clone();
+        let join = std::thread::Builder::new()
+            .name("core-transcript-projection".into())
             .spawn(move || {
-                while let Ok(request) = request_rx.recv() {
-                    let entry = catch_unwind(AssertUnwindSafe(|| {
-                        projection::index_block(&request.block, request.key.remaining)
-                    }))
-                    .map_err(|_| ());
-                    if result_tx
-                        .send(ProjectionResult {
-                            key: request.key,
-                            entry,
-                        })
-                        .is_err()
-                    {
+                while !worker_shutdown.load(Ordering::Relaxed) {
+                    let Ok(request) = request_rx.recv() else {
                         return;
+                    };
+                    let result = match request {
+                        ProjectionRequest::Index { key, block, cancel } => {
+                            let entry = catch_unwind(AssertUnwindSafe(|| {
+                                projection::index_block(&block, key.remaining, &cancel)
+                            }))
+                            .unwrap_or(Err(()));
+                            ProjectionResult::Index { key, entry }
+                        }
+                        ProjectionRequest::Detail { key, block, cancel } => {
+                            let detail = catch_unwind(AssertUnwindSafe(|| {
+                                projection::detail_block(&block, key.raw, &cancel)
+                            }))
+                            .unwrap_or(Err(()));
+                            ProjectionResult::Detail { key, detail }
+                        }
+                    };
+                    match result_tx.try_send(result) {
+                        Ok(()) => notification.notify_one(),
+                        // Full contradicts the one-request/one-result invariant; disconnect means
+                        // close already revoked the receiver. Either way, terminate instead of
+                        // blocking a join on a result nobody can consume.
+                        Err(mpsc::TrySendError::Full(_) | mpsc::TrySendError::Disconnected(_)) => {
+                            return;
+                        }
                     }
-                    notification.notify_one();
                 }
             })
             .map_err(|_| ())?;
         self.channels = Some(Channels {
             requests: request_tx,
             results: result_rx,
+            shutdown,
+            join: Some(join),
         });
         Ok(())
     }
 
-    pub(super) fn start(&mut self, key: ProjectionKey, block: Arc<block::Block>) -> Result<(), ()> {
+    pub(super) fn start_index(
+        &mut self,
+        key: ProjectionKey,
+        block: Arc<block::Block>,
+    ) -> Result<(), ()> {
+        self.start(WorkKey::Index(key), |cancel| ProjectionRequest::Index {
+            key,
+            block,
+            cancel,
+        })
+    }
+
+    pub(super) fn start_detail(
+        &mut self,
+        key: DetailKey,
+        block: Arc<block::Block>,
+    ) -> Result<(), ()> {
+        self.start(WorkKey::Detail(key), |cancel| ProjectionRequest::Detail {
+            key,
+            block,
+            cancel,
+        })
+    }
+
+    fn start(
+        &mut self,
+        key: WorkKey,
+        request: impl FnOnce(Arc<AtomicBool>) -> ProjectionRequest,
+    ) -> Result<(), ()> {
         debug_assert!(self.in_flight.is_none());
         self.ensure_started()?;
-        let request = ProjectionRequest { key, block };
+        let cancel = Arc::new(AtomicBool::new(false));
         if self
             .channels
             .as_ref()
             .expect("worker channels were started")
             .requests
-            .try_send(request)
+            .try_send(request(cancel.clone()))
             .is_err()
         {
-            self.channels = None;
+            self.close();
             return Err(());
         }
-        self.in_flight = Some(key);
+        self.in_flight = Some(InFlight { key, cancel });
         Ok(())
     }
 
-    pub(super) fn poll(&mut self) -> WorkerPoll {
-        if self.in_flight.is_none() {
-            return WorkerPoll::Idle;
+    pub(super) fn cancel_in_flight(&self) {
+        if let Some(in_flight) = &self.in_flight {
+            in_flight.cancel.store(true, Ordering::Relaxed);
         }
+    }
+
+    pub(super) fn in_flight_key(&self) -> Option<WorkKey> {
+        self.in_flight.as_ref().map(|in_flight| in_flight.key)
+    }
+
+    pub(super) fn poll(&mut self) -> WorkerPoll {
+        let Some(in_flight) = &self.in_flight else {
+            return WorkerPoll::Idle;
+        };
         let result = self
             .channels
             .as_ref()
@@ -125,11 +219,18 @@ impl ProjectionWorker {
             }
             Err(mpsc::TryRecvError::Empty) => WorkerPoll::Pending,
             Err(mpsc::TryRecvError::Disconnected) => {
-                let key = self.in_flight.take().expect("in-flight key");
-                self.channels = None;
-                WorkerPoll::Ready(ProjectionResult {
-                    key,
-                    entry: Err(()),
+                let key = in_flight.key;
+                self.in_flight = None;
+                self.close();
+                WorkerPoll::Ready(match key {
+                    WorkKey::Index(key) => ProjectionResult::Index {
+                        key,
+                        entry: Err(()),
+                    },
+                    WorkKey::Detail(key) => ProjectionResult::Detail {
+                        key,
+                        detail: Err(()),
+                    },
                 })
             }
         }
@@ -139,7 +240,38 @@ impl ProjectionWorker {
         self.in_flight.is_some()
     }
 
+    #[cfg(test)]
+    pub(super) fn owns_join_handle(&self) -> bool {
+        self.channels
+            .as_ref()
+            .and_then(|channels| channels.join.as_ref())
+            .is_some()
+    }
+
     pub(super) fn notification(&self) -> Option<Arc<tokio::sync::Notify>> {
         self.is_busy().then(|| self.notification.clone())
+    }
+
+    pub(super) fn close(&mut self) {
+        self.cancel_in_flight();
+        self.in_flight = None;
+        let Some(mut channels) = self.channels.take() else {
+            return;
+        };
+        channels.shutdown.store(true, Ordering::Relaxed);
+        drop(channels.requests);
+        drop(channels.results);
+        if let Some(join) = channels.join.take() {
+            // Every worker operation is byte-capped and observes either its request cancellation or
+            // the shutdown token between collection elements. Result delivery is non-blocking, so
+            // this ownership join has no channel or unbounded-source hang path.
+            let _ = join.join();
+        }
+    }
+}
+
+impl Drop for ProjectionWorker {
+    fn drop(&mut self) {
+        self.close();
     }
 }

@@ -116,10 +116,12 @@ incremental over stable block ids/revisions, evicts records with the retained tr
 the newest complete block projections at 16 MiB total and 2 MiB per block, a query at 512 bytes,
 results at 512, and selected pretty/raw detail at 64 KiB. A block excluded by either search budget
 is explicitly marked `search-unindexed`, and the header reports the incomplete block count; no
-prefix-only result is presented as a complete search. MiB-scale block rendering, redaction, and
-Unicode folding run on one persistent bounded background worker; each interactive-loop turn only
-dispatches or collects one projection result, while result matching advances one entry. Worker
-completion explicitly wakes the event loop without polling. A superseded index keeps reusable
+prefix-only result is presented as a complete search. MiB-scale block rendering, redaction, Unicode
+folding, selected detail, and `Y` copy projection run on one persistent bounded background worker;
+each interactive-loop turn only dispatches or collects one projection result, while result matching
+advances one entry. The worker owns an exact cancellation token and join handle, delivers results
+without blocking, and close/drop cancels and joins it after byte-capped cooperative work. Completion
+explicitly wakes the event loop without polling. A superseded index keeps reusable
 payload only for the newest 1200 authority IDs with exact matching revisions, so repeated live
 cancellation cannot retain transcript history. The header exposes exact progress, and copy/export
 wait until both transcript and query revisions are authoritative. `/` edits the filter while
@@ -135,18 +137,20 @@ events, approvals, Ctrl-C, Ctrl-D, SIGTERM, and SIGHUP remain responsive. Copy r
 terminal-control scrubbing, admits only fixed root-owned, non-writable, non-symlink stock adapters,
 and reports every post-dispatch write/shutdown/wait/exit/timeout failure as outcome-unknown without
 trying a second adapter. Every failure before a successful wait explicitly kills and bounded-waits
-the child, then synchronously joins it if the one-second reap window expires; a nonzero exit has
-already been reaped. Export runs in a separately killable copy of the
+the exact child handle; a nonzero exit has already been reaped. If the kernel does not confirm exit
+inside the one-second async window plus the finite synchronous poll budget, cleanup is truthfully
+outcome-unknown rather than falsely reported as joined. Export runs in a separately killable copy of the
 current Core executable with a cleared environment and bounded stdin/stdout protocol. Its
 five-second deadline, frontend shutdown, and every post-spawn error kill that helper, use a
-one-second async reap window, and then synchronously join any remainder; every normal and error
-return from the TUI crosses the same cleanup scope before returning.
+one-second async reap window, and then make the same finite exact-handle cleanup attempt; every
+normal and error return from the TUI crosses that cleanup scope before returning.
 The shared process registry owns each real child handle behind a checked monotonic opaque ticket;
 normal wait completion and emergency cleanup claim and remove that handle under one mutex, never by
-a reusable numeric PID. Direct supervisor drop closes the spawn gate and holds that ownership
-barrier through synchronous kill and join of every child before returning. A timed-out publication
-is reported as outcome-unknown, but no detached blocking thread can mutate
-the workspace later.
+a reusable numeric PID. Cleanup moves the exact child out under the mutex, releases the mutex before
+all OS waits, and uses a finite condition-variable barrier for concurrent claimants. It sends no
+later signal after dropping an unconfirmed handle, so PID reuse cannot redirect cleanup; both the
+effect and reap result remain outcome-unknown. A timed-out publication is likewise reported as
+outcome-unknown.
 
 The interactive loop applies at most 64 ordered runtime events from the 1024-slot EQ per turn.
 Lifecycle signals, one-shot effect completion, and terminal input have explicit priority before any
@@ -155,9 +159,10 @@ therefore retains FIFO ordering and producer backpressure without starving contr
 
 On Linux, export opens the workspace and every parent with no-follow directory handles, writes and
 fsyncs an anonymous `O_TMPFILE` inode, and exclusively publishes that held inode with `linkat` before
-syncing the directory. The workspace root itself is bound by its held parent capability plus
-basename and reopened for inode comparison before and after publication; a root rename, unlink, or
-replacement therefore cannot turn detached-inode publication into reported success. It creates no
+syncing the directory. The workspace is anchored at the filesystem root with a held capability for
+every component of its absolute visible path; the complete chain is reopened and inode-compared
+before and after publication. Renaming, unlinking, or replacing either the workspace or any ancestor
+therefore cannot turn detached-inode publication into reported success. It creates no
 temporary workspace pathname and never issues a cleanup unlink,
 so an unlink/replace or symlink race cannot redirect publication or cause Core to remove an
 attacker-owned replacement. Parent symlink swaps cannot redirect the write. Existing explicit

@@ -16,11 +16,12 @@ pub(crate) use render::render;
 mod effect;
 pub(crate) use effect::{Effect, ExportScope};
 mod projection;
-use projection::{
-    append_query, bounded_detail, bounded_safe, fold, move_bounded, move_wrapped, raw_text,
-};
+use projection::{append_query, bounded_safe, fold, move_bounded, move_wrapped};
 mod projection_worker;
-use projection_worker::{ProjectionKey, ProjectionWorker, WorkerPoll};
+use projection_worker::{
+    DetailKey, ProjectionKey, ProjectionResult, ProjectionWorker, WorkKey, WorkerPoll,
+};
+mod semantic_text;
 
 #[cfg(test)]
 mod tests;
@@ -64,6 +65,17 @@ struct Detail {
     row_ranges: Vec<(usize, usize)>,
 }
 
+struct DetailRequest {
+    key: DetailKey,
+    block: Arc<block::Block>,
+}
+
+#[derive(Clone, Copy)]
+struct PendingCopy {
+    key: DetailKey,
+    subject: &'static str,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct WorkCounters {
     index_syncs: usize,
@@ -99,6 +111,9 @@ pub(crate) struct Viewer {
     index_job: Option<IndexJob>,
     search_job: Option<SearchJob>,
     projection_worker: ProjectionWorker,
+    desired_detail: Option<DetailRequest>,
+    pending_copy: Option<PendingCopy>,
+    ready_effect: Option<Effect>,
     next_index_generation: u64,
     work: WorkCounters,
 }
@@ -119,6 +134,7 @@ impl Viewer {
         blocks: &[Arc<block::Block>],
         authority_revision: u64,
     ) {
+        self.projection_worker.close();
         self.open = true;
         self.query.clear();
         append_query(&mut self.query, query);
@@ -130,10 +146,14 @@ impl Viewer {
         self.notice.clear();
         self.pending_effect = None;
         self.authority_revision = None;
+        self.desired_detail = None;
+        self.pending_copy = None;
+        self.ready_effect = None;
         self.sync_if_changed(blocks, authority_revision);
     }
 
     pub(crate) fn close(&mut self) {
+        self.projection_worker.close();
         self.open = false;
         self.editing_query = false;
         self.entries.clear();
@@ -149,6 +169,9 @@ impl Viewer {
         self.results_revision = None;
         self.index_job = None;
         self.search_job = None;
+        self.desired_detail = None;
+        self.pending_copy = None;
+        self.ready_effect = None;
     }
 
     pub(crate) fn handle_paste(
@@ -168,9 +191,7 @@ impl Viewer {
             self.query_changed();
         }
         self.scroll = 0;
-        if !self.work_pending() {
-            self.ensure_detail(blocks);
-        }
+        self.queue_display_detail(blocks, authority_revision);
     }
 
     pub(crate) fn scroll_up(&mut self, rows: usize) {
@@ -229,9 +250,7 @@ impl Viewer {
                 }
                 _ => {}
             }
-            if !self.work_pending() {
-                self.ensure_detail(blocks);
-            }
+            self.queue_display_detail(blocks, authority_revision);
             return None;
         }
 
@@ -263,27 +282,26 @@ impl Viewer {
             KeyCode::End | KeyCode::Char('G') => self.select_edge(true),
             KeyCode::Char('r') => {
                 self.raw = !self.raw;
-                self.detail = None;
+                self.invalidate_detail_intent();
                 self.scroll = 0;
             }
             KeyCode::Char('Y') | KeyCode::Char('y') if shift => {
-                if let Some(text) = self.selected_result_text(blocks) {
-                    return Some(Effect::Copy {
-                        text,
-                        subject: "matching block projection",
-                        snapshot_revision: authority_revision,
-                    });
-                }
+                return self.request_copy(
+                    false,
+                    "matching block projection",
+                    true,
+                    blocks,
+                    authority_revision,
+                );
             }
             KeyCode::Char('y') => {
-                self.ensure_detail(blocks);
-                if let Some(detail) = &self.detail {
-                    return Some(Effect::Copy {
-                        text: detail.text.clone(),
-                        subject: "selected block",
-                        snapshot_revision: authority_revision,
-                    });
-                }
+                return self.request_copy(
+                    self.raw,
+                    "selected block",
+                    false,
+                    blocks,
+                    authority_revision,
+                );
             }
             KeyCode::Char('E') | KeyCode::Char('e') if shift => {
                 return Some(Effect::Export {
@@ -299,7 +317,7 @@ impl Viewer {
             }
             _ => {}
         }
-        self.ensure_detail(blocks);
+        self.queue_display_detail(blocks, authority_revision);
         None
     }
 
@@ -317,7 +335,7 @@ impl Viewer {
             .unwrap_or(self.entries.len() - 1);
         let next = move_bounded(current, delta, self.entries.len());
         self.selected_id = self.entries.get(next).map(|entry| entry.id);
-        self.detail = None;
+        self.invalidate_detail_intent();
         self.scroll = 0;
     }
 
@@ -327,7 +345,7 @@ impl Viewer {
         }
         self.result_position = move_wrapped(self.result_position, delta, self.results.len());
         self.selected_id = self.results.get(self.result_position).copied();
-        self.detail = None;
+        self.invalidate_detail_intent();
         self.scroll = 0;
     }
 
@@ -353,40 +371,115 @@ impl Viewer {
         };
         self.selected_id = selected;
         self.result_position = if last { len.saturating_sub(1) } else { 0 };
-        self.detail = None;
+        self.invalidate_detail_intent();
         self.scroll = 0;
     }
 
-    fn ensure_detail(&mut self, blocks: &[Arc<block::Block>]) {
-        let Some(id) = self.selected_id else {
-            self.detail = None;
-            return;
-        };
-        let Some(block) = blocks.iter().find(|block| block.id == id) else {
-            self.detail = None;
-            return;
-        };
-        let current = self.detail.as_ref().is_some_and(|detail| {
-            detail.id == id && detail.revision == block.revision && detail.raw == self.raw
-        });
-        if current {
+    fn invalidate_detail_intent(&mut self) {
+        self.detail = None;
+        self.desired_detail = None;
+        self.pending_copy = None;
+        self.ready_effect = None;
+        if matches!(
+            self.projection_worker.in_flight_key(),
+            Some(WorkKey::Detail(_))
+        ) {
+            self.projection_worker.cancel_in_flight();
+        }
+    }
+
+    fn queue_display_detail(&mut self, blocks: &[Arc<block::Block>], authority_revision: u64) {
+        if self.work_pending() {
             return;
         }
-        let source = if self.raw {
-            raw_text(block)
-        } else {
-            block.to_text()
+        let target_raw = self
+            .pending_copy
+            .map_or(self.raw, |pending| pending.key.raw);
+        let Some(id) = self.selected_id else {
+            self.detail = None;
+            self.desired_detail = None;
+            return;
         };
-        let (text, truncated) = bounded_detail(&source);
-        self.detail = Some(Detail {
+        let Some(block) = blocks.iter().find(|block| block.id == id).cloned() else {
+            self.detail = None;
+            self.desired_detail = None;
+            return;
+        };
+        let key = DetailKey {
+            authority_revision,
             id,
             revision: block.revision,
-            raw: self.raw,
-            text,
-            truncated,
-            layout_width: 0,
-            row_ranges: Vec::new(),
-        });
-        self.work.detail_rebuilds = self.work.detail_rebuilds.saturating_add(1);
+            raw: target_raw,
+        };
+        if self.detail.as_ref().is_some_and(|detail| {
+            detail.id == key.id && detail.revision == key.revision && detail.raw == key.raw
+        }) && self.pending_copy.is_none()
+        {
+            self.desired_detail = None;
+            return;
+        }
+        if self.projection_worker.in_flight_key() == Some(WorkKey::Detail(key))
+            || self
+                .desired_detail
+                .as_ref()
+                .is_some_and(|request| request.key == key)
+        {
+            return;
+        }
+        if self.projection_worker.is_busy() {
+            self.projection_worker.cancel_in_flight();
+        }
+        self.desired_detail = Some(DetailRequest { key, block });
+    }
+
+    fn request_copy(
+        &mut self,
+        raw: bool,
+        subject: &'static str,
+        matching_only: bool,
+        blocks: &[Arc<block::Block>],
+        authority_revision: u64,
+    ) -> Option<Effect> {
+        let selected = self.selected_id?;
+        if matching_only
+            && (self.query.is_empty()
+                || !self.results.contains(&selected)
+                || self
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == selected)
+                    .is_none_or(|entry| !entry.complete))
+        {
+            return None;
+        }
+        let block = blocks.iter().find(|block| block.id == selected)?.clone();
+        let key = DetailKey {
+            authority_revision,
+            id: selected,
+            revision: block.revision,
+            raw,
+        };
+        if let Some(detail) = self.detail.as_ref().filter(|detail| {
+            detail.id == key.id && detail.revision == key.revision && detail.raw == key.raw
+        }) {
+            return Some(Effect::Copy {
+                text: detail.text.clone(),
+                subject,
+                snapshot_revision: authority_revision,
+            });
+        }
+        self.pending_copy = Some(PendingCopy { key, subject });
+        if self.projection_worker.in_flight_key() != Some(WorkKey::Detail(key)) {
+            if self.projection_worker.is_busy() {
+                self.projection_worker.cancel_in_flight();
+            }
+            self.desired_detail = Some(DetailRequest { key, block });
+        }
+        self.set_notice("copy projection pending…");
+        None
+    }
+
+    pub(crate) fn take_ready_effect(&mut self) -> Option<Effect> {
+        self.ready_effect.take()
     }
 }

@@ -7,7 +7,7 @@ fn user(id: u64, text: &str) -> Arc<block::Block> {
 
 fn settle(viewer: &mut Viewer, blocks: &[Arc<block::Block>], revision: u64) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while viewer.work_pending() {
+    while viewer.background_work_pending() {
         viewer.sync_if_changed(blocks, revision);
         if viewer.projection_worker.is_busy() {
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -61,6 +61,7 @@ fn navigation_raw_copy_and_filters_are_deterministic_and_bounded() {
     );
     viewer.editing_query = false;
     viewer.key(KeyCode::Char('r'), KeyModifiers::NONE, &blocks, 1);
+    settle(&mut viewer, &blocks, 1);
     let copied = viewer.key(KeyCode::Char('y'), KeyModifiers::NONE, &blocks, 1);
     assert!(matches!(
         copied,
@@ -72,6 +73,119 @@ fn navigation_raw_copy_and_filters_are_deterministic_and_bounded() {
     ));
     viewer.key(KeyCode::Char('n'), KeyModifiers::NONE, &blocks, 1);
     assert_eq!(viewer.selected_id, Some(2));
+}
+
+#[test]
+fn detail_and_matching_copy_projection_never_run_in_the_key_handler() {
+    let blocks = vec![user(1, &format!("{} needle", "x".repeat(512 * 1024)))];
+    let mut viewer = Viewer::default();
+    viewer.open("needle", &blocks, 11);
+    settle(&mut viewer, &blocks, 11);
+    viewer.editing_query = false;
+    viewer.detail = None;
+    let before = viewer.work.detail_rebuilds;
+
+    assert!(
+        viewer
+            .key(KeyCode::Char('Y'), KeyModifiers::SHIFT, &blocks, 11)
+            .is_none(),
+        "a cache miss queues an off-thread copy projection"
+    );
+    assert_eq!(viewer.work.detail_rebuilds, before);
+    assert!(viewer.desired_detail.is_some());
+    assert!(!viewer.projection_worker.is_busy());
+
+    viewer.sync_if_changed(&blocks, 11);
+    assert!(viewer.projection_worker.is_busy());
+    settle(&mut viewer, &blocks, 11);
+    assert!(matches!(
+        viewer.take_ready_effect(),
+        Some(Effect::Copy {
+            text,
+            subject: "matching block projection",
+            snapshot_revision: 11,
+        }) if text.contains("detail truncated at 64 KiB") && text.len() <= MAX_DETAIL_BYTES
+    ));
+}
+
+#[test]
+fn projection_worker_close_owns_cancellation_and_joins_its_thread() {
+    let mut worker = ProjectionWorker::default();
+    worker
+        .start_detail(
+            DetailKey {
+                authority_revision: 1,
+                id: 1,
+                revision: 0,
+                raw: false,
+            },
+            user(1, &"x".repeat(MAX_INDEX_BLOCK_BYTES)),
+        )
+        .expect("start bounded detail projection");
+    assert!(worker.is_busy());
+    assert!(worker.owns_join_handle());
+
+    let started = std::time::Instant::now();
+    worker.close();
+    assert!(!worker.is_busy());
+    assert!(!worker.owns_join_handle());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "cancelled byte-capped projection must join within its finite test envelope"
+    );
+}
+
+#[test]
+fn bounded_semantic_projection_matches_authoritative_text_below_its_cap() {
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let blocks = vec![
+        block::Block::new(1, block::BlockKind::User("hello".into())),
+        block::Block::new(
+            2,
+            block::BlockKind::Assistant(crate::markdown::MarkdownDoc::parse(
+                "## Heading\n\n- **item**\n",
+            )),
+        ),
+        block::Block::new(
+            3,
+            block::BlockKind::Tool(block::ToolCard {
+                name: "bash".into(),
+                args: serde_json::json!({"command": "printf hello"}),
+                status: block::ToolStatus::Ok,
+                output: "hello".into(),
+                diff: None,
+                exit_code: Some(0),
+                started: std::time::Instant::now(),
+                elapsed: None,
+                open: true,
+            }),
+        ),
+        block::Block::new(
+            4,
+            block::BlockKind::Error {
+                title: "failed".into(),
+                detail: "bounded detail".into(),
+                open: true,
+            },
+        ),
+        block::Block::new(
+            5,
+            block::BlockKind::Panel {
+                title: "status".into(),
+                rows: vec![block::PanelRow::KeyValue {
+                    key: "mode".into(),
+                    value: "safe".into(),
+                }],
+            },
+        ),
+    ];
+    for block in blocks {
+        let (projected, truncated) =
+            super::semantic_text::block_text(&block, 64 * 1024, &cancelled)
+                .expect("projection is not cancelled");
+        assert!(!truncated);
+        assert_eq!(projected, block.to_text());
+    }
 }
 
 #[test]

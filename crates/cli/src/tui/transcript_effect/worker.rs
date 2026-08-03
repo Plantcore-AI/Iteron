@@ -14,7 +14,7 @@ use super::super::transcript_export;
 #[cfg(target_os = "linux")]
 use super::ProcessRegistry;
 #[cfg(any(target_os = "linux", all(test, unix)))]
-use super::RegisteredChild;
+use super::{ReapOutcome, RegisteredChild};
 
 mod protocol;
 #[cfg(target_os = "linux")]
@@ -35,6 +35,7 @@ pub(super) const REAP_DEADLINE: Duration = Duration::from_secs(1);
 pub(super) enum Cleanup {
     Reaped,
     AlreadyReaped,
+    OutcomeUnknown,
 }
 
 impl std::fmt::Display for Cleanup {
@@ -42,6 +43,7 @@ impl std::fmt::Display for Cleanup {
         formatter.write_str(match self {
             Self::Reaped => "worker was killed and reaped",
             Self::AlreadyReaped => "worker had already exited and was reaped",
+            Self::OutcomeUnknown => "worker kill was requested but reap outcome is unknown",
         })
     }
 }
@@ -140,20 +142,11 @@ pub(super) async fn kill_and_reap(child: &mut RegisteredChild) -> Cleanup {
     let _ = child.start_kill();
     match tokio::time::timeout(REAP_DEADLINE, child.wait()).await {
         Ok(Ok(_)) => Cleanup::Reaped,
-        Ok(Err(_)) => {
-            if child.reap_sync() {
-                Cleanup::Reaped
-            } else {
-                Cleanup::AlreadyReaped
-            }
-        }
-        Err(_) => {
-            if child.reap_sync() {
-                Cleanup::Reaped
-            } else {
-                Cleanup::AlreadyReaped
-            }
-        }
+        Ok(Err(_)) | Err(_) => match child.reap_sync() {
+            ReapOutcome::Reaped => Cleanup::Reaped,
+            ReapOutcome::AlreadySettled => Cleanup::AlreadyReaped,
+            ReapOutcome::OutcomeUnknown => Cleanup::OutcomeUnknown,
+        },
     }
 }
 

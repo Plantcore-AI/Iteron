@@ -1,11 +1,6 @@
 //! Revision-bound clipboard and export requests emitted by the transcript viewer.
 
-use std::sync::Arc;
-
-use crate::block;
-
 use super::Viewer;
-use super::projection::bounded_detail;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExportScope {
@@ -63,21 +58,5 @@ impl Viewer {
             }
             ExportScope::Filtered => Ok(Some(self.results.clone())),
         }
-    }
-
-    pub(super) fn selected_result_text(&self, blocks: &[Arc<block::Block>]) -> Option<String> {
-        if self.work_pending() {
-            return None;
-        }
-        let selected = self.selected_id?;
-        if self.query.is_empty() || !self.results.contains(&selected) {
-            return None;
-        }
-        self.entries
-            .iter()
-            .find(|entry| entry.id == selected)
-            .filter(|entry| entry.complete)?;
-        let source = blocks.iter().find(|block| block.id == selected)?.to_text();
-        Some(bounded_detail(&source).0)
     }
 }

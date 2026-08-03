@@ -215,53 +215,93 @@ mod unix {
         Ok(current)
     }
 
-    /// Stable binding for the workspace pathname's final component. Holding only the workspace
-    /// directory itself is insufficient: it can be renamed, unlinked, or replaced while its file
-    /// descriptor remains valid. The held parent plus basename lets both sides of publication
-    /// reopen the operator-visible root and compare it to the directory capability in use.
+    /// Stable binding for every component of the operator-visible workspace pathname.
+    ///
+    /// Holding the workspace and its immediate parent is insufficient: an ancestor can be renamed,
+    /// unlinked, or replaced while both descriptors remain valid. Start at the process's immutable
+    /// filesystem root, retain every directory capability in the chain, and reopen that entire
+    /// chain on both sides of publication.
     pub(super) struct RootBinding {
-        root: File,
-        parent: File,
-        basename: OsString,
+        anchor: File,
+        components: Vec<OsString>,
+        chain: Vec<File>,
     }
 
     impl RootBinding {
         pub(super) fn open(path: &std::path::Path) -> io::Result<Self> {
-            if let (Some(parent_path), Some(basename)) = (path.parent(), path.file_name()) {
-                let parent_path = if parent_path.as_os_str().is_empty() {
-                    std::path::Path::new(".")
-                } else {
-                    parent_path
-                };
-                let parent = open_path(parent_path)?;
-                let root = open_dir(&parent, basename)?;
-                return Ok(Self {
-                    root,
-                    parent,
-                    basename: basename.to_os_string(),
-                });
+            let absolute = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::env::current_dir()?.join(path)
+            };
+            if absolute.as_os_str().as_bytes().len() > super::MAX_EXPORT_PATH_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "workspace path is too long",
+                ));
+            }
+            let mut saw_root = false;
+            let mut components = Vec::new();
+            for component in absolute.components() {
+                match component {
+                    std::path::Component::RootDir => saw_root = true,
+                    std::path::Component::CurDir => {}
+                    std::path::Component::Normal(component) if saw_root => {
+                        components.push(component.to_os_string());
+                        if components.len() > super::MAX_EXPORT_COMPONENTS {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "workspace path has too many components",
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "workspace path is not an absolute ordinary-component path",
+                        ));
+                    }
+                }
+            }
+            if !saw_root {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "workspace path has no filesystem root",
+                ));
             }
 
-            // Filesystem roots and `.` cannot be rebound through a distinct basename. Reopening
-            // `.` through the held root is still an exact identity check, and those roots cannot
-            // be renamed or unlinked by replacing a parent-directory entry.
-            let root = open_path(path)?;
-            let parent = root.try_clone()?;
+            let anchor = open_path(std::path::Path::new("/"))?;
+            let mut chain = Vec::with_capacity(components.len());
+            let mut current = anchor.try_clone()?;
+            for component in &components {
+                current = open_dir(&current, component)?;
+                chain.push(current.try_clone()?);
+            }
             Ok(Self {
-                root,
-                parent,
-                basename: OsString::from("."),
+                anchor,
+                components,
+                chain,
             })
         }
 
         pub(super) fn root(&self) -> &File {
-            &self.root
+            self.chain.last().unwrap_or(&self.anchor)
         }
 
         pub(super) fn still_bound(&self) -> bool {
-            open_dir(&self.parent, &self.basename)
-                .and_then(|current| same_directory(&self.root, &current))
-                .unwrap_or(false)
+            let Ok(mut current) = self.anchor.try_clone() else {
+                return false;
+            };
+            for (component, expected) in self.components.iter().zip(&self.chain) {
+                let Ok(reopened) = open_dir(&current, component) else {
+                    return false;
+                };
+                if !same_directory(expected, &reopened).unwrap_or(false) {
+                    return false;
+                }
+                current = reopened;
+            }
+            true
         }
     }
 
@@ -614,6 +654,135 @@ mod tests {
         );
         std::fs::remove_dir_all(root).ok();
         std::fs::remove_dir_all(detached).ok();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[derive(Clone, Copy, Debug)]
+    enum AncestorAttack {
+        Rename,
+        Replace,
+        Unlink,
+    }
+
+    #[cfg(target_os = "linux")]
+    fn attack_workspace_parent(
+        attack: AncestorAttack,
+        visible_parent: &Path,
+        workspace: &Path,
+        detached_parent: &Path,
+        detached_workspace: &Path,
+    ) -> PathBuf {
+        match attack {
+            AncestorAttack::Rename => {
+                std::fs::rename(visible_parent, detached_parent).unwrap();
+                detached_parent.join("workspace")
+            }
+            AncestorAttack::Replace => {
+                std::fs::rename(visible_parent, detached_parent).unwrap();
+                std::fs::create_dir_all(workspace.join("reports")).unwrap();
+                detached_parent.join("workspace")
+            }
+            AncestorAttack::Unlink => {
+                std::fs::rename(workspace, detached_workspace).unwrap();
+                std::fs::remove_dir(visible_parent).unwrap();
+                detached_workspace.to_path_buf()
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parent_of_workspace_rename_replacement_and_unlink_before_publish_are_known_non_publishes() {
+        for attack in [
+            AncestorAttack::Rename,
+            AncestorAttack::Replace,
+            AncestorAttack::Unlink,
+        ] {
+            let base = scratch(&format!("ancestor-before-{attack:?}"));
+            let visible_parent = base.join("visible-parent");
+            let workspace = visible_parent.join("workspace");
+            let detached_parent = base.join("detached-parent");
+            let detached_workspace = base.join("detached-workspace");
+            std::fs::create_dir_all(workspace.join("reports")).unwrap();
+            let mut publication_root = None;
+
+            let result = export_bytes_with_hooks(
+                &workspace,
+                "reports/session.md",
+                b"must not publish through a detached ancestor",
+                CollisionPolicy::Refuse,
+                || {
+                    publication_root = Some(attack_workspace_parent(
+                        attack,
+                        &visible_parent,
+                        &workspace,
+                        &detached_parent,
+                        &detached_workspace,
+                    ));
+                },
+                || {},
+            );
+
+            assert!(matches!(result, Err(ExportError::KnownFailure(_))));
+            assert!(
+                !publication_root
+                    .expect("attack reports the held workspace")
+                    .join("reports/session.md")
+                    .exists(),
+                "{attack:?} published before the full path-chain revalidation"
+            );
+            assert!(!workspace.join("reports/session.md").exists());
+            std::fs::remove_dir_all(base).ok();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parent_of_workspace_rename_replacement_and_unlink_at_publish_are_never_success() {
+        for attack in [
+            AncestorAttack::Rename,
+            AncestorAttack::Replace,
+            AncestorAttack::Unlink,
+        ] {
+            let base = scratch(&format!("ancestor-publish-{attack:?}"));
+            let visible_parent = base.join("visible-parent");
+            let workspace = visible_parent.join("workspace");
+            let detached_parent = base.join("detached-parent");
+            let detached_workspace = base.join("detached-workspace");
+            std::fs::create_dir_all(workspace.join("reports")).unwrap();
+            let mut publication_root = None;
+
+            let result = export_bytes_with_hooks(
+                &workspace,
+                "reports/session.md",
+                b"detached ancestor publication evidence",
+                CollisionPolicy::Refuse,
+                || {},
+                || {
+                    publication_root = Some(attack_workspace_parent(
+                        attack,
+                        &visible_parent,
+                        &workspace,
+                        &detached_parent,
+                        &detached_workspace,
+                    ));
+                },
+            );
+
+            assert!(matches!(result, Err(ExportError::OutcomeUnknown(_))));
+            assert_eq!(
+                std::fs::read(
+                    publication_root
+                        .expect("attack reports the held workspace")
+                        .join("reports/session.md")
+                )
+                .unwrap(),
+                b"detached ancestor publication evidence",
+                "{attack:?} must expose the detached publication only as unknown"
+            );
+            assert!(!workspace.join("reports/session.md").exists());
+            std::fs::remove_dir_all(base).ok();
+        }
     }
 
     #[cfg(target_os = "linux")]
