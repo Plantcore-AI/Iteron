@@ -1,0 +1,25 @@
+jobs_dir: core-tb21-jobs
+n_attempts: 5
+timeout_multiplier: 1.0
+orchestrator:
+  type: local
+  n_concurrent_trials: 8
+  quiet: false
+environment:
+  type: docker
+  force_build: false
+  delete: true
+agents:
+  - import_path: core_code_agent:CoreCodeAgent
+    model_name: openai/gpt-5.4
+    env:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    kwargs:
+      binary_path: /absolute/path/to/core-linux-binary
+      binary_sha256: 0000000000000000000000000000000000000000000000000000000000000000
+      binary_arch: x86_64
+      max_turns: 250
+      max_wall_secs: 12000
+      autonomous: true
+datasets:
+  - path: /absolute/path/to/terminal-bench-2-1/tasks
