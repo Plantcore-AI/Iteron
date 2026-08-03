@@ -17,6 +17,7 @@ const MAX_REVISION_BYTES: usize = 128;
 const MAX_SOURCE_BYTES: usize = 2_048;
 const MAX_MODEL_ID_BYTES: usize = 512;
 const MAX_MODELS: usize = 512;
+const MAX_CAPABILITY_ROUTES: usize = 32;
 const MAX_HEADER_BYTES: usize = 512;
 const MAX_NOTICE_BYTES: usize = 448;
 const DAY_SECS: u64 = 24 * 60 * 60;
@@ -37,6 +38,20 @@ pub struct StaticProviderMetadata {
     bundle_revision: String,
     glm_standard_chat: GlmMetadata,
     anthropic_messages: AnthropicMetadata,
+    /// Capability snapshots keyed by route label, each scoped to one exact API root. This is the
+    /// (api_root, model) lookup: any bundled provider can document a context window here without a
+    /// new named section, and a route absent from the document still resolves to unknown.
+    #[serde(default)]
+    model_capabilities: BTreeMap<String, RouteCapabilityMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RouteCapabilityMetadata {
+    api_root: String,
+    /// Family prefixes, not exact ids: an official catalog serves dated leaves
+    /// (`claude-opus-4-7-20260720`) that inherit the documented family bounds.
+    families: BTreeMap<String, StaticModelCapabilities>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +176,12 @@ impl StaticProviderMetadata {
         let effort = digest_without_fields(&value.anthropic_messages.effort, &["version"])?;
         value.anthropic_messages.effort.version =
             stamped_version(&value.anthropic_messages.effort.version, &effort)?;
+        for (route, capabilities) in &mut value.model_capabilities {
+            for (family, capability) in &mut capabilities.families {
+                let digest = digest_named_snapshot(&format!("{route}/{family}"), capability)?;
+                capability.version = stamped_version(&capability.version, &digest)?;
+            }
+        }
         let bundle = digest_without_fields(&value, &["bundle_revision"])?;
         value.bundle_revision = stamped_version(&value.bundle_revision, &bundle)?;
         value.validate()?;
@@ -271,6 +292,35 @@ impl StaticProviderMetadata {
         self.glm_standard_chat.capabilities.get(model)
     }
 
+    /// Capabilities documented for one exact (api_root, model) pair, or `None`.
+    ///
+    /// The egress destination plus the model id is the route identity, so a compatible gateway at
+    /// another API root inherits nothing. GLM keeps its own exact-id section and is searched first;
+    /// every other bundled route resolves through `model_capabilities` by longest family match, so
+    /// `gpt-5-mini` never inherits `gpt-5`'s bounds.
+    pub fn route_model_capabilities(
+        &self,
+        api_root: &str,
+        model: &str,
+    ) -> Option<&StaticModelCapabilities> {
+        if api_root == self.glm_standard_chat.api_root
+            && let Some(capability) = self.glm_model_capabilities(model)
+        {
+            return Some(capability);
+        }
+        self.model_capabilities
+            .values()
+            .find(|route| route.api_root == api_root)
+            .and_then(|route| {
+                route
+                    .families
+                    .iter()
+                    .filter(|(family, _)| crate::model_matches_family(model, family))
+                    .max_by_key(|(family, _)| family.len())
+                    .map(|(_, capability)| capability)
+            })
+    }
+
     pub fn anthropic_effort_header(&self, model: &str) -> Option<&str> {
         self.anthropic_messages
             .effort
@@ -297,6 +347,12 @@ impl StaticProviderMetadata {
                 .map(|snapshot| snapshot.captured_at_unix_secs),
         );
         captures.push(self.anthropic_messages.effort.captured_at_unix_secs);
+        captures.extend(
+            self.model_capabilities
+                .values()
+                .flat_map(|route| route.families.values())
+                .map(|snapshot| snapshot.captured_at_unix_secs),
+        );
         if captures.into_iter().any(|captured| captured > latest) {
             return Err(configuration(
                 "provider metadata capture time is too far in the future",
@@ -455,7 +511,49 @@ impl StaticProviderMetadata {
         reqwest::header::HeaderValue::from_str(&effort.beta_header)
             .map_err(|_| configuration("Anthropic beta header is invalid"))?;
         validate_models(&effort.models)?;
+        self.validate_route_capabilities()?;
         self.validate_content_versions()
+    }
+
+    fn validate_route_capabilities(&self) -> Result<(), ProviderError> {
+        if self.model_capabilities.len() > MAX_CAPABILITY_ROUTES {
+            return Err(configuration(
+                "provider metadata declares too many capability routes",
+            ));
+        }
+        for (route, capabilities) in &self.model_capabilities {
+            validate_identifier(route, MAX_REVISION_BYTES, "capability route label")?;
+            let url = reqwest::Url::parse(&capabilities.api_root)
+                .map_err(|_| configuration("capability route API root must be a URL"))?;
+            if url.scheme() != "https" || url.host_str().is_none() {
+                return Err(configuration(
+                    "capability route API root must be an HTTPS URL",
+                ));
+            }
+            if capabilities.families.is_empty() || capabilities.families.len() > MAX_MODELS {
+                return Err(configuration(
+                    "capability route family map is empty or exceeds its bound",
+                ));
+            }
+            for (family, capability) in &capabilities.families {
+                validate_identifier(family, MAX_MODEL_ID_BYTES, "capability family")?;
+                validate_snapshot(
+                    &capability.version,
+                    &capability.source,
+                    capability.captured_at_unix_secs,
+                )?;
+                if capability.context_window_tokens == Some(0)
+                    || capability.max_output_tokens == Some(0)
+                    || matches!(
+                        (capability.context_window_tokens, capability.max_output_tokens),
+                        (Some(context), Some(output)) if u64::from(output) > context
+                    )
+                {
+                    return Err(configuration("capability route token bounds are invalid"));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn validate_content_versions(&self) -> Result<(), ProviderError> {
@@ -471,6 +569,12 @@ impl StaticProviderMetadata {
             &effort,
             "Anthropic effort",
         )?;
+        for (route, capabilities) in &self.model_capabilities {
+            for (family, capability) in &capabilities.families {
+                let digest = digest_named_snapshot(&format!("{route}/{family}"), capability)?;
+                require_content_version(&capability.version, &digest, "route capability")?;
+            }
+        }
         let bundle = digest_without_fields(self, &["bundle_revision"])?;
         require_content_version(&self.bundle_revision, &bundle, "metadata bundle")
     }
@@ -483,6 +587,92 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn bundled_routes_document_a_context_window_for_more_than_one_provider() {
+        let embedded = StaticProviderMetadata::embedded();
+
+        // The GLM section keeps its exact-id lookup and is still reached through the same seam.
+        let glm = embedded
+            .route_model_capabilities(GLM_STANDARD_ROOT, "glm-5.2")
+            .expect("the GLM model page speaks for this route");
+        assert_eq!(glm.context_window_tokens, Some(1_000_000));
+        assert!(
+            embedded
+                .route_model_capabilities(GLM_STANDARD_ROOT, "glm-5.1")
+                .is_none(),
+            "a family neighbour still inherits nothing"
+        );
+
+        // A non-GLM bundled route now reports a real window instead of unknown (I-30).
+        let anthropic = embedded
+            .route_model_capabilities(ANTHROPIC_ROOT, "claude-opus-4-7")
+            .expect("the bundled Anthropic route carries capabilities");
+        assert_eq!(anthropic.context_window_tokens, Some(1_000_000));
+        assert_eq!(anthropic.max_output_tokens, Some(128_000));
+        // An official catalog serves dated leaves; the family bound covers them.
+        assert_eq!(
+            embedded
+                .route_model_capabilities(ANTHROPIC_ROOT, "claude-opus-4-7-20260720")
+                .and_then(|snapshot| snapshot.context_window_tokens),
+            Some(1_000_000)
+        );
+
+        // Longest-family match: a smaller sibling never inherits the larger model's bounds.
+        let openai_root = "https://api.openai.com/v1";
+        assert_eq!(
+            embedded
+                .route_model_capabilities(openai_root, "gpt-5")
+                .and_then(|snapshot| snapshot.context_window_tokens),
+            Some(400_000)
+        );
+        let mini = embedded
+            .route_model_capabilities(openai_root, "gpt-5-mini")
+            .expect("the bundled OpenAI route carries capabilities");
+        assert!(
+            mini.source.contains("gpt-5-mini"),
+            "gpt-5-mini resolves to its own snapshot, not the gpt-5 prefix it shares"
+        );
+
+        // The route identity is the exact egress destination; a look-alike gateway inherits nothing.
+        assert!(
+            embedded
+                .route_model_capabilities("https://gateway.invalid/v1", "claude-opus-4-7")
+                .is_none()
+        );
+        assert!(
+            embedded
+                .route_model_capabilities(ANTHROPIC_ROOT, "claude-unknown")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn route_capability_edits_require_a_restamped_snapshot_and_bundle() {
+        let mut document: serde_json::Value = serde_json::from_str(EMBEDDED).unwrap();
+        let families = &mut document["model_capabilities"]["anthropic_messages"]["families"];
+        families["claude-opus-4-7"]["context_window_tokens"] = serde_json::json!(2_000_000);
+        assert!(
+            StaticProviderMetadata::from_slice(&serde_json::to_vec(&document).unwrap())
+                .unwrap_err()
+                .to_string()
+                .contains("canonical content digest")
+        );
+
+        StaticProviderMetadata::stamp_content_versions(&mut document).unwrap();
+        let restamped =
+            StaticProviderMetadata::from_slice(&serde_json::to_vec(&document).unwrap()).unwrap();
+        assert_eq!(
+            restamped
+                .route_model_capabilities(ANTHROPIC_ROOT, "claude-opus-4-7")
+                .and_then(|snapshot| snapshot.context_window_tokens),
+            Some(2_000_000)
+        );
+        assert_ne!(
+            restamped.bundle_revision(),
+            StaticProviderMetadata::embedded().bundle_revision()
+        );
+    }
 
     #[test]
     fn replacement_is_bounded_neutral_and_version_visible() {

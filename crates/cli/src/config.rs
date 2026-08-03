@@ -163,10 +163,11 @@ pub struct ProviderConfig {
 /// instead of a share of the window, and the pre-flight admission check cannot run at all.
 ///
 /// This is the operator saying "I read my provider's documentation, and this is the number".
-/// It is deliberately narrow. `max_output_tokens` is not declarable because the request path
-/// clamps the reservation to 8192 regardless, so a declaration could only mislead; `tool_calling`
-/// and `semantic_effort` are not declarable because they gate a request feature rather than an
-/// arithmetic bound, and a declaration is not an entitlement.
+/// It is deliberately narrow. `max_output_tokens` is not declarable because it is the reservation
+/// the request actually asks the provider for, and an over-declared ceiling is rejected at the
+/// wire rather than merely mis-sizing an estimate; `tool_calling` and `semantic_effort` are not
+/// declarable because they gate a request feature rather than an arithmetic bound, and a
+/// declaration is not an entitlement.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderModelCapabilities {

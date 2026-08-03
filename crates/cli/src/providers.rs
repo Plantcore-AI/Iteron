@@ -1001,13 +1001,52 @@ fn default_static_provider_metadata_path() -> Option<PathBuf> {
         .then(|| core_protocol::home::path(&home, STATIC_PROVIDER_METADATA_FILE))
 }
 
-fn load_static_provider_metadata() -> anyhow::Result<Arc<StaticProviderMetadata>> {
-    let metadata = if let Some(path) = default_static_provider_metadata_path() {
-        StaticProviderMetadata::load_optional(&path)?
-            .unwrap_or_else(StaticProviderMetadata::embedded)
-    } else {
-        StaticProviderMetadata::embedded()
+/// Operator opt-in that restores fail-closed loading of the metadata override.
+const STRICT_STATIC_PROVIDER_METADATA_ENV: &str = "CORE_STRICT_PROVIDER_METADATA";
+
+fn strict_static_provider_metadata() -> bool {
+    std::env::var(STRICT_STATIC_PROVIDER_METADATA_ENV)
+        .is_ok_and(|value| matches!(value.trim(), "1" | "true" | "yes"))
+}
+
+/// Resolve the active document plus, when the override was rejected in the tolerant mode, the
+/// bounded operator warning that names the file and the parse error.
+///
+/// A malformed override is an operator-refresh mistake in ONE data file, not a reason to take the
+/// whole binary offline: the loader error used to propagate through discovery and out of both entry
+/// points, killing even credential-free local commands, with no bypass flag (I-48). It now degrades
+/// to the embedded snapshot; `strict` restores fail-closed loading.
+fn resolve_static_provider_metadata(
+    path: Option<&std::path::Path>,
+    strict: bool,
+) -> Result<(Arc<StaticProviderMetadata>, Option<String>), core_provider::ProviderError> {
+    let Some(path) = path else {
+        return Ok((StaticProviderMetadata::embedded(), None));
     };
+    match StaticProviderMetadata::load_optional(path) {
+        Ok(loaded) => Ok((
+            loaded.unwrap_or_else(StaticProviderMetadata::embedded),
+            None,
+        )),
+        Err(error) if !strict => Ok((
+            StaticProviderMetadata::embedded(),
+            Some(format!(
+                "ignoring the provider metadata override at {}: {error}; using the embedded snapshot (set {STRICT_STATIC_PROVIDER_METADATA_ENV}=1 to fail instead)",
+                path.display()
+            )),
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+fn load_static_provider_metadata() -> anyhow::Result<Arc<StaticProviderMetadata>> {
+    let (metadata, warning) = resolve_static_provider_metadata(
+        default_static_provider_metadata_path().as_deref(),
+        strict_static_provider_metadata(),
+    )?;
+    if let Some(warning) = warning {
+        eprintln!("warning: {warning}");
+    }
     let now = current_unix_secs()
         .ok_or_else(|| anyhow::anyhow!("system clock is before the Unix epoch"))?;
     metadata.validate_capture_times(now)?;
@@ -1559,18 +1598,18 @@ impl ProviderDirectory {
         ))
     }
 
-    /// Return only capabilities documented for this exact endpoint/model pair. The official GLM
-    /// 5.2 model page names the standard Chat Completions id and its 1M/128K bounds; no other route
-    /// inherits those values by family or wire-compatibility heuristics.
+    /// Return only capabilities documented for this exact endpoint/model pair. The route identity
+    /// is the (api_root, model) pair — the exact egress destination plus the model id — so a
+    /// wire-compatible gateway at another API root still inherits nothing. Requiring the GLM
+    /// adapter and error profile as well left every other provider with unknown capabilities, which
+    /// silently disabled the over-window preflight and degraded the statusline (I-30).
     pub fn selection_capabilities(&self, selection: &ModelSelection) -> ModelCapabilities {
         let Some(entry) = self.entry(&selection.provider_id) else {
             return ModelCapabilities::unknown();
         };
         let metadata = entry.instance.static_metadata();
-        if entry.instance.api_root().as_str() == metadata.glm_api_root()
-            && entry.instance.adapter() == AdapterKind::OpenAiCompatibleChat
-            && entry.instance.error_profile() == ErrorProfile::Glm
-            && let Some(capabilities) = metadata.glm_model_capabilities(&selection.model_id)
+        if let Some(capabilities) = metadata
+            .route_model_capabilities(entry.instance.api_root().as_str(), &selection.model_id)
         {
             return ModelCapabilities {
                 context_window_tokens: capabilities.context_window_tokens,
@@ -3440,6 +3479,112 @@ mod tests {
             plain.selection_digests(&selection).1,
             "a declared window must change the capability digest"
         );
+    }
+
+    #[tokio::test]
+    async fn a_bundled_non_glm_route_reports_a_real_context_window() {
+        // Before I-30 the capability gate additionally required the GLM adapter and error profile,
+        // so every other provider resolved to unknown: the over-window preflight (which is gated on
+        // `model_context_window`) never ran, and the statusline fell back to bytes-used.
+        let config = ProviderConfig {
+            id: "anthropic".into(),
+            display_name: Some("Anthropic".into()),
+            adapter: "anthropic_messages".into(),
+            error_profile: Some("anthropic".into()),
+            api_root: "https://api.anthropic.com/v1".into(),
+            key_env: "CORE_TEST_ABSENT_ANTHROPIC_KEY".into(),
+            enabled: true,
+            catalog: false,
+            models: vec!["claude-opus-4-7".into()],
+            model_capabilities: BTreeMap::new(),
+        };
+        let directory =
+            ProviderDirectory::discover_entries(vec![entry_from_config(&config).unwrap()], None)
+                .await
+                .unwrap();
+
+        let selection = ModelSelection {
+            provider_id: "anthropic".into(),
+            model_id: "claude-opus-4-7".into(),
+        };
+        let capabilities = directory.selection_capabilities(&selection);
+        assert_eq!(capabilities.context_window_tokens, Some(1_000_000));
+        assert_eq!(capabilities.max_output_tokens, Some(128_000));
+        assert!(
+            capabilities
+                .version
+                .as_deref()
+                .is_some_and(|version| version.starts_with("anthropic-model-overview@")),
+            "the provenance is the captured vendor snapshot"
+        );
+        // The window is what the preflight and the percent-remaining statusline read.
+        assert_ne!(capabilities, ModelCapabilities::unknown());
+
+        // A wire-compatible gateway at another API root still inherits nothing.
+        let mut lookalike = config.clone();
+        lookalike.id = "anthropic-lookalike".into();
+        lookalike.api_root = "https://gateway.example/v1".into();
+        let plain =
+            ProviderDirectory::discover_entries(vec![entry_from_config(&lookalike).unwrap()], None)
+                .await
+                .unwrap();
+        assert_eq!(
+            plain.selection_capabilities(&ModelSelection {
+                provider_id: "anthropic-lookalike".into(),
+                model_id: "claude-opus-4-7".into(),
+            }),
+            ModelCapabilities::unknown()
+        );
+    }
+
+    #[test]
+    fn a_malformed_metadata_override_warns_and_falls_back_unless_strict() {
+        let dir = std::env::temp_dir().join(format!(
+            "core-provider-metadata-override-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("provider-metadata.json");
+        std::fs::write(&path, b"{ not json").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        // One bad byte used to propagate out of discovery and take the whole run down (I-48).
+        let (metadata, warning) = resolve_static_provider_metadata(Some(&path), false)
+            .expect("a malformed override no longer prevents startup");
+        assert_eq!(
+            metadata.bundle_revision(),
+            StaticProviderMetadata::embedded().bundle_revision()
+        );
+        let warning = warning.expect("the fallback is announced, never silent");
+        assert!(
+            warning.contains(&path.display().to_string()),
+            "the warning names the file: {warning}"
+        );
+        assert!(
+            warning.contains("schema-v1 JSON"),
+            "the warning names the parse error: {warning}"
+        );
+
+        // The explicit strict flag restores fail-closed loading.
+        assert!(resolve_static_provider_metadata(Some(&path), true).is_err());
+
+        // An absent override is not an error, and a missing home selects the embedded document.
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            resolve_static_provider_metadata(Some(&path), true)
+                .unwrap()
+                .1,
+            None
+        );
+        assert_eq!(
+            resolve_static_provider_metadata(None, true).unwrap().1,
+            None
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]
