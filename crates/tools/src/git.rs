@@ -218,14 +218,14 @@ mod tests {
 
     /// Serialise the fixture tests that drive real `git` porcelain.
     ///
-    /// These three build repositories with dozens of real `git` subprocesses, and `git submodule`
+    /// These four build repositories with dozens of real `git` subprocesses, and `git submodule`
     /// is itself a shell script that spawns more. Run concurrently on a loaded box they compete
     /// for the same 5-second per-command deadline in `setup_git`, which is the shape of the
     /// second, macOS-side flake in #55 — a failure nobody can reproduce on demand and which
     /// teaches readers to re-run a red CI instead of reading it.
     ///
     /// The issue admits an explicit serialisation in place of a diagnosis, and that is what this
-    /// is: not a claim about the mechanism, but a refusal to let these three overlap. It costs a
+    /// is: not a claim about the mechanism, but a refusal to let these four overlap. It costs a
     /// few seconds of wall clock in one crate and buys a deterministic suite.
     ///
     /// The guard is held across `await`, so it has to be the futures-aware lock: a
@@ -626,6 +626,11 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn hardened_command_disables_partial_clone_lazy_fetch() {
+        // This test used to fabricate a synthetic Git binary, so it never paid the cost of real
+        // Git. Driving the resolved system Git through `setup_git` makes it a fourth real-Git
+        // fixture, and it holds a five-second deadline while doing so, which is exactly the
+        // contention the lock below was introduced to remove. Take the lock too.
+        let _serial = git_fixture_lock().lock().await;
         let temp = TestDir::new("no-lazy-fetch");
         let workspace = temp.0.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
