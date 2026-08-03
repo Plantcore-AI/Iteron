@@ -142,6 +142,36 @@ struct ChainLine {
     tenant: String,
     prev: String,
     hash: String,
+    /// Microseconds since THIS writer opened the rollout (#102).
+    ///
+    /// # Why the line and not the payload
+    ///
+    /// `hash_line` covers `(prev, seq, payload)` and nothing else, so a sibling of `tenant` is
+    /// outside the hash by construction: every byte of every already-written chain still verifies,
+    /// and no migration re-hashes anything. It also keeps the determinism contract exactly where it
+    /// was — live and replay still produce identical `payload` bytes; only the line as a whole is
+    /// no longer byte-reproducible, which it never needed to be.
+    ///
+    /// # Why relative and monotonic
+    ///
+    /// Monotonic, so a stepped operator clock cannot make a duration go backwards. Relative to the
+    /// writer, so this never becomes a second, disagreeing absolute authority beside
+    /// `run_start.created_at`, which stays the one wall-clock anchor.
+    ///
+    /// # Reading it across a resume
+    ///
+    /// A resumed run opens a new writer, so its origin restarts and `ts_us` DROPS at the seam.
+    /// That discontinuity is the segment marker and needs no extra field: a reader splits on it,
+    /// times exactly within each segment, and reports the join between segments as unknown rather
+    /// than inventing a number. `#[serde(default)]` means a pre-#102 rollout reads as segment
+    /// origin zero, which `TimingSnapshot`-style consumers must treat as unknown, not as instant.
+    ///
+    /// `Option`, skipped when absent, for the same reason the #101/#103 fields are: a line written
+    /// before this existed has no honest value, `0` already means "at the segment origin" and must
+    /// stay distinguishable from "never measured", and an absent key keeps every frozen rollout
+    /// re-serialising byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ts_us: Option<u64>,
     /// The recorded payload. For the vertical slice this is an `Event`; the schema is
     /// tagged so intent-records and tool-result-blobs can share the chain later.
     payload: serde_json::Value,
@@ -419,6 +449,10 @@ pub struct Rollout {
     /// Record-owned so every public append path observes the actual redacted, stamped event only
     /// after fsync. A caller cannot bypass the session projection by appending directly.
     session_projection: SessionProjectionState,
+    /// This writer's monotonic origin, set when the descriptor opened. Every `ts_us` is measured
+    /// from here, which is what makes a segment internally exact without claiming to be joinable
+    /// to a previous process's segment.
+    opened_at: std::time::Instant,
 }
 
 impl Rollout {
@@ -498,6 +532,9 @@ impl Rollout {
             last_hash,
             poisoned: false,
             session_projection: SessionProjectionState::Uninitialized,
+            // The segment origin. A resumed run reaches here again in a new process, which is
+            // precisely why `ts_us` restarts and why the reader treats that drop as a seam.
+            opened_at: std::time::Instant::now(),
         })
     }
 
@@ -630,6 +667,10 @@ impl Rollout {
             tenant: self.tenant.0.clone(),
             prev: self.last_hash.clone(),
             hash: hash.clone(),
+            // Read AFTER hashing and BEFORE the write, so the stamp is as close to the durable
+            // write as the sequence allows without being inside it. It is deliberately not part of
+            // `hash`: see `ChainLine::ts_us`.
+            ts_us: Some(u64::try_from(self.opened_at.elapsed().as_micros()).unwrap_or(u64::MAX)),
             payload,
         };
         let mut line = serde_json::to_string(&cl)?;
@@ -887,6 +928,8 @@ mod tests {
                     prev: previous,
                     hash: hash.clone(),
                     payload,
+                    // Hand-built test line: no writer, so no segment origin to measure from.
+                    ts_us: None,
                 };
                 physical.push_str(&serde_json::to_string(&line).unwrap());
                 physical.push('\n');
@@ -1089,6 +1132,8 @@ mod tests {
                 prev: ZERO_HASH.to_string(),
                 hash: hash_line(ZERO_HASH, found, &payload),
                 payload,
+                // Hand-built test line: no writer, so no segment origin to measure from.
+                ts_us: None,
             };
             std::fs::write(
                 &path,
@@ -1329,6 +1374,8 @@ mod tests {
             prev: ZERO_HASH.into(),
             hash: genesis_hash.clone(),
             payload: genesis_payload,
+            // Hand-built test line: no writer, so no segment origin to measure from.
+            ts_us: None,
         };
 
         let message = Event {
@@ -1362,6 +1409,8 @@ mod tests {
             prev: genesis_hash,
             hash: message_hash,
             payload: message_payload,
+            // Hand-built test line: no writer, so no segment origin to measure from.
+            ts_us: None,
         };
         let physical = format!(
             "{}\n{}\n",
@@ -2052,5 +2101,201 @@ AbCdEf1234567890AbCdEf1234567890"
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::*;
+    use core_protocol::{Event, EventKind, RunId, Seq, TenantId, TurnId};
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "core-timeline-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The load-bearing claim of #102: adding a per-line timestamp does not touch the chain.
+    /// `hash_line` covers `(prev, seq, payload)` and `ts_us` is a sibling of `tenant`, outside it.
+    /// If this ever fails, every rollout ever written stops verifying, so it is pinned directly
+    /// against the hash function rather than inferred from a passing replay.
+    #[test]
+    fn the_timestamp_is_outside_the_hash_so_no_existing_chain_moves() {
+        let dir = scratch("hash");
+        let run = RunId("hash-stability".into());
+        let mut rollout = Rollout::open(&dir, &run, TenantId("default".into())).unwrap();
+        for _ in 0..3 {
+            rollout
+                .append(&Event {
+                    seq: Seq(0),
+                    turn: TurnId(1),
+                    kind: EventKind::TurnStart,
+                })
+                .unwrap();
+        }
+        drop(rollout);
+
+        let path = dir.join(format!("{}.jsonl", run.0));
+        let text = std::fs::read_to_string(&path).unwrap();
+        for (index, raw) in text.lines().enumerate() {
+            let written: serde_json::Value = serde_json::from_str(raw).unwrap();
+            // Recompute the hash from the line's OWN (prev, seq, payload) and nothing else. If
+            // `ts_us` had leaked into `hash_line`, this would not reproduce -- which is exactly
+            // the failure mode that would invalidate every rollout ever written.
+            let recomputed = hash_line(
+                written["prev"].as_str().unwrap(),
+                written["seq"].as_u64().unwrap(),
+                &written["payload"],
+            );
+            assert_eq!(
+                written["hash"].as_str().unwrap(),
+                recomputed,
+                "line {index}: the hash covers something other than (prev, seq, payload)"
+            );
+            assert!(
+                written["ts_us"].is_number(),
+                "line {index}: a live writer must stamp its segment offset"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rollout written before #102 has no honest offset, and the reader must be able to see
+    /// that rather than read a fabricated zero. Absence is the encoding; `0` stays available to
+    /// mean the real thing, "at the segment origin".
+    #[test]
+    fn a_pre_timeline_line_reads_as_unknown_not_as_the_origin() {
+        let legacy: ChainLine = serde_json::from_str(
+            r#"{"seq":0,"tenant":"default","prev":"0000000000000000000000000000000000000000000000000000000000000000","hash":"x","payload":{"seq":0,"turn":0,"kind":{"kind":"turn_start"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            legacy.ts_us, None,
+            "a line written before ts_us existed must decode as unknown"
+        );
+        let reserialised = serde_json::to_value(&legacy).unwrap();
+        assert!(
+            reserialised.get("ts_us").is_none(),
+            "an unknown offset must be absent, not null: {reserialised}"
+        );
+
+        let at_origin = ChainLine {
+            ts_us: Some(0),
+            ..legacy
+        };
+        assert_eq!(
+            serde_json::to_value(&at_origin).unwrap()["ts_us"],
+            0,
+            "a measured zero is a real observation and must survive the wire"
+        );
+    }
+
+    /// Offsets rise within one writer, which is what makes a segment internally exact.
+    #[test]
+    fn offsets_are_monotonic_within_one_writer() {
+        let dir = scratch("monotonic");
+        let run = RunId("monotonic".into());
+        let mut rollout = Rollout::open(&dir, &run, TenantId("default".into())).unwrap();
+        for _ in 0..4 {
+            rollout
+                .append(&Event {
+                    seq: Seq(0),
+                    turn: TurnId(1),
+                    kind: EventKind::TurnStart,
+                })
+                .unwrap();
+        }
+        drop(rollout);
+
+        let path = dir.join(format!("{}.jsonl", run.0));
+        let offsets: Vec<u64> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l).unwrap()["ts_us"]
+                    .as_u64()
+                    .expect("live writer stamps every line")
+            })
+            .collect();
+        assert_eq!(offsets.len(), 4);
+        assert!(
+            offsets.windows(2).all(|w| w[1] >= w[0]),
+            "offsets must not go backwards inside one segment: {offsets:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The resume seam, in band. A second writer restarts its origin, so the offset DROPS at the
+    /// join. That drop is the segment marker: a reader splits on it, times exactly within each
+    /// segment, and reports the join itself as unknown instead of inventing a duration across two
+    /// unrelated monotonic clocks. No extra field is needed to carry it.
+    #[test]
+    fn a_resumed_segment_restarts_its_origin_and_the_drop_is_the_seam() {
+        let dir = scratch("resume");
+        let run = RunId("resume".into());
+
+        let mut first = Rollout::open(&dir, &run, TenantId("default".into())).unwrap();
+        for _ in 0..3 {
+            first
+                .append(&Event {
+                    seq: Seq(0),
+                    turn: TurnId(1),
+                    kind: EventKind::TurnStart,
+                })
+                .unwrap();
+        }
+        // Let the first segment accumulate a clearly non-zero offset before it closes, so the
+        // restart is unambiguous rather than a coincidence of two fast appends.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        first
+            .append(&Event {
+                seq: Seq(0),
+                turn: TurnId(1),
+                kind: EventKind::TurnStart,
+            })
+            .unwrap();
+        drop(first);
+
+        let mut resumed = Rollout::open_existing(&dir, &run, TenantId("default".into())).unwrap();
+        resumed
+            .append(&Event {
+                seq: Seq(0),
+                turn: TurnId(1),
+                kind: EventKind::TurnStart,
+            })
+            .unwrap();
+        drop(resumed);
+
+        let path = dir.join(format!("{}.jsonl", run.0));
+        let offsets: Vec<u64> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l).unwrap()["ts_us"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(offsets.len(), 5);
+        let seams: Vec<usize> = offsets
+            .windows(2)
+            .enumerate()
+            .filter(|(_, w)| w[1] < w[0])
+            .map(|(index, _)| index + 1)
+            .collect();
+        assert_eq!(
+            seams,
+            vec![4],
+            "exactly one segment boundary, at the resume: {offsets:?}"
+        );
+
+        // And the chain still verifies straight through the seam: segmentation is a reading
+        // concern, not a durability one.
+        replay(&path).expect("a resumed rollout still replays as one verified chain");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
