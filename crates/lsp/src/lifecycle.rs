@@ -7,7 +7,9 @@
 use crate::{
     HEALTHY_RESTART_RESET_AFTER_MS, HEALTHY_RESTART_RESET_AFTER_SUCCESSES, LspError,
     MAX_RESTART_ATTEMPTS, MAX_RESTART_BACKOFF_MS, MIN_RESTART_BACKOFF_MS,
+    pending::CompletedRequest,
 };
+use std::collections::HashSet;
 
 /// Where a session is in its lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,7 +147,9 @@ pub struct Session {
     last_now_ms: Option<u64>,
     restart_not_before_ms: Option<u64>,
     ready_since_ms: Option<u64>,
-    successful_requests: u32,
+    successful_requests: HashSet<(u64, u32)>,
+    last_success_generation: Option<u64>,
+    last_success_id: u32,
 }
 
 impl Session {
@@ -157,7 +161,11 @@ impl Session {
             last_now_ms: None,
             restart_not_before_ms: None,
             ready_since_ms: None,
-            successful_requests: 0,
+            successful_requests: HashSet::with_capacity(
+                HEALTHY_RESTART_RESET_AFTER_SUCCESSES as usize,
+            ),
+            last_success_generation: None,
+            last_success_id: 0,
         }
     }
 
@@ -248,26 +256,50 @@ impl Session {
                 attempts: self.restarts,
             });
         }
-        self.restarts = self.restarts.saturating_add(1);
-        let delay = self.policy.backoff_ms(self.restarts);
+        let next_restart = self.restarts + 1;
+        let delay = self.policy.backoff_ms(next_restart);
+        let not_before = now_ms.checked_add(delay).ok_or(LspError::TimeOverflow {
+            operation: "restart backoff",
+            base_ms: now_ms,
+            delta_ms: delay,
+        })?;
+        self.restarts = next_restart;
         self.state = State::RestartBackoff;
-        self.restart_not_before_ms = Some(now_ms.saturating_add(delay));
+        self.restart_not_before_ms = Some(not_before);
         Ok(delay)
     }
 
     /// Record a successfully served request. Restart credit is restored only after both a fixed
     /// healthy uptime and several successes, so one response cannot sustain an infinite crash loop.
     /// Returns true exactly when credit was restored.
-    pub fn note_request_succeeded(&mut self, now_ms: u64) -> Result<bool, LspError> {
+    pub fn note_request_succeeded(
+        &mut self,
+        request: CompletedRequest,
+        now_ms: u64,
+    ) -> Result<bool, LspError> {
         self.observe_clock(now_ms)?;
         self.guard_request()?;
-        self.successful_requests = self
-            .successful_requests
-            .saturating_add(1)
-            .min(HEALTHY_RESTART_RESET_AFTER_SUCCESSES);
+        let generation = request.generation();
+        let id = request.id();
+        let is_new = match self.last_success_generation {
+            None => true,
+            Some(previous_generation) if generation > previous_generation => true,
+            Some(previous_generation) if generation == previous_generation => {
+                id > self.last_success_id
+            }
+            Some(_) => false,
+        };
+        if !is_new {
+            return Ok(false);
+        }
+        self.last_success_generation = Some(generation);
+        self.last_success_id = id;
+        if self.successful_requests.len() < HEALTHY_RESTART_RESET_AFTER_SUCCESSES as usize {
+            self.successful_requests.insert((generation, id));
+        }
         let ready_since = self.ready_since_ms.expect("ready state has an epoch");
         let stable = now_ms.saturating_sub(ready_since) >= HEALTHY_RESTART_RESET_AFTER_MS
-            && self.successful_requests >= HEALTHY_RESTART_RESET_AFTER_SUCCESSES;
+            && self.successful_requests.len() >= HEALTHY_RESTART_RESET_AFTER_SUCCESSES as usize;
         if stable && self.restarts > 0 {
             self.restarts = 0;
             return Ok(true);
@@ -282,10 +314,10 @@ impl Session {
         self.state = next;
         if next == State::Ready {
             self.ready_since_ms = Some(now_ms);
-            self.successful_requests = 0;
+            self.successful_requests.clear();
         } else {
             self.ready_since_ms = None;
-            self.successful_requests = 0;
+            self.successful_requests.clear();
         }
         if next == State::Crashed || next == State::Exited {
             self.restart_not_before_ms = None;

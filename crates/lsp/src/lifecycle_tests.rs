@@ -1,4 +1,5 @@
 use super::*;
+use crate::pending::{PendingRequests, ReplyDisposition};
 
 fn ready(at_ms: u64) -> Session {
     let mut session = Session::new(RestartPolicy::default());
@@ -128,28 +129,70 @@ fn restart_budget_and_backoff_are_both_enforced() {
 }
 
 #[test]
-fn one_success_does_not_restore_restart_credit() {
+fn only_distinct_successful_requests_restore_restart_credit() {
     let mut session = ready(0);
     session.apply(Event::ProcessFailed, 1).unwrap();
     let delay = session.plan_restart(1).unwrap();
     session.apply(Event::InitializeSent, 1 + delay).unwrap();
     session.apply(Event::Initialized, 1 + delay).unwrap();
     let ready_at = 1 + delay;
+    let mut pending = PendingRequests::new(1);
+    let first_correlation = pending.issue("textDocument/hover", 0, 1_000).unwrap();
+    let second_correlation = pending.issue("textDocument/definition", 0, 1_000).unwrap();
+    let third_correlation = pending.issue("textDocument/references", 0, 1_000).unwrap();
+    let ReplyDisposition::Accepted(first) = pending.resolve(1, first_correlation.id(), 1).unwrap()
+    else {
+        panic!("first request should complete");
+    };
+    let ReplyDisposition::Accepted(second) =
+        pending.resolve(1, second_correlation.id(), 1).unwrap()
+    else {
+        panic!("second request should complete");
+    };
+    let ReplyDisposition::Accepted(third) = pending.resolve(1, third_correlation.id(), 1).unwrap()
+    else {
+        panic!("third request should complete");
+    };
 
-    assert!(!session.note_request_succeeded(ready_at + 1).unwrap());
+    assert!(!session.note_request_succeeded(first, ready_at + 1).unwrap());
     assert_eq!(session.restarts(), 1);
     assert!(
         !session
-            .note_request_succeeded(ready_at + HEALTHY_RESTART_RESET_AFTER_MS)
+            .note_request_succeeded(first, ready_at + HEALTHY_RESTART_RESET_AFTER_MS)
+            .unwrap()
+    );
+    assert_eq!(session.restarts(), 1, "a replayed success cannot heal");
+    assert!(
+        !session
+            .note_request_succeeded(second, ready_at + HEALTHY_RESTART_RESET_AFTER_MS)
             .unwrap()
     );
     assert_eq!(session.restarts(), 1);
     assert!(
         session
-            .note_request_succeeded(ready_at + HEALTHY_RESTART_RESET_AFTER_MS)
+            .note_request_succeeded(third, ready_at + HEALTHY_RESTART_RESET_AFTER_MS)
             .unwrap()
     );
     assert_eq!(session.restarts(), 0);
+
+    let crashed_at = ready_at + HEALTHY_RESTART_RESET_AFTER_MS + 1;
+    session.apply(Event::ProcessFailed, crashed_at).unwrap();
+    let delay = session.plan_restart(crashed_at).unwrap();
+    let next_ready = crashed_at + delay;
+    session.apply(Event::InitializeSent, next_ready).unwrap();
+    session.apply(Event::Initialized, next_ready).unwrap();
+    for replay in [first, second, third] {
+        assert!(
+            !session
+                .note_request_succeeded(replay, next_ready + HEALTHY_RESTART_RESET_AFTER_MS)
+                .unwrap()
+        );
+    }
+    assert_eq!(
+        session.restarts(),
+        1,
+        "old completed requests cannot heal a new epoch"
+    );
 }
 
 #[test]
@@ -194,6 +237,22 @@ fn backoff_math_saturates_and_clock_regression_is_typed() {
         })
     );
     assert_eq!(session.state(), State::Ready);
+}
+
+#[test]
+fn restart_backoff_deadline_overflow_is_typed_without_state_mutation() {
+    let mut session = ready(u64::MAX - 2);
+    session.apply(Event::ProcessFailed, u64::MAX - 1).unwrap();
+    assert_eq!(
+        session.plan_restart(u64::MAX - 1),
+        Err(LspError::TimeOverflow {
+            operation: "restart backoff",
+            base_ms: u64::MAX - 1,
+            delta_ms: RestartPolicy::default().base_backoff_ms()
+        })
+    );
+    assert_eq!(session.state(), State::Crashed);
+    assert_eq!(session.restarts(), 0);
 }
 
 #[test]

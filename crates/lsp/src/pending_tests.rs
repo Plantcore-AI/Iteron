@@ -39,7 +39,7 @@ fn ids_are_monotonic_and_never_reused_after_retirement() {
     let first = pending.issue("definition", 0, 1_000).unwrap();
     assert_eq!(
         pending.resolve(41, first.id, 1).unwrap(),
-        ReplyDisposition::Accepted(first)
+        ReplyDisposition::Accepted(CompletedRequest { correlation: first })
     );
     let second = pending.issue("hover", 1, 1_000).unwrap();
     assert_eq!(second.id, first.id + 1);
@@ -53,7 +53,7 @@ fn a_duplicate_reply_is_typed_and_cannot_resolve_a_new_request() {
     let first = pending.issue("definition", 0, 100).unwrap();
     assert_eq!(
         pending.resolve(9, first.id, 1).unwrap(),
-        ReplyDisposition::Accepted(first)
+        ReplyDisposition::Accepted(CompletedRequest { correlation: first })
     );
     let second = pending.issue("hover", 1, 100).unwrap();
 
@@ -64,7 +64,9 @@ fn a_duplicate_reply_is_typed_and_cannot_resolve_a_new_request() {
     assert_eq!(pending.in_flight(), 1);
     assert_eq!(
         pending.resolve(9, second.id, 2).unwrap(),
-        ReplyDisposition::Accepted(second)
+        ReplyDisposition::Accepted(CompletedRequest {
+            correlation: second
+        })
     );
 }
 
@@ -87,7 +89,9 @@ fn an_old_generation_cannot_alias_the_same_wire_id_in_a_new_generation() {
     assert_eq!(current.in_flight(), 1);
     assert_eq!(
         current.resolve(11, current_request.id, 1).unwrap(),
-        ReplyDisposition::Accepted(current_request)
+        ReplyDisposition::Accepted(CompletedRequest {
+            correlation: current_request
+        })
     );
 }
 
@@ -215,12 +219,32 @@ fn a_regressed_clock_is_typed_and_does_not_expire_early() {
 }
 
 #[test]
-fn deadline_addition_saturates_without_panicking() {
+fn deadline_overflow_is_typed_and_does_not_admit_a_shortened_request() {
     let mut pending = PendingRequests::new(1);
-    let request = pending
-        .issue("hover", u64::MAX - 1, MAX_REQUEST_TIMEOUT_MS)
-        .unwrap();
-    assert_eq!(pending.expire(u64::MAX).unwrap()[0].id, request.id);
+    assert_eq!(
+        pending.issue("hover", u64::MAX - 1, MAX_REQUEST_TIMEOUT_MS),
+        Err(LspError::TimeOverflow {
+            operation: "request deadline",
+            base_ms: u64::MAX - 1,
+            delta_ms: MAX_REQUEST_TIMEOUT_MS
+        })
+    );
+    assert_eq!(pending.in_flight(), 0);
+    assert_eq!(pending.rejected(), 1);
+}
+
+#[test]
+fn allocated_wire_ids_never_exceed_the_signed_lsp_integer_domain() {
+    let mut pending = PendingRequests::new(1);
+    pending.next_id = Some(MAX_JSONRPC_NUMERIC_ID);
+    let last = pending.issue("hover", 0, 10).unwrap();
+    assert_eq!(last.id, MAX_JSONRPC_NUMERIC_ID);
+    assert_eq!(last.wire_id(), serde_json::json!(i32::MAX));
+    pending.resolve(1, last.id, 1).unwrap();
+    assert_eq!(
+        pending.issue("hover", 1, 10),
+        Err(LspError::RequestIdExhausted { generation: 1 })
+    );
 }
 
 #[test]

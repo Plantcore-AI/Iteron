@@ -1,9 +1,10 @@
-//! Document incarnations, versions, and bounded diagnostic retention.
+//! Document wire versions, synchronization state, and bounded diagnostic retention.
 //!
-//! A URI/version pair is not a stable identity: a document can be closed and reopened at the same
-//! or a lower version while an old server result is still in flight. Every open lifetime therefore
-//! receives a never-reused incarnation. Freshness-sensitive APIs require the complete
-//! URI/incarnation/version snapshot instead of reconstructing identity from the URI alone.
+//! LSP diagnostics carry only a URI and an optional client-assigned document version. This store
+//! owns a monotonic, never-reused wire-version sequence for one server generation. Close/reopen
+//! never recycles an old number, so delayed versioned notifications are stale using only fields
+//! that actually existed on the wire. Versionless diagnostics remain visible but are explicitly
+//! freshness-unknown and cannot cross the actionable-diagnostics gate.
 
 use crate::{
     LspError, MAX_DIAGNOSTIC_BYTES_PER_DOCUMENT, MAX_DIAGNOSTIC_BYTES_TOTAL,
@@ -16,104 +17,131 @@ use crate::{
 use serde_json::Value;
 use std::{collections::HashMap, io::Write};
 
-/// Complete identity of the text against which a request or notification was observed.
+/// Complete identity of text against which a positional request was issued.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DocumentSnapshot {
     pub uri: String,
+    pub server_generation: u64,
     pub incarnation: u64,
-    pub version: i32,
+    pub source_revision: i32,
+    pub wire_version: i32,
 }
 
-/// Outcome of an observed `didChange`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentState {
+    Synced,
+    Desynchronized,
+}
+
+/// Outcome of a local revision presented for `didChange`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
-    /// A strictly greater version became current.
+    /// A strictly greater source revision received a fresh global wire version.
     Accepted(DocumentSnapshot),
-    /// An equal-version change is protocol-invalid. It did not advance the version, but it did
-    /// invalidate diagnostics and old snapshots because the caller says the text changed.
-    EqualVersionInvalidated(DocumentSnapshot),
-    /// A lower version is an already-obsolete notification and did not mutate current state.
-    Stale {
+    /// Equal/lower source revisions are ambiguous. Results were cleared and an explicit full-text
+    /// resync is required before this document can accept diagnostics again.
+    Desynchronized {
         have: i32,
         incoming: i32,
     },
+    NeedsResync,
     Unknown,
 }
 
-/// Freshness evidence retained alongside diagnostics.
+/// Freshness evidence derived only from real wire fields plus the owning server generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DiagnosticProvenance {
-    /// Exact LSP version plus the document incarnation.
-    Versioned { snapshot: DocumentSnapshot },
-    /// LSP permits the version to be omitted. Such diagnostics are explicitly weaker: they are
-    /// accepted only against an exact current snapshot and ordered by local successful arrival.
-    Unversioned {
-        snapshot: DocumentSnapshot,
+pub enum DiagnosticFreshness {
+    Exact {
+        server_generation: u64,
+        wire_version: i32,
+    },
+    Unknown {
+        server_generation: u64,
+        wire_version_at_arrival: i32,
         arrival: u64,
     },
 }
 
-/// What happened to a `publishDiagnostics` payload.
+/// A diagnostics payload cannot be detached from its freshness evidence.
+#[derive(Debug, Clone)]
+pub struct DiagnosticSet {
+    diagnostics: Vec<Value>,
+    freshness: DiagnosticFreshness,
+    encoded_bytes: usize,
+    nodes: usize,
+}
+
+impl DiagnosticSet {
+    pub fn diagnostics(&self) -> &[Value] {
+        &self.diagnostics
+    }
+
+    pub fn freshness(&self) -> &DiagnosticFreshness {
+        &self.freshness
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Publish {
-    Accepted(DiagnosticProvenance),
+    Accepted(DiagnosticFreshness),
     Stale { have: i32, incoming: i32 },
     Future { have: i32, incoming: i32 },
-    PriorIncarnation { have: u64, incoming: u64 },
+    Desynchronized,
     Unknown,
 }
 
 #[derive(Debug, Clone)]
 struct Document {
-    version: i32,
+    source_revision: i32,
+    wire_version: i32,
     incarnation: u64,
-    diagnostics: Vec<Value>,
-    provenance: Option<DiagnosticProvenance>,
-    diagnostic_bytes: usize,
-    diagnostic_nodes: usize,
+    state: DocumentState,
+    diagnostic_set: Option<DiagnosticSet>,
 }
 
-/// Tracks open documents and diagnostics with explicit freshness provenance.
+/// Tracks documents for exactly one supervised language-server generation.
 #[derive(Debug, Clone)]
 pub struct DocumentStore {
+    server_generation: u64,
     docs: HashMap<String, Document>,
     next_incarnation: Option<u64>,
+    next_wire_version: Option<i32>,
     next_arrival: Option<u64>,
     diagnostic_bytes: usize,
     diagnostic_nodes: usize,
     stale_drops: u64,
     future_drops: u64,
-    prior_incarnation_drops: u64,
+    desynchronized_drops: u64,
     unversioned_accepts: u64,
     unknown_drops: u64,
     limit_rejections: u64,
 }
 
-impl Default for DocumentStore {
-    fn default() -> Self {
+impl DocumentStore {
+    pub fn new(server_generation: u64) -> Self {
         Self {
+            server_generation,
             docs: HashMap::new(),
             next_incarnation: Some(1),
+            next_wire_version: Some(1),
             next_arrival: Some(1),
             diagnostic_bytes: 0,
             diagnostic_nodes: 0,
             stale_drops: 0,
             future_drops: 0,
-            prior_incarnation_drops: 0,
+            desynchronized_drops: 0,
             unversioned_accepts: 0,
             unknown_drops: 0,
             limit_rejections: 0,
         }
     }
-}
 
-impl DocumentStore {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn server_generation(&self) -> u64 {
+        self.server_generation
     }
 
-    /// Begin a new open lifetime, even if the URI is already tracked.
-    pub fn open(&mut self, uri: &str, version: i32) -> Result<DocumentSnapshot, LspError> {
+    /// Begin a new open lifetime and allocate the version that must be sent in `didOpen`.
+    pub fn open(&mut self, uri: &str, source_revision: i32) -> Result<DocumentSnapshot, LspError> {
         validate_document_uri(uri)?;
         if !self.docs.contains_key(uri) && self.docs.len() >= MAX_OPEN_DOCUMENTS {
             self.limit_rejections = self.limit_rejections.saturating_add(1);
@@ -121,74 +149,119 @@ impl DocumentStore {
                 limit: MAX_OPEN_DOCUMENTS,
             });
         }
-        let incarnation = allocate_sequence(&mut self.next_incarnation, "document incarnation")?;
+        let replacing = self.docs.contains_key(uri);
+        let incarnation =
+            match allocate_sequence(&mut self.next_incarnation, "document incarnation") {
+                Ok(incarnation) => incarnation,
+                Err(error) => {
+                    if replacing {
+                        self.mark_desynchronized(uri);
+                    }
+                    return Err(error);
+                }
+            };
+        let wire_version = match allocate_wire_version(&mut self.next_wire_version) {
+            Ok(wire_version) => wire_version,
+            Err(error) => {
+                if replacing {
+                    self.mark_desynchronized(uri);
+                }
+                return Err(error);
+            }
+        };
         if let Some(previous) = self.docs.remove(uri) {
             self.release_budget(&previous);
         }
         self.docs.insert(
             uri.to_owned(),
             Document {
-                version,
+                source_revision,
+                wire_version,
                 incarnation,
-                diagnostics: Vec::new(),
-                provenance: None,
-                diagnostic_bytes: 0,
-                diagnostic_nodes: 0,
+                state: DocumentState::Synced,
+                diagnostic_set: None,
             },
         );
-        Ok(DocumentSnapshot {
-            uri: uri.to_owned(),
-            incarnation,
-            version,
-        })
+        Ok(self.snapshot_unchecked(uri))
     }
 
-    /// Record an edit. Only a strictly greater LSP version is accepted.
-    pub fn change(&mut self, uri: &str, version: i32) -> Result<Change, LspError> {
+    /// Record a local edit and allocate its `didChange` wire version.
+    pub fn change(&mut self, uri: &str, source_revision: i32) -> Result<Change, LspError> {
         validate_document_uri(uri)?;
         let Some(current) = self.docs.get(uri) else {
             return Ok(Change::Unknown);
         };
-        if version < current.version {
-            return Ok(Change::Stale {
-                have: current.version,
-                incoming: version,
+        if current.state == DocumentState::Desynchronized {
+            return Ok(Change::NeedsResync);
+        }
+        let have = current.source_revision;
+        if source_revision <= have {
+            let incarnation = allocate_sequence(&mut self.next_incarnation, "document incarnation");
+            self.mark_desynchronized(uri);
+            let incarnation = incarnation?;
+            self.docs
+                .get_mut(uri)
+                .expect("document cannot disappear during an exclusive borrow")
+                .incarnation = incarnation;
+            return Ok(Change::Desynchronized {
+                have,
+                incoming: source_revision,
             });
         }
-
-        let replacement_incarnation = if version == current.version {
-            Some(allocate_sequence(
-                &mut self.next_incarnation,
-                "document incarnation",
-            )?)
-        } else {
-            None
+        let wire_version = match allocate_wire_version(&mut self.next_wire_version) {
+            Ok(wire_version) => wire_version,
+            Err(error) => {
+                self.mark_desynchronized(uri);
+                return Err(error);
+            }
         };
+        self.clear_document_diagnostics(uri);
         let doc = self
             .docs
             .get_mut(uri)
             .expect("document cannot disappear during an exclusive borrow");
-        self.diagnostic_bytes = self.diagnostic_bytes.saturating_sub(doc.diagnostic_bytes);
-        self.diagnostic_nodes = self.diagnostic_nodes.saturating_sub(doc.diagnostic_nodes);
-        doc.diagnostics.clear();
-        doc.provenance = None;
-        doc.diagnostic_bytes = 0;
-        doc.diagnostic_nodes = 0;
+        doc.source_revision = source_revision;
+        doc.wire_version = wire_version;
+        Ok(Change::Accepted(self.snapshot_unchecked(uri)))
+    }
 
-        if let Some(incarnation) = replacement_incarnation {
-            doc.incarnation = incarnation;
-            return Ok(Change::EqualVersionInvalidated(DocumentSnapshot {
+    /// Restore synchronization after sending full text with the returned wire version.
+    pub fn resync(
+        &mut self,
+        uri: &str,
+        source_revision: i32,
+    ) -> Result<DocumentSnapshot, LspError> {
+        validate_document_uri(uri)?;
+        if !self.docs.contains_key(uri) {
+            return Err(LspError::UnknownDocument {
                 uri: uri.to_owned(),
-                incarnation,
-                version: doc.version,
-            }));
+            });
         }
-        doc.version = version;
-        Ok(Change::Accepted(DocumentSnapshot {
-            uri: uri.to_owned(),
-            incarnation: doc.incarnation,
-            version,
-        }))
+        let incarnation =
+            match allocate_sequence(&mut self.next_incarnation, "document incarnation") {
+                Ok(incarnation) => incarnation,
+                Err(error) => {
+                    self.mark_desynchronized(uri);
+                    return Err(error);
+                }
+            };
+        let wire_version = match allocate_wire_version(&mut self.next_wire_version) {
+            Ok(wire_version) => wire_version,
+            Err(error) => {
+                self.mark_desynchronized(uri);
+                return Err(error);
+            }
+        };
+        self.clear_document_diagnostics(uri);
+        let doc = self
+            .docs
+            .get_mut(uri)
+            .expect("document cannot disappear during an exclusive borrow");
+        doc.source_revision = source_revision;
+        doc.wire_version = wire_version;
+        doc.incarnation = incarnation;
+        doc.state = DocumentState::Synced;
+        Ok(self.snapshot_unchecked(uri))
     }
 
     pub fn close(&mut self, uri: &str) -> bool {
@@ -209,35 +282,68 @@ impl DocumentStore {
                 uri: uri.to_owned(),
             });
         };
-        Ok(DocumentSnapshot {
-            uri: uri.to_owned(),
-            incarnation: doc.incarnation,
-            version: doc.version,
-        })
+        if doc.state == DocumentState::Desynchronized {
+            return Err(LspError::DocumentDesynchronized {
+                uri: uri.to_owned(),
+            });
+        }
+        Ok(self.snapshot_unchecked(uri))
     }
 
-    pub fn version(&self, uri: &str) -> Option<i32> {
+    pub fn wire_version(&self, uri: &str) -> Option<i32> {
         if uri.len() > MAX_DOCUMENT_URI_BYTES {
             return None;
         }
-        self.docs.get(uri).map(|doc| doc.version)
+        self.docs.get(uri).map(|doc| doc.wire_version)
     }
 
-    pub fn diagnostics(&self, uri: &str) -> &[Value] {
+    pub fn state(&self, uri: &str) -> Option<DocumentState> {
         if uri.len() > MAX_DOCUMENT_URI_BYTES {
-            return &[];
+            return None;
+        }
+        self.docs.get(uri).map(|doc| doc.state)
+    }
+
+    pub fn diagnostic_set(&self, uri: &str) -> Option<&DiagnosticSet> {
+        if uri.len() > MAX_DOCUMENT_URI_BYTES {
+            return None;
         }
         self.docs
             .get(uri)
-            .map(|doc| doc.diagnostics.as_slice())
-            .unwrap_or(&[])
+            .and_then(|doc| doc.diagnostic_set.as_ref())
     }
 
-    pub fn diagnostic_provenance(&self, uri: &str) -> Option<&DiagnosticProvenance> {
-        if uri.len() > MAX_DOCUMENT_URI_BYTES {
-            return None;
+    /// The only API intended for navigation/edit/automation decisions.
+    pub fn actionable_diagnostics(&self, uri: &str) -> Result<&[Value], LspError> {
+        validate_document_uri(uri)?;
+        let Some(doc) = self.docs.get(uri) else {
+            return Err(LspError::UnknownDocument {
+                uri: uri.to_owned(),
+            });
+        };
+        if doc.state == DocumentState::Desynchronized {
+            return Err(LspError::DocumentDesynchronized {
+                uri: uri.to_owned(),
+            });
         }
-        self.docs.get(uri).and_then(|doc| doc.provenance.as_ref())
+        let Some(set) = doc.diagnostic_set.as_ref() else {
+            return Ok(&[]);
+        };
+        match set.freshness {
+            DiagnosticFreshness::Exact {
+                server_generation,
+                wire_version,
+            } if server_generation == self.server_generation
+                && wire_version == doc.wire_version =>
+            {
+                Ok(&set.diagnostics)
+            }
+            DiagnosticFreshness::Exact { .. } | DiagnosticFreshness::Unknown { .. } => {
+                Err(LspError::DiagnosticsNotActionable {
+                    uri: uri.to_owned(),
+                })
+            }
+        }
     }
 
     pub fn open_documents(&self) -> usize {
@@ -260,8 +366,8 @@ impl DocumentStore {
         self.future_drops
     }
 
-    pub fn prior_incarnation_drops(&self) -> u64 {
-        self.prior_incarnation_drops
+    pub fn desynchronized_drops(&self) -> u64 {
+        self.desynchronized_drops
     }
 
     pub fn unversioned_accepts(&self) -> u64 {
@@ -276,42 +382,27 @@ impl DocumentStore {
         self.limit_rejections
     }
 
-    /// Apply a diagnostics payload atomically against the snapshot at which it was observed.
+    /// Apply the actual wire fields from `textDocument/publishDiagnostics` atomically.
     pub fn publish(
         &mut self,
-        observed: &DocumentSnapshot,
+        uri: &str,
         version: Option<i32>,
         diagnostics: Vec<Value>,
     ) -> Result<Publish, LspError> {
-        validate_document_uri(&observed.uri)?;
-        let Some(doc) = self.docs.get(&observed.uri) else {
+        validate_document_uri(uri)?;
+        let Some(doc) = self.docs.get(uri) else {
             self.unknown_drops = self.unknown_drops.saturating_add(1);
             return Ok(Publish::Unknown);
         };
-        if observed.incarnation != doc.incarnation {
-            self.prior_incarnation_drops = self.prior_incarnation_drops.saturating_add(1);
-            return Ok(Publish::PriorIncarnation {
-                have: doc.incarnation,
-                incoming: observed.incarnation,
-            });
+        if doc.state == DocumentState::Desynchronized {
+            self.desynchronized_drops = self.desynchronized_drops.saturating_add(1);
+            return Ok(Publish::Desynchronized);
         }
-        if observed.version < doc.version {
-            self.stale_drops = self.stale_drops.saturating_add(1);
-            return Ok(Publish::Stale {
-                have: doc.version,
-                incoming: observed.version,
-            });
-        }
-        if observed.version > doc.version {
-            self.future_drops = self.future_drops.saturating_add(1);
-            return Ok(Publish::Future {
-                have: doc.version,
-                incoming: observed.version,
-            });
-        }
-        let have = doc.version;
-        let old_bytes = doc.diagnostic_bytes;
-        let old_nodes = doc.diagnostic_nodes;
+        let have = doc.wire_version;
+        let (old_bytes, old_nodes) = doc
+            .diagnostic_set
+            .as_ref()
+            .map_or((0, 0), |set| (set.encoded_bytes, set.nodes));
         match version {
             Some(incoming) if incoming < have => {
                 self.stale_drops = self.stale_drops.saturating_add(1);
@@ -354,35 +445,74 @@ impl DocumentStore {
             });
         }
 
-        let provenance = match version {
-            Some(_) => DiagnosticProvenance::Versioned {
-                snapshot: observed.clone(),
+        let freshness = match version {
+            Some(_) => DiagnosticFreshness::Exact {
+                server_generation: self.server_generation,
+                wire_version: have,
             },
             None => {
                 let arrival = allocate_sequence(&mut self.next_arrival, "diagnostic arrival")?;
                 self.unversioned_accepts = self.unversioned_accepts.saturating_add(1);
-                DiagnosticProvenance::Unversioned {
-                    snapshot: observed.clone(),
+                DiagnosticFreshness::Unknown {
+                    server_generation: self.server_generation,
+                    wire_version_at_arrival: have,
                     arrival,
                 }
             }
         };
         let doc = self
             .docs
-            .get_mut(&observed.uri)
+            .get_mut(uri)
             .expect("document cannot disappear during an exclusive borrow");
-        doc.diagnostics = canonical;
-        doc.provenance = Some(provenance.clone());
-        doc.diagnostic_bytes = encoded_bytes;
-        doc.diagnostic_nodes = nodes;
+        doc.diagnostic_set = Some(DiagnosticSet {
+            diagnostics: canonical,
+            freshness: freshness.clone(),
+            encoded_bytes,
+            nodes,
+        });
         self.diagnostic_bytes = projected;
         self.diagnostic_nodes = projected_nodes;
-        Ok(Publish::Accepted(provenance))
+        Ok(Publish::Accepted(freshness))
     }
 
     fn release_budget(&mut self, doc: &Document) {
-        self.diagnostic_bytes = self.diagnostic_bytes.saturating_sub(doc.diagnostic_bytes);
-        self.diagnostic_nodes = self.diagnostic_nodes.saturating_sub(doc.diagnostic_nodes);
+        if let Some(set) = doc.diagnostic_set.as_ref() {
+            self.diagnostic_bytes = self.diagnostic_bytes.saturating_sub(set.encoded_bytes);
+            self.diagnostic_nodes = self.diagnostic_nodes.saturating_sub(set.nodes);
+        }
+    }
+
+    fn clear_document_diagnostics(&mut self, uri: &str) {
+        let doc = self
+            .docs
+            .get_mut(uri)
+            .expect("clearing diagnostics requires an open document");
+        if let Some(set) = doc.diagnostic_set.take() {
+            self.diagnostic_bytes = self.diagnostic_bytes.saturating_sub(set.encoded_bytes);
+            self.diagnostic_nodes = self.diagnostic_nodes.saturating_sub(set.nodes);
+        }
+    }
+
+    fn mark_desynchronized(&mut self, uri: &str) {
+        self.clear_document_diagnostics(uri);
+        self.docs
+            .get_mut(uri)
+            .expect("desynchronization requires an open document")
+            .state = DocumentState::Desynchronized;
+    }
+
+    fn snapshot_unchecked(&self, uri: &str) -> DocumentSnapshot {
+        let doc = self
+            .docs
+            .get(uri)
+            .expect("snapshot construction requires an open document");
+        DocumentSnapshot {
+            uri: uri.to_owned(),
+            server_generation: self.server_generation,
+            incarnation: doc.incarnation,
+            source_revision: doc.source_revision,
+            wire_version: doc.wire_version,
+        }
     }
 }
 
@@ -394,6 +524,20 @@ fn allocate_sequence(sequence: &mut Option<u64>, kind: &'static str) -> Result<u
     Ok(value)
 }
 
+fn allocate_wire_version(sequence: &mut Option<i32>) -> Result<i32, LspError> {
+    let Some(value) = *sequence else {
+        return Err(LspError::SequenceExhausted {
+            kind: "wire document version",
+        });
+    };
+    *sequence = if value < i32::MAX {
+        Some(value + 1)
+    } else {
+        None
+    };
+    Ok(value)
+}
+
 pub(crate) fn validate_document_uri(uri: &str) -> Result<(), LspError> {
     if uri.len() > MAX_DOCUMENT_URI_BYTES {
         return Err(LspError::DocumentUriTooLong {
@@ -401,19 +545,65 @@ pub(crate) fn validate_document_uri(uri: &str) -> Result<(), LspError> {
             limit: MAX_DOCUMENT_URI_BYTES,
         });
     }
-    let Some((scheme, _)) = uri.split_once(':') else {
+    if !uri.is_ascii() {
+        return Err(LspError::InvalidDocumentUri);
+    }
+    let Some((scheme, remainder)) = uri.split_once(':') else {
         return Err(LspError::InvalidDocumentUri);
     };
+    if remainder.bytes().filter(|byte| *byte == b'#').count() > 1 {
+        return Err(LspError::InvalidDocumentUri);
+    }
     let mut scheme_bytes = scheme.bytes();
     if !scheme_bytes
         .next()
         .is_some_and(|byte| byte.is_ascii_alphabetic())
         || !scheme_bytes
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
-        || uri.chars().any(char::is_control)
     {
         return Err(LspError::InvalidDocumentUri);
     }
+    let bytes = remainder.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'%' {
+            if index + 2 >= bytes.len()
+                || !bytes[index + 1].is_ascii_hexdigit()
+                || !bytes[index + 2].is_ascii_hexdigit()
+            {
+                return Err(LspError::InvalidDocumentUri);
+            }
+            index += 3;
+            continue;
+        }
+        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~');
+        let reserved = matches!(
+            byte,
+            b':' | b'/'
+                | b'?'
+                | b'#'
+                | b'['
+                | b']'
+                | b'@'
+                | b'!'
+                | b'$'
+                | b'&'
+                | b'\''
+                | b'('
+                | b')'
+                | b'*'
+                | b'+'
+                | b','
+                | b';'
+                | b'='
+        );
+        if !unreserved && !reserved {
+            return Err(LspError::InvalidDocumentUri);
+        }
+        index += 1;
+    }
+    url::Url::parse(uri).map_err(|_| LspError::InvalidDocumentUri)?;
     Ok(())
 }
 
@@ -447,7 +637,6 @@ fn canonicalize_diagnostics(diagnostics: &[Value]) -> Result<(Vec<Value>, usize,
         validate_diagnostic(index, diagnostic)?;
     }
     let nodes = inspect_structure(diagnostics)?;
-
     let mut counter = CountingWriter::default();
     serde_json::to_writer(&mut counter, diagnostics)
         .map_err(|error| LspError::Json(error.to_string()))?;
@@ -571,7 +760,6 @@ fn inspect_structure(diagnostics: &[Value]) -> Result<usize, LspError> {
         });
     }
     stack.extend(diagnostics.iter().rev().map(|value| (value, 1)));
-
     while let Some((value, depth)) = stack.pop() {
         nodes = nodes.saturating_add(1);
         if nodes > MAX_DIAGNOSTIC_JSON_NODES {

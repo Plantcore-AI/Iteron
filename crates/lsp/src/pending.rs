@@ -5,15 +5,60 @@
 //! request.  Cancellation keeps the request charged until the server replies or its deadline
 //! expires, matching the LSP rule that `$/cancelRequest` does not suppress the response.
 
-use crate::{LspError, MAX_IN_FLIGHT, MAX_REQUEST_TIMEOUT_MS, MIN_REQUEST_TIMEOUT_MS};
+use crate::{
+    LspError, MAX_IN_FLIGHT, MAX_JSONRPC_NUMERIC_ID, MAX_REQUEST_TIMEOUT_MS, MIN_REQUEST_TIMEOUT_MS,
+};
 use std::collections::{HashMap, VecDeque};
 
 /// Identity carried from admission through every terminal disposition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RequestCorrelation {
-    pub generation: u64,
-    pub id: u64,
-    pub method: &'static str,
+    generation: u64,
+    id: u32,
+    method: &'static str,
+}
+
+impl RequestCorrelation {
+    pub fn generation(self) -> u64 {
+        self.generation
+    }
+
+    pub fn id(self) -> u32 {
+        self.id
+    }
+
+    pub fn method(self) -> &'static str {
+        self.method
+    }
+
+    /// JSON-RPC wire form, proven by allocation to fit the signed LSP integer domain.
+    pub fn wire_id(self) -> serde_json::Value {
+        serde_json::Value::from(self.id)
+    }
+}
+
+/// Capability minted only when a live, non-cancelled request resolves on time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CompletedRequest {
+    correlation: RequestCorrelation,
+}
+
+impl CompletedRequest {
+    pub fn correlation(self) -> RequestCorrelation {
+        self.correlation
+    }
+
+    pub fn generation(self) -> u64 {
+        self.correlation.generation()
+    }
+
+    pub fn id(self) -> u32 {
+        self.correlation.id()
+    }
+
+    pub fn method(self) -> &'static str {
+        self.correlation.method()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +79,7 @@ struct Entry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Expired {
     pub generation: u64,
-    pub id: u64,
+    pub id: u32,
     pub method: &'static str,
     /// Total time since admission, not merely lateness past the deadline.
     pub elapsed_ms: u64,
@@ -43,7 +88,7 @@ pub struct Expired {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplyDisposition {
     /// An ordinary request completed on time.
-    Accepted(RequestCorrelation),
+    Accepted(CompletedRequest),
     /// A cancelling request produced its still-required terminal response.
     Cancelled(RequestCorrelation),
     /// The response arrived at or after the request deadline.
@@ -51,12 +96,12 @@ pub enum ReplyDisposition {
     /// A second response arrived for an already-completed request retained in the tombstone set.
     Duplicate(RequestCorrelation),
     /// The id was issued and retired, but its bounded detailed tombstone has aged out.
-    Retired { generation: u64, id: u64 },
+    Retired { generation: u64, id: u32 },
     /// A response from another transport/document-session generation cannot correlate here.
     ForeignGeneration {
         expected: u64,
         received: u64,
-        id: u64,
+        id: u32,
     },
     /// The id has never been allocated in this generation.
     Unknown,
@@ -73,12 +118,12 @@ pub enum CancelDisposition {
     ForeignGeneration {
         expected: u64,
         received: u64,
-        id: u64,
+        id: u32,
     },
     /// The id was allocated in this generation but is no longer live.
     Retired {
         generation: u64,
-        id: u64,
+        id: u32,
     },
     Unknown,
 }
@@ -98,10 +143,10 @@ struct Tombstone {
 #[derive(Debug, Clone)]
 pub struct PendingRequests {
     generation: u64,
-    entries: HashMap<u64, Entry>,
+    entries: HashMap<u32, Entry>,
     tombstones: VecDeque<Tombstone>,
     capacity: usize,
-    next_id: Option<u64>,
+    next_id: Option<u32>,
     last_now_ms: Option<u64>,
     timed_out: u64,
     cancelled: u64,
@@ -188,6 +233,17 @@ impl PendingRequests {
                 max_ms: MAX_REQUEST_TIMEOUT_MS,
             });
         }
+        let deadline_ms = match now_ms.checked_add(timeout_ms) {
+            Some(deadline_ms) => deadline_ms,
+            None => {
+                self.rejected = self.rejected.saturating_add(1);
+                return Err(LspError::TimeOverflow {
+                    operation: "request deadline",
+                    base_ms: now_ms,
+                    delta_ms: timeout_ms,
+                });
+            }
+        };
         if self.entries.len() >= self.capacity {
             self.rejected = self.rejected.saturating_add(1);
             return Err(LspError::Backpressure {
@@ -200,7 +256,7 @@ impl PendingRequests {
                 generation: self.generation,
             });
         };
-        self.next_id = id.checked_add(1);
+        self.next_id = (id < MAX_JSONRPC_NUMERIC_ID).then_some(id + 1);
         let correlation = RequestCorrelation {
             generation: self.generation,
             id,
@@ -211,7 +267,7 @@ impl PendingRequests {
             Entry {
                 correlation,
                 issued_ms: now_ms,
-                deadline_ms: now_ms.saturating_add(timeout_ms),
+                deadline_ms,
                 state: EntryState::Active,
             },
         );
@@ -222,7 +278,7 @@ impl PendingRequests {
     pub fn resolve(
         &mut self,
         generation: u64,
-        id: u64,
+        id: u32,
         now_ms: u64,
     ) -> Result<ReplyDisposition, LspError> {
         if generation != self.generation {
@@ -247,7 +303,9 @@ impl PendingRequests {
             }
             self.remember(entry.correlation, RetiredKind::Replied);
             return Ok(match entry.state {
-                EntryState::Active => ReplyDisposition::Accepted(entry.correlation),
+                EntryState::Active => ReplyDisposition::Accepted(CompletedRequest {
+                    correlation: entry.correlation,
+                }),
                 EntryState::Cancelling => ReplyDisposition::Cancelled(entry.correlation),
             });
         }
@@ -258,7 +316,7 @@ impl PendingRequests {
     pub fn cancel(
         &mut self,
         generation: u64,
-        id: u64,
+        id: u32,
         now_ms: u64,
     ) -> Result<CancelDisposition, LspError> {
         if generation != self.generation {
@@ -305,7 +363,7 @@ impl PendingRequests {
     /// Remove everything whose deadline has passed, in stable id order.
     pub fn expire(&mut self, now_ms: u64) -> Result<Vec<Expired>, LspError> {
         self.observe_clock(now_ms)?;
-        let mut ids: Vec<u64> = self
+        let mut ids: Vec<u32> = self
             .entries
             .iter()
             .filter(|(_, entry)| entry.deadline_ms <= now_ms)
@@ -331,7 +389,7 @@ impl PendingRequests {
         Ok(expired_entries)
     }
 
-    fn retired_reply(&self, id: u64, now_ms: u64) -> ReplyDisposition {
+    fn retired_reply(&self, id: u32, now_ms: u64) -> ReplyDisposition {
         if let Some(tombstone) = self
             .tombstones
             .iter()
@@ -358,7 +416,7 @@ impl PendingRequests {
         }
     }
 
-    fn was_issued(&self, id: u64) -> bool {
+    fn was_issued(&self, id: u32) -> bool {
         id != 0 && self.next_id.is_none_or(|next| id < next)
     }
 

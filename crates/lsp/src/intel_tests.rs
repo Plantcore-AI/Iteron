@@ -1,5 +1,5 @@
 use super::*;
-use crate::{MAX_DOCUMENT_URI_BYTES, MAX_LSP_POSITION};
+use crate::{MAX_DOCUMENT_URI_BYTES, MAX_LSP_POSITION, documents::Change};
 
 fn loc(uri: &str, line: u32) -> Value {
     json!({
@@ -14,7 +14,7 @@ fn loc(uri: &str, line: u32) -> Value {
 #[test]
 fn single_array_link_and_null_union_shapes_are_normalized() {
     let single = parse_locations(&loc("file:///a.rs", 3), 10).unwrap();
-    assert_eq!(single.locations[0].range.start.line, 3);
+    assert_eq!(single.locations[0].range.start().line(), 3);
 
     let array = json!([loc("file:///a.rs", 1), loc("file:///b.rs", 2)]);
     assert_eq!(parse_locations(&array, 10).unwrap().locations.len(), 2);
@@ -27,8 +27,8 @@ fn single_array_link_and_null_union_shapes_are_normalized() {
     assert_eq!(
         parse_locations(&link, 10).unwrap().locations[0]
             .range
-            .start
-            .line,
+            .start()
+            .line(),
         12
     );
     assert_eq!(
@@ -77,7 +77,7 @@ fn sorting_deduplication_truncation_and_accounting_are_deterministic() {
     let seen: Vec<_> = parsed
         .locations
         .iter()
-        .map(|location| (location.uri.as_str(), location.range.start.line))
+        .map(|location| (location.uri.as_str(), location.range.start().line()))
         .collect();
     assert_eq!(seen, vec![("file:///a.rs", 2), ("file:///a.rs", 9)]);
     assert_eq!(parsed.truncated, 1);
@@ -138,10 +138,7 @@ fn bad_coordinates_ranges_and_uris_are_malformed_not_wrapped_or_retained() {
 
 #[test]
 fn query_params_are_exact_and_uri_bounded() {
-    let position = Position {
-        line: 1,
-        character: 2,
-    };
+    let position = Position::new(1, 2).unwrap();
     let refs = Query::References {
         include_declaration: true,
     }
@@ -163,17 +160,28 @@ fn query_params_are_exact_and_uri_bounded() {
         Query::Hover.params("raw/path.rs", position),
         Err(LspError::InvalidDocumentUri)
     );
-    let too_large = Position {
-        line: MAX_LSP_POSITION + 1,
-        character: 0,
-    };
     assert_eq!(
-        Query::Hover.params("file:///a.rs", too_large),
+        Position::new(MAX_LSP_POSITION + 1, 0),
         Err(LspError::InvalidPosition {
             line: MAX_LSP_POSITION + 1,
             character: 0,
             max: MAX_LSP_POSITION
         })
+    );
+
+    assert!(
+        serde_json::from_value::<Position>(json!({
+            "line": u64::from(MAX_LSP_POSITION) + 1,
+            "character": 0
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<Range>(json!({
+            "start": {"line": 2, "character": 0},
+            "end": {"line": 1, "character": 0}
+        }))
+        .is_err()
     );
 }
 
@@ -238,7 +246,7 @@ fn hover_validates_optional_range_and_accounts_only_source_as_truncated() {
     assert_eq!(parsed.retained_source_bytes, 6);
     assert_eq!(parsed.separator_bytes, 2);
     assert_eq!(parsed.truncated_bytes, 0);
-    assert_eq!(parsed.range.unwrap().start.line, 1);
+    assert_eq!(parsed.range.unwrap().start().line(), 1);
 
     let malformed = parse_hover_text(&json!({
         "contents": "text",
@@ -261,29 +269,28 @@ fn hover_validates_optional_range_and_accounts_only_source_as_truncated() {
 
 #[test]
 fn answer_snapshot_must_match_uri_incarnation_and_version() {
-    let mut store = DocumentStore::new();
+    let mut store = DocumentStore::new(44);
     let issued = store.open("file:///a.rs", 2).unwrap();
     assert!(ensure_fresh(&store, &issued).is_ok());
     let stale = DocumentSnapshot {
-        version: 1,
+        wire_version: issued.wire_version - 1,
         ..issued.clone()
     };
     assert_eq!(
         ensure_fresh(&store, &stale),
-        Err(LspError::StaleResult { have: 2, issued: 1 })
+        Err(LspError::StaleResult { have: 1, issued: 0 })
     );
     let future = DocumentSnapshot {
-        version: 3,
+        wire_version: issued.wire_version + 1,
         ..issued.clone()
     };
     assert_eq!(
         ensure_fresh(&store, &future),
-        Err(LspError::FutureResult { have: 2, issued: 3 })
+        Err(LspError::FutureResult { have: 1, issued: 2 })
     );
     let gone = DocumentSnapshot {
         uri: "file:///gone.rs".into(),
-        incarnation: 1,
-        version: 1,
+        ..issued.clone()
     };
     assert_eq!(
         ensure_fresh(&store, &gone),
@@ -295,13 +302,35 @@ fn answer_snapshot_must_match_uri_incarnation_and_version() {
     let long_uri = "u".repeat(MAX_DOCUMENT_URI_BYTES + 1);
     let invalid = DocumentSnapshot {
         uri: long_uri,
-        incarnation: 1,
-        version: 1,
+        ..issued.clone()
     };
     assert!(matches!(
         ensure_fresh(&store, &invalid),
         Err(LspError::DocumentUriTooLong { .. })
     ));
+
+    let foreign = DocumentSnapshot {
+        server_generation: 43,
+        ..issued.clone()
+    };
+    assert_eq!(
+        ensure_fresh(&store, &foreign),
+        Err(LspError::StaleServerGeneration {
+            have: 44,
+            issued: 43
+        })
+    );
+
+    assert!(matches!(
+        store.change("file:///a.rs", 2),
+        Ok(Change::Desynchronized { .. })
+    ));
+    assert_eq!(
+        ensure_fresh(&store, &issued),
+        Err(LspError::DocumentDesynchronized {
+            uri: "file:///a.rs".into()
+        })
+    );
 
     store.close("file:///a.rs");
     let reopened = store.open("file:///a.rs", 2).unwrap();

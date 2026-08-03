@@ -9,20 +9,96 @@ use crate::{
     MAX_LSP_POSITION,
     documents::{DocumentSnapshot, DocumentStore, range_components, validate_document_uri},
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Position {
-    pub line: u32,
-    pub character: u32,
+    line: u32,
+    character: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+impl Position {
+    pub fn new(line: u32, character: u32) -> Result<Self, LspError> {
+        if line > MAX_LSP_POSITION || character > MAX_LSP_POSITION {
+            return Err(LspError::InvalidPosition {
+                line,
+                character,
+                max: MAX_LSP_POSITION,
+            });
+        }
+        Ok(Self { line, character })
+    }
+
+    pub fn line(self) -> u32 {
+        self.line
+    }
+
+    pub fn character(self) -> u32 {
+        self.character
+    }
+}
+
+impl<'de> Deserialize<'de> for Position {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WirePosition {
+            line: u64,
+            character: u64,
+        }
+
+        let wire = WirePosition::deserialize(deserializer)?;
+        if wire.line > u64::from(MAX_LSP_POSITION) || wire.character > u64::from(MAX_LSP_POSITION) {
+            return Err(de::Error::custom("position exceeds the LSP uinteger range"));
+        }
+        Ok(Self {
+            line: wire.line as u32,
+            character: wire.character as u32,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Range {
-    pub start: Position,
-    pub end: Position,
+    start: Position,
+    end: Position,
+}
+
+impl Range {
+    pub fn new(start: Position, end: Position) -> Result<Self, LspError> {
+        if start > end {
+            return Err(LspError::InvalidRange);
+        }
+        Ok(Self { start, end })
+    }
+
+    pub fn start(self) -> Position {
+        self.start
+    }
+
+    pub fn end(self) -> Position {
+        self.end
+    }
+}
+
+impl<'de> Deserialize<'de> for Range {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WireRange {
+            start: Position,
+            end: Position,
+        }
+
+        let wire = WireRange::deserialize(deserializer)?;
+        Self::new(wire.start, wire.end).map_err(de::Error::custom)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -53,16 +129,9 @@ impl Query {
     /// layer preserves already-correct percent encoding rather than rewriting it.
     pub fn params(self, uri: &str, at: Position) -> Result<Value, LspError> {
         validate_document_uri(uri)?;
-        if at.line > MAX_LSP_POSITION || at.character > MAX_LSP_POSITION {
-            return Err(LspError::InvalidPosition {
-                line: at.line,
-                character: at.character,
-                max: MAX_LSP_POSITION,
-            });
-        }
         let mut params = json!({
             "textDocument": { "uri": uri },
-            "position": { "line": at.line, "character": at.character },
+            "position": { "line": at.line(), "character": at.character() },
         });
         if let Self::References {
             include_declaration,
@@ -135,14 +204,14 @@ fn location_from(item: &Value) -> Option<Location> {
     // the target range; otherwise consumers could navigate outside the server's claimed target.
     let target = range_from(item.get("targetRange")?)?;
     let selection = range_from(item.get("targetSelectionRange")?)?;
-    if target.start > selection.start || selection.end > target.end {
+    if target.start() > selection.start() || selection.end() > target.end() {
         return None;
     }
     location(uri, selection)
 }
 
 fn location(uri: &str, range: Range) -> Option<Location> {
-    if validate_document_uri(uri).is_err() || range.start > range.end {
+    if validate_document_uri(uri).is_err() {
         return None;
     }
     Some(Location {
@@ -153,16 +222,9 @@ fn location(uri: &str, range: Range) -> Option<Location> {
 
 fn range_from(value: &Value) -> Option<Range> {
     let (start, end) = range_components(value)?;
-    Some(Range {
-        start: Position {
-            line: start.0,
-            character: start.1,
-        },
-        end: Position {
-            line: end.0,
-            character: end.1,
-        },
-    })
+    let start = Position::new(start.0, start.1).ok()?;
+    let end = Position::new(end.0, end.1).ok()?;
+    Range::new(start, end).ok()
 }
 
 /// Bounded hover text plus observable loss.
@@ -284,23 +346,29 @@ fn utf8_prefix_len(text: &str, max_bytes: usize) -> usize {
 pub fn ensure_fresh(store: &DocumentStore, issued: &DocumentSnapshot) -> Result<(), LspError> {
     validate_document_uri(&issued.uri)?;
     let current = store.snapshot(&issued.uri)?;
+    if current.server_generation != issued.server_generation {
+        return Err(LspError::StaleServerGeneration {
+            have: current.server_generation,
+            issued: issued.server_generation,
+        });
+    }
     if current.incarnation != issued.incarnation {
         return Err(LspError::StaleDocumentIncarnation {
             have: current.incarnation,
             issued: issued.incarnation,
         });
     }
-    if current.version == issued.version {
+    if current.wire_version == issued.wire_version {
         Ok(())
-    } else if issued.version < current.version {
+    } else if issued.wire_version < current.wire_version {
         Err(LspError::StaleResult {
-            have: current.version,
-            issued: issued.version,
+            have: current.wire_version,
+            issued: issued.wire_version,
         })
     } else {
         Err(LspError::FutureResult {
-            have: current.version,
-            issued: issued.version,
+            have: current.wire_version,
+            issued: issued.wire_version,
         })
     }
 }

@@ -36,6 +36,9 @@ pub const MAX_MESSAGE_JSON_DEPTH: usize = 64;
 /// *our* memory, so it is enforced on admission rather than by dropping an already-sent request.
 pub const MAX_IN_FLIGHT: usize = 256;
 
+/// JSON-RPC numeric ids use the interoperable signed LSP integer domain.
+pub const MAX_JSONRPC_NUMERIC_ID: u32 = i32::MAX as u32;
+
 /// A client never needs to keep every file in a repository open at once. This bound also caps the
 /// URI and per-document bookkeeping retained after an untrusted server has replied.
 pub const MAX_OPEN_DOCUMENTS: usize = 512;
@@ -136,6 +139,12 @@ pub enum LspError {
     RequestIdExhausted { generation: u64 },
     #[error("the monotonic {kind} sequence is exhausted")]
     SequenceExhausted { kind: &'static str },
+    #[error("{operation} timestamp overflow: {base_ms}ms + {delta_ms}ms")]
+    TimeOverflow {
+        operation: &'static str,
+        base_ms: u64,
+        delta_ms: u64,
+    },
     #[error("request {id} timed out after {elapsed_ms}ms")]
     Timeout { id: u64, elapsed_ms: u64 },
     #[error("injected monotonic clock regressed from {previous_ms}ms to {current_ms}ms")]
@@ -181,12 +190,20 @@ pub enum LspError {
     StaleResult { have: i32, issued: i32 },
     #[error("document {uri} is not open")]
     UnknownDocument { uri: String },
+    #[error("document {uri} is desynchronized and requires a full-text resync")]
+    DocumentDesynchronized { uri: String },
+    #[error("diagnostics for {uri} have unknown or mismatched freshness and are not actionable")]
+    DiagnosticsNotActionable { uri: String },
     #[error("location limit {value} is outside [1, {max}]")]
     InvalidLocationLimit { value: usize, max: usize },
     #[error("result claims future version {issued}, document is at {have}")]
     FutureResult { have: i32, issued: i32 },
     #[error("result was computed for document incarnation {issued}, current incarnation is {have}")]
     StaleDocumentIncarnation { have: u64, issued: u64 },
+    #[error("result came from server generation {issued}, current generation is {have}")]
+    StaleServerGeneration { have: u64, issued: u64 },
     #[error("position ({line}, {character}) exceeds the LSP ceiling {max}")]
     InvalidPosition { line: u32, character: u32, max: u32 },
+    #[error("range start follows range end")]
+    InvalidRange,
 }
