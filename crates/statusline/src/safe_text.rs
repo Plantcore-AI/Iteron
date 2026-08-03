@@ -75,12 +75,20 @@ pub fn lossy(value: &str) -> String {
     if out.len() > MAX_FIELD_BYTES {
         // Truncate on a char boundary, then mark it: a silently shortened path reads as a
         // different path, which is worse than an obviously elided one.
-        let mut end = MAX_FIELD_BYTES.saturating_sub(1);
+        //
+        // Room for the marker is reserved *before* truncating. Reserving one byte and then
+        // appending a three-byte '…' returned 258 bytes from a function documented to cap at 256
+        // -- found by cross-agent review, and exactly the kind of off-by-a-multibyte-character
+        // that a `len()`-based reservation invites.
+        const ELLIPSIS: char = '…';
+        let reserve = ELLIPSIS.len_utf8();
+        let mut end = MAX_FIELD_BYTES.saturating_sub(reserve);
         while end > 0 && !out.is_char_boundary(end) {
             end -= 1;
         }
         out.truncate(end);
-        out.push('…');
+        out.push(ELLIPSIS);
+        debug_assert!(out.len() <= MAX_FIELD_BYTES);
     }
     out
 }
@@ -190,7 +198,11 @@ mod tests {
         let long = "中".repeat(MAX_FIELD_BYTES); // 3 bytes each, far over the limit
         let cleaned = lossy(&long);
         assert!(cleaned.ends_with('…'), "elision must be visible");
-        assert!(cleaned.len() <= MAX_FIELD_BYTES + 3);
+        assert!(
+            cleaned.len() <= MAX_FIELD_BYTES,
+            "lossy returned {} bytes from a function contracted to cap at {MAX_FIELD_BYTES}",
+            cleaned.len()
+        );
         // Round-trips as valid UTF-8 with no split character.
         assert!(cleaned.chars().all(|c| c == '…' || c == '中'));
     }
