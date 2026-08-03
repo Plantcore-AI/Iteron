@@ -15,12 +15,14 @@
 pub mod guard;
 pub mod hunks;
 pub mod porcelain;
+pub mod restore;
 
 pub use guard::{Operation, Verdict, assess, has_unrecorded_work, remediation_paths};
 pub use hunks::{DiffError, FileChange, FileDiff, Hunk, parse_unified, parse_unified_default};
 pub use porcelain::{
     ChangeSet, Entry, ParseError, Presence, Status, parse_default, parse_porcelain_v1_z,
 };
+pub use restore::{Preview, Scope, Unrecorded, preview};
 
 /// Upper bound on entries carried into a review. A repository-wide reformat legitimately touches
 /// thousands of files; forwarding all of them would spend the context window on the listing rather
