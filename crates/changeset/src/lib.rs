@@ -12,9 +12,11 @@
 //! bytes and performs no IO, so the harness that already captures git output keeps ownership of
 //! the process boundary.
 
+pub mod guard;
 pub mod hunks;
 pub mod porcelain;
 
+pub use guard::{Operation, Verdict, assess, has_unrecorded_work, remediation_paths};
 pub use hunks::{DiffError, FileChange, FileDiff, Hunk, parse_unified, parse_unified_default};
 pub use porcelain::{
     ChangeSet, Entry, ParseError, Presence, Status, parse_default, parse_porcelain_v1_z,
