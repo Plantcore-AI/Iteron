@@ -307,6 +307,24 @@ fn kv_get_list(kv: &[(String, String)], key: &str) -> Option<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+
+    /// `core-ctx` duplicates this list because the reverse dependency edge would be a cycle.
+    ///
+    /// A duplicated security list is only safe while something notices it drifting. `core-agents`
+    /// can see both, so the check lives here: every name this crate refuses must also be refused
+    /// by the skill catalog, or a skill could declare a writer that an agent definition could not.
+    #[test]
+    fn the_skill_catalog_refuses_everything_this_crate_refuses() {
+        for refused in WRITE_EXEC_DISPATCH {
+            assert!(
+                core_ctx::skills::SKILL_REFUSED_TOOLS
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(refused)),
+                "`{refused}` is refused for agent definitions but not for skills; the two lists \
+                 have drifted and a skill could declare it"
+            );
+        }
+    }
     use super::*;
 
     #[test]
