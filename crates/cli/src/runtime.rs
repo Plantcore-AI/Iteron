@@ -5652,6 +5652,17 @@ impl Agent {
             for (idx, tu, mut handle, dispatched_at) in pure {
                 let since_dispatch = dispatched_at.duration_since(stream_start);
                 let overlap_ms = stream_elapsed.saturating_sub(since_dispatch).as_millis() as u64;
+                // ADR-004 dispatched this read from inside the provider stream callback, which
+                // holds no mutable borrow of the journal and cannot fsync, so its admission is
+                // written here: at the collection boundary, before the outcome is observed and
+                // before anything is committed. Earlier is structurally impossible without giving
+                // up the decode overlap the ADR exists for, and this is the one class where the
+                // ordering costs nothing — a `Pure` tool has no observable effect (ADR-007 §5
+                // makes that true by construction: a no-egress read-only cell), so the
+                // at-most-once guarantee write-ahead order buys is vacuous for it. What the record
+                // gains is what I-42 found missing: an admission event and an identity for a
+                // completion that had neither.
+                let ticket = self.open_tool_call_effect(turn_id, idx, &tu, Capability::ReadOnly)?;
                 let joined = match self.run_time_remaining() {
                     Some(remaining) if remaining.is_zero() => {
                         handle.abort();
@@ -5670,7 +5681,12 @@ impl Agent {
                 };
                 match joined {
                     Some(Ok(r)) => {
-                        self.commit_local_tool_result(turn_id, &r, overlap_ms.min(r.latency_ms))?;
+                        self.commit_admitted_tool_result(
+                            ticket,
+                            &tu.name,
+                            &r,
+                            overlap_ms.min(r.latency_ms),
+                        )?;
                         any_error |= r.is_error;
                         self.ui(tool_end_ui(&tu, &r));
                         results[idx] = Some(r);
@@ -5678,7 +5694,9 @@ impl Agent {
                     Some(Err(_)) | None => {
                         // The spawned pure-tool task panicked or was cancelled. Answer its
                         // tool_use with an error result so the transcript has no dangling
-                        // tool_use (which the model API would reject next turn).
+                        // tool_use (which the model API would reject next turn). The admission is
+                        // already durable, so this settles it as a proven failure rather than
+                        // leaving recovery a dangling intent.
                         let r = ToolResult {
                             tool_use_id: tu.id.clone(),
                             content: "tool task failed, was cancelled, or exceeded the run wall deadline before producing a result".into(),
@@ -5686,7 +5704,7 @@ impl Agent {
                             trust: Trust::Workspace,
                             latency_ms: 0,
                         };
-                        self.commit_local_tool_result(turn_id, &r, 0)?;
+                        self.commit_admitted_tool_result(ticket, &tu.name, &r, 0)?;
                         any_error = true;
                         self.ui(tool_end_ui(&tu, &r));
                         results[idx] = Some(r);
@@ -5728,7 +5746,7 @@ impl Agent {
                 let control = self.requested_control();
                 if control != InboundControl::None {
                     let r = control_refusal(&tu, control);
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
                     any_error = true;
@@ -5743,7 +5761,7 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
                     any_error = true;
@@ -5782,7 +5800,7 @@ impl Agent {
                             trust: Trust::Trusted,
                             latency_ms: 0,
                         };
-                        self.commit_local_tool_result(turn_id, &r, 0)?;
+                        self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                         self.ui(tool_end_ui(&tu, &r));
                         results[idx] = Some(r);
                         any_error = true;
@@ -5808,7 +5826,7 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                     any_error = true;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
@@ -5829,7 +5847,7 @@ impl Agent {
                         trust: Trust::Trusted,
                         latency_ms: 0,
                     };
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
                     any_error = true;
@@ -5934,7 +5952,7 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
                     any_error = true;
@@ -5972,7 +5990,7 @@ impl Agent {
                             trust: Trust::Workspace,
                             latency_ms: 0,
                         };
-                        self.commit_local_tool_result(turn_id, &r, 0)?;
+                        self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                         any_error = true;
                         self.ui(tool_end_ui(&tu, &r));
                         results[idx] = Some(r);
@@ -5985,7 +6003,7 @@ impl Agent {
                 let control = self.requested_control();
                 if control != InboundControl::None {
                     let r = control_refusal(&tu, control);
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
                     any_error = true;
@@ -6007,6 +6025,11 @@ impl Agent {
                             text: "dispatching read-only subagent".into(),
                         },
                     );
+                    // `spawn_subagent` opens the `Subagent` effect around the child itself. This
+                    // admits the *tool call* that asked for it, which is the fact the completion
+                    // needs to name: before I-42 this branch committed a successful `ToolDone`
+                    // with no effect id at all.
+                    let ticket = self.open_tool_call_effect(turn_id, idx, &tu, cap)?;
                     let (content, is_error) = match self.spawn_subagent(&subtask, idx).await {
                         Ok(summary) => (summary, false),
                         Err(error) => (error, true),
@@ -6018,7 +6041,7 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_admitted_tool_result(ticket, &tu.name, &r, 0)?;
                     any_error |= r.is_error;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
@@ -6034,6 +6057,12 @@ impl Agent {
                     // the one admitted, capability-gated, budget-spending dispatch in the turn loop
                     // that produced a `ToolDone` with no preceding `EffectIntent`. It fans out real
                     // children; it crosses the boundary under its own class.
+                    //
+                    // #16 admitted the *launch*; it did not admit the tool call, so the terminal
+                    // this branch commits still carried no effect id (I-42). The launch keeps its
+                    // own `Workflow` effect — that is where the boundary's `duration_ms` for the
+                    // fan-out is measured — and the tool call is admitted around it.
+                    let call_ticket = self.open_tool_call_effect(turn_id, idx, &tu, cap)?;
                     let wf_class = effect_class::EffectClass::Workflow;
                     let wf_ordinal = self.next_effect_ordinal(turn_id, wf_class);
                     let ticket = self.open_kernel_effect(
@@ -6064,7 +6093,7 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_admitted_tool_result(call_ticket, &tu.name, &r, 0)?;
                     any_error |= r.is_error;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
@@ -6371,6 +6400,11 @@ impl Agent {
                     effects::Settlement::Definite(EventKind::ToolDone {
                         result: result.clone(),
                         effect_id: Some(effect_id),
+                        // The concurrent batch names its tool for the same reason the serial path
+                        // does: a completion whose payload is only {effect_id, kind, result} does
+                        // not say which tool ran, and 39% of recorded completions had no admission
+                        // event to recover it from either.
+                        tool: Some(call.name.clone()),
                     }),
                     result,
                     true,
@@ -6418,20 +6452,110 @@ impl Agent {
         Ok(())
     }
 
-    /// Commit a non-brokered terminal tool observation before projecting it into the live ledger.
-    /// A failed durable append therefore cannot make live reproducible counters outrun replay.
-    fn commit_local_tool_result(
+    /// Commit the terminal for a call that was **refused before dispatch** — a policy or gate
+    /// denial, an ADR-003 dedup, an operator drain/interrupt, an exhausted deadline, a broken
+    /// record — before projecting it into the live ledger. A failed durable append therefore
+    /// cannot make live reproducible counters outrun replay.
+    ///
+    /// There is no `effect_id` because nothing was admitted: no executor was entered, so there is
+    /// no admission event to point at, and minting one would put a lie on the record. That is why
+    /// `core_record` permits a missing effect id only on an error result — every value this commits
+    /// is one (I-42).
+    fn commit_refused_tool_result(
         &mut self,
         turn: TurnId,
+        tool: &str,
         result: &ToolResult,
-        overlapped_ms: u64,
     ) -> Result<(), KernelError> {
+        debug_assert!(
+            result.is_error,
+            "a refused tool result is an error result; a success has an admission to name"
+        );
         self.emit_durable(
             turn,
             EventKind::ToolDone {
                 result: result.clone(),
                 effect_id: None,
+                tool: Some(tool.to_string()),
             },
+        )?;
+        self.ledger.tool(result.latency_ms, 0, result.is_error);
+        Ok(())
+    }
+
+    /// Admit one model-declared tool call that does **not** go through
+    /// [`effects::execute_registry_tool`]: an ADR-004 pure read, an inline overflow read, a
+    /// subagent dispatch, an in-turn workflow launch.
+    ///
+    /// I-42 audited 71 journals and found 81 of 198 recorded completions with no `effect_id`, 77 of
+    /// them successful. These four paths are why: each committed its `ToolDone` locally, so real
+    /// work — reads of the operator's filesystem, children that spend provider budget — landed in
+    /// the record with nothing admitting it. They now cross the same boundary and mint the same
+    /// `RegistryTool` identity as every other tool call, keyed by the call's index in the turn, so
+    /// the terminal has an intent to point back at.
+    ///
+    /// The specialised inner effects stay exactly where they are: `spawn_subagent` still opens its
+    /// `Subagent` effect around the child, and the workflow branch still opens its `Workflow`
+    /// effect around the launch. This admits the *tool call*, which is a different fact.
+    fn open_tool_call_effect(
+        &mut self,
+        turn: TurnId,
+        ordinal: usize,
+        call: &ToolUse,
+        capability: Capability,
+    ) -> Result<effects::EffectTicket, KernelError> {
+        let effect = effects::BrokeredEffect {
+            turn,
+            effect_id: effect_class::effect_id(
+                turn,
+                effect_class::EffectClass::RegistryTool,
+                ordinal,
+            ),
+            tool_use_id: call.id.clone(),
+            kind: call.name.clone(),
+            capability,
+            audit_arguments: ui_approval_arguments(&call.input),
+            workspace: effect_workspace(&self.workspace),
+        };
+        let Agent {
+            rollout,
+            effect_admissions,
+            ..
+        } = self;
+        match effects::open_effect(rollout, effect_admissions, effect) {
+            Ok(ticket) => Ok(ticket),
+            Err(error) => Err(self.effect_boundary_failed(error)),
+        }
+    }
+
+    /// Settle an admitted tool call with its terminal `ToolDone` and project it into the live
+    /// ledger, in that order — the same shape [`effects::execute_registry_tool`] uses, so both
+    /// halves of the tool surface produce one terminal vocabulary and one ordering.
+    fn commit_admitted_tool_result(
+        &mut self,
+        ticket: effects::EffectTicket,
+        tool: &str,
+        result: &ToolResult,
+        overlapped_ms: u64,
+    ) -> Result<(), KernelError> {
+        #[cfg(test)]
+        if self.fail_next_durable_append == Some(DurableAppendFault::ToolDone) {
+            self.fail_next_durable_append = None;
+            self.record_failed = true;
+            self.diagnostic_record_append_failed();
+            drop(ticket);
+            return Err(KernelError::Record(core_record::RecordError::Io(
+                std::io::Error::other("injected durable append failure"),
+            )));
+        }
+        let effect_id = ticket.effect_id().clone();
+        self.settle_kernel_effect(
+            ticket,
+            effects::Settlement::Definite(EventKind::ToolDone {
+                result: result.clone(),
+                effect_id: Some(effect_id),
+                tool: Some(tool.to_string()),
+            }),
         )?;
         self.ledger
             .tool(result.latency_ms, overlapped_ms, result.is_error);
@@ -8886,6 +9010,7 @@ mod reconcile_tests {
                         latency_ms: 2,
                     },
                     effect_id: Some(EffectId("fx1-00000000-0000".into())),
+                    tool: Some("edit".into()),
                 },
             },
         ];
@@ -10394,6 +10519,108 @@ mod gate_integration_tests {
         a
     }
 
+    /// I-42: the four dispatch paths that bypass [`effects::execute_registry_tool`] — the ADR-004
+    /// pure read, the inline overflow read, a subagent, an in-turn workflow launch — each committed
+    /// its terminal locally. That is how 77 of the 81 unadmitted completions in the 71 audited
+    /// journals came to be successful work with no admission event and no tool name. All four now
+    /// share these two helpers, so pinning the pair pins every one of them.
+    #[test]
+    fn a_bypassed_dispatch_admits_its_call_and_names_it_on_the_terminal() {
+        let ws = temp_ws("bypassed-dispatch-identity");
+        let mut agent = agent_for(&ws);
+        let call = ToolUse {
+            id: "call-1".into(),
+            name: "read_file".into(),
+            input: serde_json::json!({"path": "README.md"}),
+        };
+        let ticket = agent
+            .open_tool_call_effect(TurnId(1), 0, &call, Capability::ReadOnly)
+            .unwrap();
+        agent
+            .commit_admitted_tool_result(
+                ticket,
+                &call.name,
+                &ToolResult {
+                    tool_use_id: call.id.clone(),
+                    content: "file body".into(),
+                    is_error: false,
+                    trust: Trust::Workspace,
+                    latency_ms: 4,
+                },
+                0,
+            )
+            .unwrap();
+        agent
+            .commit_refused_tool_result(
+                TurnId(1),
+                "bash",
+                &ToolResult {
+                    tool_use_id: "call-2".into(),
+                    content: "denied by policy".into(),
+                    is_error: true,
+                    trust: Trust::Workspace,
+                    latency_ms: 0,
+                },
+            )
+            .unwrap();
+
+        let events = core_record::replay(agent.rollout.path()).unwrap();
+        let intent = events
+            .iter()
+            .position(|event| {
+                matches!(&event.kind, EventKind::EffectIntent { tool_use_id, .. }
+                    if tool_use_id == "call-1")
+            })
+            .expect("a bypassed dispatch still writes a write-ahead admission");
+        let (terminal, admitted) = events
+            .iter()
+            .enumerate()
+            .find_map(|(at, event)| match &event.kind {
+                EventKind::ToolDone {
+                    result,
+                    effect_id,
+                    tool,
+                } if !result.is_error => {
+                    assert_eq!(tool.as_deref(), Some("read_file"));
+                    Some((
+                        at,
+                        effect_id
+                            .clone()
+                            .expect("a successful terminal names its admission"),
+                    ))
+                }
+                _ => None,
+            })
+            .expect("the successful terminal is durable");
+        assert!(
+            intent < terminal,
+            "the admission is fsynced before the terminal it belongs to"
+        );
+        let EventKind::EffectIntent { id, .. } = &events[intent].kind else {
+            unreachable!("selected by kind")
+        };
+        assert_eq!(id, &admitted, "the terminal points back at its own intent");
+
+        let refusal = events
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::ToolDone {
+                    result,
+                    effect_id,
+                    tool,
+                } if result.is_error => Some((effect_id.clone(), tool.clone())),
+                _ => None,
+            })
+            .expect("the refusal is durable");
+        assert_eq!(
+            refusal,
+            (None, Some("bash".to_string())),
+            "a call refused before dispatch names its tool but has no admission to name"
+        );
+        drop(agent);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
     #[test]
     fn d1_13_embedding_port_captures_both_faults_without_stderr_or_secret_content() {
         let ws = temp_ws("structured-kernel-diagnostics");
@@ -11574,7 +11801,8 @@ mod gate_integration_tests {
                             trust: Trust::Untrusted,
                             latency_ms: 1,
                         },
-                        effect_id: None,
+                        effect_id: Some(core_protocol::EffectId("fx1-00000004-0000".into())),
+                        tool: Some("web_fetch".into()),
                     },
                 })
                 .unwrap();

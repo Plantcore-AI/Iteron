@@ -134,10 +134,12 @@ fn replay_reconstructs_only_durable_counters_and_marks_wall_time_unknown() {
         event(EventKind::ToolDone {
             result: results[0].clone(),
             effect_id: None,
+            tool: Some("read_file".into()),
         }),
         event(EventKind::ToolDone {
             result: results[1].clone(),
             effect_id: None,
+            tool: Some("edit".into()),
         }),
         event(EventKind::EffectUnknown {
             id: EffectId("unknown-effect".into()),

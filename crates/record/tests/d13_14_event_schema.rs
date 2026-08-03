@@ -779,6 +779,7 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
         EventKind::ToolDone {
             result: _,
             effect_id: _,
+            tool: _,
         } => "tool_done",
         EventKind::EffectIntent {
             id: _,
