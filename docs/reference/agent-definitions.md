@@ -49,3 +49,7 @@ provider effect is opened. Refusal reasons are credential-redacted, terminal-saf
 at most 512 bytes and never quote the caller's raw agent or model metadata. Each admitted child
 records a SHA-256 content identity covering its
 name, system prompt, tool filter, model policy, budget, and trust tier in session genesis.
+
+The diagnostic `CORE_WORKFLOW_SPAWNER=provider` fallback does not interpret this catalog. It
+supports only the built-in `generic` agent on the exact parent model; named definitions and model
+overrides to another route resolve to `null` before a provider request.

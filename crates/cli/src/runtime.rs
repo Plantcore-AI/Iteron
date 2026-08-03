@@ -49,6 +49,7 @@ use pricing::{
 };
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
+pub(crate) use workflow_spawner::safe_agent_refusal;
 pub use workflow_spawner::{KernelSpawner, KernelSpawnerContext};
 
 /// A failing strong oracle may return control to the model only this many times per run.

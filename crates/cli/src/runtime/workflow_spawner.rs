@@ -45,7 +45,7 @@ const AGENT_REFUSAL_TRUNCATED: &str = " [truncated]";
 /// runtime failures: redact credential shapes, render terminal controls visibly, and retain at
 /// most 512 UTF-8 bytes. Request metadata is never deliberately interpolated by this module, but
 /// this defense also covers OS/library diagnostics returned by later setup stages.
-pub(super) fn safe_agent_refusal(reason: &str) -> String {
+pub(crate) fn safe_agent_refusal(reason: &str) -> String {
     let scrubbed = core_record::redact::scrub(reason);
     let content_limit = MAX_AGENT_REFUSAL_BYTES.saturating_sub(AGENT_REFUSAL_TRUNCATED.len());
     let mut safe = String::with_capacity(scrubbed.len().min(MAX_AGENT_REFUSAL_BYTES));

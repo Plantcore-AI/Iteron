@@ -2127,7 +2127,9 @@ fn safe_agent_diagnostic(value: &str) -> String {
 
 /// Build the DEFAULT workflow spawner: the real [`runtime::KernelSpawner`], so every `agent()`
 /// call runs a genuine child `Agent` (own context + read-only tool loop) via `run_leaf`. Set
-/// `CORE_WORKFLOW_SPAWNER=provider` to swap in the single-completion `ProviderSpawner` instead.
+/// `CORE_WORKFLOW_SPAWNER=provider` to swap in the generic-only, exact-parent-route
+/// single-completion `ProviderSpawner` instead. The fallback cannot resolve catalog definitions or
+/// alternate models and refuses those requests before a provider turn.
 ///
 /// The context is filled from the SAME resolved values the main agent path records
 /// (`record_model_selection` inputs): provider handle + model + `provider_id` + the catalog/capability
