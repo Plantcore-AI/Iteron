@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub const EVAL_SCHEMA_VERSION: u32 = 2;
+pub const EVAL_SCHEMA_VERSION: u32 = 3;
 
 /// Stable process exit codes for the `core-eval` binary.
 ///
@@ -252,7 +252,12 @@ pub struct EvaluationManifest {
     pub workers: u16,
     /// `None` records an explicitly uncapped run. A capped run never uses zero.
     pub max_turns: Option<u32>,
-    pub run_timeout_secs: u64,
+    /// Inner wall-clock budget supplied to the Core agent.
+    pub core_agent_wall_secs: u64,
+    /// Bounded startup/finalization allowance owned by the evaluator, not by the agent.
+    pub core_process_grace_secs: u64,
+    /// Outer evaluator kill ceiling: `core_agent_wall_secs + core_process_grace_secs`.
+    pub core_process_timeout_secs: u64,
     pub result_path: PathBuf,
     pub cells: Vec<CellResult>,
     pub aggregate: crate::report::Aggregate,

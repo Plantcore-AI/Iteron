@@ -20,6 +20,9 @@ const ORACLE_OUTPUT_LIMIT: usize = 128 * 1024;
 const MAX_CANDIDATE_DIFF_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVAL_CELLS: usize = 1_000_000;
 const MAX_BUNDLE_BYTES: u64 = 16 * 1024 * 1024;
+const CORE_PROCESS_MIN_GRACE_SECS: u64 = 1;
+const CORE_PROCESS_MAX_GRACE_SECS: u64 = 30;
+const CORE_PROCESS_GRACE_DIVISOR: u64 = 20;
 const BUILTIN_CREDENTIAL_ENVS: [&str; 6] = [
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
@@ -50,6 +53,8 @@ pub struct EvalOptions {
     pub purpose: EvaluationPurpose,
     pub seeds: u64,
     pub minimum_seeds: u64,
+    /// Wall-clock budget passed into Core itself. The evaluator gives the child a separate,
+    /// bounded startup/finalization grace before enforcing its outer process ceiling.
     pub run_timeout: Duration,
     pub checkout_timeout: Duration,
     pub oracle_timeout: Duration,
@@ -74,6 +79,7 @@ pub struct ParallelEvalOptions {
     pub purpose: EvaluationPurpose,
     pub seeds: u64,
     pub minimum_seeds: u64,
+    /// Wall-clock budget passed into Core itself. This is not the outer process ceiling.
     pub run_timeout: Duration,
     pub checkout_timeout: Duration,
     pub oracle_timeout: Duration,
@@ -139,6 +145,11 @@ pub enum RunnerError {
         path: String,
         source: std::io::Error,
     },
+    #[error("cannot canonicalize evaluation path `{path}`: {source}")]
+    CanonicalizePath {
+        path: String,
+        source: std::io::Error,
+    },
     #[error("cannot encode evaluation artifact: {0}")]
     Encode(serde_json::Error),
     #[error("cannot write evaluation artifact `{path}`: {source}")]
@@ -165,13 +176,27 @@ pub async fn run_evaluation_parallel(
         path: options.work_root.display().to_string(),
         source,
     })?;
+    // Resolve a relative operator-supplied root exactly once, before any child changes cwd. Every
+    // descendant passed across a process boundary is derived from this canonical absolute root.
+    let work_root = std::fs::canonicalize(&options.work_root).map_err(|source| {
+        RunnerError::CanonicalizePath {
+            path: options.work_root.display().to_string(),
+            source,
+        }
+    })?;
     let run_id = new_run_id();
-    let run_root = options.work_root.join(&run_id);
+    let run_root = work_root.join(&run_id);
     std::fs::create_dir(&run_root).map_err(|source| RunnerError::CreatePath {
         path: run_root.display().to_string(),
         source,
     })?;
+    let run_root =
+        std::fs::canonicalize(&run_root).map_err(|source| RunnerError::CanonicalizePath {
+            path: run_root.display().to_string(),
+            source,
+        })?;
     let mut runtime_options = options.clone();
+    runtime_options.work_root = work_root;
     let bundle_digest = match options.bundle_path.as_deref() {
         Some(source) => {
             let snapshot = run_root.join("policy.bundle");
@@ -255,11 +280,15 @@ pub async fn run_evaluation_parallel(
                     Err(error) => Err(error),
                 };
                 let mut cell = match checkout {
-                    Ok(()) => {
-                        let cell =
-                            run_cell(&core, &cell_root, &task, config, seed, &legacy_options).await;
-                        attach_two_sided_verdict(cell, &oracle_root, &task, &options).await
-                    }
+                    Ok(()) => match canonical_cell_workspace(&cell_root, &run_root) {
+                        Ok(workspace) => {
+                            let cell =
+                                run_cell(&core, &workspace, &task, config, seed, &legacy_options)
+                                    .await;
+                            attach_two_sided_verdict(cell, &oracle_root, &task, &options).await
+                        }
+                        Err(error) => errored_cell(&task, config, seed, "checkout_identity", error),
+                    },
                     Err(error) => errored_cell(&task, config, seed, "checkout", error),
                 };
                 cell.benchmark = benchmark_reference(&task);
@@ -291,6 +320,8 @@ pub async fn run_evaluation_parallel(
     let comparison = compare(&summary, "verify_OFF", "verify_ON");
     let selections = selection_summaries(&cells);
     let kernel_tax = aggregate_kernel_tax(&cells);
+    let core_timing = core_process_timing(options.run_timeout)
+        .expect("validated Core wall budget has a representable outer process ceiling");
     let manifest = EvaluationManifest {
         schema_version: EVAL_SCHEMA_VERSION,
         run_id,
@@ -304,7 +335,9 @@ pub async fn run_evaluation_parallel(
         minimum_seeds: options.minimum_seeds,
         workers: options.workers as u16,
         max_turns: (!options.uncapped).then_some(options.max_turns),
-        run_timeout_secs: options.run_timeout.as_secs(),
+        core_agent_wall_secs: core_timing.agent_wall.as_secs(),
+        core_process_grace_secs: core_timing.grace.as_secs(),
+        core_process_timeout_secs: core_timing.process_ceiling.as_secs(),
         result_path: options.output_path.clone(),
         cells,
         aggregate: summary,
@@ -352,12 +385,13 @@ fn validate_parallel_options(options: &ParallelEvalOptions) -> Result<(), Runner
         ("checkout_timeout", options.checkout_timeout),
         ("oracle_timeout", options.oracle_timeout),
     ] {
-        if duration.is_zero() {
-            return Err(RunnerError::InvalidOption(format!(
-                "{name} must be greater than zero"
-            )));
-        }
+        validate_whole_second_duration(name, duration)?;
     }
+    core_process_timing(options.run_timeout).ok_or_else(|| {
+        RunnerError::InvalidOption(
+            "run_timeout is too large to add the bounded Core process grace".into(),
+        )
+    })?;
     if !options.uncapped && options.max_turns == 0 {
         return Err(RunnerError::InvalidOption(
             "max_turns must be at least 1 for a capped run".into(),
@@ -379,6 +413,48 @@ fn validate_parallel_options(options: &ParallelEvalOptions) -> Result<(), Runner
         ));
     }
     Ok(())
+}
+
+fn validate_whole_second_duration(name: &str, duration: Duration) -> Result<(), RunnerError> {
+    if duration.is_zero() || duration.subsec_nanos() != 0 {
+        return Err(RunnerError::InvalidOption(format!(
+            "{name} must be a positive whole number of seconds"
+        )));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CoreProcessTiming {
+    agent_wall: Duration,
+    grace: Duration,
+    process_ceiling: Duration,
+}
+
+/// Keep Core's semantic agent budget distinct from the harness kill switch. The proportional
+/// grace is intentionally small for short tests and capped for production-length evaluations.
+fn core_process_timing(agent_wall: Duration) -> Option<CoreProcessTiming> {
+    if agent_wall.is_zero() || agent_wall.subsec_nanos() != 0 {
+        return None;
+    }
+    let grace_secs = (agent_wall.as_secs() / CORE_PROCESS_GRACE_DIVISOR)
+        .clamp(CORE_PROCESS_MIN_GRACE_SECS, CORE_PROCESS_MAX_GRACE_SECS);
+    let grace = Duration::from_secs(grace_secs);
+    let process_ceiling = agent_wall.checked_add(grace)?;
+    Some(CoreProcessTiming {
+        agent_wall,
+        grace,
+        process_ceiling,
+    })
+}
+
+fn canonical_cell_workspace(path: &Path, run_root: &Path) -> Result<PathBuf, String> {
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|error| format!("canonicalize materialized checkout: {error}"))?;
+    if !canonical.is_dir() || !canonical.starts_with(run_root) {
+        return Err("materialized checkout escaped the canonical evaluation run root".into());
+    }
+    Ok(canonical)
 }
 
 fn snapshot_bundle(source: &Path, destination: &Path) -> Result<String, RunnerError> {
@@ -894,6 +970,14 @@ fn create_isolated_runtime_dir(path: &Path) -> Result<(), String> {
 }
 
 fn create_core_runtime(workspace: &Path) -> Result<CoreRuntimePaths, String> {
+    if !workspace.is_absolute() {
+        return Err("benchmark workspace must be canonical and absolute".into());
+    }
+    let canonical_workspace = std::fs::canonicalize(workspace)
+        .map_err(|error| format!("canonicalize benchmark workspace: {error}"))?;
+    if canonical_workspace != workspace {
+        return Err("benchmark workspace must be canonical and absolute".into());
+    }
     match std::fs::symlink_metadata(workspace.join(".core")) {
         Ok(_) => {
             return Err(
@@ -913,16 +997,31 @@ fn create_core_runtime(workspace: &Path) -> Result<CoreRuntimePaths, String> {
         .ok_or_else(|| "benchmark workspace name is not UTF-8".to_owned())?;
     let root = parent.join(format!("{name}.core-runtime"));
     create_isolated_runtime_dir(&root)?;
-    let paths = CoreRuntimePaths {
-        home: root.join("home"),
-        config: root.join("config"),
-        temporary: root.join("tmp"),
-        runs: root.join("runs"),
-    };
-    for path in [&paths.home, &paths.config, &paths.temporary, &paths.runs] {
+    let root = std::fs::canonicalize(&root)
+        .map_err(|error| format!("canonicalize isolated Core runtime root: {error}"))?;
+    let mut children = [
+        root.join("home"),
+        root.join("config"),
+        root.join("tmp"),
+        root.join("runs"),
+    ];
+    for path in &children {
         create_isolated_runtime_dir(path)?;
     }
-    Ok(paths)
+    for path in &mut children {
+        *path = std::fs::canonicalize(&*path)
+            .map_err(|error| format!("canonicalize isolated Core runtime directory: {error}"))?;
+        if !path.starts_with(&root) {
+            return Err("isolated Core runtime directory escaped its canonical root".into());
+        }
+    }
+    let [home, config, temporary, runs] = children;
+    Ok(CoreRuntimePaths {
+        home,
+        config,
+        temporary,
+        runs,
+    })
 }
 
 async fn run_core(
@@ -932,11 +1031,24 @@ async fn run_core(
     config: HarnessConfig,
     options: &EvalOptions,
 ) -> Result<ProcessOutput, String> {
+    let spec = core_process_spec(core, workspace, task, config, options)?;
+    run_process(&spec).await.map_err(|error| error.to_string())
+}
+
+fn core_process_spec(
+    core: &Path,
+    workspace: &Path,
+    task: &CorpusTask,
+    config: HarnessConfig,
+    options: &EvalOptions,
+) -> Result<ProcessSpec, String> {
     let runtime = create_core_runtime(workspace)?;
+    let timing = core_process_timing(options.run_timeout)
+        .ok_or_else(|| "Core agent wall budget cannot form an outer process ceiling".to_owned())?;
     let mut args: Vec<OsString> = vec![
         "-p".into(),
         "-C".into(),
-        workspace.as_os_str().to_owned(),
+        ".".into(),
         "--output-format".into(),
         "json".into(),
         "--output-schema-version".into(),
@@ -944,7 +1056,7 @@ async fn run_core(
         "--model".into(),
         options.model.clone().into(),
         "--max-wall-secs".into(),
-        options.run_timeout.as_secs().max(1).to_string().into(),
+        timing.agent_wall.as_secs().to_string().into(),
         "--allow-code".into(),
         "--dangerously-bypass-permissions".into(),
         "--runs-dir".into(),
@@ -1004,18 +1116,16 @@ async fn run_core(
         ]);
         inherit_env.extend(["SYSTEMROOT".into(), "COMSPEC".into(), "PATHEXT".into()]);
     }
-    run_process(&ProcessSpec {
+    Ok(ProcessSpec {
         program: core.to_owned(),
         args,
         cwd: Some(workspace.to_owned()),
         clear_env: true,
         inherit_env,
         env,
-        timeout: options.run_timeout,
+        timeout: timing.process_ceiling,
         max_output_bytes: PROCESS_OUTPUT_LIMIT,
     })
-    .await
-    .map_err(|error| error.to_string())
 }
 
 pub(crate) async fn materialize_repository(
@@ -1434,6 +1544,7 @@ mod tests {
         let parent = unique_dir("core-runtime");
         let workspace = parent.join("cell");
         std::fs::create_dir_all(&workspace).unwrap();
+        let workspace = workspace.canonicalize().unwrap();
         let runtime = create_core_runtime(&workspace).unwrap();
         for path in [
             &runtime.home,
@@ -1442,6 +1553,8 @@ mod tests {
             &runtime.runs,
         ] {
             assert!(path.is_dir());
+            assert!(path.is_absolute());
+            assert_eq!(*path, path.canonicalize().unwrap());
             assert!(!path.starts_with(&workspace));
             #[cfg(unix)]
             {
@@ -1452,11 +1565,123 @@ mod tests {
 
         let contaminated = parent.join("contaminated");
         std::fs::create_dir_all(contaminated.join(".core")).unwrap();
+        let contaminated = contaminated.canonicalize().unwrap();
         assert!(
             create_core_runtime(&contaminated)
                 .unwrap_err()
                 .contains("refusing a confounded arm")
         );
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn core_process_timing_has_bounded_grace_and_checked_deadline_edges() {
+        let one = core_process_timing(Duration::from_secs(1)).unwrap();
+        assert_eq!(one.agent_wall, Duration::from_secs(1));
+        assert_eq!(one.grace, Duration::from_secs(1));
+        assert_eq!(one.process_ceiling, Duration::from_secs(2));
+
+        let proportional = core_process_timing(Duration::from_secs(40)).unwrap();
+        assert_eq!(proportional.grace, Duration::from_secs(2));
+        assert_eq!(proportional.process_ceiling, Duration::from_secs(42));
+
+        let capped = core_process_timing(Duration::from_secs(1_800)).unwrap();
+        assert_eq!(capped.grace, Duration::from_secs(30));
+        assert_eq!(capped.process_ceiling, Duration::from_secs(1_830));
+
+        assert!(core_process_timing(Duration::ZERO).is_none());
+        assert!(core_process_timing(Duration::from_millis(1_500)).is_none());
+        assert!(core_process_timing(Duration::from_secs(u64::MAX)).is_none());
+    }
+
+    #[test]
+    fn evaluation_durations_reject_zero_and_nonzero_subsecond_values_consistently() {
+        for name in ["run_timeout", "checkout_timeout", "oracle_timeout"] {
+            for invalid in [
+                Duration::ZERO,
+                Duration::from_nanos(1),
+                Duration::from_millis(999),
+                Duration::from_millis(1_500),
+            ] {
+                let error = validate_whole_second_duration(name, invalid).unwrap_err();
+                assert!(error.to_string().contains(name));
+                assert!(
+                    error
+                        .to_string()
+                        .contains("positive whole number of seconds")
+                );
+            }
+            validate_whole_second_duration(name, Duration::from_secs(1)).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn core_spec_uses_canonical_cwd_absolute_runtime_and_separate_outer_ceiling() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = unique_dir("core-process-spec");
+        let workspace = parent.join("cell");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace = workspace.canonicalize().unwrap();
+        let core = parent.join("fake-core");
+        std::fs::write(
+            &core,
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":4,\"type\":\"result\",\"outcome\":\"budget_exhausted\",\"reason\":\"max_wall_secs\",\"success\":false,\"assistant_text\":\"\",\"run_id\":\"deadline-edge\",\"cost_usd\":null,\"cost_status\":\"unknown\",\"cost_reason\":\"fixture\",\"turns\":1,\"exit_code\":3,\"error\":null}'\nexit 3\n",
+        )
+        .unwrap();
+        let mut permissions = core.metadata().unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&core, permissions).unwrap();
+        let fixture_task = task("https://example.invalid/repo.git".into(), "0".repeat(40));
+        let options = EvalOptions {
+            corpus_path: parent.join("corpus.json"),
+            output_path: parent.join("result.json"),
+            work_root: parent.join("work"),
+            core_bin: Some(core.clone()),
+            allow_local_repositories: false,
+            model: "deadline-model".into(),
+            provider: None,
+            credential_env: None,
+            purpose: EvaluationPurpose::Score,
+            seeds: 1,
+            minimum_seeds: 1,
+            run_timeout: Duration::from_secs(1),
+            checkout_timeout: Duration::from_secs(1),
+            oracle_timeout: Duration::from_secs(1),
+            max_turns: 1,
+        };
+        let spec = core_process_spec(&core, &workspace, &fixture_task, CONFIGS[0], &options)
+            .expect("build isolated Core process specification");
+        assert_eq!(spec.cwd.as_deref(), Some(workspace.as_path()));
+        assert_eq!(spec.timeout, Duration::from_secs(2));
+        let arg_after = |flag: &str| {
+            spec.args
+                .windows(2)
+                .find(|pair| pair[0] == flag)
+                .map(|pair| pair[1].clone())
+                .unwrap_or_else(|| panic!("missing {flag}"))
+        };
+        assert_eq!(arg_after("-C"), ".");
+        assert_eq!(arg_after("--max-wall-secs"), "1");
+        let runs = PathBuf::from(arg_after("--runs-dir"));
+        assert!(runs.is_absolute());
+        assert_eq!(runs, runs.canonicalize().unwrap());
+        for key in ["HOME", "CORE_CONFIG_HOME", "TMPDIR"] {
+            let value = spec
+                .env
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| PathBuf::from(value))
+                .unwrap_or_else(|| panic!("missing {key}"));
+            assert!(value.is_absolute());
+            assert_eq!(value, value.canonicalize().unwrap());
+        }
+
+        let output = run_process(&spec).await.unwrap();
+        assert!(!output.timed_out);
+        let result = parse_final_result(&output.stdout, output.exit_code).unwrap();
+        assert_eq!(result.outcome, "budget_exhausted");
         let _ = std::fs::remove_dir_all(parent);
     }
 
@@ -1669,7 +1894,9 @@ mod tests {
             minimum_seeds: 3,
             workers: 1,
             max_turns: Some(20),
-            run_timeout_secs: 60,
+            core_agent_wall_secs: 60,
+            core_process_grace_secs: 3,
+            core_process_timeout_secs: 63,
             result_path: PathBuf::from("result.json"),
             comparison: compare(&aggregate, "verify_OFF", "verify_ON"),
             aggregate,
