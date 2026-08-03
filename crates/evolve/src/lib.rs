@@ -22,9 +22,11 @@ mod admission;
 mod base_model;
 mod checkpoint_algebra;
 mod checkpoint_transfer;
+pub mod conformance;
 mod dataset;
 mod dataset_registry;
 mod evidence;
+pub mod gate;
 mod held_out;
 mod producer;
 mod promotion;
@@ -143,6 +145,12 @@ pub use verifier::{
     VerifiedTrainingDataset, VerifiedTrajectory, VerifierError,
 };
 pub use verifier_eval::{EvaluationSuite, EvaluationTask, MAX_EVALUATION_TASKS};
+
+#[cfg(test)]
+mod conformance_tests;
+
+#[cfg(test)]
+mod gate_tests;
 
 #[cfg(test)]
 mod promotion_tests;

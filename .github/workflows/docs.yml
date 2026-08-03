@@ -1,9 +1,11 @@
 name: docs
 
 on:
-  # The strict docs build is a required check, so every pull request must create
-  # the context even when it does not touch documentation paths.
-  pull_request:
+  # The strict docs build is still a required check, but pull requests no longer build it here:
+  # `release-tools/local_gate.sh linux` runs `mkdocs build --strict --clean` against the same
+  # hash-locked `requirements-docs.lock` and publishes the `docs / strict-build` context itself.
+  # Only the main-branch build stays on Actions, because publishing to GitHub Pages is the one
+  # step that genuinely requires a GitHub-hosted runner.
   push:
     branches: [main]
     paths:
