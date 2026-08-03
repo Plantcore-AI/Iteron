@@ -399,7 +399,7 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
 }
 
 /// Register `__agent` / `__phase` / `__log` on the context's globals. Called once per run inside the
-/// `async_with!` block, before the prelude + script are evaluated.
+/// `AsyncContext::async_with` closure, before the prelude + script are evaluated.
 pub fn install<'js>(ctx: &Ctx<'js>, env: &Arc<AgentEnv>) -> rquickjs::Result<()> {
     let globals = ctx.globals();
 
