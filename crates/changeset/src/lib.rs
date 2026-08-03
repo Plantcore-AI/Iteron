@@ -22,7 +22,7 @@ pub use hunks::{DiffError, FileChange, FileDiff, Hunk, parse_unified, parse_unif
 pub use porcelain::{
     ChangeSet, Entry, ParseError, Presence, Status, parse_default, parse_porcelain_v1_z,
 };
-pub use restore::{Preview, Scope, Unrecorded, preview};
+pub use restore::{Inventory, Membership, Preview, Scope, Unrecorded, preview, preview_against};
 
 /// Upper bound on entries carried into a review. A repository-wide reformat legitimately touches
 /// thousands of files; forwarding all of them would spend the context window on the listing rather

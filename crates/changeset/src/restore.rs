@@ -14,6 +14,69 @@
 //! untracked -- so every cheap check misses it and a restore is exactly when it disappears.
 
 use crate::porcelain::{ChangeSet, Entry, Presence};
+use std::collections::BTreeSet;
+
+/// A bounded listing of the paths a tree contains.
+///
+/// `complete` is the whole point. A listing that hit its ceiling knows what it saw but not what it
+/// missed, so a membership question it cannot answer must come back as *unknown* rather than as
+/// "absent" -- and "absent from the checkpoint" is precisely the answer that decides whether a
+/// restore deletes a file or restores it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Inventory {
+    paths: BTreeSet<String>,
+    complete: bool,
+}
+
+/// Whether a path is in a tree, when the listing may not know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Membership {
+    Present,
+    Absent,
+    /// The listing was truncated and does not contain this path, so it may or may not be there.
+    Unknown,
+}
+
+impl Inventory {
+    /// A listing that saw everything.
+    pub fn complete<I: IntoIterator<Item = S>, S: Into<String>>(paths: I) -> Self {
+        Self {
+            paths: paths.into_iter().map(Into::into).collect(),
+            complete: true,
+        }
+    }
+
+    /// A listing that hit its ceiling. Anything not seen is `Unknown`, never `Absent`.
+    pub fn truncated<I: IntoIterator<Item = S>, S: Into<String>>(paths: I) -> Self {
+        Self {
+            paths: paths.into_iter().map(Into::into).collect(),
+            complete: false,
+        }
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+
+    pub fn len(&self) -> usize {
+        self.paths.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+
+    /// Membership, honest about the limits of the listing.
+    pub fn contains(&self, path: &str) -> Membership {
+        if self.paths.contains(path) {
+            Membership::Present
+        } else if self.complete {
+            Membership::Absent
+        } else {
+            Membership::Unknown
+        }
+    }
+}
 
 /// Which half of the state a restore returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +188,60 @@ impl Preview {
 /// `ConversationOnly` reports no file effects at all -- not "zero files changed", which would
 /// invite a caller to render it beside the other scopes as though it were an unusually small
 /// file restore.
+/// Preview a restore against an actual snapshot listing.
+///
+/// This is the version that can answer the question `preview` could only guess at. `Presence::
+/// Untracked` does **not** mean "absent from the checkpoint": `core-record` captures untracked
+/// non-ignored files, so an untracked path may well be in the snapshot and would be *restored*
+/// rather than lost. Reporting it as irrecoverable would frighten a caller away from a safe
+/// restore; the mirror-image error deletes a file. Only the snapshot itself settles it.
+///
+/// A path the target listing cannot speak for is neither restored nor destroyed here -- it is
+/// counted as unknown, and the preview stops calling itself conclusive.
+pub fn preview_against(
+    changes: &ChangeSet,
+    target: &Inventory,
+    scope: Scope,
+    unrecorded: Unrecorded,
+) -> Preview {
+    if !scope.touches_files() {
+        return Preview {
+            scope,
+            unrecorded,
+            overwritten: Vec::new(),
+            not_in_snapshot: Vec::new(),
+            inexact: false,
+            unexamined: changes.truncated,
+            inferred_membership: false,
+        };
+    }
+
+    let mut overwritten = Vec::new();
+    let mut not_in_snapshot = Vec::new();
+    let mut unknown = 0usize;
+
+    for e in &changes.entries {
+        match target.contains(&e.path) {
+            Membership::Present => overwritten.push(e.clone()),
+            Membership::Absent => not_in_snapshot.push(e.clone()),
+            Membership::Unknown => unknown += 1,
+        }
+    }
+
+    let inexact = unrecorded == Unrecorded::Keep && !not_in_snapshot.is_empty();
+    Preview {
+        scope,
+        unrecorded,
+        overwritten,
+        not_in_snapshot,
+        inexact,
+        // Truncation from either side propagates: a bounded change set and a bounded tree listing
+        // are the same kind of ignorance about the same restore.
+        unexamined: changes.truncated + unknown,
+        inferred_membership: false,
+    }
+}
+
 pub fn preview(changes: &ChangeSet, scope: Scope, unrecorded: Unrecorded) -> Preview {
     if !scope.touches_files() {
         return Preview {
@@ -222,6 +339,78 @@ mod tests {
             "{}",
             p.describe()
         );
+    }
+
+    #[test]
+    fn an_untracked_path_the_snapshot_actually_contains_is_restored_not_lost() {
+        // The correction this exists for. `core-record` captures untracked non-ignored files, so
+        // "untracked" never meant "absent from the checkpoint". Guessing frightens a caller away
+        // from a safe restore; the mirror-image guess deletes a file.
+        let c = changes(&["?? generated.rs"]);
+        let target = Inventory::complete(["generated.rs"]);
+        let p = preview_against(&c, &target, Scope::CodeAndConversation, Unrecorded::Delete);
+
+        assert!(p.irrecoverable().is_empty(), "it is in the snapshot");
+        assert_eq!(p.overwritten.len(), 1);
+        assert!(p.is_conclusive());
+    }
+
+    #[test]
+    fn an_untracked_path_the_snapshot_lacks_is_still_irrecoverable() {
+        let c = changes(&["?? scratch.rs"]);
+        let target = Inventory::complete(["other.rs"]);
+        let p = preview_against(&c, &target, Scope::CodeAndConversation, Unrecorded::Delete);
+        assert_eq!(p.irrecoverable().len(), 1);
+        assert_eq!(p.irrecoverable()[0].path, "scratch.rs");
+    }
+
+    #[test]
+    fn a_truncated_inventory_answers_unknown_rather_than_absent() {
+        // The dangerous default: a listing that stopped early does not know a path is missing, and
+        // "absent" is exactly the answer that decides deletion.
+        let inv = Inventory::truncated(["seen.rs"]);
+        assert_eq!(inv.contains("seen.rs"), Membership::Present);
+        assert_eq!(inv.contains("unseen.rs"), Membership::Unknown);
+        assert_eq!(
+            Inventory::complete(["seen.rs"]).contains("unseen.rs"),
+            Membership::Absent
+        );
+    }
+
+    #[test]
+    fn unknown_membership_makes_the_preview_inconclusive_and_destroys_nothing() {
+        let c = changes(&["?? maybe.rs"]);
+        let target = Inventory::truncated(["something-else.rs"]);
+        let p = preview_against(&c, &target, Scope::CodeAndConversation, Unrecorded::Delete);
+
+        assert!(
+            p.irrecoverable().is_empty(),
+            "unknown is not a licence to delete"
+        );
+        assert!(p.overwritten.is_empty());
+        assert_eq!(p.unexamined, 1);
+        assert!(!p.is_conclusive());
+    }
+
+    #[test]
+    fn truncation_from_both_sides_accumulates() {
+        // A bounded change set and a bounded tree listing are the same ignorance about one restore.
+        let c = crate::porcelain::parse_porcelain_v1_z(
+            &{
+                let mut v = Vec::new();
+                for p in [" M a.rs", " M b.rs", " M c.rs"] {
+                    v.extend_from_slice(p.as_bytes());
+                    v.push(0);
+                }
+                v
+            },
+            1,
+        )
+        .unwrap();
+        let target = Inventory::truncated(Vec::<String>::new());
+        let p = preview_against(&c, &target, Scope::CodeOnly, Unrecorded::Keep);
+        assert_eq!(p.unexamined, c.truncated + 1);
+        assert!(!p.is_conclusive());
     }
 
     #[test]
