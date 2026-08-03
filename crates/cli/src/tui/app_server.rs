@@ -216,6 +216,8 @@ pub(crate) enum Control {
     SelectModel(Box<ModelSelection>),
     /// `/compact`
     Compact { focus: Option<String> },
+    /// `/budget` — read the turn ceiling, or (with `set`) move it for this session.
+    TurnBudget { set: Option<u32> },
 }
 
 /// The `/model` transaction's inputs, kept together because the kernel applies them as one.
@@ -244,6 +246,8 @@ pub(crate) enum ControlReply {
         report: Box<crate::runtime::CompactionReport>,
         snapshot: Box<SessionSnapshot>,
     },
+    /// `/budget` — the ceiling actually in force and the attempts charged against it.
+    TurnBudget(crate::runtime::TurnBudgetState),
 }
 
 /// One control request and the channel its answer comes back on.
@@ -1038,6 +1042,13 @@ async fn apply_control(agent: &mut Agent, events: &mut EventPublisher, request: 
                 snapshot: Box::new(snapshot_of(agent)),
             },
             Err(error) => ControlReply::Refused(error.public_summary()),
+        },
+        Control::TurnBudget { set } => match set {
+            None => ControlReply::TurnBudget(agent.turn_budget()),
+            Some(max_turns) => match agent.set_turn_ceiling(max_turns) {
+                Ok(state) => ControlReply::TurnBudget(state),
+                Err(error) => ControlReply::Refused(error.public_summary()),
+            },
         },
     };
     // A frontend that dropped the receiver has moved on; that is not the server's problem.

@@ -15,6 +15,7 @@ pub enum SlashCommand {
     Context,
     Cost,
     Status,
+    Budget,
     Model,
     Effort,
     Mode,
@@ -65,6 +66,7 @@ impl SlashCommand {
             | Self::Context
             | Self::Cost
             | Self::Status
+            | Self::Budget
             | Self::Model
             | Self::Effort
             | Self::Mode
@@ -137,6 +139,12 @@ pub const COMMANDS: &[Cmd] = &[
         name: "status",
         args: "",
         help: "session status: model, effort, mode, cost, cwd, run id",
+    },
+    Cmd {
+        command: SlashCommand::Budget,
+        name: "budget",
+        args: "[turns]",
+        help: "show the turn ceiling; `/budget <turns>` raises it for this session",
     },
     Cmd {
         command: SlashCommand::Model,
@@ -424,6 +432,24 @@ mod tests {
         // exact match sorts first
         let m2 = complete_slash("mode");
         assert_eq!(m2[0].name, "mode");
+    }
+
+    /// The turn ceiling was unreachable from inside a session: no registered command could raise
+    /// it, so a run that saturated `max_turns` could only be rescued by restarting the process.
+    #[test]
+    fn budget_command_carries_the_requested_turn_ceiling() {
+        assert_eq!(
+            parse("budget 200"),
+            Ok(Invocation {
+                command: SlashCommand::Budget,
+                args: "200".into(),
+            })
+        );
+        assert_eq!(
+            parse("budget").map(|invocation| invocation.args),
+            Ok(String::new()),
+            "the bare form reports the ceiling instead of changing it"
+        );
     }
 
     #[test]
