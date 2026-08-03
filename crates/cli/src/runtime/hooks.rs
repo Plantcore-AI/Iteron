@@ -20,9 +20,10 @@
 //!   timeout → bypass. The capability gate (ADR-014), not the hook, is the load-bearing control;
 //!   hooks only *tighten* it.
 //! - **Coverage.** PreToolUse fires for every EFFECTING tool. For pure/read-only tools it fires
-//!   ONLY when a hook is configured — which then disables their mid-stream early dispatch so the
-//!   hook can speak before the read runs (the kernel handles this). With no hook, reads early-
-//!   dispatch ungated (the flagship overlap).
+//!   ONLY when a `PreToolUse` hook is configured — which then disables their mid-stream early
+//!   dispatch so the hook can speak before the read runs (the kernel handles this). With no
+//!   `PreToolUse` hook, reads early-dispatch ungated (the flagship overlap); a hook bound to some
+//!   OTHER event says nothing about reads and never costs the session that overlap.
 //! - **Un-redacted context.** The JSON on the hook's stdin carries the LIVE tool input/result — a
 //!   hook that logs its stdin captures secrets the rollout's redaction would mask. The hook is
 //!   operator-authored (trusted), so this is the operator's responsibility.
@@ -126,7 +127,10 @@ impl Hooks {
         self.commands(event).is_empty()
     }
 
-    fn commands(&self, event: HookEvent) -> &[String] {
+    /// The commands bound to exactly one lifecycle event. `pub(crate)` because the kernel's
+    /// early-dispatch decision is about `PreToolUse` alone: asking "is anything configured?" made a
+    /// single `Stop` cleanup hook cost the whole session its concurrent reads.
+    pub(crate) fn commands(&self, event: HookEvent) -> &[String] {
         self.by_event
             .get(event.key())
             .map(|v| v.as_slice())
