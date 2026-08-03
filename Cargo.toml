@@ -5,6 +5,9 @@
 resolver = "3"
 members = [
     "xtask",
+    "crates/changeset",
+    "crates/lsp",
+    "crates/statusline",
     "crates/protocol",
     "crates/record",
     "crates/obs",
