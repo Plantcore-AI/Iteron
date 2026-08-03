@@ -853,6 +853,58 @@ mod tests {
         std::fs::remove_dir_all(&ws).ok();
     }
 
+    /// I-45. Creating the state directory now writes a `.git/info/exclude` entry for it, and the
+    /// isolated checkpoint Git reads that same file as its `core.excludesFile`. The natural
+    /// `/.core/` spelling would make the runtime-state directory an *ignored entry*, and
+    /// `add -A -- . :(top,literal,exclude).core/runs` names it exactly — which `git add` rejects
+    /// as a fatal error rather than skipping. Excluding a workspace's own state directory must
+    /// never make that workspace unable to checkpoint.
+    #[test]
+    fn a_self_excluded_state_directory_does_not_break_the_checkpoint_that_skips_it() {
+        if !git_available() {
+            eprintln!("skipping: git not available");
+            return;
+        }
+        let ws = tmp_repo("self-excluded-state");
+        test_git(&ws, &["init", "-q"]);
+        std::fs::write(ws.join("kept.txt"), "kept").unwrap();
+
+        // Go through the real writer, so the exclusion is the one production writes.
+        let runs = ws.join(".core").join("runs");
+        let rollout = crate::Rollout::open(
+            &runs,
+            &RunId("excluded".into()),
+            core_protocol::TenantId::default(),
+        )
+        .expect("the first rollout claims the state directory");
+        drop(rollout);
+        assert!(
+            std::fs::read_to_string(ws.join(".git/info/exclude"))
+                .unwrap()
+                .contains(".core"),
+            "the exclusion under test was actually written"
+        );
+
+        // Nothing under the state directory is stageable any more...
+        let untracked = test_git(&ws, &["status", "--porcelain"]);
+        assert!(
+            !untracked.contains(".core"),
+            "the state directory is excluded from the user's repository: {untracked}"
+        );
+
+        // ...and the checkpoint that explicitly names it still succeeds.
+        let snapshot =
+            checkpoint_excluding_runtime_state(&RunId("excluded".into()), Seq(3), &ws, &runs)
+                .expect("an excluded state directory is skipped, not fatal");
+        let listing = test_git(&ws, &["ls-tree", "-r", "--name-only", &snapshot.tree_ref]);
+        assert!(listing.lines().any(|path| path == "kept.txt"));
+        assert!(
+            !listing.lines().any(|path| path.starts_with(".core/")),
+            "an excluded state directory stays out of the snapshot: {listing}"
+        );
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
     #[test]
     fn repository_config_cannot_execute_clean_smudge_or_reference_hooks() {
         if !git_available() {
