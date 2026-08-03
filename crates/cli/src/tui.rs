@@ -810,6 +810,9 @@ struct App {
     cur_text_revision: u64,
     cur_doc_revision: u64,
     cur_doc: Option<crate::markdown::MarkdownDoc>,
+    /// How much of `cur_doc` is settled, so a delta re-parses only the tail it changed. Reset with
+    /// `cur_doc` on every stream boundary.
+    cur_doc_parse: crate::markdown::StreamingParse,
     // Hold the unfinished token across arbitrary provider deltas so a split credential cannot be
     // rendered for one frame before the complete token becomes recognizable.
     text_scrubber: crate::output::StreamingScrubber,
@@ -926,6 +929,7 @@ impl App {
             cur_text_revision: 0,
             cur_doc_revision: 0,
             cur_doc: None,
+            cur_doc_parse: crate::markdown::StreamingParse::default(),
             text_scrubber: crate::output::StreamingScrubber::default(),
             cur_think: String::new(),
             thinking_scrubber: crate::output::StreamingScrubber::default(),
@@ -1260,8 +1264,16 @@ impl App {
         self.autoscroll();
     }
 
+    /// When the next queued tool card stops being suppressed, so the render loop can sleep exactly
+    /// that long instead of polling for it.
+    fn next_tool_reveal(&self) -> Option<Instant> {
+        self.pending_tools
+            .front()
+            .map(|pending| pending.reveal_deadline)
+    }
+
     /// Advance the anti-flash timer. Passing `now` makes the state machine deterministic in tests;
-    /// production calls it from the existing 100 ms active-session cadence.
+    /// production calls it once per render-loop wakeup, scheduled by `next_tool_reveal`.
     fn advance_tool_presentations(&mut self, now: Instant) -> bool {
         let mut changed = false;
         while self
@@ -2683,6 +2695,52 @@ const MAX_PENDING_SUBMISSIONS: usize = 32;
 /// A single interactive follow-up is deliberately smaller than tool/model context limits. Oversize
 /// drafts stay in the editor so the operator can trim or save them instead of losing text.
 const MAX_SUBMISSION_BYTES: usize = 64 * 1024;
+/// A burst of streamed deltas costs ONE frame: the loop wakes on the first delta of the burst and
+/// then holds the next draw for this long so the rest of the burst folds into it. Visible token
+/// latency is bounded by this interval instead of by a fixed input-poll period.
+const FRAME_COALESCE: Duration = Duration::from_millis(16);
+/// Spinner/elapsed animation cadence. The loop is event-driven, so the animation carries its own
+/// clock rather than riding on an input poll's timeout.
+const SPINNER_TICK: Duration = Duration::from_millis(100);
+/// How long the input thread blocks in one crossterm read before looking at its channel again. It
+/// matches the idle cadence the loop used to poll at, so moving input off the loop costs no extra
+/// wakeups on an idle session.
+const TERMINAL_READ_SLICE: Duration = Duration::from_secs(1);
+
+/// The next instant the render loop must wake up on its own account: a frame that is being held
+/// back by the coalescing interval, the animation tick of a live run, or a queued tool card whose
+/// anti-flash delay expires. `None` means "nothing is scheduled" — the loop then sleeps until real
+/// input or a real runtime event arrives instead of burning a fixed poll.
+fn next_wake(
+    frame_held: bool,
+    next_frame_at: Instant,
+    running: bool,
+    last_spin: Instant,
+    next_tool_reveal: Option<Instant>,
+) -> Option<Instant> {
+    let mut wake: Option<Instant> = None;
+    let mut at_earliest = |candidate: Instant| {
+        wake = Some(wake.map_or(candidate, |current: Instant| current.min(candidate)));
+    };
+    if frame_held {
+        at_earliest(next_frame_at);
+    }
+    if running {
+        at_earliest(last_spin + SPINNER_TICK);
+    }
+    if let Some(reveal) = next_tool_reveal {
+        at_earliest(reveal);
+    }
+    wake
+}
+
+/// Sleep until `deadline`, or forever when nothing is scheduled.
+async fn wake_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
+        None => std::future::pending().await,
+    }
+}
 
 /// Run the TUI. The agent runs in a background task streaming `UiEvent`s; the render loop drains
 /// them and redraws. For follow-ups the same agent continues via `follow_up`.
@@ -2768,6 +2826,39 @@ pub async fn run(
     let mut first_task = initial_task;
     let mut redraw = true;
 
+    // Terminal input moves onto its own thread so the loop can wait on stdin AND the event queue at
+    // the same time. The loop used to poll stdin alone for a fixed 100 ms and only afterwards drain
+    // the queue, so a delta batch landing 1 ms into a poll waited out the other 99 ms — and an idle
+    // session sat in a 1 s poll hole. The demultiplexer moves with the reader, so a late OSC 11 or
+    // keyboard-enhancement reply is still swallowed instead of becoming synthetic operator input.
+    let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<std::io::Result<CEvent>>(256);
+    std::thread::spawn(move || {
+        loop {
+            if input_tx.is_closed() {
+                return;
+            }
+            match terminal_input.read(TERMINAL_READ_SLICE) {
+                Ok(None) => continue,
+                Ok(Some(event)) => {
+                    if input_tx.blocking_send(Ok(event)).is_err() {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    let _ = input_tx.blocking_send(Err(error));
+                    return;
+                }
+            }
+        }
+    });
+    // A runtime event observed by the wait is handed back to the drain at the top of the loop, so
+    // the EQ still has exactly one consumer and one ordering check.
+    let mut pending_event = None;
+    let mut input_open = true;
+    let mut eq_open = true;
+    let mut last_spin = Instant::now();
+    let mut next_frame_at = Instant::now();
+
     loop {
         // Kick off the initial task once the terminal is up.
         if let Some(task) = first_task.take()
@@ -2780,7 +2871,7 @@ pub async fn run(
         // Drain the EQ (non-blocking). One long-lived subscription for the whole session: the
         // frontend used to create and retire a receiver per run, which is why there was no event
         // stream at all while idle and why the join had to double as a drain barrier.
-        while let Ok(envelope) = events.try_recv() {
+        while let Some(envelope) = pending_event.take().or_else(|| events.try_recv().ok()) {
             let event_seq = envelope.sequence();
             if event_seq <= last_event_seq {
                 app.note(
@@ -2874,26 +2965,57 @@ pub async fn run(
             notifier.emit_transport(&mut notification_writer, trigger);
         }
 
-        // Active animation targets a 100 ms cadence; input may request an additional immediate
-        // frame. Idle is event-driven and does not repaint on the lifecycle poll.
-        if app.running {
+        // Active animation targets a 100 ms cadence off its own clock: the loop now wakes once per
+        // delta, so riding the wait's timeout would spin the animation at the token rate. Idle is
+        // event-driven and does not repaint at all.
+        let now = Instant::now();
+        if !app.running {
+            last_spin = now;
+        } else if now.duration_since(last_spin) >= SPINNER_TICK {
             app.spin = app.spin.wrapping_add(1);
+            last_spin = now;
             redraw = true;
         }
 
-        if redraw {
+        // Coalescing: the first change of a burst draws immediately, and everything that arrives
+        // within FRAME_COALESCE of that frame folds into the next one. A streamed burst therefore
+        // costs one frame instead of one frame per delta batch.
+        if redraw && now >= next_frame_at {
             term.draw(|f| draw(f, &mut app))?;
             redraw = false;
+            next_frame_at = now + FRAME_COALESCE;
         }
 
-        // A running session polls at the animation/event cadence. Idle wakes occasionally only for
-        // lifecycle checks; without input or events it does no rendering work.
-        let poll_for = if app.running {
-            Duration::from_millis(100)
-        } else {
-            Duration::from_secs(1)
-        };
-        if let Some(input_event) = terminal_input.read(poll_for)? {
+        if !input_open && !eq_open {
+            // Neither the operator's terminal nor the runtime can wake this loop again; leave
+            // rather than sleep forever.
+            break;
+        }
+        // Wait on everything that can change the frame at once. There is no fixed poll period any
+        // more: a delta is visible one coalescing interval after it arrives, and an idle session
+        // sleeps until something actually happens.
+        let wake = next_wake(
+            redraw,
+            next_frame_at,
+            app.running,
+            last_spin,
+            app.next_tool_reveal(),
+        );
+        let mut next_input = None;
+        tokio::select! {
+            biased;
+            result = input_rx.recv(), if input_open => match result {
+                Some(Ok(event)) => next_input = Some(event),
+                Some(Err(error)) => return Err(error.into()),
+                None => input_open = false,
+            },
+            envelope = events.recv(), if eq_open => match envelope {
+                Some(envelope) => pending_event = Some(envelope),
+                None => eq_open = false,
+            },
+            () = wake_until(wake) => {}
+        }
+        if let Some(input_event) = next_input {
             redraw = true;
             match input_event {
                 // Bracketed paste: insert the WHOLE pasted text (incl. newlines) into the editor
@@ -2958,7 +3080,8 @@ pub async fn run(
                     MouseEventKind::Down(MouseButton::Left) => {
                         if m.row >= app.view_top && m.row < app.view_top.saturating_add(app.view_h)
                         {
-                            let idx = app.view_scroll as usize + (m.row - app.view_top) as usize;
+                            // `row_map` covers the visible window only, so the click row IS the index.
+                            let idx = (m.row - app.view_top) as usize;
                             if let Some(&bi) = app.row_map.get(idx)
                                 && bi != usize::MAX
                             {
@@ -6897,9 +7020,55 @@ fn ensure_stream_doc(app: &mut App) -> bool {
     {
         return false;
     }
-    app.cur_doc = Some(crate::markdown::MarkdownDoc::parse(&app.cur_text));
+    // Incremental: `cur_text` only ever grows between stream boundaries, and `cur_doc` is dropped at
+    // every boundary, so `cur_doc == None` is exactly the "this is a new document" signal and is the
+    // one place the settled prefix has to be reset. Re-parsing the whole accumulated answer on every
+    // delta batch is quadratic in answer length, which is why long answers visibly slowed down as
+    // they streamed.
+    if app.cur_doc.is_none() {
+        app.cur_doc = Some(crate::markdown::MarkdownDoc { blocks: Vec::new() });
+        app.cur_doc_parse = crate::markdown::StreamingParse::default();
+    }
+    let doc = app.cur_doc.as_mut().expect("just ensured a live document");
+    app.cur_doc_parse.extend(doc, &app.cur_text);
     app.cur_doc_revision = app.cur_text_revision;
     true
+}
+
+/// Where one contiguous run of transcript rows lives while a frame is being laid out. Nothing here
+/// owns a copy of the rows: a settled block points at the per-block render cache by id, the animated
+/// and streaming pieces point into this frame's `live` arena, and a gap is pure geometry.
+enum TranscriptRows {
+    Blank,
+    Cached(u64),
+    Live(usize),
+}
+
+/// Copy one already-rendered run's `[from, to)` rows into the frame's viewport buffers. Hyperlink
+/// rows are translated into ABSOLUTE transcript coordinates (what `apply_to_buffer` subtracts the
+/// scroll from); `row_map` receives one entry per VISIBLE row.
+#[allow(clippy::too_many_arguments)]
+fn push_viewport_rows(
+    rendered: &crate::render::RenderedLines,
+    block_index: usize,
+    segment_start: usize,
+    from: usize,
+    to: usize,
+    lines: &mut Vec<Line<'static>>,
+    row_map: &mut Vec<usize>,
+    hyperlinks: &mut Vec<crate::render::HyperlinkRegion>,
+) {
+    for row in from..to {
+        lines.push(rendered.lines[row].clone());
+        row_map.push(block_index);
+    }
+    for region in &rendered.hyperlinks {
+        if region.row >= from && region.row < to {
+            let mut region = region.clone();
+            region.row = region.row.saturating_add(segment_start);
+            hyperlinks.push(region);
+        }
+    }
 }
 
 fn draw(f: &mut Frame, app: &mut App) {
@@ -6947,9 +7116,15 @@ fn draw(f: &mut Frame, app: &mut App) {
     // at 10 fps for the caret/activity animation, but unchanged deltas do not repeatedly rebuild
     // the semantic document.
     ensure_stream_doc(app);
-    let mut lines: Vec<Line> = Vec::new();
-    let mut hyperlink_regions = Vec::new();
-    let mut row_map: Vec<usize> = Vec::new(); // block index per rendered row (usize::MAX = spacer/stream)
+    // A frame no longer materialises the whole transcript. Pass one renders only what is missing —
+    // into the per-block cache, or into `live` for the animated cards that must not be cached — and
+    // records how many rows each piece occupies. Pass two adds the counts up to place the viewport.
+    // Pass three copies ONLY the rows the viewport shows. The old walk cloned every cached
+    // `RenderedLines` and extended one flat vector with them, so a settled session paid for its
+    // whole history on every single frame.
+    let mut live: Vec<crate::render::RenderedLines> = Vec::new();
+    let mut plan: Vec<(TranscriptRows, usize, usize)> = Vec::new();
+    let mut total_rows: usize = 0;
     {
         let theme = &app.theme;
         let spin = app.spin;
@@ -6959,40 +7134,37 @@ fn draw(f: &mut Frame, app: &mut App) {
             if bi > 0 {
                 // Variable rhythm (critique P1): a bigger gap at real turn boundaries, none between
                 // adjacent tool cards / notices / dividers, so structure is scannable, not monotone.
-                let gap = block::gap_before(&app.transcript[bi - 1].kind, &b.kind);
-                for _ in 0..gap {
-                    lines.push(Line::from(""));
-                    row_map.push(usize::MAX);
+                let gap = usize::from(block::gap_before(&app.transcript[bi - 1].kind, &b.kind));
+                if gap > 0 {
+                    plan.push((TranscriptRows::Blank, gap, usize::MAX));
+                    total_rows += gap;
                 }
             }
-            let rendered = if b.cacheable() {
-                match render_cache.get(&b.id) {
-                    Some((revision, rendered)) if *revision == b.revision => rendered.clone(),
-                    _ => {
-                        let rendered =
-                            b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy);
-                        render_cache.insert(b.id, (b.revision, rendered.clone()));
-                        rendered
-                    }
+            let rows = if b.cacheable() {
+                if render_cache.get(&b.id).map(|(revision, _)| *revision) != Some(b.revision) {
+                    let rendered =
+                        b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy);
+                    render_cache.insert(b.id, (b.revision, rendered));
                 }
+                let count = render_cache
+                    .get(&b.id)
+                    .map_or(0, |(_, rendered)| rendered.lines.len());
+                plan.push((TranscriptRows::Cached(b.id), count, bi));
+                count
             } else {
-                b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy)
+                let rendered = b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy);
+                let count = rendered.lines.len();
+                plan.push((TranscriptRows::Live(live.len()), count, bi));
+                live.push(rendered);
+                count
             };
-            let row_offset = lines.len();
-            for mut hyperlink in rendered.hyperlinks {
-                hyperlink.row = hyperlink.row.saturating_add(row_offset);
-                hyperlink_regions.push(hyperlink);
-            }
-            for _ in 0..rendered.lines.len() {
-                row_map.push(bi);
-            }
-            lines.extend(rendered.lines);
+            total_rows += rows;
         }
         // live streaming blocks (reasoning, then the in-flight answer) through the SAME render path
         if !app.cur_think.trim().is_empty() {
-            if !lines.is_empty() {
-                lines.push(Line::from(""));
-                row_map.push(usize::MAX);
+            if total_rows > 0 {
+                plan.push((TranscriptRows::Blank, 1, usize::MAX));
+                total_rows += 1;
             }
             let tb = block::Block::new(
                 u64::MAX,
@@ -7001,16 +7173,18 @@ fn draw(f: &mut Frame, app: &mut App) {
                     open: true,
                 },
             );
-            let rows = tb.render(inner_w, theme, spin);
-            row_map.extend(std::iter::repeat_n(usize::MAX, rows.len()));
-            lines.extend(rows);
+            let rendered = crate::render::RenderedLines::plain(tb.render(inner_w, theme, spin));
+            let count = rendered.lines.len();
+            plan.push((TranscriptRows::Live(live.len()), count, usize::MAX));
+            live.push(rendered);
+            total_rows += count;
         }
         if !app.cur_text.trim().is_empty() {
-            if !lines.is_empty() {
-                lines.push(Line::from(""));
-                row_map.push(usize::MAX);
+            if total_rows > 0 {
+                plan.push((TranscriptRows::Blank, 1, usize::MAX));
+                total_rows += 1;
             }
-            let rendered = block::render_assistant_doc_with_hyperlinks(
+            let mut rendered = block::render_assistant_doc_with_hyperlinks(
                 app.cur_doc
                     .as_ref()
                     .expect("non-empty streaming text has a parsed document"),
@@ -7018,25 +7192,22 @@ fn draw(f: &mut Frame, app: &mut App) {
                 theme,
                 hyperlink_policy,
             );
-            let row_offset = lines.len();
-            for mut hyperlink in rendered.hyperlinks {
-                hyperlink.row = hyperlink.row.saturating_add(row_offset);
-                hyperlink_regions.push(hyperlink);
-            }
-            row_map.extend(std::iter::repeat_n(usize::MAX, rendered.lines.len()));
-            lines.extend(rendered.lines);
             // blinking caret on the last row while streaming
             if app.running
                 && (app.spin / 4).is_multiple_of(2)
-                && let Some(last) = lines.last_mut()
+                && let Some(last) = rendered.lines.last_mut()
                 && crate::render::line_width(last) < inner_w
             {
                 last.spans
                     .push(Span::styled("▋", Style::default().fg(theme.role_assistant)));
             }
+            let count = rendered.lines.len();
+            plan.push((TranscriptRows::Live(live.len()), count, usize::MAX));
+            live.push(rendered);
+            total_rows += count;
         }
     }
-    let total = u16::try_from(lines.len()).unwrap_or(u16::MAX); // saturating (review LOW: >65535 rows)
+    let total = u16::try_from(total_rows).unwrap_or(u16::MAX); // saturating (review LOW: >65535 rows)
     let view_h = surface.transcript.height;
     let max_scroll = total.saturating_sub(view_h);
     if !app.follow_tail && app.last_view_h > 0 {
@@ -7062,12 +7233,63 @@ fn draw(f: &mut Frame, app: &mut App) {
         app.follow_latest();
     }
     let scroll = max_scroll - app.bottom_offset;
+    // Pass three: materialise the window only. `hyperlink_regions` keeps ABSOLUTE transcript rows —
+    // that is the coordinate `apply_to_buffer` subtracts the scroll from — while `row_map` is now
+    // viewport-relative, because the hit-test already knows which row the viewport starts at.
+    let first_row = usize::from(scroll);
+    let last_row = first_row.saturating_add(usize::from(view_h)).min(total_rows);
+    let window = last_row.saturating_sub(first_row);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(window);
+    let mut row_map: Vec<usize> = Vec::with_capacity(window); // block index per VISIBLE row (usize::MAX = spacer/stream)
+    let mut hyperlink_regions = Vec::new();
+    let mut cursor = 0usize;
+    for (rows, count, bi) in &plan {
+        let segment_start = cursor;
+        cursor = cursor.saturating_add(*count);
+        if cursor <= first_row || segment_start >= last_row {
+            continue;
+        }
+        let from = first_row.max(segment_start) - segment_start;
+        let to = last_row.min(cursor) - segment_start;
+        match rows {
+            TranscriptRows::Blank => {
+                for _ in from..to {
+                    lines.push(Line::from(""));
+                    row_map.push(usize::MAX);
+                }
+            }
+            TranscriptRows::Cached(id) => {
+                if let Some((_, rendered)) = app.render_cache.get(id) {
+                    push_viewport_rows(
+                        rendered,
+                        *bi,
+                        segment_start,
+                        from,
+                        to,
+                        &mut lines,
+                        &mut row_map,
+                        &mut hyperlink_regions,
+                    );
+                }
+            }
+            TranscriptRows::Live(index) => push_viewport_rows(
+                &live[*index],
+                *bi,
+                segment_start,
+                from,
+                to,
+                &mut lines,
+                &mut row_map,
+                &mut hyperlink_regions,
+            ),
+        }
+    }
     // stash viewport params for mouse hit-testing (click-to-fold, wheel scroll — R9)
     app.row_map = row_map;
     app.view_top = surface.transcript.y;
     app.view_scroll = scroll;
     app.view_h = view_h;
-    let transcript = Paragraph::new(lines).scroll((scroll, 0)); // NO .wrap(): rows == scroll units
+    let transcript = Paragraph::new(lines); // NO .wrap(): rows == scroll units, and only the window is built
     f.render_widget(transcript, surface.transcript);
     hyperlink::apply_to_buffer(
         f.buffer_mut(),
@@ -8918,6 +9140,139 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(app.bottom_offset > prior_offset);
         assert_eq!(app.unread_updates, 1);
         assert!(buffer_text(&terminal).contains("new output"));
+    }
+
+    #[test]
+    fn the_render_loop_is_event_driven_and_coalesces_a_delta_burst_into_one_frame() {
+        // The loop used to block in a stdin poll for a fixed 100 ms while running and 1 s while
+        // idle, and only afterwards drain the event queue — so a delta batch landing 1 ms into a
+        // poll waited out the remaining 99 ms, and an idle session woke every second for nothing.
+        // The wait is now a select whose only timeout is a deadline something actually asked for.
+        let now = Instant::now();
+        assert_eq!(
+            next_wake(false, now, false, now, None),
+            None,
+            "an idle session schedules no wakeup at all: it sleeps on input and events"
+        );
+        // A burst costs one frame: the first change draws, the rest fold into the frame held until
+        // the coalescing deadline, which is the only thing the loop waits for.
+        let next_frame_at = now + FRAME_COALESCE;
+        assert_eq!(
+            next_wake(true, next_frame_at, false, now, None),
+            Some(next_frame_at)
+        );
+        assert!(
+            FRAME_COALESCE < SPINNER_TICK,
+            "visible token latency is bounded by coalescing, not by the old input-poll period"
+        );
+        // A live run animates off its own clock, and a queued tool card has its own anti-flash
+        // deadline. Whichever comes first wins; nothing polls for the others.
+        assert_eq!(
+            next_wake(false, next_frame_at, true, now, None),
+            Some(now + SPINNER_TICK)
+        );
+        let reveal = now + Duration::from_millis(3);
+        assert_eq!(
+            next_wake(true, next_frame_at, true, now, Some(reveal)),
+            Some(reveal)
+        );
+    }
+
+    #[test]
+    fn a_frame_materialises_only_the_viewport_and_reproduces_the_unwindowed_rows() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // Transcript rows as text, minus the final column the overflow scrollbar overlays.
+        fn transcript_rows(
+            term: &ratatui::Terminal<ratatui::backend::TestBackend>,
+            top: u16,
+            height: u16,
+        ) -> Vec<String> {
+            let buf = term.backend().buffer();
+            (top..top.saturating_add(height))
+                .map(|y| {
+                    (0..buf.area.width.saturating_sub(1))
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect()
+        }
+
+        let mut app = App::new();
+        for index in 0..40 {
+            app.note(block::NoticeLevel::Info, format!("historical row {index:03}"));
+        }
+        // A terminal tall enough to hold the whole transcript needs no window, so its frame is the
+        // reference the windowed frame has to reproduce exactly.
+        let mut tall = Terminal::new(TestBackend::new(60, 120)).unwrap();
+        tall.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.view_scroll, 0, "the reference frame shows every row");
+        let reference = transcript_rows(&tall, app.view_top, app.view_h);
+        let total = usize::from(app.last_total_rows);
+        assert!(total > 0 && total <= reference.len());
+
+        let mut short = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        short.draw(|frame| draw(frame, &mut app)).unwrap();
+        let view_h = usize::from(app.view_h);
+        assert!(total > view_h, "the transcript has to overflow to be a test");
+        assert_eq!(
+            usize::from(app.last_total_rows),
+            total,
+            "windowing changes what is built, never how tall the transcript is"
+        );
+        assert_eq!(
+            app.row_map.len(),
+            view_h,
+            "the frame materialises one row per VISIBLE row, not one per transcript row"
+        );
+        assert_eq!(
+            transcript_rows(&short, app.view_top, app.view_h),
+            reference[total - view_h..total],
+            "the tail window is byte-identical to the unwindowed render"
+        );
+
+        app.scroll_up(9);
+        short.draw(|frame| draw(frame, &mut app)).unwrap();
+        let scroll = usize::from(app.view_scroll);
+        assert!(scroll > 0 && scroll + view_h <= total);
+        let rows = transcript_rows(&short, app.view_top, app.view_h);
+        assert_eq!(
+            rows,
+            reference[scroll..scroll + view_h],
+            "a scrolled window is byte-identical to the same slice of the unwindowed render"
+        );
+
+        // `row_map` is what a mouse click indexes. It now covers the viewport only, so the click row
+        // IS the index; the old scroll-relative index would run off the end of a scrolled frame.
+        assert_eq!(app.row_map.len(), view_h);
+        let mut checked = 0;
+        for (idx, row) in rows.iter().enumerate() {
+            let Some(at) = row.find("historical row ") else {
+                continue;
+            };
+            let marker = row[at..at + "historical row 000".len()].to_string();
+            let expected = app
+                .transcript
+                .iter()
+                .position(|candidate| candidate.to_text().contains(&marker))
+                .expect("the rendered notice is still in the transcript");
+            assert_eq!(
+                app.row_map[idx], expected,
+                "viewport row {idx} must fold the block drawn on it"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 3, "the window showed {checked} notice rows");
+
+        // Frame cost is independent of session length: ten times the history, same materialisation.
+        app.follow_latest();
+        for index in 40..440 {
+            app.note(block::NoticeLevel::Info, format!("historical row {index:03}"));
+        }
+        short.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(usize::from(app.last_total_rows) > total * 5);
+        assert_eq!(app.row_map.len(), view_h);
     }
 
     #[test]

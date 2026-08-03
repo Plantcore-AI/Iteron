@@ -64,6 +64,76 @@ pub struct MarkdownDoc {
     pub blocks: Vec<MdBlock>,
 }
 
+/// Incremental block-parse state for an append-only document (a streaming assistant answer).
+///
+/// Re-parsing the whole accumulated answer on every delta batch is quadratic in answer length; this
+/// keeps a settled prefix so each batch only pays for the tail it actually changed. The result is
+/// exactly `MarkdownDoc::parse` of the same text — see `settled_prefix_len` for why the prefix can
+/// never be re-interpreted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamingParse {
+    /// Blocks at the front of the document that no later input can change.
+    settled_blocks: usize,
+    /// Bytes of source already folded into those blocks.
+    settled_len: usize,
+}
+
+impl StreamingParse {
+    /// Re-parse only the unsettled tail of `text` into `doc`.
+    ///
+    /// `text` must be the same source this state was last advanced with, extended at the end. A
+    /// shorter `text` means the source was replaced, and the state rebuilds from scratch.
+    pub fn extend(&mut self, doc: &mut MarkdownDoc, text: &str) {
+        if text.len() < self.settled_len {
+            *self = Self::default();
+            doc.blocks.clear();
+        }
+        let boundary = settled_prefix_len(text, self.settled_len);
+        // Everything after the settled prefix was parsed from a tail that has since grown; drop it
+        // and re-derive. A newly settled span is parsed exactly once, then never again.
+        doc.blocks.truncate(self.settled_blocks);
+        if boundary > self.settled_len {
+            doc.blocks
+                .extend(parse_blocks(&text[self.settled_len..boundary]));
+            self.settled_blocks = doc.blocks.len();
+            self.settled_len = boundary;
+        }
+        doc.blocks.extend(parse_blocks(&text[self.settled_len..]));
+    }
+}
+
+/// One past the last blank line the block parser sees at TOP level, scanning from `from`.
+///
+/// `parse_blocks` is one left-to-right pass whose only cross-line state is the paragraph it is
+/// accumulating, and a blank line always flushes that. Every multi-line construct — fenced code, a
+/// blockquote run, list continuations, a table body — also terminates at a blank line, and the
+/// parser's only lookahead (the `|---|` row under a table header) cannot reach past one. So at a
+/// top-level blank line the parser holds no state whatsoever and nothing it has already emitted can
+/// change: for an append-only source that position is a safe resume point. A blank line INSIDE a
+/// fence is not one, because an unterminated fence keeps absorbing whatever arrives next.
+///
+/// `from` must itself be such a position (or 0), so the scan may start with the fence closed.
+fn settled_prefix_len(text: &str, from: usize) -> usize {
+    let mut offset = from;
+    let mut settled = from;
+    let mut in_fence = false;
+    for line in text[from..].split_inclusive('\n') {
+        offset += line.len();
+        let complete = line.ends_with('\n');
+        let body = line.trim_end_matches('\n').trim_end_matches('\r');
+        let trimmed = body.trim_start();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        // Only a COMPLETE blank line settles: a trailing partial line is still being written.
+        if !in_fence && complete && trimmed.is_empty() {
+            settled = offset;
+        }
+    }
+    settled
+}
+
 impl MarkdownDoc {
     pub fn parse(text: &str) -> Self {
         MarkdownDoc {
@@ -1740,5 +1810,85 @@ mod tests {
             })
             .collect();
         assert!(joined.contains("unclosed"));
+    }
+
+    /// Every construct whose parse spans more than one source line, so the settled-prefix argument
+    /// is exercised against the parser's real lookahead rather than against plain paragraphs.
+    const STREAMED_ANSWER: &str = concat!(
+        "# heading\n\n",
+        "a paragraph that\nspans two source lines\n\n",
+        "- bullet one\n    continued line\n- bullet two\n\n",
+        "> quoted one\n> quoted two\n\n",
+        "```rust\nfn main() {\n\n    println!(\"hi\");\n}\n```\n\n",
+        "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\n",
+        "---\n\n",
+        "closing **paragraph** with `code`",
+    );
+
+    #[test]
+    fn streaming_parse_matches_a_full_reparse_at_every_delta_boundary() {
+        // The renderer used to re-parse the whole accumulated answer on every delta batch, which is
+        // quadratic in answer length. The incremental parser replaces it and must therefore be
+        // indistinguishable from that re-parse at EVERY byte a delta could stop on — including
+        // mid-fence, mid-table and mid-list, where a naive resume point would re-interpret text the
+        // full parser had already committed.
+        let mut state = StreamingParse::default();
+        let mut doc = MarkdownDoc { blocks: Vec::new() };
+        for end in 0..=STREAMED_ANSWER.len() {
+            if !STREAMED_ANSWER.is_char_boundary(end) {
+                continue;
+            }
+            let prefix = &STREAMED_ANSWER[..end];
+            state.extend(&mut doc, prefix);
+            assert_eq!(
+                doc.blocks,
+                MarkdownDoc::parse(prefix).blocks,
+                "incremental parse of the first {end} bytes must equal a full re-parse"
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_parse_settles_a_prefix_so_a_delta_pays_only_for_its_tail() {
+        // Equality alone would also hold for a parser that quietly re-parses everything, so pin the
+        // property that makes the cost constant: the settled prefix advances, and the only thing
+        // that holds it back is an open fence, which really can still absorb whatever arrives next.
+        let mut state = StreamingParse::default();
+        let mut doc = MarkdownDoc { blocks: Vec::new() };
+        let head = "first paragraph\n\nsecond paragraph\n\n";
+        state.extend(&mut doc, head);
+        assert_eq!(state.settled_len, head.len());
+        assert_eq!(state.settled_blocks, 2);
+
+        let open_fence = format!("{head}```\ncode\n\nmore code\n");
+        state.extend(&mut doc, &open_fence);
+        assert_eq!(
+            state.settled_len,
+            head.len(),
+            "a blank line inside an unterminated fence is not a resume point"
+        );
+        assert_eq!(doc.blocks, MarkdownDoc::parse(&open_fence).blocks);
+
+        let closed_fence = format!("{open_fence}```\n\ntail\n");
+        state.extend(&mut doc, &closed_fence);
+        assert_eq!(
+            state.settled_len,
+            closed_fence.len() - "tail\n".len(),
+            "closing the fence settles everything up to the blank line after it"
+        );
+        assert_eq!(state.settled_blocks, 3);
+        assert_eq!(doc.blocks, MarkdownDoc::parse(&closed_fence).blocks);
+    }
+
+    #[test]
+    fn streaming_parse_rebuilds_when_the_source_is_replaced_rather_than_extended() {
+        // `cur_text` is cleared at every stream boundary. A shorter source is therefore a new
+        // document, not an extension, and a stale settled prefix would slice into unrelated bytes.
+        let mut state = StreamingParse::default();
+        let mut doc = MarkdownDoc { blocks: Vec::new() };
+        state.extend(&mut doc, "one\n\ntwo\n\nthree\n");
+        state.extend(&mut doc, "x\n");
+        assert_eq!(state.settled_len, 0);
+        assert_eq!(doc.blocks, MarkdownDoc::parse("x\n").blocks);
     }
 }
