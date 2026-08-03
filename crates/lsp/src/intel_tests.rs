@@ -1,4 +1,5 @@
 use super::*;
+use crate::MAX_DOCUMENT_URI_BYTES;
 
 fn loc(uri: &str, line: u32) -> Value {
     json!({
@@ -151,6 +152,10 @@ fn query_params_are_exact_and_uri_bounded() {
         Query::Hover.params(&long_uri, position),
         Err(LspError::DocumentUriTooLong { .. })
     ));
+    assert_eq!(
+        Query::Hover.params("raw/path.rs", position),
+        Err(LspError::InvalidDocumentUri)
+    );
 }
 
 #[test]

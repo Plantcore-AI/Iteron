@@ -57,7 +57,7 @@ impl DocumentStore {
     /// Begin tracking a bounded URI. Re-opening replaces its incarnation and releases any retained
     /// diagnostic budget before installing the new version.
     pub fn open(&mut self, uri: &str, version: i32) -> Result<(), LspError> {
-        validate_uri(uri)?;
+        validate_document_uri(uri)?;
         if !self.docs.contains_key(uri) && self.docs.len() >= MAX_OPEN_DOCUMENTS {
             self.limit_rejections = self.limit_rejections.saturating_add(1);
             return Err(LspError::DocumentLimit {
@@ -85,14 +85,15 @@ impl DocumentStore {
         Ok(())
     }
 
-    /// Record an edit. A version regression is refused; every accepted edit clears results for the
-    /// old text and immediately returns their bytes to the global budget.
+    /// Record an edit. The version must strictly increase; accepting an equal version would let a
+    /// delayed pre-edit result carry the same version as changed text and pass the freshness check.
+    /// Every accepted edit clears old results and immediately returns their retained budget.
     pub fn change(&mut self, uri: &str, version: i32) -> Result<bool, LspError> {
-        validate_uri(uri)?;
+        validate_document_uri(uri)?;
         let Some(doc) = self.docs.get_mut(uri) else {
             return Ok(false);
         };
-        if version < doc.version {
+        if version <= doc.version {
             return Ok(false);
         }
         self.diagnostic_bytes = self.diagnostic_bytes.saturating_sub(doc.diagnostic_bytes);
@@ -177,7 +178,7 @@ impl DocumentStore {
         version: Option<i32>,
         diagnostics: Vec<Value>,
     ) -> Result<Publish, LspError> {
-        validate_uri(uri)?;
+        validate_document_uri(uri)?;
         let Some(doc) = self.docs.get(uri) else {
             self.unknown_drops = self.unknown_drops.saturating_add(1);
             return Ok(Publish::Unknown);
@@ -245,12 +246,25 @@ impl DocumentStore {
     }
 }
 
-fn validate_uri(uri: &str) -> Result<(), LspError> {
+pub(crate) fn validate_document_uri(uri: &str) -> Result<(), LspError> {
     if uri.len() > MAX_DOCUMENT_URI_BYTES {
         return Err(LspError::DocumentUriTooLong {
             value: uri.len(),
             limit: MAX_DOCUMENT_URI_BYTES,
         });
+    }
+    let Some((scheme, _)) = uri.split_once(':') else {
+        return Err(LspError::InvalidDocumentUri);
+    };
+    let mut scheme_bytes = scheme.bytes();
+    if !scheme_bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic())
+        || !scheme_bytes
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+        || uri.chars().any(char::is_control)
+    {
+        return Err(LspError::InvalidDocumentUri);
     }
     Ok(())
 }

@@ -23,6 +23,20 @@ pub struct Expired {
     pub elapsed_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyDisposition {
+    Accepted,
+    Late(Expired),
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelDisposition {
+    Cancelled,
+    TimedOut(Expired),
+    Unknown,
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingRequests {
     entries: HashMap<u64, Entry>,
@@ -108,7 +122,7 @@ impl PendingRequests {
         // length unchanged and silently strand the first caller.
         if self.entries.contains_key(&id) {
             self.rejected = self.rejected.saturating_add(1);
-            return Err(LspError::DuplicateRequest { id });
+            return Err(LspError::DuplicateRequestId { id });
         }
         if self.entries.len() >= self.capacity {
             self.rejected = self.rejected.saturating_add(1);
@@ -128,18 +142,31 @@ impl PendingRequests {
         Ok(())
     }
 
-    /// Retire a request because its reply arrived. False identifies an unknown or late reply.
-    pub fn resolve(&mut self, id: u64) -> bool {
-        self.entries.remove(&id).is_some()
+    /// Retire a reply under the same deadline rule used by the sweeper. Requiring `now_ms` here
+    /// prevents a caller from accepting a late reply merely because it forgot to sweep first.
+    pub fn resolve(&mut self, id: u64, now_ms: u64) -> Result<ReplyDisposition, LspError> {
+        self.observe_clock(now_ms)?;
+        let Some(entry) = self.entries.remove(&id) else {
+            return Ok(ReplyDisposition::Unknown);
+        };
+        if entry.deadline_ms <= now_ms {
+            self.timed_out = self.timed_out.saturating_add(1);
+            return Ok(ReplyDisposition::Late(expired(id, entry, now_ms)));
+        }
+        Ok(ReplyDisposition::Accepted)
     }
 
-    pub fn cancel(&mut self, id: u64) -> bool {
-        if self.entries.remove(&id).is_some() {
-            self.cancelled = self.cancelled.saturating_add(1);
-            true
-        } else {
-            false
+    pub fn cancel(&mut self, id: u64, now_ms: u64) -> Result<CancelDisposition, LspError> {
+        self.observe_clock(now_ms)?;
+        let Some(entry) = self.entries.remove(&id) else {
+            return Ok(CancelDisposition::Unknown);
+        };
+        if entry.deadline_ms <= now_ms {
+            self.timed_out = self.timed_out.saturating_add(1);
+            return Ok(CancelDisposition::TimedOut(expired(id, entry, now_ms)));
         }
+        self.cancelled = self.cancelled.saturating_add(1);
+        Ok(CancelDisposition::Cancelled)
     }
 
     /// Remove everything whose deadline has passed, in stable id order.
@@ -149,11 +176,7 @@ impl PendingRequests {
             .entries
             .iter()
             .filter(|(_, entry)| entry.deadline_ms <= now_ms)
-            .map(|(id, entry)| Expired {
-                id: *id,
-                method: entry.method,
-                elapsed_ms: now_ms.saturating_sub(entry.issued_ms),
-            })
+            .map(|(id, entry)| expired(*id, *entry, now_ms))
             .collect();
         expired.sort_by_key(|entry| entry.id);
         for entry in &expired {
@@ -174,6 +197,14 @@ impl PendingRequests {
         }
         self.last_now_ms = Some(now_ms);
         Ok(())
+    }
+}
+
+fn expired(id: u64, entry: Entry, now_ms: u64) -> Expired {
+    Expired {
+        id,
+        method: entry.method,
+        elapsed_ms: now_ms.saturating_sub(entry.issued_ms),
     }
 }
 

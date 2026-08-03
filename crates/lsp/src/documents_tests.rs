@@ -68,6 +68,21 @@ fn unknown_and_regressed_documents_fail_without_mutating_state() {
 }
 
 #[test]
+fn equal_version_change_cannot_make_pre_edit_results_look_fresh() {
+    let mut store = opened(5);
+    store
+        .publish("file:///a.rs", Some(5), vec![diag("still current")])
+        .unwrap();
+
+    assert_eq!(store.change("file:///a.rs", 5), Ok(false));
+    assert_eq!(store.version("file:///a.rs"), Some(5));
+    assert_eq!(store.diagnostics("file:///a.rs").len(), 1);
+
+    assert_eq!(store.change("file:///a.rs", 6), Ok(true));
+    assert!(store.diagnostics("file:///a.rs").is_empty());
+}
+
+#[test]
 fn close_and_reopen_release_the_previous_diagnostic_budget() {
     let mut store = opened(1);
     store
@@ -109,6 +124,12 @@ fn open_document_and_uri_bounds_are_hard() {
             limit: MAX_DOCUMENT_URI_BYTES
         })
     );
+    for invalid in ["", "not-a-uri", "1file:///a.rs", "file:///a\n.rs"] {
+        assert_eq!(
+            DocumentStore::new().open(invalid, 1),
+            Err(LspError::InvalidDocumentUri)
+        );
+    }
 }
 
 #[test]

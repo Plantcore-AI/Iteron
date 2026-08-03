@@ -34,11 +34,19 @@ fn duplicate_ids_never_replace_a_live_waiter() {
     pending.issue(7, "original", 10, 100).unwrap();
     assert_eq!(
         pending.issue(7, "replacement", 10, 100),
-        Err(LspError::DuplicateRequest { id: 7 })
+        Err(LspError::DuplicateRequestId { id: 7 })
     );
     let expired = pending.expire(110).unwrap();
     assert_eq!(expired[0].method, "original");
     assert_eq!(pending.rejected(), 1);
+}
+
+#[test]
+fn an_id_is_reusable_after_the_original_request_retires() {
+    let mut pending = PendingRequests::default();
+    pending.issue(7, "definition", 0, 1_000).unwrap();
+    assert_eq!(pending.resolve(7, 1).unwrap(), ReplyDisposition::Accepted);
+    pending.issue(7, "hover", 1, 1_000).unwrap();
 }
 
 #[test]
@@ -93,17 +101,45 @@ fn late_replies_are_not_live_and_expiry_order_is_stable() {
         .map(|entry| entry.id)
         .collect();
     assert_eq!(ids, vec![10, 20, 30]);
-    assert!(!pending.resolve(10));
+    assert_eq!(
+        pending.resolve(10, 1_000).unwrap(),
+        ReplyDisposition::Unknown
+    );
 }
 
 #[test]
 fn cancellation_is_counted_separately() {
     let mut pending = PendingRequests::default();
     pending.issue(1, "hover", 0, 1_000).unwrap();
-    assert!(pending.cancel(1));
-    assert!(!pending.cancel(1));
+    assert_eq!(pending.cancel(1, 1).unwrap(), CancelDisposition::Cancelled);
+    assert_eq!(pending.cancel(1, 1).unwrap(), CancelDisposition::Unknown);
     assert_eq!(pending.cancelled(), 1);
     assert_eq!(pending.timed_out(), 0);
+}
+
+#[test]
+fn reply_and_cancel_enforce_deadlines_without_a_prior_sweep() {
+    let mut pending = PendingRequests::default();
+    pending.issue(1, "hover", 0, 10).unwrap();
+    assert_eq!(
+        pending.resolve(1, 10).unwrap(),
+        ReplyDisposition::Late(Expired {
+            id: 1,
+            method: "hover",
+            elapsed_ms: 10
+        })
+    );
+    pending.issue(2, "definition", 10, 10).unwrap();
+    assert_eq!(
+        pending.cancel(2, 20).unwrap(),
+        CancelDisposition::TimedOut(Expired {
+            id: 2,
+            method: "definition",
+            elapsed_ms: 10
+        })
+    );
+    assert_eq!(pending.timed_out(), 2);
+    assert_eq!(pending.cancelled(), 0);
 }
 
 #[test]

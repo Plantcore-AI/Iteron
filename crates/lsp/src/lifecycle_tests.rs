@@ -154,10 +154,15 @@ fn one_success_does_not_restore_restart_credit() {
 
 #[test]
 fn restart_policy_rejects_unbounded_or_inverted_configuration() {
-    assert!(matches!(
-        RestartPolicy::new(0, 1, 1),
-        Err(LspError::InvalidRestartAttempts { .. })
-    ));
+    let disabled = RestartPolicy::new(0, 1, 1).unwrap();
+    let mut no_restart = Session::new(disabled);
+    no_restart.apply(Event::InitializeSent, 0).unwrap();
+    no_restart.apply(Event::Initialized, 0).unwrap();
+    no_restart.apply(Event::ProcessFailed, 1).unwrap();
+    assert_eq!(
+        no_restart.plan_restart(1),
+        Err(LspError::RestartBudgetExhausted { attempts: 0 })
+    );
     assert!(matches!(
         RestartPolicy::new(MAX_RESTART_ATTEMPTS + 1, 1, 1),
         Err(LspError::InvalidRestartAttempts { .. })

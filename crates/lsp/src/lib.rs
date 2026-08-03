@@ -1,10 +1,10 @@
 //! Language-server lifecycle: framing, session state, document versions, in-flight requests.
 //!
-//! This crate is the *pure* half of BR-3. It owns no process and performs no spawn, so it stays
-//! outside the effect boundary the kernel brokers (conformance N5). A driver supplies bytes and
-//! clock readings; every decision here is a total function of the state and that input, which is
-//! what makes a crashed server, a stale diagnostic and a timed-out request reproducible in a test
-//! rather than only in production.
+//! This crate is the protocol/state substrate for the *pure* halves of BR-3 and BR-4. It owns no
+//! process and performs no spawn, so it stays outside the effect boundary the kernel brokers
+//! (conformance N5). A future driver must supply the supervised transport, process status, clock,
+//! request correlation, and effect-boundary freshness recheck; this crate does not claim that
+//! integration or complete LSP lifecycle support.
 //!
 //! The bounds are not decoration. A language server is an untrusted peer that shares a workspace
 //! with the agent: it can emit an unbounded diagnostic storm, answer nothing, or die mid-frame.
@@ -109,7 +109,7 @@ pub enum LspError {
     #[error("pending-request capacity {value} is outside [1, {max}]")]
     InvalidPendingCapacity { value: usize, max: usize },
     #[error("request id {id} is already in flight")]
-    DuplicateRequest { id: u64 },
+    DuplicateRequestId { id: u64 },
     #[error("request {id} timed out after {elapsed_ms}ms")]
     Timeout { id: u64, elapsed_ms: u64 },
     #[error("injected monotonic clock regressed from {previous_ms}ms to {current_ms}ms")]
@@ -118,6 +118,8 @@ pub enum LspError {
     DocumentLimit { limit: usize },
     #[error("document URI is {value} bytes (limit {limit})")]
     DocumentUriTooLong { value: usize, limit: usize },
+    #[error("document URI is empty, contains controls, or has no valid scheme")]
+    InvalidDocumentUri,
     #[error("diagnostic count is {value} (per-document limit {limit})")]
     DiagnosticsTooMany { value: usize, limit: usize },
     #[error("diagnostic JSON is {value} bytes (per-document limit {limit})")]
@@ -136,7 +138,7 @@ pub enum LspError {
     RestartBackoffActive { remaining_ms: u64 },
     #[error("server exhausted its restart budget after {attempts} attempts")]
     RestartBudgetExhausted { attempts: u32 },
-    #[error("restart attempts {value} are outside [1, {max}]")]
+    #[error("restart attempts {value} exceed {max}")]
     InvalidRestartAttempts { value: u32, max: u32 },
     #[error("{field} restart backoff {value_ms}ms is outside [{min_ms}, {max_ms}]ms")]
     InvalidRestartBackoff {

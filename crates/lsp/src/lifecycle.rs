@@ -83,7 +83,7 @@ impl RestartPolicy {
         base_backoff_ms: u64,
         max_backoff_ms: u64,
     ) -> Result<Self, LspError> {
-        if !(1..=MAX_RESTART_ATTEMPTS).contains(&max_attempts) {
+        if max_attempts > MAX_RESTART_ATTEMPTS {
             return Err(LspError::InvalidRestartAttempts {
                 value: max_attempts,
                 max: MAX_RESTART_ATTEMPTS,

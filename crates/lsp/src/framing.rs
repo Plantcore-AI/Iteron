@@ -85,6 +85,9 @@ pub fn parse_headers(block: &str) -> Result<usize, LspError> {
             limit: MAX_HEADER_BYTES,
         });
     }
+    if !block.is_ascii() {
+        return Err(LspError::Header("header block was not ASCII".into()));
+    }
     let mut content_length = None;
     for line in block.split("\r\n") {
         if line.is_empty() {
@@ -93,15 +96,31 @@ pub fn parse_headers(block: &str) -> Result<usize, LspError> {
         let (name, value) = line
             .split_once(':')
             .ok_or_else(|| LspError::Header(format!("no colon in {line:?}")))?;
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(LspError::Header("invalid header name".into()));
+        }
+        if value
+            .bytes()
+            .any(|byte| (byte < b' ' && byte != b'\t') || byte == 0x7f)
+        {
+            return Err(LspError::Header("control byte in header value".into()));
+        }
         if name.eq_ignore_ascii_case("content-length") {
+            let value = value.trim();
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(LspError::Header(format!("Content-Length {value:?}")));
+            }
             let parsed: usize = value
-                .trim()
                 .parse()
-                .map_err(|_| LspError::Header(format!("Content-Length {:?}", value.trim())))?;
-            // A second, different Content-Length is request smuggling, not sloppiness: two readers
-            // could disagree on where the next message starts. Refuse rather than pick one.
-            if content_length.is_some_and(|first| first != parsed) {
-                return Err(LspError::Header("conflicting Content-Length".into()));
+                .map_err(|_| LspError::Header(format!("Content-Length {value:?}")))?;
+            // Even identical duplicates are refused so this parser and any intermediary cannot
+            // disagree about whether the first or last field is authoritative.
+            if content_length.is_some() {
+                return Err(LspError::Header("multiple Content-Length fields".into()));
             }
             content_length = Some(parsed);
         }
@@ -277,16 +296,29 @@ mod tests {
         let block = "Content-Length: 10\r\nContent-Length: 20\r\n";
         assert_eq!(
             parse_headers(block),
-            Err(LspError::Header("conflicting Content-Length".into()))
+            Err(LspError::Header("multiple Content-Length fields".into()))
         );
     }
 
     #[test]
-    fn repeated_identical_content_length_is_accepted() {
+    fn repeated_identical_content_length_is_also_refused() {
         assert_eq!(
-            parse_headers("Content-Length: 10\r\nContent-Length: 10\r\n").unwrap(),
-            10
+            parse_headers("Content-Length: 10\r\nContent-Length: 10\r\n"),
+            Err(LspError::Header("multiple Content-Length fields".into()))
         );
+    }
+
+    #[test]
+    fn header_grammar_rejects_parser_ambiguity() {
+        for block in [
+            "Content-Length: +1",
+            "Content Length: 1",
+            "Content-Length: 1\nX-Test: yes",
+            "Content-Length: 1\0",
+            "Content-Length: 1界",
+        ] {
+            assert!(matches!(parse_headers(block), Err(LspError::Header(_))));
+        }
     }
 
     #[test]
@@ -356,6 +388,24 @@ mod tests {
             Err(LspError::HeaderTooLarge {
                 limit: MAX_HEADER_BYTES
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn one_oversized_header_line_stops_consuming_at_the_bound() {
+        let mut flood = b"X-Pad: ".to_vec();
+        flood.resize(MAX_HEADER_BYTES * 4, b'a');
+        let mut reader = cursor(&flood);
+
+        assert_eq!(
+            read_message(&mut reader).await,
+            Err(LspError::HeaderTooLarge {
+                limit: MAX_HEADER_BYTES
+            })
+        );
+        assert!(
+            reader.position() as usize <= MAX_HEADER_BYTES + HEADER_TERMINATOR.len(),
+            "the ceiling must bound bytes consumed, not only the eventual verdict"
         );
     }
 

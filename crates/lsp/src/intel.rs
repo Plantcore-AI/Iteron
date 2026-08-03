@@ -5,8 +5,8 @@
 //! truncated, and uninspected counts. It does not spawn or own a language-server process.
 
 use crate::{
-    LspError, MAX_DOCUMENT_URI_BYTES, MAX_HOVER_BYTES, MAX_HOVER_FRAGMENTS, MAX_LOCATION_INPUTS,
-    MAX_LOCATIONS, documents::DocumentStore,
+    LspError, MAX_HOVER_BYTES, MAX_HOVER_FRAGMENTS, MAX_LOCATION_INPUTS, MAX_LOCATIONS,
+    documents::{DocumentStore, validate_document_uri},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -51,7 +51,7 @@ impl Query {
     /// Build a bounded `params` object. URI encoding remains the caller's responsibility; this
     /// layer preserves already-correct percent encoding rather than rewriting it.
     pub fn params(self, uri: &str, at: Position) -> Result<Value, LspError> {
-        validate_uri_bound(uri)?;
+        validate_document_uri(uri)?;
         let mut params = json!({
             "textDocument": { "uri": uri },
             "position": { "line": at.line, "character": at.character },
@@ -133,7 +133,7 @@ fn location_from(item: &Value) -> Option<Location> {
 }
 
 fn location(uri: &str, range: Range) -> Option<Location> {
-    if uri.is_empty() || uri.len() > MAX_DOCUMENT_URI_BYTES || range.start > range.end {
+    if validate_document_uri(uri).is_err() || range.start > range.end {
         return None;
     }
     Some(Location {
@@ -245,7 +245,7 @@ pub fn ensure_fresh(
     uri: &str,
     issued_at_version: i32,
 ) -> Result<(), LspError> {
-    validate_uri_bound(uri)?;
+    validate_document_uri(uri)?;
     match store.version(uri) {
         Some(current) if current == issued_at_version => Ok(()),
         Some(current) if issued_at_version < current => Err(LspError::StaleResult {
@@ -260,16 +260,6 @@ pub fn ensure_fresh(
             uri: uri.to_owned(),
         }),
     }
-}
-
-fn validate_uri_bound(uri: &str) -> Result<(), LspError> {
-    if uri.len() > MAX_DOCUMENT_URI_BYTES {
-        return Err(LspError::DocumentUriTooLong {
-            value: uri.len(),
-            limit: MAX_DOCUMENT_URI_BYTES,
-        });
-    }
-    Ok(())
 }
 
 pub fn default_limit() -> usize {
