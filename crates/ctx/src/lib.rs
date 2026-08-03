@@ -25,7 +25,7 @@ pub mod skills;
 pub mod source;
 
 pub use compact::{
-    CompactionPlan, CompactionPolicy, ContextEstimate, TokenEstimateProvenance,
+    CompactionPlan, CompactionPolicy, ContextEstimate, RequestEstimator, TokenEstimateProvenance,
     estimate_request_context,
 };
 pub use context_assembly::{assemble_recorded_context, assemble_system_prompt};

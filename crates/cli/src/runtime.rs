@@ -19,7 +19,10 @@ pub mod hooks;
 mod pricing;
 mod strategy_runtime;
 mod workflow_spawner;
-use core_ctx::{CompactionPolicy, ContextEstimate, estimate_request_context};
+use core_ctx::{CompactionPolicy, ContextEstimate};
+// The uncached projection is now only a test oracle: the turn loop reads `Agent::context_estimator`.
+#[cfg(test)]
+use core_ctx::estimate_request_context;
 use core_obs::{
     CostState, Ledger, PhaseSpan, PricingPort, ProjectionAdmissionError, admit_verified_projection,
 };
@@ -2057,6 +2060,15 @@ pub struct Agent {
     /// A recorded ContextInjection always wins over this live proposal.
     environment_context: Option<(String, Trust)>,
     pub compaction: CompactionPolicy,
+    /// Session-scoped context accounting (I-60). Keeps a per-message token estimate with a running
+    /// total and one cached tool-schema estimate so a turn does not re-serialise the whole
+    /// transcript once per consumer. Every path that rewrites an already-counted message instead of
+    /// appending must invalidate it; the two that do are compaction and steering.
+    context_estimator: core_ctx::RequestEstimator,
+    /// Approximate workspace file count for ultracode routing, resolved once per session on the
+    /// blocking pool (I-62). Routing does not need a fresh walk per submission, and a synchronous
+    /// directory traversal has no business on an async worker.
+    workspace_file_count: Option<usize>,
     /// The workspace root, for the verification gate's sandbox.
     pub workspace: std::path::PathBuf,
     /// If set, the harness independently runs this test command (strong oracle) when the model
@@ -2234,6 +2246,8 @@ impl Agent {
             instruction_context: None,
             environment_context: None,
             compaction: CompactionPolicy::default(),
+            context_estimator: core_ctx::RequestEstimator::new(),
+            workspace_file_count: None,
             workspace: std::path::PathBuf::from("."),
             verify_command: None,
             bypass_permissions: false,
@@ -3296,6 +3310,9 @@ impl Agent {
             admitted = admitted.saturating_add(1);
         }
         if admitted > 0 {
+            // Steering merges into the trailing user message rather than appending, so an
+            // already-counted message changed underneath the running total (I-60).
+            self.context_estimator.invalidate_transcript();
             self.ui(UiEvent::SteerApplied { count: admitted });
         }
         Ok(admitted)
@@ -3307,6 +3324,45 @@ impl Agent {
     /// replay reproduces instructions, memory, and skills exactly.
     fn effective_system(&self) -> String {
         core_ctx::assemble_system_prompt(&self.system, self.injected.as_deref())
+    }
+
+    /// The tool set advertised to the model for this turn.
+    ///
+    /// I-63: a measured nine-token task paid 3671 prompt tokens, 2730 of them tool schemas, while
+    /// the fleet average is 8967 input tokens per turn. Describing a tool the current posture can
+    /// NEVER admit is pure waste — every call the model makes to it is refused by the gate.
+    ///
+    /// Only the two UNCONDITIONAL denials are filtered, so nothing that could be admitted is
+    /// hidden: `core_protocol::gate` makes Plan a hard read-only overlay that no session rule may
+    /// punch through (and `bypass_permissions` explicitly excludes Plan), and
+    /// `core_kernel::admission::constrain` denies any capability outside the intersection of the
+    /// admitted task ceiling and the selected policy manifest. An `Ask` is not filtered: the
+    /// operator can still answer it.
+    ///
+    /// The ceiling test is over every capability a call to the tool can PRESENT, not just the
+    /// declared one. `effective_capability` elevates a `ReversibleLocal` write to `TrustMutating`
+    /// when the path is trust-mutating, and a `CapabilitySet` is a set rather than a downward-closed
+    /// prefix, so a ceiling holding `TrustMutating` without `ReversibleLocal` still admits that
+    /// tool for exactly those paths. Filtering on the declared capability alone would hide it.
+    ///
+    /// Stated cost: `TurnRequest.tools` now depends on the permission mode, so entering or leaving
+    /// Plan rewrites the stable prefix and breaks the prompt cache for that one turn. That is a
+    /// rare operator action; carrying an unusable schema block on every turn of a read-only session
+    /// is not.
+    fn advertised_tool_specs(&self) -> Vec<core_protocol::ToolSpec> {
+        let admitted = self.authority_ceiling.intersect(self.policy_capabilities);
+        self.registry
+            .specs()
+            .into_iter()
+            .filter(|spec| {
+                let reachable = admitted.contains(spec.capability)
+                    || (spec.capability == Capability::ReversibleLocal
+                        && admitted.contains(Capability::TrustMutating));
+                reachable
+                    && (spec.capability == Capability::ReadOnly
+                        || self.permission_mode != PermissionMode::Plan)
+            })
+            .collect()
     }
 
     fn proposed_durable_frontend_context(
@@ -4592,6 +4648,10 @@ impl Agent {
         // REC-INJECT: resolve + record the memory segment once, before the first request build,
         // using the task for relevance recall. effective_system() reads the cached result.
         self.resolve_injection_before_provider(relevance_task)?;
+        // A submission arrives with a transcript this estimator has not seen — resumed, forked, or
+        // merged into its trailing user message by `admit_submission`. One full pass per SUBMISSION
+        // is the price of constant-time accounting per TURN.
+        self.context_estimator.invalidate_transcript();
 
         loop {
             // Steering is a real submission, not a post-run local queue. Admit it only here, at a
@@ -4606,15 +4666,20 @@ impl Agent {
                 return Ok(outcome);
             }
             let effective_system = self.effective_system();
-            let tool_specs = self.registry.specs();
+            let tool_specs = self.advertised_tool_specs();
             let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192).min(8192);
+            // One context accounting pass per turn, shared by the compaction decision, the kernel
+            // token ledger, and the context-window admission check below (I-60). It is recomputed
+            // only when compaction actually rewrote the transcript underneath it.
+            let mut context_estimate =
+                self.context_estimator
+                    .estimate(&effective_system, &messages, &tool_specs);
             // ---- compaction at the window boundary (ADR-002): if the transcript approaches
             // the budget, summarize the middle so a long task does not overflow. Done here, at
             // a turn boundary, because it rewrites the prefix (a cache bomb — do it rarely). ----
-            if let Some(plan) = self.compaction.plan_for_request_with_window(
-                &effective_system,
+            if let Some(plan) = self.compaction.plan_for_estimated_request_with_window(
+                &context_estimate,
                 &messages,
-                &tool_specs,
                 self.model_context_window,
                 request_max_tokens,
             ) {
@@ -4637,6 +4702,12 @@ impl Agent {
                             text: format!("compacted {before} messages -> {}", messages.len()),
                         },
                     );
+                    // The transcript was rewritten, not appended to: drop the cached per-message
+                    // estimates and re-account this turn against the compacted history.
+                    self.context_estimator.invalidate_transcript();
+                    context_estimate =
+                        self.context_estimator
+                            .estimate(&effective_system, &messages, &tool_specs);
                 }
             }
 
@@ -4663,8 +4734,6 @@ impl Agent {
                     phase: Phase::Model,
                 },
             );
-            let context_estimate =
-                estimate_request_context(&effective_system, &messages, &tool_specs);
             self.ledger.record_kernel_tokens(
                 u64::try_from(
                     context_estimate
@@ -6669,7 +6738,7 @@ impl Agent {
         let run_id = format!("workflow-{}", self.seq_turn);
         let signals = core_agents::RepoSignals {
             has_test_command: self.verify_command.is_some(),
-            file_count: approx_workspace_file_count(&self.workspace),
+            file_count: self.workspace_file_count().await,
         };
         let class = core_agents::Decomposer::route(task, &signals);
         let started = Instant::now();
@@ -6732,6 +6801,31 @@ impl Agent {
             (Err(error), _) => Err(error),
             (Ok(_), Err(error)) => Err(error),
         }
+    }
+
+    /// Approximate workspace size for ultracode routing (I-62).
+    ///
+    /// The walk is a synchronous directory traversal that was running inline on an async worker,
+    /// blocking the whole executor thread while it stat'd its way to the 201-file cap. It moves to
+    /// the blocking pool and its answer is memoized for the session: routing wants a coarse "is
+    /// this repo small" signal, not a fresh count per submission.
+    async fn workspace_file_count(&mut self) -> usize {
+        if let Some(count) = self.workspace_file_count {
+            return count;
+        }
+        let workspace = self.workspace.clone();
+        let count = match tokio::task::spawn_blocking({
+            let workspace = workspace.clone();
+            move || approx_workspace_file_count(&workspace)
+        })
+        .await
+        {
+            Ok(count) => count,
+            // A cancelled or panicked blocking task must not silently route as an empty repo.
+            Err(_) => approx_workspace_file_count(&workspace),
+        };
+        self.workspace_file_count = Some(count);
+        count
     }
 
     async fn run_orchestrated_admitted(
@@ -7013,7 +7107,10 @@ impl Agent {
             input_images: Vec::new(),
             tools: vec![],
             max_tokens: 1024,
-            cache_system: false,
+            // The decomposition prefix is a fixed literal, so it is exactly the stable prefix the
+            // cache discipline exists for (ADR-002). Leaving it uncached made every ultracode run
+            // pay a cold round the rest of the kernel does not (I-62).
+            cache_system: true,
             thinking_budget: 0,
             reasoning_effort: core_protocol::ReasoningEffort::Low,
         };
@@ -10465,6 +10562,252 @@ ant-api03-SuperSecretModelToken12345"
         assert!(
             !ws.join("f.txt").exists(),
             "plan mode must not let the edit touch the tree"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn plan_mode_advertises_only_the_tools_it_can_actually_admit() {
+        // I-63: a nine-token task paid 3671 prompt tokens, 2730 of them tool schemas, and every
+        // non-read tool described in plan mode is a schema the gate will refuse on sight.
+        let ws = temp_ws("plan-tool-schemas");
+        let registry = Registry::coding_agent(&ws).unwrap();
+        let all = registry.specs();
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("plan-tool-schemas".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let provider = std::sync::Arc::new(CaptureSteering::default());
+        let mut agent = Agent::new(
+            provider.clone(),
+            registry,
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+
+        // The default posture can admit every registered capability, so it hides nothing.
+        assert_eq!(agent.advertised_tool_specs().len(), all.len());
+
+        agent.permission_mode = PermissionMode::Plan;
+        let planned = agent.advertised_tool_specs();
+        assert!(
+            !planned.is_empty(),
+            "plan mode still investigates with read-only tools"
+        );
+        for spec in &all {
+            let kept = planned
+                .iter()
+                .any(|advertised| advertised.name == spec.name);
+            if spec.capability == Capability::ReadOnly {
+                assert!(
+                    kept,
+                    "a tool plan CAN admit must never be hidden: {}",
+                    spec.name
+                );
+            } else {
+                // Only tools the frozen gate denies unconditionally may be dropped.
+                assert_eq!(
+                    core_protocol::gate(
+                        PermissionMode::Plan,
+                        &PermissionRules::new(),
+                        &spec.name,
+                        spec.capability
+                    ),
+                    Verdict::Deny
+                );
+                assert!(!kept, "plan mode must not describe {}", spec.name);
+            }
+        }
+        let full = estimate_request_context("sys", &[], &all);
+        let narrowed = estimate_request_context("sys", &[], &planned);
+        assert!(
+            narrowed.tool_tokens.saturating_mul(2) < full.tool_tokens,
+            "a read-only session's fixed schema overhead must drop substantially: {} -> {}",
+            full.tool_tokens,
+            narrowed.tool_tokens
+        );
+
+        // A narrowed authority ceiling is the other unconditional denial and filters the same way.
+        // But a ceiling is a SET, not a downward-closed prefix, and `effective_capability` elevates
+        // a reversible-local write on a trust-mutating path: that tool is still admissible for
+        // exactly those paths, so testing only the DECLARED capability would hide it.
+        agent.permission_mode = PermissionMode::Default;
+        agent.narrow_authority_ceiling(CapabilitySet::from_iter_capabilities([
+            Capability::ReadOnly,
+            Capability::TrustMutating,
+        ]));
+        let by_elevation = agent.advertised_tool_specs();
+        assert!(
+            by_elevation
+                .iter()
+                .any(|spec| spec.capability == Capability::ReversibleLocal),
+            "a write this ceiling admits only by path elevation must not be hidden"
+        );
+        assert!(
+            by_elevation
+                .iter()
+                .all(|spec| spec.capability != Capability::CodeExecuting),
+            "a capability no call can reach stays hidden"
+        );
+
+        agent.narrow_authority_ceiling(CapabilitySet::only(Capability::ReadOnly));
+        assert!(
+            agent
+                .advertised_tool_specs()
+                .iter()
+                .all(|spec| spec.capability == Capability::ReadOnly)
+        );
+
+        // And the request the model actually receives carries the narrowed set, not the registry.
+        agent.permission_mode = PermissionMode::Plan;
+        assert_eq!(agent.run("investigate").await.unwrap(), Outcome::Done);
+        let advertised: Vec<String> = provider.requests.lock().unwrap()[0]
+            .tools
+            .iter()
+            .map(|spec| spec.name.clone())
+            .collect();
+        assert_eq!(
+            advertised,
+            planned
+                .iter()
+                .map(|spec| spec.name.clone())
+                .collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn ultracode_decomposition_declares_its_stable_prefix_cacheable() {
+        // I-62: the decomposition prefix is a fixed literal, so shipping it uncached paid a cold
+        // round on every ultracode run that no other request in the kernel pays.
+        let ws = temp_ws("decompose-cache-system");
+        let provider = std::sync::Arc::new(CaptureSteering::default());
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("decompose-cache-system".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+        agent
+            .decompose("task", core_agents::TaskClass::Localized)
+            .await
+            .unwrap();
+        let requests = provider.requests.lock().unwrap();
+        let decomposition = requests
+            .iter()
+            .find(|request| request.system.starts_with("You decompose"))
+            .expect("the decomposition request");
+        assert!(
+            decomposition.cache_system,
+            "the decomposition prefix must read the cache like every other request"
+        );
+        drop(requests);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn workspace_file_count_leaves_the_async_worker_and_is_memoized() {
+        // I-62: the routing signal walked the tree synchronously on the async path, once per
+        // submission.
+        let ws = temp_ws("workspace-file-count");
+        std::fs::write(ws.join("first.rs"), "fn a() {}\n").unwrap();
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("workspace-file-count".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(CaptureSteering::default()),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+
+        let first = agent.workspace_file_count().await;
+        assert_eq!(first, approx_workspace_file_count(&ws));
+
+        // A second submission reuses the session answer instead of walking the tree again.
+        std::fs::write(ws.join("second.rs"), "fn b() {}\n").unwrap();
+        assert_ne!(
+            approx_workspace_file_count(&ws),
+            first,
+            "the fixture must actually change the on-disk count"
+        );
+        assert_eq!(agent.workspace_file_count().await, first);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn steering_merged_into_the_trailing_message_reaccounts_the_transcript() {
+        // I-60: the running per-message total is append-only, but steering merges into the
+        // trailing user message. Without invalidation the turn would price a stale transcript.
+        let ws = temp_ws("steer-token-accounting");
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("steer-token-accounting".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(CaptureSteering::default()),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        let mut messages = vec![Message::user_text("task")];
+        assert_eq!(
+            agent.context_estimator.estimate("sys", &messages, &[]),
+            estimate_request_context("sys", &messages, &[])
+        );
+
+        agent.pending_steers.push_back("x".repeat(4_000));
+        assert_eq!(
+            agent
+                .admit_pending_steers(TurnId(agent.seq_turn), &mut messages)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            messages.len(),
+            1,
+            "steering merges into the trailing user message rather than appending"
+        );
+        assert_eq!(
+            agent.context_estimator.estimate("sys", &messages, &[]),
+            estimate_request_context("sys", &messages, &[]),
+            "an in-place merge must not leave a stale running total"
+        );
+
+        // Appending stays exact too, which is the fast path the turn loop actually takes.
+        messages.push(Message {
+            role: Role::Assistant,
+            content: vec![Block::Text {
+                text: "y".repeat(2_000),
+            }],
+        });
+        assert_eq!(
+            agent.context_estimator.estimate("sys", &messages, &[]),
+            estimate_request_context("sys", &messages, &[])
         );
         let _ = std::fs::remove_dir_all(&ws);
     }
