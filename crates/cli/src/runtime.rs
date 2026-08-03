@@ -1744,6 +1744,43 @@ fn effective_capability(input: &serde_json::Value, base: Capability) -> Capabili
     base
 }
 
+/// One deferred call the capability gate auto-approved, carried with everything the concurrent
+/// group needs to open its effect. Holding this value grants no authority: it is the *record* of a
+/// decision `select_concurrent_deferred_batch` already made under the ordinary gate.
+struct AutoApprovedCall {
+    /// The call's index in the turn's tool order. It is also the effect ordinal, which is why a
+    /// group can be reordered in TIME without moving a single identity in the journal.
+    index: usize,
+    call: ToolUse,
+    intent: core_protocol::intent::ToolIntent,
+    capability: Capability,
+    action_signature: String,
+    audit_arguments: serde_json::Value,
+}
+
+/// The workspace paths a tool call NAMES in its arguments: `path`, plus the per-file `path` of a
+/// multi-file patch.
+///
+/// This is deliberately a claim, not an analysis. Two calls that name the same file are never run
+/// together; a call that names none is not thereby proven safe, it is simply making no claim this
+/// layer can check, and the concurrency decision falls back to the model having emitted the calls
+/// in one message. A `bash` line can of course touch anything — which is why the sequential loop,
+/// the capability gate, and the sandbox all still stand behind this.
+fn declared_write_paths(input: &serde_json::Value) -> std::collections::BTreeSet<String> {
+    let mut paths = std::collections::BTreeSet::new();
+    if let Some(path) = input.get("path").and_then(|value| value.as_str()) {
+        paths.insert(path.to_string());
+    }
+    if let Some(files) = input.get("files").and_then(|value| value.as_array()) {
+        for file in files {
+            if let Some(path) = file.get("path").and_then(|value| value.as_str()) {
+                paths.insert(path.to_string());
+            }
+        }
+    }
+    paths
+}
+
 /// The bypass-mode verdict (DANGEROUS opt-in `--dangerously-bypass-permissions`): auto-approve
 /// unless an explicit deny rule blocks the exact tool or its capability. The caller applies the
 /// Plan-mode read-only override before consulting this, so bypass never punches through Plan.
@@ -4748,11 +4785,16 @@ impl Agent {
             // would be in flight before the hook could block it (security review MEDIUM #2: an
             // operator hook meant to block reading ~/.ssh would silently no-op). Route them through
             // the deferred path (gate=Auto for ReadOnly, then the hook) instead. This trades the
-            // overlap for hook coverage, only when hooks are present.
-            let hook_gates_reads = !self.hooks.is_empty();
+            // overlap for hook coverage, and ONLY for the event that can actually block a read:
+            // asking `is_empty()` let one `Stop` cleanup hook — which never sees a tool, let alone
+            // vetoes one — silently cost the whole session its concurrent read dispatch.
+            let hook_gates_reads = !self.hooks.commands(HookEvent::PreToolUse).is_empty();
             // Bounded concurrency (invariant #1): pure tools dispatched early are capped by a
-            // governor. At the cap, the overflow runs inline in the collection phase rather than
-            // spawning unboundedly (Little's Law: a concurrency limit is the only honest knob).
+            // governor. Past the cap a call QUEUES for a permit instead of being pushed onto an
+            // inline list, so a thirty-read turn keeps the full concurrency for all thirty rather
+            // than running sixteen together and fourteen strictly one at a time with no diagnostic
+            // (Little's Law: a concurrency limit is the only honest knob — but it must be the only
+            // one, and a hidden serial tail is a second, dishonest one).
             let gov = core_sched::Governor::new(self.max_tool_concurrency);
             let model_span = PhaseSpan::enter(Phase::Model);
             // Carry each pure tool's id so a panicked/cancelled task can still answer its
@@ -4760,7 +4802,10 @@ impl Agent {
             // block the model API rejects on the next turn).
             let mut pure: Vec<(usize, ToolUse, tokio::task::JoinHandle<ToolResult>, Instant)> =
                 Vec::new();
-            let mut overflow_pure: Vec<(usize, core_protocol::intent::ToolIntent)> = Vec::new();
+            // How many pure calls could not take a permit the instant they were admitted. They are
+            // still dispatched concurrently — they wait in the governor's queue — but the count is
+            // the honest report that the cap, not the workload, shaped this turn's tool phase.
+            let mut queued_pure: usize = 0;
             let mut deferred: Vec<(usize, ToolUse)> = Vec::new();
             let mut order: usize = 0;
             let mut tool_admission = effects::ToolCallAdmission::default();
@@ -4828,19 +4873,27 @@ impl Agent {
                             let proposal = proposal.expect("checked pure tool-policy proposal");
                             let tu_ui = proposal.intent.call.clone();
                             let intent = proposal.admit(CapabilitySet::only(Capability::ReadOnly));
-                            if let Some(permit) = gov.try_acquire() {
-                                // Spawn now — I/O overlaps the remaining decode. The permit is held
-                                // for the task's lifetime and released on completion (bounded).
-                                let fut = reg.dispatch_intent(intent);
-                                let handle = tokio::spawn(async move {
-                                    let _permit = permit;
-                                    fut.await
-                                });
-                                pure.push((idx, tu_ui, handle, Instant::now()));
-                            } else {
-                                // at the concurrency cap: run inline in the collection phase
-                                overflow_pure.push((idx, intent));
+                            // Spawn now — I/O overlaps the remaining decode. The permit is held for
+                            // the task's lifetime and released on completion (bounded). At the cap
+                            // the task still spawns and awaits a permit inside itself: the future
+                            // is created but not polled until a slot frees, so inflight work stays
+                            // capped while the WAITING work stays concurrent. The alternative this
+                            // replaces — an overflow list drained inline during collection — made
+                            // every call past the cap serial with nothing in the record saying so.
+                            let fut = reg.dispatch_intent(intent);
+                            let permit = gov.try_acquire();
+                            if permit.is_none() {
+                                queued_pure += 1;
                             }
+                            let gov = gov.clone();
+                            let handle = tokio::spawn(async move {
+                                let _permit = match permit {
+                                    Some(permit) => permit,
+                                    None => gov.acquire().await,
+                                };
+                                fut.await
+                            });
+                            pure.push((idx, tu_ui, handle, Instant::now()));
                         } else {
                             deferred.push((idx, tu));
                         }
@@ -4903,11 +4956,6 @@ impl Agent {
             let mut streamed_tools: Vec<(usize, ToolUse)> = pure
                 .iter()
                 .map(|(index, tool, _, _)| (*index, tool.clone()))
-                .chain(
-                    overflow_pure
-                        .iter()
-                        .map(|(index, intent)| (*index, intent.call.clone())),
-                )
                 .chain(deferred.iter().map(|(index, tool)| (*index, tool.clone())))
                 .collect();
             streamed_tools.sort_by_key(|(index, _)| *index);
@@ -4937,7 +4985,10 @@ impl Agent {
                 )
                 .into());
             }
-            self.ledger.tool_inline_overflow(overflow_pure.len());
+            // The obs field is named for the behaviour it used to measure (an inline serial tail);
+            // it now counts the calls that queued for a permit. Same question — "did the cap bind
+            // this turn?" — answered without the serialisation that used to be its only symptom.
+            self.ledger.tool_inline_overflow(queued_pure);
             let model_ms = model_span.elapsed_ms();
             let stream_elapsed = stream_start.elapsed();
             // Measured only if the stream actually produced an item. An attempt that failed before
@@ -4994,7 +5045,7 @@ impl Agent {
                     phase: Phase::Tools,
                 },
             );
-            let total_tools = pure.len() + overflow_pure.len() + deferred.len();
+            let total_tools = pure.len() + deferred.len();
             if total_tools > 0
                 && matches!(
                     turn_res.stop_reason,
@@ -5361,42 +5412,33 @@ impl Agent {
                 }
             }
 
-            // Overflow pure tools (past the concurrency cap): run inline now. Pure, so safe to
-            // run here; no overlap credit (they did not run during decode).
-            for (idx, intent) in overflow_pure {
-                let tu_ui = intent.call.clone();
-                let call_id = intent.call.id.clone();
-                let future = self.registry.dispatch_intent(intent);
-                let r = match self.run_time_remaining() {
-                    Some(remaining) if remaining.is_zero() => ToolResult {
-                        tool_use_id: call_id,
-                        content:
-                            "pure tool was not started because the run wall deadline was exhausted"
-                                .into(),
-                        is_error: true,
-                        trust: Trust::Workspace,
-                        latency_ms: 0,
-                    },
-                    Some(remaining) => match tokio::time::timeout(remaining, future).await {
-                        Ok(result) => result,
-                        Err(_) => ToolResult {
-                            tool_use_id: call_id,
-                            content: "pure tool was cancelled at the run wall deadline".into(),
-                            is_error: true,
-                            trust: Trust::Workspace,
-                            latency_ms: 0,
-                        },
-                    },
-                    None => future.await,
-                };
-                self.commit_local_tool_result(turn_id, &r, 0)?;
-                any_error |= r.is_error;
-                self.ui(tool_end_ui(&tu_ui, &r));
-                results[idx] = Some(r);
-            }
-
             // Effecting tools: gated by capability, run in order, AFTER message_stop.
+            //
+            // "In order" was doing two jobs, and only one of them is load-bearing. A tool that must
+            // ask the operator, that a hook must see first, or that writes a file another call in
+            // this batch also writes, is correct only in order. Everything else a coding agent
+            // actually does — a bash line, a `git_status`, a `git_diff` — is Effecting merely
+            // because it is not provably a read, and four independent ones cost the SUM of their
+            // latencies plus four sandbox spawns for no reason. So the leading run of calls the
+            // gate auto-approves, with no declared write path in common, executes concurrently
+            // under the same governor the pure path uses; the loop below then owns every call that
+            // group did not take, in the order it always ran them.
+            let batch = self.select_concurrent_deferred_batch(&deferred, argument_trust, &messages);
+            if batch.len() > 1 {
+                self.run_concurrent_deferred_batch(
+                    turn_id,
+                    batch,
+                    &gov,
+                    &mut results,
+                    &mut any_error,
+                )
+                .await?;
+            }
             for (idx, tu) in deferred {
+                // Already settled by the concurrent group above, terminal and all.
+                if results[idx].is_some() {
+                    continue;
+                }
                 // Every effect has its own admission boundary. Once Drain/Interrupt is observed,
                 // materialize deterministic denied results for the rest of this model-declared
                 // batch so the transcript remains valid without another prompt or side effect.
@@ -5832,6 +5874,243 @@ impl Agent {
             }
             self.advance_turn()?;
         }
+    }
+
+    /// The LEADING run of deferred calls that may execute concurrently.
+    ///
+    /// Membership is a pure read of decisions already made elsewhere: the tool policy's proposal,
+    /// the frozen capability gate, the task ceiling, the turn's governing trust. The scan never
+    /// prompts, never runs a hook, never widens a capability, and STOPS at the first call it cannot
+    /// admit on those terms — so the group is always a prefix of the model's declared order and the
+    /// relative order of every effect in the turn is exactly what it was before.
+    ///
+    /// A call leaves the group (and ends it) when it would need something only sequence can give:
+    /// an operator prompt or a denial, a `PreToolUse` hook's opinion, an ADR-003 dedup replay, a
+    /// subagent/workflow fan-out that settles through its own boundary, or a write to a path
+    /// another member already claimed.
+    fn select_concurrent_deferred_batch(
+        &self,
+        deferred: &[(usize, ToolUse)],
+        argument_trust: Trust,
+        messages: &[Message],
+    ) -> Vec<AutoApprovedCall> {
+        // A hook must speak BEFORE the tool it guards and observe AFTER it. Both are per-call and
+        // ordered by construction, so a configured tool hook disables the group outright rather
+        // than being reinterpreted for it. (`Stop`/`SessionStart` hooks say nothing about tools and
+        // are deliberately not consulted — that conflation is the same defect as #I-01.)
+        if !self.hooks.commands(HookEvent::PreToolUse).is_empty()
+            || !self.hooks.commands(HookEvent::PostToolUse).is_empty()
+        {
+            return Vec::new();
+        }
+        let governing_trust = self.governing_turn_trust(messages);
+        let mut batch: Vec<AutoApprovedCall> = Vec::new();
+        let mut claimed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut signatures: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (index, call) in deferred {
+            // Both fan out real children and spend provider budget through their own effect
+            // classes; neither is a registry dispatch, so neither can join a registry group.
+            if call.name == core_tools::DISPATCH_AGENT || call.name == core_tools::WORKFLOW_TOOL {
+                break;
+            }
+            // A repeat of an already-failed action is answered from the record, not re-run. That
+            // answer is cheap and ordered; keeping it in the loop keeps one path for it.
+            //
+            // The second test is the same rule applied to THIS group. `failed_actions` only learns
+            // about a failure once the group settles, so two identical calls admitted together
+            // would both reach the executor — running a side effect the ordered loop performs at
+            // most once. Ending the group at the repeat hands it back to the loop, which sees the
+            // now-recorded failure and replays it exactly as ADR-003 says.
+            let action_signature = format!("{}::{}", call.name, call.input);
+            if self.failed_actions.contains_key(&action_signature)
+                || !signatures.insert(action_signature.clone())
+            {
+                break;
+            }
+            let Ok(proposal) = strategy_runtime::propose_tool(
+                &self.registry,
+                self.tool_policy.as_ref(),
+                call.clone(),
+                argument_trust,
+            ) else {
+                break;
+            };
+            let Some(base_capability) = proposal.eligible.iter().next() else {
+                break;
+            };
+            let capability = effective_capability(&call.input, base_capability);
+            let gate_verdict =
+                if self.bypass_permissions && self.permission_mode != PermissionMode::Plan {
+                    bypass_verdict(&self.permission_rules, &call.name, capability)
+                } else {
+                    core_protocol::gate(
+                        self.permission_mode,
+                        &self.permission_rules,
+                        &call.name,
+                        capability,
+                    )
+                };
+            // Only Auto. `Ask` needs the operator in sequence and `Deny` needs the loop's specific
+            // refusal text, so both end the group rather than being decided here a second time.
+            if core_kernel::admission::constrain(
+                gate_verdict,
+                capability,
+                self.authority_ceiling,
+                self.policy_capabilities,
+                Some(governing_trust),
+            ) != Verdict::Auto
+            {
+                break;
+            }
+            // Only a DECLARED path can be proven not to collide, so only a declared collision stops
+            // the group. A call that names no path (a bash line, a git observation) claims nothing;
+            // the model emitted these in one message, which is its own assertion that they are
+            // independent, and that assertion is exactly what parallel tool calls mean.
+            let declared = declared_write_paths(&call.input);
+            if declared.iter().any(|path| claimed.contains(path)) {
+                break;
+            }
+            claimed.extend(declared);
+            batch.push(AutoApprovedCall {
+                index: *index,
+                audit_arguments: ui_approval_arguments(&call.input),
+                intent: proposal.admit(CapabilitySet::only(base_capability)),
+                capability,
+                call: call.clone(),
+                action_signature,
+            });
+        }
+        batch
+    }
+
+    /// Execute one auto-approved, non-overlapping group of deferred calls concurrently.
+    ///
+    /// The boundary is unchanged; only its shape is. Every write-ahead intent is fsynced in tool
+    /// order BEFORE any executor starts, every terminal is appended in that same order after, and
+    /// each effect id is still `effect_id(turn, RegistryTool, idx)` — so a reader replaying the
+    /// journal sees the identical ordinals, correlated to the identical calls. What moves is the
+    /// executor phase, bounded by the same `Governor` the pure path uses. A group of four therefore
+    /// costs the slowest call instead of the sum of four.
+    ///
+    /// `run_admitted_intent` takes `&self`, so this needs no `spawn` and no `'static` bound: the
+    /// futures are polled together on this task, and the registry's memo invalidation stays the
+    /// single authoritative path it already was.
+    async fn run_concurrent_deferred_batch(
+        &mut self,
+        turn_id: TurnId,
+        batch: Vec<AutoApprovedCall>,
+        governor: &core_sched::Governor,
+        results: &mut [Option<ToolResult>],
+        any_error: &mut bool,
+    ) -> Result<(), KernelError> {
+        // The same three pre-effect questions the ordered loop asks, asked once for the whole
+        // group. If any is already true, nothing is opened and the loop below still owns every one
+        // of these calls — it materializes the same refusal it always did, in order.
+        let _ = self.collect_inbound_ops(turn_id);
+        if self.record_failed
+            || self.run_deadline_exhausted()
+            || self.requested_control() != InboundControl::None
+        {
+            return Ok(());
+        }
+
+        // Phase one: the durable intents, in tool order, before a single executor runs.
+        let mut pending: Vec<(usize, ToolUse, String, effects::EffectTicket)> =
+            Vec::with_capacity(batch.len());
+        let mut intents: Vec<core_protocol::intent::ToolIntent> = Vec::with_capacity(batch.len());
+        for admitted in batch {
+            let AutoApprovedCall {
+                index,
+                call,
+                intent,
+                capability,
+                action_signature,
+                audit_arguments,
+            } = admitted;
+            let effect = effects::BrokeredEffect {
+                turn: turn_id,
+                effect_id: effect_class::effect_id(
+                    turn_id,
+                    effect_class::EffectClass::RegistryTool,
+                    index,
+                ),
+                tool_use_id: call.id.clone(),
+                kind: call.name.clone(),
+                capability,
+                audit_arguments,
+                workspace: effect_workspace(&self.workspace),
+            };
+            let Agent {
+                rollout,
+                effect_admissions,
+                ..
+            } = self;
+            match effects::open_effect(rollout, effect_admissions, effect) {
+                Ok(ticket) => {
+                    pending.push((index, call, action_signature, ticket));
+                    intents.push(intent);
+                }
+                // A failed append means the executor was never entered for THIS call. Any ticket
+                // already opened is dropped unsettled, which is exactly the pending-intent state
+                // recovery understands and reports — never a silently lost effect.
+                Err(error) => return Err(self.effect_boundary_failed(error)),
+            }
+        }
+
+        // Phase two: the executors, concurrently, capped by the governor.
+        let registry = &self.registry;
+        let executions = futures_util::future::join_all(intents.into_iter().map(|intent| async {
+            let _permit = governor.acquire().await;
+            registry.run_admitted_intent(intent).await
+        }))
+        .await;
+
+        // Phase three: exactly one terminal per opened intent, in tool order.
+        let mut unknown: usize = 0;
+        for ((index, call, action_signature, ticket), execution) in
+            pending.into_iter().zip(executions)
+        {
+            let effect_id = ticket.effect_id().clone();
+            let (settlement, result, definite) = match execution {
+                core_tools::ToolExecution::Definite(result) => (
+                    effects::Settlement::Definite(EventKind::ToolDone {
+                        result: result.clone(),
+                        effect_id: Some(effect_id),
+                    }),
+                    result,
+                    true,
+                ),
+                core_tools::ToolExecution::Unknown(result) => (
+                    effects::Settlement::Unknown(
+                        "executor dispatched the operation but did not observe an authoritative terminal outcome; automatic retry is forbidden".into(),
+                    ),
+                    result,
+                    false,
+                ),
+            };
+            self.settle_kernel_effect(ticket, settlement)?;
+            if !definite {
+                unknown = unknown.saturating_add(1);
+                self.ledger.tool(result.latency_ms, 0, true);
+                self.ui(tool_end_ui(&call, &result));
+                continue;
+            }
+            // No overlap credit: `overlapped_ms` names time a tool ran while the PROVIDER stream was
+            // still decoding, which is a different saving from this one. Claiming it here would make
+            // the two indistinguishable in the ledger.
+            self.ledger.tool(result.latency_ms, 0, result.is_error);
+            *any_error |= result.is_error;
+            if result.is_error {
+                self.failed_actions
+                    .insert(action_signature, result.content.clone());
+            }
+            self.ui(tool_end_ui(&call, &result));
+            results[index] = Some(result);
+        }
+        if unknown > 0 {
+            return Err(KernelError::UnknownEffects { count: unknown });
+        }
+        Ok(())
     }
 
     fn advance_turn(&mut self) -> Result<(), KernelError> {
@@ -9604,8 +9883,10 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(ws).ok();
     }
 
+    /// The cap must remain visible even now that exceeding it no longer serialises anything: the
+    /// obs counter answers "did the governor bind this turn?", which is still worth reporting.
     #[tokio::test]
-    async fn d2_18_governor_overflow_to_inline_is_counted() {
+    async fn d2_18_governor_overflow_past_the_cap_is_counted() {
         let ws = temp_ws("governor-inline-overflow");
         let mut registry = Registry::coding_agent(&ws).unwrap();
         registry
@@ -9662,6 +9943,560 @@ mod gate_integration_tests {
         assert_eq!(agent.ledger.tool_inline_overflow_events, 2);
         assert!(agent.ledger.summary().contains("inline_overflow=2"));
         std::fs::remove_dir_all(ws).ok();
+    }
+
+    // ---- concurrent tool dispatch (#I-01, #I-18, #I-61) ----
+    //
+    // Every test below proves overlap with a RENDEZVOUS rather than a stopwatch. A tool that only
+    // completes when `width` of its calls are in flight at the same instant turns "did these run
+    // concurrently?" into a value in the record, which a loaded CI machine cannot invert the way it
+    // can invert a wall-clock comparison.
+
+    const RENDEZVOUS_TIMEOUT: Duration = Duration::from_millis(400);
+
+    fn register_rendezvous(
+        registry: &mut Registry,
+        name: &str,
+        purity: Purity,
+        capability: Capability,
+        width: usize,
+    ) {
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(width));
+        registry
+            .register_external(
+                ToolSpec {
+                    name: name.into(),
+                    description: "test-only rendezvous tool".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity,
+                    capability,
+                },
+                move |call, _root| {
+                    let barrier = barrier.clone();
+                    core_tools::boxfut::box_it(async move {
+                        let met = tokio::time::timeout(RENDEZVOUS_TIMEOUT, barrier.wait())
+                            .await
+                            .is_ok();
+                        ToolResult {
+                            tool_use_id: call.id,
+                            content: if met { "rendezvous" } else { "serialised" }.into(),
+                            is_error: !met,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        }
+                    })
+                },
+            )
+            .unwrap();
+    }
+
+    /// A tool that returns immediately. Used where the question is the ORDER of the durable record
+    /// rather than whether anything overlapped.
+    fn register_immediate(
+        registry: &mut Registry,
+        name: &str,
+        purity: Purity,
+        capability: Capability,
+    ) {
+        registry
+            .register_external(
+                ToolSpec {
+                    name: name.into(),
+                    description: "test-only immediate tool".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity,
+                    capability,
+                },
+                |call, _root| {
+                    core_tools::boxfut::box_it(async move {
+                        ToolResult {
+                            tool_use_id: call.id,
+                            content: "ok".into(),
+                            is_error: false,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        }
+                    })
+                },
+            )
+            .unwrap();
+    }
+
+    fn burst_calls(name: &str, count: usize, paths: &[&str]) -> Vec<ToolUse> {
+        (0..count)
+            .map(|index| ToolUse {
+                id: format!("{name}-{index}"),
+                name: name.into(),
+                input: match paths.get(index) {
+                    Some(path) => serde_json::json!({"index": index, "path": path}),
+                    None => serde_json::json!({"index": index}),
+                },
+            })
+            .collect()
+    }
+
+    /// Emits one burst of tool calls in the first turn, then ends the run. The burst is the unit of
+    /// "the model asked for these together", which is the whole question #I-18 and #I-61 turn on.
+    struct ScriptedBurst {
+        turn: AtomicUsize,
+        calls: Vec<ToolUse>,
+    }
+
+    impl ScriptedBurst {
+        fn new(calls: Vec<ToolUse>) -> Self {
+            Self {
+                turn: AtomicUsize::new(0),
+                calls,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ScriptedBurst {
+        async fn turn(
+            &self,
+            _req: &TurnRequest,
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            if self.turn.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Ok(TurnResult {
+                    blocks: vec![Block::Text {
+                        text: "done".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage::default()),
+                });
+            }
+            for call in &self.calls {
+                on_item(StreamItem::ToolUseComplete(call.clone()));
+            }
+            Ok(TurnResult {
+                blocks: self.calls.iter().cloned().map(Block::ToolUse).collect(),
+                stop_reason: StopReason::ToolUse,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
+    }
+
+    fn concurrency_agent(
+        ws: &std::path::Path,
+        run: &core_protocol::RunId,
+        registry: Registry,
+        calls: Vec<ToolUse>,
+    ) -> Agent {
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            run,
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(ScriptedBurst::new(calls)),
+            registry,
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 3,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 8,
+            },
+        );
+        agent.workspace = ws.to_path_buf();
+        agent
+    }
+
+    fn recorded_events(ws: &std::path::Path, run: &core_protocol::RunId) -> Vec<Event> {
+        core_record::replay(&ws.join(".core/runs").join(format!("{}.jsonl", run.0))).unwrap()
+    }
+
+    fn recorded_tool_contents(ws: &std::path::Path, run: &core_protocol::RunId) -> Vec<String> {
+        recorded_events(ws, run)
+            .into_iter()
+            .filter_map(|event| match event.kind {
+                EventKind::ToolDone { result, .. } => Some(result.content),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn write_user_hooks(home: &std::path::Path, hooks: serde_json::Value) {
+        std::fs::create_dir_all(core_protocol::home::path(home, "")).unwrap();
+        std::fs::write(
+            core_protocol::home::path(home, "config.json"),
+            serde_json::json!({ "hooks": hooks }).to_string(),
+        )
+        .unwrap();
+    }
+
+    /// #I-01: `hook_gates_reads` asked whether ANY hook event was configured, so one `Stop` cleanup
+    /// hook — an event that never sees a tool and cannot veto one — silently cost the whole session
+    /// its concurrent read dispatch. Two reads that must be in flight together only complete if the
+    /// early-dispatch path is still live.
+    #[tokio::test]
+    async fn i01_a_stop_hook_alone_does_not_disable_concurrent_read_dispatch() {
+        let ws = temp_ws("stop-hook-keeps-overlap");
+        let home = ws.join("operator-home");
+        write_user_hooks(&home, serde_json::json!({"Stop":["true"]}));
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        register_rendezvous(
+            &mut registry,
+            "rendezvous_read",
+            Purity::Pure,
+            Capability::ReadOnly,
+            2,
+        );
+        let run = core_protocol::RunId("stop-hook-keeps-overlap".into());
+        let mut agent = concurrency_agent(
+            &ws,
+            &run,
+            registry,
+            burst_calls("rendezvous_read", 2, &[]),
+        );
+        agent.hooks = Hooks::load_user(&home);
+        assert!(!agent.hooks.is_empty());
+        assert!(agent.hooks.commands(HookEvent::PreToolUse).is_empty());
+
+        assert_eq!(agent.run("read two sources").await.unwrap(), Outcome::Done);
+        assert_eq!(
+            recorded_tool_contents(&ws, &run),
+            vec!["rendezvous".to_string(); 2],
+            "a hook bound to Stop says nothing about a read and must not serialise one"
+        );
+        assert!(
+            !recorded_events(&ws, &run).iter().any(|event| matches!(
+                &event.kind,
+                EventKind::EffectIntent { tool, .. } if tool == "rendezvous_read"
+            )),
+            "an early-dispatched read never enters the gated deferred path"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// The other direction of #I-01, and the reason the gate exists at all: a `PreToolUse` hook must
+    /// still speak BEFORE the read runs. That routes every read through the gated deferred path,
+    /// where it crosses the effect boundary one at a time — intent, terminal, intent, terminal —
+    /// which is exactly the overlap the hook is trading away.
+    #[tokio::test]
+    async fn i01_a_pretooluse_hook_still_defers_pure_reads() {
+        let ws = temp_ws("pretooluse-hook-defers");
+        let home = ws.join("operator-home");
+        write_user_hooks(&home, serde_json::json!({"PreToolUse":["true"]}));
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        register_immediate(
+            &mut registry,
+            "gated_read",
+            Purity::Pure,
+            Capability::ReadOnly,
+        );
+        let run = core_protocol::RunId("pretooluse-hook-defers".into());
+        let mut agent =
+            concurrency_agent(&ws, &run, registry, burst_calls("gated_read", 2, &[]));
+        agent.hooks = Hooks::load_user(&home);
+        assert!(!agent.hooks.commands(HookEvent::PreToolUse).is_empty());
+
+        assert_eq!(agent.run("read two sources").await.unwrap(), Outcome::Done);
+        let shape: Vec<&'static str> = recorded_events(&ws, &run)
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::EffectIntent { tool, .. } if tool == "gated_read" => Some("intent"),
+                EventKind::ToolDone {
+                    effect_id: Some(_), ..
+                } => Some("terminal"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec!["intent", "terminal", "intent", "terminal"],
+            "a PreToolUse hook must see each read before it is dispatched, one at a time"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// #I-61: at the cap, a pure call was pushed onto an overflow list and run INLINE during
+    /// collection, so a turn wider than the cap ran its tail strictly one at a time with nothing in
+    /// the record saying so. Four reads with a cap of two: the second pair must still meet.
+    #[tokio::test]
+    async fn i61_pure_calls_past_the_concurrency_cap_still_run_concurrently() {
+        let ws = temp_ws("cap-overflow-queues");
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        register_rendezvous(
+            &mut registry,
+            "rendezvous_read",
+            Purity::Pure,
+            Capability::ReadOnly,
+            2,
+        );
+        let run = core_protocol::RunId("cap-overflow-queues".into());
+        let mut agent = concurrency_agent(
+            &ws,
+            &run,
+            registry,
+            burst_calls("rendezvous_read", 4, &[]),
+        );
+        agent.max_tool_concurrency = 2;
+
+        assert_eq!(agent.run("read four sources").await.unwrap(), Outcome::Done);
+        assert_eq!(
+            recorded_tool_contents(&ws, &run),
+            vec!["rendezvous".to_string(); 4],
+            "a call past the cap must QUEUE for a permit, not fall out of the concurrent path"
+        );
+        assert_eq!(
+            agent.ledger.tool_inline_overflow_events, 2,
+            "the cap still bound the turn, and the ledger still says so"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// #I-18: everything a coding agent actually does is Effecting, and the deferred loop is a plain
+    /// `for`, so four independent calls cost the sum of their latencies rather than the max. They
+    /// must overlap — and the durable journal must be ordinal-for-ordinal what it always was.
+    #[tokio::test]
+    async fn i18_independent_auto_approved_effecting_calls_run_concurrently() {
+        let ws = temp_ws("effecting-batch-overlaps");
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        register_rendezvous(
+            &mut registry,
+            "rendezvous_exec",
+            Purity::Effecting,
+            Capability::CodeExecuting,
+            4,
+        );
+        let run = core_protocol::RunId("effecting-batch-overlaps".into());
+        let mut agent = concurrency_agent(
+            &ws,
+            &run,
+            registry,
+            burst_calls("rendezvous_exec", 4, &[]),
+        );
+        // Yolo auto-approves CodeExecuting; without an Auto verdict nothing may be grouped.
+        agent.permission_mode = PermissionMode::Yolo;
+
+        assert_eq!(agent.run("run four commands").await.unwrap(), Outcome::Done);
+        assert_eq!(
+            recorded_tool_contents(&ws, &run),
+            vec!["rendezvous".to_string(); 4],
+            "four independent auto-approved effecting calls must cost the slowest, not the sum"
+        );
+
+        let events = recorded_events(&ws, &run);
+        let intents: Vec<(TurnId, core_protocol::EffectId)> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::EffectIntent { id, tool, .. } if tool == "rendezvous_exec" => {
+                    Some((event.turn, id.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(intents.len(), 4);
+        for (ordinal, (turn, id)) in intents.iter().enumerate() {
+            assert_eq!(
+                *id,
+                effect_class::effect_id(*turn, effect_class::EffectClass::RegistryTool, ordinal),
+                "the group is reordered in TIME only; its effect ordinals never move"
+            );
+        }
+        let last_intent = events
+            .iter()
+            .rposition(|event| {
+                matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "rendezvous_exec")
+            })
+            .unwrap();
+        let first_terminal = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    &event.kind,
+                    EventKind::ToolDone {
+                        effect_id: Some(_),
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        assert!(
+            last_intent < first_terminal,
+            "every write-ahead intent in the group must be durable before any executor terminal"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// The bound on #I-18: two calls that NAME the same path are the one case the model's "these are
+    /// independent" assertion is provably wrong about, so the group ends there and the record stays
+    /// strictly nested — intent, terminal, intent, terminal.
+    #[tokio::test]
+    async fn i18_calls_declaring_the_same_path_stay_strictly_ordered() {
+        let ws = temp_ws("effecting-path-collision");
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        register_immediate(
+            &mut registry,
+            "touch_path",
+            Purity::Effecting,
+            Capability::ReversibleLocal,
+        );
+        let run = core_protocol::RunId("effecting-path-collision".into());
+        let mut agent = concurrency_agent(
+            &ws,
+            &run,
+            registry,
+            burst_calls("touch_path", 3, &["a.txt", "a.txt", "b.txt"]),
+        );
+        agent.permission_mode = PermissionMode::Yolo;
+
+        assert_eq!(agent.run("write three times").await.unwrap(), Outcome::Done);
+        let shape: Vec<&'static str> = recorded_events(&ws, &run)
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::EffectIntent { tool, .. } if tool == "touch_path" => Some("intent"),
+                EventKind::ToolDone {
+                    effect_id: Some(_), ..
+                } => Some("terminal"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                "intent", "terminal", "intent", "terminal", "intent", "terminal"
+            ],
+            "a declared path collision must keep every effect in the turn strictly ordered"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// The other bound on #I-18, and the one a grouped executor can silently break: ADR-003 dedup
+    /// reads `failed_actions`, which only learns about a failure when the group SETTLES. Two
+    /// identical calls admitted into one group would therefore both reach the executor and perform
+    /// the side effect twice, where the ordered loop performs it once and replays the error for the
+    /// repeat. The group must end at the repeat, so the tool runs exactly once either way.
+    #[tokio::test]
+    async fn i18_an_identical_repeat_never_joins_the_group_and_runs_at_most_once() {
+        let ws = temp_ws("effecting-batch-dedup");
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        let runs = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = runs.clone();
+        registry
+            .register_external(
+                ToolSpec {
+                    name: "failing_exec".into(),
+                    description: "test-only always-failing tool".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity: Purity::Effecting,
+                    capability: Capability::CodeExecuting,
+                },
+                move |call, _root| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    core_tools::boxfut::box_it(async move {
+                        ToolResult {
+                            tool_use_id: call.id,
+                            content: "the command failed".into(),
+                            is_error: true,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        }
+                    })
+                },
+            )
+            .unwrap();
+        let run = core_protocol::RunId("effecting-batch-dedup".into());
+        // Same name, same input, different provider ids: the exact shape ADR-003 dedup exists for.
+        let calls = vec![
+            ToolUse {
+                id: "repeat-0".into(),
+                name: "failing_exec".into(),
+                input: serde_json::json!({"command": "false"}),
+            },
+            ToolUse {
+                id: "repeat-1".into(),
+                name: "failing_exec".into(),
+                input: serde_json::json!({"command": "false"}),
+            },
+        ];
+        let mut agent = concurrency_agent(&ws, &run, registry, calls);
+        agent.permission_mode = PermissionMode::Yolo;
+
+        assert_eq!(agent.run("run it twice").await.unwrap(), Outcome::Done);
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "grouping must not turn one admitted side effect into two"
+        );
+        let contents = recorded_tool_contents(&ws, &run);
+        assert_eq!(contents.len(), 2, "both tool_use ids are still answered");
+        assert_eq!(contents[0], "the command failed");
+        assert!(
+            contents[1].contains("ADR-003 dedup"),
+            "the repeat is answered from the record, not re-run: {}",
+            contents[1]
+        );
+        assert_eq!(
+            recorded_events(&ws, &run)
+                .iter()
+                .filter(|event| matches!(
+                    &event.kind,
+                    EventKind::EffectIntent { tool, .. } if tool == "failing_exec"
+                ))
+                .count(),
+            1,
+            "only the first call crosses the effect boundary"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// The gate is still the gate. A call the mode makes `Ask` never joins the group, so with no
+    /// approval channel it fails closed exactly as it did before and nothing is ever dispatched.
+    #[tokio::test]
+    async fn i18_calls_that_must_ask_never_join_the_concurrent_group() {
+        let ws = temp_ws("effecting-batch-asks");
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        register_immediate(
+            &mut registry,
+            "touch_path",
+            Purity::Effecting,
+            Capability::ReversibleLocal,
+        );
+        let run = core_protocol::RunId("effecting-batch-asks".into());
+        // PermissionMode::Default asks for ReversibleLocal, and no approval channel is installed.
+        let mut agent =
+            concurrency_agent(&ws, &run, registry, burst_calls("touch_path", 2, &[]));
+
+        assert_eq!(agent.run("write twice").await.unwrap(), Outcome::Done);
+        assert!(
+            !recorded_events(&ws, &run).iter().any(|event| matches!(
+                &event.kind,
+                EventKind::EffectIntent { tool, .. } if tool == "touch_path"
+            )),
+            "an unapproved call must never cross the effect boundary, grouped or not"
+        );
+        assert!(
+            recorded_tool_contents(&ws, &run)
+                .iter()
+                .all(|content| content.contains("refused")),
+            "the ordered loop still owns the refusal text for every gated call"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[test]
+    fn declared_write_paths_names_single_and_multi_file_claims() {
+        assert!(declared_write_paths(&serde_json::json!({"command":"ls"})).is_empty());
+        assert_eq!(
+            declared_write_paths(&serde_json::json!({"path":"src/lib.rs"})),
+            ["src/lib.rs".to_string()].into_iter().collect()
+        );
+        assert_eq!(
+            declared_write_paths(
+                &serde_json::json!({"files":[{"path":"a.rs"},{"path":"b.rs"},{"path":"a.rs"}]})
+            ),
+            ["a.rs".to_string(), "b.rs".to_string()]
+                .into_iter()
+                .collect()
+        );
     }
 
     #[tokio::test]
