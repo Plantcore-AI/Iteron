@@ -1236,6 +1236,27 @@ fn fan_concurrency_permits(active_workers: usize) -> usize {
         .max(1)
 }
 
+/// The kernel-minted aggregate ceilings for an IN-TURN (`Workflow` tool) run.
+///
+/// The parent's remaining inference turns bound each CHILD's turn ceiling (`cx.budget.max_turns`).
+/// They must NOT also be divided down into the run's aggregate ceilings: the old
+/// `remaining_turns / per_child_turns` produced exactly 1 whenever the parent had fewer turns left
+/// than the 30-turn per-child ceiling — the common case — so a five-way `parallel()` admitted one
+/// agent, the other four failed admission, resolved to `null`, and were filtered away by the
+/// script's `.filter(Boolean)` before the model ever saw them.
+///
+/// The engine's own defaults already ARE the fan's permit calculation (`min(FAN_CAP, cores - 2)`
+/// concurrency, `LIFETIME_CAP` lifetime), so the in-turn path adopts them instead of inventing a
+/// narrower pair. Cost stays bounded where it belongs: the per-child turn/token ceilings above and
+/// the aggregate USD budget shared with the parent.
+fn in_turn_workflow_budget() -> Result<core_kernel::ports::WorkflowRunBudget, &'static str> {
+    let defaults = core_workflow::RunLimits::default();
+    core_kernel::ports::WorkflowRunBudget::new(
+        defaults.max_concurrency(),
+        defaults.max_agent_calls(),
+    )
+}
+
 fn approx_workspace_file_count(root: &std::path::Path) -> usize {
     const CAP: usize = 201;
     let mut count = 0usize;
@@ -1296,6 +1317,58 @@ mod orchestration_allocation_tests {
         assert!(allocate_orchestration(5, 6, 900).is_none());
         assert!(allocate_orchestration(59, 0, 900).is_none());
         assert!(allocate_orchestration(59, 6, 2).is_none());
+    }
+
+    #[test]
+    fn an_in_turn_workflow_never_collapses_to_a_single_agent() {
+        let budget = in_turn_workflow_budget().expect("in-turn aggregate budget");
+        // The regression: the aggregate ceiling used to be `remaining_turns / per_child_turns`,
+        // and `per_child_turns` is `min(child_ceiling, remaining_turns)` — so the quotient was 1
+        // for EVERY parent with fewer turns left than the 30-turn child ceiling. A five-way
+        // `parallel()` then admitted one agent and silently dropped four.
+        let child_ceiling = core_agents::subagent_budget_ceiling().max_turns;
+        for remaining_turns in [1u32, 2, 5, child_ceiling - 1, child_ceiling, child_ceiling * 3] {
+            let collapsed = (remaining_turns / child_ceiling.min(remaining_turns).max(1)).max(1);
+            assert!(
+                budget.max_agent_calls() > collapsed as usize,
+                "with {remaining_turns} parent turns left the old quotient admitted \
+                 {collapsed} agent(s); the aggregate ceiling must not be derived from it"
+            );
+        }
+        assert!(
+            budget.max_agent_calls() >= core_agents::FAN_CAP,
+            "a full fan-width parallel must be admitted in one in-turn run"
+        );
+        assert!(
+            budget.max_concurrency() >= 1,
+            "concurrency is the fan's permit calculation, never zero"
+        );
+    }
+
+    #[test]
+    fn two_in_turn_workflow_calls_in_one_response_cannot_share_a_journal() {
+        // Run ids used to be `wf_<parent>_t<turn>`: both `Workflow` tool calls in ONE assistant
+        // response landed on the same id, hence the same journal directory, and the second call
+        // replayed the first's cached outcomes instead of running.
+        let first = core_workflow::RunId::generate().to_string();
+        let second = core_workflow::RunId::generate().to_string();
+        assert_ne!(
+            first, second,
+            "two runs minted inside one turn must not share a journal"
+        );
+        assert!(first.starts_with("wf_") && second.starts_with("wf_"));
+    }
+
+    #[test]
+    fn only_an_interrupt_cancels_an_admitted_in_turn_workflow() {
+        // The launch bridge polls `requested_control()` rather than reading the out-of-band
+        // interrupt atomic: a queued SQ `Op::Interrupt` on an embedder that installed no atomic
+        // sets only `interrupt_requested`, so an atomic-only check left exactly that operator
+        // unable to stop a multi-minute run. Drain is deliberately not a cancel — an admitted run
+        // exits at its own safe point, like an admitted child.
+        assert!(InboundControl::Interrupt.interrupts());
+        assert!(!InboundControl::Drain.interrupts());
+        assert!(!InboundControl::None.interrupts());
     }
 }
 
@@ -6283,8 +6356,11 @@ impl Agent {
         let workflow_name = core_workflow::extract_meta(&script)
             .and_then(|meta| meta.name)
             .unwrap_or_else(|| "workflow".into());
-        let parent_run_id = self.rollout.run_id().0.clone();
-        let run_id = format!("wf_{parent_run_id}_t{}", self.seq_turn);
+        // Mint a fresh, time-ordered run id the way the standalone `core workflow run` path does.
+        // Deriving it from the turn counter made every `Workflow` tool call in ONE assistant
+        // response share an id — hence one journal, one child-rollout namespace, and a second call
+        // that silently replayed the first's cached outcomes instead of running.
+        let run_id = core_workflow::RunId::generate().to_string();
         let workflows_dir = self.runtime_state_dir.join("subagents").join("workflows");
 
         let mut cx = KernelSpawnerContext::new(
@@ -6311,17 +6387,16 @@ impl Agent {
         if remaining_turns == 0 {
             return Err("Workflow: parent turn budget is exhausted".into());
         }
-        let per_child_turns = cx.budget.max_turns.min(remaining_turns).max(1);
-        cx.budget.max_turns = per_child_turns;
-        let max_agent_calls = (remaining_turns / per_child_turns).max(1) as usize;
+        cx.budget.max_turns = cx.budget.max_turns.min(remaining_turns).max(1);
+        // The same soft halving `core_agents::subagent_budget` gives a fan worker. The old quotient
+        // over an invented agent count had no policy behind it and moved with the bug below.
         cx.budget.max_tokens = self
             .remaining_provider_tokens()
-            .map(|remaining| remaining / max_agent_calls as u64);
+            .map(|remaining| remaining / 2);
         cx.authority_ceiling = self.authority_ceiling;
         cx.policy_capabilities = self.policy_capabilities;
-        let kernel_limits =
-            core_kernel::ports::WorkflowRunBudget::new(max_agent_calls.min(16), max_agent_calls)
-                .map_err(|error| format!("Workflow: invalid kernel aggregate budget: {error}"))?;
+        let kernel_limits = in_turn_workflow_budget()
+            .map_err(|error| format!("Workflow: invalid kernel aggregate budget: {error}"))?;
         let engine_limits = core_workflow::RunLimits::new(
             kernel_limits.max_concurrency(),
             kernel_limits.max_agent_calls(),
@@ -6334,13 +6409,38 @@ impl Agent {
         let spawner: std::sync::Arc<dyn core_workflow::AgentSpawner> =
             std::sync::Arc::new(KernelSpawner::new(cx));
 
-        let spec = core_workflow::RunSpec::new(script)
-            .with_args(args)
+        let spec = core_workflow::RunSpec::new(script.clone())
+            .with_args(args.clone())
             .with_run_id(core_workflow::RunId::new(run_id.clone()))
-            .with_workflows_dir(workflows_dir)
+            .with_workflows_dir(workflows_dir.clone())
             .with_limits(engine_limits);
-        let sink: std::sync::Arc<dyn core_workflow::ProgressSink> =
-            std::sync::Arc::new(core_workflow::NullSink);
+        // A degraded agent resolves to JS `null` and the script's `.filter(Boolean)` deletes it, so
+        // a discarded sink turned an exhausted budget into a plausibly-short result. Keep the
+        // reasons and hand them to the model with the value.
+        let degraded = std::sync::Arc::new(crate::workflow::DegradedAgentSink::new());
+        let sink: std::sync::Arc<dyn core_workflow::ProgressSink> = degraded.clone();
+
+        // Persist the re-launchable inputs BEFORE the run starts, exactly like the standalone path:
+        // the kernel writes its journal into the very directory `core workflow list` enumerates, so
+        // without the manifest every model-launched run listed forever as unnamed, model-less and
+        // `running`.
+        if let Err(error) = crate::workflow::persist_inputs(
+            &workflows_dir,
+            &crate::workflow::RunManifest {
+                run_id: run_id.clone(),
+                name: workflow_name.clone(),
+                args,
+                provider_id: route.provider_id.clone(),
+                model: route.model_id.clone(),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_secs())
+                    .unwrap_or(0),
+            },
+            &script,
+        ) {
+            return Err(format!("Workflow: cannot persist run inputs: {error}"));
+        }
 
         // The CC-style launch banner (parallels Claude Code's "Task ID / Run ID / use /workflows").
         self.emit(
@@ -6353,14 +6453,83 @@ impl Agent {
         );
 
         let handle = core_workflow::WorkflowEngine::launch(spec, spawner, sink);
-        let report = handle
-            .join()
-            .await
-            .map_err(|error| format!("Workflow run failed: {error}"))?;
+        // Bridge the parent's stop surfaces onto the run's cancellation token. Without this a
+        // multi-minute run ignored Ctrl-C entirely: the operator interrupt reached the parent but
+        // never the engine, and `join()` simply blocked the turn until the script finished.
+        // Polling is fixed and bounded, exactly like `run_child_with_control`.
+        const WORKFLOW_CONTROL_POLL: Duration = Duration::from_millis(25);
+        let report = {
+            let mut joined = Box::pin(handle.join());
+            loop {
+                match tokio::time::timeout(WORKFLOW_CONTROL_POLL, &mut joined).await {
+                    Ok(report) => break report,
+                    Err(_) => {
+                        // Drain both stop surfaces through the canonical predicate rather than
+                        // reading the out-of-band atomic directly: a queued SQ `Op::Interrupt` on
+                        // an embedder that installed no atomic sets only `interrupt_requested`, and
+                        // an atomic-only check would leave exactly that operator unable to stop the
+                        // run. Drain is deliberately NOT a cancel — like an admitted child, an
+                        // admitted run exits at its own safe point.
+                        let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+                        if self.requested_control().interrupts() {
+                            handle.cancel();
+                        }
+                    }
+                }
+            }
+        };
+
+        // A run that never produced a report is still a directory `core workflow list` enumerates:
+        // `persist_inputs` above already created it. Settling it is the same obligation I-35 names,
+        // on the error path — and the journal's new exclusive lock makes that path reachable (a
+        // colliding run id is refused here, not silently interleaved). Without this the failure
+        // would sit in `/workflows` as `running` forever.
+        let report = match report {
+            Ok(report) => report,
+            Err(error) => {
+                let message = format!("Workflow run failed: {error}");
+                let failed = core_workflow::RunReport {
+                    run_id: core_workflow::RunId::new(run_id.clone()),
+                    value: serde_json::json!({ "error": message.clone() }),
+                    stopped: true,
+                    cache_hits: 0,
+                    cache_misses: 0,
+                };
+                let _ = crate::workflow::persist_result(&workflows_dir, &run_id, &failed);
+                return Err(message);
+            }
+        };
+
+        // Record the terminal outcome so the run lists with its name, model and terminal state.
+        // This is list metadata, not the result: a sidecar that cannot be written must not destroy
+        // a run the operator already paid for, so it degrades to a notice.
+        if let Err(error) = crate::workflow::persist_result(&workflows_dir, &run_id, &report) {
+            self.emit(
+                turn_id,
+                EventKind::Notice {
+                    text: format!("Workflow: cannot persist run result for {run_id}: {error}"),
+                },
+            );
+        }
+
         let value = serde_json::to_string_pretty(&report.value)
             .unwrap_or_else(|_| report.value.to_string());
+        let reasons = degraded.reasons();
+        let degraded_section = if reasons.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\nERROR: {} agent(s) did not complete and were resolved to null:\n{}",
+                reasons.len(),
+                reasons
+                    .iter()
+                    .map(|reason| format!("  - {reason}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        };
         Ok(format!(
-            "Workflow `{workflow_name}` (run {run_id}) {}: {} agent(s) replayed from cache, {} ran live.\n\nResult:\n{value}",
+            "Workflow `{workflow_name}` (run {run_id}) {}: {} agent(s) replayed from cache, {} ran live.{degraded_section}\n\nResult:\n{value}",
             if report.stopped {
                 "stopped"
             } else {
