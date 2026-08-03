@@ -13,6 +13,13 @@
 
 use crate::MAX_ENTRIES;
 
+/// Ceilings. A diff is produced by git but reaches this parser as bytes, and a review surface that
+/// can be made to allocate without limit is a denial-of-service on the agent reading it.
+pub const MAX_DIFF_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_HUNKS_PER_FILE: usize = 2_000;
+pub const MAX_BODY_LINES_PER_HUNK: usize = 100_000;
+pub const MAX_LINE_BYTES: usize = 64 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DiffError {
     #[error("hunk header {header:?} is malformed")]
@@ -31,6 +38,16 @@ pub enum DiffError {
     },
     #[error("diff carries more than {limit} file entries")]
     TooManyFiles { limit: usize },
+    #[error("diff is {len} bytes, over the {MAX_DIFF_BYTES}-byte ceiling")]
+    DiffTooLarge { len: usize },
+    #[error("file {path:?} carries more than {MAX_HUNKS_PER_FILE} hunks")]
+    TooManyHunks { path: String },
+    #[error("hunk {header:?} carries more than {MAX_BODY_LINES_PER_HUNK} body lines")]
+    TooManyBodyLines { header: String },
+    #[error("a diff line is {len} bytes, over the {MAX_LINE_BYTES}-byte ceiling")]
+    LineTooLong { len: usize },
+    #[error("path {raw:?} is git-quoted; a lossless source is required to parse it safely")]
+    QuotedPath { raw: String },
 }
 
 /// What a file entry in a diff actually is. A binary change and a pure rename are real changes with
@@ -41,15 +58,33 @@ pub enum FileChange {
         hunks: Vec<Hunk>,
     },
     Binary,
-    /// Rename or copy with no content change.
-    RenameOnly {
+    /// Renamed or copied with no content change.
+    RenameOnly,
+    /// Only the file mode changed (e.g. chmod +x). Its own variant because reporting it as
+    /// `Text { hunks: [] }` reads as "nothing changed" -- the same lie as a binary change with no
+    /// hunks, and the reason `hunk_count()` returns `None` here too.
+    ModeOnly {
         from: String,
+        to: String,
     },
+}
+
+/// How a path came to exist, kept **independently of whether the content also changed**.
+///
+/// Folding this into a `RenameOnly` variant lost it exactly when it mattered: a rename that also
+/// edits the file is the case a reviewer most needs to see as one change rather than as an
+/// unrelated delete and add.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    pub from: String,
+    pub copied: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff {
     pub path: String,
+    /// Present for renames and copies, whether or not the content also changed.
+    pub origin: Option<Origin>,
     pub change: FileChange,
 }
 
@@ -61,6 +96,12 @@ impl FileDiff {
             FileChange::Text { hunks } => Some(hunks.len()),
             _ => None,
         }
+    }
+
+    /// True when this entry represents a real change of some kind. Every variant does -- the
+    /// method exists so a caller cannot conclude "no hunks" means "no change".
+    pub fn is_change(&self) -> bool {
+        true
     }
 }
 
@@ -110,64 +151,72 @@ fn parse_header(line: &str) -> Option<(u32, u32, u32, u32)> {
 }
 
 /// Parse a unified diff into per-file entries, verifying every hunk against its own header.
+///
+/// `limit` is clamped to `MAX_ENTRIES`: a caller passing `usize::MAX` must not be able to opt out
+/// of the bound, because the bound exists to protect the process, not the caller.
+#[allow(
+    unused_assignments,
+    reason = "flush! is invoked mid-loop, where resetting per-file state is load-bearing, and once \
+              after the loop, where the same reset is dead. Splitting it into two macros to satisfy \
+              the lint would duplicate the entry-construction logic, which is the part worth having \
+              in exactly one place."
+)]
 pub fn parse_unified(diff: &str, limit: usize) -> Result<Vec<FileDiff>, DiffError> {
+    if diff.len() > MAX_DIFF_BYTES {
+        return Err(DiffError::DiffTooLarge { len: diff.len() });
+    }
+    let limit = limit.min(MAX_ENTRIES);
+
     let mut files: Vec<FileDiff> = Vec::new();
     let mut path: Option<String> = None;
-    let mut rename_from: Option<String> = None;
+    let mut origin: Option<Origin> = None;
+    let mut mode: Option<(String, String)> = None;
     let mut binary = false;
     let mut hunks: Vec<Hunk> = Vec::new();
     let mut current: Option<Hunk> = None;
 
-    fn flush(
-        files: &mut Vec<FileDiff>,
-        path: &mut Option<String>,
-        rename_from: &mut Option<String>,
-        binary: &mut bool,
-        hunks: &mut Vec<Hunk>,
-        current: &mut Option<Hunk>,
-    ) -> Result<(), DiffError> {
-        if let Some(h) = current.take() {
-            verify(&h)?;
-            hunks.push(h);
-        }
-        if let Some(p) = path.take() {
-            let change = if *binary {
-                FileChange::Binary
-            } else if hunks.is_empty() && rename_from.is_some() {
-                FileChange::RenameOnly {
-                    from: rename_from.clone().unwrap(),
+    macro_rules! flush {
+        () => {{
+            if let Some(h) = current.take() {
+                verify(&h)?;
+                hunks.push(h);
+            }
+            if let Some(p) = path.take() {
+                let change = if binary {
+                    FileChange::Binary
+                } else if !hunks.is_empty() {
+                    FileChange::Text {
+                        hunks: std::mem::take(&mut hunks),
+                    }
+                } else if let Some((from, to)) = mode.take() {
+                    FileChange::ModeOnly { from, to }
+                } else if origin.is_some() {
+                    FileChange::RenameOnly
+                } else {
+                    FileChange::Text { hunks: Vec::new() }
+                };
+                files.push(FileDiff {
+                    path: p,
+                    origin: origin.take(),
+                    change,
+                });
+                if files.len() > limit {
+                    return Err(DiffError::TooManyFiles { limit });
                 }
-            } else {
-                FileChange::Text {
-                    hunks: std::mem::take(hunks),
-                }
-            };
-            files.push(FileDiff { path: p, change });
-        }
-        hunks.clear();
-        *binary = false;
-        *rename_from = None;
-        Ok(())
+            }
+            hunks.clear();
+            // `origin` and `mode` were already cleared by `.take()` above; only this needs it.
+            binary = false;
+        }};
     }
 
     for line in diff.lines() {
+        if line.len() > MAX_LINE_BYTES {
+            return Err(DiffError::LineTooLong { len: line.len() });
+        }
         if let Some(rest) = line.strip_prefix("diff --git ") {
-            flush(
-                &mut files,
-                &mut path,
-                &mut rename_from,
-                &mut binary,
-                &mut hunks,
-                &mut current,
-            )?;
-            if files.len() > limit {
-                return Err(DiffError::TooManyFiles { limit });
-            }
-            // `a/<path> b/<path>`; take the b-side, which is the current name.
-            path = rest
-                .split_once(" b/")
-                .map(|(_, b)| b.to_owned())
-                .or_else(|| Some(rest.to_owned()));
+            flush!();
+            path = Some(parse_git_header_path(rest)?);
             continue;
         }
         if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
@@ -175,13 +224,38 @@ pub fn parse_unified(diff: &str, limit: usize) -> Result<Vec<FileDiff>, DiffErro
             continue;
         }
         if let Some(from) = line.strip_prefix("rename from ") {
-            rename_from = Some(from.to_owned());
+            origin = Some(Origin {
+                from: unquoted(from)?,
+                copied: false,
+            });
+            continue;
+        }
+        if let Some(from) = line.strip_prefix("copy from ") {
+            origin = Some(Origin {
+                from: unquoted(from)?,
+                copied: true,
+            });
+            continue;
+        }
+        if let Some(m) = line.strip_prefix("old mode ") {
+            mode = Some((m.trim().to_owned(), String::new()));
+            continue;
+        }
+        if let Some(m) = line.strip_prefix("new mode ")
+            && let Some((from, _)) = mode.take()
+        {
+            mode = Some((from, m.trim().to_owned()));
             continue;
         }
         if line.starts_with("@@ ") {
             if let Some(h) = current.take() {
                 verify(&h)?;
                 hunks.push(h);
+            }
+            if hunks.len() >= MAX_HUNKS_PER_FILE {
+                return Err(DiffError::TooManyHunks {
+                    path: path.clone().unwrap_or_default(),
+                });
             }
             let (os, ol, ns, nl) = parse_header(line).ok_or_else(|| DiffError::BadHeader {
                 header: line.to_owned(),
@@ -197,27 +271,50 @@ pub fn parse_unified(diff: &str, limit: usize) -> Result<Vec<FileDiff>, DiffErro
             continue;
         }
         if let Some(h) = current.as_mut() {
-            // "\ No newline at end of file" annotates the previous line and is not itself content.
+            // `\ No newline at end of file` annotates the previous line and is not content. Body
+            // lines always carry a ' ', '+' or '-' prefix, so a line starting with a backslash can
+            // only be that marker.
             if line.starts_with('\\') {
                 continue;
             }
             if line.starts_with(' ') || line.starts_with('+') || line.starts_with('-') {
+                if h.body.len() >= MAX_BODY_LINES_PER_HUNK {
+                    return Err(DiffError::TooManyBodyLines {
+                        header: h.header.clone(),
+                    });
+                }
                 h.body.push(line.to_owned());
             }
         }
     }
-    flush(
-        &mut files,
-        &mut path,
-        &mut rename_from,
-        &mut binary,
-        &mut hunks,
-        &mut current,
-    )?;
-    if files.len() > limit {
-        return Err(DiffError::TooManyFiles { limit });
-    }
+    flush!();
     Ok(files)
+}
+
+/// Extract the b-side path from a `diff --git a/x b/x` header.
+///
+/// Git quotes a path containing a space, quote, newline or non-UTF-8 byte as a C-style string.
+/// Such a header cannot be split reliably on `" b/"`, so it is refused rather than mis-parsed --
+/// guessing here silently attributes hunks to the wrong file, which is worse than declining.
+fn parse_git_header_path(rest: &str) -> Result<String, DiffError> {
+    if rest.starts_with('"') || rest.contains(" \"") {
+        return Err(DiffError::QuotedPath {
+            raw: rest.to_owned(),
+        });
+    }
+    Ok(rest
+        .split_once(" b/")
+        .map(|(_, b)| b.to_owned())
+        .unwrap_or_else(|| rest.to_owned()))
+}
+
+fn unquoted(value: &str) -> Result<String, DiffError> {
+    if value.starts_with('"') {
+        return Err(DiffError::QuotedPath {
+            raw: value.to_owned(),
+        });
+    }
+    Ok(value.to_owned())
 }
 
 /// Check a hunk's body against the counts its own header declared.
@@ -356,13 +453,105 @@ rename from old.rs
 rename to new.rs
 ";
         let files = parse_unified_default(diff).unwrap();
+        assert_eq!(files[0].change, FileChange::RenameOnly);
+        assert_eq!(files[0].origin.as_ref().unwrap().from, "old.rs");
+        assert_eq!(files[0].hunk_count(), None);
+    }
+
+    #[test]
+    fn a_rename_that_also_edits_keeps_its_provenance() {
+        // Previously folded into a `RenameOnly` variant, so provenance was lost exactly when it
+        // mattered: a reviewer needs this as one change, not an unrelated delete plus add.
+        let diff = "\
+diff --git a/old.rs b/new.rs
+similarity index 88%
+rename from old.rs
+rename to new.rs
+@@ -1,2 +1,2 @@
+-a
++b
+ c
+";
+        let files = parse_unified_default(diff).unwrap();
+        assert_eq!(files[0].path, "new.rs");
+        assert_eq!(files[0].origin.as_ref().unwrap().from, "old.rs");
+        assert!(!files[0].origin.as_ref().unwrap().copied);
+        assert_eq!(files[0].hunk_count(), Some(1), "content change kept too");
+    }
+
+    #[test]
+    fn a_copy_is_distinguished_from_a_rename() {
+        let diff = "\
+diff --git a/src.rs b/dst.rs
+copy from src.rs
+copy to dst.rs
+";
+        let files = parse_unified_default(diff).unwrap();
+        assert!(files[0].origin.as_ref().unwrap().copied);
+    }
+
+    #[test]
+    fn a_mode_only_change_is_not_an_empty_text_diff() {
+        // chmod +x with no content change. `Text { hunks: [] }` would read as "nothing changed" --
+        // the same lie as a binary change with no hunks.
+        let diff = "\
+diff --git a/run.sh b/run.sh
+old mode 100644
+new mode 100755
+";
+        let files = parse_unified_default(diff).unwrap();
         assert_eq!(
             files[0].change,
-            FileChange::RenameOnly {
-                from: "old.rs".into()
+            FileChange::ModeOnly {
+                from: "100644".into(),
+                to: "100755".into()
             }
         );
-        assert_eq!(files[0].hunk_count(), None);
+        assert_eq!(files[0].hunk_count(), None, "not Some(0)");
+    }
+
+    #[test]
+    fn a_git_quoted_path_is_refused_rather_than_mis_split() {
+        // Git quotes paths containing a space, quote or newline. Splitting such a header on " b/"
+        // silently attributes hunks to the wrong file, which is worse than declining.
+        let diff = "diff --git \"a/we ird.rs\" \"b/we ird.rs\"\n@@ -1 +1 @@\n-a\n+b\n";
+        assert!(matches!(
+            parse_unified_default(diff),
+            Err(DiffError::QuotedPath { .. })
+        ));
+    }
+
+    #[test]
+    fn an_arbitrary_limit_cannot_opt_out_of_the_bound() {
+        // The ceiling protects the process, not the caller, so `usize::MAX` is clamped.
+        let mut diff = String::new();
+        for i in 0..(MAX_ENTRIES + 5) {
+            diff.push_str(&format!(
+                "diff --git a/f{i} b/f{i}\nBinary files a/f{i} and b/f{i} differ\n"
+            ));
+        }
+        assert!(matches!(
+            parse_unified(&diff, usize::MAX),
+            Err(DiffError::TooManyFiles { .. })
+        ));
+    }
+
+    #[test]
+    fn an_oversized_diff_is_refused_before_parsing() {
+        let huge = "x".repeat(MAX_DIFF_BYTES + 1);
+        assert!(matches!(
+            parse_unified_default(&huge),
+            Err(DiffError::DiffTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn an_overlong_line_is_refused() {
+        let diff = format!("diff --git a/x b/x\n{}\n", "y".repeat(MAX_LINE_BYTES + 1));
+        assert!(matches!(
+            parse_unified_default(&diff),
+            Err(DiffError::LineTooLong { .. })
+        ));
     }
 
     #[test]
