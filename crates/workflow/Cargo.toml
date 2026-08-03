@@ -30,6 +30,7 @@ jsonschema = { version = "0.28", default-features = false }
 # Content-addressed resume cache key: v2:sha256 over the canonical agent input (design §2.6).
 sha2 = { workspace = true }
 hex = { workspace = true }
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
