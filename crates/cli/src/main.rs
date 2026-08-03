@@ -194,10 +194,83 @@ fn assemble_system_prompt(
     }
 }
 
+/// Build identity, stamped by the release build (`.github/workflows/release.yml` exports both
+/// before `cargo build`). Two artifacts cut from different commits both reported `core 0.0.1`,
+/// and there is no self-update or staleness hint, so a user had no way to learn which binary
+/// they were running. An unstamped local build says `unknown` rather than claiming an identity.
+const BUILD_COMMIT: &str = match option_env!("CORE_BUILD_COMMIT") {
+    Some(commit) => commit,
+    None => "unknown",
+};
+const BUILD_DATE: &str = match option_env!("CORE_BUILD_DATE") {
+    Some(date) => date,
+    None => "unknown",
+};
+/// Past this age the compiled-in provider catalog is old enough to have retired model ids, whose
+/// 400 is then classified as permanent. Purely local arithmetic — no network, no update check.
+const BUILD_STALE_AFTER_DAYS: i64 = 90;
+
+/// `--version` text. `-V` keeps the bare `core <semver>` that release smoke tests match exactly.
+fn long_version() -> &'static str {
+    static LONG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    LONG.get_or_init(|| {
+        format!(
+            "{} ({} {})",
+            env!("CARGO_PKG_VERSION"),
+            BUILD_COMMIT,
+            BUILD_DATE
+        )
+    })
+}
+
+/// Days since 1970-01-01 for a proleptic-Gregorian civil date (Howard Hinnant's `days_from_civil`).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+/// Parse a stamped `YYYY-MM-DD` build date into days since the epoch. An unstamped or malformed
+/// value yields `None`, and an unknown age never produces a claim about it.
+fn build_date_days(date: &str) -> Option<i64> {
+    let mut fields = date.split('-');
+    let year: i64 = fields.next()?.parse().ok()?;
+    let month: i64 = fields.next()?.parse().ok()?;
+    let day: i64 = fields.next()?.parse().ok()?;
+    if fields.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some(days_from_civil(year, month, day))
+}
+
+/// One line, on stderr, when this binary is old enough that its compiled-in facts have aged out.
+fn staleness_note(date: &str, now_unix_secs: i64) -> Option<String> {
+    let age = now_unix_secs.div_euclid(86_400) - build_date_days(date)?;
+    (age > BUILD_STALE_AFTER_DAYS).then(|| {
+        format!(
+            "warning: this core build is {age} days old (built {date}, commit {BUILD_COMMIT}); its compiled-in provider catalog may name retired models — reinstall with the installer in the latest release"
+        )
+    })
+}
+
+fn warn_if_stale() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .unwrap_or_default();
+    if let Some(note) = staleness_note(BUILD_DATE, now) {
+        eprintln!("{note}");
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "core",
     version,
+    long_version = long_version(),
     about = "Core Code — a terminal-native coding agent built on a bounded controller."
 )]
 struct Cli {
@@ -335,6 +408,9 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn run_cli() -> anyhow::Result<u8> {
+    // Before parsing, so `--version` and `--help` carry it too. stderr only: stdout stays a clean
+    // machine contract.
+    warn_if_stale();
     let cli = Cli::parse();
 
     // `--sessions` and `--fork` predate the one-shot machine contract and intentionally keep their
@@ -1785,6 +1861,58 @@ fn print_timeline(run: &core_protocol::RunId, report: &core_obs::timeline::Timel
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_version_identifies_the_exact_build_and_short_version_stays_bare() {
+        // Two artifacts cut from different commits both reported `core 0.0.1`. `--version` now
+        // carries the commit and build date; `-V` keeps the bare semver the release smoke tests
+        // and the installer compare exactly.
+        let long = long_version();
+        assert!(long.starts_with(env!("CARGO_PKG_VERSION")), "{long}");
+        assert!(long.contains(BUILD_COMMIT), "{long}");
+        assert!(long.contains(BUILD_DATE), "{long}");
+        assert!(long.len() > env!("CARGO_PKG_VERSION").len(), "{long}");
+        assert_eq!(
+            long,
+            long_version(),
+            "the rendered identity must be stable within a process"
+        );
+    }
+
+    #[test]
+    fn an_old_binary_says_so_and_a_fresh_one_stays_quiet() {
+        // 2026-01-01, purely as arithmetic: 20454 days after the epoch.
+        let built = "2026-01-01";
+        let built_secs = 20_454 * 86_400;
+        assert_eq!(build_date_days(built), Some(20_454));
+        assert_eq!(staleness_note(built, built_secs), None);
+        assert_eq!(
+            staleness_note(built, built_secs + BUILD_STALE_AFTER_DAYS * 86_400),
+            None,
+            "the threshold itself is not yet stale"
+        );
+        let note = staleness_note(built, built_secs + (BUILD_STALE_AFTER_DAYS + 1) * 86_400)
+            .expect("a binary past the threshold must say so");
+        assert!(note.contains("91 days old"), "{note}");
+        assert!(note.contains(built), "{note}");
+        assert_eq!(note.lines().count(), 1, "the note is one line: {note}");
+    }
+
+    #[test]
+    fn an_unstamped_or_malformed_build_date_makes_no_claim() {
+        // No network is consulted, so an unknown age must stay silent rather than guess.
+        for date in [
+            "unknown",
+            "",
+            "2026-01",
+            "2026-13-01",
+            "2026-01-32",
+            "x-y-z",
+        ] {
+            assert_eq!(build_date_days(date), None, "{date}");
+            assert_eq!(staleness_note(date, 20_454 * 86_400), None, "{date}");
+        }
+    }
 
     #[test]
     fn one_shot_submission_builder_emits_exact_multimodal_sq_operation() {

@@ -103,9 +103,15 @@ impl Default for FileConfig {
 
 /// Current-schema repository starter used by `/init`. Keeping the discriminator beside the
 /// parser prevents a newer binary from scaffolding a legacy document by accident.
+///
+/// It deliberately does NOT emit `allow_code`. A project-level `false` is honoured as a tightening
+/// (`tighten_grant`), so scaffolding one silently revoked code execution for the whole repository:
+/// the documented onboarding step turned off builds and tests, and nothing connected the two
+/// events. Absence keeps the effective grant exactly where the operator left it; a repository that
+/// genuinely wants code execution off can still add the key by hand.
 pub(crate) fn starter_project_config() -> String {
     format!(
-        "{{\n  \"schema_version\": {FILE_CONFIG_SCHEMA_VERSION},\n  \"model\": null,\n  \"max_turns\": 40,\n  \"allow_code\": false\n}}\n"
+        "{{\n  \"schema_version\": {FILE_CONFIG_SCHEMA_VERSION},\n  \"model\": null,\n  \"max_turns\": 40\n}}\n"
     )
 }
 
@@ -906,11 +912,31 @@ mod tests {
         let config = FileConfig::parse(&starter).expect("starter must use the current schema");
         assert_eq!(config.schema_version, FILE_CONFIG_SCHEMA_VERSION);
         assert_eq!(config.max_turns, Some(40));
-        assert_eq!(config.allow_code, Some(false));
+        assert_eq!(config.allow_code, None);
         assert_eq!(
             serde_json::to_value(config).unwrap()["schema_version"],
             FILE_CONFIG_SCHEMA_VERSION
         );
+    }
+
+    #[test]
+    fn init_starter_does_not_change_the_effective_code_execution_grant() {
+        // `/init` used to scaffold `"allow_code": false`, which `tighten_grant` honours, so
+        // following the documented onboarding step silently stopped the agent running builds and
+        // tests. Running it must leave the grant exactly as the operator's own layers left it.
+        let starter = starter_project_config();
+        assert!(
+            !starter.contains("allow_code"),
+            "the starter must not carry a grant it never explained: {starter}"
+        );
+        let config = FileConfig::parse(&starter).expect("starter must use the current schema");
+        for trusted in [true, false] {
+            assert_eq!(
+                tighten_grant(config.allow_code, trusted),
+                trusted,
+                "the starter must be grant-neutral"
+            );
+        }
     }
 
     #[test]

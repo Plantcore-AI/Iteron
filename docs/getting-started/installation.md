@@ -55,6 +55,18 @@ downloaded release asset with `--help` to inspect the complete interface.
 Each target is built, tested, packaged, and installed on a native hosted runner.
 Windows is not a supported runtime target today.
 
+## Linux prerequisite for code execution
+
+Code execution (`bash`, builds, tests) is confined by bubblewrap on Linux, and the
+sandbox fails **closed**: without a usable `bwrap` the agent can read and edit but
+cannot run anything. Install the `bubblewrap` package, and on Ubuntu 24.04 also
+grant it an AppArmor profile for unprivileged user namespaces.
+
+The installer runs the sandbox's own probe after installing and prints the exact
+remedy as a warning when it fails; installation itself still succeeds. See
+[supported platforms](../reference/platforms.md#linux-requirements) for the
+commands.
+
 ## Verify a release independently
 
 Every release publishes:

@@ -16,10 +16,13 @@ esac
 fixture=$temporary/fixture
 mkdir -p "$fixture" "$temporary/fakebin"
 
+# `-V` is the bare `core <semver>` the installer's smoke tests match exactly; `--version` adds the
+# commit and build date, so a real binary's long form is deliberately not an exact-match target.
 cat > "$temporary/fake-core" <<'EOF'
 #!/bin/sh
 case "${1:-}" in
-  --version) printf 'core 0.0.1\n' ;;
+  -V) printf 'core 0.0.1\n' ;;
+  --version) printf 'core 0.0.1 (0123456789abcdef0123456789abcdef01234567 2026-08-03)\n' ;;
   *) exit 2 ;;
 esac
 EOF
@@ -107,7 +110,8 @@ test ! -e "$install_dir/core"
 PATH="$temporary/fakebin:$PATH" TMPDIR="$temporary/tmp with spaces" CORE_CODE_TEST_FIXTURE=$fixture \
   sh "$repo_root/install.sh" --version v0.0.1 --bin-dir "$install_dir" >/dev/null
 test -x "$install_dir/core"
-test "$("$install_dir/core" --version)" = 'core 0.0.1'
+test "$("$install_dir/core" -V)" = 'core 0.0.1'
+grep -q '0123456789abcdef' <<<"$("$install_dir/core" --version)"
 
 printf 'existing\n' > "$install_dir/core"
 if PATH="$temporary/fakebin:$PATH" CORE_CODE_TEST_FIXTURE=$fixture CORE_CODE_TEST_TAMPER=1 \

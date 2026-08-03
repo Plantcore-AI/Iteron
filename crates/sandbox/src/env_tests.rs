@@ -58,6 +58,29 @@ async fn d4_13_d5_14_unsupported_backend_refuses_instead_of_running_unconfined()
     assert!(matches!(error, SandboxError::Unsupported));
 }
 
+#[test]
+fn the_unsupported_refusal_names_the_missing_dependency() {
+    // The refusal used to say only "unsupported on this platform build", which reads as "wrong
+    // OS" on a Linux host whose sole problem is an absent bubblewrap or a blocked user namespace.
+    let rendered = SandboxError::Unsupported.to_string();
+    assert!(rendered.contains("bubblewrap"), "{rendered}");
+    assert!(rendered.contains("bwrap"), "{rendered}");
+    assert!(rendered.contains("user namespace"), "{rendered}");
+}
+
+#[test]
+fn a_busybox_userland_without_bash_falls_back_to_sh() {
+    // The musl artifact's natural home (Alpine) has no /bin/bash at all, so hardcoding it turned
+    // every confined command into a spawn failure inside a working namespace.
+    assert_eq!(select_confined_shell(true), "/bin/bash");
+    assert_eq!(select_confined_shell(false), "/bin/sh");
+    assert_eq!(
+        confined_shell(),
+        select_confined_shell(std::path::Path::new("/bin/bash").exists()),
+        "the cached resolution must agree with this host"
+    );
+}
+
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn sandbox_strips_secrets_but_keeps_home_and_path() {

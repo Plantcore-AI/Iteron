@@ -134,12 +134,21 @@ impl Hooks {
                 &self.sensitive_env_names,
             )
             .await;
+            // A hook that never started is still fail-open, but it is no longer SILENT. The
+            // operator configured a guardrail; if the interpreter or the script is missing the
+            // hook no-ops forever with nothing to see. Say so once per dispatch, on stderr.
+            if let HookRun::NotStarted(reason) = &out {
+                eprintln!(
+                    "warning: {} hook did not start and had no opinion: {reason}",
+                    event.key()
+                );
+            }
             // DENY convention (matches the leading agent): ONLY exit code 2 blocks. exit 0 allows;
             // any OTHER non-zero (1, 127 from a typo'd command, a spawn error, a timeout) is a hook
             // ERROR, treated as "no opinion" -> allow. This makes a misconfigured hook fail SAFE
             // (it does not wedge every tool), while a deliberate `exit 2` is respected.
             if event == HookEvent::PreToolUse
-                && let Some(out) = out
+                && let HookRun::Completed(out) = out
                 && out.code == 2
             {
                 return HookDecision::Deny(if out.stderr.trim().is_empty() {
@@ -150,6 +159,29 @@ impl Hooks {
             }
         }
         HookDecision::Allow
+    }
+}
+
+/// What one hook dispatch actually did. `NotStarted` used to be indistinguishable from a timeout
+/// or a clean exit 0, which is how a permanently broken hook stayed invisible.
+#[derive(Debug)]
+enum HookRun {
+    /// The process ran to completion; its exit code is the hook's opinion.
+    Completed(HookRunOutput),
+    /// The process never started (missing path, not executable, no pipe). The string says why.
+    NotStarted(String),
+    /// It started but produced no usable opinion: a timeout, or a read/wait failure.
+    NoOpinion,
+}
+
+impl HookRun {
+    /// The completed output, if the hook actually ran to completion.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn completed(self) -> Option<HookRunOutput> {
+        match self {
+            HookRun::Completed(output) => Some(output),
+            HookRun::NotStarted(_) | HookRun::NoOpinion => None,
+        }
     }
 }
 
@@ -255,14 +287,15 @@ where
 }
 
 /// Run one hook command with `ctx` on stdin, bounded by `timeout_secs`. Returns its exit and
-/// bounded, marked output if it ran to completion; spawn/read/wait errors and timeouts are no
-/// opinion, preserving the existing fail-open hook semantics.
+/// bounded, marked output if it ran to completion; spawn/read/wait errors and timeouts remain no
+/// opinion, preserving the existing fail-open hook semantics, but a hook that could not be STARTED
+/// is reported as such rather than collapsing into the same silent `None` as a timeout.
 async fn run_one(
     cmd: &str,
     ctx: &str,
     timeout_secs: u64,
     sensitive_env_names: &[String],
-) -> Option<HookRunOutput> {
+) -> HookRun {
     run_one_with_sensitive_env_names(
         cmd,
         ctx,
@@ -273,7 +306,7 @@ async fn run_one(
 }
 
 #[cfg(test)]
-async fn run_one_with_timeout(cmd: &str, ctx: &str, timeout: Duration) -> Option<HookRunOutput> {
+async fn run_one_with_timeout(cmd: &str, ctx: &str, timeout: Duration) -> HookRun {
     run_one_with_sensitive_env_names(cmd, ctx, timeout, &[]).await
 }
 
@@ -282,33 +315,56 @@ async fn run_one_with_sensitive_env_names(
     ctx: &str,
     timeout: Duration,
     sensitive_env_names: &[String],
-) -> Option<HookRunOutput> {
+) -> HookRun {
+    // The interpreter is resolved rather than hardcoded: the Linux musl artifact's natural home
+    // has `/bin/sh` and no `/bin/bash`, and on a platform with neither the hook must say so
+    // instead of no-opping forever.
+    run_one_with_shell(
+        core_sandbox::confined_shell(),
+        cmd,
+        ctx,
+        timeout,
+        sensitive_env_names,
+    )
+    .await
+}
+
+async fn run_one_with_shell(
+    shell: &str,
+    cmd: &str,
+    ctx: &str,
+    timeout: Duration,
+    sensitive_env_names: &[String],
+) -> HookRun {
     use tokio::io::AsyncWriteExt;
 
-    let mut command = tokio::process::Command::new("/bin/bash");
+    let mut command = tokio::process::Command::new(shell);
     core_sandbox::clear_to_safe_child_env_with_exact(&mut command, sensitive_env_names);
     core_sandbox::configure_process_group(&mut command);
-    let mut child = command
+    let spawned = command
         .arg("-c")
         .arg(cmd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
-        .spawn()
-        .ok()?;
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => return HookRun::NotStarted(format!("{shell} -c: {error}")),
+    };
 
     let Some(mut stdin) = child.stdin.take() else {
         terminate_and_reap(&mut child).await;
-        return None;
+        return HookRun::NotStarted("hook stdin was not piped".to_string());
     };
     let Some(stdout) = child.stdout.take() else {
         terminate_and_reap(&mut child).await;
-        return None;
+        return HookRun::NotStarted("hook stdout was not piped".to_string());
     };
     let Some(stderr) = child.stderr.take() else {
         terminate_and_reap(&mut child).await;
-        return None;
+        return HookRun::NotStarted("hook stderr was not piped".to_string());
     };
 
     // Stdin, stdout and stderr progress concurrently. Unlike `wait_with_output`, both readers
@@ -334,12 +390,13 @@ async fn run_one_with_sensitive_env_names(
     };
 
     match tokio::time::timeout(timeout, work).await {
-        Ok(output) => output,
+        Ok(Some(output)) => HookRun::Completed(output),
+        Ok(None) => HookRun::NoOpinion,
         Err(_) => {
             // Do not rely on `kill_on_drop`: a timed-out hook is explicitly killed and waited so
             // the direct child cannot survive the decision or remain as a zombie.
             terminate_and_reap(&mut child).await;
-            None
+            HookRun::NoOpinion
         }
     }
 }
@@ -408,6 +465,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_hook_that_could_not_be_started_is_reported_not_swallowed() {
+        // The shell was hardcoded outside any cfg and its spawn error went through `.ok()?`, so on
+        // a host without that interpreter every configured hook no-opped with nothing to observe.
+        // Fail-open is still the contract; being silent about it is not.
+        let outcome = run_one_with_shell(
+            "/nonexistent/interpreter/for/hooks",
+            "exit 2",
+            "",
+            Duration::from_secs(2),
+            &[],
+        )
+        .await;
+        let HookRun::NotStarted(reason) = &outcome else {
+            panic!("a missing interpreter must be reported: {outcome:?}");
+        };
+        assert!(
+            reason.contains("/nonexistent/interpreter/for/hooks"),
+            "the report must name what could not be started: {reason}"
+        );
+        assert!(outcome.completed().is_none(), "it produced no opinion");
+    }
+
+    #[tokio::test]
     async fn hook_child_gets_toolchain_env_but_no_exact_pricing_credential() {
         unsafe {
             std::env::set_var(
@@ -424,6 +504,7 @@ mod tests {
             &sensitive,
         )
         .await
+        .completed()
         .expect("hook should run");
         unsafe {
             std::env::remove_var("CORE_TEST_PRICING_KEY");
@@ -452,6 +533,7 @@ mod tests {
         );
         let output = run_one_with_timeout(command, "", Duration::from_secs(10))
             .await
+            .completed()
             .expect("flooding hook should complete while both pipes are drained");
 
         assert_eq!(output.code, 2);
@@ -501,7 +583,10 @@ mod tests {
         ));
         let command = format!("echo $$ > {}; exec sleep 60", shell_quote(&pid_path));
         let output = run_one_with_timeout(&command, "", Duration::from_millis(500)).await;
-        assert!(output.is_none(), "timed-out hook must have no opinion");
+        assert!(
+            matches!(output, HookRun::NoOpinion),
+            "timed-out hook must have no opinion: {output:?}"
+        );
 
         let pid: u32 = std::fs::read_to_string(&pid_path)
             .unwrap()

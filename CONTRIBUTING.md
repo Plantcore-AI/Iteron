@@ -160,8 +160,18 @@ neither is discoverable from a red pull request:
   accepted deliberately.
 
 `review / required-humans` still runs on Actions: it reads the pull request's own
-review state, which has no local equivalent. The Windows lane will run there too,
+review state, which has no local equivalent. `windows / check` runs there too,
 since Windows is the one platform this project cannot self-host.
+
+**Windows is not supported, and nothing has landed toward supporting it.** The
+sandbox returns `Unsupported` for every non-macOS, non-Linux target, no release
+target is Windows, and the runtime lifecycle still assumes a POSIX shell.
+`.github/workflows/windows.yml` runs a **non-blocking** `cargo check` only: it
+reports whether the workspace still compiles for `x86_64-pc-windows-msvc`, so the
+gap between the tree and any Windows claim stays visible instead of being
+asserted. It is deliberately not a required context, and a green check is not a
+support claim. Do not read a closed Windows tracking issue as delivered work;
+`docs/reference/platforms.md` is the authority on what actually runs.
 
 `ci.yml` retains every lane behind `workflow_dispatch`. It is the reference
 definition these local lanes mirror, and the fallback when hosted capacity is

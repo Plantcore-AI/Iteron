@@ -360,7 +360,7 @@ impl Sandbox for Seatbelt {
         let mut cmd = tokio::process::Command::new("/usr/bin/sandbox-exec");
         cmd.arg("-p")
             .arg(&prof)
-            .arg("/bin/bash")
+            .arg(crate::confined_shell())
             .arg("-c")
             .arg(command)
             .current_dir(&conf.workspace);
