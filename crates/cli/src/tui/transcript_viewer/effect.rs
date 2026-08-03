@@ -45,6 +45,9 @@ impl Viewer {
         scope: ExportScope,
         snapshot_revision: u64,
     ) -> Result<Option<Vec<u64>>, String> {
+        if self.work_pending() {
+            return Err("transcript index is updating; export snapshot is not ready".into());
+        }
         if self.authority_revision != Some(snapshot_revision) {
             return Err("transcript changed before the export snapshot was captured".into());
         }
@@ -63,6 +66,9 @@ impl Viewer {
     }
 
     pub(super) fn selected_result_text(&self, blocks: &[Arc<block::Block>]) -> Option<String> {
+        if self.work_pending() {
+            return None;
+        }
         let selected = self.selected_id?;
         if self.query.is_empty() || !self.results.contains(&selected) {
             return None;

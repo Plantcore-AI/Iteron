@@ -16,6 +16,7 @@ fn copied_text_is_secret_and_terminal_control_safe_and_bounded() {
 #[cfg(unix)]
 #[tokio::test]
 async fn direct_argv_adapter_reports_success_and_typed_failure() {
+    let processes = ProcessRegistry::default();
     let output = std::env::temp_dir().join(format!(
         "core-clipboard-{}-{:?}.txt",
         std::process::id(),
@@ -23,7 +24,11 @@ async fn direct_argv_adapter_reports_success_and_typed_failure() {
     ));
     let _ = std::fs::remove_file(&output);
     let success = [CommandSpec::new("/usr/bin/tee", [output.as_os_str()])];
-    assert!(copy_text_with_specs("你好 😀", &success).await.is_ok());
+    assert!(
+        copy_text_with_specs("你好 😀", &success, &processes)
+            .await
+            .is_ok()
+    );
     assert_eq!(std::fs::read_to_string(&output).unwrap(), "你好 😀");
     let _ = std::fs::remove_file(output);
 
@@ -32,7 +37,7 @@ async fn direct_argv_adapter_reports_success_and_typed_failure() {
         std::iter::empty::<&str>(),
     )];
     assert!(matches!(
-        copy_text_with_specs("text", &failure).await,
+        copy_text_with_specs("text", &failure, &processes).await,
         Err(ClipboardError::DispatchedOutcomeUnknown { .. })
     ));
 }
@@ -40,6 +45,7 @@ async fn direct_argv_adapter_reports_success_and_typed_failure() {
 #[cfg(unix)]
 #[tokio::test]
 async fn dispatched_failure_never_falls_through_to_a_second_adapter() {
+    let processes = ProcessRegistry::default();
     let output = std::env::temp_dir().join(format!(
         "core-clipboard-fallback-{}-{:?}.txt",
         std::process::id(),
@@ -51,7 +57,7 @@ async fn dispatched_failure_never_falls_through_to_a_second_adapter() {
         CommandSpec::new("/usr/bin/tee", [output.as_os_str()]),
     ];
     assert!(matches!(
-        copy_text_with_specs("must run once", &specs).await,
+        copy_text_with_specs("must run once", &specs, &processes).await,
         Err(ClipboardError::DispatchedOutcomeUnknown { .. })
     ));
     assert!(!output.exists(), "a dispatched failure retried the payload");
@@ -60,9 +66,17 @@ async fn dispatched_failure_never_falls_through_to_a_second_adapter() {
 #[cfg(unix)]
 #[tokio::test]
 async fn timeout_explicitly_kills_and_reaps_with_unknown_outcome() {
+    let processes = ProcessRegistry::default();
     let spec = CommandSpec::new("/bin/sleep", ["10"]);
     let started = std::time::Instant::now();
-    let report = run_report(&spec, b"", Duration::from_millis(25), InjectedFault::None).await;
+    let report = run_report(
+        &spec,
+        b"",
+        Duration::from_millis(25),
+        InjectedFault::None,
+        &processes,
+    )
+    .await;
     assert!(matches!(
         report.result,
         Err(ClipboardError::DispatchedOutcomeUnknown {
@@ -80,6 +94,7 @@ async fn timeout_explicitly_kills_and_reaps_with_unknown_outcome() {
 #[cfg(unix)]
 #[tokio::test]
 async fn every_injected_post_spawn_error_explicitly_kills_and_reaps() {
+    let processes = ProcessRegistry::default();
     let spec = CommandSpec::new("/bin/sleep", ["10"]);
     for (fault, stage) in [
         (InjectedFault::MissingStdin, PostSpawnStage::MissingStdin),
@@ -87,7 +102,7 @@ async fn every_injected_post_spawn_error_explicitly_kills_and_reaps() {
         (InjectedFault::Shutdown, PostSpawnStage::Shutdown),
         (InjectedFault::Wait, PostSpawnStage::Wait),
     ] {
-        let report = run_report(&spec, b"payload", Duration::from_secs(1), fault).await;
+        let report = run_report(&spec, b"payload", Duration::from_secs(1), fault, &processes).await;
         assert_eq!(report.cleanup, Some(CleanupState::Reaped), "{stage}");
         assert!(matches!(
             report.result,

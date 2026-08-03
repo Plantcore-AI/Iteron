@@ -116,7 +116,10 @@ incremental over stable block ids/revisions, evicts records with the retained tr
 the newest complete block projections at 16 MiB total and 2 MiB per block, a query at 512 bytes,
 results at 512, and selected pretty/raw detail at 64 KiB. A block excluded by either search budget
 is explicitly marked `search-unindexed`, and the header reports the incomplete block count; no
-prefix-only result is presented as a complete search. `/` edits the filter; `j`/`k` and `n`/`N`
+prefix-only result is presented as a complete search. Index projection and result matching each
+advance by at most one bounded entry per interactive-loop turn; the header exposes exact progress,
+and copy/export wait until both transcript and query revisions are authoritative. `/` edits the
+filter while indexing remains pending; `j`/`k` and `n`/`N`
 navigate deterministically; canonical NFC/NFD-equivalent Unicode matches identically. `r` toggles
 pretty/raw; `y` copies the selected block and `Y` the bounded matching-block projection through a
 fixed direct-argv platform adapter; `e` exports the filtered ids and `E` exports all retained blocks
@@ -128,12 +131,21 @@ events, approvals, Ctrl-C, Ctrl-D, SIGTERM, and SIGHUP remain responsive. Copy r
 terminal-control scrubbing, admits only fixed root-owned, non-writable, non-symlink stock adapters,
 and reports every post-dispatch write/shutdown/wait/exit/timeout failure as outcome-unknown without
 trying a second adapter. Every failure before a successful wait explicitly kills and bounded-waits
-the child; a nonzero exit has already been reaped. Export runs in a separately killable copy of the
+the child, then synchronously joins it if the one-second reap window expires; a nonzero exit has
+already been reaped. Export runs in a separately killable copy of the
 current Core executable with a cleared environment and bounded stdin/stdout protocol. Its
-five-second deadline, frontend shutdown, and every post-spawn error kill and bounded-wait that
-helper; every normal and error return from the TUI crosses the same cleanup scope before returning.
-A timed-out publication is reported as outcome-unknown, but no detached blocking thread can mutate
+five-second deadline, frontend shutdown, and every post-spawn error kill that helper, use a
+one-second async reap window, and then synchronously join any remainder; every normal and error
+return from the TUI crosses the same cleanup scope before returning.
+Direct supervisor drop closes the spawn gate and synchronously kills and reaps every registered
+child before returning. A timed-out publication is reported as outcome-unknown, but no detached
+blocking thread can mutate
 the workspace later.
+
+The interactive loop applies at most 64 ordered runtime events from the 1024-slot EQ per turn.
+Lifecycle signals, one-shot effect completion, and terminal input have explicit priority before any
+additional EQ receive, while repaint remains frame-coalesced. A continuously refilled runtime queue
+therefore retains FIFO ordering and producer backpressure without starving control or draw phases.
 
 On Linux, export opens the workspace and every parent with no-follow directory handles, writes and
 fsyncs an anonymous `O_TMPFILE` inode, and exclusively publishes that held inode with `linkat` before

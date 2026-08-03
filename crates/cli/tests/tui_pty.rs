@@ -1006,7 +1006,7 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
     #[cfg(not(target_os = "linux"))]
     pty.wait_until("truthful fail-closed export diagnostic", |pty| {
         pty.screen_text()
-            .contains("secure transcript export requires Linux")
+            .contains("export failed before dispatch: secure transcript")
             && !scratch.repo().join("core-transcript-filtered.md").exists()
     });
 
@@ -1041,7 +1041,7 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
         "slash export fails closed without filesystem mutation",
         |pty| {
             pty.screen_text()
-                .contains("export failed: secure transcript export requires")
+                .contains("export failed before dispatch: secure transcript")
                 && !slash_export.exists()
                 && !slash_export_2.exists()
         },

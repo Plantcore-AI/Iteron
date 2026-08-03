@@ -55,15 +55,21 @@ pub(crate) fn render(frame: &mut Frame, viewer: &mut Viewer, theme: &theme::Them
     } else {
         format!(" · search incomplete {} blocks", viewer.incomplete_entries)
     };
+    let work_status = viewer
+        .work_progress()
+        .map_or_else(String::new, |(phase, done, total)| {
+            format!(" · {phase} {done}/{total}")
+        });
     let effect_status = viewer
         .pending_effect
         .map_or_else(String::new, |label| format!(" · {label} pending"));
     let header_text = format!(
-        " Transcript · block {selected_position}/{} · {}{}{}{} ",
+        " Transcript · block {selected_position}/{} · {}{}{}{}{} ",
         viewer.entries.len(),
         if viewer.raw { "raw" } else { "pretty" },
         result_status,
         index_status,
+        work_status,
         effect_status,
     );
     let header_style = if theme.mono {
@@ -157,7 +163,9 @@ pub(crate) fn render(frame: &mut Frame, viewer: &mut Viewer, theme: &theme::Them
             Style::default().fg(theme.muted),
         ),
     ]);
-    let second = if viewer.notice.is_empty() {
+    let second = if viewer.notice.is_empty() && viewer.work_progress().is_some() {
+        "index update pending · input and redraw remain active · snapshot effects wait".to_string()
+    } else if viewer.notice.is_empty() {
         "y copy block · Y copy match · e export filtered · E export all · esc close".to_string()
     } else {
         viewer.notice.clone()

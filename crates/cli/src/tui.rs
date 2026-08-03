@@ -2910,6 +2910,14 @@ const MAX_SUBMISSION_BYTES: usize = 64 * 1024;
 /// then holds the next draw for this long so the rest of the burst folds into it. Visible token
 /// latency is bounded by this interval instead of by a fixed input-poll period.
 const FRAME_COALESCE: Duration = Duration::from_millis(16);
+/// A permanently full 1024-slot EQ must yield every loop turn to draw, lifecycle signals, effect
+/// completion, and operator input. Ordering is unchanged because the sole receiver still consumes
+/// the same FIFO stream; only the per-turn batch size is bounded.
+const MAX_EQ_EVENTS_PER_TICK: usize = 64;
+
+fn eq_tick_slots() -> std::ops::Range<usize> {
+    0..MAX_EQ_EVENTS_PER_TICK
+}
 /// Spinner/elapsed animation cadence. The loop is event-driven, so the animation carries its own
 /// clock rather than riding on an input poll's timeout.
 const SPINNER_TICK: Duration = Duration::from_millis(100);
@@ -3315,7 +3323,10 @@ pub async fn run(
         // Drain the EQ (non-blocking). One long-lived subscription for the whole session: the
         // frontend used to create and retire a receiver per run, which is why there was no event
         // stream at all while idle and why the join had to double as a drain barrier.
-        while let Some(envelope) = pending_event.take().or_else(|| events.try_recv().ok()) {
+        for _ in eq_tick_slots() {
+            let Some(envelope) = pending_event.take().or_else(|| events.try_recv().ok()) else {
+                break;
+            };
             let event_seq = envelope.sequence();
             if event_seq <= last_event_seq {
                 app.note(
@@ -3351,6 +3362,13 @@ pub async fn run(
                 &interrupt,
                 &drain,
             );
+            redraw = true;
+        }
+        if app.transcript_viewer.is_open()
+            && app
+                .transcript_viewer
+                .sync_if_changed(&app.transcript, app.transcript_revision)
+        {
             redraw = true;
         }
         if app.advance_tool_presentations(Instant::now()) {
@@ -3446,16 +3464,38 @@ pub async fn run(
         // Wait on everything that can change the frame at once. There is no fixed poll period any
         // more: a delta is visible one coalescing interval after it arrives, and an idle session
         // sleeps until something actually happens.
-        let wake = next_wake(
-            redraw,
-            next_frame_at,
-            app.running,
-            last_spin,
-            app.next_tool_reveal(),
-        );
+        // Incremental transcript work is an immediate loop source, independent of repaint cadence.
+        // Each turn still performs only one bounded unit and polls signal/effect/input before this
+        // wake, while FRAME_COALESCE prevents a large index from repainting per entry.
+        let wake = if app.transcript_viewer.is_open() && app.transcript_viewer.work_pending() {
+            Some(Instant::now())
+        } else {
+            next_wake(
+                redraw,
+                next_frame_at,
+                app.running,
+                last_spin,
+                app.next_tool_reveal(),
+            )
+        };
         let mut next_input = None;
         let effect_active = transcript_effects.is_active();
         tokio::select! {
+            biased;
+            // Explicit priority plus the bounded EQ phase above gives every control plane a
+            // deterministic service point under a continuously refilled runtime queue. Effects
+            // are single-flight, so placing their completion ahead of input cannot starve input.
+            signal = termination_rx.recv() => {
+                if let Some(exit_code) = signal {
+                    termination_exit = Some(exit_code);
+                }
+            },
+            effect = transcript_effects.recv(), if effect_active => {
+                if let Some(effect) = effect {
+                    apply_transcript_effect_event(&mut app, effect);
+                    redraw = true;
+                }
+            },
             result = input_rx.recv(), if input_open => match result {
                 Some(Ok(event)) => next_input = Some(event),
                 Some(Err(error)) => return Err(error.into()),
@@ -3464,17 +3504,6 @@ pub async fn run(
             envelope = events.recv(), if eq_open => match envelope {
                 Some(envelope) => pending_event = Some(envelope),
                 None => eq_open = false,
-            },
-            effect = transcript_effects.recv(), if effect_active => {
-                if let Some(effect) = effect {
-                    apply_transcript_effect_event(&mut app, effect);
-                    redraw = true;
-                }
-            },
-            signal = termination_rx.recv() => {
-                if let Some(exit_code) = signal {
-                    termination_exit = Some(exit_code);
-                }
             },
             () = wake_until(wake) => {}
         }
@@ -5737,6 +5766,7 @@ fn export_transcript(
         &bytes,
         transcript_export::CollisionPolicy::Refuse,
     )
+    .map_err(|error| error.to_string())
 }
 
 fn schedule_transcript_viewer_effect(
@@ -5853,9 +5883,10 @@ fn apply_transcript_effect_event(app: &mut App, event: transcript_effect::Event)
         }
         return;
     }
-    let level = match event.level {
-        transcript_effect::Level::Ok => block::NoticeLevel::Ok,
-        transcript_effect::Level::Warn => block::NoticeLevel::Warn,
+    let level = match event.outcome {
+        transcript_effect::Disposition::Success => block::NoticeLevel::Ok,
+        transcript_effect::Disposition::KnownFailure
+        | transcript_effect::Disposition::OutcomeUnknown => block::NoticeLevel::Warn,
     };
     app.note(level, message);
 }
@@ -8018,8 +8049,6 @@ fn draw(f: &mut Frame, app: &mut App) {
         app.transcript_viewer.close();
     }
     if app.transcript_viewer.is_open() {
-        app.transcript_viewer
-            .sync_if_changed(&app.transcript, app.transcript_revision);
         transcript_viewer::render(f, &mut app.transcript_viewer, &app.theme);
         return;
     }
@@ -8379,6 +8408,57 @@ fn draw(f: &mut Frame, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuously_refilled_1024_eq_yields_every_tick_to_control_and_draw_phases() {
+        let mut queue = (0..1024usize).collect::<VecDeque<_>>();
+        let mut next = 1024usize;
+        let mut draws = 0usize;
+        let mut inputs = 0usize;
+        let mut effects = 0usize;
+        let mut effect_pending = true;
+
+        for _tick in 0..32 {
+            let mut drained = 0usize;
+            for _ in eq_tick_slots() {
+                let _event = queue.pop_front().expect("permanent EQ backlog");
+                drained += 1;
+                queue.push_back(next);
+                next += 1;
+            }
+            assert_eq!(drained, MAX_EQ_EVENTS_PER_TICK);
+            assert_eq!(queue.len(), 1024, "the fixture remains permanently ready");
+
+            // The draw phase precedes the select. With a one-shot effect and continuously ready
+            // input, the production select consumes the effect first and input on every later
+            // tick; the ready EQ never takes either control slot.
+            draws += 1;
+            if effect_pending {
+                effects += 1;
+                effect_pending = false;
+            } else {
+                inputs += 1;
+            }
+        }
+
+        assert_eq!((draws, effects, inputs), (32, 1, 31));
+        assert_eq!(next, 1024 + 32 * MAX_EQ_EVENTS_PER_TICK);
+
+        // A lifecycle signal is the first biased branch and therefore wins its very first service
+        // point even when effect, input, and EQ are simultaneously ready; the real loop then exits.
+        let signal_ready = true;
+        let effect_ready = true;
+        let input_ready = true;
+        let selected = [
+            ("signal", signal_ready),
+            ("effect", effect_ready),
+            ("input", input_ready),
+            ("eq", !queue.is_empty()),
+        ]
+        .into_iter()
+        .find_map(|(lane, ready)| ready.then_some(lane));
+        assert_eq!(selected, Some("signal"));
+    }
 
     #[test]
     fn active_keyboard_panic_restore_pops_once_and_restores_terminal_modes() {

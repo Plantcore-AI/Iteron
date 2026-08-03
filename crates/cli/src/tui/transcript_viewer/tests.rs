@@ -5,11 +5,29 @@ fn user(id: u64, text: &str) -> Arc<block::Block> {
     Arc::new(block::Block::new(id, block::BlockKind::User(text.into())))
 }
 
+fn settle(viewer: &mut Viewer, blocks: &[Arc<block::Block>], revision: u64) {
+    for _ in 0..(MAX_INDEX_ENTRIES * 2 + 4) {
+        if !viewer.work_pending() {
+            return;
+        }
+        viewer.sync_if_changed(blocks, revision);
+    }
+    panic!("bounded viewer work did not settle");
+}
+
+fn replace_query(viewer: &mut Viewer, blocks: &[Arc<block::Block>], revision: u64, query: &str) {
+    viewer.query = query.into();
+    viewer.query_revision = viewer.query_revision.wrapping_add(1);
+    viewer.query_changed();
+    settle(viewer, blocks, revision);
+}
+
 #[test]
 fn index_reconciles_revisions_and_eviction_and_searches_unicode() {
     let mut viewer = Viewer::default();
     let mut blocks = vec![user(1, "alpha 你好"), user(2, "beta 😀")];
     viewer.open("你好", &blocks, 1);
+    settle(&mut viewer, &blocks, 1);
     assert_eq!(viewer.results, vec![1]);
     assert_eq!(viewer.selected_id, Some(1));
 
@@ -19,14 +37,11 @@ fn index_reconciles_revisions_and_eviction_and_searches_unicode() {
     blocks.remove(1);
     blocks.push(user(3, "emoji 😀 result"));
     viewer.sync_if_changed(&blocks, 2);
+    settle(&mut viewer, &blocks, 2);
     assert!(viewer.entries.iter().all(|entry| entry.id != 2));
-    viewer.query = "😀".into();
-    viewer.query_revision = viewer.query_revision.wrapping_add(1);
-    viewer.refresh_results_if_changed();
+    replace_query(&mut viewer, &blocks, 2, "😀");
     assert_eq!(viewer.results, vec![3]);
-    viewer.query = "東京".into();
-    viewer.query_revision = viewer.query_revision.wrapping_add(1);
-    viewer.refresh_results_if_changed();
+    replace_query(&mut viewer, &blocks, 2, "東京");
     assert_eq!(viewer.results, vec![1]);
 }
 
@@ -35,6 +50,7 @@ fn navigation_raw_copy_and_filters_are_deterministic_and_bounded() {
     let blocks = vec![user(1, "first"), user(2, "second needle")];
     let mut viewer = Viewer::default();
     viewer.open("needle", &blocks, 1);
+    settle(&mut viewer, &blocks, 1);
     assert_eq!(
         viewer.export_ids(ExportScope::Filtered, 1),
         Ok(Some(vec![2]))
@@ -60,6 +76,7 @@ fn query_and_detail_escape_controls_and_limit_state() {
     let blocks = vec![user(1, &format!("{secret}\u{1b}]52;bad\u{7}"))];
     let mut viewer = Viewer::default();
     viewer.open("\u{1b}abc\n😀", &blocks, 1);
+    settle(&mut viewer, &blocks, 1);
     assert_eq!(viewer.query, "abc😀");
     let detail = viewer.detail.as_ref().unwrap();
     assert!(!detail.text.contains(&secret));
@@ -99,6 +116,7 @@ fn search_matches_beyond_the_old_prefix_and_surfaces_any_unindexed_block() {
     let blocks = vec![user(1, &long)];
     let mut viewer = Viewer::default();
     viewer.open("late-needle", &blocks, 1);
+    settle(&mut viewer, &blocks, 1);
     assert_eq!(viewer.results, vec![1]);
     assert_eq!(viewer.incomplete_entries, 0);
     viewer.editing_query = false;
@@ -118,6 +136,7 @@ fn search_matches_beyond_the_old_prefix_and_surfaces_any_unindexed_block() {
 
     let oversized = vec![user(2, &"z".repeat(MAX_INDEX_BLOCK_BYTES + 1))];
     viewer.open("z", &oversized, 2);
+    settle(&mut viewer, &oversized, 2);
     assert!(viewer.results.is_empty());
     assert_eq!(viewer.incomplete_entries, 1);
     assert!(!viewer.entries[0].complete);
@@ -153,6 +172,7 @@ fn changed_live_blocks_reindex_only_after_an_authority_revision() {
     ))];
     let mut viewer = Viewer::default();
     viewer.open("after", &blocks, 1);
+    settle(&mut viewer, &blocks, 1);
     assert!(viewer.results.is_empty());
     let block = Arc::make_mut(&mut blocks[0]);
     let block::BlockKind::Tool(card) = &mut block.kind else {
@@ -161,6 +181,7 @@ fn changed_live_blocks_reindex_only_after_an_authority_revision() {
     card.output = "after".into();
     block.touch();
     viewer.sync_if_changed(&blocks, 2);
+    settle(&mut viewer, &blocks, 2);
     assert_eq!(viewer.results, vec![9]);
 }
 
@@ -190,6 +211,7 @@ fn row_cache_handles_combining_wide_tiny_and_zero_surfaces() {
     let blocks = vec![user(1, text)];
     let mut viewer = Viewer::default();
     viewer.open("", &blocks, 1);
+    settle(&mut viewer, &blocks, 1);
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(1, 1)).unwrap();
     terminal
         .draw(|frame| super::render(frame, &mut viewer, &crate::theme::Theme::dark()))
@@ -217,10 +239,9 @@ fn result_count_and_query_bytes_are_hard_bounded() {
         .collect::<Vec<_>>();
     let mut viewer = Viewer::default();
     viewer.open(&"x".repeat(MAX_QUERY_BYTES * 2), &blocks, 1);
+    settle(&mut viewer, &blocks, 1);
     assert!(viewer.query.len() <= MAX_QUERY_BYTES);
-    viewer.query = "same".into();
-    viewer.query_revision = viewer.query_revision.wrapping_add(1);
-    viewer.refresh_results_if_changed();
+    replace_query(&mut viewer, &blocks, 1, "same");
     assert_eq!(viewer.results.len(), MAX_RESULTS);
     assert!(viewer.results_truncated);
     assert!(viewer.export_ids(ExportScope::Filtered, 1).is_err());
@@ -231,6 +252,7 @@ fn one_hundred_stable_frames_do_zero_index_result_or_detail_rebuilds() {
     let blocks = vec![user(1, &"stable 你好 ".repeat(2_000))];
     let mut viewer = Viewer::default();
     viewer.open("stable", &blocks, 7);
+    settle(&mut viewer, &blocks, 7);
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
     terminal
         .draw(|frame| super::render(frame, &mut viewer, &crate::theme::Theme::dark()))
@@ -254,12 +276,14 @@ fn one_changed_block_projects_once_while_unchanged_entries_are_reused() {
         .collect::<Vec<_>>();
     let mut viewer = Viewer::default();
     viewer.open("stable", &blocks, 1);
+    settle(&mut viewer, &blocks, 1);
     let before = viewer.work;
     let changed = Arc::make_mut(&mut blocks[42]);
     changed.kind = block::BlockKind::User("changed needle".into());
     changed.touch();
 
     viewer.sync_if_changed(&blocks, 2);
+    settle(&mut viewer, &blocks, 2);
 
     assert_eq!(viewer.work.index_syncs, before.index_syncs + 1);
     assert_eq!(
@@ -275,18 +299,26 @@ fn key_reconciles_a_no_draw_authority_update_before_emitting_snapshot_ids() {
     let mut blocks = vec![user(1, "needle before draw"), user(2, "stable")];
     let mut viewer = Viewer::default();
     viewer.open("needle", &blocks, 41);
+    settle(&mut viewer, &blocks, 41);
     viewer.editing_query = false;
     assert_eq!(viewer.results, vec![1]);
 
     let changed = Arc::make_mut(&mut blocks[0]);
     changed.kind = block::BlockKind::User("changed without a draw".into());
     changed.touch();
-    let effect = viewer
+    let stale_attempt = viewer.key(KeyCode::Char('e'), KeyModifiers::NONE, &blocks, 42);
+    assert!(
+        stale_attempt.is_none(),
+        "no effect may escape while revision 42 is indexing"
+    );
+    assert!(viewer.export_ids(ExportScope::Filtered, 42).is_err());
+    settle(&mut viewer, &blocks, 42);
+    let current_effect = viewer
         .key(KeyCode::Char('e'), KeyModifiers::NONE, &blocks, 42)
-        .expect("export key");
+        .expect("current export key");
 
     assert!(matches!(
-        effect,
+        current_effect,
         Effect::Export {
             scope: ExportScope::Filtered,
             snapshot_revision: 42,
@@ -307,6 +339,7 @@ fn global_index_budget_stops_projecting_older_block_bytes() {
     let mut viewer = Viewer::default();
 
     viewer.open("x", &blocks, 1);
+    settle(&mut viewer, &blocks, 1);
 
     assert!(viewer.work.index_projections < blocks.len());
     assert!(viewer.entries.iter().any(|entry| entry.needs_projection));
@@ -324,6 +357,7 @@ fn unrelated_live_revision_does_not_rescrub_an_unchanged_oversized_entry() {
     ];
     let mut viewer = Viewer::default();
     viewer.open("live", &blocks, 1);
+    settle(&mut viewer, &blocks, 1);
     assert_eq!(viewer.incomplete_entries, 1);
     let before = viewer.work;
     let live = Arc::make_mut(&mut blocks[1]);
@@ -331,6 +365,7 @@ fn unrelated_live_revision_does_not_rescrub_an_unchanged_oversized_entry() {
     live.touch();
 
     viewer.sync_if_changed(&blocks, 2);
+    settle(&mut viewer, &blocks, 2);
 
     assert_eq!(viewer.incomplete_entries, 1);
     assert_eq!(
@@ -367,7 +402,85 @@ fn canonically_equivalent_unicode_queries_match_the_same_block() {
     let blocks = vec![user(1, "caf\u{e9}"), user(2, "Cafe\u{301}")];
     let mut viewer = Viewer::default();
     viewer.open("CAFE\u{301}", &blocks, 1);
+    settle(&mut viewer, &blocks, 1);
     assert_eq!(viewer.results, vec![1, 2]);
+}
+
+#[test]
+fn indexing_has_a_deterministic_one_projection_tick_budget_and_keeps_input_live() {
+    let blocks = (0..12)
+        .map(|id| user(id, &format!("block-{id} {}", "x".repeat(32 * 1024))))
+        .collect::<Vec<_>>();
+    let mut viewer = Viewer::default();
+
+    viewer.open("", &blocks, 7);
+    assert_eq!(viewer.work.index_projections, 1);
+    assert_eq!(viewer.work_progress(), Some(("indexing", 1, 12)));
+
+    viewer.key(KeyCode::Char('/'), KeyModifiers::NONE, &blocks, 7);
+    let after_search_key = viewer.work.index_projections;
+    assert_eq!(
+        after_search_key, 2,
+        "one key turn may project only one block"
+    );
+    viewer.key(KeyCode::Char('n'), KeyModifiers::NONE, &blocks, 7);
+    assert_eq!(
+        viewer.query, "n",
+        "query input remains active while indexing"
+    );
+    assert_eq!(
+        viewer.work.index_projections,
+        after_search_key + 1,
+        "query input cannot accidentally trigger an unbounded catch-up scan"
+    );
+
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 10)).unwrap();
+    terminal
+        .draw(|frame| super::render(frame, &mut viewer, &crate::theme::Theme::dark()))
+        .unwrap();
+    let screen = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(screen.contains("indexing 3/12"));
+    assert!(screen.contains("search> n"));
+    assert!(viewer.export_ids(ExportScope::All, 7).is_err());
+}
+
+#[test]
+fn result_matching_is_incremental_and_snapshot_effects_wait_for_exact_query_revision() {
+    let blocks = (0..6)
+        .map(|id| user(id, if id == 5 { "needle" } else { "hay" }))
+        .collect::<Vec<_>>();
+    let mut viewer = Viewer::default();
+    viewer.open("", &blocks, 9);
+    settle(&mut viewer, &blocks, 9);
+
+    replace_query_without_settle(&mut viewer, "needle");
+    assert_eq!(viewer.work_progress(), Some(("searching", 0, 6)));
+    viewer.sync_if_changed(&blocks, 9);
+    assert_eq!(viewer.work_progress(), Some(("searching", 1, 6)));
+    assert!(
+        viewer.results.is_empty(),
+        "partial results are not snapshot authority"
+    );
+    assert!(viewer.export_ids(ExportScope::Filtered, 9).is_err());
+
+    settle(&mut viewer, &blocks, 9);
+    assert_eq!(viewer.results, vec![5]);
+    assert_eq!(
+        viewer.export_ids(ExportScope::Filtered, 9),
+        Ok(Some(vec![5]))
+    );
+}
+
+fn replace_query_without_settle(viewer: &mut Viewer, query: &str) {
+    viewer.query = query.into();
+    viewer.query_revision = viewer.query_revision.wrapping_add(1);
+    viewer.query_changed();
 }
 
 #[test]

@@ -32,6 +32,10 @@ const MAX_RESULTS: usize = 512;
 const MAX_DETAIL_BYTES: usize = 64 * 1024;
 const MAX_DETAIL_ROWS: usize = 64 * 1024;
 const MAX_NOTICE_BYTES: usize = 512;
+/// One projection can consume at most `MAX_INDEX_BLOCK_BYTES`; doing exactly one per loop turn
+/// prevents the former 16 MiB synchronous burst from monopolizing input, effects, signals, or draw.
+const MAX_INDEX_PROJECTIONS_PER_TICK: usize = 1;
+const MAX_SEARCH_ENTRIES_PER_TICK: usize = 1;
 
 #[derive(Debug)]
 pub(super) struct Entry {
@@ -68,7 +72,10 @@ struct WorkCounters {
     detail_rebuilds: usize,
 }
 
-#[derive(Debug, Default)]
+mod index;
+use index::{IndexJob, SearchJob};
+
+#[derive(Default)]
 pub(crate) struct Viewer {
     open: bool,
     entries: Vec<Entry>,
@@ -89,6 +96,8 @@ pub(crate) struct Viewer {
     index_revision: u64,
     query_revision: u64,
     results_revision: Option<(u64, u64)>,
+    index_job: Option<IndexJob>,
+    search_job: Option<SearchJob>,
     work: WorkCounters,
 }
 
@@ -120,11 +129,6 @@ impl Viewer {
         self.pending_effect = None;
         self.authority_revision = None;
         self.sync_if_changed(blocks, authority_revision);
-        if self.query.is_empty() {
-            self.selected_id = self.entries.last().map(|entry| entry.id);
-        }
-        self.refresh_results_if_changed();
-        self.ensure_detail(blocks);
     }
 
     pub(crate) fn close(&mut self) {
@@ -141,87 +145,8 @@ impl Viewer {
         self.pending_effect = None;
         self.authority_revision = None;
         self.results_revision = None;
-    }
-
-    /// Incrementally update changed entries, while preserving transcript order and dropping ids
-    /// that block eviction or `/clear` removed. Search is complete for each admitted block; the
-    /// newest blocks receive a hard 16 MiB global budget and every omitted block is surfaced.
-    pub(crate) fn sync_if_changed(
-        &mut self,
-        blocks: &[Arc<block::Block>],
-        authority_revision: u64,
-    ) {
-        if self.authority_revision == Some(authority_revision) {
-            return;
-        }
-        self.authority_revision = Some(authority_revision);
-        self.work.index_syncs = self.work.index_syncs.saturating_add(1);
-        let mut old: HashMap<u64, Entry> = self
-            .entries
-            .drain(..)
-            .map(|entry| (entry.id, entry))
-            .collect();
-        let blocks = &blocks[blocks.len().saturating_sub(MAX_INDEX_ENTRIES)..];
-        let mut rebuilt = Vec::with_capacity(blocks.len());
-        let mut remaining = MAX_INDEX_TOTAL_BYTES;
-        for block in blocks.iter().rev() {
-            let entry = match old.remove(&block.id) {
-                Some(mut entry) if entry.revision == block.revision && entry.complete => {
-                    if entry.folded.len() <= remaining {
-                        entry
-                    } else {
-                        entry.required_bytes = Some(entry.folded.len());
-                        entry.folded.clear();
-                        entry.complete = false;
-                        entry
-                    }
-                }
-                Some(entry)
-                    if entry.revision == block.revision
-                        && !entry.needs_projection
-                        && entry.required_bytes.is_none_or(|bytes| bytes > remaining) =>
-                {
-                    entry
-                }
-                Some(entry) if entry.revision == block.revision && remaining == 0 => entry,
-                _ if remaining == 0 => projection::unprojected_block(block),
-                _ => {
-                    self.work.index_projections = self.work.index_projections.saturating_add(1);
-                    index_block(block, remaining)
-                }
-            };
-            if !entry.complete {
-                // The newest-prefix budget is authoritative. Once one complete projection does not
-                // fit (globally or per block), do not scrub/fold every older block merely to
-                // discover that it also loses priority; retain metadata-only placeholders and
-                // revisit them only if a later reconciliation frees budget.
-                remaining = 0;
-            } else {
-                remaining = remaining.saturating_sub(entry.folded.len());
-            }
-            rebuilt.push(entry);
-        }
-        rebuilt.reverse();
-        self.entries = rebuilt;
-        self.entry_positions.clear();
-        self.entry_positions.extend(
-            self.entries
-                .iter()
-                .enumerate()
-                .map(|(position, entry)| (entry.id, position)),
-        );
-        self.incomplete_entries = self.entries.iter().filter(|entry| !entry.complete).count();
-        if self
-            .selected_id
-            .is_some_and(|id| !self.entry_positions.contains_key(&id))
-        {
-            self.selected_id = self.entries.last().map(|entry| entry.id);
-            self.scroll = 0;
-            self.detail = None;
-        }
-        self.index_revision = self.index_revision.wrapping_add(1);
-        self.refresh_results_if_changed();
-        self.ensure_detail(blocks);
+        self.index_job = None;
+        self.search_job = None;
     }
 
     pub(crate) fn handle_paste(
@@ -238,10 +163,12 @@ impl Viewer {
         append_query(&mut self.query, text);
         if self.query != before {
             self.query_revision = self.query_revision.wrapping_add(1);
+            self.query_changed();
         }
-        self.refresh_results_if_changed();
         self.scroll = 0;
-        self.ensure_detail(blocks);
+        if !self.work_pending() {
+            self.ensure_detail(blocks);
+        }
     }
 
     pub(crate) fn scroll_up(&mut self, rows: usize) {
@@ -283,7 +210,7 @@ impl Viewer {
                 KeyCode::Backspace => {
                     if self.query.pop().is_some() {
                         self.query_revision = self.query_revision.wrapping_add(1);
-                        self.refresh_results_if_changed();
+                        self.query_changed();
                         self.scroll = 0;
                     }
                 }
@@ -294,17 +221,30 @@ impl Viewer {
                     append_query(&mut self.query, &character.to_string());
                     if self.query.len() != before {
                         self.query_revision = self.query_revision.wrapping_add(1);
+                        self.query_changed();
                     }
-                    self.refresh_results_if_changed();
                     self.scroll = 0;
                 }
                 _ => {}
             }
-            self.ensure_detail(blocks);
+            if !self.work_pending() {
+                self.ensure_detail(blocks);
+            }
             return None;
         }
 
         let shift = modifiers.contains(KeyModifiers::SHIFT);
+        if self.work_pending() {
+            match code {
+                KeyCode::Esc | KeyCode::Char('q') => self.close(),
+                KeyCode::Char('/') => self.editing_query = true,
+                KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.editing_query = true;
+                }
+                _ => self.set_notice("transcript index is updating; snapshot effects are pending"),
+            }
+            return None;
+        }
         match code {
             KeyCode::Esc | KeyCode::Char('q') => self.close(),
             KeyCode::Char('/') => self.editing_query = true,
@@ -359,48 +299,6 @@ impl Viewer {
         }
         self.ensure_detail(blocks);
         None
-    }
-
-    fn refresh_results_if_changed(&mut self) {
-        let revision = (self.index_revision, self.query_revision);
-        if self.results_revision == Some(revision) {
-            return;
-        }
-        self.results_revision = Some(revision);
-        self.work.result_rebuilds = self.work.result_rebuilds.saturating_add(1);
-        self.results.clear();
-        self.results_truncated = false;
-        let folded_query = fold(&self.query);
-        if folded_query.is_empty() {
-            self.result_position = 0;
-            return;
-        }
-        for entry in &self.entries {
-            if entry.folded.contains(&folded_query) {
-                if self.results.len() == MAX_RESULTS {
-                    self.results_truncated = true;
-                    break;
-                }
-                self.results.push(entry.id);
-            }
-        }
-        if self.results.is_empty() {
-            self.result_position = 0;
-            if self
-                .selected_id
-                .is_none_or(|id| !self.entry_positions.contains_key(&id))
-            {
-                self.selected_id = self.entries.last().map(|entry| entry.id);
-            }
-            self.detail = None;
-            return;
-        }
-        self.result_position = self
-            .selected_id
-            .and_then(|selected| self.results.iter().position(|id| *id == selected))
-            .unwrap_or(0);
-        self.selected_id = self.results.get(self.result_position).copied();
-        self.detail = None;
     }
 
     fn move_selection(&mut self, delta: isize) {

@@ -7,6 +7,7 @@
 //! they provide an equivalent inode-relative, atomically published implementation.
 
 use std::collections::HashSet;
+use std::fmt;
 #[cfg(target_os = "linux")]
 use std::path::Component;
 use std::path::{Path, PathBuf};
@@ -26,6 +27,37 @@ const MAX_VERSION_ATTEMPTS: usize = 100;
 pub(crate) enum CollisionPolicy {
     Refuse,
     Versioned,
+}
+
+/// Export failures retain whether publication is known not to have happened. This distinction is
+/// carried over the helper protocol; callers must never turn an uncertain post-publication
+/// durability result into an ordinary retryable failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(super) enum ExportError {
+    KnownFailure(String),
+    OutcomeUnknown(String),
+}
+
+impl fmt::Display for ExportError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::KnownFailure(message) | Self::OutcomeUnknown(message) => {
+                formatter.write_str(message)
+            }
+        }
+    }
+}
+
+impl ExportError {
+    fn known(message: impl Into<String>) -> Self {
+        Self::KnownFailure(message.into())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn unknown(message: impl Into<String>) -> Self {
+        Self::OutcomeUnknown(message.into())
+    }
 }
 
 pub(crate) fn body(
@@ -57,7 +89,7 @@ pub(super) fn export_bytes(
     requested: &str,
     bytes: &[u8],
     collision: CollisionPolicy,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, ExportError> {
     export_bytes_with_hooks(workspace, requested, bytes, collision, || {}, || {})
 }
 
@@ -67,8 +99,10 @@ pub(super) fn export_bytes(
     _requested: &str,
     _bytes: &[u8],
     _collision: CollisionPolicy,
-) -> Result<PathBuf, String> {
-    Err("secure transcript export requires Linux anonymous-inode publication".into())
+) -> Result<PathBuf, ExportError> {
+    Err(ExportError::known(
+        "secure transcript export requires Linux anonymous-inode publication",
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -292,22 +326,25 @@ fn export_bytes_with_hooks<A, P>(
     collision: CollisionPolicy,
     acquired: A,
     mut before_publish: P,
-) -> Result<PathBuf, String>
+) -> Result<PathBuf, ExportError>
 where
     A: FnOnce(),
     P: FnMut(),
 {
-    let (parents, leaf) = parse_relative(requested)?;
+    let (parents, leaf) = parse_relative(requested).map_err(ExportError::known)?;
     let root = unix::open_root(workspace)
-        .map_err(|_| "workspace is unavailable or is a symlink".to_string())?;
-    let parent = unix::traverse(&root, &parents)
-        .map_err(|_| "export parent is unavailable, non-directory, or symlinked".to_string())?;
+        .map_err(|_| ExportError::known("workspace is unavailable or is a symlink"))?;
+    let parent = unix::traverse(&root, &parents).map_err(|_| {
+        ExportError::known("export parent is unavailable, non-directory, or symlinked")
+    })?;
     acquired();
     let rebound = unix::traverse(&root, &parents)
         .and_then(|current| unix::same_directory(&parent, &current))
         .unwrap_or(false);
     if !rebound {
-        return Err("export parent changed after its directory capability was acquired".into());
+        return Err(ExportError::known(
+            "export parent changed after its directory capability was acquired",
+        ));
     }
 
     let attempts = match collision {
@@ -322,10 +359,9 @@ where
                     .and_then(|current| unix::same_directory(&parent, &current))
                     .unwrap_or(false);
                 if !still_bound {
-                    return Err(
-                        "export parent changed during dispatch; publication outcome is unknown"
-                            .into(),
-                    );
+                    return Err(ExportError::unknown(
+                        "export parent changed during dispatch; publication outcome is unknown",
+                    ));
                 }
                 let mut display = workspace.to_path_buf();
                 for component in &parents {
@@ -336,17 +372,25 @@ where
             }
             Err(unix::WriteError::Exists) if collision == CollisionPolicy::Versioned => continue,
             Err(unix::WriteError::Exists) => {
-                return Err("export target already exists; choose a new path".into());
+                return Err(ExportError::known(
+                    "export target already exists; choose a new path",
+                ));
             }
             Err(unix::WriteError::Known) => {
-                return Err("export failed before the final file was published".into());
+                return Err(ExportError::known(
+                    "export failed before the final file was published",
+                ));
             }
             Err(unix::WriteError::OutcomeUnknown) => {
-                return Err("export was dispatched but durability outcome is unknown".into());
+                return Err(ExportError::unknown(
+                    "export was dispatched but durability outcome is unknown",
+                ));
             }
         }
     }
-    Err("could not allocate a unique export filename within 100 attempts".into())
+    Err(ExportError::known(
+        "could not allocate a unique export filename within 100 attempts",
+    ))
 }
 
 #[cfg(test)]
@@ -377,7 +421,7 @@ mod tests {
         collision: CollisionPolicy,
     ) -> Result<PathBuf, String> {
         let bytes = body(blocks, selected_ids)?;
-        export_bytes(workspace, requested, &bytes, collision)
+        export_bytes(workspace, requested, &bytes, collision).map_err(|error| error.to_string())
     }
 
     #[cfg(target_os = "linux")]

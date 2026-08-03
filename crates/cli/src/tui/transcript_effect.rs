@@ -10,6 +10,7 @@ use std::path::PathBuf;
 #[cfg(all(test, unix))]
 use std::process::Stdio;
 use std::sync::Arc;
+#[cfg(test)]
 use std::time::Duration;
 
 use crate::block;
@@ -17,10 +18,10 @@ use crate::block;
 use super::{clipboard, transcript_export};
 
 mod worker;
-use worker::WorkerRun;
+use worker::{WorkerFailure, WorkerRun};
 pub(crate) use worker::{worker_main, worker_requested};
-
-const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(7);
+mod process;
+pub(super) use process::ProcessRegistry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Origin {
@@ -29,15 +30,16 @@ pub(crate) enum Origin {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Level {
-    Ok,
-    Warn,
+pub(crate) enum Disposition {
+    Success,
+    KnownFailure,
+    OutcomeUnknown,
 }
 
 #[derive(Debug)]
 pub(crate) struct Event {
     pub(crate) origin: Origin,
-    pub(crate) level: Level,
+    pub(crate) outcome: Disposition,
     pub(crate) message: String,
     final_slot: bool,
 }
@@ -93,6 +95,7 @@ pub(crate) struct Supervisor {
     task: Option<tokio::task::JoinHandle<()>>,
     cancel: Option<tokio::sync::watch::Sender<bool>>,
     label: Option<&'static str>,
+    processes: ProcessRegistry,
 }
 
 impl Default for Supervisor {
@@ -104,6 +107,7 @@ impl Default for Supervisor {
             task: None,
             cancel: None,
             label: None,
+            processes: ProcessRegistry::default(),
         }
     }
 }
@@ -126,7 +130,12 @@ impl Supervisor {
         let (cancel, cancelled) = tokio::sync::watch::channel(false);
         self.label = Some(label);
         self.cancel = Some(cancel);
-        self.task = Some(tokio::spawn(run(request, sender, cancelled)));
+        self.task = Some(tokio::spawn(run(
+            request,
+            sender,
+            cancelled,
+            self.processes.clone(),
+        )));
         Ok(())
     }
 
@@ -142,23 +151,20 @@ impl Supervisor {
         Some(event)
     }
 
-    /// Cancel the active effect and wait for its owned process to be reaped. The outer task is
-    /// aborted only after the effect-specific bound has already expired; child processes are also
-    /// `kill_on_drop` and, on Linux, carry a parent-death signal as a final containment layer.
+    /// Cancel the active effect and join its owned task only after any child process is reaped.
+    /// Child processes are also `kill_on_drop` and, on Linux, carry a parent-death signal as a final
+    /// containment layer, but neither fallback substitutes for this explicit ownership boundary.
     pub(crate) async fn shutdown(&mut self) {
-        let Some(mut task) = self.task.take() else {
+        let Some(task) = self.task.take() else {
             return;
         };
         if let Some(cancel) = self.cancel.take() {
             let _ = cancel.send(true);
         }
-        if tokio::time::timeout(SHUTDOWN_DEADLINE, &mut task)
-            .await
-            .is_err()
-        {
-            task.abort();
-            let _ = tokio::time::timeout(worker::REAP_DEADLINE, task).await;
-        }
+        // Every production branch owns its own bounded deadline and kill/reap path. Awaiting the
+        // task here is the joined ownership boundary; aborting it would drop a `Child` after kill
+        // without evidence that the kernel reaped it.
+        let _ = task.await;
         self.label = None;
         while self.receiver.try_recv().is_ok() {}
     }
@@ -171,6 +177,20 @@ impl Supervisor {
     }
 }
 
+impl Drop for Supervisor {
+    fn drop(&mut self) {
+        let Some(task) = self.task.take() else {
+            return;
+        };
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(true);
+        }
+        self.processes.close_and_reap();
+        task.abort();
+        self.label = None;
+    }
+}
+
 async fn send(sender: &tokio::sync::mpsc::Sender<Event>, event: Event) {
     let _ = sender.send(event).await;
 }
@@ -179,6 +199,7 @@ async fn run(
     request: Request,
     sender: tokio::sync::mpsc::Sender<Event>,
     mut cancelled: tokio::sync::watch::Receiver<bool>,
+    processes: ProcessRegistry,
 ) {
     match request {
         Request::Copy {
@@ -188,15 +209,25 @@ async fn run(
         } => {
             // Clipboard owns its own three-second deadline plus explicit kill-and-reap path. Let it
             // settle instead of dropping that cleanup future when frontend shutdown is requested.
-            let (level, message) = match clipboard::copy_text(&text).await {
-                Ok(adapter) => (Level::Ok, format!("copied {subject} via {adapter}")),
-                Err(error) => (Level::Warn, format!("copy failed: {error}")),
+            let (outcome, message) = match clipboard::copy_text(&text, &processes).await {
+                Ok(adapter) => (
+                    Disposition::Success,
+                    format!("copied {subject} via {adapter}"),
+                ),
+                Err(error @ clipboard::ClipboardError::DispatchedOutcomeUnknown { .. }) => (
+                    Disposition::OutcomeUnknown,
+                    format!("copy outcome unknown after dispatch: {error}"),
+                ),
+                Err(error) => (
+                    Disposition::KnownFailure,
+                    format!("copy failed before dispatch: {error}"),
+                ),
             };
             send(
                 &sender,
                 Event {
                     origin,
-                    level,
+                    outcome,
                     message,
                     final_slot: true,
                 },
@@ -218,8 +249,8 @@ async fn run(
                         &sender,
                         Event {
                             origin,
-                            level: Level::Warn,
-                            message: format!("export failed: {error}"),
+                            outcome: Disposition::KnownFailure,
+                            message: format!("export failed before dispatch: {error}"),
                             final_slot: true,
                         },
                     )
@@ -227,69 +258,32 @@ async fn run(
                     return;
                 }
             };
-            match worker::run_export_worker(
-                &workspace,
-                &requested,
-                collision,
-                &bytes,
-                &mut cancelled,
-            )
-            .await
-            {
-                WorkerRun::Completed(Ok(path)) => {
-                    send(
-                        &sender,
-                        Event {
-                            origin,
-                            level: Level::Ok,
-                            message: format!("exported -> {}", path.display()),
-                            final_slot: true,
-                        },
-                    )
-                    .await;
-                }
-                WorkerRun::Completed(Err(error)) => {
-                    send(
-                        &sender,
-                        Event {
-                            origin,
-                            level: Level::Warn,
-                            message: format!("export failed: {error}"),
-                            final_slot: true,
-                        },
-                    )
-                    .await;
-                }
-                WorkerRun::TimedOut { reaped } => {
-                    send(
-                        &sender,
-                        Event {
-                            origin,
-                            level: Level::Warn,
-                            message: format!(
-                                "export exceeded 5s; outcome unknown; worker {}",
-                                if reaped {
-                                    "was killed and reaped"
-                                } else {
-                                    "could not be reaped within 1s"
-                                }
-                            ),
-                            final_slot: true,
-                        },
-                    )
-                    .await;
-                }
-                WorkerRun::Cancelled => {}
+            if let Some(event) = export_event(
+                origin,
+                worker::run_export_worker(
+                    &workspace,
+                    &requested,
+                    collision,
+                    &bytes,
+                    &mut cancelled,
+                    &processes,
+                )
+                .await,
+            ) {
+                send(&sender, event).await;
             }
         }
         #[cfg(test)]
         Request::Delay { duration, origin } => {
-            tokio::time::sleep(duration).await;
+            tokio::select! {
+                _ = worker::cancelled(&mut cancelled) => return,
+                _ = tokio::time::sleep(duration) => {}
+            }
             send(
                 &sender,
                 Event {
                     origin,
-                    level: Level::Ok,
+                    outcome: Disposition::Success,
                     message: "test effect complete".into(),
                     final_slot: true,
                 },
@@ -298,9 +292,37 @@ async fn run(
         }
         #[cfg(all(test, unix))]
         Request::ProcessDelay { started, origin } => {
-            run_test_process(started, origin, &sender, &mut cancelled).await;
+            run_test_process(started, origin, &sender, &mut cancelled, &processes).await;
         }
     }
+}
+
+fn export_event(origin: Origin, run: WorkerRun) -> Option<Event> {
+    let (outcome, message) = match run {
+        WorkerRun::Completed(Ok(path)) => (
+            Disposition::Success,
+            format!("exported -> {}", path.display()),
+        ),
+        WorkerRun::Completed(Err(WorkerFailure::KnownFailure(error))) => (
+            Disposition::KnownFailure,
+            format!("export failed before dispatch: {error}"),
+        ),
+        WorkerRun::Completed(Err(WorkerFailure::OutcomeUnknown {
+            stage,
+            detail,
+            cleanup,
+        })) => (
+            Disposition::OutcomeUnknown,
+            format!("export outcome unknown after dispatch ({stage}: {detail}); {cleanup}"),
+        ),
+        WorkerRun::Cancelled => return None,
+    };
+    Some(Event {
+        origin,
+        outcome,
+        message,
+        final_slot: true,
+    })
 }
 
 #[cfg(all(test, unix))]
@@ -309,32 +331,36 @@ async fn run_test_process(
     origin: Origin,
     sender: &tokio::sync::mpsc::Sender<Event>,
     cancelled_rx: &mut tokio::sync::watch::Receiver<bool>,
+    processes: &ProcessRegistry,
 ) {
-    let mut child = match tokio::process::Command::new("/bin/sleep")
+    let mut command = tokio::process::Command::new("/bin/sleep");
+    command
         .arg("30")
         .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-    {
+        .kill_on_drop(true);
+    let mut child = match processes.spawn(&mut command) {
         Ok(child) => child,
         Err(_) => return,
     };
     let Some(pid) = child.id() else {
-        let _ = worker::kill_and_reap(&mut child).await;
+        let _ = worker::kill_and_reap(&mut child, processes).await;
         return;
     };
     let _ = started.send(pid);
     tokio::select! {
         _ = worker::cancelled(cancelled_rx) => {
-            let _ = worker::kill_and_reap(&mut child).await;
+            let _ = worker::kill_and_reap(&mut child, processes).await;
         }
-        _ = child.wait() => {
+        result = child.wait() => {
+            if result.is_ok() {
+                processes.reaped(Some(pid));
+            }
             send(sender, Event {
                 origin,
-                level: Level::Ok,
+                outcome: Disposition::Success,
                 message: "test process complete".into(),
                 final_slot: true,
             }).await;
@@ -345,6 +371,64 @@ async fn run_test_process(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn injected_post_dispatch_faults_are_typed_unknown_with_exact_ui_text() {
+        use worker::{Cleanup, PostDispatchStage};
+
+        for (stage, label) in [
+            (
+                PostDispatchStage::RequestWriteOrShutdown,
+                "request write/shutdown",
+            ),
+            (PostDispatchStage::Wait, "helper wait"),
+            (PostDispatchStage::Exit, "helper exit"),
+            (
+                PostDispatchStage::MissingResponse,
+                "missing helper response",
+            ),
+            (
+                PostDispatchStage::OversizeResponse,
+                "oversize helper response",
+            ),
+            (
+                PostDispatchStage::MalformedResponse,
+                "malformed helper response",
+            ),
+        ] {
+            let event = export_event(
+                Origin::Viewer,
+                WorkerRun::Completed(Err(WorkerFailure::OutcomeUnknown {
+                    stage,
+                    detail: "injected evidence loss".into(),
+                    cleanup: Cleanup::Reaped,
+                })),
+            )
+            .expect("post-dispatch ambiguity emits one terminal event");
+            assert_eq!(event.outcome, Disposition::OutcomeUnknown, "{label}");
+            assert_eq!(
+                event.message,
+                format!(
+                    "export outcome unknown after dispatch ({label}: injected evidence loss); \
+                     worker was killed and reaped"
+                )
+            );
+            assert!(event.is_final());
+        }
+
+        let known = export_event(
+            Origin::Slash,
+            WorkerRun::Completed(Err(WorkerFailure::KnownFailure(
+                "request exceeds bound".into(),
+            ))),
+        )
+        .unwrap();
+        assert_eq!(known.outcome, Disposition::KnownFailure);
+        assert_eq!(
+            known.message,
+            "export failed before dispatch: request exceeds bound"
+        );
+    }
 
     #[tokio::test]
     async fn active_effect_is_single_flight_while_unrelated_events_remain_responsive() {
@@ -408,6 +492,30 @@ mod tests {
         // SAFETY: signal 0 performs no mutation and only asks whether this exact PID still exists.
         let probe = unsafe { libc::kill(pid as libc::pid_t, 0) };
         assert_eq!(probe, -1, "shutdown returned with the helper process alive");
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn direct_owner_drop_synchronously_reaps_the_registered_helper() {
+        let mut supervisor = Supervisor::default();
+        let (started, pid) = tokio::sync::oneshot::channel();
+        supervisor
+            .start(Request::ProcessDelay {
+                started,
+                origin: Origin::Viewer,
+            })
+            .unwrap();
+        let pid = pid.await.unwrap();
+
+        drop(supervisor);
+
+        // SAFETY: signal 0 is a read-only liveness probe for the exact registered child pid.
+        let probe = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        assert_eq!(probe, -1, "Supervisor::drop returned with its helper alive");
         assert_eq!(
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::ESRCH)
