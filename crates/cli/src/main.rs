@@ -9,8 +9,10 @@ mod commands;
 mod config;
 mod editor;
 mod environment;
+mod external_editor;
 mod highlight;
 mod image_input;
+mod keymap;
 mod markdown;
 mod mcp;
 mod output;
@@ -1060,6 +1062,11 @@ async fn run_cli() -> anyhow::Result<u8> {
             "warning: ignoring `prompt_history` in the project config (untrusted origin); configure prompt retention in ~/.core/config.json"
         );
     }
+    if file.tui_keymap.is_some() || file.external_editor.is_some() {
+        eprintln!(
+            "warning: ignoring `tui_keymap`/`external_editor` in the project config (untrusted origin); configure terminal input in ~/.core/config.json"
+        );
+    }
     // Retry tuning is resolved at the composition root with project input structurally ignored.
     // It remains deliberately inactive while `RetryProvider` reports opaque internal attempts:
     // the kernel refuses that decorator until every physical request gets its own durable intent.
@@ -1824,7 +1831,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         // USER config only, exactly like the hooks above: an endpoint is an exfiltration target and
         // a cloned repo must never be able to name one.
         let telemetry = runtime::telemetry::TelemetrySink::load_user(&home);
-        hooks.set_sensitive_env_names(credential_env_names);
+        hooks.set_sensitive_env_names(credential_env_names.clone());
         agent.hooks = hooks;
         agent.telemetry = telemetry;
         if !agent.hooks.is_empty() {
@@ -1856,8 +1863,13 @@ async fn run_cli() -> anyhow::Result<u8> {
             cli.task,
             provider_directory,
             route,
-            completion_notifications.enabled,
-            user_file.prompt_history.unwrap_or_default(),
+            tui::RunConfig {
+                completion_notifications: completion_notifications.enabled,
+                history_mode: user_file.prompt_history.unwrap_or_default(),
+                keymap: user_file.tui_keymap.clone(),
+                external_editor: user_file.external_editor.clone(),
+                sensitive_env_names: credential_env_names,
+            },
             startup,
         )
         .await?;

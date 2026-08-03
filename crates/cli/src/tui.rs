@@ -27,7 +27,7 @@ use crate::route::RouteView;
 use crate::runtime::{
     UiEvent, WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi, WorkflowUiEvent,
 };
-use crate::{block, prompt_history, startup, surface, theme};
+use crate::{block, keymap, prompt_history, startup, surface, theme};
 use core_ctx::ContextEstimate;
 use core_obs::CostState;
 use core_protocol::{
@@ -850,6 +850,8 @@ struct App {
     /// Captured delivers wheel/click events to Core; released gives mouse ownership back to the
     /// terminal for native text selection and copying.
     mouse_capture: mouse_capture::State,
+    /// Truthful projection of the live keymap/Vim state; updated before routing each key.
+    keymap_status: String,
     // live-accumulating current assistant paragraph (so streamed text coalesces into one line)
     cur_text: String,
     cur_text_revision: u64,
@@ -982,6 +984,7 @@ impl App {
             last_view_h: 0,
             quit: false,
             mouse_capture: mouse_capture::State::default(),
+            keymap_status: "keys:standard".into(),
             cur_text: String::new(),
             cur_text_revision: 0,
             cur_doc_revision: 0,
@@ -2769,6 +2772,50 @@ impl TermGuard {
     fn toggle_mouse_capture(&mut self) -> std::io::Result<mouse_capture::State> {
         self.mouse_capture.toggle()
     }
+
+    /// Temporarily hand the physical terminal to an operator-owned external editor. Keyboard
+    /// enhancement is popped before leaving and deliberately stays off after resume: the panic
+    /// hook owns the original restorer, so blindly pushing a second frame would make cleanup
+    /// ambiguous. Portable input remains fully functional.
+    fn suspend_for_external_editor(&mut self) -> std::io::Result<mouse_capture::State> {
+        let desired_mouse = self.mouse_capture.state();
+        self.mouse_capture.release()?;
+        let mut stdout = std::io::stdout();
+        let suspended = (|| {
+            let _ = self.keyboard.restorer().restore(&mut stdout)?;
+            terminal::disable_raw_mode()?;
+            execute!(stdout, DisableBracketedPaste)?;
+            execute!(stdout, cursor::Show)?;
+            execute!(
+                stdout,
+                crossterm::style::SetAttribute(crossterm::style::Attribute::Reset)
+            )?;
+            execute!(stdout, crossterm::style::ResetColor)?;
+            execute!(stdout, terminal::LeaveAlternateScreen)?;
+            Ok(())
+        })();
+        if suspended.is_err() {
+            restore_terminal_modes(&mut stdout);
+        }
+        suspended.map(|()| desired_mouse)
+    }
+
+    fn resume_after_external_editor(
+        &mut self,
+        desired_mouse: mouse_capture::State,
+    ) -> std::io::Result<()> {
+        terminal::enable_raw_mode()?;
+        if let Err(error) = execute!(
+            std::io::stdout(),
+            terminal::EnterAlternateScreen,
+            EnableBracketedPaste
+        ) {
+            restore_terminal(&self.keyboard.restorer());
+            return Err(error);
+        }
+        self.mouse_capture.set(desired_mouse)?;
+        Ok(())
+    }
 }
 impl Drop for TermGuard {
     fn drop(&mut self) {
@@ -2839,6 +2886,149 @@ async fn wake_until(deadline: Option<Instant>) {
     }
 }
 
+enum InputThreadControl {
+    Pause(std::sync::mpsc::SyncSender<()>),
+    Resume,
+}
+
+fn service_input_control(receiver: &std::sync::mpsc::Receiver<InputThreadControl>) -> bool {
+    let Ok(command) = receiver.try_recv() else {
+        return true;
+    };
+    match command {
+        InputThreadControl::Resume => true,
+        InputThreadControl::Pause(acknowledge) => {
+            let _ = acknowledge.send(());
+            loop {
+                match receiver.recv() {
+                    Ok(InputThreadControl::Resume) => return true,
+                    Ok(InputThreadControl::Pause(acknowledge)) => {
+                        let _ = acknowledge.send(());
+                    }
+                    Err(_) => return false,
+                }
+            }
+        }
+    }
+}
+
+fn update_keymap_status(app: &mut App, keymap: &keymap::Keymap, vim: &keymap::Vim) {
+    app.keymap_status = match (keymap.mode(), vim.state()) {
+        (keymap::Mode::Standard, _) if keymap.is_custom() => "keys:custom",
+        (keymap::Mode::Standard, _) => "keys:standard",
+        (keymap::Mode::Vim, keymap::VimState::Insert) => "vim:insert",
+        (keymap::Mode::Vim, keymap::VimState::Normal) => "vim:normal",
+    }
+    .into();
+}
+
+fn apply_vim_action(app: &mut App, action: keymap::VimAction) {
+    match action {
+        keymap::VimAction::EnterInsert
+        | keymap::VimAction::EnterNormal
+        | keymap::VimAction::Consumed => {}
+        keymap::VimAction::AppendInsert => app.editor.right(),
+        keymap::VimAction::AppendEndInsert => app.editor.end(),
+        keymap::VimAction::InsertStart => app.editor.home(),
+        keymap::VimAction::Left => app.editor.left(),
+        keymap::VimAction::Right => app.editor.right(),
+        keymap::VimAction::Home => app.editor.home(),
+        keymap::VimAction::End => app.editor.end(),
+        keymap::VimAction::WordLeft => app.editor.word_left(),
+        keymap::VimAction::WordRight => app.editor.word_right(),
+        keymap::VimAction::Delete => app.editor.delete(),
+        keymap::VimAction::Clear => app.editor.clear_recoverable(),
+        keymap::VimAction::HistoryPrevious if !app.running => app.editor.history_prev(),
+        keymap::VimAction::HistoryNext if !app.running => app.editor.history_next(),
+        keymap::VimAction::HistoryPrevious | keymap::VimAction::HistoryNext => {}
+    }
+}
+
+fn reload_operator_keymap(
+    app: &mut App,
+    active: &mut keymap::Keymap,
+    vim: &mut keymap::Vim,
+    external_editor_command: &mut Option<Vec<String>>,
+) {
+    match crate::config::FileConfig::load_user().and_then(|config| {
+        let keymap =
+            keymap::Keymap::from_config(config.tui_keymap.as_ref()).map_err(anyhow::Error::msg)?;
+        Ok((keymap, config.external_editor))
+    }) {
+        Ok((next, editor)) => {
+            *active = next;
+            *external_editor_command = editor;
+            vim.reset();
+            app.note(
+                block::NoticeLevel::Info,
+                "reloaded operator keymap and external-editor configuration",
+            );
+        }
+        Err(error) => {
+            *active = keymap::Keymap::default();
+            *external_editor_command = None;
+            vim.reset();
+            app.note(
+                block::NoticeLevel::Warn,
+                format!("keymap reload failed; using built-in bindings: {error}"),
+            );
+        }
+    }
+    update_keymap_status(app, active, vim);
+}
+
+async fn external_edit_round_trip(
+    term: &mut Terminal<
+        ratatui::backend::CrosstermBackend<notification::LiveTerminalWriter<std::io::Stdout>>,
+    >,
+    guard: &mut TermGuard,
+    input_control: &std::sync::mpsc::Sender<InputThreadControl>,
+    workspace: &Path,
+    configured: Option<Vec<String>>,
+    draft: &str,
+    sensitive_env_names: &[String],
+) -> Result<Result<String, String>, String> {
+    let (acknowledge, acknowledged) = std::sync::mpsc::sync_channel(0);
+    input_control
+        .send(InputThreadControl::Pause(acknowledge))
+        .map_err(|_| "terminal input reader is no longer available".to_owned())?;
+    if acknowledged
+        .recv_timeout(TERMINAL_READ_SLICE + Duration::from_secs(1))
+        .is_err()
+    {
+        // The reader may observe Pause after this timeout. Queue Resume before returning so it
+        // cannot become stranded in the pause loop with exclusive ownership of stdin.
+        let _ = input_control.send(InputThreadControl::Resume);
+        return Ok(Err("terminal input reader did not pause in time".to_owned()));
+    }
+
+    let desired_mouse = match guard.suspend_for_external_editor() {
+        Ok(state) => state,
+        Err(error) => {
+            let _ = input_control.send(InputThreadControl::Resume);
+            return Err(format!(
+                "could not suspend the Core terminal for editing: {error}"
+            ));
+        }
+    };
+    let edited = crate::external_editor::edit(
+        crate::config::config_home(),
+        workspace,
+        configured,
+        draft,
+        sensitive_env_names,
+    )
+    .await;
+    let resumed = guard
+        .resume_after_external_editor(desired_mouse)
+        .map_err(|error| format!("could not restore the Core terminal after editing: {error}"));
+    let _ = input_control.send(InputThreadControl::Resume);
+    resumed?;
+    term.clear()
+        .map_err(|error| format!("could not repaint after external editing: {error}"))?;
+    Ok(edited)
+}
+
 /// Run the TUI. The agent runs in a background task streaming `UiEvent`s; the render loop drains
 /// them and redraws. For follow-ups the same agent continues via `follow_up`.
 /// Enter the interactive frontend.
@@ -2851,15 +3041,29 @@ async fn wake_until(deadline: Option<Instant>) {
 /// speak the runtime's protocol has nothing useful to draw, and a diagnostic printed from inside
 /// the alternate screen is a diagnostic nobody reads: the terminal guard restores the screen on the
 /// way out and takes the message with it.
+pub(crate) struct RunConfig {
+    pub(crate) completion_notifications: bool,
+    pub(crate) history_mode: PromptHistoryMode,
+    pub(crate) keymap: Option<keymap::Config>,
+    pub(crate) external_editor: Option<Vec<String>>,
+    pub(crate) sensitive_env_names: Vec<String>,
+}
+
 pub async fn run(
     attached: app_server::Attached,
     initial_task: Option<String>,
     mut providers: ProviderDirectory,
     route: RouteView,
-    completion_notifications: bool,
-    history_mode: PromptHistoryMode,
+    config: RunConfig,
     mut startup: startup::StartupTiming,
 ) -> anyhow::Result<()> {
+    let RunConfig {
+        completion_notifications,
+        history_mode,
+        keymap: keymap_config,
+        external_editor: mut external_editor_command,
+        sensitive_env_names,
+    } = config;
     eprintln!(
         "app server: TUI attached as a versioned client (SQ/EQ protocol v{})",
         attached.handle.client.negotiated_version()
@@ -2895,6 +3099,16 @@ pub async fn run(
         }
     });
     let history_writer = prompt_history::Writer::new(history_store);
+    let (mut active_keymap, initial_keymap_warning) =
+        match keymap::Keymap::from_config(keymap_config.as_ref()) {
+            Ok(keymap) => (keymap, None),
+            Err(error) => (
+                keymap::Keymap::default(),
+                Some(format!("invalid keymap; using built-in bindings: {error}")),
+            ),
+        };
+    let mut vim = keymap::Vim::default();
+    let mut keymap_watcher = keymap::Watcher::new(crate::config::user_config_path());
     // Drain promises a real workspace checkpoint. Probe once before raw mode so a non-Git
     // workspace can reject that verb explicitly without blocking or breaking the terminal.
     let drain_available = core_record::checkpoint_supported(&facts.workspace);
@@ -2938,13 +3152,16 @@ pub async fn run(
     if let Some(warning) = history_warning {
         app.note(block::NoticeLevel::Warn, warning);
     }
+    if let Some(warning) = initial_keymap_warning {
+        app.note(block::NoticeLevel::Warn, warning);
+    }
+    update_keymap_status(&mut app, &active_keymap, &vim);
     app.hyperlink_policy = hyperlink::Policy::detect(&repo);
     app.mode = initial_state.mode;
     app.effort = initial_state.effort;
     app.model = initial_state.model.clone();
     app.model_context_window = facts.initial_model_context_window;
     app.route = route;
-    let provider_credential_envs = providers.credential_env_names();
 
     // Paint before probing. Everything the first frame needs is already resolved, and a terminal
     // that answers neither query must not be able to delay it.
@@ -2974,9 +3191,13 @@ pub async fn run(
     // session sat in a 1 s poll hole. The demultiplexer moves with the reader, so a late OSC 11 or
     // keyboard-enhancement reply is still swallowed instead of becoming synthetic operator input.
     let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<std::io::Result<CEvent>>(256);
+    let (input_control_tx, input_control_rx) = std::sync::mpsc::channel::<InputThreadControl>();
     std::thread::spawn(move || {
         loop {
             if input_tx.is_closed() {
+                return;
+            }
+            if !service_input_control(&input_control_rx) {
                 return;
             }
             match terminal_input.read(TERMINAL_READ_SLICE) {
@@ -3091,7 +3312,7 @@ pub async fn run(
                         &mut app,
                         &repo,
                         bash.trim(),
-                        &provider_credential_envs,
+                        &sensitive_env_names,
                         mode,
                         &rules,
                     )
@@ -3250,6 +3471,15 @@ pub async fn run(
                     if k.kind != KeyEventKind::Press {
                         continue;
                     }
+                    if keymap_watcher.changed() {
+                        reload_operator_keymap(
+                            &mut app,
+                            &mut active_keymap,
+                            &mut vim,
+                            &mut external_editor_command,
+                        );
+                    }
+                    let mapped_action = active_keymap.action_for(k.code, k.modifiers);
                     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
 
                     // Global even while a picker or approval owns normal keyboard input: Ctrl-T is
@@ -3376,6 +3606,94 @@ pub async fn run(
                     let alt = k.modifiers.contains(KeyModifiers::ALT);
                     let shift = k.modifiers.contains(KeyModifiers::SHIFT);
                     let menu_open = app.completion.is_some();
+
+                    if let Some(action) = mapped_action {
+                        match action {
+                            keymap::Action::ExternalEditor if !app.running => {
+                                let original = app.editor.text();
+                                match external_edit_round_trip(
+                                    &mut term,
+                                    &mut guard,
+                                    &input_control_tx,
+                                    &repo,
+                                    external_editor_command.clone(),
+                                    &original,
+                                    &sensitive_env_names,
+                                )
+                                .await
+                                {
+                                    Ok(Ok(edited)) => {
+                                        app.editor.replace_text(&edited);
+                                        app.completion = None;
+                                        app.resume_handoff = None;
+                                        app.note(
+                                            block::NoticeLevel::Ok,
+                                            format!(
+                                                "external editor applied a {}-byte draft",
+                                                edited.len()
+                                            ),
+                                        );
+                                        app.refresh_completion(&repo);
+                                    }
+                                    Ok(Err(error)) => app.note(block::NoticeLevel::Warn, error),
+                                    Err(error) => return Err(anyhow::anyhow!(error)),
+                                }
+                                vim.reset();
+                                update_keymap_status(&mut app, &active_keymap, &vim);
+                                continue;
+                            }
+                            keymap::Action::ExternalEditor => {
+                                app.note(
+                                    block::NoticeLevel::Info,
+                                    "external editing is available between turns",
+                                );
+                                continue;
+                            }
+                            keymap::Action::ToggleFold => {
+                                app.toggle_last_fold();
+                                continue;
+                            }
+                            keymap::Action::RestoreDraft if !app.running => {
+                                if app.editor.restore_recently_cleared() {
+                                    app.resume_handoff = None;
+                                    app.refresh_completion(&repo);
+                                }
+                                continue;
+                            }
+                            keymap::Action::ReverseSearch if !app.running && !menu_open => {
+                                if !shift
+                                    && app.editor.is_empty()
+                                    && let Some(task) = app.retryable_task.clone()
+                                {
+                                    submit_turn(&mut app, &session, &mut notifier, task);
+                                } else if !app.editor.reverse_search_previous() {
+                                    app.status = "no older matching prompt".into();
+                                }
+                                app.refresh_completion(&repo);
+                                continue;
+                            }
+                            keymap::Action::RestoreDraft | keymap::Action::ReverseSearch => {
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Pickers and approvals have already consumed their keys above. The completion
+                    // menu gets first Esc/navigation handling below; otherwise Vim normal mode owns
+                    // ordinary editor keys before readline insertion can see them.
+                    if !menu_open
+                        && let Some(action) = vim.route(
+                            active_keymap.mode() == keymap::Mode::Vim,
+                            k.code,
+                            k.modifiers,
+                        )
+                    {
+                        apply_vim_action(&mut app, action);
+                        update_keymap_status(&mut app, &active_keymap, &vim);
+                        app.refresh_completion(&repo);
+                        continue;
+                    }
+
                     let mut refresh = false;
                     match k.code {
                         KeyCode::Char('c') if ctrl => {
@@ -3418,14 +3736,6 @@ pub async fn run(
                             } else {
                                 app.quit = true;
                             }
-                        }
-                        // Ctrl-O: expand/collapse the most recent tool/thinking/error block (CC's ctrl+o).
-                        KeyCode::Char('o') if ctrl => app.toggle_last_fold(),
-                        // One bounded draft slot: Ctrl-C/Esc clears safely; Ctrl-Z restores once
-                        // without conflating submitted history with unsent recovery.
-                        KeyCode::Char('z') if ctrl && app.editor.restore_recently_cleared() => {
-                            app.resume_handoff = None;
-                            refresh = true;
                         }
                         KeyCode::Char('d') if ctrl && !app.running => {
                             if !app.editor.has_submission() {
@@ -3504,33 +3814,6 @@ pub async fn run(
                         }
                         KeyCode::Esc if menu_open => {
                             app.completion = None;
-                        }
-                        // ---- one-keystroke retry of a failed turn (I-39) ----
-                        KeyCode::Char('r')
-                            if ctrl
-                                && !shift
-                                && !app.running
-                                && !menu_open
-                                && app.editor.is_empty()
-                                && app.retryable_task.is_some() =>
-                        {
-                            let task = app
-                                .retryable_task
-                                .clone()
-                                .expect("guarded by the match arm");
-                            submit_turn(&mut app, &session, &mut notifier, task);
-                            refresh = true;
-                        }
-                        // Ctrl-R searches persisted and current-session history. When an empty
-                        // composer also has a failed turn, the compatibility retry arm above wins;
-                        // Ctrl-Shift-R explicitly walks history from an empty query.
-                        KeyCode::Char('r') | KeyCode::Char('R')
-                            if ctrl && !app.running && !menu_open =>
-                        {
-                            if !app.editor.reverse_search_previous() {
-                                app.status = "no older matching prompt".into();
-                            }
-                            refresh = true;
                         }
                         // ---- input history (idle, no menu) ----
                         KeyCode::Up if !app.running => {
@@ -3655,7 +3938,7 @@ pub async fn run(
                                         &mut app,
                                         &repo,
                                         bash.trim(),
-                                        &provider_credential_envs,
+                                        &sensitive_env_names,
                                         mode,
                                         &rules,
                                     )
@@ -5365,7 +5648,10 @@ async fn handle_registered_command(
                 .iter()
                 .map(|c| item("/", &format!("{} {}", c.name, c.args), c.help))
                 .collect();
-            rows.push(block::PanelRow::Note("keys: ↑↓ history · ←→/Ctrl-A/E/U/K/W edit · @file · !shell · Shift+Tab mode · Ctrl-T mouse/native selection · Ctrl-C interrupt".into()));
+            rows.push(block::PanelRow::Note("keys: ↑↓ history · Ctrl-R search · Ctrl-G external editor · ←→/Ctrl-A/E/U/K/W edit · @file · !shell · Shift+Tab permission mode · Ctrl-T mouse/native selection · Ctrl-C interrupt".into()));
+            rows.push(block::PanelRow::Note(
+                "operator config: tui_keymap supports standard/vim and four conflict-checked actions; lifecycle keys remain reserved".into(),
+            ));
             rows.push(block::PanelRow::Note(
                 "while running: Enter steer · Tab queue · Ctrl-J newline · Alt-Up edit queued · Ctrl-End follow".into(),
             ));
@@ -6729,6 +7015,9 @@ fn status_right_bits(app: &App, density: surface::Density) -> Vec<String> {
     // Mouse ownership is persistent user-facing state, but yields first when a narrow status row
     // needs its safety/liveness text. The hint row independently keeps the Ctrl-T action visible.
     let mut bits = vec![app.mouse_capture.status_label().to_string()];
+    if app.keymap_status != "keys:standard" {
+        bits.push(app.keymap_status.clone());
+    }
     // Economics is drill-down information and the first metadata dropped under pressure. Keep it
     // off the standard surface; `/cost` remains the authoritative full-run view.
     if density == surface::Density::Wide
@@ -7318,6 +7607,8 @@ fn footer_spans(text: &str, theme: &theme::Theme) -> Vec<Span<'static>> {
         "ctrl+t",
         "ctrl+v",
         "ctrl+z",
+        "ctrl+g",
+        "ctrl+r",
         "alt+↑",
         "alt+backspace",
         "ctrl+end",
@@ -7406,7 +7697,7 @@ fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, app: &App) 
             "type to steer · tab queues · ctrl+j newline · esc interrupt"
         }
     } else if !text.is_empty() || !app.editor.attachments().is_empty() {
-        "enter send · ctrl+j newline · alt+backspace remove image · esc clear"
+        "enter send · ctrl+j newline · ctrl+g edit · alt+backspace remove image · esc clear"
     } else if density == surface::Density::Compact {
         "/ commands · @ image/file · ctrl+v image · ? help"
     } else {

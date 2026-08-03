@@ -440,6 +440,23 @@ impl Editor {
         self.persistence_revision = 0;
     }
 
+    /// Replace only composer text after a trusted external-editor round trip. Existing image
+    /// attachments remain ordered on the draft and never cross the editor file boundary.
+    pub fn replace_text(&mut self, text: &str) {
+        let attachments = std::mem::take(&mut self.attachments);
+        self.buf.clear();
+        self.cursor = 0;
+        self.leave_navigation();
+        for character in text.chars() {
+            if character == '\n' || character == '\t' || !is_stripped_control(character) {
+                self.buf.push(character);
+            }
+        }
+        self.cursor = self.buf.len();
+        self.attachments = attachments;
+        self.mark_persistence_change();
+    }
+
     /// Text-only snapshot. Image bytes and paths never enter prompt history.
     pub fn persistence_state(&self) -> crate::prompt_history::State {
         crate::prompt_history::State::new(

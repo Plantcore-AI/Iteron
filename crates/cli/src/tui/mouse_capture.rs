@@ -71,6 +71,16 @@ impl<W: Write> Controller<W> {
         Ok(next)
     }
 
+    pub(super) fn state(&self) -> State {
+        self.state
+    }
+
+    pub(super) fn set(&mut self, state: State) -> io::Result<State> {
+        state.write_to(&mut self.writer)?;
+        self.state = state;
+        Ok(state)
+    }
+
     /// Emit disable even when the tracked state is already released. Teardown must repair a
     /// terminal whose mode drifted independently of our in-memory projection.
     pub(super) fn release(&mut self) -> io::Result<()> {

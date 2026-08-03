@@ -61,6 +61,12 @@ pub struct FileConfig {
     /// Project configuration is parsed but ignored by the composition root because a cloned
     /// repository cannot decide whether operator text is retained outside that repository.
     pub prompt_history: Option<PromptHistoryMode>,
+    /// Interactive input mode and the closed set of remappable composer actions. Operator-owned:
+    /// repository content cannot take over terminal lifecycle keys.
+    pub tui_keymap: Option<crate::keymap::Config>,
+    /// External editor argv. It is executed directly (never through a shell) and consumed only
+    /// from trusted user configuration.
+    pub external_editor: Option<Vec<String>>,
     /// Session effort. The shared schema accepts it for trusted user config; a repository value is
     /// deliberately ignored because effort changes cost and orchestration authority.
     pub effort: Option<String>,
@@ -104,6 +110,8 @@ impl Default for FileConfig {
             retry: None,
             completion_notifications: None,
             prompt_history: None,
+            tui_keymap: None,
+            external_editor: None,
             effort: None,
             provider: None,
             base_url: None,
@@ -355,6 +363,10 @@ impl FileConfig {
         if let Some(retry) = &self.retry {
             retry.validate()?;
         }
+        crate::keymap::Keymap::from_config(self.tui_keymap.as_ref())?;
+        if let Some(command) = &self.external_editor {
+            crate::external_editor::validate_command(command)?;
+        }
         if let Some(effort) = self.effort.as_deref()
             && core_protocol::Effort::parse(effort).is_none()
         {
@@ -596,6 +608,8 @@ const SETTABLE_KEYS: &[&str] = &[
     "allow_code",
     "completion_notifications",
     "prompt_history",
+    "tui_keymap",
+    "external_editor",
     "compaction_trigger_tokens",
 ];
 
@@ -647,6 +661,23 @@ pub(crate) fn apply_setting(config: &mut FileConfig, key: &str, value: &str) -> 
                 }
             })
         }
+        "tui_keymap" => {
+            config.tui_keymap = Some(
+                serde_json::from_str(value)
+                    .map_err(|error| format!("`{key}` must be a JSON keymap object: {error}"))?,
+            );
+            crate::keymap::Keymap::from_config(config.tui_keymap.as_ref())?;
+        }
+        "external_editor" => {
+            let command = if value.trim_start().starts_with('[') {
+                serde_json::from_str::<Vec<String>>(value)
+                    .map_err(|error| format!("`{key}` must be a JSON argv array: {error}"))?
+            } else {
+                vec![value.to_owned()]
+            };
+            crate::external_editor::validate_command(&command)?;
+            config.external_editor = Some(command);
+        }
         "compaction_trigger_tokens" => {
             config.compaction_trigger_tokens =
                 Some(value.parse::<usize>().map_err(|_| {
@@ -682,6 +713,14 @@ pub(crate) fn setting_value(config: &FileConfig, key: &str) -> Option<String> {
             PromptHistoryMode::Global => "global".to_owned(),
             PromptHistoryMode::Disabled => "disabled".to_owned(),
         }),
+        "tui_keymap" => config
+            .tui_keymap
+            .as_ref()
+            .and_then(|value| serde_json::to_string(value).ok()),
+        "external_editor" => config
+            .external_editor
+            .as_ref()
+            .and_then(|value| serde_json::to_string(value).ok()),
         "compaction_trigger_tokens" => config
             .compaction_trigger_tokens
             .map(|value| value.to_string()),
@@ -1197,6 +1236,57 @@ mod tests {
         }
         assert!(apply_setting(&mut config, "prompt_history", "forever").is_err());
         assert!(settable_keys().contains(&"prompt_history"));
+    }
+
+    #[test]
+    fn operator_keymap_and_external_editor_are_typed_bounded_and_round_trip() {
+        let parsed = FileConfig::parse(
+            r#"{"schema_version":2,"tui_keymap":{"mode":"vim","bindings":{"external_editor":"alt+e"}},"external_editor":["/usr/bin/vi","-f"]}"#,
+        )
+        .expect("the current schema accepts typed operator input configuration");
+        parsed.validate().unwrap();
+        assert_eq!(
+            parsed.tui_keymap.as_ref().map(|config| config.mode),
+            Some(crate::keymap::Mode::Vim)
+        );
+        assert_eq!(
+            parsed.external_editor,
+            Some(vec!["/usr/bin/vi".into(), "-f".into()])
+        );
+
+        let mut config = FileConfig::default();
+        apply_setting(
+            &mut config,
+            "tui_keymap",
+            r#"{"mode":"standard","bindings":{"reverse_search":"alt+r"}}"#,
+        )
+        .unwrap();
+        apply_setting(&mut config, "external_editor", r#"["/usr/bin/vi","-f"]"#).unwrap();
+        assert!(
+            setting_value(&config, "tui_keymap")
+                .as_deref()
+                .is_some_and(|value| value.contains("alt+r"))
+        );
+        assert_eq!(
+            setting_value(&config, "external_editor").as_deref(),
+            Some(r#"["/usr/bin/vi","-f"]"#)
+        );
+        assert!(settable_keys().contains(&"tui_keymap"));
+        assert!(settable_keys().contains(&"external_editor"));
+
+        assert!(
+            apply_setting(
+                &mut config,
+                "tui_keymap",
+                r#"{"bindings":{"external_editor":"ctrl+c"}}"#,
+            )
+            .unwrap_err()
+            .contains("reserved")
+        );
+        assert!(apply_setting(&mut config, "external_editor", "[]").is_err());
+        assert!(
+            FileConfig::parse(r#"{"schema_version":2,"tui_keymap":{"mode":"emacs"}}"#).is_err()
+        );
     }
 
     #[test]

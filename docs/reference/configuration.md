@@ -35,6 +35,8 @@ their own user config, but its contents are still bounded and strictly parsed.
 | `retry` | object | operator-owned policy | parsed and ignored |
 | `completion_notifications` | boolean | bounded run/approval/long-idle attention notifications; default `false` | parsed and ignored |
 | `prompt_history` | `project`, `global`, or `disabled` | scrubbed, bounded TUI prompt history and text-draft retention; default `project` | parsed and ignored |
+| `tui_keymap` | object | `standard` or `vim` input mode plus a closed, conflict-checked action map | parsed and ignored |
+| `external_editor` | string array | direct executable argv used by Ctrl-G; no shell parsing | parsed and ignored |
 | `providers` | array | allowed, maximum 64 | ignored |
 | `rate_cards` | array | allowed, maximum 256 | ignored |
 | `mcp_servers` | array | allowed | ignored |
@@ -60,6 +62,14 @@ their own user config, but its contents are still bounded and strictly parsed.
   "effort": "medium",
   "completion_notifications": false,
   "prompt_history": "project",
+  "tui_keymap": {
+    "mode": "standard",
+    "bindings": {
+      "external_editor": "ctrl+g",
+      "reverse_search": "ctrl+r"
+    }
+  },
+  "external_editor": ["/usr/bin/vi"],
   "compaction_trigger_tokens": 120000,
   "retry": {
     "base_ms": 500,
@@ -88,6 +98,28 @@ serialization, and use private directory/file permissions where the platform sup
 attachments and their paths are never serialized. Ctrl-R searches newest-to-oldest; when an empty
 composer has a failed turn, Ctrl-R retains retry compatibility and Ctrl-Shift-R explicitly starts an
 empty-query history walk. Repository configuration cannot choose the operator's retention policy.
+
+`tui_keymap` is operator-owned and reloads on the first key event after `~/.core/config.json`
+changes. The only remappable actions are `external_editor`, `reverse_search`, `restore_draft`, and
+`toggle_fold`; duplicate chords and unknown actions are refused. Ctrl-C, Ctrl-D, Ctrl-J, Ctrl-T,
+Ctrl-V, Enter, Esc, Tab, and Shift-Tab remain reserved for lifecycle, safety, terminal ownership,
+submission, and permission-mode behavior. A malformed hot reload falls back to the built-in map and
+shows a warning rather than leaving the session with a partially applied map. `mode: "vim"` adds a
+small deterministic composer state machine: Esc enters normal mode; `i`, `a`, `A`, and `I` return
+to insert mode; `h`/`l`, `0`/`$`, `b`/`w`, `x`, `j`/`k`, and `dd` provide bounded navigation,
+history, deletion, and clear operations. The status line makes `keys:custom`, `vim:insert`, or
+`vim:normal` visible.
+
+Ctrl-G invokes `external_editor` as an exact argv with the current repository as its working
+directory. Core never shell-splits this array. If the field is absent, a single-token `VISUAL` or
+`EDITOR` value is accepted; environment values containing arguments are refused. Core writes only
+the text draft (never image attachments or paths) to a private, uniquely created file below
+`~/.core/tmp`, temporarily restores the native terminal, strips provider/pricing names and ambient
+secret-shaped variables from the child, and accepts at most 64 KiB of valid UTF-8 on a successful
+exit. Spawn, timeout, exit,
+read, type, or size failure preserves the original in-memory draft, and the temporary file is
+removed on every ordinary return path. Repository configuration cannot select an executable or
+take over terminal keys.
 
 `retry` contains only bounded numeric policy: `base_ms` is `1..=30000`, `cap_ms` is between
 `base_ms` and `60000`, and `max_attempts` (including the initial request) is `1..=10`. Numeric

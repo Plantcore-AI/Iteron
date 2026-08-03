@@ -118,6 +118,57 @@ impl Scratch {
         )
         .expect("write isolated project config");
     }
+
+    fn configure_external_editor(&self) {
+        let config_dir = self.home().join(".core");
+        std::fs::create_dir_all(&config_dir).expect("create isolated Core config directory");
+        let config = json!({
+            "schema_version": 2,
+            "tui_keymap": {
+                "mode": "standard",
+                "bindings": { "external_editor": "alt+e" }
+            },
+            "external_editor": [
+                "/bin/sh",
+                "-c",
+                "printf 'edited safely in native terminal' > \"$1\"",
+                "core-editor-fixture"
+            ]
+        });
+        std::fs::write(
+            config_dir.join("config.json"),
+            serde_json::to_vec(&config).expect("encode external-editor config"),
+        )
+        .expect("write external-editor config");
+    }
+
+    fn configure_vim_keymap(&self) {
+        let config_dir = self.home().join(".core");
+        std::fs::create_dir_all(&config_dir).expect("create isolated Core config directory");
+        let config = json!({
+            "schema_version": 2,
+            "tui_keymap": { "mode": "vim" }
+        });
+        std::fs::write(
+            config_dir.join("config.json"),
+            serde_json::to_vec(&config).expect("encode Vim keymap config"),
+        )
+        .expect("write Vim keymap config");
+    }
+
+    fn configure_invalid_keymap(&self) {
+        let config = json!({
+            "schema_version": 2,
+            "tui_keymap": {
+                "bindings": { "external_editor": "ctrl+c" }
+            }
+        });
+        std::fs::write(
+            self.home().join(".core/config.json"),
+            serde_json::to_vec(&config).expect("encode invalid hot-reload fixture"),
+        )
+        .expect("write invalid hot-reload fixture");
+    }
 }
 
 impl Drop for Scratch {
@@ -820,6 +871,90 @@ fn assert_termios_restored(pty: &PtyHarness) {
         pty.baseline_termios,
         "Core did not restore the raw-mode terminal settings it changed"
     );
+}
+
+#[test]
+fn custom_external_editor_round_trip_restores_tui_and_preserves_terminal_cleanup() {
+    let scratch = Scratch::new("external-editor");
+    scratch.configure_external_editor();
+    let mut pty = PtyHarness::spawn(&scratch, 80, 24);
+    wait_for_ready(&mut pty);
+
+    pty.send(b"original draft");
+    pty.wait_until("the original composer draft", |pty| {
+        pty.screen_text().contains("original draft")
+    });
+    pty.send(b"\x1be"); // configured Alt-E, proving the default Ctrl-G was actually remapped.
+    pty.wait_until("the external-editor draft after terminal resume", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("edited safely in native terminal")
+            && screen.contains("external editor applied")
+            && pty.parser.screen().alternate_screen()
+            && pty.parser.screen().bracketed_paste()
+    });
+    let tmp = scratch.home().join(".core/tmp");
+    assert_eq!(
+        std::fs::read_dir(tmp)
+            .expect("private temp directory exists")
+            .count(),
+        0,
+        "external-editor draft must be removed after the round trip"
+    );
+
+    scratch.configure_invalid_keymap();
+    pty.send(b"\x07"); // first key after the rewrite must route through the safe built-in map.
+    pty.wait_until("invalid hot reload and built-in keymap fallback", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("keymap reload failed; using built-in bindings")
+            && screen.contains("no external editor configured")
+    });
+
+    pty.send(b"\x15\x1b"); // clear the draft, then exit.
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "normal TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+}
+
+#[test]
+fn vim_composer_routes_insert_normal_delete_and_return_to_insert() {
+    let scratch = Scratch::new("vim-composer");
+    scratch.configure_vim_keymap();
+    let mut pty = PtyHarness::spawn(&scratch, 100, 24);
+    wait_for_ready(&mut pty);
+    pty.wait_until("visible Vim insert mode", |pty| {
+        pty.screen_text().contains("vim:insert")
+    });
+
+    pty.send(b"unique-draft");
+    pty.wait_until("insert-mode draft", |pty| {
+        pty.screen_text().contains("unique-draft")
+    });
+    pty.send(b"\x1b0x");
+    pty.wait_until("normal-mode cursor and delete", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("vim:normal")
+            && screen.contains("nique-draft")
+            && !screen.contains("unique-draft")
+    });
+    pty.send(b"I+");
+    pty.wait_until("return to insert at line start", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("vim:insert") && screen.contains("+nique-draft")
+    });
+
+    pty.send(b"\x05\x15"); // move to end, then readline-clear the whole insert-mode draft.
+    pty.wait_until("the empty insert-mode composer", |pty| {
+        pty.screen_text()
+            .contains("describe a task, question, or change")
+    });
+    pty.send(b"\x03"); // Ctrl-C exits the empty TUI.
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "normal TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
 }
 
 #[test]
