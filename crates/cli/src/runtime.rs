@@ -4091,6 +4091,7 @@ impl Agent {
         cwd: String,
         created_at: u64,
         config_digest: String,
+        agent_definition_tag: Option<String>,
     ) -> Result<(), KernelError> {
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
         self.reconcile_usd_budget_for_genesis();
@@ -4098,6 +4099,14 @@ impl Agent {
             validate_route_identifier("model_id", &self.model, 512, false)?;
         }
         validate_route_digest("config_digest", &config_digest)?;
+        if let Some(tag) = &agent_definition_tag {
+            validate_route_identifier(
+                "agent_definition_tag",
+                tag,
+                core_protocol::MAX_AGENT_DEFINITION_TAG_BYTES,
+                false,
+            )?;
+        }
         self.emit_durable(
             TurnId(0),
             EventKind::RunStart {
@@ -4115,6 +4124,7 @@ impl Agent {
                 forked_at: None,
                 parent_hash_at_seq: None,
                 config_digest,
+                agent_definition_tag,
                 max_usd: self.effective_max_usd(),
             },
         )?;
@@ -10030,6 +10040,7 @@ mod gate_integration_tests {
                         forked_at: None,
                         parent_hash_at_seq: None,
                         config_digest: String::new(),
+                        agent_definition_tag: None,
                         max_usd: None,
                     },
                 })
@@ -10110,7 +10121,7 @@ mod gate_integration_tests {
                 .permission_rules
                 .set_cap(Capability::CodeExecuting, Verdict::Auto);
             original
-                .record_genesis(ws.display().to_string(), 1, String::new())
+                .record_genesis(ws.display().to_string(), 1, String::new(), None)
                 .unwrap();
             original
                 .transition_effort(Effort::Max, RuntimePolicySource::Operator)
@@ -11617,7 +11628,7 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent
-            .record_genesis(ws.display().to_string(), 1, String::new())
+            .record_genesis(ws.display().to_string(), 1, String::new(), None)
             .unwrap();
 
         assert_eq!(agent.run("finish the task").await.unwrap(), Outcome::Done);
@@ -11738,7 +11749,7 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent
-            .record_genesis(ws.display().to_string(), 1, String::new())
+            .record_genesis(ws.display().to_string(), 1, String::new(), None)
             .unwrap();
 
         assert!(matches!(
@@ -12239,7 +12250,12 @@ ant-api03-SuperSecretModelToken12345"
             "the live provider proposal must use the same post-scrub bytes as the record"
         );
         agent
-            .record_genesis("/workspace".into(), 1, format!("sha256:{}", "c".repeat(64)))
+            .record_genesis(
+                "/workspace".into(),
+                1,
+                format!("sha256:{}", "c".repeat(64)),
+                None,
+            )
             .unwrap();
         agent.resolve_injection(TurnId(0), "fresh").unwrap();
         let effective = agent.effective_system();
@@ -12570,7 +12586,12 @@ ant-api03-SuperSecretModelToken12345"
                 .set_environment_context(original_environment.into(), Trust::Workspace)
                 .unwrap();
             fresh
-                .record_genesis("/original".into(), 7, format!("sha256:{}", "c".repeat(64)))
+                .record_genesis(
+                    "/original".into(),
+                    7,
+                    format!("sha256:{}", "c".repeat(64)),
+                    None,
+                )
                 .unwrap();
             // Simulate process loss after genesis but before `run` resolves ContextInjection.
         }
@@ -13727,6 +13748,7 @@ ant-api03-SuperSecretModelToken12345"
                     ws.display().to_string(),
                     1,
                     format!("sha256:{}", "c".repeat(64)),
+                    None,
                 )
                 .unwrap();
             agent.budget.max_usd = proposed;
@@ -13767,6 +13789,7 @@ ant-api03-SuperSecretModelToken12345"
                 ws.display().to_string(),
                 1,
                 format!("sha256:{}", "c".repeat(64)),
+                None,
             )
             .unwrap();
         agent.budget.max_usd = Some(0.25);
@@ -14120,6 +14143,7 @@ ant-api03-SuperSecretModelToken12345"
                 ws.display().to_string(),
                 1,
                 format!("sha256:{}", "c".repeat(64)),
+                None,
             )
             .unwrap();
         agent
@@ -14463,6 +14487,7 @@ ant-api03-SuperSecretModelToken12345"
                     ws.display().to_string(),
                     1,
                     format!("sha256:{}", "c".repeat(64)),
+                    None,
                 )
                 .unwrap();
         }
@@ -14516,6 +14541,7 @@ ant-api03-SuperSecretModelToken12345"
                     ws.display().to_string(),
                     1,
                     format!("sha256:{}", "c".repeat(64)),
+                    None,
                 )
                 .unwrap();
             agent
@@ -14605,6 +14631,7 @@ ant-api03-SuperSecretModelToken12345"
                     ws.display().to_string(),
                     1,
                     format!("sha256:{}", "c".repeat(64)),
+                    None,
                 )
                 .unwrap();
             let events = core_record::replay(original.rollout.path()).unwrap();
@@ -14690,6 +14717,7 @@ ant-api03-SuperSecretModelToken12345"
                         ws.display().to_string(),
                         1,
                         format!("sha256:{}", "c".repeat(64)),
+                        None,
                     )
                     .unwrap();
                 original
@@ -14788,6 +14816,7 @@ ant-api03-SuperSecretModelToken12345"
                         forked_at: None,
                         parent_hash_at_seq: None,
                         config_digest: format!("sha256:{}", "c".repeat(64)),
+                        agent_definition_tag: None,
                         max_usd: Some(1.0),
                     },
                 })
@@ -15379,7 +15408,7 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent
-            .record_genesis(ws.display().to_string(), 1, String::new())
+            .record_genesis(ws.display().to_string(), 1, String::new(), None)
             .unwrap();
         agent
             .record_model_selection(
@@ -15480,7 +15509,7 @@ ant-api03-SuperSecretModelToken12345"
             );
             agent.workspace = ws.clone();
             agent
-                .record_genesis(ws.display().to_string(), 1, String::new())
+                .record_genesis(ws.display().to_string(), 1, String::new(), None)
                 .unwrap();
             agent
                 .record_model_selection(

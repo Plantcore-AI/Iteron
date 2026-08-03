@@ -147,7 +147,7 @@
     },
     {
       "id": "record.rollout",
-      "current_version": 6,
+      "current_version": 7,
       "version_field": null,
       "fixtures": [
         {
@@ -184,6 +184,11 @@
           "path": "governance/schema-compat/fixtures/record/rollout-v6.jsonl",
           "format": "jsonl",
           "schema_version": 6
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-v7.jsonl",
+          "format": "jsonl",
+          "schema_version": 7
         }
       ],
       "fields": [
@@ -833,8 +838,92 @@
       "compatibility_shims": []
     },
     {
+      "id": "cli.machine-contract",
+      "current_version": 1,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "machine_contract" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/cli/machine-contract-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "cli_stream_versions", "introduced_release": 1 },
+        { "name": "default_cli_stream_version", "introduced_release": 1 },
+        { "name": "resident_protocol_version", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.session-list-page",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "session_list_page" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/cli/session-list-page-v4.json",
+          "format": "json",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "next_cursor", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "sessions", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.session-transcript-page",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "session_transcript_page" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/cli/session-transcript-page-v4.json",
+          "format": "json",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "events", "introduced_release": 1 },
+        { "name": "older_cursor", "introduced_release": 1 },
+        { "name": "run_id", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.session-fork-result",
+      "current_version": 4,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "session_fork_result" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/cli/session-fork-result-v4.json",
+          "format": "json",
+          "schema_version": 4
+        }
+      ],
+      "fields": [
+        { "name": "child_run_id", "introduced_release": 1 },
+        { "name": "fork_point", "introduced_release": 1 },
+        { "name": "parent_run_id", "introduced_release": 1 },
+        { "name": "schema_version", "introduced_release": 1 },
+        { "name": "status", "introduced_release": 1 },
+        { "name": "type", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
       "id": "record.event-envelope",
-      "current_version": 2,
+      "current_version": 3,
       "version_field": null,
       "fixtures": [
         {
@@ -846,6 +935,11 @@
           "path": "governance/schema-compat/fixtures/record/event-envelope-v2.jsonl",
           "format": "jsonl",
           "schema_version": 2
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-envelope-v3.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
         }
       ],
       "fields": [
@@ -1494,7 +1588,7 @@
     },
     {
       "id": "record.event-kind.run_start",
-      "current_version": 1,
+      "current_version": 2,
       "version_field": null,
       "selector": {
         "field": "kind",
@@ -1505,9 +1599,19 @@
           "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
           "format": "jsonl",
           "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-run-start-v2.json",
+          "format": "json",
+          "schema_version": 2
         }
       ],
       "fields": [
+        {
+          "name": "agent_definition_tag",
+          "introduced_release": 1,
+          "optional": true
+        },
         {
           "name": "config_digest",
           "introduced_release": 1

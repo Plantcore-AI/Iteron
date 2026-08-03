@@ -70,7 +70,7 @@ fn validate_stream_writer(file: &syn::File) -> Result<()> {
     let method = emitter_method(file, "write_stream_event")?;
     if !matches!(method.vis, syn::Visibility::Inherited)
         || !method.attrs.is_empty()
-        || method.block.stmts.len() != 2
+        || method.block.stmts.len() != 3
     {
         bail!("CLI stream writer no longer has its exact two-step producer-to-writer flow");
     }
@@ -98,8 +98,9 @@ fn validate_stream_writer(file: &syn::File) -> Result<()> {
     {
         bail!("CLI stream writer can transform or substitute the stream_event Value");
     }
+    validate_schema_projection_binding(&method.block.stmts[1], false)?;
     validate_write_json_line_call(
-        statement_expression(&method.block.stmts[1], false)?,
+        statement_expression(&method.block.stmts[2], false)?,
         "value",
         true,
     )
@@ -123,17 +124,62 @@ fn validate_result_writer(file: &syn::File) -> Result<()> {
     if machine.else_branch.is_some() || !is_machine_condition(&machine.cond) {
         bail!("CLI final writer machine-format condition changed");
     }
-    if machine.then_branch.stmts.len() != 1 {
-        bail!("CLI final writer machine branch is not one direct write");
+    if machine.then_branch.stmts.len() != 2 {
+        bail!("CLI final writer machine branch is not one projection and direct write");
     }
+    validate_schema_projection_binding(&machine.then_branch.stmts[0], true)?;
     validate_write_json_line_call(
-        try_expression(&machine.then_branch.stmts[0])?,
+        try_expression(&machine.then_branch.stmts[1])?,
         "value",
-        false,
+        true,
     )
     .context("CLI final writer sink changed")?;
     if !is_ok_unit(statement_expression(&method.block.stmts[2], false)?) {
         bail!("CLI final writer has an unexpected tail");
+    }
+    Ok(())
+}
+
+fn validate_schema_projection_binding(statement: &syn::Stmt, clone_input: bool) -> Result<()> {
+    let syn::Stmt::Local(local) = statement else {
+        bail!("CLI schema projection is not a local Value binding");
+    };
+    let syn::Pat::Ident(binding) = &local.pat else {
+        bail!("CLI schema projection uses an unsupported binding");
+    };
+    let Some(initializer) = &local.init else {
+        bail!("CLI schema projection lacks an initializer");
+    };
+    let syn::Expr::Try(projected) = initializer.expr.as_ref() else {
+        bail!("CLI schema projection no longer propagates failure");
+    };
+    let syn::Expr::Call(call) = projected.expr.as_ref() else {
+        bail!("CLI schema projection does not call project_schema directly");
+    };
+    if call.args.len() != 2 {
+        bail!("CLI schema projection has the wrong arity");
+    }
+    let input_matches = if clone_input {
+        matches!(
+            &call.args[0],
+            syn::Expr::MethodCall(clone)
+                if clone.method == "clone"
+                    && clone.args.is_empty()
+                    && expression_path_is(&clone.receiver, &["value"])
+        )
+    } else {
+        expression_path_is(&call.args[0], &["value"])
+    };
+    if binding.ident != "value"
+        || binding.mutability.is_some()
+        || binding.by_ref.is_some()
+        || binding.subpat.is_some()
+        || initializer.diverge.is_some()
+        || !expression_path_is(&call.func, &["project_schema"])
+        || !input_matches
+        || !is_self_field(&call.args[1], "schema_version")
+    {
+        bail!("CLI schema projection can transform or substitute its frozen inputs");
     }
     Ok(())
 }
@@ -279,6 +325,9 @@ fn is_emitter_binding(statement: &syn::Stmt) -> bool {
     binding.ident == "emitter"
         && binding.mutability.is_some()
         && expression_path_is(&call.func, &["Emitter", "new"])
+        && call.args.len() == 2
+        && expression_path_is(&call.args[0], &["output_format"])
+        && expression_path_is(&call.args[1], &["machine_schema_version"])
 }
 
 #[derive(Default)]

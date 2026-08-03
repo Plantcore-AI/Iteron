@@ -26,10 +26,13 @@
 //! final line fails replay rather than yielding a prefix that looks whole. That failure is
 //! surfaced; it is not smoothed into an empty transcript.
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use core_protocol::{RunId, TenantId};
 use core_record::SessionMeta;
 use core_record::redact::redact_event;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
 /// The schema a client pins on. Additive changes keep the number; a removal or a retype moves it.
@@ -40,6 +43,12 @@ pub(crate) const MAX_SESSIONS_PER_PAGE: usize = 200;
 
 /// The most transcript bytes one read returns, measured on the serialized events.
 pub(crate) const MAX_TRANSCRIPT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Operator-defined grouping metadata is deliberately small enough for every session page.
+pub(crate) const MAX_AGENT_DEFINITION_TAG_BYTES: usize =
+    core_protocol::MAX_AGENT_DEFINITION_TAG_BYTES;
+const MAX_CURSOR_BYTES: usize = 4 * 1024;
+const CURSOR_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SessionSummary {
@@ -55,6 +64,8 @@ pub(crate) struct SessionSummary {
     pub updated_at: u64,
     /// Present only for a fork or rewind child.
     pub parent_run: Option<String>,
+    /// Bounded operator-defined grouping metadata. Legacy sessions are untagged.
+    pub agent_definition_tag: Option<String>,
 }
 
 impl SessionSummary {
@@ -79,8 +90,110 @@ impl SessionSummary {
                 .parent
                 .as_ref()
                 .map(|parent| parent.parent_run.to_string()),
+            agent_definition_tag: meta.agent_definition_tag.clone(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SessionListPage {
+    pub schema_version: u32,
+    #[serde(rename = "type")]
+    pub frame_type: &'static str,
+    pub sessions: Vec<SessionSummary>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SessionTranscriptPage {
+    pub schema_version: u32,
+    #[serde(rename = "type")]
+    pub frame_type: &'static str,
+    pub run_id: String,
+    pub events: Vec<serde_json::Value>,
+    pub older_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CursorEnvelope {
+    payload: String,
+    digest: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SessionListCursor {
+    version: u32,
+    kind: String,
+    tenant: String,
+    agent_definition_tag: Option<String>,
+    updated_at: u64,
+    updated_at_subsec_nanos: u32,
+    run_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TranscriptCursor {
+    version: u32,
+    kind: String,
+    run_id: String,
+    end_index: usize,
+}
+
+fn cursor_digest(payload: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"core-cli-session-cursor-v1\0");
+    digest.update(payload);
+    URL_SAFE_NO_PAD.encode(digest.finalize())
+}
+
+fn encode_cursor<T: Serialize>(cursor: &T) -> anyhow::Result<String> {
+    let payload = serde_json::to_vec(cursor)?;
+    let envelope = CursorEnvelope {
+        digest: cursor_digest(&payload),
+        payload: URL_SAFE_NO_PAD.encode(payload),
+    };
+    let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&envelope)?);
+    if encoded.len() > MAX_CURSOR_BYTES {
+        anyhow::bail!("session cursor exceeds its byte bound");
+    }
+    Ok(encoded)
+}
+
+fn decode_cursor<T: for<'de> Deserialize<'de>>(token: &str) -> anyhow::Result<T> {
+    if token.is_empty() || token.len() > MAX_CURSOR_BYTES {
+        anyhow::bail!("session cursor is empty or exceeds its byte bound");
+    }
+    let envelope_bytes = URL_SAFE_NO_PAD
+        .decode(token)
+        .map_err(|_| anyhow::anyhow!("session cursor is not valid base64url"))?;
+    if envelope_bytes.len() > MAX_CURSOR_BYTES {
+        anyhow::bail!("decoded session cursor exceeds its byte bound");
+    }
+    let envelope: CursorEnvelope = serde_json::from_slice(&envelope_bytes)
+        .map_err(|_| anyhow::anyhow!("session cursor envelope is invalid"))?;
+    let payload = URL_SAFE_NO_PAD
+        .decode(&envelope.payload)
+        .map_err(|_| anyhow::anyhow!("session cursor payload is invalid"))?;
+    if payload.len() > MAX_CURSOR_BYTES || cursor_digest(&payload) != envelope.digest {
+        anyhow::bail!("session cursor integrity check failed");
+    }
+    serde_json::from_slice(&payload)
+        .map_err(|_| anyhow::anyhow!("session cursor payload is invalid"))
+}
+
+pub(crate) fn validate_agent_definition_tag(tag: &str) -> anyhow::Result<()> {
+    if tag.trim().is_empty()
+        || tag.len() > MAX_AGENT_DEFINITION_TAG_BYTES
+        || tag.chars().any(char::is_control)
+    {
+        anyhow::bail!(
+            "--agent-definition-tag must be non-blank, control-free, and at most {MAX_AGENT_DEFINITION_TAG_BYTES} UTF-8 bytes"
+        );
+    }
+    if core_record::redact::scrub_route_identifier(tag) != tag {
+        anyhow::bail!("--agent-definition-tag looks like a credential and cannot be recorded");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -129,6 +242,75 @@ pub(crate) fn list_sessions(
     }
 }
 
+/// Return one stable newest-first v4 page. The cursor is tied to tenant, filter, and the exact
+/// final row of the previous page; a changed or cross-query token is rejected instead of silently
+/// producing duplicates or gaps.
+pub(crate) fn list_sessions_page(
+    runs_dir: &Path,
+    tenant: &TenantId,
+    agent_definition_tag: Option<&str>,
+    limit: usize,
+    cursor: Option<&str>,
+    schema_version: u32,
+) -> anyhow::Result<SessionListPage> {
+    if let Some(tag) = agent_definition_tag {
+        validate_agent_definition_tag(tag)?;
+    }
+    let limit = limit.clamp(1, MAX_SESSIONS_PER_PAGE);
+    let metas: Vec<_> = core_record::list(runs_dir, tenant)
+        .into_iter()
+        .filter(|meta| {
+            agent_definition_tag.is_none_or(|tag| meta.agent_definition_tag.as_deref() == Some(tag))
+        })
+        .collect();
+    let start = if let Some(token) = cursor {
+        let cursor: SessionListCursor = decode_cursor(token)?;
+        if cursor.version != CURSOR_VERSION
+            || cursor.kind != "session_list"
+            || cursor.tenant != tenant.0
+            || cursor.agent_definition_tag.as_deref() != agent_definition_tag
+        {
+            anyhow::bail!("session cursor does not belong to this list query");
+        }
+        metas
+            .iter()
+            .position(|meta| {
+                meta.updated_at == cursor.updated_at
+                    && meta.updated_at_subsec_nanos == cursor.updated_at_subsec_nanos
+                    && meta.run_id.0 == cursor.run_id
+            })
+            .map(|index| index + 1)
+            .ok_or_else(|| anyhow::anyhow!("session cursor is stale for the current list"))?
+    } else {
+        0
+    };
+    let end = start.saturating_add(limit).min(metas.len());
+    let sessions = metas[start..end]
+        .iter()
+        .map(SessionSummary::from_meta)
+        .collect();
+    let next_cursor = if end < metas.len() {
+        let last = &metas[end - 1];
+        Some(encode_cursor(&SessionListCursor {
+            version: CURSOR_VERSION,
+            kind: "session_list".into(),
+            tenant: tenant.0.clone(),
+            agent_definition_tag: agent_definition_tag.map(str::to_owned),
+            updated_at: last.updated_at,
+            updated_at_subsec_nanos: last.updated_at_subsec_nanos,
+            run_id: last.run_id.0.clone(),
+        })?)
+    } else {
+        None
+    };
+    Ok(SessionListPage {
+        schema_version,
+        frame_type: "session_list_page",
+        sessions,
+        next_cursor,
+    })
+}
+
 /// Read one session's transcript, bounded and redacted.
 ///
 /// The logical history is used, so a fork returns the conversation a reader would see rather than
@@ -160,6 +342,77 @@ pub(crate) fn read_transcript(
         total_events,
         truncated,
         events: rendered,
+    })
+}
+
+/// Return one tail-first transcript page while preserving chronological order inside the page.
+/// The cursor stores the exclusive older boundary, so later appends cannot duplicate or skip an
+/// already traversed historical event.
+pub(crate) fn read_transcript_page(
+    runs_dir: &Path,
+    run: &RunId,
+    cursor: Option<&str>,
+    schema_version: u32,
+) -> anyhow::Result<SessionTranscriptPage> {
+    read_transcript_page_with_limit(runs_dir, run, cursor, schema_version, MAX_TRANSCRIPT_BYTES)
+}
+
+fn read_transcript_page_with_limit(
+    runs_dir: &Path,
+    run: &RunId,
+    cursor: Option<&str>,
+    schema_version: u32,
+    max_bytes: usize,
+) -> anyhow::Result<SessionTranscriptPage> {
+    let events = core_record::load_forked(runs_dir, run)?;
+    let end = if let Some(token) = cursor {
+        let cursor: TranscriptCursor = decode_cursor(token)?;
+        if cursor.version != CURSOR_VERSION
+            || cursor.kind != "session_transcript"
+            || cursor.run_id != run.0
+            || cursor.end_index > events.len()
+        {
+            anyhow::bail!("transcript cursor does not belong to this run");
+        }
+        cursor.end_index
+    } else {
+        events.len()
+    };
+
+    let mut start = end;
+    let mut budget = 0usize;
+    let mut rendered = Vec::new();
+    while start > 0 {
+        let scrubbed = redact_event(&events[start - 1]);
+        let value = serde_json::to_value(&scrubbed)?;
+        let size = serde_json::to_vec(&value)?.len().saturating_add(1);
+        if budget.saturating_add(size) > max_bytes {
+            if rendered.is_empty() {
+                anyhow::bail!("one transcript event exceeds the page byte bound");
+            }
+            break;
+        }
+        budget = budget.saturating_add(size);
+        rendered.push(value);
+        start -= 1;
+    }
+    rendered.reverse();
+    let older_cursor = if start > 0 {
+        Some(encode_cursor(&TranscriptCursor {
+            version: CURSOR_VERSION,
+            kind: "session_transcript".into(),
+            run_id: run.0.clone(),
+            end_index: start,
+        })?)
+    } else {
+        None
+    };
+    Ok(SessionTranscriptPage {
+        schema_version,
+        frame_type: "session_transcript_page",
+        run_id: run.to_string(),
+        events: rendered,
+        older_cursor,
     })
 }
 

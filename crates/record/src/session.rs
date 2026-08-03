@@ -122,6 +122,9 @@ pub struct SessionMeta {
     pub provider_id: String,
     pub model: String,
     pub effort: Effort,
+    /// Bounded operator-defined grouping metadata from genesis. Legacy sessions are untagged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_definition_tag: Option<String>,
     /// Deterministic: the first user message's first line, truncated (SESS-3).
     pub title: String,
     /// Recorded once at run start (from the genesis header), not read at list time (ADR-006 rule 1).
@@ -628,6 +631,7 @@ struct GenesisProjection {
     tenant: TenantId,
     cwd: PathBuf,
     created_at: u64,
+    agent_definition_tag: Option<String>,
     parent: Option<Provenance>,
 }
 
@@ -658,6 +662,7 @@ fn read_genesis_projection(path: &Path) -> Option<GenesisProjection> {
         EventKind::RunStart {
             cwd,
             created_at,
+            agent_definition_tag,
             parent_run,
             forked_at,
             parent_hash_at_seq,
@@ -676,6 +681,7 @@ fn read_genesis_projection(path: &Path) -> Option<GenesisProjection> {
                 tenant: TenantId(chain.tenant),
                 cwd: PathBuf::from(cwd),
                 created_at,
+                agent_definition_tag,
                 parent,
             })
         }
@@ -688,6 +694,7 @@ fn genesis_matches_meta(path: &Path, meta: &SessionMeta) -> bool {
         genesis.tenant == meta.tenant
             && genesis.cwd == meta.cwd
             && genesis.created_at == meta.created_at
+            && genesis.agent_definition_tag == meta.agent_definition_tag
             && genesis.parent == meta.parent
     })
 }
@@ -882,6 +889,7 @@ fn load_session_projection(
     let provider_id = String::new();
     let mut model = String::new();
     let mut effort = Effort::default();
+    let mut agent_definition_tag = None;
     let mut created_at = 0u64;
     let mut parent: Option<Provenance> = None;
 
@@ -891,6 +899,7 @@ fn load_session_projection(
             cwd: c,
             model: m,
             effort: ef,
+            agent_definition_tag: tag,
             created_at: ca,
             parent_run,
             forked_at,
@@ -901,6 +910,7 @@ fn load_session_projection(
             cwd = PathBuf::from(c);
             model = m.clone();
             effort = *ef;
+            agent_definition_tag = tag.clone();
             created_at = *ca;
             if let (Some(pr), Some(fa), Some(ph)) =
                 (parent_run.clone(), forked_at, parent_hash_at_seq.clone())
@@ -940,6 +950,7 @@ fn load_session_projection(
             provider_id,
             model,
             effort,
+            agent_definition_tag,
             title: String::new(),
             created_at,
             updated_at: 0,
@@ -1302,21 +1313,23 @@ pub fn fork(
             )
         })?;
 
-    let (cwd, mut model, config_digest, mut environment) =
+    let (cwd, mut model, config_digest, mut environment, agent_definition_tag) =
         match parent_lines.first().map(|l| &l.event.kind) {
             Some(EventKind::RunStart {
                 cwd,
                 model,
                 config_digest,
                 environment,
+                agent_definition_tag,
                 ..
             }) => (
                 cwd.clone(),
                 model.clone(),
                 config_digest.clone(),
                 environment.clone(),
+                agent_definition_tag.clone(),
             ),
-            _ => (String::new(), String::new(), String::new(), None),
+            _ => (String::new(), String::new(), String::new(), None, None),
         };
     // Resolve the LOGICAL prefix, not only the parent run's physical lines. At seq 0 of a nested
     // fork, the effective route may live in an ancestor prefix; filtering only `parent_lines`
@@ -1419,6 +1432,7 @@ pub fn fork(
             forked_at: Some(at.0),
             parent_hash_at_seq: Some(pinned),
             config_digest,
+            agent_definition_tag,
             max_usd,
         },
     };
@@ -1771,6 +1785,7 @@ mod tests {
                 forked_at: None,
                 parent_hash_at_seq: None,
                 config_digest: "cfg".into(),
+                agent_definition_tag: None,
                 max_usd: None,
             },
         }
@@ -3771,6 +3786,7 @@ mod tests {
                         forked_at: Some(4),
                         parent_hash_at_seq: Some(pinned),
                         config_digest: "cfg".into(),
+                        agent_definition_tag: None,
                         max_usd: None,
                     },
                 })
@@ -3819,6 +3835,40 @@ mod tests {
         let events = load_forked(&dir, &child).unwrap();
         assert_eq!(user_texts(&events), vec!["parent-task", "child-follow-up"]);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fork_inherits_the_bounded_agent_definition_tag() {
+        let dir = tmpdir("fork-agent-definition-tag");
+        let tenant = TenantId::default();
+        let parent = RunId("tagged-parent".into());
+        let mut rollout = Rollout::open(&dir, &parent, tenant.clone()).unwrap();
+        let mut genesis = genesis_event("/repo");
+        if let EventKind::RunStart {
+            agent_definition_tag,
+            ..
+        } = &mut genesis.kind
+        {
+            *agent_definition_tag = Some("reviewer-a".into());
+        }
+        rollout.append(&genesis).unwrap();
+        let at = crate::replay(rollout.path()).unwrap().last().unwrap().seq;
+
+        let child = fork(&dir, &parent, at, &tenant).unwrap();
+        let child_meta = meta(&dir, &child).unwrap();
+        assert_eq!(
+            child_meta.agent_definition_tag.as_deref(),
+            Some("reviewer-a")
+        );
+        let child_events = crate::replay(&rollout_path(&dir, &child).unwrap()).unwrap();
+        assert!(matches!(
+            &child_events[0].kind,
+            EventKind::RunStart {
+                agent_definition_tag: Some(tag),
+                ..
+            } if tag == "reviewer-a"
+        ));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

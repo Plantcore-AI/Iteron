@@ -166,6 +166,7 @@ impl Scratch {
                     forked_at: None,
                     parent_hash_at_seq: None,
                     config_digest: String::new(),
+                    agent_definition_tag: None,
                     max_usd: None,
                 },
             })

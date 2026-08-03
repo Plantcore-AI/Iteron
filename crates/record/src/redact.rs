@@ -144,6 +144,7 @@ pub fn redact_event(event: &Event) -> Event {
             forked_at,
             parent_hash_at_seq,
             config_digest,
+            agent_definition_tag,
             max_usd,
         } => EventKind::RunStart {
             // These are structural references, not free-form route metadata. Preserve them exactly
@@ -162,6 +163,7 @@ pub fn redact_event(event: &Event) -> Event {
             forked_at: *forked_at,
             parent_hash_at_seq: parent_hash_at_seq.as_deref().map(scrub_route_digest),
             config_digest: scrub_route_digest(config_digest),
+            agent_definition_tag: agent_definition_tag.as_deref().map(scrub_route_identifier),
             max_usd: *max_usd,
         },
         EventKind::ModelSelected {
@@ -1240,6 +1242,7 @@ AbCdEf12\
                 forked_at: Some(3),
                 parent_hash_at_seq: Some(content_address.into()),
                 config_digest: digest.into(),
+                agent_definition_tag: None,
                 max_usd: Some(1.0),
             },
         };
