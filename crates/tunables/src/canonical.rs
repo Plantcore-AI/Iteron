@@ -1,6 +1,6 @@
 use crate::{
-    CANONICALIZATION, DIGEST_ALGORITHM, FAMILY_CANONICALIZATION, Family, REFERENCED_SCHEMAS,
-    REGISTRY_ID, REGISTRY_REVISION, REGISTRY_SCHEMA_VERSION, ReferencedSchema, families,
+    CANONICALIZATION, DIGEST_ALGORITHM, FAMILY_CANONICALIZATION, Family, REGISTRY_ID,
+    REGISTRY_REVISION, REGISTRY_SCHEMA_VERSION, SCALAR_CATALOGS, ScalarCatalogDefinition, families,
     validate_registry,
 };
 use serde::Serialize;
@@ -36,7 +36,7 @@ pub struct CanonicalPayload<'a> {
     pub registry_revision: u16,
     pub canonicalization: &'static str,
     pub family_count: usize,
-    pub referenced_schemas: &'a [ReferencedSchema],
+    pub scalar_catalogs: &'a [ScalarCatalogDefinition],
     pub families: Vec<CanonicalFamily<'a>>,
 }
 
@@ -77,7 +77,7 @@ fn payload() -> Result<CanonicalPayload<'static>, crate::RegistryError> {
         registry_revision: REGISTRY_REVISION,
         canonicalization: CANONICALIZATION,
         family_count: registry.len(),
-        referenced_schemas: REFERENCED_SCHEMAS,
+        scalar_catalogs: SCALAR_CATALOGS,
         families: canonical_families,
     })
 }
@@ -88,6 +88,10 @@ fn payload_digest(payload: &CanonicalPayload<'_>) -> Result<CanonicalDigest, cra
         algorithm: DIGEST_ALGORITHM,
         value: hex::encode(Sha256::digest(bytes)),
     })
+}
+
+pub(crate) fn registry_digest_unvalidated() -> Result<CanonicalDigest, crate::RegistryError> {
+    payload_digest(&payload()?)
 }
 
 pub fn canonical_payload_json() -> Result<Vec<u8>, crate::RegistryError> {

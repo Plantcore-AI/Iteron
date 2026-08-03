@@ -1,52 +1,62 @@
-use crate::{ReferencedSchema, ReferencedSchemaShape};
+use crate::{ScalarDomain, StringFormat};
+use serde::Serialize;
 
-pub const ADMITTED_VALUE_CATALOG: &str = "core://tunables/catalogs/admitted-values-v1";
-pub const NAMESPACED_ID_SCHEMA: &str = "core://tunables/schemas/namespaced-id-v1";
-pub const BOUNDED_MAP_VALUE_SCHEMA: &str = "core://tunables/schemas/bounded-map-value-v1";
-pub const BOUNDED_POLICY_SCHEMA: &str = "core://tunables/schemas/bounded-policy-v1";
-pub const VERSIONED_CATALOG_ENTRY_SCHEMA: &str =
-    "core://tunables/schemas/versioned-catalog-entry-v1";
+/// Executable leaf contract for an admitted open catalog. Family-owned catalog roots carry their
+/// entry schema inline; these definitions cover only catalog-backed scalar selectors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ScalarCatalogDefinition {
+    pub id: &'static str,
+    pub value_domain: ScalarDomain,
+}
 
-/// Immutable referenced-schema catalog. URI versions are semantic versions: changing a definition
-/// requires a new URI, so a family semantic digest remains sufficient when it includes the URI.
-pub const REFERENCED_SCHEMAS: &[ReferencedSchema] = &[
-    ReferencedSchema {
-        id: ADMITTED_VALUE_CATALOG,
-        shape: ReferencedSchemaShape::AdmittedCatalogValue,
-        max_bytes: 16 * 1024,
-        max_nodes: 64,
-        max_depth: 4,
+const fn namespaced_id() -> ScalarDomain {
+    ScalarDomain::Text {
+        min_bytes: 1,
+        max_bytes: 96,
+        format: StringFormat::NamespacedId,
+    }
+}
+
+/// Immutable, versioned definitions for every scalar catalog ID used by a family schema.
+pub const SCALAR_CATALOGS: &[ScalarCatalogDefinition] = &[
+    ScalarCatalogDefinition {
+        id: "core://tunables/catalogs/providers-v1",
+        value_domain: namespaced_id(),
     },
-    ReferencedSchema {
-        id: NAMESPACED_ID_SCHEMA,
-        shape: ReferencedSchemaShape::NamespacedId,
-        max_bytes: 512,
-        max_nodes: 1,
-        max_depth: 1,
+    ScalarCatalogDefinition {
+        id: "core://tunables/catalogs/models-v1",
+        value_domain: namespaced_id(),
     },
-    ReferencedSchema {
-        id: BOUNDED_MAP_VALUE_SCHEMA,
-        shape: ReferencedSchemaShape::BoundedScalarOrObject,
-        max_bytes: 64 * 1024,
-        max_nodes: 1_024,
-        max_depth: 16,
+    ScalarCatalogDefinition {
+        id: "core://tunables/catalogs/provider-reasoning-levels-v1",
+        value_domain: namespaced_id(),
     },
-    ReferencedSchema {
-        id: BOUNDED_POLICY_SCHEMA,
-        shape: ReferencedSchemaShape::BoundedPolicyObject,
-        max_bytes: 256 * 1024,
-        max_nodes: 4_096,
-        max_depth: 32,
+    ScalarCatalogDefinition {
+        id: "core://tunables/catalogs/token-estimators-v1",
+        value_domain: namespaced_id(),
     },
-    ReferencedSchema {
-        id: VERSIONED_CATALOG_ENTRY_SCHEMA,
-        shape: ReferencedSchemaShape::VersionedCatalogEntry,
-        max_bytes: 256 * 1024,
-        max_nodes: 4_096,
-        max_depth: 32,
+    ScalarCatalogDefinition {
+        id: "core://tunables/catalogs/tool-capabilities-v1",
+        value_domain: namespaced_id(),
+    },
+    ScalarCatalogDefinition {
+        id: "core://tunables/catalogs/model-routes-v1",
+        value_domain: namespaced_id(),
+    },
+    ScalarCatalogDefinition {
+        id: "core://tunables/catalogs/provider-service-tiers-v1",
+        value_domain: namespaced_id(),
+    },
+    ScalarCatalogDefinition {
+        id: "core://tunables/catalogs/agent-roles-v1",
+        value_domain: namespaced_id(),
+    },
+    ScalarCatalogDefinition {
+        id: "core://tunables/catalogs/binary-inspectors-v1",
+        value_domain: namespaced_id(),
     },
 ];
 
-pub(crate) fn contains_schema(id: &str) -> bool {
-    REFERENCED_SCHEMAS.iter().any(|schema| schema.id == id)
+pub(crate) fn contains_scalar_catalog(id: &str) -> bool {
+    SCALAR_CATALOGS.iter().any(|catalog| catalog.id == id)
 }

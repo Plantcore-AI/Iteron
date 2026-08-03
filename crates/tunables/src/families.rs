@@ -1,32 +1,10 @@
+use crate::benchmark_metadata::benchmark_relevance;
 use crate::metadata::{
-    OptimizationSeed, activation, aliases, authority, default_resolution_source, optimization,
-    requirements, risk, source_trust, strategy_slots,
+    OptimizationSeed, aliases, authority, optimization, requirements, risk, strategy_slots,
 };
+use crate::resolution_metadata::{activation_spec, default_spec, source_spec};
 use crate::value_schemas::value_schema;
-use crate::{
-    BenchmarkCausalPath, BenchmarkRelevance, CausalPath as Path, DefaultKind, DefaultSpec, Domain,
-    FAMILY_SCHEMA_VERSION, Family, ImplementationStatus, RelevanceLevel, SourceKind, SourceSpec,
-};
-
-const fn relevance(terminal_bench_2_1: Path, swe_bench_pro: Path) -> BenchmarkRelevance {
-    BenchmarkRelevance {
-        swe_bench_pro: relevance_level(swe_bench_pro),
-        terminal_bench_2_1: relevance_level(terminal_bench_2_1),
-        causal_path: BenchmarkCausalPath {
-            swe_bench_pro,
-            terminal_bench_2_1,
-        },
-        rationale: "Formal relevance only; quantify direction and magnitude with a fixed-model held-out A/B run.",
-    }
-}
-
-const fn relevance_level(path: Path) -> RelevanceLevel {
-    match path {
-        Path::Direct => RelevanceLevel::High,
-        Path::Indirect => RelevanceLevel::Medium,
-        Path::Conditional | Path::None => RelevanceLevel::Low,
-    }
-}
+use crate::{CausalPath as Path, Domain, FAMILY_SCHEMA_VERSION, Family, ImplementationStatus};
 
 macro_rules! family {
     ($status:ident; $ordinal:literal, $id:literal, $domain:ident, $summary:literal,
@@ -39,25 +17,13 @@ macro_rules! family {
             aliases: aliases($ordinal),
             domain: Domain::$domain,
             summary: $summary,
-            activation: activation(
-                ImplementationStatus::$status,
-                SourceKind::$source_kind,
-                $locator,
-            ),
+            activation: activation_spec($ordinal),
             requirements: requirements($ordinal, Domain::$domain),
-            strategy_slots: strategy_slots($ordinal, Domain::$domain),
-            default: DefaultSpec {
-                kind: DefaultKind::$default_kind,
-                value: $default,
-                resolution_source: default_resolution_source($ordinal, DefaultKind::$default_kind),
-            },
-            source: SourceSpec {
-                kind: SourceKind::$source_kind,
-                trust: source_trust($ordinal, SourceKind::$source_kind),
-                locator: $locator,
-            },
+            strategy_slots: strategy_slots($ordinal),
+            default: default_spec($ordinal),
+            source: source_spec($ordinal),
             value_schema: value_schema($ordinal),
-            benchmark_relevance: relevance(Path::$tb, Path::$swe),
+            benchmark_relevance: benchmark_relevance($ordinal, $summary, Path::$tb, Path::$swe),
             implementation_status: ImplementationStatus::$status,
             optimization: optimization(
                 $ordinal,

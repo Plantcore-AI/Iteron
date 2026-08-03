@@ -13,11 +13,14 @@
 //!   StrategySlot bindings, implementation truth, benchmark relevance, and optimization class;
 //! - metadata never silently turns an invariant or operator ceiling into an adaptive choice.
 
+mod benchmark_metadata;
 mod canonical;
 mod families;
 mod metadata;
 mod requirements;
+mod resolution_metadata;
 mod schema_catalog;
+mod strategy_slots;
 mod types;
 mod validate;
 mod value_schemas;
@@ -27,14 +30,15 @@ pub use canonical::{
     canonical_artifact_json, canonical_payload_json, family_semantic_digest, registry_digest,
 };
 pub use families::families;
-pub use schema_catalog::REFERENCED_SCHEMAS;
+pub use schema_catalog::{SCALAR_CATALOGS, ScalarCatalogDefinition};
 pub use types::{
     ActivationPredicate, ActivationSpec, AuthorityClass, BenchmarkCausalPath, BenchmarkRelevance,
-    CapabilityRequirement, CausalPath, CoreStrategySlot, DefaultKind, DefaultResolutionSource,
-    DefaultSpec, Domain, Family, ImplementationStatus, NumericType, OptimizationClass,
-    OptimizationSpec, ProviderRequirement, ReferencedSchema, ReferencedSchemaShape, RelevanceLevel,
-    RequirementSpec, RiskClass, SearchPhase, SourceKind, SourceSpec, SourceTrust,
-    StructuredValueDomain, ValueKind, ValueSchema,
+    CapabilityRequirement, CausalPath, CoreStrategySlot, CrossFieldRule, DecimalValue, DefaultKind,
+    DefaultResolver, DefaultSpec, DefaultValueRequirement, Domain, ExternalCeiling, Family,
+    FieldDomain, ImplementationStatus, InactiveReason, OptimizationClass, OptimizationSpec,
+    ProviderRequirement, RelevanceLevel, RequirementSpec, RiskClass, RuleValue, ScalarDomain,
+    SchemaField, SearchPhase, SourceBinding, SourceKind, SourceSpec, SourceTrust, StringFormat,
+    StructuredValueDomain, TunableValue, TunableValueField, ValueKind, ValueSchema,
 };
 pub use validate::{RegistryError, validate_registry};
 
@@ -56,4 +60,4 @@ pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v1";
 pub const DIGEST_ALGORITHM: &str = "sha256";
 /// Golden digest for revision 2; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "9feb20c505c819d559c96104c7ec046bee84cd2ade85c163f56233f5e3e7e3f5";
+    "db088d2900f790fa1d705dc8ad4948f4cc7d46cb8a977bc1db5404331d298f5d";

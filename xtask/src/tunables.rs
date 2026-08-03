@@ -5,8 +5,9 @@
 
 use anyhow::{Context, Result, bail};
 use core_tunables::{
-    CoreStrategySlot, DefaultKind, Domain, Family, ImplementationStatus, OptimizationClass,
-    RelevanceLevel, SourceKind, SourceTrust, StructuredValueDomain, ValueKind,
+    CapabilityRequirement, CoreStrategySlot, DefaultKind, DefaultResolver, Domain, Family,
+    FieldDomain, ImplementationStatus, OptimizationClass, ProviderRequirement, RelevanceLevel,
+    ScalarDomain, SourceKind, SourceTrust, StructuredValueDomain, ValueKind,
     canonical_artifact_json, families, registry_digest, validate_registry,
 };
 use std::collections::BTreeMap;
@@ -34,12 +35,14 @@ pub fn generate(root: &Path) -> Result<()> {
 
 fn validate_source_locators(root: &Path) -> Result<()> {
     for family in families() {
-        let locator = family.source.locator;
-        if locator.starts_with("crates/") && !root.join(locator).exists() {
-            bail!(
-                "family `{}` points at missing source locator `{locator}`",
-                family.id
-            );
+        for binding in family.source.bindings {
+            let locator = binding.locator;
+            if locator.starts_with("crates/") && !root.join(locator).exists() {
+                bail!(
+                    "family `{}` points at missing source locator `{locator}`",
+                    family.id
+                );
+            }
         }
     }
     Ok(())
@@ -120,9 +123,9 @@ fn render_markdown() -> Result<String> {
     writeln!(out, "\n## Families\n")?;
     writeln!(
         out,
-        "| # | Stable ID | Domain | Structured value domain | Default | Source / trust | SWE | TB 2.1 | Optimization | Status | StrategySlot |"
+        "| # | Stable ID | Domain | Structured value domain | Default | Source / trust | Requirements | SWE | TB 2.1 | Optimization | Status | StrategySlot |"
     )?;
-    writeln!(out, "|---:|---|---|---|---|---|---|---|---|---|---|")?;
+    writeln!(out, "|---:|---|---|---|---|---|---|---|---|---|---|---|")?;
     for family in registry {
         render_family(&mut out, family)?;
     }
@@ -157,17 +160,47 @@ fn render_family(out: &mut String, family: &Family) -> Result<()> {
         .map(slot_name)
         .collect::<Vec<_>>()
         .join(", ");
+    let sources = family
+        .source
+        .bindings
+        .iter()
+        .map(|binding| {
+            format!(
+                "{}/{}",
+                source_name(binding.kind),
+                source_trust_name(binding.trust)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let capabilities = family
+        .requirements
+        .capabilities
+        .iter()
+        .copied()
+        .map(capability_name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let requirements = format!(
+        "provider={}; {}",
+        provider_requirement_name(family.requirements.provider),
+        capabilities
+    );
+    let default = match family.default.value {
+        Some(value) => serde_json::to_string(&value)?,
+        None => resolver_name(family.default.resolver),
+    };
     writeln!(
         out,
-        "| {} | `{}` | `{}` | {} | `{}`: {} | `{}` / `{}` | `{}` | `{}` | `{}` | `{}` | {} |",
+        "| {} | `{}` | `{}` | {} | `{}`: {} | {} | {} | `{}` | `{}` | `{}` | `{}` | {} |",
         family.ordinal,
         family.id,
         domain_name(family.domain),
         escape_cell(&value_domain_summary(family.value_schema.domain)),
         default_name(family.default.kind),
-        escape_cell(family.default.value),
-        source_name(family.source.kind),
-        source_trust_name(family.source.trust),
+        escape_cell(&default),
+        escape_cell(&sources),
+        escape_cell(&requirements),
         relevance_name(family.benchmark_relevance.swe_bench_pro),
         relevance_name(family.benchmark_relevance.terminal_bench_2_1),
         optimization_name(family.optimization.class),
@@ -183,67 +216,100 @@ fn render_family(out: &mut String, family: &Family) -> Result<()> {
 
 fn value_domain_summary(domain: StructuredValueDomain) -> String {
     match domain {
-        StructuredValueDomain::Boolean => "boolean".into(),
-        StructuredValueDomain::Numeric { min, max, unit, .. } => format!(
-            "numeric [{}..{}] {}",
-            min.map_or_else(|| "-∞".into(), |value| value.to_string()),
-            max.map_or_else(|| "+∞".into(), |value| value.to_string()),
-            unit
-        ),
-        StructuredValueDomain::FiniteEnum {
-            values,
-            open_catalog,
-            ..
-        } => {
-            if open_catalog {
-                format!("open catalog enum ({} fixed values)", values.len())
-            } else {
-                format!("finite enum [{}]", values.join(", "))
-            }
-        }
-        StructuredValueDomain::Text {
-            min_bytes,
-            max_bytes,
-            format,
-        } => format!(
-            "text bytes [{}..{}], format {format}",
-            min_bytes,
-            max_bytes.map_or_else(|| "+∞".into(), |value| value.to_string())
-        ),
+        StructuredValueDomain::Scalar { domain } => scalar_domain_summary(domain),
         StructuredValueDomain::List {
             min_items,
             max_items,
-            item_schema,
+            item,
             ..
         } => format!(
-            "list items [{}..{}], {item_schema}",
+            "list items [{}..{}], {}",
             min_items,
-            max_items.map_or_else(|| "+∞".into(), |value| value.to_string())
+            max_items,
+            scalar_domain_summary(item)
         ),
         StructuredValueDomain::Map {
             min_entries,
             max_entries,
-            value_schema,
+            key,
+            value,
             ..
         } => format!(
-            "map entries [{}..{}], {value_schema}",
-            min_entries,
-            max_entries.map_or_else(|| "+∞".into(), |value| value.to_string())
-        ),
-        StructuredValueDomain::Composite { schema_ref, .. } => {
-            format!("composite {schema_ref}")
-        }
-        StructuredValueDomain::Catalog {
+            "map entries [{}..{}], key={}, value={}",
             min_entries,
             max_entries,
-            entry_schema,
-            open_catalog,
-        } => format!(
-            "{} catalog entries [{}..{}], {entry_schema}",
-            if open_catalog { "open" } else { "closed" },
-            min_entries,
-            max_entries.map_or_else(|| "+∞".into(), |value| value.to_string())
+            scalar_domain_summary(key),
+            field_domain_summary(value)
         ),
+        StructuredValueDomain::Object { fields, .. } => format!(
+            "closed object ({} fields, {} required)",
+            fields.len(),
+            fields.iter().filter(|field| field.required).count()
+        ),
+        StructuredValueDomain::Catalog {
+            catalog_id,
+            min_entries,
+            max_entries,
+            entry_fields,
+        } => format!(
+            "catalog {catalog_id}, entries [{}..{}], {} typed fields",
+            min_entries,
+            max_entries,
+            entry_fields.len()
+        ),
+    }
+}
+
+fn scalar_domain_summary(domain: ScalarDomain) -> String {
+    match domain {
+        ScalarDomain::Boolean => "boolean".into(),
+        ScalarDomain::Integer { min, max, unit } => {
+            format!("integer [{min}..{max}] {unit}")
+        }
+        ScalarDomain::Decimal {
+            min,
+            max,
+            max_scale,
+            unit,
+        } => format!(
+            "decimal [{}e-{}..{}e-{}] {unit}, scale<={max_scale}",
+            min.coefficient, min.scale, max.coefficient, max.scale
+        ),
+        ScalarDomain::Text {
+            min_bytes,
+            max_bytes,
+            format,
+        } => format!("text bytes [{min_bytes}..{max_bytes}], {format:?}"),
+        ScalarDomain::Enum { values, catalog_id } => catalog_id.map_or_else(
+            || format!("enum [{}]", values.join(", ")),
+            |catalog| format!("catalog enum {catalog}"),
+        ),
+    }
+}
+
+fn field_domain_summary(domain: FieldDomain) -> String {
+    match domain {
+        FieldDomain::Scalar { domain } => scalar_domain_summary(domain),
+        FieldDomain::List {
+            min_items,
+            max_items,
+            item,
+            ..
+        } => format!(
+            "list [{min_items}..{max_items}] of {}",
+            scalar_domain_summary(item)
+        ),
+        FieldDomain::Map {
+            min_entries,
+            max_entries,
+            key,
+            value,
+        } => format!(
+            "map [{min_entries}..{max_entries}] {} -> {}",
+            scalar_domain_summary(key),
+            scalar_domain_summary(value)
+        ),
+        FieldDomain::Object { fields, .. } => format!("closed object ({} fields)", fields.len()),
     }
 }
 
@@ -275,14 +341,47 @@ fn default_name(value: DefaultKind) -> &'static str {
         DefaultKind::Literal => "literal",
         DefaultKind::Derived => "derived",
         DefaultKind::Dynamic => "dynamic",
-        DefaultKind::Catalog => "catalog",
-        DefaultKind::OperatorRequired => "operator_required",
     }
+}
+
+fn resolver_name(value: DefaultResolver) -> String {
+    match value {
+        DefaultResolver::Literal => "literal".into(),
+        DefaultResolver::Builtin { resolver_id } => format!("builtin:{resolver_id}"),
+        DefaultResolver::ModelMetadata { field } => format!("model_metadata:{field}"),
+        DefaultResolver::ProviderCapability { capability } => {
+            format!("provider_capability:{capability}")
+        }
+        DefaultResolver::Transport { field } => format!("transport:{field}"),
+        DefaultResolver::RuntimeObservation { field } => {
+            format!("runtime_observation:{field}")
+        }
+        DefaultResolver::GovernedCatalog { catalog_id } => {
+            format!("governed_catalog:{catalog_id}")
+        }
+        DefaultResolver::Operator { input_id } => format!("operator:{input_id}"),
+    }
+}
+
+fn provider_requirement_name(value: ProviderRequirement) -> &'static str {
+    match value {
+        ProviderRequirement::None => "none",
+        ProviderRequirement::AnyAdmittedRoute => "any_admitted_route",
+        ProviderRequirement::SelectedRoute => "selected_route",
+    }
+}
+
+fn capability_name(value: CapabilityRequirement) -> String {
+    serde_json::to_string(&value)
+        .expect("serializing a fieldless capability enum cannot fail")
+        .trim_matches('"')
+        .to_owned()
 }
 
 fn source_name(value: SourceKind) -> &'static str {
     match value {
         SourceKind::Cli => "cli",
+        SourceKind::OperatorInput => "operator_input",
         SourceKind::UserConfig => "user_config",
         SourceKind::ProjectConfig => "project_config",
         SourceKind::Environment => "environment",
