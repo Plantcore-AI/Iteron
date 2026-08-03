@@ -78,17 +78,85 @@ fn validate_workspace(workspace: &toml::Value) -> Result<()> {
         .iter()
         .map(|(member, _)| (*member).to_owned())
         .collect::<BTreeSet<_>>();
-    if member_values.len() != expected.len() || members != expected {
-        bail!("schema workspace membership differs from its trusted crate graph");
+    if member_values.len() != members.len() {
+        bail!("schema workspace lists a member twice");
+    }
+    // Removals and renames stay forbidden: every member this binary was built to trust must still
+    // be present, under the same path. That is the property worth pinning -- a crate silently
+    // dropped from the graph takes its boundary, its owners, and its checks with it.
+    if let Some(missing) = expected.difference(&members).next() {
+        bail!("schema workspace no longer contains trusted member '{missing}'");
+    }
+    // Additions are permitted, because forbidding them made the graph unable to grow: this binary
+    // is built from the merge base, so a compiled-in equality check rejects every crate-adding pull
+    // request no matter what it contains, and there is no ordering of policy-first or code-first
+    // commits that passes both this check and the candidate's own. An added member must still
+    // declare itself in the cargo policy, which is owner-reviewed, and it is validated in full by
+    // the candidate's own binary in the Rust lane.
+    for added in members.difference(&expected) {
+        if !added.starts_with("crates/") {
+            bail!("added workspace member '{added}' is not under crates/");
+        }
+        if added.contains("..") {
+            bail!("added workspace member '{added}' is not a plain crates/ path");
+        }
     }
     Ok(())
 }
 
+/// Workspace members present in the tree that this binary was not built to know about.
+///
+/// Empty for every pull request that does not add a crate, so the common path is unchanged.
+fn added_members(root: &Path) -> Result<Vec<String>> {
+    let workspace = read_toml(root, "Cargo.toml")?;
+    let expected = MEMBERS
+        .iter()
+        .map(|(member, _)| (*member).to_owned())
+        .collect::<BTreeSet<_>>();
+    Ok(workspace
+        .get("workspace")
+        .and_then(toml::Value::as_table)
+        .and_then(|table| table.get("members"))
+        .and_then(toml::Value::as_array)
+        .map(|members| {
+            members
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .filter(|member| !expected.contains(*member))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 fn validate_member_identities_and_paths(root: &Path) -> Result<()> {
-    let names = MEMBERS
+    let mut names = MEMBERS
         .iter()
         .map(|(member, package)| ((*package).to_owned(), (*member).to_owned()))
         .collect::<BTreeMap<_, _>>();
+    // Added members join the internal-name table, or a trusted member that depends on one of them
+    // reads as naming an unknown internal dependency -- which is how `xtask -> core-tunables` fails
+    // even though both sides are legitimate. Their own identity and paths are checked by the
+    // candidate's binary, which knows them; what this binary still enforces on them is the
+    // path-shape and aliasing rules below, applied to every trusted member that references them.
+    for member in added_members(root)? {
+        let manifest = format!("{member}/Cargo.toml");
+        let value = read_toml(root, &manifest)?;
+        let package = value
+            .get("package")
+            .and_then(toml::Value::as_table)
+            .with_context(|| format!("added member '{manifest}' lacks [package]"))?;
+        let package_name = package
+            .get("name")
+            .and_then(toml::Value::as_str)
+            .with_context(|| format!("added member '{manifest}' lacks a package name"))?;
+        if !package_name.starts_with("core-") {
+            bail!("added workspace member '{member}' is not an internal `core-` package");
+        }
+        if names.insert(package_name.to_owned(), member.clone()).is_some() {
+            bail!("added workspace member '{member}' collides with a trusted package name");
+        }
+    }
     for (member, package_name) in MEMBERS {
         let manifest = format!("{member}/Cargo.toml");
         let value = read_toml(root, &manifest)?;
