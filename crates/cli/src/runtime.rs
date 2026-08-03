@@ -196,6 +196,8 @@ pub enum KernelError {
     ContextResolution(String),
     #[error("context strategy inputs are already resolved for this run")]
     ContextAlreadyResolved,
+    #[error("agent catalog is already pinned for this run")]
+    AgentCatalogAlreadyResolved,
     #[error("delegation depth limit reached; child agents cannot delegate")]
     DelegationDepthExceeded,
 }
@@ -278,6 +280,9 @@ impl KernelError {
             }
             Self::ContextAlreadyResolved => {
                 "context strategy inputs are already fixed for this run".into()
+            }
+            Self::AgentCatalogAlreadyResolved => {
+                "agent catalog is already fixed for this run".into()
             }
             Self::DelegationDepthExceeded => {
                 "delegation depth limit reached; child agents cannot delegate".into()
@@ -2301,6 +2306,10 @@ pub struct Agent {
     context_port: std::sync::Arc<dyn core_ctx::ContextPort>,
     /// Explicit operator home supplied by the composition root. The kernel never reads `HOME`.
     context_home_dir: Option<std::path::PathBuf>,
+    /// Immutable, composition-root-discovered agent definitions. Children inherit this exact Arc;
+    /// neither repository drift nor a nested worker can widen or replace it mid-run.
+    agent_catalog: std::sync::Arc<core_agents::AgentCatalog>,
+    agent_catalog_pinned: bool,
     /// The resolved memory segment for this run, recalled + recorded ONCE (REC-INJECT). `None`
     /// until `resolve_injection` runs; `Some("")` means "resolved, nothing to inject". Reused from
     /// the RECORD on resume — never re-read from disk mid-run (the live bug the R5 review flagged
@@ -2437,6 +2446,8 @@ impl Agent {
             tool_policy: std::sync::Arc::new(core_tools::ToolPolicy::default()),
             context_port: std::sync::Arc::new(core_ctx::DefaultContextPort),
             context_home_dir: None,
+            agent_catalog: std::sync::Arc::new(core_agents::AgentCatalog::builtin_only()),
+            agent_catalog_pinned: false,
             injected: None,
             injected_trust: None,
             observed_trust: Trust::Trusted,
@@ -2472,6 +2483,32 @@ impl Agent {
     /// Effective full rule snapshot.
     pub fn permission_rules(&self) -> &PermissionRules {
         &self.permission_rules
+    }
+
+    /// Pin the exact discovered catalog before this process can spawn a child. A second pin is
+    /// refused. Existing rollouts are allowed because a resumed process must reconstruct its
+    /// immutable execution inputs before doing new work.
+    pub fn pin_agent_catalog(
+        &mut self,
+        catalog: core_agents::AgentCatalog,
+    ) -> Result<(), KernelError> {
+        if self.agent_catalog_pinned {
+            return Err(KernelError::AgentCatalogAlreadyResolved);
+        }
+        for def in catalog.defs() {
+            def.validate()
+                .map_err(|_| KernelError::InvalidRouteMetadata {
+                    field: "agent_catalog",
+                    reason: "contains an invalid executable agent definition",
+                })?;
+        }
+        self.agent_catalog = std::sync::Arc::new(catalog);
+        self.agent_catalog_pinned = true;
+        Ok(())
+    }
+
+    pub fn agent_catalog_digest(&self) -> String {
+        self.agent_catalog.execution_digest()
     }
 
     /// The quota the provider last published on its response headers, or `None` when this route
@@ -4698,7 +4735,9 @@ impl Agent {
         // One injected evidence plane and one emission bound cover the whole parent/descendant
         // tree. A child must never fall back to the default null port or multiply the cap.
         child.diagnostics = self.diagnostics.clone();
-        child.usd_budget = self.usd_budget.clone();
+        if self.usd_budget.is_some() {
+            child.usd_budget = self.usd_budget.clone();
+        }
         child.authority_ceiling = self.authority_ceiling;
         child.policy_capabilities = self.policy_capabilities;
         if let Some(pricing) = &self.pricing_port {
@@ -7240,7 +7279,6 @@ impl Agent {
         );
         cx.model_context_window = self.model_context_window;
         cx.model_max_output_tokens = self.model_max_output_tokens;
-        cx.hooks = self.hooks.clone();
         cx.sensitive_env_names = self.sensitive_env_names.clone();
         cx.pricing_port = self.pricing_port.clone();
         cx.usd_budget = self.usd_budget.clone();
@@ -7269,6 +7307,7 @@ impl Agent {
         cx.tool_policy = self.tool_policy.clone();
         cx.context_port = self.context_port.clone();
         cx.context_home_dir = self.context_home_dir.clone();
+        cx.agent_catalog = self.agent_catalog.clone();
         let spawner: std::sync::Arc<dyn core_workflow::AgentSpawner> =
             std::sync::Arc::new(KernelSpawner::new(cx));
 
@@ -8466,21 +8505,66 @@ impl Agent {
         let idx = task.id;
         let sub_run = self.subagent_run_id("fan", seq, idx);
         let sub_dir = self.subagent_directory();
-        let registry = match Registry::read_only(&self.workspace) {
+        let setup_failure = |code: &str, detail: String| InvestigatorReport {
+            text: "[fan worker setup failed]".into(),
+            outcome: WorkflowAgentOutcomeUi::Failed,
+            drained: false,
+            ledger: Ledger::default(),
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            sub_run: Some(sub_run.0.clone()),
+            error_code: Some(code.into()),
+            error_detail: Some(detail),
+        };
+        let agent_type = task.agent_type.as_deref().unwrap_or("generic");
+        let Some(agent_def) = self.agent_catalog.get(agent_type).cloned() else {
+            return Ok(Err(setup_failure(
+                "unknown_agent_definition",
+                format!("agent type `{agent_type}` is absent from the pinned catalog"),
+            )));
+        };
+        if let Err(reason) = agent_def.validate() {
+            return Ok(Err(setup_failure(
+                "invalid_agent_definition",
+                format!("agent type `{agent_type}` is invalid: {reason}"),
+            )));
+        }
+        if let Some(model) = agent_def.model.as_deref()
+            && model != self.model
+        {
+            return Ok(Err(setup_failure(
+                "unresolved_agent_model",
+                format!(
+                    "agent type `{agent_type}` requests model `{model}`, but the run is pinned to `{}`",
+                    self.model
+                ),
+            )));
+        }
+        let mut parent_budget = budget.clone();
+        parent_budget.max_usd = self.effective_max_usd();
+        let worker_budget =
+            match workflow_spawner::intersect_budget(&parent_budget, &agent_def.budget) {
+                Ok(budget) => budget,
+                Err(reason) => {
+                    return Ok(Err(setup_failure("agent_budget", reason)));
+                }
+            };
+        if worker_budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) && self.pricing_port.is_none()
+        {
+            return Ok(Err(setup_failure(
+                "unpriced_agent_budget",
+                "positive child USD ceiling has no verified route pricing port".into(),
+            )));
+        }
+        let mut registry = match Registry::read_only(&self.workspace) {
             Ok(r) => r,
             Err(_) => {
-                return Ok(Err(InvestigatorReport {
-                    text: "[fan worker setup failed]".into(),
-                    outcome: WorkflowAgentOutcomeUi::Failed,
-                    drained: false,
-                    ledger: Ledger::default(),
-                    elapsed_ms: started.elapsed().as_millis() as u64,
-                    sub_run: Some(sub_run.0),
-                    error_code: Some("registry_setup".into()),
-                    error_detail: Some("read-only tool registry could not be created".into()),
-                }));
+                return Ok(Err(setup_failure(
+                    "registry_setup",
+                    "read-only tool registry could not be created".into(),
+                )));
             }
         };
+        registry.narrow_to(&agent_def.tools.narrow());
         let rollout = match Rollout::open(&sub_dir, &sub_run, self.rollout.tenant().clone()) {
             Ok(r) => r,
             Err(_) => {
@@ -8500,7 +8584,7 @@ impl Agent {
             TurnId(seq),
             EventKind::SubagentSpawned {
                 sub_run: sub_run.0.clone(),
-                agent: "investigator".into(),
+                agent: agent_def.execution_tag(),
             },
         )?;
         self.emit_durable(
@@ -8512,7 +8596,7 @@ impl Agent {
                     task_id: idx as u32,
                     sub_run: sub_run.0.clone(),
                     spawn_seq,
-                    budget: budget.clone(),
+                    budget: worker_budget.clone(),
                 },
             },
         )?;
@@ -8520,16 +8604,16 @@ impl Agent {
             run_id: workflow_run_id.to_string(),
             agent_id: idx,
             sub_run: sub_run.0.clone(),
-            turn_budget: budget.max_turns,
+            turn_budget: worker_budget.max_turns,
         }));
-        let child_deadline = self.child_run_deadline(budget);
+        let child_deadline = self.child_run_deadline(&worker_budget);
         let mut sub = Agent::new(
             self.provider.clone(),
             registry,
             rollout,
             self.model.clone(),
-            core_agents::AgentDef::generic().system,
-            budget.clone(),
+            agent_def.system.clone(),
+            worker_budget,
         );
         sub.projection_attribution = Some(CostAttribution::WorkflowChild {
             parent_run_id: self.rollout.run_id().0.clone(),
@@ -8543,19 +8627,44 @@ impl Agent {
         sub.tool_policy = self.tool_policy.clone();
         sub.context_port = self.context_port.clone();
         sub.context_home_dir = self.context_home_dir.clone();
+        sub.agent_catalog = self.agent_catalog.clone();
+        sub.agent_catalog_pinned = true;
         sub.model_context_window = self.model_context_window;
         sub.model_max_output_tokens = self.model_max_output_tokens;
         sub.sensitive_env_names = self.sensitive_env_names.clone();
-        // Preserve the same trusted hook policy recursively for fan-out investigators.
-        sub.hooks = self.hooks.clone();
+        // Lifecycle hooks are executable processes and therefore outside a read-only definition's
+        // authority. The child receives no hook process surface and cannot bypass permissions.
+        sub.hooks = Hooks::default();
+        sub.bypass_permissions = false;
         sub.delegation_depth = self.delegation_depth.saturating_add(1);
-        sub.effort = if self.effort == core_protocol::Effort::Ultracode {
+        let child_effort = if self.effort == core_protocol::Effort::Ultracode {
             core_protocol::Effort::Max
         } else {
             self.effort
         };
         sub.run_deadline = Some(child_deadline);
+        if self.usd_budget.is_some() {
+            sub.usd_budget = self.usd_budget.clone();
+        }
+        sub.configure_initial_runtime_policy(
+            child_effort,
+            self.permission_mode,
+            self.permission_rules.clone(),
+        )?;
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        sub.record_genesis(
+            self.workspace.display().to_string(),
+            created_at,
+            self.agent_catalog.execution_digest(),
+            Some(agent_def.execution_tag()),
+        )?;
         self.inherit_route_and_pricing(&mut sub)?;
+        let read_only = CapabilitySet::from_iter_capabilities([Capability::ReadOnly]);
+        sub.authority_ceiling = sub.authority_ceiling.intersect(read_only);
+        sub.policy_capabilities = sub.policy_capabilities.intersect(read_only);
         if let Some(interrupt) = &self.interrupt {
             sub.set_interrupt(interrupt.clone());
         }
@@ -10776,6 +10885,22 @@ mod gate_integration_tests {
         );
         a.workspace = ws.to_path_buf();
         a
+    }
+
+    #[test]
+    fn executable_agent_catalog_is_pinned_once_even_when_a_rollout_already_exists() {
+        let ws = temp_ws("catalog-pin");
+        let mut agent = agent_for(&ws);
+        let catalog = core_agents::AgentCatalog::builtin_only();
+        let expected = catalog.execution_digest();
+        agent.pin_agent_catalog(catalog).unwrap();
+        assert_eq!(agent.agent_catalog_digest(), expected);
+        assert!(matches!(
+            agent.pin_agent_catalog(core_agents::AgentCatalog::builtin_only()),
+            Err(KernelError::AgentCatalogAlreadyResolved)
+        ));
+        drop(agent);
+        std::fs::remove_dir_all(ws).unwrap();
     }
 
     /// I-42: the four dispatch paths that bypass [`effects::execute_registry_tool`] — the ADR-004
