@@ -48,6 +48,16 @@ impl Operation {
 pub enum Verdict {
     /// Nothing would be lost.
     Safe,
+    /// The change set was truncated, so entries exist that were never examined.
+    ///
+    /// Distinct from `Safe`, and that distinction is the whole point: a bounded scan that hit its
+    /// ceiling has *not* established that nothing would be lost, it has established that it stopped
+    /// looking. Reporting `Safe` here is how a guard destroys the work it was added to protect.
+    Incomplete {
+        operation: Operation,
+        examined: Vec<Entry>,
+        unexamined: usize,
+    },
     /// Work would be destroyed. The entries are listed so the refusal is actionable and so a
     /// caller can offer to commit or stash exactly those paths.
     WouldLose {
@@ -61,10 +71,27 @@ impl Verdict {
         matches!(self, Verdict::Safe)
     }
 
+    /// Whether the operation may proceed. `Incomplete` is not permission: the caller must widen
+    /// the scan or accept the risk explicitly, not read past an inconclusive answer.
+    pub fn permits(&self) -> bool {
+        matches!(self, Verdict::Safe)
+    }
+
     /// A message naming the operation and the count, for a caller that needs one line.
     pub fn describe(&self) -> String {
         match self {
             Verdict::Safe => "no uncommitted work would be lost".to_owned(),
+            Verdict::Incomplete {
+                operation,
+                examined,
+                unexamined,
+            } => format!(
+                "{} cannot be judged: {} unexamined change{} beyond the scan limit, {} seen",
+                operation.label(),
+                unexamined,
+                if *unexamined == 1 { "" } else { "s" },
+                examined.len()
+            ),
             Verdict::WouldLose { operation, entries } => format!(
                 "{} would discard {} uncommitted change{}: {}",
                 operation.label(),
@@ -92,6 +119,16 @@ pub fn assess(changes: &ChangeSet, operation: Operation) -> Verdict {
         .filter(|e| would_lose(e, operation))
         .cloned()
         .collect();
+
+    // A truncated scan cannot clear an operation. It did not look at everything, so "nothing at
+    // risk was found" and "nothing is at risk" are different statements.
+    if changes.truncated > 0 {
+        return Verdict::Incomplete {
+            operation,
+            examined: at_risk,
+            unexamined: changes.truncated,
+        };
+    }
 
     if at_risk.is_empty() {
         Verdict::Safe
@@ -121,7 +158,9 @@ fn would_lose(entry: &Entry, operation: Operation) -> bool {
 pub fn remediation_paths(changes: &ChangeSet, operation: Operation) -> Vec<&str> {
     match assess(changes, operation) {
         Verdict::Safe => Vec::new(),
-        Verdict::WouldLose { .. } => changes
+        // For an inconclusive scan these are the paths seen so far, not the full remediation set;
+        // the caller learns that from the verdict, which is why this returns the same list.
+        Verdict::Incomplete { .. } | Verdict::WouldLose { .. } => changes
             .entries
             .iter()
             .filter(|e| would_lose(e, operation))
@@ -145,7 +184,7 @@ pub fn has_unrecorded_work(changes: &ChangeSet) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::porcelain::parse_default;
+    use crate::porcelain::{parse_default, parse_porcelain_v1_z};
 
     fn rec(parts: &[&str]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -205,6 +244,32 @@ mod tests {
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].path, "new.rs");
         }
+    }
+
+    #[test]
+    fn a_truncated_scan_is_never_reported_as_safe() {
+        // The failure this prevents: a bounded scan hits its ceiling, finds nothing at risk among
+        // what it saw, and the guard clears a destructive operation over work it never looked at.
+        let c = parse_porcelain_v1_z(&rec(&[" M a.rs", " M b.rs", " M c.rs"]), 1).unwrap();
+        assert_eq!(c.truncated, 2);
+
+        let v = assess(&c, Operation::HardReset);
+        assert!(!v.is_safe());
+        assert!(!v.permits(), "an inconclusive scan is not permission");
+        assert!(matches!(v, Verdict::Incomplete { unexamined: 2, .. }));
+        assert!(v.describe().contains("unexamined"), "{}", v.describe());
+    }
+
+    #[test]
+    fn a_truncated_scan_is_inconclusive_even_when_nothing_seen_is_at_risk() {
+        // `reset --hard` ignores untracked files, so the examined set is empty -- which previously
+        // rendered as Safe.
+        let c = parse_porcelain_v1_z(&rec(&["?? a.rs", "?? b.rs"]), 1).unwrap();
+        assert_eq!(c.truncated, 1);
+        assert!(matches!(
+            assess(&c, Operation::HardReset),
+            Verdict::Incomplete { .. }
+        ));
     }
 
     #[test]

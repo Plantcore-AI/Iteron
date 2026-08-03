@@ -62,6 +62,24 @@ pub struct Preview {
     pub not_in_snapshot: Vec<Entry>,
     /// True when the resulting tree will not equal the checkpoint tree.
     pub inexact: bool,
+    /// Entries the change set never examined because it hit its ceiling. Non-zero means this
+    /// preview is a lower bound, not a description.
+    pub unexamined: usize,
+    /// True when the caller supplied no snapshot inventory, so "not in the snapshot" was inferred
+    /// from `Presence::Untracked` rather than known.
+    ///
+    /// That inference is **wrong** against `core-record`, whose snapshot captures untracked
+    /// non-ignored files too: such a path *is* in the checkpoint and would be restored, not lost.
+    /// Until an inventory is threaded through, a preview says so instead of asserting a
+    /// classification it cannot make.
+    pub inferred_membership: bool,
+}
+
+impl Preview {
+    /// Whether this preview describes the outcome, as opposed to bounding it.
+    pub fn is_conclusive(&self) -> bool {
+        self.unexamined == 0 && !self.inferred_membership
+    }
 }
 
 impl Preview {
@@ -115,6 +133,8 @@ pub fn preview(changes: &ChangeSet, scope: Scope, unrecorded: Unrecorded) -> Pre
             overwritten: Vec::new(),
             not_in_snapshot: Vec::new(),
             inexact: false,
+            unexamined: changes.truncated,
+            inferred_membership: false,
         };
     }
 
@@ -134,6 +154,8 @@ pub fn preview(changes: &ChangeSet, scope: Scope, unrecorded: Unrecorded) -> Pre
         overwritten,
         not_in_snapshot,
         inexact,
+        unexamined: changes.truncated,
+        inferred_membership: true,
     }
 }
 
@@ -200,6 +222,42 @@ mod tests {
             "{}",
             p.describe()
         );
+    }
+
+    #[test]
+    fn a_preview_without_a_snapshot_inventory_says_so() {
+        // `Presence::Untracked` is not the same as "absent from the checkpoint": core-record's
+        // snapshot captures untracked non-ignored files, so such a path would be *restored*, not
+        // lost. Until an inventory is threaded through, the preview reports that it inferred.
+        let p = preview(
+            &changes(&["?? generated.rs"]),
+            Scope::CodeAndConversation,
+            Unrecorded::Delete,
+        );
+        assert!(p.inferred_membership);
+        assert!(
+            !p.is_conclusive(),
+            "an inferred classification is not a conclusion"
+        );
+    }
+
+    #[test]
+    fn a_truncated_change_set_makes_the_preview_a_lower_bound() {
+        let c = crate::porcelain::parse_porcelain_v1_z(
+            &{
+                let mut v = Vec::new();
+                for p in [" M a.rs", " M b.rs", " M c.rs"] {
+                    v.extend_from_slice(p.as_bytes());
+                    v.push(0);
+                }
+                v
+            },
+            1,
+        )
+        .unwrap();
+        let p = preview(&c, Scope::CodeOnly, Unrecorded::Keep);
+        assert_eq!(p.unexamined, 2);
+        assert!(!p.is_conclusive());
     }
 
     #[test]
