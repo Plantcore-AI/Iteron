@@ -6,7 +6,13 @@ fn user(id: u64, text: &str) -> Arc<block::Block> {
 }
 
 fn settle(viewer: &mut Viewer, blocks: &[Arc<block::Block>], revision: u64) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // A hang guard, not a performance budget: it exists so a viewer that never drains fails as a
+    // test rather than hanging the suite. Ten seconds was not a guard, it was a coin flip --
+    // `global_index_budget_stops_projecting_older_block_bytes` needs 8.6s on an M-series Mac and
+    // over 10s on Linux/aarch64, where it failed deterministically on the required
+    // `rust / ubuntu-24.04` lane while passing locally. Sixty seconds is far above any real settle
+    // time on hardware this suite runs on, and still bounded.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while viewer.background_work_pending() {
         viewer.sync_if_changed(blocks, revision);
         if viewer.projection_worker.is_busy() {
