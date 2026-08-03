@@ -147,6 +147,9 @@ pub(crate) struct SessionSnapshot {
     pub(crate) permission_rules: core_protocol::PermissionRules,
     /// The ledger line the status panel prints.
     pub(crate) ledger_summary: String,
+    /// One line of provider quota, read from the response headers of the last request. `None`
+    /// when the route publishes none — a row of dashes reads like an exhausted budget (I-53).
+    pub(crate) rate_limit: Option<String>,
 }
 
 /// The EQ payload.
@@ -216,6 +219,8 @@ pub(crate) enum Control {
     SelectModel(Box<ModelSelection>),
     /// `/compact`
     Compact { focus: Option<String> },
+    /// `/budget` — read the turn ceiling, or (with `set`) move it for this session.
+    TurnBudget { set: Option<u32> },
 }
 
 /// The `/model` transaction's inputs, kept together because the kernel applies them as one.
@@ -244,6 +249,8 @@ pub(crate) enum ControlReply {
         report: Box<crate::runtime::CompactionReport>,
         snapshot: Box<SessionSnapshot>,
     },
+    /// `/budget` — the ceiling actually in force and the attempts charged against it.
+    TurnBudget(crate::runtime::TurnBudgetState),
 }
 
 /// One control request and the channel its answer comes back on.
@@ -1039,6 +1046,13 @@ async fn apply_control(agent: &mut Agent, events: &mut EventPublisher, request: 
             },
             Err(error) => ControlReply::Refused(error.public_summary()),
         },
+        Control::TurnBudget { set } => match set {
+            None => ControlReply::TurnBudget(agent.turn_budget()),
+            Some(max_turns) => match agent.set_turn_ceiling(max_turns) {
+                Ok(state) => ControlReply::TurnBudget(state),
+                Err(error) => ControlReply::Refused(error.public_summary()),
+            },
+        },
     };
     // A frontend that dropped the receiver has moved on; that is not the server's problem.
     let _ = request.reply.send(reply);
@@ -1055,6 +1069,10 @@ fn snapshot_of(agent: &mut Agent) -> SessionSnapshot {
         unadmitted_steers: agent.take_unadmitted_steers(),
         permission_rules: agent.permission_rules().clone(),
         ledger_summary: agent.ledger.summary(),
+        rate_limit: agent
+            .last_rate_limit()
+            .as_ref()
+            .and_then(core_provider::RateLimitSnapshot::summary),
     }
 }
 
@@ -1076,6 +1094,7 @@ mod tests {
             unadmitted_steers: Vec::new(),
             permission_rules: core_protocol::PermissionRules::new(),
             ledger_summary: String::new(),
+            rate_limit: None,
         })
     }
 

@@ -77,6 +77,33 @@ fn outcome_reason(outcome: &Outcome) -> Option<&str> {
     }
 }
 
+/// The concrete operator action that clears one budget ceiling.
+///
+/// A bare `budget_exhausted` is indistinguishable from a hang: the run stops, nothing is broken,
+/// and nothing says what would make the next submission run. `max_turns` is the worst of the five
+/// because it is *cumulative for the whole session* — subagent attempts are charged to the parent
+/// and resume deliberately restores the count — so an operator who reaches it has no reason to
+/// suspect the ceiling is raisable at all. Every reason therefore names a remedy, and the
+/// unrecognized case still says which direction to move.
+pub fn budget_remedy(reason: &str) -> &'static str {
+    match reason {
+        "max_turns" => {
+            "the turn ceiling counts the whole session, not this submission: raise it in place \
+             with `/budget <turns>`, or restart with --max-turns <turns>"
+        }
+        "max_wall_secs" => {
+            "the wall-clock ceiling bounds one submission: restart with --max-wall-secs <seconds>"
+        }
+        "max_usd" => "raise the spend ceiling with --max-usd <dollars>",
+        "max_tokens" => "raise the aggregate token ceiling with --max-tokens <tokens>",
+        "verify_attempts" => {
+            "the verification retry ceiling was reached: fix the failing check, or rerun without \
+             --verify"
+        }
+        _ => "raise the ceiling named above and submit again",
+    }
+}
+
 fn phase_name(phase: Phase) -> &'static str {
     match phase {
         Phase::Context => "context",
@@ -703,6 +730,39 @@ mod tests {
         assert_eq!(outcome_exit_code(&Outcome::BudgetExhausted("max_turns")), 3);
         assert_eq!(outcome_exit_code(&Outcome::Stuck), 4);
         assert_eq!(outcome_exit_code(&Outcome::Interrupted), 130);
+    }
+
+    /// Every budget stop used to print only its reason token, which told an operator that the run
+    /// had ended but never that anything could be done about it.
+    #[test]
+    fn every_budget_stop_names_a_concrete_remedy() {
+        for reason in [
+            "max_turns",
+            "max_wall_secs",
+            "max_usd",
+            "max_tokens",
+            "verify_attempts",
+        ] {
+            let remedy = budget_remedy(reason);
+            assert!(!remedy.is_empty(), "{reason} has no remedy");
+            assert_ne!(
+                remedy,
+                budget_remedy("something-new"),
+                "{reason} is generic"
+            );
+        }
+        assert!(
+            budget_remedy("max_turns").contains("/budget"),
+            "the cumulative turn ceiling must name the in-session command that raises it"
+        );
+        assert!(
+            budget_remedy("max_wall_secs").contains("--max-wall-secs"),
+            "the wall-clock ceiling must name the flag that sets it"
+        );
+        assert!(
+            !budget_remedy("unrecognized").is_empty(),
+            "an unknown reason still points the operator somewhere"
+        );
     }
 
     #[test]

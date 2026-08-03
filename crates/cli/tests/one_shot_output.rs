@@ -1060,6 +1060,49 @@ fn text_one_shot_process_contract_is_byte_exact() {
 }
 
 #[test]
+fn startup_timing_is_opt_in_and_reports_every_pre_first_frame_phase() {
+    // Nothing measured the work that happens BEFORE the first frame — config load, tool-server
+    // registration, provider discovery — so a startup regression was invisible and the only symptom
+    // an operator had was "it feels slow". Every `PhaseSpan` in this binary lived inside the turn
+    // loop, which starts after all of it.
+    let server = MockProvider::spawn(Reply::Success);
+    let scratch = Scratch::new("startup-timing-on", &server.api_root);
+    let mut command = core_command(&scratch, "text", 1, &[]);
+    command.env("CORE_STARTUP_TIMING", "1");
+    let output = collect_core(command.spawn().expect("spawn the real core binary"));
+    server.finish();
+
+    assert_eq!(output.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let breakdown = stderr
+        .lines()
+        .find(|line| line.starts_with("startup:"))
+        .unwrap_or_else(|| panic!("no startup breakdown on stderr:\n{stderr}"));
+    for phase in ["config=", "tool_server=", "provider_discover=", "total="] {
+        assert!(
+            breakdown.contains(phase),
+            "startup breakdown is missing {phase}: {breakdown}"
+        );
+    }
+    // `terminal_probe` is the TUI's phase. A one-shot run paints no frame and must not claim one.
+    assert!(
+        !breakdown.contains("terminal_probe="),
+        "a one-shot run reported a terminal probe it never made: {breakdown}"
+    );
+
+    // Measurement must never become a reason startup got slower: unasked, it reads no clock and
+    // writes nothing at all.
+    let quiet_server = MockProvider::spawn(Reply::Success);
+    let quiet_scratch = Scratch::new("startup-timing-off", &quiet_server.api_root);
+    let quiet = run_core(&quiet_scratch, "text", &[]);
+    quiet_server.finish();
+    assert!(
+        !String::from_utf8_lossy(&quiet.stderr).contains("startup:"),
+        "the startup instrument spoke without being asked"
+    );
+}
+
+#[test]
 fn json_one_shot_process_contract_matches_golden() {
     let server = MockProvider::spawn(Reply::Success);
     let scratch = Scratch::new("json-success", &server.api_root);

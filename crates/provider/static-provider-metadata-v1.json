@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "bundle_revision": "core-provider-static-metadata@2026-07-20+sha256:41bd2f3ce6a52cdbcd2e4452bbcb137191dfd387ca3bd5668b4280b094553542",
+  "bundle_revision": "core-provider-static-metadata@2026-08-03+sha256:0900a6f064bed739fe6191c2fe196744aa6034962afe66cb6a8191a401934a79",
   "glm_standard_chat": {
     "version": "glm-chat-completions-schema@2026-07-14+sha256:11d83bc656448de43b2bbf7d1fd78863f75d3f6f75e405a767bfab8d3b14170b",
     "source": "https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E5%AF%B9%E8%AF%9D%E8%A1%A5%E5%85%A8",
@@ -46,6 +46,72 @@
         "claude-opus-4-6",
         "claude-sonnet-4-6"
       ]
+    }
+  },
+  "model_capabilities": {
+    "anthropic_messages": {
+      "api_root": "https://api.anthropic.com/v1",
+      "families": {
+        "claude-opus-4-7": {
+          "version": "anthropic-model-overview@2026-08-01+sha256:5f8fde7e5687e27b06696dbd9c85d53888db41d3661b3c3b6d85a60505061785",
+          "source": "https://docs.claude.com/en/docs/about-claude/models/overview",
+          "captured_at_unix_secs": 1785542400,
+          "context_window_tokens": 1000000,
+          "max_output_tokens": 128000,
+          "tool_calling": true,
+          "semantic_effort": true
+        },
+        "claude-opus-4-6": {
+          "version": "anthropic-model-overview@2026-08-01+sha256:5d7d6b225ca0b3fe21d5e1ba0699d93e779184d26830b26099cd3a655ef00f63",
+          "source": "https://docs.claude.com/en/docs/about-claude/models/overview",
+          "captured_at_unix_secs": 1785542400,
+          "context_window_tokens": 1000000,
+          "max_output_tokens": 128000,
+          "tool_calling": true,
+          "semantic_effort": true
+        },
+        "claude-sonnet-4-6": {
+          "version": "anthropic-model-overview@2026-08-01+sha256:a81364462e1fda512936e13b7000bb94153575c12172c041a48a92efc9c7ca65",
+          "source": "https://docs.claude.com/en/docs/about-claude/models/overview",
+          "captured_at_unix_secs": 1785542400,
+          "context_window_tokens": 1000000,
+          "max_output_tokens": 128000,
+          "tool_calling": true,
+          "semantic_effort": true
+        },
+        "claude-haiku-4-5": {
+          "version": "anthropic-model-overview@2026-08-01+sha256:9692d0febf5e6e4f638e69390882d5f2c01aaa5583ae6680b9616cc82853bbb2",
+          "source": "https://docs.claude.com/en/docs/about-claude/models/overview",
+          "captured_at_unix_secs": 1785542400,
+          "context_window_tokens": 200000,
+          "max_output_tokens": 64000,
+          "tool_calling": true,
+          "semantic_effort": false
+        }
+      }
+    },
+    "openai_responses": {
+      "api_root": "https://api.openai.com/v1",
+      "families": {
+        "gpt-5": {
+          "version": "openai-model-page@2026-08-01+sha256:398fcfad4829a32237e6b09c5fb1127e1b82079f5bf748859d0cf2b5100de58a",
+          "source": "https://platform.openai.com/docs/models/gpt-5",
+          "captured_at_unix_secs": 1785542400,
+          "context_window_tokens": 400000,
+          "max_output_tokens": 128000,
+          "tool_calling": true,
+          "semantic_effort": true
+        },
+        "gpt-5-mini": {
+          "version": "openai-model-page@2026-08-01+sha256:6da890055e81ed408deb4647447a5c1aaf084a4d090c48c191a8c8606d48e90a",
+          "source": "https://platform.openai.com/docs/models/gpt-5-mini",
+          "captured_at_unix_secs": 1785542400,
+          "context_window_tokens": 400000,
+          "max_output_tokens": 128000,
+          "tool_calling": true,
+          "semantic_effort": true
+        }
+      }
     }
   }
 }

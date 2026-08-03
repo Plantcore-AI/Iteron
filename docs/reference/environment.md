@@ -10,7 +10,9 @@ repository or documentation.
 | --- | --- |
 | `CORE_PROVIDER` | Trusted provider instance selection |
 | `CORE_MODEL` | Model selection |
-| `CORE_BASE_URL` | Trusted one-run compatible API root |
+| `CORE_BASE_URL` | Trusted one-run compatible API root (requires `CORE_KEY_ENV` or `--key-env`) |
+| `CORE_KEY_ENV` | Name of the variable holding the credential for `CORE_BASE_URL` |
+| `CORE_CONFIG_HOME` | Config root, replacing `HOME` (for containers and CI runners with no `HOME`) |
 | `CORE_EFFORT` | Effort level |
 | `CORE_MAX_TURNS` | Turn ceiling |
 | `CORE_MAX_USD` | Monetary ceiling when cost evidence is available |
@@ -32,9 +34,21 @@ values; retry policy currently has no CLI flag.
 | `MINIMAX_API_KEY` | MiniMax |
 | `FIREWORKS_API_KEY` | Fireworks |
 
-A user-defined provider names its own credential variable through `key_env`.
-Core Code reads that variable at call time and does not persist the plaintext
-value in config.
+A user-defined provider declares where its credential comes from through
+`credential`, either `{"type": "env", "name": "..."}` or
+`{"type": "file", "path": "..."}`. The deprecated `key_env` spelling is still
+accepted and means the `env` form. Either way the config holds only the name of
+the source, never the plaintext value.
+
+An `env` credential is read once, when the process starts: a running process's
+own environment is not a rotation channel. A `file` credential is re-read at
+call time — always when it declares no expiry, and otherwise as soon as it is
+within a minute of expiring — so a hosted subscription token can rotate without
+restarting Core. The file must be a regular file at mode 0600 holding either one
+token line or `{"token": "...", "expires_at_unix": N}`.
+
+`core setup` writes that file for you; `core auth status` reports which source
+is in use and when it expires.
 
 A signed `rate_cards` entry also names its HMAC variable through `key_env`. Its
 value is exactly 64 hexadecimal characters (32 bytes). Core authenticates the

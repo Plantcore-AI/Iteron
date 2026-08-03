@@ -19,6 +19,7 @@
 //! decision recorded above this crate (ADR-007 §2: network tests are a separate, gated escalation).
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -28,7 +29,10 @@ pub mod seatbelt;
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxError {
     #[error(
-        "sandbox unsupported on this platform build; refusing to run code UNconfined (ADR-007)"
+        "sandbox unsupported on this platform build; refusing to run code UNconfined (ADR-007). \
+         Linux needs the `bubblewrap` package (a root-owned /usr/bin/bwrap) AND permission to \
+         create unprivileged user namespaces; macOS needs /usr/bin/sandbox-exec. See \
+         docs/reference/platforms.md for the exact remedy."
     )]
     Unsupported,
     #[error("sandbox spawn: {0}")]
@@ -299,6 +303,31 @@ pub fn platform_sandbox() -> Box<dyn Sandbox> {
     {
         Box::new(Unsupported)
     }
+}
+
+const PREFERRED_CONFINED_SHELL: &str = "/bin/bash";
+const FALLBACK_CONFINED_SHELL: &str = "/bin/sh";
+
+/// Pick the shell a confined command is executed with. `/bin/bash` stays the preference — the tool
+/// prompt and the model's habits assume its builtins — but the musl release artifact's natural
+/// home is exactly the image that does not have it: Alpine and other BusyBox userlands ship only
+/// `/bin/sh`. Hardcoding bash there turned every `bash` tool call into a bare spawn failure inside
+/// an otherwise perfectly usable namespace, so resolve the interpreter instead of assuming it.
+fn select_confined_shell(preferred_exists: bool) -> &'static str {
+    if preferred_exists {
+        PREFERRED_CONFINED_SHELL
+    } else {
+        FALLBACK_CONFINED_SHELL
+    }
+}
+
+/// The resolved confined shell for this host, probed once. Both backends run the command inside a
+/// namespace/profile that exposes the host's own `/bin`, so the host answer is the confined answer.
+pub fn confined_shell() -> &'static str {
+    static SHELL: OnceLock<&'static str> = OnceLock::new();
+    SHELL.get_or_init(|| {
+        select_confined_shell(std::path::Path::new(PREFERRED_CONFINED_SHELL).exists())
+    })
 }
 
 /// True if an environment variable name looks like it holds a credential. Case-insensitive

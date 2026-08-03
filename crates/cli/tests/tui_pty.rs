@@ -25,6 +25,9 @@ const OSC9_RUN_COMPLETE: &[u8] = b"\x1b]9;Core Code: run complete\x07";
 const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
 const KEYBOARD_ENHANCEMENT_PUSH: &[u8] = b"\x1b[>1u";
 const KEYBOARD_ENHANCEMENT_POP: &[u8] = b"\x1b[<1u";
+const OSC11_QUERY: &[u8] = b"\x1b]11;?\x1b\\";
+/// A glyph from the startup banner, i.e. proof that a real frame reached the terminal.
+const FIRST_FRAME_MARKER: &[u8] = "██████╗".as_bytes();
 static SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
 
 struct Scratch {
@@ -860,6 +863,11 @@ fn unanswered_osc11_query_times_out_to_colorfgbg_without_blocking_startup() {
         started.elapsed() < Duration::from_secs(2),
         "an unanswered terminal query must not hold TUI startup"
     );
+    // The query is now issued BEHIND the first frame, so a painted surface no longer implies the
+    // probe has been written. Wait for the real bytes before asserting anything about the timeout.
+    pty.wait_until("the deferred OSC 11 background query", |pty| {
+        find_sequence(&pty.capture, OSC11_QUERY).is_some()
+    });
 
     let capture = std::str::from_utf8(&pty.capture).expect("terminal stream is valid UTF-8");
     assert!(
@@ -882,6 +890,51 @@ fn unanswered_osc11_query_times_out_to_colorfgbg_without_blocking_startup() {
     );
 
     pty.send(b"\x15\x1b");
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "normal TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+}
+
+#[test]
+fn capability_probes_are_written_after_the_first_painted_frame() {
+    // Both probes used to sit between EnterAlternateScreen and the first draw: the progressive
+    // keyboard query blocks up to 2000 ms and OSC 11 another 80 ms, so a terminal that answered
+    // neither held a freshly blanked screen for two seconds before anything appeared.
+    //
+    // Byte order is the durable statement of the fix, and it is the STRONGER one: a query that is
+    // written after the frame cannot delay the frame no matter how long the terminal takes to
+    // answer it, or whether it answers at all. A wall-clock bound would instead mostly measure how
+    // loaded the machine running this suite happens to be.
+    let scratch = Scratch::new("probe-after-first-frame");
+    let mut pty = PtyHarness::spawn_osc11_fixture(&scratch, 80, 24);
+    pty.wait_until("both deferred capability probes", |pty| {
+        find_sequence(&pty.capture, KEYBOARD_ENHANCEMENT_QUERY).is_some()
+            && find_sequence(&pty.capture, OSC11_QUERY).is_some()
+    });
+    let frame =
+        find_sequence(&pty.capture, FIRST_FRAME_MARKER).expect("the first frame reaches the PTY");
+    let keyboard = find_sequence(&pty.capture, KEYBOARD_ENHANCEMENT_QUERY).unwrap();
+    let background = find_sequence(&pty.capture, OSC11_QUERY).unwrap();
+    assert!(
+        frame < keyboard,
+        "the blocking keyboard probe was written before the first frame ({keyboard} < {frame})"
+    );
+    assert!(
+        frame < background,
+        "the OSC 11 probe was written before the first frame ({background} < {frame})"
+    );
+
+    // An answering terminal still gets the background it reported, now as a repaint behind the
+    // frame rather than as a precondition for it.
+    pty.send(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\");
+    wait_for_ready(&mut pty);
+    pty.wait_until("the late OSC 11 reply repaints the light palette", |pty| {
+        std::str::from_utf8(&pty.capture).is_ok_and(|capture| capture.contains("38;2;52;91;209;"))
+    });
+
+    pty.send(b"\x1b");
     let status = pty.wait_for_exit();
     assert!(status.success(), "normal TUI exit failed: {status}");
     assert_termios_restored(&pty);
@@ -1227,11 +1280,12 @@ fn kitty_keyboard_shift_enter_inserts_newline_and_drop_pops_flags() {
     let scratch = Scratch::new("kitty-shift-enter");
     let mut pty = PtyHarness::spawn_kitty_keyboard_fixture(&scratch, 80, 24);
     wait_for_ready(&mut pty);
-    assert_eq!(
-        sequence_count(&pty.capture, KEYBOARD_ENHANCEMENT_PUSH),
-        1,
-        "positive negotiation must push disambiguate-escape-codes"
-    );
+    // Negotiation runs behind the first frame now, so the push follows the painted surface instead
+    // of preceding it. Waiting keeps this assertion about the OUTCOME of negotiation; the ordering
+    // itself is pinned by `capability_probes_are_written_after_the_first_painted_frame`.
+    pty.wait_until("positive keyboard-enhancement negotiation", |pty| {
+        sequence_count(&pty.capture, KEYBOARD_ENHANCEMENT_PUSH) == 1
+    });
     assert_eq!(
         sequence_count(&pty.capture, KEYBOARD_ENHANCEMENT_POP),
         0,
@@ -1267,10 +1321,11 @@ fn unsupported_keyboard_keeps_ctrl_j_fallback_without_stack_sequences() {
     let scratch = Scratch::new("ctrl-j-keyboard-fallback");
     let mut pty = PtyHarness::spawn(&scratch, 80, 24);
     wait_for_ready(&mut pty);
-    assert!(
-        pty.keyboard_query_answered,
-        "fixture must answer capability query"
-    );
+    // Same deferral as the Kitty fixture: the query is written after the frame, so the answer is
+    // waited for rather than assumed to have already happened by the time the surface appears.
+    pty.wait_until("the deferred keyboard capability query", |pty| {
+        pty.keyboard_query_answered
+    });
     assert_eq!(
         sequence_count(&pty.capture, KEYBOARD_ENHANCEMENT_PUSH),
         0,

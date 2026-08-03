@@ -20,7 +20,10 @@ mod pricing;
 mod strategy_runtime;
 pub mod telemetry;
 mod workflow_spawner;
-use core_ctx::{CompactionPolicy, ContextEstimate, estimate_request_context};
+use core_ctx::{CompactionPolicy, ContextEstimate};
+// The uncached projection is now only a test oracle: the turn loop reads `Agent::context_estimator`.
+#[cfg(test)]
+use core_ctx::estimate_request_context;
 use core_obs::{
     CostState, Ledger, PhaseSpan, PricingPort, ProjectionAdmissionError, admit_verified_projection,
 };
@@ -68,6 +71,17 @@ const VERSION_MISMATCH_SUBMISSION_NOTICE: &str =
     "submission rejected: the frontend and Core use different SQ/EQ protocol versions";
 const INCOMPLETE_USAGE_NOTICE: &str =
     "provider completed the turn without an authoritative usage report; cost is unknown";
+/// I-52: the route reported usage but named no cache-creation count, and the bound card charges a
+/// cache-write rate. Pricing the missing count as a measured zero would report the turn as free.
+const UNPRICEABLE_CACHE_CREATION_NOTICE: &str = "this route does not report cache-creation tokens \
+and the bound rate card charges for them; the turn is unpriced rather than priced as free";
+/// Appended to the partial answer a failed stream left behind, so the record — and the model, on
+/// resume — can tell an interrupted response from a finished one (I-39).
+const INTERRUPTED_STREAM_MARKER: &str =
+    "[interrupted: the provider stream ended before this response was complete]";
+/// Ceiling on the partial answer preserved from an interrupted stream. Generous enough for a real
+/// response, bounded because the bytes come from the provider.
+const INTERRUPTED_STREAM_MAX_BYTES: usize = 256 * 1024;
 const IMAGE_INPUT_UNSUPPORTED_NOTICE: &str = "image attachments were omitted because the selected \
 provider does not support image input; continuing with text only";
 const PROVIDER_RUN_NOTICE_LABEL: &str = "provider run notice";
@@ -1237,6 +1251,27 @@ fn fan_concurrency_permits(active_workers: usize) -> usize {
         .max(1)
 }
 
+/// The kernel-minted aggregate ceilings for an IN-TURN (`Workflow` tool) run.
+///
+/// The parent's remaining inference turns bound each CHILD's turn ceiling (`cx.budget.max_turns`).
+/// They must NOT also be divided down into the run's aggregate ceilings: the old
+/// `remaining_turns / per_child_turns` produced exactly 1 whenever the parent had fewer turns left
+/// than the 30-turn per-child ceiling — the common case — so a five-way `parallel()` admitted one
+/// agent, the other four failed admission, resolved to `null`, and were filtered away by the
+/// script's `.filter(Boolean)` before the model ever saw them.
+///
+/// The engine's own defaults already ARE the fan's permit calculation (`min(FAN_CAP, cores - 2)`
+/// concurrency, `LIFETIME_CAP` lifetime), so the in-turn path adopts them instead of inventing a
+/// narrower pair. Cost stays bounded where it belongs: the per-child turn/token ceilings above and
+/// the aggregate USD budget shared with the parent.
+fn in_turn_workflow_budget() -> Result<core_kernel::ports::WorkflowRunBudget, &'static str> {
+    let defaults = core_workflow::RunLimits::default();
+    core_kernel::ports::WorkflowRunBudget::new(
+        defaults.max_concurrency(),
+        defaults.max_agent_calls(),
+    )
+}
+
 fn approx_workspace_file_count(root: &std::path::Path) -> usize {
     const CAP: usize = 201;
     let mut count = 0usize;
@@ -1297,6 +1332,65 @@ mod orchestration_allocation_tests {
         assert!(allocate_orchestration(5, 6, 900).is_none());
         assert!(allocate_orchestration(59, 0, 900).is_none());
         assert!(allocate_orchestration(59, 6, 2).is_none());
+    }
+
+    #[test]
+    fn an_in_turn_workflow_never_collapses_to_a_single_agent() {
+        let budget = in_turn_workflow_budget().expect("in-turn aggregate budget");
+        // The regression: the aggregate ceiling used to be `remaining_turns / per_child_turns`,
+        // and `per_child_turns` is `min(child_ceiling, remaining_turns)` — so the quotient was 1
+        // for EVERY parent with fewer turns left than the 30-turn child ceiling. A five-way
+        // `parallel()` then admitted one agent and silently dropped four.
+        let child_ceiling = core_agents::subagent_budget_ceiling().max_turns;
+        for remaining_turns in [
+            1u32,
+            2,
+            5,
+            child_ceiling - 1,
+            child_ceiling,
+            child_ceiling * 3,
+        ] {
+            let collapsed = (remaining_turns / child_ceiling.min(remaining_turns).max(1)).max(1);
+            assert!(
+                budget.max_agent_calls() > collapsed as usize,
+                "with {remaining_turns} parent turns left the old quotient admitted \
+                 {collapsed} agent(s); the aggregate ceiling must not be derived from it"
+            );
+        }
+        assert!(
+            budget.max_agent_calls() >= core_agents::FAN_CAP,
+            "a full fan-width parallel must be admitted in one in-turn run"
+        );
+        assert!(
+            budget.max_concurrency() >= 1,
+            "concurrency is the fan's permit calculation, never zero"
+        );
+    }
+
+    #[test]
+    fn two_in_turn_workflow_calls_in_one_response_cannot_share_a_journal() {
+        // Run ids used to be `wf_<parent>_t<turn>`: both `Workflow` tool calls in ONE assistant
+        // response landed on the same id, hence the same journal directory, and the second call
+        // replayed the first's cached outcomes instead of running.
+        let first = core_workflow::RunId::generate().to_string();
+        let second = core_workflow::RunId::generate().to_string();
+        assert_ne!(
+            first, second,
+            "two runs minted inside one turn must not share a journal"
+        );
+        assert!(first.starts_with("wf_") && second.starts_with("wf_"));
+    }
+
+    #[test]
+    fn only_an_interrupt_cancels_an_admitted_in_turn_workflow() {
+        // The launch bridge polls `requested_control()` rather than reading the out-of-band
+        // interrupt atomic: a queued SQ `Op::Interrupt` on an embedder that installed no atomic
+        // sets only `interrupt_requested`, so an atomic-only check left exactly that operator
+        // unable to stop a multi-minute run. Drain is deliberately not a cancel — an admitted run
+        // exits at its own safe point, like an admitted child.
+        assert!(InboundControl::Interrupt.interrupts());
+        assert!(!InboundControl::Drain.interrupts());
+        assert!(!InboundControl::None.interrupts());
     }
 }
 
@@ -1601,7 +1695,16 @@ fn project_messages_from_events(events: Vec<Event>) -> Vec<Message> {
             EventKind::Compaction {
                 messages: compacted,
             } => {
-                messages = compacted;
+                // The record carries the summary and its plan range, not a second copy of the
+                // transcript it is already holding; the rebuild is deterministic, so replay
+                // performs it here. A pre-seed full snapshot is adopted verbatim.
+                //
+                // Reconcile FIRST. The range is counted in the coordinates the kernel planned in,
+                // which is always a reconciled projection (`messages_from_rollout`, or the working
+                // set it is kept in lockstep with). Raw events are not those coordinates: a steer
+                // is durable on its own but merges into the user role before it, so counting raw
+                // would cut the range short and resurrect a turn the summary folded away.
+                messages = core_ctx::replay_compaction(reconcile_transcript(messages), compacted);
                 terminal_results.clear();
                 duplicate_terminal_id = false;
                 pending_turn = messages.last().and_then(|message| {
@@ -1743,6 +1846,43 @@ fn effective_capability(input: &serde_json::Value, base: Capability) -> Capabili
         return Capability::TrustMutating;
     }
     base
+}
+
+/// One deferred call the capability gate auto-approved, carried with everything the concurrent
+/// group needs to open its effect. Holding this value grants no authority: it is the *record* of a
+/// decision `select_concurrent_deferred_batch` already made under the ordinary gate.
+struct AutoApprovedCall {
+    /// The call's index in the turn's tool order. It is also the effect ordinal, which is why a
+    /// group can be reordered in TIME without moving a single identity in the journal.
+    index: usize,
+    call: ToolUse,
+    intent: core_protocol::intent::ToolIntent,
+    capability: Capability,
+    action_signature: String,
+    audit_arguments: serde_json::Value,
+}
+
+/// The workspace paths a tool call NAMES in its arguments: `path`, plus the per-file `path` of a
+/// multi-file patch.
+///
+/// This is deliberately a claim, not an analysis. Two calls that name the same file are never run
+/// together; a call that names none is not thereby proven safe, it is simply making no claim this
+/// layer can check, and the concurrency decision falls back to the model having emitted the calls
+/// in one message. A `bash` line can of course touch anything — which is why the sequential loop,
+/// the capability gate, and the sandbox all still stand behind this.
+fn declared_write_paths(input: &serde_json::Value) -> std::collections::BTreeSet<String> {
+    let mut paths = std::collections::BTreeSet::new();
+    if let Some(path) = input.get("path").and_then(|value| value.as_str()) {
+        paths.insert(path.to_string());
+    }
+    if let Some(files) = input.get("files").and_then(|value| value.as_array()) {
+        for file in files {
+            if let Some(path) = file.get("path").and_then(|value| value.as_str()) {
+                paths.insert(path.to_string());
+            }
+        }
+    }
+    paths
 }
 
 /// The bypass-mode verdict (DANGEROUS opt-in `--dangerously-bypass-permissions`): auto-approve
@@ -2025,6 +2165,10 @@ pub struct Agent {
     /// remains source-compatible, but swapping its Arc without recording a new selection is not an
     /// admissible route change.
     selected_provider: Option<std::sync::Arc<dyn Provider>>,
+    /// The most recent quota the provider published on its response headers. Read before the
+    /// first token of the answer, so a shrinking budget is visible while there is still time to
+    /// act on it rather than only after the 429 that already cost a request (I-53).
+    last_rate_limit: Option<core_provider::RateLimitSnapshot>,
     /// Injected, pure pricing strategy port. Its concrete implementation owns trust material; the
     /// kernel stores neither HMAC bytes nor a price table.
     pricing_port: Option<std::sync::Arc<dyn PricingPort>>,
@@ -2058,6 +2202,19 @@ pub struct Agent {
     /// A recorded ContextInjection always wins over this live proposal.
     environment_context: Option<(String, Trust)>,
     pub compaction: CompactionPolicy,
+    /// One compaction per top-level submission. Set by whichever path took it — the emergency
+    /// valve inside the turn loop, or the end-of-turn settle — and cleared when the next
+    /// submission is admitted, so the two can never both fire on one run.
+    compacted_in_run: bool,
+    /// Session-scoped context accounting (I-60). Keeps a per-message token estimate with a running
+    /// total and one cached tool-schema estimate so a turn does not re-serialise the whole
+    /// transcript once per consumer. Every path that rewrites an already-counted message instead of
+    /// appending must invalidate it; the two that do are compaction and steering.
+    context_estimator: core_ctx::RequestEstimator,
+    /// Approximate workspace file count for ultracode routing, resolved once per session on the
+    /// blocking pool (I-62). Routing does not need a fresh walk per submission, and a synchronous
+    /// directory traversal has no business on an async worker.
+    workspace_file_count: Option<usize>,
     /// The workspace root, for the verification gate's sandbox.
     pub workspace: std::path::PathBuf,
     /// If set, the harness independently runs this test command (strong oracle) when the model
@@ -2080,6 +2237,13 @@ pub struct Agent {
     /// If set, the run resumes from this reconstructed transcript instead of starting fresh
     /// (invariant #2, recoverable). Set via `set_resume`.
     resumed: Option<Vec<Message>>,
+    /// The working message set the last admitted run finished with, kept so an IN-PROCESS follow-up
+    /// continues from what this process already had. Reconstructing it instead means replaying and
+    /// SHA-256-verifying the whole rollout — twice, because `set_resume` replays it again — between
+    /// every pair of operator messages. It is deliberately NOT a substitute for replay on a genuine
+    /// resume (`--resume`, a fork, crash recovery): those cross a process boundary, where the record
+    /// on disk is the only thing that carries authority.
+    working_set: Option<Vec<Message>>,
     /// Route-bound content keys for successfully appended run-level provider notices. Provider
     /// proposals are pure; this bounded set advances only after WAL commit and is restored only
     /// from this physical run, so failure/fork/route changes cannot consume another run's notice.
@@ -2227,6 +2391,7 @@ impl Agent {
             model,
             selected_route: None,
             selected_provider: None,
+            last_rate_limit: None,
             pricing_port: None,
             pricing: None,
             usd_budget,
@@ -2239,6 +2404,9 @@ impl Agent {
             instruction_context: None,
             environment_context: None,
             compaction: CompactionPolicy::default(),
+            compacted_in_run: false,
+            context_estimator: core_ctx::RequestEstimator::new(),
+            workspace_file_count: None,
             workspace: std::path::PathBuf::from("."),
             verify_command: None,
             bypass_permissions: false,
@@ -2246,6 +2414,7 @@ impl Agent {
             #[cfg(test)]
             pricing_now_unix_secs: None,
             resumed: None,
+            working_set: None,
             committed_provider_run_notices: std::collections::BTreeSet::new(),
             verify_attempts: 0,
             drain_requested: false,
@@ -2303,6 +2472,13 @@ impl Agent {
     /// Effective full rule snapshot.
     pub fn permission_rules(&self) -> &PermissionRules {
         &self.permission_rules
+    }
+
+    /// The quota the provider last published on its response headers, or `None` when this route
+    /// publishes none. Read before the first token of the answer, so a frontend can show a
+    /// shrinking budget before the rejection rather than after it (I-53).
+    pub fn last_rate_limit(&self) -> Option<core_provider::RateLimitSnapshot> {
+        self.last_rate_limit
     }
 
     /// Bind an admitted task envelope. Repeated calls only narrow the previous ceiling.
@@ -2700,7 +2876,14 @@ impl Agent {
         model_ms: u64,
         projected_at_unix_secs: u64,
         stream: StreamTiming,
+        cache_creation_reported: bool,
     ) -> Result<(), KernelError> {
+        // A rate that is never charged cannot be misapplied, so an unreported cache-creation count
+        // only makes the turn unpriceable when the bound card actually bills for cache writes.
+        let unpriceable_cache_creation = !cache_creation_reported
+            && self.pricing.as_ref().is_some_and(|signed| {
+                signed.rate_card.rates.cache_creation_microusd_per_million > 0
+            });
         let projection_identity = CostProjectionIdentity {
             tenant_id: self.rollout.tenant().0.clone(),
             run_id: self.rollout.run_id().0.clone(),
@@ -2709,7 +2892,7 @@ impl Agent {
             attribution: self.projection_attribution.clone(),
         };
         let projection = match (&self.pricing_port, &self.pricing) {
-            (Some(port), Some(rate_card)) => Some(port.project(
+            (Some(port), Some(rate_card)) if !unpriceable_cache_creation => Some(port.project(
                 rate_card,
                 projection_identity.clone(),
                 usage,
@@ -2728,6 +2911,20 @@ impl Agent {
         ) {
             self.mark_usd_unknown();
             return Err(error);
+        }
+        if unpriceable_cache_creation {
+            // Say why, on the record, before the ledger reports an unpriced turn. A silent
+            // downgrade to "unknown" is indistinguishable from a missing rate card.
+            if let Err(error) = self.emit_durable(
+                turn,
+                EventKind::Notice {
+                    text: UNPRICEABLE_CACHE_CREATION_NOTICE.into(),
+                },
+            ) {
+                self.mark_usd_unknown();
+                return Err(error);
+            }
+            self.ui(UiEvent::Notice(UNPRICEABLE_CACHE_CREATION_NOTICE.into()));
         }
         self.ledger.turn(&usage, model_ms);
         let projection = match projection.transpose() {
@@ -2803,8 +3000,15 @@ impl Agent {
         stream: StreamTiming,
     ) -> Result<Option<core_protocol::Usage>, KernelError> {
         match report {
-            UsageReport::Complete(usage) => {
-                self.complete_provider_turn(turn, usage, model_ms, projected_at_unix_secs, stream)?;
+            UsageReport::Complete(usage) | UsageReport::CacheCreationUnreported(usage) => {
+                self.complete_provider_turn(
+                    turn,
+                    usage,
+                    model_ms,
+                    projected_at_unix_secs,
+                    stream,
+                    report.cache_creation_reported(),
+                )?;
                 Ok(Some(usage))
             }
             UsageReport::Incomplete { .. } => {
@@ -2991,6 +3195,52 @@ impl Agent {
         self.budget
             .max_turns
             .saturating_sub(self.ledger.provider_attempts)
+    }
+
+    /// The turn ceiling and what has already been charged against it, read as one pair so a
+    /// frontend can never print a ceiling from one instant beside a count from another.
+    pub fn turn_budget(&self) -> TurnBudgetState {
+        TurnBudgetState {
+            max_turns: self.budget.max_turns,
+            used: self.ledger.provider_attempts,
+        }
+    }
+
+    /// Set the session turn ceiling in place, write-ahead.
+    ///
+    /// `max_turns` is the one ceiling an operator can saturate without having spent anything:
+    /// `provider_attempts` only ever saturating-adds, subagent attempts are charged to the parent,
+    /// and resume deliberately restores the count so it cannot be laundered by reconnecting. That
+    /// is correct as an aggregate guarantee and unusable as a stop: before this existed, the
+    /// ceiling was fixed at startup, so a long session that reached it ended every later
+    /// submission immediately and the only exit was restarting the process.
+    ///
+    /// The escape hatch is explicit rather than automatic. Nothing here resets `provider_attempts`
+    /// — the count keeps meaning "provider calls this session made" across resume — and the new
+    /// ceiling is appended to the record BEFORE memory changes, so a reader of the log can always
+    /// tell why more turns were admitted than the run started with. A failed append leaves the old
+    /// ceiling in force.
+    pub fn set_turn_ceiling(&mut self, max_turns: u32) -> Result<TurnBudgetState, KernelError> {
+        if max_turns == 0 {
+            return Err(KernelError::InvalidBudget(
+                "max_turns must be >= 1 (0 would disable the turn budget)",
+            ));
+        }
+        let previous = self.budget.max_turns;
+        if max_turns != previous {
+            let used = self.ledger.provider_attempts;
+            self.emit_durable(
+                TurnId(self.seq_turn),
+                EventKind::Notice {
+                    text: format!(
+                        "operator set the session turn ceiling: {previous} -> {max_turns} ({used} \
+                         provider attempts already charged)"
+                    ),
+                },
+            )?;
+            self.budget.max_turns = max_turns;
+        }
+        Ok(self.turn_budget())
     }
 
     /// Install the inbound approvals channel (the TUI's answer path). When set, an `Ask` verdict
@@ -3302,6 +3552,9 @@ impl Agent {
             admitted = admitted.saturating_add(1);
         }
         if admitted > 0 {
+            // Steering merges into the trailing user message rather than appending, so an
+            // already-counted message changed underneath the running total (I-60).
+            self.context_estimator.invalidate_transcript();
             self.ui(UiEvent::SteerApplied { count: admitted });
         }
         Ok(admitted)
@@ -3313,6 +3566,45 @@ impl Agent {
     /// replay reproduces instructions, memory, and skills exactly.
     fn effective_system(&self) -> String {
         core_ctx::assemble_system_prompt(&self.system, self.injected.as_deref())
+    }
+
+    /// The tool set advertised to the model for this turn.
+    ///
+    /// I-63: a measured nine-token task paid 3671 prompt tokens, 2730 of them tool schemas, while
+    /// the fleet average is 8967 input tokens per turn. Describing a tool the current posture can
+    /// NEVER admit is pure waste — every call the model makes to it is refused by the gate.
+    ///
+    /// Only the two UNCONDITIONAL denials are filtered, so nothing that could be admitted is
+    /// hidden: `core_protocol::gate` makes Plan a hard read-only overlay that no session rule may
+    /// punch through (and `bypass_permissions` explicitly excludes Plan), and
+    /// `core_kernel::admission::constrain` denies any capability outside the intersection of the
+    /// admitted task ceiling and the selected policy manifest. An `Ask` is not filtered: the
+    /// operator can still answer it.
+    ///
+    /// The ceiling test is over every capability a call to the tool can PRESENT, not just the
+    /// declared one. `effective_capability` elevates a `ReversibleLocal` write to `TrustMutating`
+    /// when the path is trust-mutating, and a `CapabilitySet` is a set rather than a downward-closed
+    /// prefix, so a ceiling holding `TrustMutating` without `ReversibleLocal` still admits that
+    /// tool for exactly those paths. Filtering on the declared capability alone would hide it.
+    ///
+    /// Stated cost: `TurnRequest.tools` now depends on the permission mode, so entering or leaving
+    /// Plan rewrites the stable prefix and breaks the prompt cache for that one turn. That is a
+    /// rare operator action; carrying an unusable schema block on every turn of a read-only session
+    /// is not.
+    fn advertised_tool_specs(&self) -> Vec<core_protocol::ToolSpec> {
+        let admitted = self.authority_ceiling.intersect(self.policy_capabilities);
+        self.registry
+            .specs()
+            .into_iter()
+            .filter(|spec| {
+                let reachable = admitted.contains(spec.capability)
+                    || (spec.capability == Capability::ReversibleLocal
+                        && admitted.contains(Capability::TrustMutating));
+                reachable
+                    && (spec.capability == Capability::ReadOnly
+                        || self.permission_mode != PermissionMode::Plan)
+            })
+            .collect()
     }
 
     fn proposed_durable_frontend_context(
@@ -3597,6 +3889,20 @@ impl Agent {
         }
     }
 
+    /// Refresh the rebuildable session sidecars, charged to the same meter as a durable append.
+    ///
+    /// This is not free bookkeeping: `refresh_session_cache` rewrites the per-run `.meta.json` and
+    /// `sessions.index`, and each rewrite ends in a directory fsync. Called once per turn from
+    /// `advance_turn` and once at each run boundary, it was real durability cost that no meter saw,
+    /// so `kernel_tax` under-reported what the record actually costs. Failure stays best-effort:
+    /// the cache is rebuildable and the append-only rollout is the sole authoritative result.
+    fn refresh_session_cache_metered(&mut self) {
+        let fsync_started = Instant::now();
+        let _ = self.rollout.refresh_session_cache();
+        self.ledger
+            .record_fsync_latency_us(elapsed_us(fsync_started));
+    }
+
     fn diagnostic_record_append_failed(&self) {
         self.diagnostics
             .emit(KernelDiagnostic::RecordAppendFailed {});
@@ -3695,7 +4001,11 @@ impl Agent {
         event: HookEvent,
         context_json: &str,
     ) -> Result<hooks::HookDecision, KernelError> {
-        if self.hooks.is_empty() {
+        // Per EVENT, not per hook map: a run with only a `Stop` hook configured has nothing to say
+        // about `PreToolUse`, so brokering it would append an intent and a terminal (and pay their
+        // barriers) to call zero commands. The boundary still covers every dispatch that can
+        // actually start a process, which is the only thing it was ever protecting.
+        if self.hooks.is_empty_for(event) {
             return Ok(hooks::HookDecision::Allow);
         }
         let class = effect_class::EffectClass::Hook;
@@ -3835,6 +4145,61 @@ impl Agent {
 
     /// Record a transcript message AND push it onto the working set — the two must stay in
     /// lockstep so the rollout is a complete, resumable record.
+    /// Durably preserve what a failed turn had already streamed (I-39).
+    ///
+    /// A mid-stream disconnect used to return before the assistant message was appended, so every
+    /// token the operator had watched arrive was destroyed by the failure that interrupted it —
+    /// and only 429/529 are retried, so a connection reset, a DNS failure, a VPN drop and the
+    /// stream idle timeout all took that path. Worse, the `Text`/`Thinking` delta events the
+    /// frozen schema declares had no producer anywhere, so streamed text had no durable channel
+    /// at all.
+    ///
+    /// This is that channel, and it writes two different things for two different readers:
+    /// the coalesced deltas are what was on screen, and the interrupted assistant message is what
+    /// resume and rewind replay into the next request. Both are bounded, both are emitted only on
+    /// this path, and neither claims usage: **no billing semantics change here**. An append
+    /// failure is swallowed on purpose — the provider error is the one worth reporting, and
+    /// losing the record of a partial answer must not also lose the reason it was partial.
+    fn preserve_interrupted_stream(
+        &mut self,
+        turn: TurnId,
+        messages: &mut Vec<Message>,
+        text: &str,
+        thinking: &str,
+    ) {
+        if text.is_empty() && thinking.is_empty() {
+            return;
+        }
+        if !thinking.is_empty() {
+            let _ = self.emit_durable(
+                turn,
+                EventKind::Thinking {
+                    delta: strict_utf8_head(thinking, INTERRUPTED_STREAM_MAX_BYTES),
+                },
+            );
+        }
+        if text.is_empty() {
+            return;
+        }
+        let delta = strict_utf8_head(text, INTERRUPTED_STREAM_MAX_BYTES);
+        let _ = self.emit_durable(
+            turn,
+            EventKind::Text {
+                delta: delta.clone(),
+            },
+        );
+        // The marker is inside the text, not beside it: an assistant message that resume replays
+        // must tell the model where its own answer stopped, and a sibling field would be dropped
+        // the moment the transcript is serialized for a provider.
+        let interrupted = Message {
+            role: Role::Assistant,
+            content: vec![Block::Text {
+                text: format!("{delta}\n\n{INTERRUPTED_STREAM_MARKER}"),
+            }],
+        };
+        let _ = self.commit_message(turn, messages, interrupted);
+    }
+
     fn commit_message(
         &mut self,
         turn: TurnId,
@@ -3871,6 +4236,9 @@ impl Agent {
     /// Load a prior run's transcript so `run` continues it instead of starting fresh.
     pub fn set_resume(&mut self, messages: Vec<Message>) -> Result<(), KernelError> {
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
+        // An explicit resume replaces the transcript outright; a working set left over from an
+        // earlier run in this process must never outrank it on the next follow-up.
+        self.working_set = None;
         // Redaction is applied on the RECORD path (ADR-008 §1). Resuming from that record can
         // therefore give the model masked tool output where the live turn saw the original bytes.
         // Emit only a bounded count through the injected port; neither transcript content nor a
@@ -4389,14 +4757,44 @@ impl Agent {
     }
 
     /// Continue an already-run agent with a new operator message (TUI follow-up). The prior
-    /// transcript is in the rollout; we reload it and run the new instruction. A follow-up is a
-    /// new submission, not a crash-recovery continuation, so Ultracode may orchestrate it.
+    /// transcript is the one this process just produced. A follow-up is a new submission, not a
+    /// crash-recovery continuation, so Ultracode may orchestrate it.
     pub async fn follow_up(&mut self, text: &str) -> Result<Outcome, KernelError> {
-        let path = self.rollout.path().to_path_buf();
-        let prior = Self::messages_from_rollout(&path)?;
-        self.set_resume(prior)?;
+        self.stage_follow_up_transcript()?;
         self.verify_attempts = 0;
         self.run(text).await
+    }
+
+    /// Stage the transcript a follow-up continues from.
+    ///
+    /// A follow-up is not a resume. This process ran the previous turns and still holds the exact
+    /// working set they produced, so it continues from memory. Rebuilding it meant replaying and
+    /// SHA-256-verifying the whole rollout, and then doing it a SECOND time inside `set_resume` — at
+    /// the 64 MiB rollout ceiling roughly half a second of blocking parse and hashing between two
+    /// operator messages, growing with the session. Every piece of state `set_resume` restores from
+    /// the record (ledger, ceilings, runtime policy, turn/approval ids, taint) is already live and
+    /// strictly richer here; the record stays the authority for the paths that cross a process
+    /// boundary — `--resume`, fork, crash recovery — and those still call `set_resume`.
+    fn stage_follow_up_transcript(&mut self) -> Result<(), KernelError> {
+        let Some(working) = self.working_set.take() else {
+            // Nothing has run in this process yet, so the record is the only transcript there is.
+            let path = self.rollout.path().to_path_buf();
+            let prior = Self::messages_from_rollout(&path)?;
+            return self.set_resume(prior);
+        };
+        self.budget.validate().map_err(KernelError::InvalidBudget)?;
+        // Turn ids are canonical effect/correlation identities, not an invocation-local counter, so
+        // the follow-up must open a NEW one exactly as `set_resume` does when it continues after the
+        // greatest durable id. In this process the live counter already IS that greatest id — the
+        // run loop leaves it on the turn it finished — so the successor is one step on, no replay
+        // needed. Skipping this reused the finished turn, and at-most-once dispatch then refused the
+        // follow-up's first provider effect as an identity it had already admitted.
+        self.advance_turn()?;
+        // An interrupted or errored run can leave a trailing assistant message whose tool_use was
+        // never answered. Repair it exactly as the replay path does, or the provider rejects the
+        // next request.
+        self.resumed = Some(reconcile_transcript(working));
+        Ok(())
     }
 
     /// Continue an already-run agent with one validated text-plus-image operator submission.
@@ -4407,9 +4805,7 @@ impl Agent {
         &mut self,
         content: &core_protocol::ContentSegments,
     ) -> Result<Outcome, KernelError> {
-        let path = self.rollout.path().to_path_buf();
-        let prior = Self::messages_from_rollout(&path)?;
-        self.set_resume(prior)?;
+        self.stage_follow_up_transcript()?;
         self.verify_attempts = 0;
         self.run_content(content).await
     }
@@ -4471,6 +4867,9 @@ impl Agent {
         {
             return Err(KernelError::UnpricedUsdCeiling);
         }
+        // One compaction per top-level submission: an emergency valve taken inside the turn must
+        // not be followed by a second summary at the end of it.
+        self.compacted_in_run = false;
         let owns_deadline = self.run_deadline.is_none();
         if owns_deadline {
             self.run_deadline = Some(
@@ -4507,10 +4906,16 @@ impl Agent {
             self.brokered_hook(TurnId(self.seq_turn), HookEvent::Stop, &ctx)
                 .await?;
         }
+        // The answer is already durable and already on the operator's screen; this is their
+        // thinking time, and it is where a summary belongs (#I-58). Before the cache refresh, so
+        // the per-run meta cache sees the compaction that just happened.
+        if matches!(&outcome, Ok(Outcome::Done)) {
+            self.settle_compaction().await;
+        }
         // Every exit from the admitted run loop is a session boundary, including provider,
         // pricing, transcript, or tool errors after a durable TurnEnd. Keep cache failure
         // best-effort so the append-only rollout remains the sole authoritative result.
-        let _ = self.rollout.refresh_session_cache();
+        self.refresh_session_cache_metered();
         outcome
     }
 
@@ -4576,7 +4981,7 @@ impl Agent {
         // last thing the run does, and it exports what the run actually did.
         self.brokered_telemetry_export(TurnId(self.seq_turn))
             .await?;
-        let _ = self.rollout.refresh_session_cache();
+        self.refresh_session_cache_metered();
         outcome
     }
 
@@ -4675,9 +5080,28 @@ impl Agent {
         resolved
     }
 
+    /// Run the controller loop and keep the working set it finished with.
+    ///
+    /// The loop leaves through many paths (terminal outcome, control request, record failure, `?`),
+    /// and every one of them ends a turn whose transcript the next follow-up wants. Capturing it
+    /// here, once, is what lets an in-process follow-up skip rebuilding it from the rollout.
     async fn drive_admitted(
         &mut self,
-        mut messages: Vec<Message>,
+        messages: Vec<Message>,
+        relevance_task: &str,
+        input_images: &[core_protocol::ImageContent],
+    ) -> Result<Outcome, KernelError> {
+        let mut messages = messages;
+        let outcome = self
+            .drive_admitted_loop(&mut messages, relevance_task, input_images)
+            .await;
+        self.working_set = Some(messages);
+        outcome
+    }
+
+    async fn drive_admitted_loop(
+        &mut self,
+        messages: &mut Vec<Message>,
         relevance_task: &str,
         input_images: &[core_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
@@ -4686,11 +5110,15 @@ impl Agent {
         // REC-INJECT: resolve + record the memory segment once, before the first request build,
         // using the task for relevance recall. effective_system() reads the cached result.
         self.resolve_injection_before_provider(relevance_task)?;
+        // A submission arrives with a transcript this estimator has not seen — resumed, forked, or
+        // merged into its trailing user message by `admit_submission`. One full pass per SUBMISSION
+        // is the price of constant-time accounting per TURN.
+        self.context_estimator.invalidate_transcript();
 
         loop {
             // Steering is a real submission, not a post-run local queue. Admit it only here, at a
             // turn boundary, before the next request projection is built.
-            self.admit_pending_steers(TurnId(self.seq_turn), &mut messages)?;
+            self.admit_pending_steers(TurnId(self.seq_turn), messages)?;
             let turn_id = TurnId(self.seq_turn);
             if self.record_failed {
                 // The audit record could not be durably written; halt rather than run un-recorded.
@@ -4700,14 +5128,27 @@ impl Agent {
                 return Ok(outcome);
             }
             let effective_system = self.effective_system();
-            let tool_specs = self.registry.specs();
-            let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192).min(8192);
-            // ---- compaction at the window boundary (ADR-002): if the transcript approaches
-            // the budget, summarize the middle so a long task does not overflow. Done here, at
-            // a turn boundary, because it rewrites the prefix (a cache bomb — do it rarely). ----
-            if let Some(plan) = self.compaction.plan_for_request_with_window(
+            let tool_specs = self.advertised_tool_specs();
+            // A declared capability is the route's own documented ceiling, so it is used as
+            // declared. 8192 remains the conservative default for an UNKNOWN capability only —
+            // clamping the declared value froze every provider at that default (I-02).
+            let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192);
+            // One context accounting pass per turn, shared by the kernel token ledger and the
+            // context-window admission check below (I-60). Recomputed only when compaction
+            // actually rewrote the transcript underneath it.
+            let mut context_estimate =
+                self.context_estimator
+                    .estimate(&effective_system, messages, &tool_specs);
+            // ---- compaction, emergency valve only (ADR-002): this projection no longer fits the
+            // proven window, so the alternative to summarizing here is a refused request. The
+            // ROUTINE compaction moved off the critical path to `settle_compaction`, at the end of
+            // the turn: buying an extra synchronous round and a cold prefix inside the turn the
+            // operator is waiting on was the whole defect. The cached estimate is deliberately NOT
+            // threaded into this decision: on the overflow path it fires at most once per run, so
+            // the accounting pass it would save is not on any hot path. ----
+            if let Some(plan) = self.compaction.plan_before_overflow(
                 &effective_system,
-                &messages,
+                messages,
                 &tool_specs,
                 self.model_context_window,
                 request_max_tokens,
@@ -4716,21 +5157,14 @@ impl Agent {
                 // Best-effort: if the summary call fails, continue uncompacted rather than lose
                 // the run (it retries next turn).
                 if let Ok(summary) = self.summarize(&plan.to_summarize, None).await {
-                    messages = CompactionPolicy::rebuild(&plan, summary);
-                    // Record the compaction as a full snapshot so resume reconstructs the
-                    // compacted state, not the pre-compaction history (code review).
-                    self.emit(
-                        TurnId(self.seq_turn),
-                        EventKind::Compaction {
-                            messages: messages.clone(),
-                        },
-                    );
-                    self.emit(
-                        TurnId(self.seq_turn),
-                        EventKind::Notice {
-                            text: format!("compacted {before} messages -> {}", messages.len()),
-                        },
-                    );
+                    *messages = CompactionPolicy::rebuild(&plan, summary.clone());
+                    self.record_compaction(before, &plan, &summary, messages.len());
+                    // The transcript was rewritten, not appended to: drop the cached per-message
+                    // estimates and re-account this turn against the compacted history.
+                    self.context_estimator.invalidate_transcript();
+                    context_estimate =
+                        self.context_estimator
+                            .estimate(&effective_system, messages, &tool_specs);
                 }
             }
 
@@ -4757,8 +5191,6 @@ impl Agent {
                     phase: Phase::Model,
                 },
             );
-            let context_estimate =
-                estimate_request_context(&effective_system, &messages, &tool_specs);
             self.ledger.record_kernel_tokens(
                 u64::try_from(
                     context_estimate
@@ -4836,17 +5268,22 @@ impl Agent {
             // ---- the flagship: dispatch PURE tools mid-stream. ----
             let reg = &self.registry;
             let tool_policy = self.tool_policy.clone();
-            let argument_trust = self.governing_turn_trust(&messages);
+            let argument_trust = self.governing_turn_trust(messages);
             let ui_tx = self.ui_tx.clone();
             // If a PreToolUse hook is configured, pure tools must NOT early-dispatch — the read
             // would be in flight before the hook could block it (security review MEDIUM #2: an
             // operator hook meant to block reading ~/.ssh would silently no-op). Route them through
             // the deferred path (gate=Auto for ReadOnly, then the hook) instead. This trades the
-            // overlap for hook coverage, only when hooks are present.
-            let hook_gates_reads = !self.hooks.is_empty();
+            // overlap for hook coverage, and ONLY for the event that can actually block a read:
+            // asking `is_empty()` let one `Stop` cleanup hook — which never sees a tool, let alone
+            // vetoes one — silently cost the whole session its concurrent read dispatch.
+            let hook_gates_reads = !self.hooks.commands(HookEvent::PreToolUse).is_empty();
             // Bounded concurrency (invariant #1): pure tools dispatched early are capped by a
-            // governor. At the cap, the overflow runs inline in the collection phase rather than
-            // spawning unboundedly (Little's Law: a concurrency limit is the only honest knob).
+            // governor. Past the cap a call QUEUES for a permit instead of being pushed onto an
+            // inline list, so a thirty-read turn keeps the full concurrency for all thirty rather
+            // than running sixteen together and fourteen strictly one at a time with no diagnostic
+            // (Little's Law: a concurrency limit is the only honest knob — but it must be the only
+            // one, and a hidden serial tail is a second, dishonest one).
             let gov = core_sched::Governor::new(self.max_tool_concurrency);
             let model_span = PhaseSpan::enter(Phase::Model);
             // Carry each pure tool's id so a panicked/cancelled task can still answer its
@@ -4854,7 +5291,10 @@ impl Agent {
             // block the model API rejects on the next turn).
             let mut pure: Vec<(usize, ToolUse, tokio::task::JoinHandle<ToolResult>, Instant)> =
                 Vec::new();
-            let mut overflow_pure: Vec<(usize, core_protocol::intent::ToolIntent)> = Vec::new();
+            // How many pure calls could not take a permit the instant they were admitted. They are
+            // still dispatched concurrently — they wait in the governor's queue — but the count is
+            // the honest report that the cap, not the workload, shaped this turn's tool phase.
+            let mut queued_pure: usize = 0;
             let mut deferred: Vec<(usize, ToolUse)> = Vec::new();
             let mut order: usize = 0;
             let mut tool_admission = effects::ToolCallAdmission::default();
@@ -4868,14 +5308,31 @@ impl Agent {
             // rather than consuming an average this layer pre-computed.
             let mut first_item_at: Option<Instant> = None;
             let mut stream_items: u32 = 0;
+            // I-39: what the model has already said. A mid-stream failure used to return before
+            // the assistant message was appended, so a connection reset destroyed every token the
+            // operator had already watched arrive — and the declared `EventKind::Text`/`Thinking`
+            // deltas had no producer anywhere, leaving streamed text with no durable channel at
+            // all. This buffer is that channel, bounded by the same output ceiling the turn is.
+            let mut streamed_text = String::new();
+            let mut streamed_thinking = String::new();
+            // I-53: transport metadata, captured here and folded into the agent after the turn.
+            let mut observed_rate_limit: Option<core_provider::RateLimitSnapshot> = None;
 
             let mut on_item = |item: StreamItem| {
+                // Quota is read from the response headers, not produced by the model. Counting it
+                // would make time-to-first-token report the moment the headers landed and turn
+                // every stalled prefill into an apparently instant one (#103, I-64).
+                if let StreamItem::RateLimit(snapshot) = item {
+                    observed_rate_limit = Some(snapshot);
+                    return;
+                }
                 if first_item_at.is_none() {
                     first_item_at = Some(Instant::now());
                 }
                 stream_items = stream_items.saturating_add(1);
                 match item {
                     StreamItem::TextDelta(t) => {
+                        streamed_text.push_str(&t);
                         if let Some(tx) = &ui_tx {
                             // Scrub secrets before the assistant text crosses the UI seam (ADR-015 R1):
                             // the record already masks the committed Block::Text, but the live UI / /export
@@ -4885,6 +5342,7 @@ impl Agent {
                         }
                     }
                     StreamItem::ThinkingDelta(t) => {
+                        streamed_thinking.push_str(&t);
                         if let Some(tx) = &ui_tx {
                             let _ = tx.send(UiEvent::Thinking(core_record::redact::scrub(&t)));
                         }
@@ -4922,24 +5380,34 @@ impl Agent {
                             let proposal = proposal.expect("checked pure tool-policy proposal");
                             let tu_ui = proposal.intent.call.clone();
                             let intent = proposal.admit(CapabilitySet::only(Capability::ReadOnly));
-                            if let Some(permit) = gov.try_acquire() {
-                                // Spawn now — I/O overlaps the remaining decode. The permit is held
-                                // for the task's lifetime and released on completion (bounded).
-                                let fut = reg.dispatch_intent(intent);
-                                let handle = tokio::spawn(async move {
-                                    let _permit = permit;
-                                    fut.await
-                                });
-                                pure.push((idx, tu_ui, handle, Instant::now()));
-                            } else {
-                                // at the concurrency cap: run inline in the collection phase
-                                overflow_pure.push((idx, intent));
+                            // Spawn now — I/O overlaps the remaining decode. The permit is held for
+                            // the task's lifetime and released on completion (bounded). At the cap
+                            // the task still spawns and awaits a permit inside itself: the future
+                            // is created but not polled until a slot frees, so inflight work stays
+                            // capped while the WAITING work stays concurrent. The alternative this
+                            // replaces — an overflow list drained inline during collection — made
+                            // every call past the cap serial with nothing in the record saying so.
+                            let fut = reg.dispatch_intent(intent);
+                            let permit = gov.try_acquire();
+                            if permit.is_none() {
+                                queued_pure += 1;
                             }
+                            let gov = gov.clone();
+                            let handle = tokio::spawn(async move {
+                                let _permit = match permit {
+                                    Some(permit) => permit,
+                                    None => gov.acquire().await,
+                                };
+                                fut.await
+                            });
+                            pure.push((idx, tu_ui, handle, Instant::now()));
                         } else {
                             deferred.push((idx, tu));
                         }
                     }
-                    StreamItem::TurnComplete { .. } => {}
+                    // Returned above, before the first-token clock; repeated here only because
+                    // the match is exhaustive by design.
+                    StreamItem::RateLimit(_) | StreamItem::TurnComplete { .. } => {}
                 }
             };
 
@@ -4950,6 +5418,9 @@ impl Agent {
                 Some(refusal) => Err(refusal),
                 None => self.bounded_provider_turn(&req, &mut on_item).await,
             };
+            if let Some(snapshot) = observed_rate_limit {
+                self.last_rate_limit = Some(snapshot);
+            }
             if let Some(ticket) = provider_ticket {
                 let settlement = provider_settlement(turn_id, provider_ordinal, &provider_result);
                 let broker_started = Instant::now();
@@ -4968,6 +5439,13 @@ impl Agent {
                         handle.abort();
                         let _ = handle.await;
                     }
+                    // Before the error leaves: keep what the model already said (I-39).
+                    self.preserve_interrupted_stream(
+                        turn_id,
+                        messages,
+                        &streamed_text,
+                        &streamed_thinking,
+                    );
                     if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
                         return Ok(outcome);
                     }
@@ -4997,11 +5475,6 @@ impl Agent {
             let mut streamed_tools: Vec<(usize, ToolUse)> = pure
                 .iter()
                 .map(|(index, tool, _, _)| (*index, tool.clone()))
-                .chain(
-                    overflow_pure
-                        .iter()
-                        .map(|(index, intent)| (*index, intent.call.clone())),
-                )
                 .chain(deferred.iter().map(|(index, tool)| (*index, tool.clone())))
                 .collect();
             streamed_tools.sort_by_key(|(index, _)| *index);
@@ -5031,7 +5504,10 @@ impl Agent {
                 )
                 .into());
             }
-            self.ledger.tool_inline_overflow(overflow_pure.len());
+            // The obs field is named for the behaviour it used to measure (an inline serial tail);
+            // it now counts the calls that queued for a permit. Same question — "did the cap bind
+            // this turn?" — answered without the serialisation that used to be its only symptom.
+            self.ledger.tool_inline_overflow(queued_pure);
             let model_ms = model_span.elapsed_ms();
             let stream_elapsed = stream_start.elapsed();
             // Measured only if the stream actually produced an item. An attempt that failed before
@@ -5078,7 +5554,7 @@ impl Agent {
                 role: Role::Assistant,
                 content: turn_res.blocks.clone(),
             };
-            self.commit_message(turn_id, &mut messages, assistant)?;
+            self.commit_message(turn_id, messages, assistant)?;
 
             // ---- collect tool results in DETERMINISTIC tool_use order (ADR-006 R7) ----
             let tools_span = PhaseSpan::enter(Phase::Tools);
@@ -5088,7 +5564,7 @@ impl Agent {
                     phase: Phase::Tools,
                 },
             );
-            let total_tools = pure.len() + overflow_pure.len() + deferred.len();
+            let total_tools = pure.len() + deferred.len();
             if total_tools > 0
                 && matches!(
                     turn_res.stop_reason,
@@ -5141,7 +5617,7 @@ impl Agent {
                         self.ui(UiEvent::Notice(
                             "model output reached max tokens; continuing".into(),
                         ));
-                        self.commit_message(turn_id, &mut messages, continuation)?;
+                        self.commit_message(turn_id, messages, continuation)?;
                         self.advance_turn()?;
                         continue;
                     }
@@ -5165,7 +5641,7 @@ impl Agent {
                         self.ui(UiEvent::Notice(
                             "provider paused the turn; continuing".into(),
                         ));
-                        self.commit_message(turn_id, &mut messages, continuation)?;
+                        self.commit_message(turn_id, messages, continuation)?;
                         self.advance_turn()?;
                         continue;
                     }
@@ -5176,7 +5652,7 @@ impl Agent {
                         // A message typed while this turn was decoding wins over the model's claim
                         // to be done: durably admit it, then build another turn. This is the
                         // Claude/Codex steering contract at a safe point, never mid-effect.
-                        let steered = self.admit_pending_steers(turn_id, &mut messages)?;
+                        let steered = self.admit_pending_steers(turn_id, messages)?;
                         if let Some(outcome) = self.finish_requested_control(turn_id)? {
                             return Ok(outcome);
                         }
@@ -5275,7 +5751,7 @@ impl Agent {
                                     self.ui(UiEvent::Notice(format!(
                                         "verify gate: `{cmd}` test failure, continuing"
                                     )));
-                                    self.commit_message(turn_id, &mut messages, msg)?;
+                                    self.commit_message(turn_id, messages, msg)?;
                                     self.advance_turn()?;
                                     continue;
                                 }
@@ -5303,7 +5779,7 @@ impl Agent {
                                     // transcript to the provider.
                                     self.commit_message(
                                         turn_id,
-                                        &mut messages,
+                                        messages,
                                         Message::user_text(format!(
                                             "Verification timed out while running `{cmd}`. This was \
                                              not classified as a test failure and consumed no \
@@ -5330,7 +5806,7 @@ impl Agent {
                                     self.ui(UiEvent::Notice(notice));
                                     self.commit_message(
                                         turn_id,
-                                        &mut messages,
+                                        messages,
                                         Message::user_text(format!(
                                             "Verification infrastructure could not run `{cmd}`. \
                                              This was not a candidate test failure and consumed no \
@@ -5353,7 +5829,7 @@ impl Agent {
                                     self.ui(UiEvent::Notice(notice));
                                     self.commit_message(
                                         turn_id,
-                                        &mut messages,
+                                        messages,
                                         Message::user_text(format!(
                                             "Verification of `{cmd}` was cancelled before a verdict. \
                                              It consumed no candidate-fix retry. On resume, re-check \
@@ -5369,7 +5845,7 @@ impl Agent {
                         }
                         // Verification can be long-running. Re-check the ordered submission queue
                         // before committing Done so guidance typed during the oracle is not lost.
-                        let steered = self.admit_pending_steers(turn_id, &mut messages)?;
+                        let steered = self.admit_pending_steers(turn_id, messages)?;
                         if let Some(outcome) = self.finish_requested_control(turn_id)? {
                             return Ok(outcome);
                         }
@@ -5413,6 +5889,17 @@ impl Agent {
             for (idx, tu, mut handle, dispatched_at) in pure {
                 let since_dispatch = dispatched_at.duration_since(stream_start);
                 let overlap_ms = stream_elapsed.saturating_sub(since_dispatch).as_millis() as u64;
+                // ADR-004 dispatched this read from inside the provider stream callback, which
+                // holds no mutable borrow of the journal and cannot fsync, so its admission is
+                // written here: at the collection boundary, before the outcome is observed and
+                // before anything is committed. Earlier is structurally impossible without giving
+                // up the decode overlap the ADR exists for, and this is the one class where the
+                // ordering costs nothing — a `Pure` tool has no observable effect (ADR-007 §5
+                // makes that true by construction: a no-egress read-only cell), so the
+                // at-most-once guarantee write-ahead order buys is vacuous for it. What the record
+                // gains is what I-42 found missing: an admission event and an identity for a
+                // completion that had neither.
+                let ticket = self.open_tool_call_effect(turn_id, idx, &tu, Capability::ReadOnly)?;
                 let joined = match self.run_time_remaining() {
                     Some(remaining) if remaining.is_zero() => {
                         handle.abort();
@@ -5431,7 +5918,12 @@ impl Agent {
                 };
                 match joined {
                     Some(Ok(r)) => {
-                        self.commit_local_tool_result(turn_id, &r, overlap_ms.min(r.latency_ms))?;
+                        self.commit_admitted_tool_result(
+                            ticket,
+                            &tu.name,
+                            &r,
+                            overlap_ms.min(r.latency_ms),
+                        )?;
                         any_error |= r.is_error;
                         self.ui(tool_end_ui(&tu, &r));
                         results[idx] = Some(r);
@@ -5439,7 +5931,9 @@ impl Agent {
                     Some(Err(_)) | None => {
                         // The spawned pure-tool task panicked or was cancelled. Answer its
                         // tool_use with an error result so the transcript has no dangling
-                        // tool_use (which the model API would reject next turn).
+                        // tool_use (which the model API would reject next turn). The admission is
+                        // already durable, so this settles it as a proven failure rather than
+                        // leaving recovery a dangling intent.
                         let r = ToolResult {
                             tool_use_id: tu.id.clone(),
                             content: "tool task failed, was cancelled, or exceeded the run wall deadline before producing a result".into(),
@@ -5447,7 +5941,7 @@ impl Agent {
                             trust: Trust::Workspace,
                             latency_ms: 0,
                         };
-                        self.commit_local_tool_result(turn_id, &r, 0)?;
+                        self.commit_admitted_tool_result(ticket, &tu.name, &r, 0)?;
                         any_error = true;
                         self.ui(tool_end_ui(&tu, &r));
                         results[idx] = Some(r);
@@ -5455,42 +5949,33 @@ impl Agent {
                 }
             }
 
-            // Overflow pure tools (past the concurrency cap): run inline now. Pure, so safe to
-            // run here; no overlap credit (they did not run during decode).
-            for (idx, intent) in overflow_pure {
-                let tu_ui = intent.call.clone();
-                let call_id = intent.call.id.clone();
-                let future = self.registry.dispatch_intent(intent);
-                let r = match self.run_time_remaining() {
-                    Some(remaining) if remaining.is_zero() => ToolResult {
-                        tool_use_id: call_id,
-                        content:
-                            "pure tool was not started because the run wall deadline was exhausted"
-                                .into(),
-                        is_error: true,
-                        trust: Trust::Workspace,
-                        latency_ms: 0,
-                    },
-                    Some(remaining) => match tokio::time::timeout(remaining, future).await {
-                        Ok(result) => result,
-                        Err(_) => ToolResult {
-                            tool_use_id: call_id,
-                            content: "pure tool was cancelled at the run wall deadline".into(),
-                            is_error: true,
-                            trust: Trust::Workspace,
-                            latency_ms: 0,
-                        },
-                    },
-                    None => future.await,
-                };
-                self.commit_local_tool_result(turn_id, &r, 0)?;
-                any_error |= r.is_error;
-                self.ui(tool_end_ui(&tu_ui, &r));
-                results[idx] = Some(r);
-            }
-
             // Effecting tools: gated by capability, run in order, AFTER message_stop.
+            //
+            // "In order" was doing two jobs, and only one of them is load-bearing. A tool that must
+            // ask the operator, that a hook must see first, or that writes a file another call in
+            // this batch also writes, is correct only in order. Everything else a coding agent
+            // actually does — a bash line, a `git_status`, a `git_diff` — is Effecting merely
+            // because it is not provably a read, and four independent ones cost the SUM of their
+            // latencies plus four sandbox spawns for no reason. So the leading run of calls the
+            // gate auto-approves, with no declared write path in common, executes concurrently
+            // under the same governor the pure path uses; the loop below then owns every call that
+            // group did not take, in the order it always ran them.
+            let batch = self.select_concurrent_deferred_batch(&deferred, argument_trust, messages);
+            if batch.len() > 1 {
+                self.run_concurrent_deferred_batch(
+                    turn_id,
+                    batch,
+                    &gov,
+                    &mut results,
+                    &mut any_error,
+                )
+                .await?;
+            }
             for (idx, tu) in deferred {
+                // Already settled by the concurrent group above, terminal and all.
+                if results[idx].is_some() {
+                    continue;
+                }
                 // Every effect has its own admission boundary. Once Drain/Interrupt is observed,
                 // materialize deterministic denied results for the rest of this model-declared
                 // batch so the transcript remains valid without another prompt or side effect.
@@ -5498,7 +5983,7 @@ impl Agent {
                 let control = self.requested_control();
                 if control != InboundControl::None {
                     let r = control_refusal(&tu, control);
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
                     any_error = true;
@@ -5513,7 +5998,7 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
                     any_error = true;
@@ -5552,7 +6037,7 @@ impl Agent {
                             trust: Trust::Trusted,
                             latency_ms: 0,
                         };
-                        self.commit_local_tool_result(turn_id, &r, 0)?;
+                        self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                         self.ui(tool_end_ui(&tu, &r));
                         results[idx] = Some(r);
                         any_error = true;
@@ -5578,7 +6063,7 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                     any_error = true;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
@@ -5599,7 +6084,7 @@ impl Agent {
                         trust: Trust::Trusted,
                         latency_ms: 0,
                     };
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
                     any_error = true;
@@ -5608,7 +6093,7 @@ impl Agent {
                 // Elevate a trust-mutating write (.git/CI/instruction/.core paths) so the gate
                 // cannot auto-approve it (code review: the carve-out was otherwise unreachable).
                 let cap = effective_capability(&tu.input, base_cap);
-                let governing_trust = self.governing_turn_trust(&messages);
+                let governing_trust = self.governing_turn_trust(messages);
                 let admitted_capabilities =
                     self.authority_ceiling.intersect(self.policy_capabilities);
                 let ceiling_blocks_capability = !admitted_capabilities.contains(cap);
@@ -5704,7 +6189,7 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
                     any_error = true;
@@ -5742,7 +6227,7 @@ impl Agent {
                             trust: Trust::Workspace,
                             latency_ms: 0,
                         };
-                        self.commit_local_tool_result(turn_id, &r, 0)?;
+                        self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                         any_error = true;
                         self.ui(tool_end_ui(&tu, &r));
                         results[idx] = Some(r);
@@ -5755,7 +6240,7 @@ impl Agent {
                 let control = self.requested_control();
                 if control != InboundControl::None {
                     let r = control_refusal(&tu, control);
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
                     any_error = true;
@@ -5777,6 +6262,11 @@ impl Agent {
                             text: "dispatching read-only subagent".into(),
                         },
                     );
+                    // `spawn_subagent` opens the `Subagent` effect around the child itself. This
+                    // admits the *tool call* that asked for it, which is the fact the completion
+                    // needs to name: before I-42 this branch committed a successful `ToolDone`
+                    // with no effect id at all.
+                    let ticket = self.open_tool_call_effect(turn_id, idx, &tu, cap)?;
                     let (content, is_error) = match self.spawn_subagent(&subtask, idx).await {
                         Ok(summary) => (summary, false),
                         Err(error) => (error, true),
@@ -5788,7 +6278,7 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_admitted_tool_result(ticket, &tu.name, &r, 0)?;
                     any_error |= r.is_error;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
@@ -5804,6 +6294,12 @@ impl Agent {
                     // the one admitted, capability-gated, budget-spending dispatch in the turn loop
                     // that produced a `ToolDone` with no preceding `EffectIntent`. It fans out real
                     // children; it crosses the boundary under its own class.
+                    //
+                    // #16 admitted the *launch*; it did not admit the tool call, so the terminal
+                    // this branch commits still carried no effect id (I-42). The launch keeps its
+                    // own `Workflow` effect — that is where the boundary's `duration_ms` for the
+                    // fan-out is measured — and the tool call is admitted around it.
+                    let call_ticket = self.open_tool_call_effect(turn_id, idx, &tu, cap)?;
                     let wf_class = effect_class::EffectClass::Workflow;
                     let wf_ordinal = self.next_effect_ordinal(turn_id, wf_class);
                     let ticket = self.open_kernel_effect(
@@ -5834,7 +6330,7 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    self.commit_local_tool_result(turn_id, &r, 0)?;
+                    self.commit_admitted_tool_result(call_ticket, &tu.name, &r, 0)?;
                     any_error |= r.is_error;
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
@@ -5915,7 +6411,7 @@ impl Agent {
                 role: Role::User,
                 content: blocks,
             };
-            self.commit_message(turn_id, &mut messages, tool_msg)?;
+            self.commit_message(turn_id, messages, tool_msg)?;
 
             if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
                 return Ok(outcome);
@@ -5928,30 +6424,375 @@ impl Agent {
         }
     }
 
+    /// The LEADING run of deferred calls that may execute concurrently.
+    ///
+    /// Membership is a pure read of decisions already made elsewhere: the tool policy's proposal,
+    /// the frozen capability gate, the task ceiling, the turn's governing trust. The scan never
+    /// prompts, never runs a hook, never widens a capability, and STOPS at the first call it cannot
+    /// admit on those terms — so the group is always a prefix of the model's declared order and the
+    /// relative order of every effect in the turn is exactly what it was before.
+    ///
+    /// A call leaves the group (and ends it) when it would need something only sequence can give:
+    /// an operator prompt or a denial, a `PreToolUse` hook's opinion, an ADR-003 dedup replay, a
+    /// subagent/workflow fan-out that settles through its own boundary, or a write to a path
+    /// another member already claimed.
+    fn select_concurrent_deferred_batch(
+        &self,
+        deferred: &[(usize, ToolUse)],
+        argument_trust: Trust,
+        messages: &[Message],
+    ) -> Vec<AutoApprovedCall> {
+        // A hook must speak BEFORE the tool it guards and observe AFTER it. Both are per-call and
+        // ordered by construction, so a configured tool hook disables the group outright rather
+        // than being reinterpreted for it. (`Stop`/`SessionStart` hooks say nothing about tools and
+        // are deliberately not consulted — that conflation is the same defect as #I-01.)
+        if !self.hooks.commands(HookEvent::PreToolUse).is_empty()
+            || !self.hooks.commands(HookEvent::PostToolUse).is_empty()
+        {
+            return Vec::new();
+        }
+        let governing_trust = self.governing_turn_trust(messages);
+        let mut batch: Vec<AutoApprovedCall> = Vec::new();
+        let mut claimed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut signatures: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (index, call) in deferred {
+            // Both fan out real children and spend provider budget through their own effect
+            // classes; neither is a registry dispatch, so neither can join a registry group.
+            if call.name == core_tools::DISPATCH_AGENT || call.name == core_tools::WORKFLOW_TOOL {
+                break;
+            }
+            // A repeat of an already-failed action is answered from the record, not re-run. That
+            // answer is cheap and ordered; keeping it in the loop keeps one path for it.
+            //
+            // The second test is the same rule applied to THIS group. `failed_actions` only learns
+            // about a failure once the group settles, so two identical calls admitted together
+            // would both reach the executor — running a side effect the ordered loop performs at
+            // most once. Ending the group at the repeat hands it back to the loop, which sees the
+            // now-recorded failure and replays it exactly as ADR-003 says.
+            let action_signature = format!("{}::{}", call.name, call.input);
+            if self.failed_actions.contains_key(&action_signature)
+                || !signatures.insert(action_signature.clone())
+            {
+                break;
+            }
+            let Ok(proposal) = strategy_runtime::propose_tool(
+                &self.registry,
+                self.tool_policy.as_ref(),
+                call.clone(),
+                argument_trust,
+            ) else {
+                break;
+            };
+            let Some(base_capability) = proposal.eligible.iter().next() else {
+                break;
+            };
+            let capability = effective_capability(&call.input, base_capability);
+            let gate_verdict =
+                if self.bypass_permissions && self.permission_mode != PermissionMode::Plan {
+                    bypass_verdict(&self.permission_rules, &call.name, capability)
+                } else {
+                    core_protocol::gate(
+                        self.permission_mode,
+                        &self.permission_rules,
+                        &call.name,
+                        capability,
+                    )
+                };
+            // Only Auto. `Ask` needs the operator in sequence and `Deny` needs the loop's specific
+            // refusal text, so both end the group rather than being decided here a second time.
+            if core_kernel::admission::constrain(
+                gate_verdict,
+                capability,
+                self.authority_ceiling,
+                self.policy_capabilities,
+                Some(governing_trust),
+            ) != Verdict::Auto
+            {
+                break;
+            }
+            // Only a DECLARED path can be proven not to collide, so only a declared collision stops
+            // the group. A call that names no path (a bash line, a git observation) claims nothing;
+            // the model emitted these in one message, which is its own assertion that they are
+            // independent, and that assertion is exactly what parallel tool calls mean.
+            let declared = declared_write_paths(&call.input);
+            if declared.iter().any(|path| claimed.contains(path)) {
+                break;
+            }
+            claimed.extend(declared);
+            batch.push(AutoApprovedCall {
+                index: *index,
+                audit_arguments: ui_approval_arguments(&call.input),
+                intent: proposal.admit(CapabilitySet::only(base_capability)),
+                capability,
+                call: call.clone(),
+                action_signature,
+            });
+        }
+        batch
+    }
+
+    /// Execute one auto-approved, non-overlapping group of deferred calls concurrently.
+    ///
+    /// The boundary is unchanged; only its shape is. Every write-ahead intent is fsynced in tool
+    /// order BEFORE any executor starts, every terminal is appended in that same order after, and
+    /// each effect id is still `effect_id(turn, RegistryTool, idx)` — so a reader replaying the
+    /// journal sees the identical ordinals, correlated to the identical calls. What moves is the
+    /// executor phase, bounded by the same `Governor` the pure path uses. A group of four therefore
+    /// costs the slowest call instead of the sum of four.
+    ///
+    /// `run_admitted_intent` takes `&self`, so this needs no `spawn` and no `'static` bound: the
+    /// futures are polled together on this task, and the registry's memo invalidation stays the
+    /// single authoritative path it already was.
+    async fn run_concurrent_deferred_batch(
+        &mut self,
+        turn_id: TurnId,
+        batch: Vec<AutoApprovedCall>,
+        governor: &core_sched::Governor,
+        results: &mut [Option<ToolResult>],
+        any_error: &mut bool,
+    ) -> Result<(), KernelError> {
+        // The same three pre-effect questions the ordered loop asks, asked once for the whole
+        // group. If any is already true, nothing is opened and the loop below still owns every one
+        // of these calls — it materializes the same refusal it always did, in order.
+        let _ = self.collect_inbound_ops(turn_id);
+        if self.record_failed
+            || self.run_deadline_exhausted()
+            || self.requested_control() != InboundControl::None
+        {
+            return Ok(());
+        }
+
+        // Phase one: the durable intents, in tool order, before a single executor runs.
+        let mut pending: Vec<(usize, ToolUse, String, effects::EffectTicket)> =
+            Vec::with_capacity(batch.len());
+        let mut intents: Vec<core_protocol::intent::ToolIntent> = Vec::with_capacity(batch.len());
+        for admitted in batch {
+            let AutoApprovedCall {
+                index,
+                call,
+                intent,
+                capability,
+                action_signature,
+                audit_arguments,
+            } = admitted;
+            let effect = effects::BrokeredEffect {
+                turn: turn_id,
+                effect_id: effect_class::effect_id(
+                    turn_id,
+                    effect_class::EffectClass::RegistryTool,
+                    index,
+                ),
+                tool_use_id: call.id.clone(),
+                kind: call.name.clone(),
+                capability,
+                audit_arguments,
+                workspace: effect_workspace(&self.workspace),
+            };
+            let Agent {
+                rollout,
+                effect_admissions,
+                ..
+            } = self;
+            match effects::open_effect(rollout, effect_admissions, effect) {
+                Ok(ticket) => {
+                    pending.push((index, call, action_signature, ticket));
+                    intents.push(intent);
+                }
+                // A failed append means the executor was never entered for THIS call. Any ticket
+                // already opened is dropped unsettled, which is exactly the pending-intent state
+                // recovery understands and reports — never a silently lost effect.
+                Err(error) => return Err(self.effect_boundary_failed(error)),
+            }
+        }
+
+        // Phase two: the executors, concurrently, capped by the governor.
+        //
+        // The correlation id is restored from the ADMITTED call after every execution, exactly as
+        // `effects::execute_registry_tool` does on the serial path: a tool-call correlation id is
+        // structural, never content an executor returned. Dispatching concurrently changes which
+        // wrapper opens and settles the boundary; it must not change that guarantee.
+        let registry = &self.registry;
+        let executions = futures_util::future::join_all(intents.into_iter().map(|intent| async {
+            let provider_tool_use_id = intent.call.id.clone();
+            let _permit = governor.acquire().await;
+            let mut execution = registry.run_admitted_intent(intent).await;
+            match &mut execution {
+                core_tools::ToolExecution::Definite(result)
+                | core_tools::ToolExecution::Unknown(result) => {
+                    result.tool_use_id = provider_tool_use_id;
+                }
+            }
+            execution
+        }))
+        .await;
+
+        // Phase three: exactly one terminal per opened intent, in tool order.
+        let mut unknown: usize = 0;
+        for ((index, call, action_signature, ticket), execution) in
+            pending.into_iter().zip(executions)
+        {
+            let effect_id = ticket.effect_id().clone();
+            let (settlement, result, definite) = match execution {
+                core_tools::ToolExecution::Definite(result) => (
+                    effects::Settlement::Definite(EventKind::ToolDone {
+                        result: result.clone(),
+                        effect_id: Some(effect_id),
+                        // The concurrent batch names its tool for the same reason the serial path
+                        // does: a completion whose payload is only {effect_id, kind, result} does
+                        // not say which tool ran, and 39% of recorded completions had no admission
+                        // event to recover it from either.
+                        tool: Some(call.name.clone()),
+                    }),
+                    result,
+                    true,
+                ),
+                core_tools::ToolExecution::Unknown(result) => (
+                    effects::Settlement::Unknown(
+                        "executor dispatched the operation but did not observe an authoritative terminal outcome; automatic retry is forbidden".into(),
+                    ),
+                    result,
+                    false,
+                ),
+            };
+            self.settle_kernel_effect(ticket, settlement)?;
+            if !definite {
+                unknown = unknown.saturating_add(1);
+                self.ledger.tool(result.latency_ms, 0, true);
+                self.ui(tool_end_ui(&call, &result));
+                continue;
+            }
+            // No overlap credit: `overlapped_ms` names time a tool ran while the PROVIDER stream was
+            // still decoding, which is a different saving from this one. Claiming it here would make
+            // the two indistinguishable in the ledger.
+            self.ledger.tool(result.latency_ms, 0, result.is_error);
+            *any_error |= result.is_error;
+            if result.is_error {
+                self.failed_actions
+                    .insert(action_signature, result.content.clone());
+            }
+            self.ui(tool_end_ui(&call, &result));
+            results[index] = Some(result);
+        }
+        if unknown > 0 {
+            return Err(KernelError::UnknownEffects { count: unknown });
+        }
+        Ok(())
+    }
+
     fn advance_turn(&mut self) -> Result<(), KernelError> {
         let next = self
             .seq_turn
             .checked_add(1)
             .ok_or(KernelError::IdentityExhausted("turn"))?;
-        let _ = self.rollout.refresh_session_cache();
+        self.refresh_session_cache_metered();
         self.seq_turn = next;
         Ok(())
     }
 
-    /// Commit a non-brokered terminal tool observation before projecting it into the live ledger.
-    /// A failed durable append therefore cannot make live reproducible counters outrun replay.
-    fn commit_local_tool_result(
+    /// Commit the terminal for a call that was **refused before dispatch** — a policy or gate
+    /// denial, an ADR-003 dedup, an operator drain/interrupt, an exhausted deadline, a broken
+    /// record — before projecting it into the live ledger. A failed durable append therefore
+    /// cannot make live reproducible counters outrun replay.
+    ///
+    /// There is no `effect_id` because nothing was admitted: no executor was entered, so there is
+    /// no admission event to point at, and minting one would put a lie on the record. That is why
+    /// `core_record` permits a missing effect id only on an error result — every value this commits
+    /// is one (I-42).
+    fn commit_refused_tool_result(
         &mut self,
         turn: TurnId,
+        tool: &str,
         result: &ToolResult,
-        overlapped_ms: u64,
     ) -> Result<(), KernelError> {
+        debug_assert!(
+            result.is_error,
+            "a refused tool result is an error result; a success has an admission to name"
+        );
         self.emit_durable(
             turn,
             EventKind::ToolDone {
                 result: result.clone(),
                 effect_id: None,
+                tool: Some(tool.to_string()),
             },
+        )?;
+        self.ledger.tool(result.latency_ms, 0, result.is_error);
+        Ok(())
+    }
+
+    /// Admit one model-declared tool call that does **not** go through
+    /// [`effects::execute_registry_tool`]: an ADR-004 pure read, an inline overflow read, a
+    /// subagent dispatch, an in-turn workflow launch.
+    ///
+    /// I-42 audited 71 journals and found 81 of 198 recorded completions with no `effect_id`, 77 of
+    /// them successful. These four paths are why: each committed its `ToolDone` locally, so real
+    /// work — reads of the operator's filesystem, children that spend provider budget — landed in
+    /// the record with nothing admitting it. They now cross the same boundary and mint the same
+    /// `RegistryTool` identity as every other tool call, keyed by the call's index in the turn, so
+    /// the terminal has an intent to point back at.
+    ///
+    /// The specialised inner effects stay exactly where they are: `spawn_subagent` still opens its
+    /// `Subagent` effect around the child, and the workflow branch still opens its `Workflow`
+    /// effect around the launch. This admits the *tool call*, which is a different fact.
+    fn open_tool_call_effect(
+        &mut self,
+        turn: TurnId,
+        ordinal: usize,
+        call: &ToolUse,
+        capability: Capability,
+    ) -> Result<effects::EffectTicket, KernelError> {
+        let effect = effects::BrokeredEffect {
+            turn,
+            effect_id: effect_class::effect_id(
+                turn,
+                effect_class::EffectClass::RegistryTool,
+                ordinal,
+            ),
+            tool_use_id: call.id.clone(),
+            kind: call.name.clone(),
+            capability,
+            audit_arguments: ui_approval_arguments(&call.input),
+            workspace: effect_workspace(&self.workspace),
+        };
+        let Agent {
+            rollout,
+            effect_admissions,
+            ..
+        } = self;
+        match effects::open_effect(rollout, effect_admissions, effect) {
+            Ok(ticket) => Ok(ticket),
+            Err(error) => Err(self.effect_boundary_failed(error)),
+        }
+    }
+
+    /// Settle an admitted tool call with its terminal `ToolDone` and project it into the live
+    /// ledger, in that order — the same shape [`effects::execute_registry_tool`] uses, so both
+    /// halves of the tool surface produce one terminal vocabulary and one ordering.
+    fn commit_admitted_tool_result(
+        &mut self,
+        ticket: effects::EffectTicket,
+        tool: &str,
+        result: &ToolResult,
+        overlapped_ms: u64,
+    ) -> Result<(), KernelError> {
+        #[cfg(test)]
+        if self.fail_next_durable_append == Some(DurableAppendFault::ToolDone) {
+            self.fail_next_durable_append = None;
+            self.record_failed = true;
+            self.diagnostic_record_append_failed();
+            drop(ticket);
+            return Err(KernelError::Record(core_record::RecordError::Io(
+                std::io::Error::other("injected durable append failure"),
+            )));
+        }
+        let effect_id = ticket.effect_id().clone();
+        self.settle_kernel_effect(
+            ticket,
+            effects::Settlement::Definite(EventKind::ToolDone {
+                result: result.clone(),
+                effect_id: Some(effect_id),
+                tool: Some(tool.to_string()),
+            }),
         )?;
         self.ledger
             .tool(result.latency_ms, overlapped_ms, result.is_error);
@@ -6326,10 +7167,11 @@ impl Agent {
     /// In-turn `Workflow` tool handler (kernel interception, the workflow analogue of
     /// `spawn_subagent`). Builds a [`crate::KernelSpawner`] from THIS agent's live route + paths, then
     /// drives the run through [`core_workflow::WorkflowEngine::launch`] (background `RunHandle`, review
-    /// B3) and `join`s it within the turn so the model receives the aggregated result. The CC-style
-    /// banner (run id) is emitted as a `Notice` at launch. Deferred: truly detached background
-    /// (returning before completion) + a cross-turn `/workflows` watch surface — those need a session
-    /// lifecycle owner outside a single turn.
+    /// B3) and `join`s it within the turn so the model receives the aggregated result. The launch
+    /// banner (run id) is emitted as a `Notice`, and the re-launchable sidecars are persisted so
+    /// `core workflow list|resume|watch` can see the run. Deferred: truly detached background
+    /// (returning before completion), which needs a session lifecycle owner outside a single turn,
+    /// and live in-turn progress (ADR-0001 step 1).
     async fn launch_workflow(
         &mut self,
         turn_id: TurnId,
@@ -6377,8 +7219,11 @@ impl Agent {
         let workflow_name = core_workflow::extract_meta(&script)
             .and_then(|meta| meta.name)
             .unwrap_or_else(|| "workflow".into());
-        let parent_run_id = self.rollout.run_id().0.clone();
-        let run_id = format!("wf_{parent_run_id}_t{}", self.seq_turn);
+        // Mint a fresh, time-ordered run id the way the standalone `core workflow run` path does.
+        // Deriving it from the turn counter made every `Workflow` tool call in ONE assistant
+        // response share an id — hence one journal, one child-rollout namespace, and a second call
+        // that silently replayed the first's cached outcomes instead of running.
+        let run_id = core_workflow::RunId::generate().to_string();
         let workflows_dir = self.runtime_state_dir.join("subagents").join("workflows");
 
         let mut cx = KernelSpawnerContext::new(
@@ -6405,17 +7250,16 @@ impl Agent {
         if remaining_turns == 0 {
             return Err("Workflow: parent turn budget is exhausted".into());
         }
-        let per_child_turns = cx.budget.max_turns.min(remaining_turns).max(1);
-        cx.budget.max_turns = per_child_turns;
-        let max_agent_calls = (remaining_turns / per_child_turns).max(1) as usize;
+        cx.budget.max_turns = cx.budget.max_turns.min(remaining_turns).max(1);
+        // The same soft halving `core_agents::subagent_budget` gives a fan worker. The old quotient
+        // over an invented agent count had no policy behind it and moved with the bug below.
         cx.budget.max_tokens = self
             .remaining_provider_tokens()
-            .map(|remaining| remaining / max_agent_calls as u64);
+            .map(|remaining| remaining / 2);
         cx.authority_ceiling = self.authority_ceiling;
         cx.policy_capabilities = self.policy_capabilities;
-        let kernel_limits =
-            core_kernel::ports::WorkflowRunBudget::new(max_agent_calls.min(16), max_agent_calls)
-                .map_err(|error| format!("Workflow: invalid kernel aggregate budget: {error}"))?;
+        let kernel_limits = in_turn_workflow_budget()
+            .map_err(|error| format!("Workflow: invalid kernel aggregate budget: {error}"))?;
         let engine_limits = core_workflow::RunLimits::new(
             kernel_limits.max_concurrency(),
             kernel_limits.max_agent_calls(),
@@ -6428,33 +7272,135 @@ impl Agent {
         let spawner: std::sync::Arc<dyn core_workflow::AgentSpawner> =
             std::sync::Arc::new(KernelSpawner::new(cx));
 
-        let spec = core_workflow::RunSpec::new(script)
-            .with_args(args)
+        let spec = core_workflow::RunSpec::new(script.clone())
+            .with_args(args.clone())
             .with_run_id(core_workflow::RunId::new(run_id.clone()))
-            .with_workflows_dir(workflows_dir)
+            .with_workflows_dir(workflows_dir.clone())
             .with_limits(engine_limits);
-        let sink: std::sync::Arc<dyn core_workflow::ProgressSink> =
-            std::sync::Arc::new(core_workflow::NullSink);
+        // A degraded agent resolves to JS `null` and the script's `.filter(Boolean)` deletes it, so
+        // a discarded sink turned an exhausted budget into a plausibly-short result. Keep the
+        // reasons and hand them to the model with the value.
+        let degraded = std::sync::Arc::new(crate::workflow::DegradedAgentSink::new());
+        let sink: std::sync::Arc<dyn core_workflow::ProgressSink> = degraded.clone();
 
-        // The CC-style launch banner (parallels Claude Code's "Task ID / Run ID / use /workflows").
+        // Persist the re-launchable inputs BEFORE the run starts, exactly like the standalone path:
+        // the kernel writes its journal into the very directory `core workflow list` enumerates, so
+        // without the manifest every model-launched run listed forever as unnamed, model-less and
+        // `running`.
+        if let Err(error) = crate::workflow::persist_inputs(
+            &workflows_dir,
+            &crate::workflow::RunManifest {
+                run_id: run_id.clone(),
+                name: workflow_name.clone(),
+                args,
+                provider_id: route.provider_id.clone(),
+                model: route.model_id.clone(),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_secs())
+                    .unwrap_or(0),
+            },
+            &script,
+        ) {
+            return Err(format!("Workflow: cannot persist run inputs: {error}"));
+        }
+
+        // The launch banner. It names the surface that can actually show this run: `/workflows`
+        // summarizes the cards already in THIS transcript, and an in-turn script run has no card
+        // until ADR-0001 step 1 lands, so pointing at it would be a promise the TUI cannot keep.
         self.emit(
             turn_id,
             EventKind::Notice {
                 text: format!(
-                    "Workflow `{workflow_name}` launched (run {run_id}); use /workflows to watch"
+                    "Workflow `{workflow_name}` launched (run {run_id}); `core workflow list` tracks it"
                 ),
             },
         );
 
         let handle = core_workflow::WorkflowEngine::launch(spec, spawner, sink);
-        let report = handle
-            .join()
-            .await
-            .map_err(|error| format!("Workflow run failed: {error}"))?;
+        // Bridge the parent's stop surfaces onto the run's cancellation token. Without this a
+        // multi-minute run ignored Ctrl-C entirely: the operator interrupt reached the parent but
+        // never the engine, and `join()` simply blocked the turn until the script finished.
+        // Polling is fixed and bounded, exactly like `run_child_with_control`.
+        const WORKFLOW_CONTROL_POLL: Duration = Duration::from_millis(25);
+        let report = {
+            let mut joined = Box::pin(handle.join());
+            loop {
+                match tokio::time::timeout(WORKFLOW_CONTROL_POLL, &mut joined).await {
+                    Ok(report) => break report,
+                    Err(_) => {
+                        // Drain both stop surfaces through the canonical predicate rather than
+                        // reading the out-of-band atomic directly: a queued SQ `Op::Interrupt` on
+                        // an embedder that installed no atomic sets only `interrupt_requested`, and
+                        // an atomic-only check would leave exactly that operator unable to stop the
+                        // run. Drain is deliberately NOT a cancel — like an admitted child, an
+                        // admitted run exits at its own safe point.
+                        let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+                        if self.requested_control().interrupts() {
+                            handle.cancel();
+                        }
+                    }
+                }
+            }
+        };
+
+        // A run that never produced a report is still a directory `core workflow list` enumerates:
+        // `persist_inputs` above already created it. Settling it is the same obligation I-35 names,
+        // on the error path — and the journal's new exclusive lock makes that path reachable (a
+        // colliding run id is refused here, not silently interleaved). Without this the failure
+        // would sit in `/workflows` as `running` forever.
+        let report = match report {
+            Ok(report) => report,
+            Err(error) => {
+                let message = format!("Workflow run failed: {error}");
+                let failed = core_workflow::RunReport {
+                    run_id: core_workflow::RunId::new(run_id.clone()),
+                    value: serde_json::json!({ "error": message.clone() }),
+                    stopped: true,
+                    cache_hits: 0,
+                    cache_misses: 0,
+                    // A run that never produced a report has no authoritative totals to state.
+                    // Zero here means "none were settled", which is true: the engine failed before
+                    // it could aggregate any. It is not a claim that the run was free.
+                    tokens: 0,
+                    tool_calls: 0,
+                    elapsed_ms: 0,
+                };
+                let _ = crate::workflow::persist_result(&workflows_dir, &run_id, &failed);
+                return Err(message);
+            }
+        };
+
+        // Record the terminal outcome so the run lists with its name, model and terminal state.
+        // This is list metadata, not the result: a sidecar that cannot be written must not destroy
+        // a run the operator already paid for, so it degrades to a notice.
+        if let Err(error) = crate::workflow::persist_result(&workflows_dir, &run_id, &report) {
+            self.emit(
+                turn_id,
+                EventKind::Notice {
+                    text: format!("Workflow: cannot persist run result for {run_id}: {error}"),
+                },
+            );
+        }
+
         let value = serde_json::to_string_pretty(&report.value)
             .unwrap_or_else(|_| report.value.to_string());
+        let reasons = degraded.reasons();
+        let degraded_section = if reasons.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\nERROR: {} agent(s) did not complete and were resolved to null:\n{}",
+                reasons.len(),
+                reasons
+                    .iter()
+                    .map(|reason| format!("  - {reason}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        };
         Ok(format!(
-            "Workflow `{workflow_name}` (run {run_id}) {}: {} agent(s) replayed from cache, {} ran live.\n\nResult:\n{value}",
+            "Workflow `{workflow_name}` (run {run_id}) {}: {} agent(s) replayed from cache, {} ran live.{degraded_section}\n\nResult:\n{value}",
             if report.stopped {
                 "stopped"
             } else {
@@ -6763,7 +7709,7 @@ impl Agent {
         let run_id = format!("workflow-{}", self.seq_turn);
         let signals = core_agents::RepoSignals {
             has_test_command: self.verify_command.is_some(),
-            file_count: approx_workspace_file_count(&self.workspace),
+            file_count: self.workspace_file_count().await,
         };
         let class = core_agents::Decomposer::route(task, &signals);
         let started = Instant::now();
@@ -6826,6 +7772,31 @@ impl Agent {
             (Err(error), _) => Err(error),
             (Ok(_), Err(error)) => Err(error),
         }
+    }
+
+    /// Approximate workspace size for ultracode routing (I-62).
+    ///
+    /// The walk is a synchronous directory traversal that was running inline on an async worker,
+    /// blocking the whole executor thread while it stat'd its way to the 201-file cap. It moves to
+    /// the blocking pool and its answer is memoized for the session: routing wants a coarse "is
+    /// this repo small" signal, not a fresh count per submission.
+    async fn workspace_file_count(&mut self) -> usize {
+        if let Some(count) = self.workspace_file_count {
+            return count;
+        }
+        let workspace = self.workspace.clone();
+        let count = match tokio::task::spawn_blocking({
+            let workspace = workspace.clone();
+            move || approx_workspace_file_count(&workspace)
+        })
+        .await
+        {
+            Ok(count) => count,
+            // A cancelled or panicked blocking task must not silently route as an empty repo.
+            Err(_) => approx_workspace_file_count(&workspace),
+        };
+        self.workspace_file_count = Some(count);
+        count
     }
 
     async fn run_orchestrated_admitted(
@@ -7107,7 +8078,10 @@ impl Agent {
             input_images: Vec::new(),
             tools: vec![],
             max_tokens: 1024,
-            cache_system: false,
+            // The decomposition prefix is a fixed literal, so it is exactly the stable prefix the
+            // cache discipline exists for (ADR-002). Leaving it uncached made every ultracode run
+            // pay a cold round the rest of the kernel does not (I-62).
+            cache_system: true,
             thinking_budget: 0,
             reasoning_effort: core_protocol::ReasoningEffort::Low,
         };
@@ -7872,9 +8846,86 @@ impl Agent {
         }
     }
 
+    /// Record one compaction. What lands on the record is the summary and its plan range, NOT the
+    /// rebuilt transcript: the rebuild is a deterministic function of a transcript the record
+    /// already holds, so writing it back out wrote the same bytes twice — one line, audited at
+    /// 115949 of them, fsynced inline, inside the operator's turn. `replay_compaction` puts them
+    /// back together and `messages_from_rollout` proves the result is identical.
+    fn record_compaction(
+        &mut self,
+        before: usize,
+        plan: &core_ctx::CompactionPlan,
+        summary: &str,
+        after: usize,
+    ) {
+        self.compacted_in_run = true;
+        self.emit(
+            TurnId(self.seq_turn),
+            EventKind::Compaction {
+                messages: core_ctx::compaction_seed(plan, summary),
+            },
+        );
+        self.emit(
+            TurnId(self.seq_turn),
+            EventKind::Notice {
+                text: format!("compacted {before} messages -> {after}"),
+            },
+        );
+    }
+
+    /// Compaction at the END of the turn, not inside it (#I-58). The operator already has their
+    /// answer and is reading it; the summary is paid out of that thinking time, and the next
+    /// submission reaches the model in one round against a prefix that is already rebuilt.
+    ///
+    /// Best-effort by construction, and deliberately skippable: if the operator is already back
+    /// (a queued steer, an interrupt, a drain) their submission is worth more than a summary they
+    /// did not ask for, and the emergency valve inside the turn loop still guarantees that
+    /// whatever comes next can be admitted.
+    async fn settle_compaction(&mut self) {
+        if self.compacted_in_run || self.record_failed || self.delegation_depth > 0 {
+            return;
+        }
+        let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+        if !self.pending_steers.is_empty()
+            || !matches!(self.requested_control(), InboundControl::None)
+        {
+            return;
+        }
+        // Plan against the PROJECTED transcript, which is exactly what the next submission will
+        // load, so the plan the record describes is the plan the next turn inherits.
+        let path = self.rollout.path().to_path_buf();
+        let Ok(messages) = Self::messages_from_rollout(&path) else {
+            return;
+        };
+        // Same ceiling rule as the request path: a declared capability is used as declared, and
+        // 8192 is the default for an UNKNOWN one only (#I-02). Clamping here would plan against a
+        // window the route does not actually have.
+        let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192);
+        let Some(plan) = self.compaction.plan_at_turn_end(
+            &self.effective_system(),
+            &messages,
+            &self.registry.specs(),
+            self.model_context_window,
+            request_max_tokens,
+        ) else {
+            return;
+        };
+        let before = messages.len();
+        let after = 2 + plan.keep_verbatim.len();
+        if let Ok(summary) = self.summarize(&plan.to_summarize, None).await {
+            self.record_compaction(before, &plan, &summary, after);
+            // The in-memory working set was captured by `drive_admitted` BEFORE this ran, so it
+            // still holds the pre-compaction transcript. Dropping it makes the next follow-up
+            // replay from the rollout, which now carries the compaction — the one case where the
+            // #I-21 shortcut must not be taken, and it costs one replay per compaction rather
+            // than one per turn.
+            self.working_set = None;
+        }
+    }
+
     /// Force compaction NOW (operator `/compact`), optionally focusing the summary. Reconstructs
     /// the working set from the rollout (same path as follow_up), summarizes the middle, records
-    /// the Compaction snapshot so resume reproduces the compacted state, and returns the delta.
+    /// the compaction so resume reproduces the compacted state, and returns the delta.
     /// Callable while idle (the TUI guarantees this). Records → replay reproduces it.
     pub async fn compact_now(
         &mut self,
@@ -7890,12 +8941,11 @@ impl Agent {
             });
         };
         let summary = self.summarize(&plan.to_summarize, focus.as_deref()).await?;
-        let compacted = CompactionPolicy::rebuild(&plan, summary);
-        let after = compacted.len();
+        let after = 2 + plan.keep_verbatim.len();
         self.emit(
             TurnId(self.seq_turn),
             EventKind::Compaction {
-                messages: compacted,
+                messages: core_ctx::compaction_seed(&plan, &summary),
             },
         );
         self.emit(
@@ -7913,6 +8963,21 @@ impl Agent {
 pub struct CompactionReport {
     pub before: usize,
     pub after: usize,
+}
+
+/// The session turn ceiling beside the attempts already charged against it (`/budget`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnBudgetState {
+    pub max_turns: u32,
+    /// Cumulative admitted provider attempts, including every subagent charged to this parent.
+    pub used: u32,
+}
+
+impl TurnBudgetState {
+    /// Attempts still admissible before the next submission stops immediately.
+    pub fn remaining(&self) -> u32 {
+        self.max_turns.saturating_sub(self.used)
+    }
 }
 
 #[cfg(test)]
@@ -8200,6 +9265,7 @@ mod reconcile_tests {
                         latency_ms: 2,
                     },
                     effect_id: Some(EffectId("fx1-00000000-0000".into())),
+                    tool: Some("edit".into()),
                 },
             },
         ];
@@ -8220,6 +9286,147 @@ mod reconcile_tests {
         assert_eq!(results[1].tool_use_id, "second");
         assert!(results[1].is_error);
         assert!(results[1].content.contains("did not replay"));
+    }
+
+    #[test]
+    fn a_recorded_compaction_seed_projects_exactly_what_the_full_snapshot_projected() {
+        // The compaction event used to carry the entire rebuilt transcript — one line, audited at
+        // 115949 bytes, fsynced inline inside the operator's turn. It now carries the summary and
+        // its plan range. The projection must not be able to tell the two apart, and a rollout
+        // written before the seed format must keep replaying as itself.
+        fn assistant(text: &str) -> Message {
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::Text { text: text.into() }],
+            }
+        }
+        fn history() -> Vec<Message> {
+            vec![
+                Message::user_text("THE TASK"),
+                assistant("first answer"),
+                Message::user_text("second ask"),
+                assistant("second answer"),
+                Message::user_text("third ask"),
+                assistant("third answer"),
+            ]
+        }
+        fn events(compaction: Vec<Message>) -> Vec<Event> {
+            history()
+                .into_iter()
+                .map(|message| Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Message { message },
+                })
+                .chain(std::iter::once(Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Compaction {
+                        messages: compaction,
+                    },
+                }))
+                .collect()
+        }
+        // `Message` has no `PartialEq`; the wire form is the identity that matters, because it is
+        // what the record writes and the replay reads back.
+        fn wire(messages: &[Message]) -> String {
+            serde_json::to_string(messages).expect("messages serialize")
+        }
+
+        let mut policy = core_ctx::CompactionPolicy::default();
+        policy.keep_recent = 2;
+        policy.set_fixed_trigger_tokens(1);
+        let plan = policy.plan(&history()).expect("a plan");
+        let snapshot = core_ctx::CompactionPolicy::rebuild(&plan, "SUMMARY".into());
+        let seed = core_ctx::compaction_seed(&plan, "SUMMARY");
+
+        assert_eq!(seed.len(), 1);
+        assert!(
+            serde_json::to_string(&seed).expect("seed serializes").len() < 200,
+            "the recorded compaction is small"
+        );
+        assert_eq!(
+            wire(&project_messages_from_events(events(seed))),
+            wire(&project_messages_from_events(events(snapshot))),
+            "replay reconstructs the identical transcript from the seed"
+        );
+    }
+
+    #[test]
+    fn a_seed_replays_through_the_adjacent_user_messages_a_steer_records_separately() {
+        // A steer is recorded as its own Message event but merged into the preceding user role
+        // for the request, so the plan the kernel builds counts MERGED messages while the record
+        // holds the unmerged events. Reading the seed's range in the raw coordinate space cuts one
+        // message short and resurrects a turn the summary already folded away.
+        fn assistant(text: &str) -> Message {
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::Text { text: text.into() }],
+            }
+        }
+        fn recorded() -> Vec<Message> {
+            vec![
+                Message::user_text("THE TASK"),
+                assistant("first answer"),
+                Message::user_text("second ask"),
+                // Two adjacent user events: one submission, one steer that arrived behind it.
+                Message::user_text("steer"),
+                assistant("second answer"),
+                Message::user_text("third ask"),
+                assistant("third answer"),
+            ]
+        }
+        fn message_events() -> Vec<Event> {
+            recorded()
+                .into_iter()
+                .map(|message| Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Message { message },
+                })
+                .collect()
+        }
+        fn events(compaction: Vec<Message>) -> Vec<Event> {
+            message_events()
+                .into_iter()
+                .chain(std::iter::once(Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Compaction {
+                        messages: compaction,
+                    },
+                }))
+                .collect()
+        }
+        fn wire(messages: &[Message]) -> String {
+            serde_json::to_string(messages).expect("messages serialize")
+        }
+
+        // What the kernel plans against is the PROJECTION, which has already merged the steer.
+        let projected = project_messages_from_events(message_events());
+        assert_eq!(
+            projected.len(),
+            6,
+            "the steer merged into the ask before it"
+        );
+        let mut policy = core_ctx::CompactionPolicy::default();
+        policy.keep_recent = 2;
+        policy.set_fixed_trigger_tokens(1);
+        let plan = policy.plan(&projected).expect("a plan");
+        let snapshot = core_ctx::CompactionPolicy::rebuild(&plan, "SUMMARY".into());
+        let seed = core_ctx::compaction_seed(&plan, "SUMMARY");
+
+        let replayed = project_messages_from_events(events(seed));
+        assert_eq!(
+            wire(&replayed),
+            wire(&project_messages_from_events(events(snapshot))),
+            "replay reconstructs what actually ran, not one message more"
+        );
+        assert!(
+            !wire(&replayed).contains("second answer"),
+            "the summary folded that turn away; reading the range in raw event coordinates \
+             resurrects it"
+        );
     }
 }
 
@@ -8545,6 +9752,35 @@ mod gate_integration_tests {
         fan_calls: AtomicUsize,
         total_calls: AtomicUsize,
         fan_efforts: std::sync::Mutex<Vec<(core_protocol::ReasoningEffort, u32)>>,
+    }
+
+    /// Answers at a fixed, large size so a transcript grows past a compaction trigger over a few
+    /// ordinary submissions, the way a real session does, instead of being injected wholesale.
+    #[derive(Default)]
+    struct VerboseCapture {
+        requests: std::sync::Mutex<Vec<TurnRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for VerboseCapture {
+        async fn turn(
+            &self,
+            req: &TurnRequest,
+            _on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            self.requests.lock().unwrap().push(req.clone());
+            // A summary request carries no tools; keep that one terse so only the ANSWERS grow.
+            let text = if req.tools.is_empty() {
+                "the earlier turns, in brief".to_string()
+            } else {
+                "y".repeat(30_000)
+            };
+            Ok(TurnResult {
+                blocks: vec![Block::Text { text }],
+                stop_reason: StopReason::EndTurn,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
     }
 
     #[derive(Default)]
@@ -9542,6 +10778,108 @@ mod gate_integration_tests {
         a
     }
 
+    /// I-42: the four dispatch paths that bypass [`effects::execute_registry_tool`] — the ADR-004
+    /// pure read, the inline overflow read, a subagent, an in-turn workflow launch — each committed
+    /// its terminal locally. That is how 77 of the 81 unadmitted completions in the 71 audited
+    /// journals came to be successful work with no admission event and no tool name. All four now
+    /// share these two helpers, so pinning the pair pins every one of them.
+    #[test]
+    fn a_bypassed_dispatch_admits_its_call_and_names_it_on_the_terminal() {
+        let ws = temp_ws("bypassed-dispatch-identity");
+        let mut agent = agent_for(&ws);
+        let call = ToolUse {
+            id: "call-1".into(),
+            name: "read_file".into(),
+            input: serde_json::json!({"path": "README.md"}),
+        };
+        let ticket = agent
+            .open_tool_call_effect(TurnId(1), 0, &call, Capability::ReadOnly)
+            .unwrap();
+        agent
+            .commit_admitted_tool_result(
+                ticket,
+                &call.name,
+                &ToolResult {
+                    tool_use_id: call.id.clone(),
+                    content: "file body".into(),
+                    is_error: false,
+                    trust: Trust::Workspace,
+                    latency_ms: 4,
+                },
+                0,
+            )
+            .unwrap();
+        agent
+            .commit_refused_tool_result(
+                TurnId(1),
+                "bash",
+                &ToolResult {
+                    tool_use_id: "call-2".into(),
+                    content: "denied by policy".into(),
+                    is_error: true,
+                    trust: Trust::Workspace,
+                    latency_ms: 0,
+                },
+            )
+            .unwrap();
+
+        let events = core_record::replay(agent.rollout.path()).unwrap();
+        let intent = events
+            .iter()
+            .position(|event| {
+                matches!(&event.kind, EventKind::EffectIntent { tool_use_id, .. }
+                    if tool_use_id == "call-1")
+            })
+            .expect("a bypassed dispatch still writes a write-ahead admission");
+        let (terminal, admitted) = events
+            .iter()
+            .enumerate()
+            .find_map(|(at, event)| match &event.kind {
+                EventKind::ToolDone {
+                    result,
+                    effect_id,
+                    tool,
+                } if !result.is_error => {
+                    assert_eq!(tool.as_deref(), Some("read_file"));
+                    Some((
+                        at,
+                        effect_id
+                            .clone()
+                            .expect("a successful terminal names its admission"),
+                    ))
+                }
+                _ => None,
+            })
+            .expect("the successful terminal is durable");
+        assert!(
+            intent < terminal,
+            "the admission is fsynced before the terminal it belongs to"
+        );
+        let EventKind::EffectIntent { id, .. } = &events[intent].kind else {
+            unreachable!("selected by kind")
+        };
+        assert_eq!(id, &admitted, "the terminal points back at its own intent");
+
+        let refusal = events
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::ToolDone {
+                    result,
+                    effect_id,
+                    tool,
+                } if result.is_error => Some((effect_id.clone(), tool.clone())),
+                _ => None,
+            })
+            .expect("the refusal is durable");
+        assert_eq!(
+            refusal,
+            (None, Some("bash".to_string())),
+            "a call refused before dispatch names its tool but has no admission to name"
+        );
+        drop(agent);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
     #[test]
     fn d1_13_embedding_port_captures_both_faults_without_stderr_or_secret_content() {
         let ws = temp_ws("structured-kernel-diagnostics");
@@ -9627,6 +10965,147 @@ mod gate_integration_tests {
         let _ = std::fs::remove_dir_all(child_ws);
     }
 
+    /// Streams real content and then dies mid-stream, exactly like a reset connection, a dropped
+    /// VPN or the 120s stream idle timeout — none of which are retryable, all of which used to
+    /// destroy everything the operator had already watched arrive.
+    struct DiesMidStream;
+
+    #[async_trait::async_trait]
+    impl Provider for DiesMidStream {
+        async fn turn(
+            &self,
+            _req: &TurnRequest,
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            on_item(StreamItem::ThinkingDelta("weighing the options".into()));
+            on_item(StreamItem::TextDelta("the answer begins ".into()));
+            on_item(StreamItem::TextDelta("and continues".into()));
+            Err(ProviderError::Http("connection reset by peer".into()))
+        }
+    }
+
+    /// I-39: a mid-stream failure returned before the assistant message was appended, so a
+    /// connection reset discarded every token already streamed — and the `Text`/`Thinking` delta
+    /// events the frozen schema declares had no producer anywhere, leaving streamed text with no
+    /// durable channel at all. Both halves of that are asserted here.
+    #[tokio::test]
+    async fn a_mid_stream_failure_leaves_the_partial_answer_in_the_record_marked_interrupted() {
+        let ws = temp_ws("mid-stream-failure-preserves-partial");
+        let runs = ws.join(".core/runs");
+        let run = core_protocol::RunId("mid-stream-failure-preserves-partial".into());
+        let rollout = Rollout::open(&runs, &run, core_protocol::TenantId::default()).unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(DiesMidStream),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+
+        assert!(
+            agent.run("answer me").await.is_err(),
+            "the failure is still reported; preserving the partial answer never hides it"
+        );
+
+        let events = core_record::replay(&runs.join(format!("{}.jsonl", run.0))).unwrap();
+        let streamed_text: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::Text { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            streamed_text,
+            vec!["the answer begins and continues"],
+            "the declared Text delta event now has exactly one producer"
+        );
+        let streamed_thinking: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::Thinking { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(streamed_thinking, vec!["weighing the options"]);
+
+        let assistant: Vec<&Message> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::Message { message } if message.role == Role::Assistant => Some(message),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(assistant.len(), 1, "one interrupted assistant message");
+        let Block::Text { text } = &assistant[0].content[0] else {
+            panic!("the preserved partial answer is text");
+        };
+        assert!(text.starts_with("the answer begins and continues"));
+        assert!(
+            text.contains(INTERRUPTED_STREAM_MARKER),
+            "resume must be able to tell a partial answer from a finished one"
+        );
+
+        // No billing semantics changed: nothing claims usage for a turn that never completed.
+        assert_eq!(agent.ledger.turns, 0);
+        assert_eq!(agent.ledger.usage, Usage::default());
+
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    /// A turn that fails before its first byte has nothing to preserve and must not invent an
+    /// empty assistant message.
+    #[tokio::test]
+    async fn a_failure_before_the_first_token_appends_no_interrupted_message() {
+        struct FailsImmediately;
+
+        #[async_trait::async_trait]
+        impl Provider for FailsImmediately {
+            async fn turn(
+                &self,
+                _req: &TurnRequest,
+                _on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<TurnResult, ProviderError> {
+                Err(ProviderError::Http("name resolution failed".into()))
+            }
+        }
+
+        let ws = temp_ws("pre-stream-failure-preserves-nothing");
+        let runs = ws.join(".core/runs");
+        let run = core_protocol::RunId("pre-stream-failure-preserves-nothing".into());
+        let rollout = Rollout::open(&runs, &run, core_protocol::TenantId::default()).unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(FailsImmediately),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+        assert!(agent.run("answer me").await.is_err());
+
+        let events = core_record::replay(&runs.join(format!("{}.jsonl", run.0))).unwrap();
+        assert!(
+            !events.iter().any(|event| matches!(
+                &event.kind,
+                EventKind::Text { .. }
+                    | EventKind::Thinking { .. }
+                    | EventKind::Message {
+                        message: Message {
+                            role: Role::Assistant,
+                            ..
+                        }
+                    }
+            )),
+            "nothing streamed, so nothing is invented"
+        );
+
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
     #[tokio::test]
     async fn d2_08_missing_usage_commits_response_but_keeps_cost_unknown() {
         let ws = temp_ws("missing-usage-cost-truth");
@@ -9698,8 +11177,10 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(ws).ok();
     }
 
+    /// The cap must remain visible even now that exceeding it no longer serialises anything: the
+    /// obs counter answers "did the governor bind this turn?", which is still worth reporting.
     #[tokio::test]
-    async fn d2_18_governor_overflow_to_inline_is_counted() {
+    async fn d2_18_governor_overflow_past_the_cap_is_counted() {
         let ws = temp_ws("governor-inline-overflow");
         let mut registry = Registry::coding_agent(&ws).unwrap();
         registry
@@ -9756,6 +11237,555 @@ mod gate_integration_tests {
         assert_eq!(agent.ledger.tool_inline_overflow_events, 2);
         assert!(agent.ledger.summary().contains("inline_overflow=2"));
         std::fs::remove_dir_all(ws).ok();
+    }
+
+    // ---- concurrent tool dispatch (#I-01, #I-18, #I-61) ----
+    //
+    // Every test below proves overlap with a RENDEZVOUS rather than a stopwatch. A tool that only
+    // completes when `width` of its calls are in flight at the same instant turns "did these run
+    // concurrently?" into a value in the record, which a loaded CI machine cannot invert the way it
+    // can invert a wall-clock comparison.
+
+    const RENDEZVOUS_TIMEOUT: Duration = Duration::from_millis(400);
+
+    fn register_rendezvous(
+        registry: &mut Registry,
+        name: &str,
+        purity: Purity,
+        capability: Capability,
+        width: usize,
+    ) {
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(width));
+        registry
+            .register_external(
+                ToolSpec {
+                    name: name.into(),
+                    description: "test-only rendezvous tool".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity,
+                    capability,
+                },
+                move |call, _root| {
+                    let barrier = barrier.clone();
+                    core_tools::boxfut::box_it(async move {
+                        let met = tokio::time::timeout(RENDEZVOUS_TIMEOUT, barrier.wait())
+                            .await
+                            .is_ok();
+                        ToolResult {
+                            tool_use_id: call.id,
+                            content: if met { "rendezvous" } else { "serialised" }.into(),
+                            is_error: !met,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        }
+                    })
+                },
+            )
+            .unwrap();
+    }
+
+    /// A tool that returns immediately. Used where the question is the ORDER of the durable record
+    /// rather than whether anything overlapped.
+    fn register_immediate(
+        registry: &mut Registry,
+        name: &str,
+        purity: Purity,
+        capability: Capability,
+    ) {
+        registry
+            .register_external(
+                ToolSpec {
+                    name: name.into(),
+                    description: "test-only immediate tool".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity,
+                    capability,
+                },
+                |call, _root| {
+                    core_tools::boxfut::box_it(async move {
+                        ToolResult {
+                            tool_use_id: call.id,
+                            content: "ok".into(),
+                            is_error: false,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        }
+                    })
+                },
+            )
+            .unwrap();
+    }
+
+    fn burst_calls(name: &str, count: usize, paths: &[&str]) -> Vec<ToolUse> {
+        (0..count)
+            .map(|index| ToolUse {
+                id: format!("{name}-{index}"),
+                name: name.into(),
+                input: match paths.get(index) {
+                    Some(path) => serde_json::json!({"index": index, "path": path}),
+                    None => serde_json::json!({"index": index}),
+                },
+            })
+            .collect()
+    }
+
+    /// Emits one burst of tool calls in the first turn, then ends the run. The burst is the unit of
+    /// "the model asked for these together", which is the whole question #I-18 and #I-61 turn on.
+    struct ScriptedBurst {
+        turn: AtomicUsize,
+        calls: Vec<ToolUse>,
+    }
+
+    impl ScriptedBurst {
+        fn new(calls: Vec<ToolUse>) -> Self {
+            Self {
+                turn: AtomicUsize::new(0),
+                calls,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ScriptedBurst {
+        async fn turn(
+            &self,
+            _req: &TurnRequest,
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            if self.turn.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Ok(TurnResult {
+                    blocks: vec![Block::Text {
+                        text: "done".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage::default()),
+                });
+            }
+            for call in &self.calls {
+                on_item(StreamItem::ToolUseComplete(call.clone()));
+            }
+            Ok(TurnResult {
+                blocks: self.calls.iter().cloned().map(Block::ToolUse).collect(),
+                stop_reason: StopReason::ToolUse,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
+    }
+
+    fn concurrency_agent(
+        ws: &std::path::Path,
+        run: &core_protocol::RunId,
+        registry: Registry,
+        calls: Vec<ToolUse>,
+    ) -> Agent {
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            run,
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(ScriptedBurst::new(calls)),
+            registry,
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 3,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 8,
+            },
+        );
+        agent.workspace = ws.to_path_buf();
+        agent
+    }
+
+    fn recorded_events(ws: &std::path::Path, run: &core_protocol::RunId) -> Vec<Event> {
+        core_record::replay(&ws.join(".core/runs").join(format!("{}.jsonl", run.0))).unwrap()
+    }
+
+    fn recorded_tool_contents(ws: &std::path::Path, run: &core_protocol::RunId) -> Vec<String> {
+        recorded_events(ws, run)
+            .into_iter()
+            .filter_map(|event| match event.kind {
+                EventKind::ToolDone { result, .. } => Some(result.content),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn write_user_hooks(home: &std::path::Path, hooks: serde_json::Value) {
+        std::fs::create_dir_all(core_protocol::home::path(home, "")).unwrap();
+        std::fs::write(
+            core_protocol::home::path(home, "config.json"),
+            serde_json::json!({ "hooks": hooks }).to_string(),
+        )
+        .unwrap();
+    }
+
+    /// #I-01: `hook_gates_reads` asked whether ANY hook event was configured, so one `Stop` cleanup
+    /// hook — an event that never sees a tool and cannot veto one — silently cost the whole session
+    /// its concurrent read dispatch. Two reads that must be in flight together only complete if the
+    /// early-dispatch path is still live.
+    #[tokio::test]
+    async fn i01_a_stop_hook_alone_does_not_disable_concurrent_read_dispatch() {
+        let ws = temp_ws("stop-hook-keeps-overlap");
+        let home = ws.join("operator-home");
+        write_user_hooks(&home, serde_json::json!({"Stop":["true"]}));
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        register_rendezvous(
+            &mut registry,
+            "rendezvous_read",
+            Purity::Pure,
+            Capability::ReadOnly,
+            2,
+        );
+        let run = core_protocol::RunId("stop-hook-keeps-overlap".into());
+        let mut agent =
+            concurrency_agent(&ws, &run, registry, burst_calls("rendezvous_read", 2, &[]));
+        agent.hooks = Hooks::load_user(&home);
+        assert!(!agent.hooks.is_empty());
+        assert!(agent.hooks.commands(HookEvent::PreToolUse).is_empty());
+
+        assert_eq!(agent.run("read two sources").await.unwrap(), Outcome::Done);
+        assert_eq!(
+            recorded_tool_contents(&ws, &run),
+            vec!["rendezvous".to_string(); 2],
+            "a hook bound to Stop says nothing about a read and must not serialise one"
+        );
+        // Concurrency is proven by the fixture itself, not by an event count: `rendezvous_read`
+        // only completes when both callers are inside it at once, so two recorded results ARE the
+        // overlap. What the record must additionally show is that early dispatch did not cost the
+        // reads their admission — #I-42 closed exactly that hole, and the fast path now opens its
+        // effect at the collection boundary rather than skipping it.
+        let admissions = recorded_events(&ws, &run)
+            .into_iter()
+            .filter(|event| {
+                matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "rendezvous_read")
+            })
+            .count();
+        assert_eq!(
+            admissions, 2,
+            "an early-dispatched read is still an admitted read: overlap is not bought by dropping \
+             its admission from the record"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// The other direction of #I-01, and the reason the gate exists at all: a `PreToolUse` hook must
+    /// still speak BEFORE the read runs. That routes every read through the gated deferred path,
+    /// where it crosses the effect boundary one at a time — intent, terminal, intent, terminal —
+    /// which is exactly the overlap the hook is trading away.
+    #[tokio::test]
+    async fn i01_a_pretooluse_hook_still_defers_pure_reads() {
+        let ws = temp_ws("pretooluse-hook-defers");
+        let home = ws.join("operator-home");
+        write_user_hooks(&home, serde_json::json!({"PreToolUse":["true"]}));
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        register_immediate(
+            &mut registry,
+            "gated_read",
+            Purity::Pure,
+            Capability::ReadOnly,
+        );
+        let run = core_protocol::RunId("pretooluse-hook-defers".into());
+        let mut agent = concurrency_agent(&ws, &run, registry, burst_calls("gated_read", 2, &[]));
+        agent.hooks = Hooks::load_user(&home);
+        assert!(!agent.hooks.commands(HookEvent::PreToolUse).is_empty());
+
+        assert_eq!(agent.run("read two sources").await.unwrap(), Outcome::Done);
+        let shape: Vec<&'static str> = recorded_events(&ws, &run)
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::EffectIntent { tool, .. } if tool == "gated_read" => Some("intent"),
+                EventKind::ToolDone {
+                    effect_id: Some(_), ..
+                } => Some("terminal"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec!["intent", "terminal", "intent", "terminal"],
+            "a PreToolUse hook must see each read before it is dispatched, one at a time"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// #I-61: at the cap, a pure call was pushed onto an overflow list and run INLINE during
+    /// collection, so a turn wider than the cap ran its tail strictly one at a time with nothing in
+    /// the record saying so. Four reads with a cap of two: the second pair must still meet.
+    #[tokio::test]
+    async fn i61_pure_calls_past_the_concurrency_cap_still_run_concurrently() {
+        let ws = temp_ws("cap-overflow-queues");
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        register_rendezvous(
+            &mut registry,
+            "rendezvous_read",
+            Purity::Pure,
+            Capability::ReadOnly,
+            2,
+        );
+        let run = core_protocol::RunId("cap-overflow-queues".into());
+        let mut agent =
+            concurrency_agent(&ws, &run, registry, burst_calls("rendezvous_read", 4, &[]));
+        agent.max_tool_concurrency = 2;
+
+        assert_eq!(agent.run("read four sources").await.unwrap(), Outcome::Done);
+        assert_eq!(
+            recorded_tool_contents(&ws, &run),
+            vec!["rendezvous".to_string(); 4],
+            "a call past the cap must QUEUE for a permit, not fall out of the concurrent path"
+        );
+        assert_eq!(
+            agent.ledger.tool_inline_overflow_events, 2,
+            "the cap still bound the turn, and the ledger still says so"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// #I-18: everything a coding agent actually does is Effecting, and the deferred loop is a plain
+    /// `for`, so four independent calls cost the sum of their latencies rather than the max. They
+    /// must overlap — and the durable journal must be ordinal-for-ordinal what it always was.
+    #[tokio::test]
+    async fn i18_independent_auto_approved_effecting_calls_run_concurrently() {
+        let ws = temp_ws("effecting-batch-overlaps");
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        register_rendezvous(
+            &mut registry,
+            "rendezvous_exec",
+            Purity::Effecting,
+            Capability::CodeExecuting,
+            4,
+        );
+        let run = core_protocol::RunId("effecting-batch-overlaps".into());
+        let mut agent =
+            concurrency_agent(&ws, &run, registry, burst_calls("rendezvous_exec", 4, &[]));
+        // Yolo auto-approves CodeExecuting; without an Auto verdict nothing may be grouped.
+        agent.permission_mode = PermissionMode::Yolo;
+
+        assert_eq!(agent.run("run four commands").await.unwrap(), Outcome::Done);
+        assert_eq!(
+            recorded_tool_contents(&ws, &run),
+            vec!["rendezvous".to_string(); 4],
+            "four independent auto-approved effecting calls must cost the slowest, not the sum"
+        );
+
+        let events = recorded_events(&ws, &run);
+        let intents: Vec<(TurnId, core_protocol::EffectId)> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::EffectIntent { id, tool, .. } if tool == "rendezvous_exec" => {
+                    Some((event.turn, id.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(intents.len(), 4);
+        for (ordinal, (turn, id)) in intents.iter().enumerate() {
+            assert_eq!(
+                *id,
+                effect_class::effect_id(*turn, effect_class::EffectClass::RegistryTool, ordinal),
+                "the group is reordered in TIME only; its effect ordinals never move"
+            );
+        }
+        let last_intent = events
+            .iter()
+            .rposition(|event| {
+                matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "rendezvous_exec")
+            })
+            .unwrap();
+        let first_terminal = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    &event.kind,
+                    EventKind::ToolDone {
+                        effect_id: Some(_),
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        assert!(
+            last_intent < first_terminal,
+            "every write-ahead intent in the group must be durable before any executor terminal"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// The bound on #I-18: two calls that NAME the same path are the one case the model's "these are
+    /// independent" assertion is provably wrong about, so the group ends there and the record stays
+    /// strictly nested — intent, terminal, intent, terminal.
+    #[tokio::test]
+    async fn i18_calls_declaring_the_same_path_stay_strictly_ordered() {
+        let ws = temp_ws("effecting-path-collision");
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        register_immediate(
+            &mut registry,
+            "touch_path",
+            Purity::Effecting,
+            Capability::ReversibleLocal,
+        );
+        let run = core_protocol::RunId("effecting-path-collision".into());
+        let mut agent = concurrency_agent(
+            &ws,
+            &run,
+            registry,
+            burst_calls("touch_path", 3, &["a.txt", "a.txt", "b.txt"]),
+        );
+        agent.permission_mode = PermissionMode::Yolo;
+
+        assert_eq!(agent.run("write three times").await.unwrap(), Outcome::Done);
+        let shape: Vec<&'static str> = recorded_events(&ws, &run)
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::EffectIntent { tool, .. } if tool == "touch_path" => Some("intent"),
+                EventKind::ToolDone {
+                    effect_id: Some(_), ..
+                } => Some("terminal"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                "intent", "terminal", "intent", "terminal", "intent", "terminal"
+            ],
+            "a declared path collision must keep every effect in the turn strictly ordered"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// The other bound on #I-18, and the one a grouped executor can silently break: ADR-003 dedup
+    /// reads `failed_actions`, which only learns about a failure when the group SETTLES. Two
+    /// identical calls admitted into one group would therefore both reach the executor and perform
+    /// the side effect twice, where the ordered loop performs it once and replays the error for the
+    /// repeat. The group must end at the repeat, so the tool runs exactly once either way.
+    #[tokio::test]
+    async fn i18_an_identical_repeat_never_joins_the_group_and_runs_at_most_once() {
+        let ws = temp_ws("effecting-batch-dedup");
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        let runs = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = runs.clone();
+        registry
+            .register_external(
+                ToolSpec {
+                    name: "failing_exec".into(),
+                    description: "test-only always-failing tool".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity: Purity::Effecting,
+                    capability: Capability::CodeExecuting,
+                },
+                move |call, _root| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    core_tools::boxfut::box_it(async move {
+                        ToolResult {
+                            tool_use_id: call.id,
+                            content: "the command failed".into(),
+                            is_error: true,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        }
+                    })
+                },
+            )
+            .unwrap();
+        let run = core_protocol::RunId("effecting-batch-dedup".into());
+        // Same name, same input, different provider ids: the exact shape ADR-003 dedup exists for.
+        let calls = vec![
+            ToolUse {
+                id: "repeat-0".into(),
+                name: "failing_exec".into(),
+                input: serde_json::json!({"command": "false"}),
+            },
+            ToolUse {
+                id: "repeat-1".into(),
+                name: "failing_exec".into(),
+                input: serde_json::json!({"command": "false"}),
+            },
+        ];
+        let mut agent = concurrency_agent(&ws, &run, registry, calls);
+        agent.permission_mode = PermissionMode::Yolo;
+
+        assert_eq!(agent.run("run it twice").await.unwrap(), Outcome::Done);
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "grouping must not turn one admitted side effect into two"
+        );
+        let contents = recorded_tool_contents(&ws, &run);
+        assert_eq!(contents.len(), 2, "both tool_use ids are still answered");
+        assert_eq!(contents[0], "the command failed");
+        assert!(
+            contents[1].contains("ADR-003 dedup"),
+            "the repeat is answered from the record, not re-run: {}",
+            contents[1]
+        );
+        assert_eq!(
+            recorded_events(&ws, &run)
+                .iter()
+                .filter(|event| matches!(
+                    &event.kind,
+                    EventKind::EffectIntent { tool, .. } if tool == "failing_exec"
+                ))
+                .count(),
+            1,
+            "only the first call crosses the effect boundary"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// The gate is still the gate. A call the mode makes `Ask` never joins the group, so with no
+    /// approval channel it fails closed exactly as it did before and nothing is ever dispatched.
+    #[tokio::test]
+    async fn i18_calls_that_must_ask_never_join_the_concurrent_group() {
+        let ws = temp_ws("effecting-batch-asks");
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        register_immediate(
+            &mut registry,
+            "touch_path",
+            Purity::Effecting,
+            Capability::ReversibleLocal,
+        );
+        let run = core_protocol::RunId("effecting-batch-asks".into());
+        // PermissionMode::Default asks for ReversibleLocal, and no approval channel is installed.
+        let mut agent = concurrency_agent(&ws, &run, registry, burst_calls("touch_path", 2, &[]));
+
+        assert_eq!(agent.run("write twice").await.unwrap(), Outcome::Done);
+        assert!(
+            !recorded_events(&ws, &run).iter().any(|event| matches!(
+                &event.kind,
+                EventKind::EffectIntent { tool, .. } if tool == "touch_path"
+            )),
+            "an unapproved call must never cross the effect boundary, grouped or not"
+        );
+        assert!(
+            recorded_tool_contents(&ws, &run)
+                .iter()
+                .all(|content| content.contains("refused")),
+            "the ordered loop still owns the refusal text for every gated call"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[test]
+    fn declared_write_paths_names_single_and_multi_file_claims() {
+        assert!(declared_write_paths(&serde_json::json!({"command":"ls"})).is_empty());
+        assert_eq!(
+            declared_write_paths(&serde_json::json!({"path":"src/lib.rs"})),
+            ["src/lib.rs".to_string()].into_iter().collect()
+        );
+        assert_eq!(
+            declared_write_paths(
+                &serde_json::json!({"files":[{"path":"a.rs"},{"path":"b.rs"},{"path":"a.rs"}]})
+            ),
+            ["a.rs".to_string(), "b.rs".to_string()]
+                .into_iter()
+                .collect()
+        );
     }
 
     #[tokio::test]
@@ -9859,6 +11889,116 @@ mod gate_integration_tests {
             "invocation-local image bytes must not enter the durable text transcript"
         );
         drop(requests);
+        drop(agent);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    /// Role plus visible text, so a transcript can be compared without `Message: PartialEq`.
+    fn transcript_shape(messages: &[Message]) -> Vec<String> {
+        messages
+            .iter()
+            .map(|message| {
+                let text = message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        Block::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|");
+                format!("{:?}:{text}", message.role)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn follow_up_continues_from_memory_and_still_matches_what_replay_would_rebuild() {
+        // `follow_up` used to replay and SHA-256-verify the whole rollout, then do it a SECOND time
+        // inside `set_resume`, for a transcript this very process had never let go of. At the 64 MiB
+        // rollout ceiling that is about half a second of blocking parse and hashing between two
+        // operator messages, and it grows with the session. The shortcut is only admissible if it
+        // reproduces the replay exactly, so pin that equality rather than just the speed.
+        let ws = temp_ws("follow-up-in-memory");
+        let provider = std::sync::Arc::new(CaptureSteering::default());
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("follow-up-in-memory".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 6,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 2,
+            },
+        );
+        agent.workspace = ws.clone();
+
+        assert_eq!(agent.run("first task").await.unwrap(), Outcome::Done);
+        let first_turn = agent.seq_turn;
+        assert!(
+            agent.working_set.is_some(),
+            "a finished run hands its working set to the next follow-up"
+        );
+
+        assert_eq!(agent.follow_up("second task").await.unwrap(), Outcome::Done);
+        // A follow-up opens a NEW turn. Turn ids are canonical effect identities, so continuing on
+        // the finished one made at-most-once dispatch refuse the follow-up's first provider effect.
+        assert!(
+            agent.seq_turn > first_turn,
+            "follow-up must advance the turn id exactly as the replay path does"
+        );
+        assert!(
+            agent.working_set.is_some(),
+            "and it keeps its own, so a second follow-up is free as well"
+        );
+
+        let sent = provider
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| transcript_shape(&request.messages))
+            .collect::<Vec<_>>();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0], vec!["User:first task"]);
+        assert_eq!(
+            sent[1],
+            vec!["User:first task", "Assistant:done", "User:second task"],
+            "the in-memory follow-up continues the prior transcript, it does not restart it"
+        );
+
+        // The equivalence that licenses skipping the replay: what this process held is exactly what
+        // reading the record back would have rebuilt.
+        let replayed = Agent::messages_from_rollout(agent.rollout.path()).unwrap();
+        let held = reconcile_transcript(agent.working_set.clone().unwrap());
+        assert_eq!(transcript_shape(&held), transcript_shape(&replayed));
+
+        // The record stays the authority wherever a process boundary is crossed: an explicit resume
+        // replaces the transcript outright, and a stale working set must never outrank it.
+        agent
+            .set_resume(vec![Message::user_text("replayed transcript")])
+            .unwrap();
+        assert!(agent.working_set.is_none());
+        assert_eq!(agent.run("third task").await.unwrap(), Outcome::Done);
+        let last = provider
+            .requests
+            .lock()
+            .unwrap()
+            .last()
+            .map(|request| transcript_shape(&request.messages))
+            .unwrap();
+        assert_eq!(last, vec!["User:replayed transcript|\n\n|third task"]);
+
         drop(agent);
         let _ = std::fs::remove_dir_all(ws);
     }
@@ -10057,7 +12197,8 @@ mod gate_integration_tests {
                             trust: Trust::Untrusted,
                             latency_ms: 1,
                         },
-                        effect_id: None,
+                        effect_id: Some(core_protocol::EffectId("fx1-00000004-0000".into())),
+                        tool: Some("web_fetch".into()),
                     },
                 })
                 .unwrap();
@@ -10515,6 +12656,101 @@ ant-api03-SuperSecretModelToken12345"
         }
     }
 
+    /// `provider_attempts` only ever saturating-adds and resume restores it, so a session that
+    /// reached `max_turns` ended every later submission immediately and the only exit was killing
+    /// the process. The ceiling has to be movable from inside the session.
+    #[tokio::test]
+    async fn a_saturated_turn_ceiling_is_recoverable_without_restarting_the_session() {
+        let ws = temp_ws("turn-ceiling-raise");
+        let provider = std::sync::Arc::new(MeteredProvider {
+            calls: AtomicUsize::new(0),
+            continuation: false,
+        });
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("turn-ceiling-raise".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 1,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        assert_eq!(agent.run("first").await.unwrap(), Outcome::Done);
+        assert_eq!(
+            agent.follow_up("second").await.unwrap(),
+            Outcome::BudgetExhausted("max_turns"),
+            "the cumulative ceiling stops the next submission before any provider call"
+        );
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+        let raised = agent.set_turn_ceiling(3).expect("the ceiling is raisable");
+        assert_eq!(
+            raised,
+            TurnBudgetState {
+                max_turns: 3,
+                used: 1,
+            },
+            "raising the ceiling must not launder the attempts already charged"
+        );
+        assert_eq!(raised.remaining(), 2);
+        assert_eq!(agent.follow_up("third").await.unwrap(), Outcome::Done);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(agent.turn_budget().used, 2);
+
+        // The widening is in the record, so a later reader can tell why more turns were admitted
+        // than the run started with.
+        let raw = std::fs::read_to_string(agent.rollout.path()).unwrap();
+        assert!(
+            raw.contains("operator set the session turn ceiling: 1 -> 3"),
+            "the raise must be journaled, not applied silently"
+        );
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn a_turn_ceiling_change_is_refused_before_it_can_disable_the_budget() {
+        let ws = temp_ws("turn-ceiling-refusals");
+        let mut agent = agent_for(&ws);
+        let before = agent.turn_budget();
+        assert!(matches!(
+            agent.set_turn_ceiling(0),
+            Err(KernelError::InvalidBudget(_))
+        ));
+        assert_eq!(agent.turn_budget(), before, "a refusal changes nothing");
+
+        // Write-ahead: the ceiling in memory may never be one a crash would fail to explain.
+        agent.fail_next_durable_append = Some(DurableAppendFault::Notice);
+        assert!(matches!(
+            agent.set_turn_ceiling(before.max_turns + 10),
+            Err(KernelError::Record(_))
+        ));
+        assert_eq!(
+            agent.turn_budget(),
+            before,
+            "a failed append leaves the old ceiling in force"
+        );
+
+        // An unchanged ceiling is a no-op, not an append.
+        let events = core_record::replay(agent.rollout.path()).unwrap().len();
+        assert_eq!(agent.set_turn_ceiling(before.max_turns).unwrap(), before);
+        assert_eq!(
+            core_record::replay(agent.rollout.path()).unwrap().len(),
+            events
+        );
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
     #[tokio::test]
     async fn max_tokens_fails_closed_when_provider_usage_is_missing() {
         let ws = temp_ws("token-budget-missing-usage");
@@ -10560,6 +12796,252 @@ ant-api03-SuperSecretModelToken12345"
         assert!(
             !ws.join("f.txt").exists(),
             "plan mode must not let the edit touch the tree"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn plan_mode_advertises_only_the_tools_it_can_actually_admit() {
+        // I-63: a nine-token task paid 3671 prompt tokens, 2730 of them tool schemas, and every
+        // non-read tool described in plan mode is a schema the gate will refuse on sight.
+        let ws = temp_ws("plan-tool-schemas");
+        let registry = Registry::coding_agent(&ws).unwrap();
+        let all = registry.specs();
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("plan-tool-schemas".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let provider = std::sync::Arc::new(CaptureSteering::default());
+        let mut agent = Agent::new(
+            provider.clone(),
+            registry,
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+
+        // The default posture can admit every registered capability, so it hides nothing.
+        assert_eq!(agent.advertised_tool_specs().len(), all.len());
+
+        agent.permission_mode = PermissionMode::Plan;
+        let planned = agent.advertised_tool_specs();
+        assert!(
+            !planned.is_empty(),
+            "plan mode still investigates with read-only tools"
+        );
+        for spec in &all {
+            let kept = planned
+                .iter()
+                .any(|advertised| advertised.name == spec.name);
+            if spec.capability == Capability::ReadOnly {
+                assert!(
+                    kept,
+                    "a tool plan CAN admit must never be hidden: {}",
+                    spec.name
+                );
+            } else {
+                // Only tools the frozen gate denies unconditionally may be dropped.
+                assert_eq!(
+                    core_protocol::gate(
+                        PermissionMode::Plan,
+                        &PermissionRules::new(),
+                        &spec.name,
+                        spec.capability
+                    ),
+                    Verdict::Deny
+                );
+                assert!(!kept, "plan mode must not describe {}", spec.name);
+            }
+        }
+        let full = estimate_request_context("sys", &[], &all);
+        let narrowed = estimate_request_context("sys", &[], &planned);
+        assert!(
+            narrowed.tool_tokens.saturating_mul(2) < full.tool_tokens,
+            "a read-only session's fixed schema overhead must drop substantially: {} -> {}",
+            full.tool_tokens,
+            narrowed.tool_tokens
+        );
+
+        // A narrowed authority ceiling is the other unconditional denial and filters the same way.
+        // But a ceiling is a SET, not a downward-closed prefix, and `effective_capability` elevates
+        // a reversible-local write on a trust-mutating path: that tool is still admissible for
+        // exactly those paths, so testing only the DECLARED capability would hide it.
+        agent.permission_mode = PermissionMode::Default;
+        agent.narrow_authority_ceiling(CapabilitySet::from_iter_capabilities([
+            Capability::ReadOnly,
+            Capability::TrustMutating,
+        ]));
+        let by_elevation = agent.advertised_tool_specs();
+        assert!(
+            by_elevation
+                .iter()
+                .any(|spec| spec.capability == Capability::ReversibleLocal),
+            "a write this ceiling admits only by path elevation must not be hidden"
+        );
+        assert!(
+            by_elevation
+                .iter()
+                .all(|spec| spec.capability != Capability::CodeExecuting),
+            "a capability no call can reach stays hidden"
+        );
+
+        agent.narrow_authority_ceiling(CapabilitySet::only(Capability::ReadOnly));
+        assert!(
+            agent
+                .advertised_tool_specs()
+                .iter()
+                .all(|spec| spec.capability == Capability::ReadOnly)
+        );
+
+        // And the request the model actually receives carries the narrowed set, not the registry.
+        agent.permission_mode = PermissionMode::Plan;
+        assert_eq!(agent.run("investigate").await.unwrap(), Outcome::Done);
+        let advertised: Vec<String> = provider.requests.lock().unwrap()[0]
+            .tools
+            .iter()
+            .map(|spec| spec.name.clone())
+            .collect();
+        assert_eq!(
+            advertised,
+            planned
+                .iter()
+                .map(|spec| spec.name.clone())
+                .collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn ultracode_decomposition_declares_its_stable_prefix_cacheable() {
+        // I-62: the decomposition prefix is a fixed literal, so shipping it uncached paid a cold
+        // round on every ultracode run that no other request in the kernel pays.
+        let ws = temp_ws("decompose-cache-system");
+        let provider = std::sync::Arc::new(CaptureSteering::default());
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("decompose-cache-system".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+        agent
+            .decompose("task", core_agents::TaskClass::Localized)
+            .await
+            .unwrap();
+        let requests = provider.requests.lock().unwrap();
+        let decomposition = requests
+            .iter()
+            .find(|request| request.system.starts_with("You decompose"))
+            .expect("the decomposition request");
+        assert!(
+            decomposition.cache_system,
+            "the decomposition prefix must read the cache like every other request"
+        );
+        drop(requests);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn workspace_file_count_leaves_the_async_worker_and_is_memoized() {
+        // I-62: the routing signal walked the tree synchronously on the async path, once per
+        // submission.
+        let ws = temp_ws("workspace-file-count");
+        std::fs::write(ws.join("first.rs"), "fn a() {}\n").unwrap();
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("workspace-file-count".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(CaptureSteering::default()),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+
+        let first = agent.workspace_file_count().await;
+        assert_eq!(first, approx_workspace_file_count(&ws));
+
+        // A second submission reuses the session answer instead of walking the tree again.
+        std::fs::write(ws.join("second.rs"), "fn b() {}\n").unwrap();
+        assert_ne!(
+            approx_workspace_file_count(&ws),
+            first,
+            "the fixture must actually change the on-disk count"
+        );
+        assert_eq!(agent.workspace_file_count().await, first);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn steering_merged_into_the_trailing_message_reaccounts_the_transcript() {
+        // I-60: the running per-message total is append-only, but steering merges into the
+        // trailing user message. Without invalidation the turn would price a stale transcript.
+        let ws = temp_ws("steer-token-accounting");
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("steer-token-accounting".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(CaptureSteering::default()),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        let mut messages = vec![Message::user_text("task")];
+        assert_eq!(
+            agent.context_estimator.estimate("sys", &messages, &[]),
+            estimate_request_context("sys", &messages, &[])
+        );
+
+        agent.pending_steers.push_back("x".repeat(4_000));
+        assert_eq!(
+            agent
+                .admit_pending_steers(TurnId(agent.seq_turn), &mut messages)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            messages.len(),
+            1,
+            "steering merges into the trailing user message rather than appending"
+        );
+        assert_eq!(
+            agent.context_estimator.estimate("sys", &messages, &[]),
+            estimate_request_context("sys", &messages, &[]),
+            "an in-place merge must not leave a stale running total"
+        );
+
+        // Appending stays exact too, which is the fast path the turn loop actually takes.
+        messages.push(Message {
+            role: Role::Assistant,
+            content: vec![Block::Text {
+                text: "y".repeat(2_000),
+            }],
+        });
+        assert_eq!(
+            agent.context_estimator.estimate("sys", &messages, &[]),
+            estimate_request_context("sys", &messages, &[])
         );
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -13483,6 +15965,53 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
+    async fn a_declared_output_ceiling_reaches_the_request_unclamped() {
+        // The request reservation used to be `unwrap_or(8192).min(8192)`, which froze every
+        // declared capability at the unknown-capability default: GLM's documented 128K arrived as
+        // 8192, and the same expression fed the recorded compaction trigger (I-02).
+        for (label, declared, expected) in [
+            ("declared", Some(128_000_u32), 128_000_u32),
+            ("undeclared", None, 8_192),
+        ] {
+            let ws = temp_ws(&format!("declared-output-ceiling-{label}"));
+            let registry = Registry::coding_agent(&ws).unwrap();
+            let run = core_protocol::RunId(format!("declared-output-ceiling-{label}"));
+            let rollout = Rollout::open(
+                &ws.join(".core/runs"),
+                &run,
+                core_protocol::TenantId::default(),
+            )
+            .unwrap();
+            let provider = std::sync::Arc::new(CaptureSteering::default());
+            let mut agent = Agent::new(
+                provider.clone(),
+                registry,
+                rollout,
+                "glm-5.2".into(),
+                "sys".into(),
+                Budget {
+                    max_turns: 1,
+                    max_usd: None,
+                    max_tokens: None,
+                    max_wall_secs: 30,
+                    max_consecutive_tool_errors: 3,
+                },
+            );
+            agent.workspace = ws.clone();
+            agent.model_context_window = Some(1_000_000);
+            agent.model_max_output_tokens = declared;
+
+            assert_eq!(agent.run("inspect the route").await.unwrap(), Outcome::Done);
+            assert_eq!(
+                provider.requests.lock().unwrap()[0].max_tokens,
+                expected,
+                "{label} output ceiling must reach the provider as resolved"
+            );
+            let _ = std::fs::remove_dir_all(&ws);
+        }
+    }
+
+    #[tokio::test]
     async fn model_window_drives_compaction_before_admission_and_avoids_legacy_large_window_cutoff()
     {
         fn history(message_bytes: usize) -> Vec<Message> {
@@ -13586,6 +16115,135 @@ ant-api03-SuperSecretModelToken12345"
         );
         drop(large_requests);
         let _ = std::fs::remove_dir_all(&large_ws);
+    }
+
+    /// #I-58. Compaction used to run inside the turn loop, before the model request the operator
+    /// was waiting on: an extra synchronous provider round in front of their own submission, and a
+    /// rewritten prefix that threw away a full cache hit (the audit recorded 111687 uncached
+    /// tokens immediately after one). It now runs at the END of a turn, so the summary is paid out
+    /// of the operator's thinking time, and what it records is the summary rather than a second
+    /// copy of the transcript.
+    #[tokio::test]
+    async fn compaction_settles_after_the_turn_and_records_only_the_summary() {
+        let ws = temp_ws("compaction-settles-after-the-turn");
+        let provider = std::sync::Arc::new(VerboseCapture::default());
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("compaction-settle".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 24,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        agent.workspace = ws.clone();
+        // A window nothing here comes close to overflowing: whatever compacts, compacts because
+        // the transcript is getting long, never because a request could not be admitted.
+        agent.model_context_window = Some(1_000_000);
+        agent.model_max_output_tokens = Some(8_192);
+        agent.compaction.keep_recent = 2;
+        agent.compaction.set_fixed_trigger_tokens(20_000);
+
+        assert_eq!(agent.run("one").await.unwrap(), Outcome::Done);
+        assert_eq!(agent.follow_up("two").await.unwrap(), Outcome::Done);
+        assert_eq!(
+            provider.requests.lock().unwrap().len(),
+            2,
+            "two submissions, two provider rounds, and nothing compacted yet"
+        );
+
+        // The third submission crosses the trigger. Under the defect it paid for a summary first.
+        assert_eq!(agent.follow_up("three").await.unwrap(), Outcome::Done);
+        let requests = provider.requests.lock().unwrap().clone();
+        assert_eq!(
+            requests.len(),
+            4,
+            "one operator round, then one settle round"
+        );
+        assert!(
+            requests[..3].iter().all(|req| !req.tools.is_empty()),
+            "every request the operator waited on went straight to the model"
+        );
+        assert!(
+            requests[3].tools.is_empty(),
+            "the summary is the LAST request of the turn, not the first"
+        );
+        assert!(
+            requests[2].messages.iter().any(|message| message
+                .content
+                .iter()
+                .any(|block| matches!(block, Block::Text { text } if text.len() > 20_000))),
+            "the operator's own request carried the uncompacted history; nothing was rewritten \
+             in front of it"
+        );
+
+        // What the compaction wrote: the summary and its plan range, not the transcript.
+        let events = core_record::replay(agent.rollout.path()).unwrap();
+        let compactions: Vec<&EventKind> = events
+            .iter()
+            .map(|event| &event.kind)
+            .filter(|kind| matches!(kind, EventKind::Compaction { .. }))
+            .collect();
+        assert_eq!(compactions.len(), 1, "one compaction, once per submission");
+        let EventKind::Compaction { messages: seed } = compactions[0] else {
+            unreachable!("filtered to compactions")
+        };
+        assert_eq!(seed.len(), 1);
+        let line = serde_json::to_string(compactions[0]).unwrap();
+        assert!(
+            line.len() < 4_096,
+            "the compaction event is small; the audited one was 115949 bytes, got {}",
+            line.len()
+        );
+
+        // Replay reconstructs the transcript the compaction produced: the middle is gone, the
+        // task anchor and the recent tail survive, and the next submission inherits exactly that.
+        let replayed = Agent::messages_from_rollout(agent.rollout.path()).unwrap();
+        let replayed_text: String = replayed
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                Block::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(replayed_text.contains("one"), "the task anchor survives");
+        assert!(
+            replayed_text.contains("the earlier turns, in brief"),
+            "the summary replaced the middle"
+        );
+        assert!(
+            replayed_text.contains("three"),
+            "the recent tail survives verbatim"
+        );
+
+        // The point of all of it: the next submission reaches the model in one round, against a
+        // transcript that was already rebuilt while the operator was reading.
+        assert_eq!(agent.follow_up("four").await.unwrap(), Outcome::Done);
+        let requests = provider.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 5, "one round, no summary in front of it");
+        assert!(!requests[4].tools.is_empty());
+        assert!(
+            requests[4]
+                .messages
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .any(|block| matches!(block, Block::Text { text }
+                    if text.contains("the earlier turns, in brief"))),
+            "the next turn runs on the compacted prefix"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
     }
 
     #[tokio::test]
@@ -15372,6 +18030,7 @@ ant-api03-SuperSecretModelToken12345"
                 0,
                 attempt.projected_at_unix_secs(),
                 StreamTiming::default(),
+                true,
             )
             .unwrap();
         attempt.complete();
@@ -15767,6 +18426,87 @@ ant-api03-SuperSecretModelToken12345"
         let _ = std::fs::remove_dir_all(&ws);
     }
 
+    /// I-52: `Usage::cache_creation` had no vendor field to read on OpenAI-compatible routes, so
+    /// it stayed at its struct default and pricing multiplied that constant zero by a cache-write
+    /// rate. A route that reports the count must be priced; a route that does not must be marked
+    /// unpriceable rather than free.
+    #[tokio::test]
+    async fn an_unreported_cache_creation_count_is_unpriceable_not_free() {
+        for (tag, reported) in [("reported", true), ("unreported", false)] {
+            let ws = temp_ws(&format!("cache-creation-{tag}"));
+            let rollout = Rollout::open(
+                &ws.join(".core/runs"),
+                &core_protocol::RunId(format!("cache-creation-{tag}")),
+                core_protocol::TenantId::default(),
+            )
+            .unwrap();
+            let mut agent = Agent::new(
+                std::sync::Arc::new(ScriptedDone),
+                Registry::coding_agent(&ws).unwrap(),
+                rollout,
+                "model-a".into(),
+                "sys".into(),
+                Budget::default(),
+            );
+            agent.workspace = ws.clone();
+            bind_test_pricing(&mut agent);
+            assert!(
+                agent.pricing.as_ref().is_some_and(|signed| signed
+                    .rate_card
+                    .rates
+                    .cache_creation_microusd_per_million
+                    > 0),
+                "the fixture card charges for cache writes, which is what makes silence matter"
+            );
+
+            let usage = Usage {
+                input: 1_000,
+                output: 200,
+                cache_read: 4_000,
+                ..Usage::default()
+            };
+            let report = if reported {
+                UsageReport::complete(usage)
+            } else {
+                UsageReport::cache_creation_unreported(usage)
+            };
+            agent.ledger.attempt();
+            agent
+                .record_provider_usage(TurnId(0), report, 5, 1_000, StreamTiming::default())
+                .unwrap();
+
+            let events = core_record::replay(agent.rollout.path()).unwrap();
+            let projected = events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::CostProjected { .. }));
+            let declined = events.iter().any(|event| {
+                matches!(
+                    &event.kind,
+                    EventKind::Notice { text } if text == UNPRICEABLE_CACHE_CREATION_NOTICE
+                )
+            });
+            if reported {
+                assert!(projected, "a route that reports the field prices it");
+                assert!(!declined);
+                assert!(matches!(agent.ledger.cost_state(), CostState::Known { .. }));
+            } else {
+                assert!(
+                    !projected,
+                    "silence about cache writes must not be priced as a measured zero"
+                );
+                assert!(declined, "the record must say precisely why it is unpriced");
+                assert!(matches!(
+                    agent.ledger.cost_state(),
+                    CostState::Unknown { .. }
+                ));
+            }
+            // Either way the token counts themselves are authoritative and are recorded.
+            assert_eq!(agent.ledger.usage, usage);
+
+            let _ = std::fs::remove_dir_all(&ws);
+        }
+    }
+
     #[tokio::test]
     async fn failed_summarization_closes_positive_usd_budget() {
         let ws = temp_ws("priced-summary-error");
@@ -15853,6 +18593,7 @@ ant-api03-SuperSecretModelToken12345"
                 0,
                 unix_now_secs(),
                 StreamTiming::default(),
+                true,
             )
             .unwrap();
 
@@ -15866,7 +18607,8 @@ ant-api03-SuperSecretModelToken12345"
                 usage,
                 0,
                 unix_now_secs(),
-                StreamTiming::default()
+                StreamTiming::default(),
+                true
             ),
             Err(KernelError::PricingLedger(_))
         ));
@@ -17240,6 +19982,89 @@ ant-api03-SuperSecretModelToken12345"
         assert!(blocked, "the read must be blocked by the PreToolUse hook");
         let leaked = events.iter().any(|e| matches!(&e.kind, EventKind::ToolDone { result, .. } if result.content.contains("TOP-SECRET-CONTENT")));
         assert!(!leaked, "a blocked read must NOT return the file content");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn i17_an_unrelated_hook_does_not_broker_the_tool_lifecycle() {
+        // The broker short-circuit used to ask "does this operator use hooks at all". With a `Stop`
+        // hook configured, every PreToolUse and PostToolUse dispatch therefore crossed the boundary
+        // — an intent append, a terminal append and their barriers — to run zero commands.
+        let ws = temp_ws("hook-per-event-shortcircuit");
+        std::fs::write(ws.join("secret.txt"), "content").unwrap();
+        let home = ws.join("home");
+        std::fs::create_dir_all(home.join(".core")).unwrap();
+        std::fs::write(
+            home.join(".core").join("config.json"),
+            r#"{"hooks":{"Stop":["true"]}}"#,
+        )
+        .unwrap();
+        let runs = ws.join(".core/runs");
+        let run = core_protocol::RunId("hook-per-event-shortcircuit".into());
+        let rollout = Rollout::open(&runs, &run, core_protocol::TenantId::default()).unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(ScriptedRead::default()),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+        agent.hooks = hooks::Hooks::load_user(&home);
+        assert!(
+            !agent.hooks.is_empty(),
+            "the run must have a hook configured"
+        );
+        agent.run("read secret.txt").await.unwrap();
+
+        let events = core_record::replay(&runs.join(format!("{run}.jsonl"))).unwrap();
+        let brokered: Vec<String> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::EffectIntent {
+                    tool, arguments, ..
+                } if tool == "hook" => Some(
+                    arguments
+                        .get("event")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("?")
+                        .to_string(),
+                ),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            brokered,
+            vec!["Stop".to_string()],
+            "only the configured event may cross the effect boundary"
+        );
+        // The tool itself still ran and is still fully journalled; this narrows the hook class only.
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(&event.kind, EventKind::ToolDone { .. })),
+            "the read must still execute and record its terminal"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn i17_the_per_turn_session_cache_refresh_is_charged_to_the_kernel_tax() {
+        // `refresh_session_cache` rewrites two sidecars and fsyncs their directory on every turn
+        // advance. Outside the meter it was invisible durability cost, so `kernel_tax` understated
+        // what a turn actually pays for the record.
+        let ws = temp_ws("session-cache-metered");
+        let mut agent = agent_for(&ws);
+        agent
+            .emit_durable(TurnId(0), EventKind::TurnStart)
+            .expect("seed a turn so the projection has something to persist");
+        let before = agent.ledger.kernel_tax().record_fsync_latency_us;
+        agent.advance_turn().unwrap();
+        assert!(
+            agent.ledger.kernel_tax().record_fsync_latency_us > before,
+            "the turn-advance cache refresh must appear in the ledger, not beside it"
+        );
         let _ = std::fs::remove_dir_all(&ws);
     }
 

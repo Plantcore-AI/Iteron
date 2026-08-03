@@ -18,10 +18,18 @@ For a substantive task, the current policy may:
 4. reduce their untrusted evidence in declaration order;
 5. give one writer the original task plus the bounded evidence.
 
-The current implementation can run investigators sequentially. It does not claim
-a wall-clock parallel speedup, a generic DAG scheduler, or multiple concurrent
-writers. If decomposition fails, yields no useful evidence, or would consume the
-writer reserve, Core Code falls back to the single writer.
+Investigators run bounded-concurrent: several are in flight at once, capped by a
+permit pool, and the live tree renders one row per investigator. Core Code does
+not claim a generic DAG scheduler or multiple concurrent writers. If
+decomposition fails, yields no useful evidence, or would consume the writer
+reserve, Core Code falls back to the single writer.
+
+## Workflow scripts
+
+The same engine also runs standalone workflow scripts — JavaScript files that
+call `agent()`, `parallel()`, `pipeline()`, `phase()`, and `log()`. See
+`core workflow` in the [CLI reference](../reference/cli.md) and the example
+script at `crates/workflow/examples/repo-audit.js`.
 
 ## Authority remains fixed
 

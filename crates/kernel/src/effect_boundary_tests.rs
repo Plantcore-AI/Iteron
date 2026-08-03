@@ -583,6 +583,15 @@ struct EffectPrimitive {
     guidance: &'static str,
 }
 
+// `run_one_with_sensitive_env_names` was split too: the outer function resolves the interpreter
+// (the musl artifact's natural home has `/bin/sh` and no `/bin/bash`, and a platform with neither
+// must say so rather than no-op forever) and the spawn moved to `run_one_with_shell` with the body.
+// The hook is still the one child process the kernel starts directly, still behind brokered_hook.
+//
+// `drive_admitted` was split: the outer function now only captures the working set the loop
+// finished with (so an in-process follow-up need not rebuild it from the rollout), and the body
+// moved to `drive_admitted_loop`. Both names are admitted because the boundary semantics did not
+// move with it — the loop still opens and settles every effect it dispatches.
 const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     EffectPrimitive {
         needle: "hooks.run(",
@@ -592,13 +601,24 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     },
     EffectPrimitive {
         needle: "registry.run_admitted_intent(",
-        allowed_in: &["drive_admitted"],
+        allowed_in: &[
+            "drive_admitted",
+            "drive_admitted_loop",
+            "run_concurrent_deferred_batch",
+        ],
         guidance: "an admitted registry intent must be dispatched by \
-                   effects::execute_registry_tool, never called directly",
+                   effects::execute_registry_tool, or opened and settled around it the way \
+                   run_concurrent_deferred_batch does when a batch runs concurrently — one \
+                   intent appended before the executor is entered, exactly one terminal after, \
+                   and the correlation id restored from the admitted call, never from the result",
     },
     EffectPrimitive {
         needle: "self.bounded_provider_turn(",
-        allowed_in: &["brokered_provider_turn", "drive_admitted"],
+        allowed_in: &[
+            "brokered_provider_turn",
+            "drive_admitted",
+            "drive_admitted_loop",
+        ],
         guidance: "a provider request is a paid, externally visible effect; dispatch it through \
                    Agent::brokered_provider_turn, or open/settle around it as drive_admitted does",
     },
@@ -616,7 +636,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     },
     EffectPrimitive {
         needle: "self.launch_workflow(",
-        allowed_in: &["drive_admitted"],
+        allowed_in: &["drive_admitted", "drive_admitted_loop"],
         guidance: "an in-turn workflow launch fans out real children that spend budget; it crosses \
                    the boundary under EffectClass::Workflow",
     },
@@ -628,7 +648,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     },
     EffectPrimitive {
         needle: "tokio::process::Command::new(",
-        allowed_in: &["run_one_with_sensitive_env_names"],
+        allowed_in: &["run_one_with_sensitive_env_names", "run_one_with_shell"],
         guidance: "the kernel starts exactly one kind of child process directly — a hook — and it \
                    does so behind Agent::brokered_hook. Anything else belongs in a world module \
                    reached through the boundary",
@@ -930,6 +950,7 @@ fn a_registry_tool_terminal_is_not_restamped_by_the_boundary() {
                 trust: core_protocol::Trust::Workspace,
             },
             effect_id: Some(effect_id),
+            tool: Some("edit".into()),
         }),
     )
     .expect("settle");

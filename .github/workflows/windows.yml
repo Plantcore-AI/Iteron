@@ -1,0 +1,46 @@
+name: windows
+# Windows is NOT supported, and the tracking issues that were closed delivered nothing: the sandbox
+# returns `Unsupported` for every non-macOS, non-Linux target (`crates/sandbox/src/lib.rs`), no
+# release target is Windows, and the lifecycle paths assume a POSIX shell. This lane exists so that
+# gap is an observed status instead of a claim in a closed issue.
+#
+# It is deliberately NON-BLOCKING: `continue-on-error` publishes a result without ever gating a
+# merge, and it is not in the branch ruleset's required contexts. A green run means the workspace
+# still compiles for `x86_64-pc-windows-msvc`. It is not a support claim, and it never becomes one
+# without a sandbox backend and a release target. `docs/reference/platforms.md` is the authority.
+#
+# It lives here rather than in `ci.yml` for the same reason `review / required-humans` does: Windows
+# is the one platform this project cannot self-host, so it cannot move to `local_gate.sh`.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: 1.90.0
+
+concurrency:
+  group: windows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: windows / check
+    runs-on: windows-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: install pinned Rust toolchain
+        run: >-
+          rustup toolchain install "$env:RUSTUP_TOOLCHAIN" --profile minimal
+          --target x86_64-pc-windows-msvc
+      - name: check the workspace for Windows (advisory)
+        run: cargo check --workspace --locked --target x86_64-pc-windows-msvc

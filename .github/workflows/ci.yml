@@ -14,8 +14,10 @@ name: ci
 # blocked; both are documented in CONTRIBUTING.md.
 #
 # `review / required-humans` stays on Actions because it reads the pull request's own review
-# state, which has no local equivalent. The Windows lane will be added here once #38 lands, and
-# Windows is the one platform we cannot self-host.
+# state, which has no local equivalent. So does `windows / check` (see `windows.yml`): Windows is
+# the one platform we cannot self-host. That lane is NON-BLOCKING and reports compilation only —
+# there is no Windows sandbox backend, no Windows release target, and no Windows support. Its
+# tracking issues are closed with nothing delivered, so the lane exists to keep the gap visible.
 #
 # This workflow is kept, in full, behind manual dispatch: it is the fallback when Actions
 # capacity is available again and the reference definition these local lanes mirror.
@@ -68,6 +70,10 @@ jobs:
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: enforce the complete microkernel conformance matrix
         run: cargo run --locked -p core-xtask -- conformance kernel
+      # The CLI reference is generated from the argument parser. A shipped flag with no doc entry
+      # (the permission bypass was one) is a red build, not a documentation backlog item.
+      - name: enforce the generated CLI reference
+        run: cargo run --locked -p core-xtask -- docs check
       - name: validate ownership and dependency contract on main
         if: github.event_name == 'push'
         run: cargo run --locked -p core-xtask -- boundaries check
@@ -274,6 +280,31 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: test
         run: cargo test --workspace --all-targets --locked
+
+  # Non-blocking by construction (`continue-on-error`). The suite has 1613 functional tests and
+  # not one wall-clock bound, so a one-line concurrency hazard — a lock held across an await, an
+  # fsync moved into a loop — merges green (I-57). This replays a fixed script against the
+  # loopback fixture provider and asserts a loose ceiling on `kernel_tax`, the harness's own
+  # admission/broker/fsync microseconds, so the provider contributes nothing to the number. The
+  # budget sits at 1.75x an observed min-of-5 floor: a 2x regression fails it, ordinary variance
+  # does not. `CORE_HARNESS_TAX_BUDGET_US` re-bases it if this runner is simply slower.
+  harness-latency:
+    name: perf / harness latency
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: install pinned Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      # `--ignored` is the whole gate: the merge lane never spends wall-clock time on timing, and
+      # this job never blocks a merge on a runner having a bad minute.
+      - name: harness-attributable latency budget
+        run: >-
+          cargo test --locked -p core-cli --test harness_latency --
+          --ignored --nocapture
 
   evolution-gate:
     name: gate / evolution

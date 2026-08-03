@@ -232,3 +232,235 @@ fn schema_v4_session_argv_is_typed_provider_free_and_tag_preserving() {
         Some("reviewer-a")
     );
 }
+/// Write a complete, listable session whose genesis records `cwd`.
+fn write_session(runs: &Path, run: &RunId, cwd: &Path, title: &str) {
+    let mut rollout = Rollout::open(runs, run, TenantId::default()).unwrap();
+    rollout
+        .append(&Event {
+            seq: Seq::ZERO,
+            turn: TurnId(0),
+            kind: EventKind::RunStart {
+                cwd: cwd.display().to_string(),
+                model: "fixture-model".into(),
+                effort: Effort::Low,
+                created_at: 123,
+                environment: None,
+                parent_run: None,
+                forked_at: None,
+                parent_hash_at_seq: None,
+                agent_definition_tag: None,
+                config_digest: String::new(),
+                max_usd: None,
+            },
+        })
+        .unwrap();
+    rollout
+        .append(&Event {
+            seq: Seq::ZERO,
+            turn: TurnId(1),
+            kind: EventKind::Message {
+                message: Message::user_text(title),
+            },
+        })
+        .unwrap();
+}
+
+/// I-06. Nine call sites used the raw `.core/runs` default, so the audit record landed beside
+/// whatever directory the process started in rather than under `-C`. An absolute `--runs-dir` is
+/// still taken verbatim.
+#[test]
+fn d11_06_a_relative_runs_dir_resolves_against_dash_c_not_the_process_directory() {
+    let scratch = Scratch::new();
+    let repo_arg = scratch.repo().display().to_string();
+    let canonical = scratch.repo().canonicalize().unwrap();
+
+    // Invoked from the scratch ROOT, not from the repository.
+    let (status, stdout, stderr) = run_core(&scratch.0, &["--repo", &repo_arg, "reindex"]);
+    assert!(status.success(), "stdout={stdout}\nstderr={stderr}");
+    assert!(
+        stdout.contains(&canonical.join(".core/runs").display().to_string()),
+        "{stdout}"
+    );
+    assert!(
+        canonical.join(".core/runs").is_dir(),
+        "the runs dir belongs to -C"
+    );
+    assert!(
+        !scratch.0.join(".core").exists(),
+        "nothing is written beside the process working directory"
+    );
+
+    let runs_arg = scratch.runs().display().to_string();
+    let (status, stdout, stderr) = run_core(
+        &scratch.0,
+        &["--repo", &repo_arg, "--runs-dir", &runs_arg, "reindex"],
+    );
+    assert!(status.success(), "stdout={stdout}\nstderr={stderr}");
+    assert!(
+        stdout.contains(&runs_arg),
+        "an absolute --runs-dir is honoured verbatim: {stdout}"
+    );
+}
+
+/// I-50. The failure used to propagate the bare `RecordError`, which anyhow's alternate Display
+/// printed as `io: <errno>: <errno>` — the `#[from]` source repeated, with no run id and no path.
+#[test]
+fn d11_50_a_transcript_read_failure_names_the_run_and_the_file() {
+    let scratch = Scratch::new();
+    let repo_arg = scratch.repo().display().to_string();
+    let runs_arg = scratch.runs().display().to_string();
+
+    let (status, stdout, stderr) = run_core(
+        &scratch.repo(),
+        &[
+            "--repo",
+            &repo_arg,
+            "--runs-dir",
+            &runs_arg,
+            "--transcript",
+            "absent-run",
+        ],
+    );
+    assert!(!status.success(), "stdout={stdout}\nstderr={stderr}");
+    assert!(stderr.contains("absent-run"), "the run id: {stderr}");
+    assert!(
+        stderr.contains(
+            &scratch
+                .runs()
+                .join("absent-run.jsonl")
+                .display()
+                .to_string()
+        ),
+        "the file: {stderr}"
+    );
+    assert_eq!(
+        stderr.matches("os error").count(),
+        1,
+        "the underlying error is reported once, not twice: {stderr}"
+    );
+}
+
+/// I-51. `--sessions` documented "sessions in this repo" while listing every repository the runs
+/// dir held; `--continue` filtered by the recorded cwd. Both now mean the same thing.
+#[test]
+fn d11_51_sessions_lists_only_the_repository_continue_would_select_from() {
+    let scratch = Scratch::new();
+    let elsewhere = scratch.0.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    write_session(
+        &scratch.runs(),
+        &RunId("in-this-repo".into()),
+        &scratch.repo(),
+        "belongs here",
+    );
+    write_session(
+        &scratch.runs(),
+        &RunId("in-another-repo".into()),
+        &elsewhere,
+        "belongs elsewhere",
+    );
+
+    let repo_arg = scratch.repo().display().to_string();
+    let runs_arg = scratch.runs().display().to_string();
+    let (status, stdout, stderr) = run_core(
+        &scratch.repo(),
+        &["--repo", &repo_arg, "--runs-dir", &runs_arg, "--sessions"],
+    );
+    assert!(status.success(), "stdout={stdout}\nstderr={stderr}");
+    assert!(stdout.contains("in-this-repo"), "{stdout}");
+    assert!(
+        !stdout.contains("in-another-repo"),
+        "another repository's sessions are not in this repo: {stdout}"
+    );
+
+    let elsewhere_arg = elsewhere.display().to_string();
+    let (status, stdout, stderr) = run_core(
+        &scratch.repo(),
+        &[
+            "--repo",
+            &elsewhere_arg,
+            "--runs-dir",
+            &runs_arg,
+            "--sessions",
+        ],
+    );
+    assert!(status.success(), "stdout={stdout}\nstderr={stderr}");
+    assert!(stdout.contains("in-another-repo"), "{stdout}");
+    assert!(!stdout.contains("in-this-repo"), "{stdout}");
+}
+
+/// I-46. The listing was linear and unpaged, and nothing ever removed a journal. The list is now
+/// bounded, and `prune` deletes exactly what an explicit policy names.
+#[test]
+fn d11_46_the_session_list_is_paged_and_prune_enforces_an_explicit_policy() {
+    let scratch = Scratch::new();
+    for index in 0..3 {
+        write_session(
+            &scratch.runs(),
+            &RunId(format!("session-{index}")),
+            &scratch.repo(),
+            "paged session",
+        );
+    }
+    let repo_arg = scratch.repo().display().to_string();
+    let runs_arg = scratch.runs().display().to_string();
+    let (status, stdout, stderr) = run_core(
+        &scratch.repo(),
+        &[
+            "--repo",
+            &repo_arg,
+            "--runs-dir",
+            &runs_arg,
+            "--sessions",
+            "--limit",
+            "2",
+        ],
+    );
+    assert!(status.success(), "stdout={stdout}\nstderr={stderr}");
+    assert_eq!(
+        stdout.lines().count(),
+        2,
+        "the listing is a page, not a dump: {stdout}"
+    );
+    assert!(
+        stderr.contains("showing the 2 most recent of 3 sessions"),
+        "a page must say it is a page: {stderr}"
+    );
+
+    // A prune with no rule is a question, not a command.
+    let (status, stdout, stderr) = run_core(
+        &scratch.repo(),
+        &["--repo", &repo_arg, "--runs-dir", &runs_arg, "prune"],
+    );
+    assert!(!status.success(), "stdout={stdout}\nstderr={stderr}");
+    assert!(stderr.contains("explicit retention policy"), "{stderr}");
+    assert_eq!(count_rollouts(&scratch.runs()), 3);
+
+    let (status, stdout, stderr) = run_core(
+        &scratch.repo(),
+        &[
+            "--repo",
+            &repo_arg,
+            "--runs-dir",
+            &runs_arg,
+            "prune",
+            "--keep-last",
+            "1",
+        ],
+    );
+    assert!(status.success(), "stdout={stdout}\nstderr={stderr}");
+    assert!(stdout.contains("removed 2 sessions"), "{stdout}");
+    assert_eq!(
+        count_rollouts(&scratch.runs()),
+        1,
+        "prune removes exactly what the policy names"
+    );
+}
+
+fn count_rollouts(runs: &Path) -> usize {
+    std::fs::read_dir(runs)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.path().extension().and_then(|x| x.to_str()) == Some("jsonl"))
+        .count()
+}

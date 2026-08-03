@@ -1,4 +1,5 @@
 mod conformance;
+mod docs_cli;
 mod model;
 mod render;
 mod rust_source;
@@ -22,6 +23,16 @@ fn main() -> Result<()> {
         [group, command] if group == "conformance" && command == "check" => {
             conformance::validate(&root)?;
             println!("kernel structural conformance contract valid");
+            return Ok(());
+        }
+        [group, command] if group == "docs" && command == "check" => {
+            docs_cli::check(&root)?;
+            println!("CLI reference matches the argument parser");
+            return Ok(());
+        }
+        [group, command] if group == "docs" && command == "generate" => {
+            docs_cli::generate(&root)?;
+            println!("generated docs/reference/cli.md");
             return Ok(());
         }
         [group, command] if group == "schema-compat" && command == "check-bootstrap" => {
@@ -113,7 +124,7 @@ fn main() -> Result<()> {
         }
         _ => {
             bail!(
-                "usage: core-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
+                "usage: core-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
             )
         }
     }

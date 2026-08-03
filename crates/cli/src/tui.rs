@@ -21,10 +21,11 @@ use crate::commands::{self, SlashCommand};
 use crate::editor::Editor;
 use crate::image_input::{self, ImageAttachments};
 use crate::providers::{ModelSelection, ProviderDirectory};
+use crate::route::RouteView;
 use crate::runtime::{
     UiEvent, WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi, WorkflowUiEvent,
 };
-use crate::{block, surface, theme};
+use crate::{block, startup, surface, theme};
 use core_ctx::ContextEstimate;
 use core_obs::CostState;
 use core_protocol::{
@@ -147,6 +148,11 @@ impl Session {
         &self.state.ledger_summary
     }
 
+    /// Provider quota from the last response's headers, if the route publishes any (I-53).
+    pub(crate) fn rate_limit(&self) -> Option<&str> {
+        self.state.rate_limit.as_deref()
+    }
+
     pub(crate) fn compaction_trigger_tokens(&self) -> usize {
         self.facts.compaction_trigger_tokens
     }
@@ -174,6 +180,7 @@ impl Session {
                 unadmitted_steers: Vec::new(),
                 permission_rules: PermissionRules::new(),
                 ledger_summary: String::new(),
+                rate_limit: None,
             },
             facts: app_server::SessionFacts {
                 workspace: std::path::PathBuf::new(),
@@ -749,6 +756,42 @@ struct PendingToolProjection {
     reveal_deadline: Instant,
 }
 
+/// How long a model request may go without a first token before the interface stops calling it
+/// ordinary, and before it stops calling it merely slow. Both sit well inside the 60s response
+/// header deadline and the 120s stream idle deadline, which is the point: the operator learns
+/// which failure they are watching while the request is still open (I-64).
+const FIRST_TOKEN_SLOW_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
+/// The one-keystroke retry offer printed under a failed run (I-39).
+const RETRY_HINT: &str = "ctrl+r re-sends this turn. Whatever the model had already streamed is \
+recorded as an interrupted message, so a retry continues from it rather than from nothing.";
+const FIRST_TOKEN_STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether a silent provider is being described as slow or as stalled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FirstTokenState {
+    Slow,
+    Stalled,
+}
+
+/// A first-token wait long enough to say something about.
+#[derive(Debug, Clone, Copy)]
+struct FirstTokenStall {
+    state: FirstTokenState,
+    waited: std::time::Duration,
+}
+
+impl FirstTokenStall {
+    fn label(self) -> String {
+        let seconds = self.waited.as_secs();
+        match self.state {
+            FirstTokenState::Slow => format!("waiting for the first token · {seconds}s"),
+            FirstTokenState::Stalled => format!(
+                "no response for {seconds}s · the connection may be stalled · esc to interrupt"
+            ),
+        }
+    }
+}
+
 /// TUI state.
 struct App {
     /// The structured semantic transcript (ADR-015): typed self-rendering blocks, not a flat log.
@@ -810,6 +853,9 @@ struct App {
     cur_text_revision: u64,
     cur_doc_revision: u64,
     cur_doc: Option<crate::markdown::MarkdownDoc>,
+    /// How much of `cur_doc` is settled, so a delta re-parses only the tail it changed. Reset with
+    /// `cur_doc` on every stream boundary.
+    cur_doc_parse: crate::markdown::StreamingParse,
     // Hold the unfinished token across arbitrary provider deltas so a split credential cannot be
     // rendered for one frame before the complete token becomes recognizable.
     text_scrubber: crate::output::StreamingScrubber,
@@ -820,8 +866,10 @@ struct App {
     mode: PermissionMode,
     effort: Effort,
     model: String,
-    /// Provider identity is independent from model identity. The pair changes atomically.
-    provider_id: String,
+    /// THE resolved route: provider, model, api_root, adapter, credential source, catalog
+    /// provenance and the run's effective limits. Every display reads this and derives nothing of
+    /// its own, so what is on screen is the request that goes out (I-26).
+    route: RouteView,
     /// Cumulative run economics. Unknown is first-class; the UI never formats an unverified rate.
     cost: CostState,
     /// Provider-reported usage for the most recently completed direct model request. This is not
@@ -852,6 +900,16 @@ struct App {
     resume_handoff: Option<String>,
     /// When the current run started (for the elapsed/spinner indicator).
     run_started: Option<Instant>,
+    /// The text of the last plain-text turn, retained only while a failed run offers to re-send
+    /// it. A mid-stream failure is not retried automatically — only 429/529 are, and a bare
+    /// transport error says nothing about whether the provider already billed the request — so
+    /// the operator is the idempotency key, and this makes saying yes one keystroke (I-39).
+    retryable_task: Option<String>,
+    /// When the model phase began without a token yet arriving, and `None` again the instant one
+    /// does. The response-header deadline is 60s and the stream idle deadline 120s, so without
+    /// this a dead connection and a slow prefill looked identical for a full minute (I-64). It is
+    /// the frontend end of the same first-token instrumentation `TurnEnd.ttft_ms` records.
+    awaiting_first_token_since: Option<Instant>,
     /// Currently-running tool calls, ordered by start time. This feeds the one-line activity shelf;
     /// full details remain in correlated transcript cards.
     active_tools: VecDeque<(String, String)>,
@@ -926,13 +984,14 @@ impl App {
             cur_text_revision: 0,
             cur_doc_revision: 0,
             cur_doc: None,
+            cur_doc_parse: crate::markdown::StreamingParse::default(),
             text_scrubber: crate::output::StreamingScrubber::default(),
             cur_think: String::new(),
             thinking_scrubber: crate::output::StreamingScrubber::default(),
             mode: PermissionMode::default(),
             effort: Effort::default(),
             model: String::new(),
-            provider_id: String::new(),
+            route: RouteView::unresolved(),
             cost: CostState::Zero,
             last_turn_usage: None,
             last_context: None,
@@ -947,6 +1006,8 @@ impl App {
             picker: None,
             resume_handoff: None,
             run_started: None,
+            retryable_task: None,
+            awaiting_first_token_since: None,
             active_tools: VecDeque::new(),
             spin: 0,
             row_map: Vec::new(),
@@ -1153,8 +1214,28 @@ impl App {
         self.push_block(block::BlockKind::User(ui_safe_text(&text.into())));
     }
 
+    /// How long the provider has been silent since the model phase opened, and whether that is
+    /// merely slow or long enough to describe as stalled. `None` once a token has arrived, when no
+    /// model request is open, or while the wait is still ordinary (I-64).
+    fn first_token_stall(&self) -> Option<FirstTokenStall> {
+        if !self.running {
+            return None;
+        }
+        let waited = self.awaiting_first_token_since?.elapsed();
+        let state = if waited >= FIRST_TOKEN_STALL_AFTER {
+            FirstTokenState::Stalled
+        } else if waited >= FIRST_TOKEN_SLOW_AFTER {
+            FirstTokenState::Slow
+        } else {
+            return None;
+        };
+        Some(FirstTokenStall { state, waited })
+    }
+
     /// Append streamed assistant text; the in-flight buffer renders as a live markdown block.
     fn stream_text(&mut self, delta: &str) {
+        // A token arrived: this connection is slow at worst, not stalled (I-64).
+        self.awaiting_first_token_since = None;
         self.flush_think();
         if let Some(complete) = self.text_scrubber.push(delta) {
             if complete.is_empty() {
@@ -1168,6 +1249,9 @@ impl App {
 
     /// Append streamed reasoning; the in-flight buffer renders as a live Thinking block (bounded).
     fn stream_think(&mut self, delta: &str) {
+        // Extended thinking is the model producing tokens, so it stops the stall clock exactly
+        // like text does — the same rule `TurnEnd.ttft_ms` already measures by (I-64).
+        self.awaiting_first_token_since = None;
         if let Some(complete) = self.thinking_scrubber.push(delta) {
             if complete.is_empty() {
                 return;
@@ -1260,8 +1344,16 @@ impl App {
         self.autoscroll();
     }
 
+    /// When the next queued tool card stops being suppressed, so the render loop can sleep exactly
+    /// that long instead of polling for it.
+    fn next_tool_reveal(&self) -> Option<Instant> {
+        self.pending_tools
+            .front()
+            .map(|pending| pending.reveal_deadline)
+    }
+
     /// Advance the anti-flash timer. Passing `now` makes the state machine deterministic in tests;
-    /// production calls it from the existing 100 ms active-session cadence.
+    /// production calls it once per render-loop wakeup, scheduled by `next_tool_reveal`.
     fn advance_tool_presentations(&mut self, now: Instant) -> bool {
         let mut changed = false;
         while self
@@ -1647,7 +1739,9 @@ impl App {
         }
     }
 
-    #[allow(dead_code)] // REPL seam (see workflow_run_index); exercised by tests, live at M9.
+    // REPL seam (see workflow_run_index); exercised by tests. It goes live with ADR-0001 step 1,
+    // which needs a CLI stream schema-version bump to add the `UiEvent` variant that reaches it.
+    #[allow(dead_code)]
     fn workflow_run_card_mut(&mut self, run_id: &str) -> Option<&mut block::WorkflowRunCard> {
         let block_id = *self.workflow_run_index.get(run_id)?;
         self.transcript
@@ -1662,7 +1756,8 @@ impl App {
     /// Upsert one QuickJS `core-workflow` progress event into its one live phase→agent tree card
     /// (design §3.2), creating the card on first sight of a run id. This is the interactive-TUI seam
     /// for a workflow launched from the REPL; the one-shot `core workflow run` command drives an
-    /// equivalent card through its own live loop (`workflow::run_live`).
+    /// equivalent card through its own live loop (`workflow::run_live`). Wired up by ADR-0001
+    /// step 1 (docs/project/decisions/0001-workflow-renderer-convergence.md).
     #[allow(dead_code)]
     fn workflow_run_event(
         &mut self,
@@ -2028,6 +2123,17 @@ impl App {
         self.theme = self.color_depth.project_theme(theme);
         self.theme_epoch = self.theme_epoch.wrapping_add(1);
         self.render_cache.clear();
+    }
+
+    /// Adopt a theme that late terminal evidence detected AFTER the first frame was painted.
+    /// Detection now happens behind the frame, so an identical result must stay a no-op: bumping
+    /// the epoch would throw away a warm render cache for a repaint nobody can see.
+    fn adopt_detected_theme(&mut self, detected: theme::DetectedTheme) -> bool {
+        if detected.theme == self.theme {
+            return false;
+        }
+        self.set_theme(detected.theme);
+        true
     }
 
     fn prepare_resume_handoff(&mut self, run_id: &str) {
@@ -2652,9 +2758,10 @@ impl TermGuard {
     fn negotiate_keyboard(
         &self,
         terminal_input: &mut terminal_input::TerminalInput,
+        environment: &theme::capabilities::Environment,
     ) -> std::io::Result<bool> {
         self.keyboard
-            .negotiate(terminal_input.supports_keyboard_enhancement())
+            .negotiate(terminal_input.supports_keyboard_enhancement(environment))
     }
 
     fn toggle_mouse_capture(&mut self) -> std::io::Result<mouse_capture::State> {
@@ -2683,6 +2790,52 @@ const MAX_PENDING_SUBMISSIONS: usize = 32;
 /// A single interactive follow-up is deliberately smaller than tool/model context limits. Oversize
 /// drafts stay in the editor so the operator can trim or save them instead of losing text.
 const MAX_SUBMISSION_BYTES: usize = 64 * 1024;
+/// A burst of streamed deltas costs ONE frame: the loop wakes on the first delta of the burst and
+/// then holds the next draw for this long so the rest of the burst folds into it. Visible token
+/// latency is bounded by this interval instead of by a fixed input-poll period.
+const FRAME_COALESCE: Duration = Duration::from_millis(16);
+/// Spinner/elapsed animation cadence. The loop is event-driven, so the animation carries its own
+/// clock rather than riding on an input poll's timeout.
+const SPINNER_TICK: Duration = Duration::from_millis(100);
+/// How long the input thread blocks in one crossterm read before looking at its channel again. It
+/// matches the idle cadence the loop used to poll at, so moving input off the loop costs no extra
+/// wakeups on an idle session.
+const TERMINAL_READ_SLICE: Duration = Duration::from_secs(1);
+
+/// The next instant the render loop must wake up on its own account: a frame that is being held
+/// back by the coalescing interval, the animation tick of a live run, or a queued tool card whose
+/// anti-flash delay expires. `None` means "nothing is scheduled" — the loop then sleeps until real
+/// input or a real runtime event arrives instead of burning a fixed poll.
+fn next_wake(
+    frame_held: bool,
+    next_frame_at: Instant,
+    running: bool,
+    last_spin: Instant,
+    next_tool_reveal: Option<Instant>,
+) -> Option<Instant> {
+    let mut wake: Option<Instant> = None;
+    let mut at_earliest = |candidate: Instant| {
+        wake = Some(wake.map_or(candidate, |current: Instant| current.min(candidate)));
+    };
+    if frame_held {
+        at_earliest(next_frame_at);
+    }
+    if running {
+        at_earliest(last_spin + SPINNER_TICK);
+    }
+    if let Some(reveal) = next_tool_reveal {
+        at_earliest(reveal);
+    }
+    wake
+}
+
+/// Sleep until `deadline`, or forever when nothing is scheduled.
+async fn wake_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
+        None => std::future::pending().await,
+    }
+}
 
 /// Run the TUI. The agent runs in a background task streaming `UiEvent`s; the render loop drains
 /// them and redraws. For follow-ups the same agent continues via `follow_up`.
@@ -2699,9 +2852,10 @@ const MAX_SUBMISSION_BYTES: usize = 64 * 1024;
 pub async fn run(
     attached: app_server::Attached,
     initial_task: Option<String>,
-    providers: ProviderDirectory,
-    provider_id: String,
+    mut providers: ProviderDirectory,
+    route: RouteView,
     completion_notifications: bool,
+    mut startup: startup::StartupTiming,
 ) -> anyhow::Result<()> {
     eprintln!(
         "app server: TUI attached as a versioned client (SQ/EQ protocol v{})",
@@ -2738,15 +2892,13 @@ pub async fn run(
         }
     }
     let mut terminal_input = terminal_input::TerminalInput::default();
-    // The query is fail-soft: terminals that do not implement the protocol keep the portable
-    // Ctrl-J path and receive neither a push nor a pop. Signal/panic cleanup is installed before
-    // negotiation so even an exit during startup can restore an already-pushed stack frame.
-    let _ = guard.negotiate_keyboard(&mut terminal_input);
-    // OSC 11 runs after raw-mode entry. The input adapter demultiplexes the response from operator
-    // events, replays unrelated startup input, and remains armed to swallow a late reply.
+    // BOTH capability probes are deliberately deferred until after the first frame. The
+    // progressive-keyboard query blocks up to 2000 ms and OSC 11 another 80 ms; running them here,
+    // between EnterAlternateScreen and the first draw, is exactly how a terminal that never answers
+    // held a freshly blanked screen for two seconds. The environment alone decides the first
+    // frame's theme; a background reply only repaints it.
     let environment = theme::capabilities::Environment::capture();
-    let background = terminal_input.query_background(&environment);
-    let detected_theme = theme::Theme::detect_with(environment, background);
+    let detected_theme = theme::Theme::detect_with(environment.clone(), None);
     let (terminal_writer, mut notification_writer) = notification::LiveTerminalWriter::stdout();
     let backend = ratatui::backend::CrosstermBackend::new(terminal_writer);
     let mut term = Terminal::new(backend)?;
@@ -2759,14 +2911,63 @@ pub async fn run(
     app.effort = initial_state.effort;
     app.model = initial_state.model.clone();
     app.model_context_window = facts.initial_model_context_window;
-    app.provider_id = provider_id;
+    app.route = route;
     let provider_credential_envs = providers.credential_env_names();
+
+    // Paint before probing. Everything the first frame needs is already resolved, and a terminal
+    // that answers neither query must not be able to delay it.
+    term.draw(|f| draw(f, &mut app))?;
+    // The query is fail-soft: terminals that do not implement the protocol keep the portable
+    // Ctrl-J path and receive neither a push nor a pop. Signal/panic cleanup is installed before
+    // negotiation so even an exit during startup can restore an already-pushed stack frame.
+    let _ = guard.negotiate_keyboard(&mut terminal_input, &environment);
+    // OSC 11 runs after raw-mode entry. The input adapter demultiplexes the response from operator
+    // events, replays unrelated startup input, and remains armed to swallow a late reply.
+    if let Some(background) = terminal_input.query_background(&environment) {
+        let probed = theme::Theme::detect_with(environment, Some(background));
+        app.adopt_detected_theme(probed);
+    }
+    startup.mark(startup::StartupPhase::TerminalProbe);
+    startup.flush();
 
     let mut session = Session::new(handle.client, handle.control, initial_state, facts);
     let mut events = handle.events;
     let mut last_event_seq = 0;
     let mut first_task = initial_task;
     let mut redraw = true;
+
+    // Terminal input moves onto its own thread so the loop can wait on stdin AND the event queue at
+    // the same time. The loop used to poll stdin alone for a fixed 100 ms and only afterwards drain
+    // the queue, so a delta batch landing 1 ms into a poll waited out the other 99 ms — and an idle
+    // session sat in a 1 s poll hole. The demultiplexer moves with the reader, so a late OSC 11 or
+    // keyboard-enhancement reply is still swallowed instead of becoming synthetic operator input.
+    let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<std::io::Result<CEvent>>(256);
+    std::thread::spawn(move || {
+        loop {
+            if input_tx.is_closed() {
+                return;
+            }
+            match terminal_input.read(TERMINAL_READ_SLICE) {
+                Ok(None) => continue,
+                Ok(Some(event)) => {
+                    if input_tx.blocking_send(Ok(event)).is_err() {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    let _ = input_tx.blocking_send(Err(error));
+                    return;
+                }
+            }
+        }
+    });
+    // A runtime event observed by the wait is handed back to the drain at the top of the loop, so
+    // the EQ still has exactly one consumer and one ordering check.
+    let mut pending_event = None;
+    let mut input_open = true;
+    let mut eq_open = true;
+    let mut last_spin = Instant::now();
+    let mut next_frame_at = Instant::now();
 
     loop {
         // Kick off the initial task once the terminal is up.
@@ -2780,7 +2981,7 @@ pub async fn run(
         // Drain the EQ (non-blocking). One long-lived subscription for the whole session: the
         // frontend used to create and retire a receiver per run, which is why there was no event
         // stream at all while idle and why the join had to double as a drain barrier.
-        while let Ok(envelope) = events.try_recv() {
+        while let Some(envelope) = pending_event.take().or_else(|| events.try_recv().ok()) {
             let event_seq = envelope.sequence();
             if event_seq <= last_event_seq {
                 app.note(
@@ -2840,6 +3041,7 @@ pub async fn run(
                 if q.is_empty() {
                     continue;
                 } else if let Some(cmd) = q.strip_prefix('/') {
+                    settle_providers_for(&mut providers, cmd).await;
                     dispatch_slash_command(&mut term, &mut app, &mut session, &providers, cmd)
                         .await?;
                 } else if let Some(bash) = q.strip_prefix('!') {
@@ -2874,26 +3076,57 @@ pub async fn run(
             notifier.emit_transport(&mut notification_writer, trigger);
         }
 
-        // Active animation targets a 100 ms cadence; input may request an additional immediate
-        // frame. Idle is event-driven and does not repaint on the lifecycle poll.
-        if app.running {
+        // Active animation targets a 100 ms cadence off its own clock: the loop now wakes once per
+        // delta, so riding the wait's timeout would spin the animation at the token rate. Idle is
+        // event-driven and does not repaint at all.
+        let now = Instant::now();
+        if !app.running {
+            last_spin = now;
+        } else if now.duration_since(last_spin) >= SPINNER_TICK {
             app.spin = app.spin.wrapping_add(1);
+            last_spin = now;
             redraw = true;
         }
 
-        if redraw {
+        // Coalescing: the first change of a burst draws immediately, and everything that arrives
+        // within FRAME_COALESCE of that frame folds into the next one. A streamed burst therefore
+        // costs one frame instead of one frame per delta batch.
+        if redraw && now >= next_frame_at {
             term.draw(|f| draw(f, &mut app))?;
             redraw = false;
+            next_frame_at = now + FRAME_COALESCE;
         }
 
-        // A running session polls at the animation/event cadence. Idle wakes occasionally only for
-        // lifecycle checks; without input or events it does no rendering work.
-        let poll_for = if app.running {
-            Duration::from_millis(100)
-        } else {
-            Duration::from_secs(1)
-        };
-        if let Some(input_event) = terminal_input.read(poll_for)? {
+        if !input_open && !eq_open {
+            // Neither the operator's terminal nor the runtime can wake this loop again; leave
+            // rather than sleep forever.
+            break;
+        }
+        // Wait on everything that can change the frame at once. There is no fixed poll period any
+        // more: a delta is visible one coalescing interval after it arrives, and an idle session
+        // sleeps until something actually happens.
+        let wake = next_wake(
+            redraw,
+            next_frame_at,
+            app.running,
+            last_spin,
+            app.next_tool_reveal(),
+        );
+        let mut next_input = None;
+        tokio::select! {
+            biased;
+            result = input_rx.recv(), if input_open => match result {
+                Some(Ok(event)) => next_input = Some(event),
+                Some(Err(error)) => return Err(error.into()),
+                None => input_open = false,
+            },
+            envelope = events.recv(), if eq_open => match envelope {
+                Some(envelope) => pending_event = Some(envelope),
+                None => eq_open = false,
+            },
+            () = wake_until(wake) => {}
+        }
+        if let Some(input_event) = next_input {
             redraw = true;
             match input_event {
                 // Bracketed paste: insert the WHOLE pasted text (incl. newlines) into the editor
@@ -2958,7 +3191,8 @@ pub async fn run(
                     MouseEventKind::Down(MouseButton::Left) => {
                         if m.row >= app.view_top && m.row < app.view_top.saturating_add(app.view_h)
                         {
-                            let idx = app.view_scroll as usize + (m.row - app.view_top) as usize;
+                            // `row_map` covers the visible window only, so the click row IS the index.
+                            let idx = (m.row - app.view_top) as usize;
                             if let Some(&bi) = app.row_map.get(idx)
                                 && bi != usize::MAX
                             {
@@ -3220,6 +3454,7 @@ pub async fn run(
                                 let trimmed = line.trim();
                                 app.completion = None;
                                 if let Some(cmd) = trimmed.strip_prefix('/') {
+                                    settle_providers_for(&mut providers, cmd).await;
                                     dispatch_slash_command(
                                         &mut term,
                                         &mut app,
@@ -3235,6 +3470,17 @@ pub async fn run(
                         }
                         KeyCode::Esc if menu_open => {
                             app.completion = None;
+                        }
+                        // ---- one-keystroke retry of a failed turn (I-39) ----
+                        KeyCode::Char('r')
+                            if ctrl && !app.running && app.retryable_task.is_some() =>
+                        {
+                            let task = app
+                                .retryable_task
+                                .clone()
+                                .expect("guarded by the match arm");
+                            submit_turn(&mut app, &session, &mut notifier, task);
+                            refresh = true;
                         }
                         // ---- input history (idle, no menu) ----
                         KeyCode::Up if !app.running => {
@@ -3338,6 +3584,7 @@ pub async fn run(
                                     && let Some(cmd) = trimmed.strip_prefix('/')
                                 {
                                     let _ = app.editor.take_submit();
+                                    settle_providers_for(&mut providers, cmd).await;
                                     dispatch_slash_command(
                                         &mut term,
                                         &mut app,
@@ -3465,6 +3712,21 @@ pub async fn run(
 
 /// Execute one already-submitted slash command. Both ordinary Enter and Enter on a slash
 /// completion use this path, so completion activation cannot drift into a second dispatch path.
+/// Join deferred provider discovery for the one command that reads catalogs the launch did not
+/// resolve eagerly. `/model` opens the hierarchical picker over every instance and is therefore the
+/// waiter for the background handle; nothing else pays for providers this session never routes to.
+async fn settle_providers_for(providers: &mut ProviderDirectory, cmd: &str) {
+    let named = commands::dispatch(cmd).is_ok_and(|routed| {
+        matches!(
+            routed.route,
+            commands::DispatchRoute::InProcess(SlashCommand::Model)
+        )
+    });
+    if named {
+        providers.settle().await;
+    }
+}
+
 async fn dispatch_slash_command(
     term: &mut Terminal<
         ratatui::backend::CrosstermBackend<notification::LiveTerminalWriter<std::io::Stdout>>,
@@ -3584,7 +3846,8 @@ fn submit_turn(
     notifier: &mut notification::TerminalNotifier,
     task: String,
 ) {
-    let _ = submit_operation(app, session, notifier, Op::UserInput { text: task });
+    let _ = submit_operation(app, session, notifier, Op::UserInput { text: task.clone() });
+    app.retryable_task = Some(task);
 }
 
 fn submit_operation(
@@ -3601,6 +3864,9 @@ fn submit_operation(
             app.draining = false;
             app.status = "running…".into();
             app.run_started = Some(Instant::now());
+            // A new run must not inherit the previous one's first-token clock; the next
+            // `Phase(Model)` starts it honestly (I-64).
+            app.awaiting_first_token_since = None;
             app.completion = None;
             true
         }
@@ -3684,6 +3950,9 @@ fn submit_composer(
         Op::UserInputV2 { segments }
     };
     if submit_operation(app, session, notifier, op) {
+        // Only the plain-text turn is offered back: re-sending staged attachments would re-read
+        // files that may have changed since, which is a different request, not a retry (I-39).
+        app.retryable_task = staged.is_empty().then(|| text.clone());
         let image_count = staged.len();
         let _ = app.editor.take_submit();
         app.push_user(if text.is_empty() {
@@ -3871,6 +4140,7 @@ fn apply_server_event<T: notification::NotificationTransport + ?Sized>(
             app.interrupting = false;
             app.draining = false;
             app.run_started = None;
+            app.awaiting_first_token_since = None;
             app.flush_text();
             app.pending = None; // a pending approval cannot outlive its run
             app.settle_unfinished_tools();
@@ -3916,11 +4186,37 @@ fn apply_server_event<T: notification::NotificationTransport + ?Sized>(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
             {
+                // Everything already streamed is on the record as an interrupted message, so a
+                // retry continues from evidence rather than from nothing (I-39).
+                let detail = if app.retryable_task.is_some() {
+                    format!("{detail}\n\n{RETRY_HINT}")
+                } else {
+                    detail
+                };
                 app.push_block(block::BlockKind::Error {
                     title: "run failed".into(),
                     detail,
                     open: true,
                 });
+            } else {
+                // The turn landed; there is nothing to re-send.
+                app.retryable_task = None;
+            }
+            // A budget stop is not a failure and gets no error block, so without this the operator
+            // saw only `idle · last: budget_exhausted` — true, and silent about the fact that the
+            // turn ceiling is raisable in place.
+            if canonical_outcome == "budget_exhausted" {
+                let reason = result
+                    .get("reason")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                app.note(
+                    block::NoticeLevel::Warn,
+                    format!(
+                        "stopped on the {reason} ceiling — {}",
+                        crate::output::budget_remedy(reason)
+                    ),
+                );
             }
             app.status = format!("idle · last: {canonical_outcome}");
             app.last_result = Some(result);
@@ -3951,7 +4247,8 @@ async fn apply_model_selection(
         }
     };
 
-    let changed = session.model() != selection.model_id || app.provider_id != selection.provider_id;
+    let changed =
+        session.model() != selection.model_id || app.route.provider_id != selection.provider_id;
     let provider_name = directory
         .entry(&selection.provider_id)
         .map(|entry| entry.display_name().to_owned())
@@ -3992,8 +4289,32 @@ async fn apply_model_selection(
     };
 
     app.model = state.model.clone();
-    app.provider_id = selection.provider_id.clone();
+    // Re-derive the ONE route view from the directory, so the statusline, /status and /config all
+    // move together with the request the next turn dispatches. The model comes from the state the
+    // runtime actually reached, not from what was requested of it.
+    let applied = ModelSelection {
+        provider_id: selection.provider_id.clone(),
+        model_id: state.model.clone(),
+    };
+    app.route = app.route.reselect(directory, &applied);
     app.model_context_window = capabilities.context_window_tokens;
+    // A model chosen in the TUI is an operator decision, and until now it evaporated at exit:
+    // nothing in the product ever wrote the user config (I-25). Persist it through the same single
+    // atomic writer `core config set` uses, so the next launch starts on the route the operator
+    // picked (I-26). Provider and model go in ONE transaction: persisting the model alone would
+    // leave the next launch pairing a new model with the previous provider.
+    let persisted_provider = applied.provider_id.clone();
+    let persisted_model = applied.model_id.clone();
+    match crate::config::update_user_config(move |config| {
+        crate::config::apply_setting(config, "provider", &persisted_provider)?;
+        crate::config::apply_setting(config, "model", &persisted_model)
+    }) {
+        Ok(_) => {}
+        Err(error) => app.note(
+            block::NoticeLevel::Warn,
+            format!("route applied for this session but not persisted: {error}"),
+        ),
+    }
     if changed {
         clear_last_turn_telemetry_from(app, &state);
     }
@@ -4401,6 +4722,54 @@ fn model_picker_items(
     items
 }
 
+/// Build the `/mode` picker. The code clause is *derived* from the same gate the runtime consults,
+/// never asserted: a session rule (`--allow-code`, `/permissions allow code_executing`) outranks the
+/// mode table, so a hard-coded "code still gated" mislabels every session that carries such a grant.
+fn mode_picker_items(current: PermissionMode, rules: &PermissionRules) -> Vec<PickItem> {
+    let code_clause = |mode: PermissionMode| match core_protocol::gate(
+        mode,
+        rules,
+        "bash",
+        Capability::CodeExecuting,
+    ) {
+        Verdict::Auto => "code auto",
+        Verdict::Deny => "code denied",
+        Verdict::Ask => "code still gated",
+    };
+    let modes = [
+        (
+            PermissionMode::Default,
+            format!(
+                "edits prompt live; {}",
+                code_clause(PermissionMode::Default)
+            ),
+        ),
+        (
+            PermissionMode::AcceptEdits,
+            format!("edits auto; {}", code_clause(PermissionMode::AcceptEdits)),
+        ),
+        (
+            PermissionMode::Plan,
+            "read-only; propose a plan first".to_string(),
+        ),
+        (
+            PermissionMode::Yolo,
+            "auto-approve (still asks for trust-mutating + egress)".to_string(),
+        ),
+    ];
+    modes
+        .into_iter()
+        .map(|(mode, hint)| {
+            PickItem::flat(
+                mode.label(),
+                hint,
+                mode == current,
+                PickAction::SetMode(mode),
+            )
+        })
+        .collect()
+}
+
 fn permission_picker_items(rules: &PermissionRules) -> Vec<PickItem> {
     let caps = [
         (Capability::ReversibleLocal, "Reversible edits"),
@@ -4567,7 +4936,7 @@ fn open_picker(app: &mut App, session: &Session, directory: &ProviderDirectory, 
             let cur = session.model().to_string();
             (
                 "Model",
-                model_picker_items(directory, &app.provider_id, &cur),
+                model_picker_items(directory, &app.route.provider_id, &cur),
             )
         }
         "effort" => {
@@ -4578,23 +4947,10 @@ fn open_picker(app: &mut App, session: &Session, directory: &ProviderDirectory, 
                 .collect();
             ("Effort", items)
         }
-        "mode" => {
-            let cur = session.permission_mode();
-            let modes = [
-                (PermissionMode::Default, "edits prompt live"),
-                (PermissionMode::AcceptEdits, "edits auto; code still gated"),
-                (PermissionMode::Plan, "read-only; propose a plan first"),
-                (
-                    PermissionMode::Yolo,
-                    "auto-approve (still asks for trust-mutating + egress)",
-                ),
-            ];
-            let items = modes
-                .iter()
-                .map(|(m, h)| PickItem::flat(m.label(), *h, *m == cur, PickAction::SetMode(*m)))
-                .collect();
-            ("Permission mode", items)
-        }
+        "mode" => (
+            "Permission mode",
+            mode_picker_items(session.permission_mode(), session.permission_rules()),
+        ),
         "permissions" => (
             "Permissions",
             permission_picker_items(session.permission_rules()),
@@ -4860,7 +5216,7 @@ async fn handle_registered_command(
                 let value = arg.strip_prefix("retry").unwrap_or_default().trim();
                 let selection = match model_retry_selection(
                     directory,
-                    &app.provider_id,
+                    &app.route.provider_id,
                     session.model(),
                     value,
                 ) {
@@ -4885,7 +5241,7 @@ async fn handle_registered_command(
                     ),
                 }
             } else {
-                match directory.resolve_model(arg, Some(&app.provider_id)) {
+                match directory.resolve_model(arg, Some(&app.route.provider_id)) {
                     Ok(selection) => {
                         apply_model_selection(app, session, directory, selection).await
                     }
@@ -4906,11 +5262,15 @@ async fn handle_registered_command(
                 .and_then(|s| s.to_str())
                 .unwrap_or("?")
                 .to_string();
-            let mut rows = vec![
-                kv("provider", &app.provider_id),
-                kv("model", session.model()),
-                kv("effort requested", session.effort().label()),
-            ];
+            // Every route row comes from the one resolved view; only the live runtime policy
+            // (effort/mode/cwd) is read off the session.
+            let mut rows: Vec<block::PanelRow> = app
+                .route
+                .rows()
+                .iter()
+                .map(|(key, value)| kv(key, value))
+                .collect();
+            rows.push(kv("effort requested", session.effort().label()));
             if let Some(application) = app.effort_application {
                 rows.push(kv(
                     "effort applied",
@@ -4923,8 +5283,16 @@ async fn handle_registered_command(
                 kv("mode", session.permission_mode().label()),
                 kv("cwd", &session.workspace().display().to_string()),
                 kv("run", &run),
-                block::PanelRow::Note(session.ledger_summary().to_string()),
             ]);
+            // Before a rejection, not after it: this is the only place the operator can see the
+            // budget shrinking while there is still time to act on it (I-53).
+            rows.push(kv(
+                "provider quota",
+                session
+                    .rate_limit()
+                    .unwrap_or("not published by this route"),
+            ));
+            rows.push(block::PanelRow::Note(session.ledger_summary().to_string()));
             app.panel("≡", "status", rows);
         }
         SlashCommand::Cost => {
@@ -4933,6 +5301,65 @@ async fn handle_registered_command(
                 "cost",
                 vec![block::PanelRow::Note(session.ledger_summary().to_string())],
             );
+        }
+        SlashCommand::Budget => {
+            // The turn ceiling counts the whole session, so it is the one budget an operator can
+            // saturate mid-task with no way out except restarting the process. `/budget <turns>`
+            // is that way out; the bare form shows how close the session already is.
+            let requested = arg.trim();
+            let set = if requested.is_empty() {
+                None
+            } else {
+                match requested.parse::<u32>() {
+                    Ok(turns) => Some(turns),
+                    Err(_) => {
+                        app.push(fg(Color::Red), "usage: /budget [turns]");
+                        return;
+                    }
+                }
+            };
+            match session
+                .control(app_server::Control::TurnBudget { set })
+                .await
+            {
+                Some(app_server::ControlReply::TurnBudget(state)) => {
+                    if set.is_some() {
+                        app.note(
+                            block::NoticeLevel::Ok,
+                            format!(
+                                "turn ceiling is now {} ({} used, {} left this session)",
+                                state.max_turns,
+                                state.used,
+                                state.remaining()
+                            ),
+                        );
+                    } else {
+                        app.panel(
+                            "◷",
+                            "turn budget",
+                            vec![
+                                kv("ceiling", &state.max_turns.to_string()),
+                                kv(
+                                    "used",
+                                    &format!("{} (this session, subagents included)", state.used),
+                                ),
+                                kv("remaining", &state.remaining().to_string()),
+                                block::PanelRow::Note(
+                                    "/budget <turns> raises the ceiling without restarting".into(),
+                                ),
+                            ],
+                        );
+                    }
+                }
+                Some(app_server::ControlReply::Refused(reason)) => app.note(
+                    block::NoticeLevel::Err,
+                    format!("the turn ceiling was not changed: {reason}"),
+                ),
+                _ => app.note(
+                    block::NoticeLevel::Err,
+                    "the runtime is no longer reachable",
+                ),
+            }
         }
         SlashCommand::Context => {
             let mut rows = Vec::new();
@@ -5371,36 +5798,56 @@ async fn handle_registered_command(
             app.panel("◇", "skills", rows);
         }
         SlashCommand::Config => {
-            let mut rows = vec![
-                kv(
-                    "provider",
-                    if app.provider_id.is_empty() {
-                        "(unresolved)"
-                    } else {
-                        &app.provider_id
-                    },
-                ),
-                kv("model", session.model()),
-                kv("effort", session.effort().label()),
-                kv("mode", session.permission_mode().label()),
-            ];
-            match crate::config::FileConfig::load(session.workspace()) {
-                Ok(f) => {
-                    // human values, never raw Option Debug (`Some(5.0)`/`None` in a panel is a toy tell)
-                    let mt = f
-                        .max_turns
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|| "default".into());
-                    let mu = f
-                        .max_usd
-                        .map(|v| format!("${v:.2}"))
-                        .unwrap_or_else(|| "none".into());
-                    rows.push(kv("max_turns", &mt));
-                    rows.push(kv("max_usd", &mu));
-                }
-                Err(e) => rows.push(block::PanelRow::Note(format!("config load failed: {e}"))),
+            // `/config` used to re-read the REPOSITORY config document, so it reported what was on
+            // disk instead of the layered value the kernel enforces: `core --max-turns 5` printed
+            // `max_turns: default`. It reads the one resolved route and the same effective limits
+            // the budget was built from (I-26).
+            let mut rows: Vec<block::PanelRow> = app
+                .route
+                .rows()
+                .iter()
+                .map(|(key, value)| kv(key, value))
+                .collect();
+            rows.push(kv("effort", session.effort().label()));
+            rows.push(kv("mode", session.permission_mode().label()));
+            for (key, value) in app.route.limits.rows() {
+                rows.push(kv(key, &value));
             }
+            rows.push(block::PanelRow::Note(
+                "persist a choice with `core config set <key> <value>`".into(),
+            ));
             app.panel("⚙", "config", rows);
+        }
+        SlashCommand::Login => {
+            // The credential half of the setup state machine deliberately does NOT run here. A
+            // pasted key inside the TUI would land in a rendered, scrollable transcript buffer;
+            // `core setup` owns collection precisely so a secret never reaches this surface.
+            // What `/login` runs is the rest of the same machine: name the credential source, then
+            // ask the provider whether it actually works, which is the check that used to happen
+            // only on the first paid turn.
+            let provider_id = if arg.trim().is_empty() {
+                app.route.provider_id.clone()
+            } else {
+                arg.trim().to_owned()
+            };
+            let mut rows = vec![
+                kv("provider", &provider_id),
+                kv("api_root", &app.route.api_root),
+                kv("credential", &app.route.credential),
+            ];
+            match directory.entry(&provider_id) {
+                Some(entry) => {
+                    rows.push(kv("state", &directory.status_label(entry)));
+                    if let Some(reason) = directory.blocked_reason(entry) {
+                        rows.push(kv("blocked", &reason));
+                    }
+                }
+                None => rows.push(kv("state", &directory.resolution_error(&provider_id))),
+            }
+            rows.push(block::PanelRow::Note(format!(
+                "sign in or replace this credential with `core setup --byok {provider_id}` (or `core setup --plan`); inspect it with `core auth status`"
+            )));
+            app.panel("⚿", "login", rows);
         }
         SlashCommand::Tools => {
             // Visualize every tool + its capability tier + purity (user: tool 所有能的可视化).
@@ -5630,7 +6077,12 @@ fn apply_event(app: &mut App, ev: UiEvent) {
             output,
             diff,
         } => app.tool_end(&id, ok, exit_code, output, diff),
-        UiEvent::Phase(p) => app.status = p.label().into(),
+        UiEvent::Phase(p) => {
+            // Entering the model phase starts the first-token clock; every other phase stops it,
+            // because only a model request can be waiting on a provider's first byte (I-64).
+            app.awaiting_first_token_since = (p == core_protocol::Phase::Model).then(Instant::now);
+            app.status = p.label().into();
+        }
         UiEvent::TurnEnd {
             cost,
             usage,
@@ -6169,6 +6621,18 @@ fn render_status(f: &mut Frame, area: Rect, density: surface::Density, app: &App
             format!("↑ reading history{unread} · ctrl+end to follow"),
             Style::default().fg(th.warn),
         )]
+    } else if let Some(stall) = app.first_token_stall() {
+        // A dead connection and a slow prefill are the same picture for a full minute unless the
+        // interface says which one it is looking at, and it knows: no token has arrived yet
+        // (I-64). Both states still spin, because the request is genuinely still open.
+        let style = match stall.state {
+            FirstTokenState::Slow => accent,
+            FirstTokenState::Stalled => warn,
+        };
+        vec![
+            Span::styled(format!("{} ", SPINNER[app.spin % SPINNER.len()]), style),
+            Span::styled(stall.label(), style),
+        ]
     } else if app.running {
         let phase = match app.status.trim() {
             "" | "running…" => "working",
@@ -6651,19 +7115,9 @@ fn format_attachment_size(bytes: usize) -> String {
 }
 
 fn route_label(app: &App) -> String {
-    if app.model.is_empty() {
-        return String::new();
-    }
-    let model = app
-        .model
-        .split(['/', ':'])
-        .next_back()
-        .unwrap_or(&app.model);
-    if app.provider_id.is_empty() {
-        model.to_string()
-    } else {
-        format!("{}/{model}", app.provider_id)
-    }
+    // The statusline used to build `provider/model` out of two loose `App` fields. It reads the
+    // one route view now, so it cannot label a request the run is not making (I-26).
+    app.route.short_label()
 }
 
 fn footer_spans(text: &str, theme: &theme::Theme) -> Vec<Span<'static>> {
@@ -6787,9 +7241,55 @@ fn ensure_stream_doc(app: &mut App) -> bool {
     {
         return false;
     }
-    app.cur_doc = Some(crate::markdown::MarkdownDoc::parse(&app.cur_text));
+    // Incremental: `cur_text` only ever grows between stream boundaries, and `cur_doc` is dropped at
+    // every boundary, so `cur_doc == None` is exactly the "this is a new document" signal and is the
+    // one place the settled prefix has to be reset. Re-parsing the whole accumulated answer on every
+    // delta batch is quadratic in answer length, which is why long answers visibly slowed down as
+    // they streamed.
+    if app.cur_doc.is_none() {
+        app.cur_doc = Some(crate::markdown::MarkdownDoc { blocks: Vec::new() });
+        app.cur_doc_parse = crate::markdown::StreamingParse::default();
+    }
+    let doc = app.cur_doc.as_mut().expect("just ensured a live document");
+    app.cur_doc_parse.extend(doc, &app.cur_text);
     app.cur_doc_revision = app.cur_text_revision;
     true
+}
+
+/// Where one contiguous run of transcript rows lives while a frame is being laid out. Nothing here
+/// owns a copy of the rows: a settled block points at the per-block render cache by id, the animated
+/// and streaming pieces point into this frame's `live` arena, and a gap is pure geometry.
+enum TranscriptRows {
+    Blank,
+    Cached(u64),
+    Live(usize),
+}
+
+/// Copy one already-rendered run's `[from, to)` rows into the frame's viewport buffers. Hyperlink
+/// rows are translated into ABSOLUTE transcript coordinates (what `apply_to_buffer` subtracts the
+/// scroll from); `row_map` receives one entry per VISIBLE row.
+#[allow(clippy::too_many_arguments)]
+fn push_viewport_rows(
+    rendered: &crate::render::RenderedLines,
+    block_index: usize,
+    segment_start: usize,
+    from: usize,
+    to: usize,
+    lines: &mut Vec<Line<'static>>,
+    row_map: &mut Vec<usize>,
+    hyperlinks: &mut Vec<crate::render::HyperlinkRegion>,
+) {
+    for row in from..to {
+        lines.push(rendered.lines[row].clone());
+        row_map.push(block_index);
+    }
+    for region in &rendered.hyperlinks {
+        if region.row >= from && region.row < to {
+            let mut region = region.clone();
+            region.row = region.row.saturating_add(segment_start);
+            hyperlinks.push(region);
+        }
+    }
 }
 
 fn draw(f: &mut Frame, app: &mut App) {
@@ -6837,9 +7337,15 @@ fn draw(f: &mut Frame, app: &mut App) {
     // at 10 fps for the caret/activity animation, but unchanged deltas do not repeatedly rebuild
     // the semantic document.
     ensure_stream_doc(app);
-    let mut lines: Vec<Line> = Vec::new();
-    let mut hyperlink_regions = Vec::new();
-    let mut row_map: Vec<usize> = Vec::new(); // block index per rendered row (usize::MAX = spacer/stream)
+    // A frame no longer materialises the whole transcript. Pass one renders only what is missing —
+    // into the per-block cache, or into `live` for the animated cards that must not be cached — and
+    // records how many rows each piece occupies. Pass two adds the counts up to place the viewport.
+    // Pass three copies ONLY the rows the viewport shows. The old walk cloned every cached
+    // `RenderedLines` and extended one flat vector with them, so a settled session paid for its
+    // whole history on every single frame.
+    let mut live: Vec<crate::render::RenderedLines> = Vec::new();
+    let mut plan: Vec<(TranscriptRows, usize, usize)> = Vec::new();
+    let mut total_rows: usize = 0;
     {
         let theme = &app.theme;
         let spin = app.spin;
@@ -6849,40 +7355,36 @@ fn draw(f: &mut Frame, app: &mut App) {
             if bi > 0 {
                 // Variable rhythm (critique P1): a bigger gap at real turn boundaries, none between
                 // adjacent tool cards / notices / dividers, so structure is scannable, not monotone.
-                let gap = block::gap_before(&app.transcript[bi - 1].kind, &b.kind);
-                for _ in 0..gap {
-                    lines.push(Line::from(""));
-                    row_map.push(usize::MAX);
+                let gap = usize::from(block::gap_before(&app.transcript[bi - 1].kind, &b.kind));
+                if gap > 0 {
+                    plan.push((TranscriptRows::Blank, gap, usize::MAX));
+                    total_rows += gap;
                 }
             }
-            let rendered = if b.cacheable() {
-                match render_cache.get(&b.id) {
-                    Some((revision, rendered)) if *revision == b.revision => rendered.clone(),
-                    _ => {
-                        let rendered =
-                            b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy);
-                        render_cache.insert(b.id, (b.revision, rendered.clone()));
-                        rendered
-                    }
+            let rows = if b.cacheable() {
+                if render_cache.get(&b.id).map(|(revision, _)| *revision) != Some(b.revision) {
+                    let rendered = b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy);
+                    render_cache.insert(b.id, (b.revision, rendered));
                 }
+                let count = render_cache
+                    .get(&b.id)
+                    .map_or(0, |(_, rendered)| rendered.lines.len());
+                plan.push((TranscriptRows::Cached(b.id), count, bi));
+                count
             } else {
-                b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy)
+                let rendered = b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy);
+                let count = rendered.lines.len();
+                plan.push((TranscriptRows::Live(live.len()), count, bi));
+                live.push(rendered);
+                count
             };
-            let row_offset = lines.len();
-            for mut hyperlink in rendered.hyperlinks {
-                hyperlink.row = hyperlink.row.saturating_add(row_offset);
-                hyperlink_regions.push(hyperlink);
-            }
-            for _ in 0..rendered.lines.len() {
-                row_map.push(bi);
-            }
-            lines.extend(rendered.lines);
+            total_rows += rows;
         }
         // live streaming blocks (reasoning, then the in-flight answer) through the SAME render path
         if !app.cur_think.trim().is_empty() {
-            if !lines.is_empty() {
-                lines.push(Line::from(""));
-                row_map.push(usize::MAX);
+            if total_rows > 0 {
+                plan.push((TranscriptRows::Blank, 1, usize::MAX));
+                total_rows += 1;
             }
             let tb = block::Block::new(
                 u64::MAX,
@@ -6891,16 +7393,18 @@ fn draw(f: &mut Frame, app: &mut App) {
                     open: true,
                 },
             );
-            let rows = tb.render(inner_w, theme, spin);
-            row_map.extend(std::iter::repeat_n(usize::MAX, rows.len()));
-            lines.extend(rows);
+            let rendered = crate::render::RenderedLines::plain(tb.render(inner_w, theme, spin));
+            let count = rendered.lines.len();
+            plan.push((TranscriptRows::Live(live.len()), count, usize::MAX));
+            live.push(rendered);
+            total_rows += count;
         }
         if !app.cur_text.trim().is_empty() {
-            if !lines.is_empty() {
-                lines.push(Line::from(""));
-                row_map.push(usize::MAX);
+            if total_rows > 0 {
+                plan.push((TranscriptRows::Blank, 1, usize::MAX));
+                total_rows += 1;
             }
-            let rendered = block::render_assistant_doc_with_hyperlinks(
+            let mut rendered = block::render_assistant_doc_with_hyperlinks(
                 app.cur_doc
                     .as_ref()
                     .expect("non-empty streaming text has a parsed document"),
@@ -6908,25 +7412,22 @@ fn draw(f: &mut Frame, app: &mut App) {
                 theme,
                 hyperlink_policy,
             );
-            let row_offset = lines.len();
-            for mut hyperlink in rendered.hyperlinks {
-                hyperlink.row = hyperlink.row.saturating_add(row_offset);
-                hyperlink_regions.push(hyperlink);
-            }
-            row_map.extend(std::iter::repeat_n(usize::MAX, rendered.lines.len()));
-            lines.extend(rendered.lines);
             // blinking caret on the last row while streaming
             if app.running
                 && (app.spin / 4).is_multiple_of(2)
-                && let Some(last) = lines.last_mut()
+                && let Some(last) = rendered.lines.last_mut()
                 && crate::render::line_width(last) < inner_w
             {
                 last.spans
                     .push(Span::styled("▋", Style::default().fg(theme.role_assistant)));
             }
+            let count = rendered.lines.len();
+            plan.push((TranscriptRows::Live(live.len()), count, usize::MAX));
+            live.push(rendered);
+            total_rows += count;
         }
     }
-    let total = u16::try_from(lines.len()).unwrap_or(u16::MAX); // saturating (review LOW: >65535 rows)
+    let total = u16::try_from(total_rows).unwrap_or(u16::MAX); // saturating (review LOW: >65535 rows)
     let view_h = surface.transcript.height;
     let max_scroll = total.saturating_sub(view_h);
     if !app.follow_tail && app.last_view_h > 0 {
@@ -6952,12 +7453,65 @@ fn draw(f: &mut Frame, app: &mut App) {
         app.follow_latest();
     }
     let scroll = max_scroll - app.bottom_offset;
+    // Pass three: materialise the window only. `hyperlink_regions` keeps ABSOLUTE transcript rows —
+    // that is the coordinate `apply_to_buffer` subtracts the scroll from — while `row_map` is now
+    // viewport-relative, because the hit-test already knows which row the viewport starts at.
+    let first_row = usize::from(scroll);
+    let last_row = first_row
+        .saturating_add(usize::from(view_h))
+        .min(total_rows);
+    let window = last_row.saturating_sub(first_row);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(window);
+    let mut row_map: Vec<usize> = Vec::with_capacity(window); // block index per VISIBLE row (usize::MAX = spacer/stream)
+    let mut hyperlink_regions = Vec::new();
+    let mut cursor = 0usize;
+    for (rows, count, bi) in &plan {
+        let segment_start = cursor;
+        cursor = cursor.saturating_add(*count);
+        if cursor <= first_row || segment_start >= last_row {
+            continue;
+        }
+        let from = first_row.max(segment_start) - segment_start;
+        let to = last_row.min(cursor) - segment_start;
+        match rows {
+            TranscriptRows::Blank => {
+                for _ in from..to {
+                    lines.push(Line::from(""));
+                    row_map.push(usize::MAX);
+                }
+            }
+            TranscriptRows::Cached(id) => {
+                if let Some((_, rendered)) = app.render_cache.get(id) {
+                    push_viewport_rows(
+                        rendered,
+                        *bi,
+                        segment_start,
+                        from,
+                        to,
+                        &mut lines,
+                        &mut row_map,
+                        &mut hyperlink_regions,
+                    );
+                }
+            }
+            TranscriptRows::Live(index) => push_viewport_rows(
+                &live[*index],
+                *bi,
+                segment_start,
+                from,
+                to,
+                &mut lines,
+                &mut row_map,
+                &mut hyperlink_regions,
+            ),
+        }
+    }
     // stash viewport params for mouse hit-testing (click-to-fold, wheel scroll — R9)
     app.row_map = row_map;
     app.view_top = surface.transcript.y;
     app.view_scroll = scroll;
     app.view_h = view_h;
-    let transcript = Paragraph::new(lines).scroll((scroll, 0)); // NO .wrap(): rows == scroll units
+    let transcript = Paragraph::new(lines); // NO .wrap(): rows == scroll units, and only the window is built
     f.render_widget(transcript, surface.transcript);
     hyperlink::apply_to_buffer(
         f.buffer_mut(),
@@ -7391,6 +7945,62 @@ mod tests {
         assert_eq!(
             format_resume_command("run with space"),
             "core --resume 'run with space'"
+        );
+    }
+
+    #[test]
+    fn mode_picker_hint_tracks_the_effective_code_grant() {
+        let hint_for = |rules: &PermissionRules, mode: PermissionMode| {
+            mode_picker_items(mode, rules)
+                .into_iter()
+                .find(|item| item.label == mode.label())
+                .expect("every mode is offered")
+                .hint
+        };
+
+        // Deny-by-default: nothing seeded, so acceptEdits really does still gate code.
+        let none = PermissionRules::new();
+        assert_eq!(
+            hint_for(&none, PermissionMode::AcceptEdits),
+            "edits auto; code still gated"
+        );
+        assert_eq!(
+            hint_for(&none, PermissionMode::Default),
+            "edits prompt live; code still gated"
+        );
+
+        // With the operator's code grant in the session the old hard-coded hint lied: the rule
+        // outranks the mode table, so acceptEdits auto-runs bash.
+        let mut allowed = PermissionRules::new();
+        allowed.allow_cap(Capability::CodeExecuting);
+        assert_eq!(
+            hint_for(&allowed, PermissionMode::AcceptEdits),
+            "edits auto; code auto"
+        );
+
+        let mut denied = PermissionRules::new();
+        denied
+            .try_set_cap(Capability::CodeExecuting, Verdict::Deny)
+            .unwrap();
+        assert_eq!(
+            hint_for(&denied, PermissionMode::AcceptEdits),
+            "edits auto; code denied"
+        );
+
+        // The two modes whose posture no session rule can change keep their fixed wording.
+        assert_eq!(
+            hint_for(&allowed, PermissionMode::Plan),
+            "read-only; propose a plan first"
+        );
+        assert_eq!(
+            hint_for(&allowed, PermissionMode::Yolo),
+            "auto-approve (still asks for trust-mutating + egress)"
+        );
+        assert!(
+            mode_picker_items(PermissionMode::Plan, &none)
+                .iter()
+                .any(|item| item.label == PermissionMode::Plan.label() && item.is_current),
+            "the active mode stays pre-selected"
         );
     }
 
@@ -8315,7 +8925,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let mut app = App::new();
         app.theme = theme::Theme::dark();
-        app.provider_id = "glm".into();
+        app.route.provider_id = "glm".into();
+        app.route.model_id = "glm-5.2".into();
         app.model = "glm-5.2".into();
         app.effort = Effort::High;
         let expected = surface::Surface::resolve(Rect::new(0, 0, 80, 12), 1, 0, true, false);
@@ -8387,7 +8998,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             let mut app = App::new();
             app.theme = theme::Theme::dark();
             app.model = "claude-sonnet-4-5".into();
-            app.provider_id = "anthropic".into();
+            app.route.provider_id = "anthropic".into();
+            app.route.model_id = "claude-sonnet-4-5".into();
             let screen = render_text(&mut app, width, height);
             assert!(
                 screen.contains("██████╗"),
@@ -8756,6 +9368,148 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
+    fn the_render_loop_is_event_driven_and_coalesces_a_delta_burst_into_one_frame() {
+        // The loop used to block in a stdin poll for a fixed 100 ms while running and 1 s while
+        // idle, and only afterwards drain the event queue — so a delta batch landing 1 ms into a
+        // poll waited out the remaining 99 ms, and an idle session woke every second for nothing.
+        // The wait is now a select whose only timeout is a deadline something actually asked for.
+        let now = Instant::now();
+        assert_eq!(
+            next_wake(false, now, false, now, None),
+            None,
+            "an idle session schedules no wakeup at all: it sleeps on input and events"
+        );
+        // A burst costs one frame: the first change draws, the rest fold into the frame held until
+        // the coalescing deadline, which is the only thing the loop waits for.
+        let next_frame_at = now + FRAME_COALESCE;
+        assert_eq!(
+            next_wake(true, next_frame_at, false, now, None),
+            Some(next_frame_at)
+        );
+        assert!(
+            FRAME_COALESCE < SPINNER_TICK,
+            "visible token latency is bounded by coalescing, not by the old input-poll period"
+        );
+        // A live run animates off its own clock, and a queued tool card has its own anti-flash
+        // deadline. Whichever comes first wins; nothing polls for the others.
+        assert_eq!(
+            next_wake(false, next_frame_at, true, now, None),
+            Some(now + SPINNER_TICK)
+        );
+        let reveal = now + Duration::from_millis(3);
+        assert_eq!(
+            next_wake(true, next_frame_at, true, now, Some(reveal)),
+            Some(reveal)
+        );
+    }
+
+    #[test]
+    fn a_frame_materialises_only_the_viewport_and_reproduces_the_unwindowed_rows() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // Transcript rows as text, minus the final column the overflow scrollbar overlays.
+        fn transcript_rows(
+            term: &ratatui::Terminal<ratatui::backend::TestBackend>,
+            top: u16,
+            height: u16,
+        ) -> Vec<String> {
+            let buf = term.backend().buffer();
+            (top..top.saturating_add(height))
+                .map(|y| {
+                    (0..buf.area.width.saturating_sub(1))
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect()
+        }
+
+        let mut app = App::new();
+        for index in 0..40 {
+            app.note(
+                block::NoticeLevel::Info,
+                format!("historical row {index:03}"),
+            );
+        }
+        // A terminal tall enough to hold the whole transcript needs no window, so its frame is the
+        // reference the windowed frame has to reproduce exactly.
+        let mut tall = Terminal::new(TestBackend::new(60, 120)).unwrap();
+        tall.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.view_scroll, 0, "the reference frame shows every row");
+        let reference = transcript_rows(&tall, app.view_top, app.view_h);
+        let total = usize::from(app.last_total_rows);
+        assert!(total > 0 && total <= reference.len());
+
+        let mut short = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        short.draw(|frame| draw(frame, &mut app)).unwrap();
+        let view_h = usize::from(app.view_h);
+        assert!(
+            total > view_h,
+            "the transcript has to overflow to be a test"
+        );
+        assert_eq!(
+            usize::from(app.last_total_rows),
+            total,
+            "windowing changes what is built, never how tall the transcript is"
+        );
+        assert_eq!(
+            app.row_map.len(),
+            view_h,
+            "the frame materialises one row per VISIBLE row, not one per transcript row"
+        );
+        assert_eq!(
+            transcript_rows(&short, app.view_top, app.view_h),
+            reference[total - view_h..total],
+            "the tail window is byte-identical to the unwindowed render"
+        );
+
+        app.scroll_up(9);
+        short.draw(|frame| draw(frame, &mut app)).unwrap();
+        let scroll = usize::from(app.view_scroll);
+        assert!(scroll > 0 && scroll + view_h <= total);
+        let rows = transcript_rows(&short, app.view_top, app.view_h);
+        assert_eq!(
+            rows,
+            reference[scroll..scroll + view_h],
+            "a scrolled window is byte-identical to the same slice of the unwindowed render"
+        );
+
+        // `row_map` is what a mouse click indexes. It now covers the viewport only, so the click row
+        // IS the index; the old scroll-relative index would run off the end of a scrolled frame.
+        assert_eq!(app.row_map.len(), view_h);
+        let mut checked = 0;
+        for (idx, row) in rows.iter().enumerate() {
+            let Some(at) = row.find("historical row ") else {
+                continue;
+            };
+            let marker = row[at..at + "historical row 000".len()].to_string();
+            let expected = app
+                .transcript
+                .iter()
+                .position(|candidate| candidate.to_text().contains(&marker))
+                .expect("the rendered notice is still in the transcript");
+            assert_eq!(
+                app.row_map[idx], expected,
+                "viewport row {idx} must fold the block drawn on it"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 3, "the window showed {checked} notice rows");
+
+        // Frame cost is independent of session length: ten times the history, same materialisation.
+        app.follow_latest();
+        for index in 40..440 {
+            app.note(
+                block::NoticeLevel::Info,
+                format!("historical row {index:03}"),
+            );
+        }
+        short.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(usize::from(app.last_total_rows) > total * 5);
+        assert_eq!(app.row_map.len(), view_h);
+    }
+
+    #[test]
     fn unread_signal_tracks_visible_change_not_transport_noise() {
         let mut app = App::new();
         app.scroll_up(1);
@@ -9017,6 +9771,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 unadmitted_steers: Vec::new(),
                 permission_rules: PermissionRules::new(),
                 ledger_summary: String::new(),
+                rate_limit: None,
             }),
             summary: Box::new(summary),
         };
@@ -9041,6 +9796,68 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(
             notification_bytes, b"\x07",
             "the authoritative RunEnded boundary emits one run-complete notification"
+        );
+    }
+
+    /// A budget stop is not an error, so it produced no block at all: the operator saw
+    /// `idle · last: budget_exhausted` and nothing about the session turn ceiling being raisable
+    /// in place. The terminal boundary has to say what clears the ceiling it just hit.
+    #[test]
+    fn a_budget_stop_tells_the_operator_which_ceiling_and_how_to_clear_it() {
+        let mut app = App::new();
+        app.running = true;
+        let (sq, _rx) = tokio::sync::mpsc::channel(1);
+        let mut session = Session::for_test(sq);
+        let event = app_server::ServerEvent::RunEnded {
+            snapshot: Box::new(app_server::SessionSnapshot {
+                mode: PermissionMode::default(),
+                effort: Effort::default(),
+                model: "test-model".into(),
+                cost: CostState::default(),
+                last_turn_usage: None,
+                unadmitted_steers: Vec::new(),
+                permission_rules: PermissionRules::new(),
+                ledger_summary: String::new(),
+                rate_limit: None,
+            }),
+            summary: Box::new(app_server::TerminalSummary {
+                outcome: core_protocol::Outcome::BudgetExhausted("max_turns"),
+                assistant_text: String::new(),
+                run_id: "run-budget-remedy".into(),
+                cost: CostState::default(),
+                turns: 40,
+                kernel_tax: core_obs::KernelTax::default(),
+                error: None,
+                memo_hits: 0,
+                memo_misses: 0,
+            }),
+        };
+        let mut notifier = notification::TerminalNotifier::new(false);
+        notifier.begin_run();
+        let mut notification_bytes = Vec::new();
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let drain = Arc::new(AtomicBool::new(false));
+
+        apply_server_event(
+            &mut app,
+            &mut session,
+            event,
+            &mut notifier,
+            &mut notification_bytes,
+            &interrupt,
+            &drain,
+        );
+
+        assert_eq!(app.status, "idle · last: budget_exhausted");
+        let notice = app
+            .transcript
+            .last()
+            .expect("the budget stop leaves a notice")
+            .to_text();
+        assert!(notice.contains("max_turns"), "{notice:?} names the ceiling");
+        assert!(
+            notice.contains("/budget"),
+            "{notice:?} names the in-session command that raises the ceiling"
         );
     }
 
@@ -9689,7 +10506,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             }),
         );
         let live = render_text(&mut app, 120, 32);
-        assert!(live.contains("NOW"));
+        // The running investigator keeps its own branch row (I-04): no NOW hoist, no filtered row.
+        assert!(live.contains("inspect the runtime · running"));
         assert!(live.contains("read_file"));
         assert!(live.contains("RESERVE"));
         assert!(live.contains("sequential"));
@@ -10018,6 +10836,57 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
     }
 
+    /// I-64: the response-header deadline is 60s and the stream idle deadline 120s, so a dead
+    /// connection and a slow prefill used to look identical for a full minute. The interface must
+    /// say which one it is watching, and must stop saying it the instant a token arrives.
+    #[test]
+    fn a_stalled_provider_is_described_differently_from_a_slow_one_before_the_deadline() {
+        let mut app = App::new();
+        app.running = true;
+        apply_event(&mut app, UiEvent::Phase(core_protocol::Phase::Model));
+
+        // An ordinary wait says nothing at all; the phase label already covers it.
+        assert!(app.first_token_stall().is_none());
+
+        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_SLOW_AFTER);
+        let slow = app
+            .first_token_stall()
+            .expect("a slow prefill is described");
+        assert_eq!(slow.state, FirstTokenState::Slow);
+        assert!(slow.label().contains("waiting for the first token"));
+
+        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
+        let stalled = app
+            .first_token_stall()
+            .expect("a stalled stream is described");
+        assert_eq!(stalled.state, FirstTokenState::Stalled);
+        assert!(stalled.label().contains("may be stalled"));
+        assert_ne!(
+            slow.label(),
+            stalled.label(),
+            "the two failures must not share one sentence"
+        );
+        assert!(
+            FIRST_TOKEN_STALL_AFTER < std::time::Duration::from_secs(60),
+            "the operator must learn this before the response-header deadline expires"
+        );
+
+        // Extended thinking is the model producing tokens, so it clears the clock exactly like
+        // text does — the same rule `TurnEnd.ttft_ms` measures by.
+        apply_event(&mut app, UiEvent::Thinking("reasoning".into()));
+        assert!(app.first_token_stall().is_none());
+
+        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
+        apply_event(&mut app, UiEvent::Text("answer".into()));
+        assert!(app.first_token_stall().is_none());
+
+        // Leaving the model phase stops the clock: only a provider request can be waiting on one.
+        apply_event(&mut app, UiEvent::Phase(core_protocol::Phase::Model));
+        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
+        apply_event(&mut app, UiEvent::Phase(core_protocol::Phase::Tools));
+        assert!(app.first_token_stall().is_none());
+    }
+
     #[test]
     fn notifications_use_only_the_out_of_band_writer_and_never_stream_deltas() {
         let mut app = App::new();
@@ -10176,6 +11045,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             unadmitted_steers: Vec::new(),
             permission_rules: PermissionRules::new(),
             ledger_summary: String::new(),
+            rate_limit: None,
         };
 
         clear_last_turn_telemetry_from(&mut app, &state);
@@ -10193,7 +11063,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let mut app = App::new();
         app.model = "gpt-5".into();
-        app.provider_id = "openai".into();
+        app.route.provider_id = "openai".into();
+        app.route.model_id = "gpt-5".into();
         app.effort = Effort::High;
         let usage = Usage {
             input: 30,

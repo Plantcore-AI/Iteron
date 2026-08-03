@@ -76,8 +76,13 @@ pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> 
     let gov = core_sched::Governor::new(limits.max_concurrency());
     // Keep a handle to the token for the post-run `stopped` check; the rest moves into the JS driver.
     let report_cancel = cancel.clone();
+    // The run clock + the per-run metric accumulator both outlive the JS driver, so the report can
+    // carry real totals instead of only cache counters.
+    let run_started = std::time::Instant::now();
+    let state = Arc::new(RunState::new(limits.max_agent_calls()));
+    let report_state = state.clone();
     let env = Arc::new(AgentEnv {
-        state: Arc::new(RunState::new(limits.max_agent_calls())),
+        state,
         spawner,
         sink,
         gov,
@@ -152,11 +157,15 @@ pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> 
         value
     };
 
+    let (tokens, tool_calls) = report_state.totals();
     Ok(RunReport {
         run_id,
         value,
         stopped,
         cache_hits: journal.hits(),
         cache_misses: journal.misses(),
+        tokens,
+        tool_calls,
+        elapsed_ms: run_started.elapsed().as_millis() as u64,
     })
 }

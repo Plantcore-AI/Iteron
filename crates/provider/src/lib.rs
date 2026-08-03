@@ -27,7 +27,8 @@ pub use anthropic::Anthropic;
 pub use catalog::{
     AccountAvailability, AccountProbe, AccountProbeResult, AdapterKind, ApiRoot,
     BalanceAvailability, BuiltinProvider, CatalogSnapshot, CatalogStrategy, Compatibility,
-    ErrorProfile, ModelDescriptor, ModelFamily, ModelHealth, ProviderHealth, ProviderHealthStore,
+    CredentialKind, CredentialSource, CredentialStatus, ErrorProfile, FileCredential,
+    ModelDescriptor, ModelFamily, ModelHealth, ProviderHealth, ProviderHealthStore,
     ProviderInstance, RawModel, Selectability, discover_catalog, probe_account,
 };
 pub use openai::OpenAiCompat;
@@ -356,6 +357,185 @@ pub(crate) fn request_id_from_headers(headers: &reqwest::header::HeaderMap) -> O
         .into_iter()
         .find_map(|name| headers.get(name)?.to_str().ok().map(ToOwned::to_owned))
         .and_then(sanitize_request_id)
+}
+
+/// What the response headers say about the caller's remaining quota.
+///
+/// Both vendors publish this on every successful response, and Core read none of it: header
+/// extraction handled `Retry-After` and the request id only, so the first visible sign of an
+/// exhausted budget was the 429 that had already cost a request (I-53). Every field is `Option`
+/// because a gateway may forward some headers and drop others, and a `0` remaining is the single
+/// most alarming value this type can hold — it must never be minted from an absent header.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RateLimitSnapshot {
+    pub requests_remaining: Option<u64>,
+    pub tokens_remaining: Option<u64>,
+    /// Time until the request budget refills, normalized from whichever form the vendor sent.
+    pub requests_reset: Option<Duration>,
+    pub tokens_reset: Option<Duration>,
+}
+
+impl RateLimitSnapshot {
+    pub const fn is_empty(&self) -> bool {
+        self.requests_remaining.is_none()
+            && self.tokens_remaining.is_none()
+            && self.requests_reset.is_none()
+            && self.tokens_reset.is_none()
+    }
+
+    /// One line for a status screen. `None` when the route published nothing to report, so a
+    /// caller never renders a row of dashes that looks like an exhausted budget.
+    pub fn summary(&self) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if let Some(requests) = self.requests_remaining {
+            parts.push(format!("requests {requests}"));
+        }
+        if let Some(tokens) = self.tokens_remaining {
+            parts.push(format!("tokens {tokens}"));
+        }
+        let reset = self
+            .requests_reset
+            .into_iter()
+            .chain(self.tokens_reset)
+            .max();
+        if let Some(reset) = reset {
+            parts.push(format!("resets in {}s", reset.as_secs()));
+        }
+        Some(parts.join(", "))
+    }
+}
+
+/// Anthropic and OpenAI spell the same four facts differently. Order is (requests-remaining,
+/// tokens-remaining, requests-reset, tokens-reset) per vendor; the first header present wins.
+const RATE_LIMIT_HEADERS: [[&str; 2]; 4] = [
+    [
+        "anthropic-ratelimit-requests-remaining",
+        "x-ratelimit-remaining-requests",
+    ],
+    [
+        "anthropic-ratelimit-tokens-remaining",
+        "x-ratelimit-remaining-tokens",
+    ],
+    [
+        "anthropic-ratelimit-requests-reset",
+        "x-ratelimit-reset-requests",
+    ],
+    [
+        "anthropic-ratelimit-tokens-reset",
+        "x-ratelimit-reset-tokens",
+    ],
+];
+
+pub(crate) fn rate_limit_from_headers(
+    headers: &reqwest::header::HeaderMap,
+) -> Option<RateLimitSnapshot> {
+    rate_limit_from_headers_at(headers, SystemTime::now())
+}
+
+fn rate_limit_from_headers_at(
+    headers: &reqwest::header::HeaderMap,
+    now: SystemTime,
+) -> Option<RateLimitSnapshot> {
+    let raw = |index: usize| -> Option<&str> {
+        RATE_LIMIT_HEADERS[index]
+            .into_iter()
+            .find_map(|name| headers.get(name)?.to_str().ok())
+    };
+    let snapshot = RateLimitSnapshot {
+        requests_remaining: raw(0).and_then(|value| value.trim().parse().ok()),
+        tokens_remaining: raw(1).and_then(|value| value.trim().parse().ok()),
+        requests_reset: raw(2).and_then(|value| parse_rate_limit_reset_at(value, now)),
+        tokens_reset: raw(3).and_then(|value| parse_rate_limit_reset_at(value, now)),
+    };
+    (!snapshot.is_empty()).then_some(snapshot)
+}
+
+/// Normalize a reset header to "time from now". Anthropic sends an RFC 3339 instant; OpenAI sends
+/// a compact duration (`1s`, `6m0s`, `120ms`). A reset already in the past is `ZERO`, never an
+/// underflow, on exactly the same rule `Retry-After` already uses.
+fn parse_rate_limit_reset_at(raw: &str, now: SystemTime) -> Option<Duration> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Ok(seconds) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    if let Some(instant) = parse_rfc3339_utc(raw) {
+        return Some(instant.duration_since(now).unwrap_or(Duration::ZERO));
+    }
+    parse_compact_duration(raw)
+}
+
+/// `1h2m3s`, `6m0s`, `120ms`, `1.5s` — the form OpenAI uses for its reset headers.
+fn parse_compact_duration(raw: &str) -> Option<Duration> {
+    let mut total = Duration::ZERO;
+    let mut rest = raw;
+    let mut matched = false;
+    while !rest.is_empty() {
+        let split = rest.find(|c: char| !c.is_ascii_digit() && c != '.')?;
+        let (value, remainder) = rest.split_at(split);
+        let value: f64 = value.parse().ok()?;
+        // Longest unit first: `ms` must not be read as `m` followed by a stray `s`.
+        let (unit_len, seconds) = if remainder.starts_with("ms") {
+            (2, value / 1_000.0)
+        } else if let Some(unit) = remainder.chars().next() {
+            let scale = match unit {
+                's' => 1.0,
+                'm' => 60.0,
+                'h' => 3_600.0,
+                'd' => 86_400.0,
+                _ => return None,
+            };
+            (unit.len_utf8(), value * scale)
+        } else {
+            return None;
+        };
+        total = total.checked_add(Duration::try_from_secs_f64(seconds).ok()?)?;
+        matched = true;
+        rest = &remainder[unit_len..];
+    }
+    matched.then_some(total)
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ`, the only shape either vendor emits here. Deliberately strict: a
+/// timestamp this code cannot prove it understands yields `None` rather than a wrong deadline.
+fn parse_rfc3339_utc(raw: &str) -> Option<SystemTime> {
+    let raw = raw.strip_suffix('Z').or_else(|| raw.strip_suffix('z'))?;
+    let (date, time) = raw.split_once('T')?;
+    // Fractional seconds carry no information a quota display can use.
+    let time = time.split_once('.').map_or(time, |(whole, _)| whole);
+    let mut date = date.split('-');
+    let year: i64 = date.next()?.parse().ok()?;
+    let month: i64 = date.next()?.parse().ok()?;
+    let day: i64 = date.next()?.parse().ok()?;
+    if date.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let mut time = time.split(':');
+    let hour: u64 = time.next()?.parse().ok()?;
+    let minute: u64 = time.next()?.parse().ok()?;
+    let second: u64 = time.next()?.parse().ok()?;
+    if time.next().is_some() || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    // Howard Hinnant's days-from-civil: exact, branch-light, and no calendar dependency.
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    let seconds = days
+        .checked_mul(86_400)?
+        .checked_add(i64::try_from(hour * 3_600 + minute * 60 + second).ok()?)?;
+    if seconds < 0 {
+        return std::time::UNIX_EPOCH.checked_sub(Duration::from_secs(seconds.unsigned_abs()));
+    }
+    std::time::UNIX_EPOCH.checked_add(Duration::from_secs(seconds as u64))
 }
 
 /// Consume a non-success provider response into a bounded, normalized error. This is shared by
@@ -1630,6 +1810,100 @@ mod guard_tests {
         let past = httpdate::fmt_http_date(now - Duration::from_secs(1));
         assert_eq!(parse_retry_after_at(&past, now), Some(Duration::ZERO));
         assert_eq!(parse_retry_after_at("eventually", now), None);
+    }
+
+    /// I-53: header extraction handled `Retry-After` and the request id only, so remaining quota
+    /// was invisible until a 429 had already been paid for. Both vendors publish it on every
+    /// successful response, in different spellings and different reset formats.
+    #[test]
+    fn remaining_quota_is_read_from_both_vendors_before_any_rejection() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let headers = |pairs: &[(&str, &str)]| {
+            let mut map = reqwest::header::HeaderMap::new();
+            for (name, value) in pairs {
+                map.insert(
+                    reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                    value.parse().unwrap(),
+                );
+            }
+            map
+        };
+
+        let anthropic = rate_limit_from_headers_at(
+            &headers(&[
+                ("anthropic-ratelimit-requests-remaining", "48"),
+                ("anthropic-ratelimit-tokens-remaining", "199000"),
+                ("anthropic-ratelimit-tokens-reset", "1970-01-12T13:47:05Z"),
+            ]),
+            now,
+        )
+        .expect("a published quota is a snapshot");
+        assert_eq!(anthropic.requests_remaining, Some(48));
+        assert_eq!(anthropic.tokens_remaining, Some(199_000));
+        assert_eq!(anthropic.tokens_reset, Some(Duration::from_secs(25)));
+        assert_eq!(
+            anthropic.requests_reset, None,
+            "an absent header stays absent instead of becoming an invented deadline"
+        );
+        assert_eq!(
+            anthropic.summary().as_deref(),
+            Some("requests 48, tokens 199000, resets in 25s")
+        );
+
+        let openai = rate_limit_from_headers_at(
+            &headers(&[
+                ("x-ratelimit-remaining-requests", "0"),
+                ("x-ratelimit-remaining-tokens", "12"),
+                ("x-ratelimit-reset-requests", "6m0s"),
+                ("x-ratelimit-reset-tokens", "120ms"),
+            ]),
+            now,
+        )
+        .expect("a published quota is a snapshot");
+        assert_eq!(openai.requests_remaining, Some(0));
+        assert_eq!(openai.tokens_remaining, Some(12));
+        assert_eq!(openai.requests_reset, Some(Duration::from_secs(360)));
+        assert_eq!(openai.tokens_reset, Some(Duration::from_millis(120)));
+
+        assert_eq!(
+            rate_limit_from_headers_at(&headers(&[("x-request-id", "req-1")]), now),
+            None,
+            "a route that publishes no quota must not render a row of zeroes"
+        );
+    }
+
+    #[test]
+    fn a_reset_header_core_cannot_prove_it_understands_is_absent_not_zero() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        assert_eq!(
+            parse_rate_limit_reset_at("30", now),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            parse_rate_limit_reset_at("1h2m3s", now),
+            Some(Duration::from_secs(3_723))
+        );
+        assert_eq!(
+            parse_rate_limit_reset_at("1.5s", now),
+            Some(Duration::from_millis(1_500))
+        );
+        assert_eq!(parse_rate_limit_reset_at("", now), None);
+        assert_eq!(parse_rate_limit_reset_at("soon", now), None);
+        assert_eq!(parse_rate_limit_reset_at("2024-13-01T00:00:00Z", now), None);
+        assert_eq!(
+            parse_rate_limit_reset_at("2024-01-01T00:00:00+02:00", now),
+            None
+        );
+        assert_eq!(
+            parse_rate_limit_reset_at("1970-01-01T00:00:00Z", now),
+            Some(Duration::ZERO),
+            "a reset already in the past is now, never an underflow"
+        );
+        assert_eq!(
+            parse_rfc3339_utc("2024-02-29T12:34:56.789Z"),
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_709_210_096)),
+            "leap days and fractional seconds are both handled exactly"
+        );
     }
 
     #[test]

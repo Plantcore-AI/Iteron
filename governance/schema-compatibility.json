@@ -1149,7 +1149,7 @@
     },
     {
       "id": "record.event-kind.tool_done",
-      "current_version": 1,
+      "current_version": 2,
       "version_field": null,
       "selector": {
         "field": "kind",
@@ -1160,6 +1160,11 @@
           "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
           "format": "jsonl",
           "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v2.jsonl",
+          "format": "jsonl",
+          "schema_version": 2
         }
       ],
       "fields": [
@@ -1173,6 +1178,10 @@
         },
         {
           "name": "result",
+          "introduced_release": 1
+        },
+        {
+          "name": "tool",
           "introduced_release": 1
         }
       ],

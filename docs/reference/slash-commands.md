@@ -22,7 +22,7 @@ rather than dispatching an incomplete operation.
 | `/diff` | Show the working-tree diff summary |
 | `/memory add\|list\|forget` | Manage remembered facts |
 | `/sessions` | List repository sessions |
-| `/workflows` | Show Ultracode workflow and investigator progress |
+| `/workflows` | Summarize the workflow cards already in this transcript |
 | `/fork` | Branch the current session |
 | `/rewind` | Branch the conversation from the current point |
 | `/resume` | List sessions and show resume guidance |

@@ -54,6 +54,67 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// How hard one append pushes its line toward the platter.
+///
+/// `File::sync_data` is `fcntl(F_FULLFSYNC)` on Apple platforms — it asks the *device* to flush its
+/// own volatile write cache, and profiling measured it at p50 4.09 ms against tens of microseconds
+/// for a plain `fsync(2)` in the same directory. A turn appends 15 to 20 events, so paying the full
+/// barrier on every one of them spends two orders of magnitude more than the turn boundary needs.
+///
+/// What the tiering does NOT change: a *process* crash (panic, SIGKILL, an OOM kill mid-turn) never
+/// loses an appended line under either tier, because `write(2)` already handed the bytes to the
+/// kernel's page cache and the kernel outlives the process. `Barrier::Line` additionally forces
+/// them out to the device, so an OS panic does not lose them either.
+///
+/// What it DOES change, precisely: sudden power loss (or a device that lies about its cache) can
+/// now lose the events appended since the last `Barrier::Turn`. That is the only weakened mode, and
+/// the chain already tolerates it by construction — `scan_tail` truncates a torn trailing line and
+/// resumes, and every surviving line is still chain-verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Barrier {
+    /// Per-event: a plain `fsync(2)`. Kernel and device hold the bytes; the device's write cache
+    /// may still be volatile.
+    Line,
+    /// Turn boundary: the platform's strongest flush (`F_FULLFSYNC` on Apple), which is what
+    /// survives power loss.
+    Turn,
+}
+
+/// Turn boundaries carry the full barrier. `TurnEnd` closes one turn's accounting and `Done` closes
+/// the run; those are the points an operator can observe as "the turn happened", so those are the
+/// points that must survive power loss, not every intermediate phase/tool line inside them.
+fn barrier_for(kind: &EventKind) -> Barrier {
+    match kind {
+        EventKind::TurnEnd { .. } | EventKind::Done { .. } => Barrier::Turn,
+        _ => Barrier::Line,
+    }
+}
+
+/// A plain `fsync(2)`. std has no API for this on Apple platforms: both `sync_all` and `sync_data`
+/// route through `F_FULLFSYNC` there, so the cheap tier has to call libc directly.
+#[cfg(unix)]
+fn sync_line(file: &File) -> std::io::Result<()> {
+    // Fully qualified rather than a `use`: this file is a managed schema source whose import
+    // fingerprint is pinned, and a platform fd accessor is not a schema change.
+    let fd = <File as std::os::unix::io::AsRawFd>::as_raw_fd(file);
+    loop {
+        // SAFETY: `fd` is borrowed from `file`, which is alive for the whole call, and `fsync`
+        // neither takes ownership of it nor reads caller memory.
+        if unsafe { libc::fsync(fd) } == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_line(file: &File) -> std::io::Result<()> {
+    file.sync_data()
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RecordError {
     #[error("io: {0}")]
@@ -310,6 +371,44 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
     Ok(())
 }
 
+/// A tool completion MUST identify itself, and a successful one MUST name its admission (I-42).
+///
+/// The audit that produced this gate read 71 journals: 81 of 198 `tool_done` records carried no
+/// `effect_id`, and 77 of those were *successful* executions — work that ran with no admission
+/// event to correlate it to. The same payload carried no tool name either, so nothing in the
+/// record said what had run. Both holes are closed at the dispatch sites; this is what keeps them
+/// closed, because a silent reappearance of either is indistinguishable, from the record alone,
+/// from a run that simply used no tools.
+///
+/// A missing `effect_id` stays legal for an error result and only for an error result: a refused,
+/// gate-denied, deduplicated or deadline-cancelled call never reached an executor, so there was no
+/// effect to admit and a synthesized identity would be a lie about an admission that never
+/// happened.
+///
+/// This is deliberately a **write-only** gate, applied in [`Rollout::append`] rather than in
+/// `validate_event_bounds`. Records already on disk predate the rule and must stay replayable;
+/// rejecting them at read time would destroy exactly the evidence the audit was built from.
+fn validate_terminal_identity(kind: &EventKind) -> Result<(), &'static str> {
+    let EventKind::ToolDone {
+        result,
+        effect_id,
+        tool,
+    } = kind
+    else {
+        return Ok(());
+    };
+    if !tool.iter().any(|name| !name.is_empty()) {
+        return Err("a tool_done must name the tool that produced it");
+    }
+    if effect_id.is_none() && !result.is_error {
+        return Err(
+            "a successful tool_done must carry the effect id of its admission event; only a call \
+             that failed or was refused before dispatch may omit it",
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn ensure_record_line_size(bytes: usize) -> Result<(), RecordError> {
     if bytes > MAX_RECORD_LINE_BYTES {
         Err(RecordError::RecordLineTooLarge {
@@ -432,6 +531,127 @@ pub(crate) fn visit_record_lines_charged(
     visit_record_lines_with_budget(path, total_bytes, total_physical_lines, visitor)
 }
 
+/// The `<repo>/.core` state root a runs directory lives under, if any. A runs dir configured
+/// somewhere else entirely (an absolute `--runs-dir` outside the project) has no state root here
+/// and is left alone: this only ever speaks for Core's own per-repository directory.
+fn state_root_of(runs_dir: &Path) -> Option<PathBuf> {
+    let mut walked = PathBuf::new();
+    let mut root = None;
+    for component in runs_dir.components() {
+        walked.push(component);
+        if root.is_none()
+            && let Component::Normal(name) = component
+            && name.to_str().is_some_and(core_protocol::home::is_home_dir)
+        {
+            // The OUTERMOST `.core` is the one sitting in the repository, which is the directory
+            // git would otherwise stage.
+            root = Some(walked.clone());
+        }
+    }
+    root
+}
+
+/// `create_dir_all` for a runs directory, claiming the git exclusion the first time Core's
+/// per-repository state root comes into existence.
+///
+/// Everything Core keeps per repository — run journals, memory, skills — lands under `<repo>/.core`.
+/// Nothing used to exclude it, so the first `git add -A` after a run committed the session
+/// transcript into the user's own history. This is the one place that knows the directory is new,
+/// so it is the one place that can claim the exclusion exactly once.
+///
+/// Every path that can bring the state directory into being goes through here — a run opening its
+/// rollout, a `reindex`, and the session-index lock — because whichever of them happens to run
+/// first in a fresh repository is the one that has to make the claim.
+pub(crate) fn create_state_dir(dir: &Path) -> std::io::Result<()> {
+    let state_root = state_root_of(dir);
+    let unclaimed = state_root.as_deref().is_some_and(|root| !root.exists());
+    std::fs::create_dir_all(dir)?;
+    if let Some(root) = state_root.filter(|_| unclaimed) {
+        exclude_state_dir_from_git(&root);
+    }
+    Ok(())
+}
+
+/// Exclude the per-repository state directory in `.git/info/exclude` for the repository that owns
+/// `state_root`.
+///
+/// `.git/info/exclude` and not `.gitignore`: the ignore file is the user's, it is tracked, and a
+/// tool that edits it puts its own housekeeping into someone else's commit. `info/exclude` is
+/// per-clone, untracked, and exactly the place for "this working copy has a tool directory in it".
+///
+/// The pattern is two lines, and the second one is load-bearing:
+///
+/// ```text
+/// /.core/**
+/// !/.core/**/
+/// ```
+///
+/// The obvious `/.core/` would ignore the same files, but it also makes `.core` — and under
+/// `/.core/**` alone, `.core/runs` — an *ignored directory entry*. `git add` treats a pathspec that
+/// names an ignored entry as a fatal error, not a no-op, and the checkpoint stages with
+/// `add -A -- . :(top,literal,exclude)<runtime state dir>`, which names it exactly. Either
+/// directory form would therefore have turned every checkpoint in the repository into a hard
+/// failure. Re-including the directories leaves them ordinary and empty in git's eyes while every
+/// file beneath them stays ignored, which is the whole of what this needs to do.
+///
+/// Entirely best effort. A repository we cannot write to is not a reason to fail a run — the worst
+/// case is the status quo, where the directory shows up as untracked.
+fn exclude_state_dir_from_git(state_root: &Path) {
+    let Some(repo_root) = state_root.parent() else {
+        return;
+    };
+    let git_dir = repo_root.join(".git");
+    // Only a real `.git` DIRECTORY is claimed. A `.git` FILE is a worktree or submodule pointer
+    // whose exclude file lives behind an indirection; guessing at it would mean writing into
+    // metadata we did not resolve.
+    if !git_dir.is_dir() {
+        return;
+    }
+    let home = core_protocol::home::HOME_DIR;
+    let files = format!("/{home}/**");
+    let keep_dirs = format!("!/{home}/**/");
+    let already_excluded = |text: &str| {
+        text.lines().any(|line| {
+            let line = line.trim();
+            line == files
+                || line == home
+                || line == format!("{home}/")
+                || line == format!("/{home}/")
+                || line == format!("{home}/**")
+        })
+    };
+    // A project that already ignores the directory (this one does) needs no second declaration —
+    // and could not be helped by one anyway, since `.gitignore` outranks `info/exclude`.
+    if std::fs::read_to_string(repo_root.join(".gitignore"))
+        .is_ok_and(|text| already_excluded(&text))
+    {
+        return;
+    }
+    let info_dir = git_dir.join("info");
+    let exclude = info_dir.join("exclude");
+    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if already_excluded(&existing) {
+        return;
+    }
+    if std::fs::create_dir_all(&info_dir).is_err() {
+        return;
+    }
+    let mut addition = String::new();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        addition.push('\n');
+    }
+    addition.push_str("# Core Code per-repository state (run records, memory, skills).\n");
+    addition.push_str(&files);
+    addition.push('\n');
+    addition.push_str(&keep_dirs);
+    addition.push('\n');
+    let _ = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&exclude)
+        .and_then(|mut file| file.write_all(addition.as_bytes()));
+}
+
 enum SessionProjectionState {
     /// No projection has been loaded for this writer. The first durable `TurnStart` (or an
     /// explicit refresh) performs the one bounded replay needed to initialize it.
@@ -467,6 +687,10 @@ pub struct Rollout {
     /// from here, which is what makes a segment internally exact without claiming to be joinable
     /// to a previous process's segment.
     opened_at: std::time::Instant,
+    /// Barrier tiers this descriptor actually took, counted per tier. The tiering is a *cost*
+    /// property, and timing a disk is not a test, so the counter is how a regression test pins it.
+    #[cfg(test)]
+    barriers_taken: (u64, u64),
 }
 
 impl Rollout {
@@ -505,7 +729,7 @@ impl Rollout {
     ) -> Result<Self, RecordError> {
         let _ = validated_run_path(dir, run, ".jsonl")?;
         if create {
-            std::fs::create_dir_all(dir)?;
+            create_state_dir(dir)?;
         }
         let dir = dir.canonicalize()?;
         let path = validated_run_path(&dir, run, ".jsonl")?;
@@ -549,6 +773,8 @@ impl Rollout {
             // The segment origin. A resumed run reaches here again in a new process, which is
             // precisely why `ts_us` restarts and why the reader treats that drop as a seam.
             opened_at: std::time::Instant::now(),
+            #[cfg(test)]
+            barriers_taken: (0, 0),
         })
     }
 
@@ -638,7 +864,9 @@ impl Rollout {
         Ok((next_seq, event_count, physical_line_count, last))
     }
 
-    /// Append an event. Durably `fsync`s before returning (ADR-008 write-ahead durability), and
+    /// Append an event. Durably `fsync`s before returning (ADR-008 write-ahead durability) at the
+    /// tier [`barrier_for`] assigns — a plain `fsync(2)` inside a turn, the platform's full barrier
+    /// at the turn boundary — and
     /// **only advances the in-memory chain state after durability succeeds** (code review: a
     /// failed write must not leave `last_hash`/`seq` pointing past a line that was never written,
     /// which would silently fork the chain). Once file I/O begins the writer is pessimistically
@@ -661,6 +889,8 @@ impl Rollout {
         event
             .kind
             .validate_compatibility_tag()
+            .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
+        validate_terminal_identity(&event.kind)
             .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
         validate_event_bounds(event)?;
         // Scrub known-secret shapes from tool output before it enters the durable record
@@ -711,7 +941,14 @@ impl Rollout {
         // descriptor and chain head.
         self.poisoned = true;
         self.file.write_all(line.as_bytes())?;
-        self.file.sync_data()?; // durable BEFORE we advance state
+        // Durable BEFORE we advance state, at the tier this event's position earns (see `Barrier`).
+        let barrier = barrier_for(&event.kind);
+        match barrier {
+            Barrier::Line => sync_line(&self.file)?,
+            Barrier::Turn => self.file.sync_data()?,
+        }
+        #[cfg(test)]
+        self.observe_barrier(barrier);
         // Only now, after the line is on disk, advance the chain.
         self.last_hash = hash.clone();
         self.seq = seq.next();
@@ -774,6 +1011,20 @@ impl Rollout {
                 Err(error)
             }
         }
+    }
+
+    #[cfg(test)]
+    fn observe_barrier(&mut self, barrier: Barrier) {
+        match barrier {
+            Barrier::Line => self.barriers_taken.0 = self.barriers_taken.0.saturating_add(1),
+            Barrier::Turn => self.barriers_taken.1 = self.barriers_taken.1.saturating_add(1),
+        }
+    }
+
+    /// `(cheap fsync appends, full F_FULLFSYNC barriers)` taken by this descriptor.
+    #[cfg(test)]
+    pub(crate) fn barriers_taken(&self) -> (u64, u64) {
+        self.barriers_taken
     }
 
     pub fn path(&self) -> &Path {
@@ -1305,6 +1556,61 @@ mod tests {
     }
 
     #[test]
+    fn i16_only_the_turn_boundary_pays_the_full_barrier() {
+        let dir = test_dir("durability-tiering");
+        let run = RunId("durability-tiering".into());
+        let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+
+        // One turn as the profile measured it: 16 intra-turn phase/tool lines, then the boundary.
+        // Before the fix every one of these was an `F_FULLFSYNC` at p50 4.09 ms.
+        for _ in 0..16 {
+            rollout.append(&ev(0)).unwrap();
+        }
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::TurnEnd {
+                    usage: core_protocol::Usage::default(),
+                    ttft_ms: None,
+                    decode_ms: None,
+                    stream_items: None,
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            rollout.barriers_taken(),
+            (16, 1),
+            "only TurnEnd may pay F_FULLFSYNC; the 16 intra-turn appends take a plain fsync"
+        );
+
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Done {
+                    outcome: "Completed".into(),
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            rollout.barriers_taken(),
+            (16, 2),
+            "the run terminal is a boundary too"
+        );
+
+        // The cheap tier is a durability tier, not a correctness shortcut: the chain still verifies
+        // and replays byte-for-byte, and a reopened writer still recovers the same head.
+        drop(rollout);
+        let path = dir.join("durability-tiering.jsonl");
+        assert_eq!(replay(&path).unwrap().len(), 18);
+        let reopened = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+        assert_eq!(reopened.next_sequence(), Seq(18));
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn append_then_replay_roundtrips_and_chain_verifies() {
         let dir = std::env::temp_dir().join(format!("core-rec-{}", std::process::id()));
         let run = RunId("t1".into());
@@ -1421,6 +1727,140 @@ mod tests {
             })
             .unwrap();
         assert_eq!(replay(rollout.path()).unwrap().len(), 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// I-42: 81 of 198 audited `tool_done` records had no `effect_id` and 77 of those were
+    /// successful, so successful work was landing in the record with nothing that admitted it and
+    /// nothing that named it. The gate has to sit at the append boundary rather than in a caller,
+    /// because the whole point is that no caller can quietly regrow the hole.
+    #[test]
+    fn append_refuses_a_tool_terminal_that_names_neither_its_tool_nor_its_admission() {
+        let dir = test_dir("tool-terminal-identity");
+        let run = RunId("tool-terminal-identity".into());
+        let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+        let result = |is_error: bool| core_protocol::ToolResult {
+            tool_use_id: "call-1".into(),
+            content: "ok".into(),
+            is_error,
+            trust: Trust::Workspace,
+            latency_ms: 3,
+        };
+
+        for kind in [
+            // Successful, admitted, but anonymous: the audited shape.
+            EventKind::ToolDone {
+                result: result(false),
+                effect_id: Some(core_protocol::EffectId("fx1-00000000-0000".into())),
+                tool: None,
+            },
+            // Named but empty is the same defect wearing a value.
+            EventKind::ToolDone {
+                result: result(false),
+                effect_id: Some(core_protocol::EffectId("fx1-00000000-0000".into())),
+                tool: Some(String::new()),
+            },
+            // Successful with no admission event: 77 of the 81.
+            EventKind::ToolDone {
+                result: result(false),
+                effect_id: None,
+                tool: Some("read_file".into()),
+            },
+        ] {
+            let error = rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind,
+                })
+                .unwrap_err();
+            assert!(matches!(error, RecordError::InvalidEventSchema { .. }));
+            assert_eq!(rollout.next_sequence(), Seq::ZERO);
+        }
+
+        // A call that never reached an executor has no admission to name, and refusing it would
+        // leave the transcript with a dangling tool_use the provider rejects on the next turn.
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::ToolDone {
+                    result: result(true),
+                    effect_id: None,
+                    tool: Some("bash".into()),
+                },
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::ToolDone {
+                    result: result(false),
+                    effect_id: Some(core_protocol::EffectId("fx1-00000000-0001".into())),
+                    tool: Some("edit".into()),
+                },
+            })
+            .unwrap();
+        assert_eq!(replay(rollout.path()).unwrap().len(), 2);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The gate is write-only. Every rollout the audit read is full of anonymous terminals, and a
+    /// read-time rule would turn the evidence into an unreplayable file.
+    #[test]
+    fn replay_still_reads_the_anonymous_terminals_already_on_disk() {
+        let dir = test_dir("legacy-tool-terminal");
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = RunId("legacy-tool-terminal".into());
+        let path;
+        {
+            let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+            rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::ToolDone {
+                        result: core_protocol::ToolResult {
+                            tool_use_id: "call-1".into(),
+                            content: "ok".into(),
+                            is_error: true,
+                            trust: Trust::Workspace,
+                            latency_ms: 3,
+                        },
+                        effect_id: None,
+                        tool: Some("grep".into()),
+                    },
+                })
+                .unwrap();
+            path = rollout.path().to_path_buf();
+        }
+        // Rewind that line to the shape a pre-I-42 writer produced — a successful terminal with
+        // neither name nor admission — and re-anchor the chain over it, so `replay` is judging the
+        // record and not a corrupted hash.
+        let stored = std::fs::read_to_string(&path).unwrap();
+        let mut line: serde_json::Value = serde_json::from_str(stored.trim()).unwrap();
+        let kind = line["payload"]["kind"].as_object_mut().unwrap();
+        kind.remove("tool");
+        kind["result"]["is_error"] = serde_json::Value::Bool(false);
+        let prev = line["prev"].as_str().unwrap().to_owned();
+        let seq = line["seq"].as_u64().unwrap();
+        line["hash"] = serde_json::Value::String(hash_line(&prev, seq, &line["payload"]));
+        std::fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&line).unwrap()),
+        )
+        .unwrap();
+
+        let events = replay(&path).unwrap();
+        assert!(matches!(
+            events[0].kind,
+            EventKind::ToolDone {
+                effect_id: None,
+                tool: None,
+                ..
+            }
+        ));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -2183,6 +2623,86 @@ AbCdEf1234567890AbCdEf1234567890"
                 );
             }
         }
+    }
+
+    /// I-45. Opening the first rollout in a repository creates `<repo>/.core`. Nothing used to
+    /// exclude it, so the next `git add -A` committed the session transcript, memory and skills
+    /// into the user's own history. The exclusion goes in `.git/info/exclude` — per-clone and
+    /// untracked — and the tracked `.gitignore` is the user's file and is never touched.
+    #[test]
+    fn the_state_directory_excludes_itself_from_git_without_editing_the_users_ignore_file() {
+        let repo = test_dir("git-exclude");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let ignore = repo.join(".gitignore");
+        std::fs::write(&ignore, "target/\n").unwrap();
+
+        let runs = repo.join(".core").join("runs");
+        let rollout = Rollout::open(&runs, &RunId("first".into()), TenantId::default()).unwrap();
+        drop(rollout);
+
+        let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        assert!(
+            exclude.lines().any(|line| line.trim() == "/.core/**"),
+            "the state directory's files must be excluded: {exclude}"
+        );
+        assert!(
+            exclude.lines().any(|line| line.trim() == "!/.core/**/"),
+            "the directories stay un-ignored so a checkpoint pathspec may name them: {exclude}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&ignore).unwrap(),
+            "target/\n",
+            "the user's own ignore file is not ours to edit"
+        );
+
+        // Idempotent: a second run in the same repository does not append a duplicate stanza.
+        let rollout = Rollout::open(&runs, &RunId("second".into()), TenantId::default()).unwrap();
+        drop(rollout);
+        assert_eq!(
+            std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap(),
+            exclude,
+            "the claim is made once, on first creation"
+        );
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// I-45. Opening a rollout is not the only way the state directory comes into being: a bare
+    /// `core reindex` in a fresh repository creates it too, and used to create it unclaimed — the
+    /// index and its lock file were then staged by the next `git add -A`. Whichever path gets there
+    /// first has to make the claim.
+    #[test]
+    fn maintenance_that_creates_the_state_directory_claims_the_exclusion_too() {
+        let repo = test_dir("git-exclude-reindex");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let runs = repo.join(".core").join("runs");
+
+        assert_eq!(session::reindex(&runs).unwrap(), 0);
+
+        let exclude = std::fs::read_to_string(repo.join(".git/info/exclude"))
+            .expect("reindex creating the state directory claims it");
+        assert!(
+            exclude.lines().any(|line| line.trim() == "/.core/**"),
+            "{exclude}"
+        );
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// The exclusion speaks only for Core's own directory: a runs dir configured somewhere else
+    /// entirely has no `.core` state root and must not cause a write into any repository.
+    #[test]
+    fn a_runs_dir_outside_the_state_directory_writes_no_git_exclusion() {
+        let repo = test_dir("git-exclude-foreign");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let runs = repo.join("elsewhere").join("runs");
+
+        let rollout = Rollout::open(&runs, &RunId("only".into()), TenantId::default()).unwrap();
+        drop(rollout);
+
+        assert!(
+            !repo.join(".git/info/exclude").exists(),
+            "an unrelated runs dir is not a reason to write into .git"
+        );
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }
 

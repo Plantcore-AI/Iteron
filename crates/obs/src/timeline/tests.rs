@@ -202,6 +202,7 @@ fn overlapping_work_reports_a_negative_residual_instead_of_hiding_it() {
                 trust: Trust::Workspace,
             },
             effect_id: None,
+            tool: Some("read_file".into()),
         },
     );
     // One second of wall clock, 1.8s of attributed work: the tool ran during the stream.

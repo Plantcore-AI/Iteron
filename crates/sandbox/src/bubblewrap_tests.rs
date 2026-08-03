@@ -87,7 +87,10 @@ fn args_unshare_net_by_default_and_make_only_workspace_writable() {
         tmpfs_position < workspace_position,
         "a workspace below host /tmp must be mounted after the private tmpfs"
     );
-    assert_eq!(&args[args.len() - 3..], ["/bin/bash", "-c", "make test"]);
+    assert_eq!(
+        &args[args.len() - 3..],
+        [crate::confined_shell(), "-c", "make test"]
+    );
     assert!(
         BWRAP_CANDIDATES
             .iter()
@@ -119,6 +122,89 @@ fn egress_escalation_shares_the_network() {
         !args.iter().any(|arg| arg == "--unshare-net"),
         "escalated egress must not unshare net"
     );
+}
+
+#[test]
+fn a_refused_probe_is_cached_for_a_bounded_ttl_then_retried() {
+    // Before this, `usable_bwrap` explicitly refused to cache a failure, so a host with restricted
+    // user namespaces re-ran a process probe with a 5s ceiling on EVERY bash call.
+    let binary = PathBuf::from("/usr/bin/bwrap");
+    let refused = ProbeOutcome {
+        binary: binary.clone(),
+        usable: false,
+        at: std::time::Instant::now(),
+    };
+    assert_eq!(
+        cached_probe(Some(&refused), &binary, refused.at),
+        Some(false),
+        "a fresh refusal must answer from cache instead of re-probing"
+    );
+    assert_eq!(
+        cached_probe(
+            Some(&refused),
+            &binary,
+            refused.at + BWRAP_PROBE_NEGATIVE_TTL - std::time::Duration::from_millis(1),
+        ),
+        Some(false),
+    );
+    assert_eq!(
+        cached_probe(
+            Some(&refused),
+            &binary,
+            refused.at + BWRAP_PROBE_NEGATIVE_TTL,
+        ),
+        None,
+        "the refusal must expire so an operator who fixes the host is picked up"
+    );
+    assert!(
+        BWRAP_PROBE_NEGATIVE_TTL >= BWRAP_PROBE_TIMEOUT,
+        "a TTL below the probe's own ceiling would not bound the cost at all"
+    );
+}
+
+#[test]
+fn a_successful_probe_is_kept_and_a_different_executable_is_not() {
+    let binary = PathBuf::from("/usr/bin/bwrap");
+    let usable = ProbeOutcome {
+        binary: binary.clone(),
+        usable: true,
+        at: std::time::Instant::now(),
+    };
+    assert_eq!(
+        cached_probe(
+            Some(&usable),
+            &binary,
+            usable.at + BWRAP_PROBE_NEGATIVE_TTL * 1000,
+        ),
+        Some(true),
+        "a proven namespace capability does not need re-proving"
+    );
+    assert_eq!(
+        cached_probe(Some(&usable), Path::new("/usr/local/bin/bwrap"), usable.at),
+        None,
+        "a different executable is a different trust decision"
+    );
+    assert_eq!(cached_probe(None, &binary, usable.at), None);
+}
+
+#[tokio::test]
+async fn resolving_the_backend_does_not_park_the_async_worker() {
+    // `usable_bwrap` spawns a child and `std::thread::sleep`s while polling it. Called inline from
+    // this single-threaded runtime it would hold the only worker for the whole probe, so nothing
+    // else — timers, streaming, cancellation — could run. It must go through the blocking pool.
+    let ticked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = ticked.clone();
+    let ticker = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let resolved = Bubblewrap::usable_bwrap_off_worker().await;
+    ticker.await.unwrap();
+    assert!(
+        ticked.load(std::sync::atomic::Ordering::SeqCst),
+        "a concurrent task must still be scheduled while the backend is probed"
+    );
+    assert_eq!(resolved.is_some(), Bubblewrap::available());
 }
 
 #[test]

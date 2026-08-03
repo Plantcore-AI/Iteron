@@ -139,8 +139,9 @@ impl WorkflowStatus {
     }
 }
 
-/// State of a declared read-only investigator. Only one may be `Running` in the current sequential
-/// executor; the live tree makes that limitation visible instead of suggesting fake concurrency.
+/// State of a declared read-only investigator. The fan is bounded-concurrent, so SEVERAL may be
+/// `Running` at once; the live tree renders one row per task so no concurrent investigator is
+/// hidden behind another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkflowTaskStatus {
     Queued,
@@ -200,9 +201,11 @@ pub struct WorkflowCard {
 // ---------------------------------------------------------------------------------------------
 // QuickJS `core-workflow` live tree (WORKFLOW-REPLICATION-DESIGN.md §3.3)
 //
-// This is a SEPARATE projection from the native-ultracode `WorkflowCard` above: it consumes the
-// `core_workflow::events::ProgressEvent` stream (`agent()`/`parallel()`/`phase()`/`log()` runtime)
-// and renders Claude Code's phase-box tree. The native card keeps its own flat connector tree.
+// This consumes the `core_workflow::events::ProgressEvent` stream
+// (`agent()`/`parallel()`/`phase()`/`log()` runtime) and renders the phase-box tree. Per
+// ADR-0001 (docs/project/decisions/0001-workflow-renderer-convergence.md) this is the SURVIVING
+// workflow renderer: new progress capability lands here, and the native-ultracode `WorkflowCard`
+// above retires once ultracode's decomposition runs as a built-in script.
 // ---------------------------------------------------------------------------------------------
 
 /// One `phase(title)` group, in 1-based first-seen order (`ProgressEvent::Phase`).
@@ -226,6 +229,9 @@ pub struct WorkflowRunAgent {
     pub tool_calls: u64,
     /// The live tool line for a running child (`last_tool_summary`, ≤60 chars at the emitter).
     pub last_tool_summary: Option<String>,
+    /// When this row was ADMITTED (permit acquired). A running row has no settled `duration_ms`, so
+    /// this is what makes its elapsed column tick instead of reading `0s` for the whole run.
+    pub started: Option<Instant>,
     pub duration_ms: u64,
     pub error: Option<String>,
 }
@@ -250,6 +256,8 @@ pub struct WorkflowRunCard {
     pub finished: bool,
     /// Verbose toggle: false collapses finished agents to a dim `✔ n done` line (design §3.3).
     pub verbose: bool,
+    /// The run clock, for the header's elapsed column.
+    pub started: Instant,
     /// Last `phase()` seen — the group an `agent()` without an explicit `opts.phase` falls into.
     current_phase: usize,
 }
@@ -264,8 +272,41 @@ impl WorkflowRunCard {
             logs: Vec::new(),
             finished: false,
             verbose: false,
+            started: Instant::now(),
             current_phase: 0,
         }
+    }
+
+    /// Seed the tree from the script's `export const meta.phases`. The metadata was parsed,
+    /// populated and tested, but both call sites read only `name`/`description`, so phase boxes
+    /// appeared only once execution reached them. Declared phases are laid out in advance and keep
+    /// their declared order; a `phase()` the script actually reaches binds back by TITLE, so a
+    /// script whose runtime order differs from its header never registers a duplicate box.
+    pub fn declare_phases<I, S>(&mut self, titles: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        for title in titles {
+            let title = title.into();
+            if title.is_empty() || self.phases.iter().any(|phase| phase.title == title) {
+                continue;
+            }
+            let index = self.phases.iter().map(|p| p.index).max().unwrap_or(0) + 1;
+            self.phases.push(WorkflowRunPhase { index, title });
+        }
+    }
+
+    /// Run-level totals: `(done, total, tokens, tool_calls)` across every row.
+    pub fn totals(&self) -> (usize, usize, u64, u64) {
+        let done = self
+            .agents
+            .iter()
+            .filter(|agent| agent.state == WorkflowState::Done)
+            .count();
+        let tokens = self.agents.iter().map(|agent| agent.tokens).sum();
+        let tool_calls = self.agents.iter().map(|agent| agent.tool_calls).sum();
+        (done, self.agents.len(), tokens, tool_calls)
     }
 
     /// Resolve an agent's group: an explicit `opts.phase` title binds to (or registers) a phase;
@@ -300,6 +341,7 @@ impl WorkflowRunCard {
             tokens: 0,
             tool_calls: 0,
             last_tool_summary: None,
+            started: None,
             duration_ms: 0,
             error: None,
         };
@@ -317,13 +359,35 @@ impl WorkflowRunCard {
     /// resolves.
     pub fn ingest(&mut self, event: ProgressEvent) {
         match event {
+            // A reached `phase()` binds to a DECLARED box by title first, so seeding the tree from
+            // `meta.phases` never produces a second box for the same phase.
             ProgressEvent::Phase { index, title } => {
-                if !self.phases.iter().any(|p| p.index == index) {
-                    self.phases.push(WorkflowRunPhase { index, title });
-                }
-                self.current_phase = index;
+                self.current_phase =
+                    if let Some(existing) = self.phases.iter().find(|phase| phase.title == title) {
+                        existing.index
+                    } else if self.phases.iter().any(|phase| phase.index == index) {
+                        let next = self.phases.iter().map(|p| p.index).max().unwrap_or(0) + 1;
+                        self.phases.push(WorkflowRunPhase { index: next, title });
+                        next
+                    } else {
+                        self.phases.push(WorkflowRunPhase { index, title });
+                        index
+                    };
             }
             ProgressEvent::Log { message } => self.logs.push(message),
+            ProgressEvent::AgentQueued {
+                index,
+                label,
+                phase,
+                model,
+            } => {
+                let phase_index = self.resolve_phase(phase);
+                let agent = self.agent_mut(index);
+                agent.label = label;
+                agent.model = model;
+                agent.phase_index = phase_index;
+                agent.state = WorkflowState::Queued;
+            }
             ProgressEvent::AgentStarted {
                 index,
                 label,
@@ -336,6 +400,7 @@ impl WorkflowRunCard {
                 agent.model = model;
                 agent.phase_index = phase_index;
                 agent.state = WorkflowState::Running;
+                agent.started = Some(Instant::now());
             }
             ProgressEvent::AgentActivity {
                 index,
@@ -401,8 +466,9 @@ pub enum BlockKind {
     /// A live, id-correlated workflow/agent tree (ultracode today; generic workflow vocabulary).
     Workflow(WorkflowCard),
     /// The live QuickJS `core-workflow` phase→agent tree (design §3.3), fed by `ProgressEvent`s.
-    /// Constructed by the interactive-REPL seam (`App::workflow_run_event`) once an M9 launch path
-    /// exists; the one-shot `core workflow run` live loop renders its `WorkflowRunCard` directly.
+    /// The one-shot `core workflow run` live loop renders its `WorkflowRunCard` directly; the
+    /// interactive-REPL seam (`App::workflow_run_event`) has no live caller until ADR-0001 step 1
+    /// lands, which needs a CLI stream schema-version bump to carry a new `UiEvent` variant.
     #[allow(dead_code)]
     WorkflowRun(WorkflowRunCard),
     /// A one-line harness hint / confirmation (its level sets color + glyph).
@@ -1025,36 +1091,6 @@ fn render_workflow(
             ),
         ]);
     } else {
-        if let Some(active) = card
-            .tasks
-            .iter()
-            .find(|task| task.status == WorkflowTaskStatus::Running)
-        {
-            let mut now = vec![
-                Span::styled("└─ ", Style::default().fg(theme.faint)),
-                Span::styled(
-                    "NOW  ",
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(active.label.clone(), Style::default().fg(theme.fg)),
-            ];
-            if let Some(activity) = &active.activity {
-                now.push(Span::styled(
-                    format!(" · {activity}"),
-                    Style::default().fg(theme.muted),
-                ));
-            }
-            if width >= 100 && active.turn_budget > 0 {
-                now.push(Span::styled(
-                    format!(" · ≤{} turns", active.turn_budget),
-                    Style::default().fg(theme.faint),
-                ));
-            }
-            rows.push(now);
-        }
-
         if width >= 80
             && running
             && card.execution_mode != crate::runtime::WorkflowExecutionModeUi::Direct
@@ -1076,13 +1112,11 @@ fn render_workflow(
             ]);
         }
 
-        let visible_tasks = card
-            .tasks
-            .iter()
-            .filter(|task| task.status != WorkflowTaskStatus::Running)
-            .collect::<Vec<_>>();
-        for (index, task) in visible_tasks.iter().enumerate() {
-            let last = index + 1 == visible_tasks.len()
+        // One row per declared task, running rows included: the fan is bounded-concurrent, so
+        // several investigators are live at once and each needs its own animated arm. Collapsing
+        // them into a single "NOW" line made three of four concurrent workers disappear.
+        for (index, task) in card.tasks.iter().enumerate() {
+            let last = index + 1 == card.tasks.len()
                 && card.dropped == 0
                 && card.duplicates_removed == 0
                 && card.invalid_removed == 0;
@@ -1113,8 +1147,22 @@ fn render_workflow(
                     Style::default().fg(color),
                 ),
             ];
+            // A running row carries its own live tool line; that context used to exist only on the
+            // single NOW line, so it was lost for every investigator but the first.
+            if task.status == WorkflowTaskStatus::Running
+                && let Some(activity) = &task.activity
+            {
+                row.push(Span::styled(
+                    format!(" · {activity}"),
+                    Style::default().fg(theme.muted),
+                ));
+            }
+            // A still-running task has no settled `elapsed`; its clock runs from `started`.
+            let elapsed = task
+                .elapsed
+                .or_else(|| task.started.map(|started| started.elapsed()))
+                .unwrap_or_default();
             if width >= 100 && task.status != WorkflowTaskStatus::Queued {
-                let elapsed = task.elapsed.unwrap_or_default();
                 row.push(Span::styled(
                     format!(
                         " · {} turns · {} tok · {} tools · {}",
@@ -1126,10 +1174,15 @@ fn render_workflow(
                     Style::default().fg(theme.muted),
                 ));
             } else if width >= 60 && task.status != WorkflowTaskStatus::Queued {
-                let elapsed = task.elapsed.unwrap_or_default();
                 row.push(Span::styled(
                     format!(" · {}", fmt_dur(elapsed)),
                     Style::default().fg(theme.muted),
+                ));
+            }
+            if width >= 100 && task.status == WorkflowTaskStatus::Running && task.turn_budget > 0 {
+                row.push(Span::styled(
+                    format!(" · ≤{} turns", task.turn_budget),
+                    Style::default().fg(theme.faint),
                 ));
             }
             rows.push(row);
@@ -1240,15 +1293,22 @@ fn agent_meta_string(agent: &WorkflowRunAgent) -> Option<String> {
     }
     if agent.finished() {
         parts.push(events::fmt_duration(agent.duration_ms));
-    } else if let Some(tool) = &agent.last_tool_summary {
-        // The live tool line — the running child's most recent tool_use, summarized (≤60 chars).
-        parts.push(tool.clone());
+    } else {
+        if let Some(tool) = &agent.last_tool_summary {
+            // The live tool line — the running child's most recent tool_use, summarized (≤60 chars).
+            parts.push(tool.clone());
+        }
+        // A running row's clock ticks from its admission instant; without it the elapsed column
+        // stayed empty for the entire life of the row.
+        if let Some(started) = agent.started {
+            parts.push(events::fmt_duration(started.elapsed().as_millis() as u64));
+        }
     }
     if parts.is_empty() {
-        if agent.finished() {
-            None
-        } else {
-            Some("\u{2026}running".into()) // …running
+        match agent.state {
+            WorkflowState::Queued => Some("\u{2026}queued".into()), // …queued
+            _ if agent.finished() => None,
+            _ => Some("\u{2026}running".into()), // …running
         }
     } else {
         Some(parts.join(" \u{b7} "))
@@ -1415,6 +1475,9 @@ fn render_phase_box(
         } else {
             ("\u{2714}".to_string(), theme.success) // ✔
         }
+    } else if total == 0 {
+        // A DECLARED phase execution has not reached yet: pending, not spinning.
+        ("\u{27f3}".to_string(), theme.faint) // ⟳
     } else {
         (braille_frame(spin).to_string(), theme.muted) // running spinner, uncolored
     };
@@ -1467,6 +1530,41 @@ pub(crate) fn render_workflow_run(
     spin: usize,
 ) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
+    let (done, total, tokens, tool_calls) = card.totals();
+
+    // Title row: the tree had no header at all, so a run was a set of anonymous boxes with no name,
+    // no run id, no run-level progress and no clock.
+    let mut head = vec![
+        Span::styled(
+            if card.finished {
+                primary_marker().to_string()
+            } else {
+                braille_frame(spin).to_string()
+            },
+            Style::default().fg(if card.finished {
+                theme.faint
+            } else {
+                theme.accent
+            }),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            card.name.clone(),
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" \u{b7} {done}/{total} agents"),
+            Style::default().fg(theme.muted),
+        ),
+    ];
+    if width >= 60 {
+        head.push(Span::styled(
+            format!(" \u{b7} {}", card.run_id),
+            Style::default().fg(theme.faint),
+        ));
+    }
+    out.push(Line::from(head));
+    out.push(Line::default());
 
     // Narrator: newest log as `❯ <msg>`, up to two prior logs dim below, then a blank margin row.
     if let Some(newest) = card.logs.last() {
@@ -1493,8 +1591,9 @@ pub(crate) fn render_workflow_run(
         out.push(Line::default());
     }
 
-    let use_boxes =
-        width >= 24 && !card.phases.is_empty() && card.agents.iter().any(|a| a.phase_index > 0);
+    // A declared-but-not-yet-reached phase has no agents. Pre-registering it is not enough on its
+    // own: the empty-group guard below used to skip it, so the layout still grew phase by phase.
+    let use_boxes = width >= 24 && !card.phases.is_empty();
 
     if use_boxes {
         let mut ordered: Vec<&WorkflowRunPhase> = card.phases.iter().collect();
@@ -1506,9 +1605,6 @@ pub(crate) fn render_workflow_run(
                 .iter()
                 .filter(|a| a.phase_index == phase.index)
                 .collect();
-            if agents.is_empty() {
-                continue;
-            }
             if !first {
                 out.push(Line::from(Span::styled(
                     " \u{2193}", // ↓
@@ -1550,6 +1646,34 @@ pub(crate) fn render_workflow_run(
             )));
         }
     }
+
+    // Run totals. Per-agent token counts arrive on every finish event and were never summed, so a
+    // finished run reported no cost evidence and no elapsed at all.
+    let mut totals = vec![Span::styled(
+        format!("{done}/{total} agents"),
+        Style::default().fg(theme.muted),
+    )];
+    if tokens > 0 {
+        totals.push(Span::styled(
+            format!(" \u{b7} {} tok", events::fmt_count(tokens)),
+            Style::default().fg(theme.muted),
+        ));
+    }
+    if tool_calls > 0 {
+        totals.push(Span::styled(
+            format!(" \u{b7} {}", plural(tool_calls as usize, "tool call")),
+            Style::default().fg(theme.muted),
+        ));
+    }
+    totals.push(Span::styled(
+        format!(
+            " \u{b7} {}",
+            events::fmt_duration(card.started.elapsed().as_millis() as u64)
+        ),
+        Style::default().fg(theme.muted),
+    ));
+    out.push(Line::default());
+    out.push(Line::from(totals));
 
     out
 }
@@ -3556,7 +3680,9 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("exploring"));
-        assert!(rendered.contains("NOW"));
+        // The running investigator keeps its own row (and its live tool line) instead of being
+        // hoisted into a single NOW line that hid every other running worker.
+        assert!(rendered.contains("compare the terminal interaction model"));
         assert!(rendered.contains("read_file"));
         assert!(rendered.contains("queued"));
         assert!(rendered.contains("1.2k tok"));
@@ -3615,6 +3741,96 @@ mod tests {
         let narrow = plain(workflow.render(40, &theme, 0));
         assert!(narrow.contains("Ultracode · partial"));
         assert!(narrow.contains("failed"));
+    }
+
+    /// The fan is bounded-concurrent: four investigators run at once. The card used to hoist the
+    /// FIRST running task onto a `NOW` line and then filter every running task out of the branch
+    /// list, so three of the four vanished and the per-row spinner arm was unreachable. Pin the
+    /// four-running snapshot: four rows, four live spinner arms, and a header that agrees.
+    #[test]
+    fn workflow_card_renders_every_concurrent_investigator() {
+        let theme = Theme::dark();
+        let labels = [
+            "map provider ownership",
+            "trace the rollout writer",
+            "audit the permission gate",
+            "inspect verification coverage",
+        ];
+        let tasks = labels
+            .iter()
+            .enumerate()
+            .map(|(id, label)| {
+                let mut task = workflow_task(id, label, WorkflowTaskStatus::Running);
+                task.started = Some(Instant::now());
+                task.elapsed = None;
+                task.activity = Some(format!("read_file · crates/{id}/lib.rs"));
+                task
+            })
+            .collect::<Vec<_>>();
+        let workflow = Block::new(
+            11,
+            BlockKind::Workflow(WorkflowCard {
+                run_id: "workflow-concurrent".into(),
+                name: "ultracode".into(),
+                class: "multi-file".into(),
+                status: WorkflowStatus::Exploring,
+                tasks,
+                dropped: 0,
+                duplicates_removed: 0,
+                invalid_removed: 0,
+                execution_mode: crate::runtime::WorkflowExecutionModeUi::Concurrent,
+                fan_turn_budget: 8,
+                writer_turn_reserve: 24,
+                fan_wall_secs: 120,
+                writer_wall_reserve_secs: 240,
+                started: Instant::now(),
+                elapsed: None,
+                reason: None,
+                provider_attempts: 1,
+                turns: 0,
+                tokens: 0,
+                tool_calls: 0,
+                failed_tasks: 0,
+                skipped_tasks: 0,
+                open: true,
+            }),
+        );
+
+        let spin = 3usize;
+        let arm = SPINNER[spin % SPINNER.len()];
+        let text = plain(workflow.render(120, &theme, spin));
+        for label in labels {
+            assert!(
+                text.contains(label),
+                "row for `{label}` is missing:\n{text}"
+            );
+        }
+        // One arm per branch row (the card's own header marker also spins, hence the `+ 1`).
+        assert_eq!(
+            text.matches(arm).count(),
+            labels.len() + 1,
+            "every concurrent investigator needs its own live spinner arm:\n{text}"
+        );
+        assert_eq!(
+            text.matches(" · running").count(),
+            labels.len(),
+            "every concurrent investigator must render as a running row:\n{text}"
+        );
+        // The done/total header still agrees with the row count.
+        assert!(text.contains(&format!("0/{}", labels.len())));
+        assert!(text.contains("concurrent"));
+        // Each running row keeps its own live tool line (the old NOW line kept only the first).
+        assert_eq!(text.matches("read_file · crates/").count(), labels.len());
+        assert!(!text.contains("NOW"));
+
+        for width in [16u16, 24, 40, 60, 80, 120, 160] {
+            for row in workflow.render(width, &theme, spin) {
+                assert!(
+                    line_width(&row) <= width,
+                    "concurrent workflow row exceeded width {width}: {row:?}"
+                );
+            }
+        }
     }
 
     /// Drive a scripted `ProgressEvent` stream (2 phases, 3 agents, mixed running/done/error + a log
@@ -3699,6 +3915,9 @@ mod tests {
         let text = plain(lines);
         println!("\n===== workflow-run tree (width {width}) =====\n{text}\n=====");
 
+        // Header (name · run-level progress · run id) + run totals line.
+        assert!(text.contains("audit \u{b7} 1/3 agents \u{b7} wf_demo"));
+        assert!(text.contains("1/3 agents \u{b7} 2k tok \u{b7} 3 tool calls"));
         // Narrator + phase boxes + rows + collapse + meta + error tail.
         assert!(text.contains("\u{276f} synthesizing findings")); // ❯ newest log
         assert!(text.contains("mapping the repository")); // prior log, dim
@@ -3732,7 +3951,95 @@ mod tests {
             })
             .unwrap();
         let buf = terminal.backend().buffer();
-        let drawn: String = (0..buf.area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        let drawn: String = (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol())
+            .collect();
+        assert!(drawn.contains("audit"), "header drew into the frame");
         assert!(drawn.contains('\u{276f}'), "narrator drew into the frame");
+    }
+
+    /// Twenty agents at concurrency six: the queued fourteen are declared before their permit is
+    /// requested, so every row exists on the first frame and the denominator never moves. The
+    /// declared `meta.phases` lay every box out in advance, empty ones included.
+    #[test]
+    fn workflow_run_tree_seeds_declared_phases_and_pins_the_denominator() {
+        use core_workflow::events::WorkflowState;
+
+        let theme = Theme::dark();
+        let width = 78u16;
+        let mut c = WorkflowRunCard::new("wf_fan", "audit");
+        c.declare_phases(["Explore", "Synthesize", "Write"]);
+
+        // Every declared phase is a box on the very first frame, before any agent exists.
+        let empty = plain(render_workflow_run(&c, width, &theme, 0));
+        for title in ["Explore", "Synthesize", "Write"] {
+            assert!(
+                empty.contains(title),
+                "declared phase `{title}` is invisible"
+            );
+        }
+        assert!(empty.contains("0/0 agents"));
+
+        // The whole fan is declared up front (AgentQueued precedes the permit).
+        for index in 1..=20 {
+            c.ingest(ProgressEvent::AgentQueued {
+                index,
+                label: format!("investigator {index}"),
+                phase: Some("Explore".into()),
+                model: Some("haiku".into()),
+            });
+        }
+        let (_, total, _, _) = c.totals();
+        assert_eq!(total, 20, "the denominator is fixed by the queued rows");
+
+        // Six permits are granted; the remaining fourteen stay visibly pending.
+        for index in 1..=6 {
+            c.ingest(ProgressEvent::AgentStarted {
+                index,
+                label: format!("investigator {index}"),
+                phase: Some("Explore".into()),
+                model: Some("haiku".into()),
+            });
+        }
+        assert_eq!(
+            c.agents
+                .iter()
+                .filter(|agent| agent.state == WorkflowState::Queued)
+                .count(),
+            14
+        );
+        assert_eq!(
+            c.agents
+                .iter()
+                .filter(|agent| agent.state == WorkflowState::Running)
+                .count(),
+            6
+        );
+        let (_, total_after, _, _) = c.totals();
+        assert_eq!(total_after, 20, "the denominator must not move mid-run");
+
+        c.verbose = true;
+        let text = plain(render_workflow_run(&c, width, &theme, 0));
+        assert!(text.contains("0/20 agents"));
+        assert_eq!(
+            text.matches("\u{27f3} investigator").count(), // ⟳
+            14,
+            "every queued investigator renders a pending row:\n{text}"
+        );
+        // A declared-but-unreached phase renders an empty box with a pending glyph, not a spinner.
+        assert!(text.contains("Synthesize  \u{27f3} 0/0"));
+        // A reached `phase()` binds to the DECLARED box by title — no duplicate box.
+        c.ingest(ProgressEvent::Phase {
+            index: 1,
+            title: "Explore".into(),
+        });
+        assert_eq!(c.phases.len(), 3);
+        for line in render_workflow_run(&c, width, &theme, 0) {
+            assert!(
+                line_width(&line) <= width,
+                "queued row over width: {line:?}"
+            );
+        }
     }
 }

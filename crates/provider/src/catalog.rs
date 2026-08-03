@@ -20,6 +20,14 @@ use std::time::{Duration, Instant};
 
 /// Bounded connect timeout shared by every adapter's HTTP client.
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long an idle pooled connection is kept for the next turn. A coding turn is mostly the
+/// operator (or the model) thinking, and reqwest's 90s default evicts the connection during that
+/// pause: the next turn then pays a full TCP+TLS handshake again, measured at 0.78-1.02s on this
+/// network. 300s covers a long think without holding a connection open indefinitely.
+const HTTP_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+/// TCP keepalive on the pooled connection, so a NAT or middlebox on the path does not silently
+/// drop a connection that is being kept for exactly that long think.
+const HTTP_TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
 /// The concrete HTTP client an adapter dispatches through. Re-exported so a host
 /// implementing [`HttpTransport`] can name the port's return type without
@@ -58,6 +66,10 @@ impl HttpTransport for DefaultHttpTransport {
     fn client(&self) -> Result<HttpClient, ProviderError> {
         reqwest::Client::builder()
             .connect_timeout(HTTP_CONNECT_TIMEOUT)
+            // Connection reuse is a latency policy, not a tuning detail: without these two the
+            // pool drops the connection across a long think and the next turn re-handshakes.
+            .pool_idle_timeout(HTTP_POOL_IDLE_TIMEOUT)
+            .tcp_keepalive(HTTP_TCP_KEEPALIVE)
             // The configured API root is an authority boundary. Never replay an
             // API key, prompt, or POST body through an endpoint-chosen redirect.
             .redirect(reqwest::redirect::Policy::none())
@@ -246,6 +258,302 @@ impl std::str::FromStr for ApiRoot {
     }
 }
 
+/// Bytes admitted from a credential file. A credential document is a token plus an expiry; a
+/// larger file is a mistake or an attack, never something to allocate.
+const MAX_CREDENTIAL_FILE_BYTES: u64 = 8 * 1024;
+/// Re-read a file credential once it is within this window of its recorded expiry. A subscription
+/// token therefore rotates a full minute before the provider would start rejecting it.
+const CREDENTIAL_REFRESH_SKEW_SECS: u64 = 60;
+
+/// Which kind of source produced (or failed to produce) a credential. Kept separate from the
+/// value so status output can name the source without ever holding the secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialKind {
+    Env,
+    File,
+}
+
+impl CredentialKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Env => "env",
+            Self::File => "file",
+        }
+    }
+}
+
+/// Everything an operator needs to debug "why is my key not working" — and nothing else. This
+/// type is deliberately value-free: it names the source, says whether a credential resolved, and
+/// reports the expiry, so it can be printed, logged, and handed to the TUI safely.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialStatus {
+    pub kind: CredentialKind,
+    /// The environment variable name, or the credential file path. Never the value.
+    pub name: String,
+    pub present: bool,
+    pub expires_at_unix: Option<u64>,
+    pub error: Option<String>,
+}
+
+impl CredentialStatus {
+    /// One-line operator display. A missing credential names what to set, not what was set.
+    pub fn display(&self) -> String {
+        let mut text = format!("{} {}", self.kind.label(), self.name);
+        if !self.present {
+            text.push_str(" (absent)");
+        }
+        if let Some(expires_at) = self.expires_at_unix {
+            text.push_str(&format!(" (expires at {expires_at})"));
+        }
+        if let Some(error) = &self.error {
+            text.push_str(&format!(" ({error})"));
+        }
+        text
+    }
+}
+
+/// Where a provider credential comes from.
+///
+/// This used to be an `Option<String>` snapshotted once at process construction, which made two
+/// documented "read at call time" claims false and made a hosted subscription token unusable:
+/// rotation required restarting Core. The source is now resolved per turn. `Env` keeps the exact
+/// previous behaviour — a running process's own environment is not a rotation channel — while
+/// `File` re-reads an operator-owned credential document ahead of its recorded expiry.
+#[derive(Clone)]
+pub enum CredentialSource {
+    /// A value the composition root read out of the process environment (or that a test supplied
+    /// directly). `name` is the environment variable it came from, when one is known.
+    Env {
+        name: Option<String>,
+        value: Option<String>,
+    },
+    /// An operator-owned credential file holding a token and an optional expiry.
+    File(Arc<FileCredential>),
+}
+
+impl CredentialSource {
+    /// The historical constructor shape: an already-resolved optional value with no source name.
+    pub fn env_value(value: Option<String>) -> Self {
+        Self::Env {
+            name: None,
+            value: value.filter(|value| !value.trim().is_empty()),
+        }
+    }
+
+    /// A named environment variable, read once by the composition root.
+    pub fn env(name: impl Into<String>, value: Option<String>) -> Self {
+        Self::Env {
+            name: Some(name.into()),
+            value: value.filter(|value| !value.trim().is_empty()),
+        }
+    }
+
+    /// A credential file, re-read on resolution once it is close to expiring.
+    pub fn file(path: impl Into<std::path::PathBuf>) -> Self {
+        Self::File(Arc::new(FileCredential::new(path.into())))
+    }
+
+    /// Resolve the credential value NOW. Every call site that dispatches a request must use this
+    /// rather than a value captured at construction.
+    pub fn resolve(&self) -> Option<String> {
+        match self {
+            Self::Env { value, .. } => value.clone(),
+            Self::File(file) => file.resolve(),
+        }
+    }
+
+    /// Value-free provenance for display. Resolving is part of the status: an operator asking
+    /// "which credential am I using" is asking about the one the next turn would use.
+    pub fn status(&self) -> CredentialStatus {
+        match self {
+            Self::Env { name, value } => CredentialStatus {
+                kind: CredentialKind::Env,
+                name: name.clone().unwrap_or_else(|| "(direct)".into()),
+                present: value.is_some(),
+                expires_at_unix: None,
+                error: None,
+            },
+            Self::File(file) => file.status(),
+        }
+    }
+
+    /// The credential file backing this source, if any. The composition root adds it to the
+    /// redaction set; nothing else may read it.
+    pub fn file_path(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Env { .. } => None,
+            Self::File(file) => Some(file.path()),
+        }
+    }
+}
+
+impl fmt::Debug for CredentialSource {
+    /// Never print a credential value, not even behind a formatter an operator asked for.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let status = self.status();
+        formatter
+            .debug_struct("CredentialSource")
+            .field("kind", &status.kind)
+            .field("name", &status.name)
+            .field("present", &status.present)
+            .finish()
+    }
+}
+
+/// One operator-owned credential file plus the last value read from it.
+///
+/// The cache exists so an unexpiring token is not re-read on a hot path forever; it is bypassed
+/// as soon as the token is inside [`CREDENTIAL_REFRESH_SKEW_SECS`] of expiry, which is what makes
+/// mid-session rotation work without a restart.
+pub struct FileCredential {
+    path: std::path::PathBuf,
+    state: Mutex<Option<LoadedCredential>>,
+}
+
+#[derive(Clone)]
+struct LoadedCredential {
+    token: Option<String>,
+    expires_at_unix: Option<u64>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialDocument {
+    token: String,
+    #[serde(default)]
+    expires_at_unix: Option<u64>,
+}
+
+impl FileCredential {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            state: Mutex::new(None),
+        }
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    fn resolve(&self) -> Option<String> {
+        self.load().token
+    }
+
+    fn status(&self) -> CredentialStatus {
+        let loaded = self.load();
+        CredentialStatus {
+            kind: CredentialKind::File,
+            name: self.path.display().to_string(),
+            present: loaded.token.is_some(),
+            expires_at_unix: loaded.expires_at_unix,
+            error: loaded.error,
+        }
+    }
+
+    /// Return the cached credential when it is comfortably inside its validity window, otherwise
+    /// re-read the file. A credential with no declared expiry is always re-read: that is exactly
+    /// the "read at call time" behaviour the provider documentation already claimed.
+    fn load(&self) -> LoadedCredential {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let now = unix_now();
+        let usable = state.as_ref().is_some_and(|loaded| {
+            loaded
+                .expires_at_unix
+                .is_some_and(|expiry| now.saturating_add(CREDENTIAL_REFRESH_SKEW_SECS) < expiry)
+        });
+        if !usable {
+            *state = Some(read_credential_file(&self.path));
+        }
+        state.clone().unwrap_or(LoadedCredential {
+            token: None,
+            expires_at_unix: None,
+            error: Some("credential file could not be read".into()),
+        })
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+/// Read a credential document through a bounded, permission-checked descriptor.
+///
+/// A credential file is the highest-value file Core reads, so it is held to the same standard as
+/// the catalog scope key: a regular file, never a symlink, never group/world readable, and small.
+fn read_credential_file(path: &std::path::Path) -> LoadedCredential {
+    let absent = |error: String| LoadedCredential {
+        token: None,
+        expires_at_unix: None,
+        error: Some(error),
+    };
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return absent("credential file is absent".into());
+        }
+        Err(_) => return absent("credential file could not be inspected".into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return absent("credential file must be a regular file, not a symlink".into());
+    }
+    if metadata.len() > MAX_CREDENTIAL_FILE_BYTES {
+        return absent("credential file exceeds its 8 KiB bound".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return absent(
+                "credential file must not be group- or world-accessible (chmod 600)".into(),
+            );
+        }
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return absent("credential file could not be read".into());
+    };
+    if bytes.len() as u64 > MAX_CREDENTIAL_FILE_BYTES {
+        return absent("credential file exceeds its 8 KiB bound".into());
+    }
+    let Ok(text) = String::from_utf8(bytes) else {
+        return absent("credential file is not valid UTF-8".into());
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return absent("credential file is empty".into());
+    }
+    // A JSON document carries the expiry a subscription token needs; a bare line is the simple
+    // BYOK case. Both are accepted, neither is guessed at: a `{` starts a document.
+    if trimmed.starts_with('{') {
+        return match serde_json::from_str::<CredentialDocument>(trimmed) {
+            Ok(document) if !document.token.trim().is_empty() => LoadedCredential {
+                token: Some(document.token.trim().to_owned()),
+                expires_at_unix: document.expires_at_unix,
+                error: None,
+            },
+            Ok(_) => absent("credential document has an empty `token`".into()),
+            Err(_) => {
+                absent("credential document must be {\"token\":\"…\",\"expires_at_unix\":…}".into())
+            }
+        };
+    }
+    if trimmed.lines().count() != 1 || trimmed.chars().any(char::is_whitespace) {
+        return absent("credential file must hold one token line or a JSON document".into());
+    }
+    LoadedCredential {
+        token: Some(trimmed.to_owned()),
+        expires_at_unix: None,
+        error: None,
+    }
+}
+
 /// One configured account/gateway. A credential is intentionally omitted from Debug output.
 #[derive(Clone)]
 pub struct ProviderInstance {
@@ -255,8 +563,9 @@ pub struct ProviderInstance {
     error_profile: ErrorProfile,
     api_root: ApiRoot,
     catalog_strategy: CatalogStrategy,
-    credential: Option<String>,
+    credential: CredentialSource,
     static_metadata: Arc<crate::StaticProviderMetadata>,
+    prompt_cache: bool,
 }
 
 impl fmt::Debug for ProviderInstance {
@@ -273,10 +582,11 @@ impl fmt::Debug for ProviderInstance {
                 "static_metadata_revision",
                 &self.static_metadata.bundle_revision(),
             )
-            .field(
-                "credential",
-                &self.credential.as_ref().map(|_| "[REDACTED]"),
-            )
+            // `CredentialSource` has a hand-written Debug that never prints a value, so this is
+            // strictly better than the blanket "[REDACTED]" it replaces: kind, name and presence
+            // stay visible, which is what an operator debugging a route actually needs.
+            .field("credential", &self.credential)
+            .field("prompt_cache", &self.prompt_cache)
             .finish()
     }
 }
@@ -340,7 +650,7 @@ impl ProviderInstance {
         }
         let catalog_strategy = default_catalog_strategy(adapter, &api_root)?;
         let error_profile = default_error_profile(adapter, &api_root);
-        let credential = credential.filter(|value| !value.trim().is_empty());
+        let credential = CredentialSource::env_value(credential);
         Ok(Self {
             id,
             display_name,
@@ -350,6 +660,7 @@ impl ProviderInstance {
             catalog_strategy,
             credential,
             static_metadata: crate::StaticProviderMetadata::embedded(),
+            prompt_cache: true,
         })
     }
 
@@ -396,6 +707,22 @@ impl ProviderInstance {
         self
     }
 
+    /// Whether this route may mark prompt-cache breakpoints. Default on.
+    pub fn prompt_cache(&self) -> bool {
+        self.prompt_cache
+    }
+
+    /// Opt one configured route out of prompt caching.
+    ///
+    /// `cache_control` is part of the Anthropic Messages wire, not a per-account entitlement, so
+    /// every adapter speaking that wire marks breakpoints by default. This is the escape hatch
+    /// for the rare gateway that rejects the field outright rather than ignoring it; it is the
+    /// operator declaring an endpoint fact, never a guess Core makes from a model name.
+    pub fn with_prompt_cache(mut self, prompt_cache: bool) -> Self {
+        self.prompt_cache = prompt_cache;
+        self
+    }
+
     /// Replace dated world-data snapshots while retaining the exact configured route and adapter.
     pub fn with_static_metadata(
         mut self,
@@ -421,8 +748,25 @@ impl ProviderInstance {
         self.static_metadata.clone()
     }
 
+    /// Replace the credential provenance while keeping the exact configured route. This is the
+    /// seam a hosted subscription token uses: the composition root hands over a file source and
+    /// every later resolution re-reads it.
+    pub fn with_credential_source(mut self, credential: CredentialSource) -> Self {
+        self.credential = credential;
+        self
+    }
+
+    pub fn credential_source(&self) -> &CredentialSource {
+        &self.credential
+    }
+
+    /// Value-free credential provenance for `core auth status`, `/status`, and `/config`.
+    pub fn credential_status(&self) -> CredentialStatus {
+        self.credential.status()
+    }
+
     pub fn has_credential(&self) -> bool {
-        self.credential.is_some()
+        self.credential.resolve().is_some()
     }
 
     /// Derive an opaque, installation-local scope for credential-visible catalog evidence.
@@ -435,7 +779,7 @@ impl ProviderInstance {
         use hmac::{Hmac, Mac};
         use sha2::Sha256;
 
-        let credential = self.credential.as_deref()?;
+        let credential = self.credential.resolve()?;
         let mut mac = Hmac::<Sha256>::new_from_slice(local_key)
             .expect("HMAC-SHA256 accepts every key length");
         update_mac_part(&mut mac, b"core/catalog-cache-credential-scope/v1");
@@ -447,10 +791,13 @@ impl ProviderInstance {
     }
 
     /// Construct the turn transport without exposing the credential to frontend crates.
+    ///
+    /// The credential is resolved HERE, per turn, not captured at construction: a file-backed
+    /// subscription token that rotated since the last turn is picked up without a restart.
     pub fn build_turn_provider(&self) -> Result<Box<dyn crate::Provider>, ProviderError> {
         let credential =
             self.credential
-                .clone()
+                .resolve()
                 .ok_or_else(|| ProviderError::MissingCredential {
                     provider: self.id.clone(),
                 })?;
@@ -459,6 +806,7 @@ impl ProviderInstance {
                 crate::Anthropic::with_root(credential, self.api_root.clone())?
                     .with_error_profile(self.error_profile)
                     .with_static_metadata(self.static_metadata.clone())
+                    .with_prompt_cache(self.prompt_cache)
                     .with_route_scope(self.id.clone())?,
             )),
             AdapterKind::OpenAiCompatibleChat => Ok(Box::new(
@@ -475,8 +823,8 @@ impl ProviderInstance {
         }
     }
 
-    pub(crate) fn credential(&self) -> Option<&str> {
-        self.credential.as_deref()
+    pub(crate) fn credential(&self) -> Option<String> {
+        self.credential.resolve()
     }
 }
 
@@ -739,16 +1087,16 @@ pub async fn discover_catalog(
     let deadline = Instant::now() + TOTAL_DISCOVERY_TIMEOUT;
     match &instance.catalog_strategy {
         CatalogStrategy::AnthropicModels => {
-            let raw = discover_anthropic(&client, instance, credential, deadline).await?;
+            let raw = discover_anthropic(&client, instance, &credential, deadline).await?;
             Ok(CatalogSnapshot::from_raw(instance, raw))
         }
         CatalogStrategy::OpenAiModels => {
-            let raw = discover_openai(&client, instance, credential, deadline).await?;
+            let raw = discover_openai(&client, instance, &credential, deadline).await?;
             Ok(CatalogSnapshot::from_raw(instance, raw))
         }
         CatalogStrategy::FireworksControlPlane { api_root } => {
             let models =
-                discover_fireworks(&client, instance, credential, api_root, deadline).await?;
+                discover_fireworks(&client, instance, &credential, api_root, deadline).await?;
             Ok(CatalogSnapshot::from_descriptors(instance, models))
         }
         CatalogStrategy::Unsupported { .. } => unreachable!("handled before credential lookup"),
@@ -809,7 +1157,7 @@ pub async fn probe_account(
                         .into(),
                 ));
             };
-            probe_fireworks_accounts(&client, instance, credential, api_root).await
+            probe_fireworks_accounts(&client, instance, &credential, api_root).await
         }
     }
 }
@@ -2825,6 +3173,87 @@ mod tests {
     }
 
     #[test]
+    fn default_transport_pins_the_connection_reuse_policy() {
+        // reqwest exposes no getter for either option, so the audited policy is pinned as named
+        // constants applied in the single client constructor; the behavioural half of this pin is
+        // `a_second_turn_reuses_the_pooled_connection`.
+        assert_eq!(HTTP_POOL_IDLE_TIMEOUT, Duration::from_secs(300));
+        assert_eq!(HTTP_TCP_KEEPALIVE, Duration::from_secs(30));
+        assert!(
+            HTTP_POOL_IDLE_TIMEOUT > Duration::from_secs(90),
+            "the pool must outlive a think longer than reqwest's 90s default, or the next turn \
+             pays a fresh TLS handshake"
+        );
+        assert!(DefaultHttpTransport.client().is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_second_turn_reuses_the_pooled_connection() {
+        // Audited on origin/main: with no pool idle timeout and no TCP keepalive, the connection
+        // was gone after a long think and the next turn re-handshaked (0.78-1.02s measured).
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            // Exactly one accept: both turns must arrive on the same connection.
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            for _ in 0..2 {
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                loop {
+                    let read = stream.read(&mut chunk).unwrap();
+                    assert!(read > 0, "client closed the pooled connection");
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                // Keep-alive: no `Connection: close`, so the connection returns to the pool.
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}"
+                )
+                .unwrap();
+                stream.flush().unwrap();
+            }
+            // A connection the client opened instead of reusing is still queued in the backlog.
+            listener.set_nonblocking(true).unwrap();
+            sender.send(listener.accept().is_ok()).unwrap();
+        });
+
+        let client = DefaultHttpTransport.client().unwrap();
+        let url = format!("http://{address}/v1/messages");
+        for _ in 0..2 {
+            let response = client.get(&url).send().await.unwrap();
+            assert!(response.status().is_success());
+            // The body must be drained before the connection can return to the pool.
+            response.bytes().await.unwrap();
+            // Stands in for the think between two turns.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            !receiver.recv().unwrap(),
+            "the second turn opened a new connection instead of reusing the pooled one"
+        );
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn prompt_cache_is_on_by_default_and_opt_out_survives_construction() {
+        let instance = instance(AdapterKind::AnthropicMessages);
+        assert!(instance.prompt_cache(), "caching is the default");
+        let opted_out = instance.clone().with_prompt_cache(false);
+        assert!(!opted_out.prompt_cache());
+        // The opt-out is a route fact, so it must survive the clone the directory keeps and
+        // still build a turn provider.
+        assert!(!opted_out.clone().prompt_cache());
+        assert!(opted_out.build_turn_provider().is_ok());
+    }
+
+    #[test]
     fn api_root_preserves_exact_prefixes() {
         let cases = [
             (
@@ -3884,6 +4313,184 @@ mod tests {
         store.mark_ready("q");
         store.update_from_error("q", &model);
         assert_eq!(store.get("q").availability, AccountAvailability::Ready);
+    }
+
+    fn credential_file(name: &str, contents: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "core-credential-{name}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::write(&path, contents).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        path
+    }
+
+    fn instance_with_source(source: CredentialSource) -> ProviderInstance {
+        ProviderInstance::new(
+            "sub",
+            "Subscription",
+            AdapterKind::OpenAiCompatibleChat,
+            ApiRoot::parse("https://gateway.example/v1").unwrap(),
+            None,
+        )
+        .unwrap()
+        .with_credential_source(source)
+    }
+
+    /// I-22 — a credential was a frozen `String`, so a subscription token could never refresh:
+    /// the value was snapshotted at construction and rotation required restarting Core. The file
+    /// source must be re-read whenever the cached token is inside its refresh window, so a token
+    /// rewritten mid-session is the one the next turn dispatches with.
+    #[test]
+    fn i22_an_expiring_file_credential_refreshes_without_a_restart() {
+        let now = unix_now();
+        let path = credential_file(
+            "rotates",
+            &format!(r#"{{"token":"first","expires_at_unix":{}}}"#, now + 30),
+        );
+        let instance = instance_with_source(CredentialSource::file(path.clone()));
+
+        assert_eq!(instance.credential(), Some("first".into()));
+        assert!(instance.build_turn_provider().is_ok());
+
+        std::fs::write(
+            &path,
+            format!(r#"{{"token":"second","expires_at_unix":{}}}"#, now + 30),
+        )
+        .unwrap();
+        assert_eq!(
+            instance.credential(),
+            Some("second".into()),
+            "a rotated token inside the refresh window must be re-read, not served from a snapshot"
+        );
+
+        let status = instance.credential_status();
+        assert_eq!(status.kind, CredentialKind::File);
+        assert!(status.present);
+        assert_eq!(status.expires_at_unix, Some(now + 30));
+        assert!(
+            !status.display().contains("second"),
+            "credential status must never carry the value: {}",
+            status.display()
+        );
+        std::fs::remove_file(path).ok();
+    }
+
+    /// A credential that is comfortably inside its validity window is served from the cache, and
+    /// an environment credential keeps exactly its previous snapshot behaviour.
+    #[test]
+    fn i22_a_valid_token_is_cached_and_an_env_credential_is_unchanged() {
+        let far_future = unix_now() + 10 * 365 * 24 * 60 * 60;
+        let path = credential_file(
+            "cached",
+            &format!(r#"{{"token":"stable","expires_at_unix":{far_future}}}"#),
+        );
+        let instance = instance_with_source(CredentialSource::file(path.clone()));
+        assert_eq!(instance.credential(), Some("stable".into()));
+        std::fs::write(&path, r#"{"token":"ignored-while-valid"}"#).unwrap();
+        assert_eq!(instance.credential(), Some("stable".into()));
+        std::fs::remove_file(path).ok();
+
+        let env = instance_with_source(CredentialSource::env("GATEWAY_KEY", Some("k".into())));
+        assert_eq!(env.credential(), Some("k".into()));
+        assert!(env.has_credential());
+        let status = env.credential_status();
+        assert_eq!(status.kind, CredentialKind::Env);
+        assert_eq!(status.name, "GATEWAY_KEY");
+        assert!(status.present);
+        assert_eq!(status.expires_at_unix, None);
+
+        let empty = instance_with_source(CredentialSource::env("GATEWAY_KEY", None));
+        assert!(!empty.has_credential());
+        assert!(!empty.credential_status().present);
+        assert!(matches!(
+            empty.build_turn_provider(),
+            Err(ProviderError::MissingCredential { .. })
+        ));
+    }
+
+    /// No credential value may reach a formatter, a log line, or a status row — the only thing
+    /// that ever leaves this type is the source name.
+    #[test]
+    fn i22_a_credential_value_never_escapes_through_debug_or_status() {
+        let path = credential_file("redacted", "top-secret-token\n");
+        let instance = instance_with_source(CredentialSource::file(path.clone()));
+        assert_eq!(instance.credential(), Some("top-secret-token".into()));
+
+        let rendered = format!("{instance:?}");
+        assert!(
+            !rendered.contains("top-secret-token"),
+            "provider Debug leaked a credential: {rendered}"
+        );
+        assert!(rendered.contains(&path.display().to_string()));
+        assert_eq!(
+            instance.credential_source().file_path(),
+            Some(path.as_path()),
+            "the composition root needs the path to add it to the redaction set"
+        );
+
+        let env =
+            instance_with_source(CredentialSource::env("GATEWAY_KEY", Some("sk-live".into())));
+        let rendered = format!("{env:?}");
+        assert!(
+            !rendered.contains("sk-live"),
+            "provider Debug leaked an env credential: {rendered}"
+        );
+        std::fs::remove_file(path).ok();
+    }
+
+    /// A credential file is the highest-value file Core reads. Anything that is not a small,
+    /// private, regular file with one token resolves to absent WITH a reason, never to a guess.
+    #[test]
+    fn i22_a_credential_file_is_bounded_private_and_explicit() {
+        let missing = instance_with_source(CredentialSource::file(
+            std::env::temp_dir().join("core-credential-does-not-exist"),
+        ));
+        assert!(!missing.has_credential());
+        assert_eq!(
+            missing.credential_status().error.as_deref(),
+            Some("credential file is absent")
+        );
+
+        let oversized = credential_file("oversized", &"x".repeat(9 * 1024));
+        let instance = instance_with_source(CredentialSource::file(oversized.clone()));
+        assert!(!instance.has_credential());
+        assert!(
+            instance
+                .credential_status()
+                .error
+                .is_some_and(|error| error.contains("8 KiB"))
+        );
+        std::fs::remove_file(oversized).ok();
+
+        let malformed = credential_file("malformed", r#"{"token":""}"#);
+        let instance = instance_with_source(CredentialSource::file(malformed.clone()));
+        assert!(!instance.has_credential());
+        std::fs::remove_file(malformed).ok();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let world = credential_file("world-readable", "token\n");
+            std::fs::set_permissions(&world, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let instance = instance_with_source(CredentialSource::file(world.clone()));
+            assert!(!instance.has_credential());
+            assert!(
+                instance
+                    .credential_status()
+                    .error
+                    .is_some_and(|error| error.contains("chmod 600"))
+            );
+            std::fs::remove_file(world).ok();
+        }
     }
 }
 

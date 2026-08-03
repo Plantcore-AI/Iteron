@@ -519,6 +519,7 @@ dependencies = [
  "core-obs",
  "core-protocol",
  "hex",
+ "libc",
  "serde",
  "serde_json",
  "sha2",

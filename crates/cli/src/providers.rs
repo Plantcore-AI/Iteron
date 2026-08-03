@@ -4,14 +4,14 @@
 //! `core-provider`; this layer supplies built-in instance definitions, merges trusted user config,
 //! performs bounded discovery concurrently, and resolves an explicit `(provider, model)` pair.
 
-use crate::config::ProviderConfig;
+use crate::config::{ProviderConfig, ProviderCredential};
 use core_provider::catalog::glm_standard_schema_catalog;
 use core_provider::{
     AccountAvailability, AccountProbe, AccountProbeResult, AdapterKind, ApiRoot,
-    BalanceAvailability, CatalogSnapshot, CatalogStrategy, Compatibility, ErrorProfile,
-    HealthReportingProvider, ModelDescriptor, ModelFamily, Provider, ProviderError, ProviderHealth,
-    ProviderHealthStore, ProviderInstance, RawModel, Selectability, StaticProviderMetadata,
-    StreamItem, TurnRequest, TurnResult, discover_catalog, probe_account,
+    BalanceAvailability, CatalogSnapshot, CatalogStrategy, Compatibility, CredentialSource,
+    ErrorProfile, HealthReportingProvider, ModelDescriptor, ModelFamily, Provider, ProviderError,
+    ProviderHealth, ProviderHealthStore, ProviderInstance, RawModel, Selectability,
+    StaticProviderMetadata, StreamItem, TurnRequest, TurnResult, discover_catalog, probe_account,
 };
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
@@ -20,9 +20,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // Six built-ins plus at most 64 trusted custom instances (the config validator's ceiling).
 const MAX_PROVIDER_INSTANCES: usize = 70;
@@ -50,6 +50,24 @@ const MAX_CACHED_MODELS_TOTAL: usize = 50_000;
 const MAX_CACHED_FAMILIES_PER_ENTRY: usize = 1_024;
 const MAX_CACHED_TEXT_BYTES: usize = 512;
 const STATIC_PROVIDER_METADATA_FILE: &str = "provider-metadata.json";
+/// Wall-clock a launch may spend on the providers it actually needs before the first frame. Past
+/// it the instance falls back to whatever the cache already proved and finishes in the background:
+/// a black-holed endpoint carries a 15 s discovery deadline plus a second one for its account
+/// probe, which is 30 s of black screen for one misconfigured entry.
+const EAGER_DISCOVERY_BUDGET: Duration = Duration::from_millis(1_500);
+const PROBE_CACHE_FILE: &str = "account-probes-v1.json";
+const PROBE_CACHE_VERSION: u32 = 1;
+/// A positive probe is evidence for minutes, not days: balance and suspension both move under the
+/// operator's feet. Long enough that repeated launches stop paying, short enough to notice.
+const PROBE_CACHE_TTL_SECS: u64 = 15 * 60;
+/// A failing probe backs off exponentially instead of costing a round trip on every launch: one
+/// minute, then two, four… up to a day. A key rejected weeks ago is retried once a day, not once
+/// per `core` invocation.
+const PROBE_BACKOFF_BASE_SECS: u64 = 60;
+const PROBE_BACKOFF_CAP_SECS: u64 = 24 * 60 * 60;
+const MAX_PROBE_FAILURE_EXPONENT: u32 = 32;
+const MAX_PROBE_CACHE_BYTES: usize = 64 * 1024;
+const MAX_PROBE_CACHE_ENTRIES: usize = MAX_PROVIDER_INSTANCES;
 static CACHE_TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,10 +118,28 @@ enum CatalogProvenance {
     OperatorExplicit,
 }
 
+impl CatalogProvenance {
+    /// Operator-facing name for the evidence class behind the visible model inventory.
+    fn label(&self) -> String {
+        match self {
+            Self::Unavailable => "unavailable".into(),
+            Self::DynamicFresh => "provider catalog (fresh)".into(),
+            Self::CachedFresh => "provider catalog (cached)".into(),
+            Self::StaticOfficial { version, source } => {
+                format!("official static schema {version} ({source})")
+            }
+            Self::OperatorManifest => "operator manifest".into(),
+            Self::OperatorExplicit => "operator-typed model".into(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ProviderEntry {
     pub instance: ProviderInstance,
-    pub key_env: String,
+    /// Where this instance's credential is declared. Only the NAME (an environment variable or a
+    /// file path) lives here; the value is resolved per turn inside the provider instance.
+    pub credential: ProviderCredential,
     pub enabled: bool,
     pub catalog_enabled: bool,
     pub catalog: Option<CatalogSnapshot>,
@@ -126,6 +162,16 @@ impl ProviderEntry {
 
     pub fn display_name(&self) -> &str {
         self.instance.display_name()
+    }
+
+    /// Value-free credential provenance for `/status`, `/config`, and `core auth status`.
+    pub fn credential_display(&self) -> String {
+        self.instance.credential_status().display()
+    }
+
+    /// The evidence class behind this entry's visible model inventory.
+    pub fn catalog_provenance_label(&self) -> String {
+        self.catalog_provenance.label()
     }
 }
 
@@ -417,63 +463,433 @@ impl CatalogCache {
             }
             self.entries.remove(0);
         };
+        write_private_file_atomic(path, &bytes, CATALOG_CACHE_FILE)
+    }
+}
 
-        let parent = path.parent().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "cache path has no parent")
-        })?;
-        let directory = prepare_private_cache_directory(parent)?;
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(CATALOG_CACHE_FILE);
-        let mut temporary = None;
-        let nonce = CACHE_TEMP_NONCE.fetch_add(1, AtomicOrdering::Relaxed);
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0);
-        for attempt in 0..16u8 {
-            let candidate = parent.join(format!(
-                ".{file_name}.tmp-{}-{timestamp:x}-{nonce:x}-{attempt}",
-                std::process::id()
-            ));
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            match options.open(&candidate) {
-                Ok(file) => {
-                    temporary = Some((candidate, file));
-                    break;
-                }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
+/// Publish `bytes` at `path` through a 0600 temporary file and a rename, inside a directory whose
+/// identity and permissions were verified first. Shared by both operator caches so a second cache
+/// cannot quietly acquire weaker durability or weaker permissions than the first.
+fn write_private_file_atomic(path: &Path, bytes: &[u8], fallback_name: &str) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "cache path has no parent"))?;
+    let directory = prepare_private_cache_directory(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(fallback_name);
+    let mut temporary = None;
+    let nonce = CACHE_TEMP_NONCE.fetch_add(1, AtomicOrdering::Relaxed);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    for attempt in 0..16u8 {
+        let candidate = parent.join(format!(
+            ".{file_name}.tmp-{}-{timestamp:x}-{nonce:x}-{attempt}",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
         }
-        let Some((temporary_path, mut file)) = temporary else {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "could not reserve an atomic provider-cache temporary file",
-            ));
+        match options.open(&candidate) {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let Some((temporary_path, mut file)) = temporary else {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not reserve an atomic provider-cache temporary file",
+        ));
+    };
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary_path, path)?;
+        // Persist the rename itself where the platform supports directory fsync.
+        if let Some(directory) = directory {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    if result.is_ok() && file_name == CATALOG_CACHE_FILE {
+        // A cache-format bump renames the file, so every earlier generation just stayed in
+        // `~/.core/cache/providers` forever — a full stale catalog nobody reads and nothing
+        // deletes. Reclaim them once the current generation is durable on disk.
+        for superseded in 1..CATALOG_CACHE_VERSION {
+            let _ = fs::remove_file(parent.join(format!("catalogs-v{superseded}.json")));
+        }
+    }
+    result
+}
+
+/// Persisted account-probe evidence, kept beside the catalog cache in its own versioned file.
+///
+/// The catalog cache short-circuits only the `/models` request; the account probe used to run on
+/// every launch even on a cache hit, and a failed probe was never written back at all. A key that
+/// has been rejected for weeks therefore still cost a round trip each time `core` started.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProbeCache {
+    version: u32,
+    entries: Vec<CachedProbe>,
+}
+
+impl Default for ProbeCache {
+    fn default() -> Self {
+        Self {
+            version: PROBE_CACHE_VERSION,
+            entries: Vec::new(),
+        }
+    }
+}
+
+/// One provider's last probe outcome, bound to the exact endpoint, probe kind and credential that
+/// produced it. A rotated key or a re-pointed root does not inherit the old verdict.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CachedProbe {
+    provider_id: String,
+    api_root: String,
+    probe: String,
+    credential_scope: String,
+    observed_at_unix_secs: u64,
+    outcome: CachedProbeOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum CachedProbeOutcome {
+    /// The provider answered. Reusable until the TTL expires.
+    Observed {
+        availability: CachedAvailability,
+        balance: CachedBalance,
+    },
+    /// The provider did not answer, or answered with an error. Counted so the retry interval can
+    /// grow instead of paying the same failed round trip on every launch.
+    Failed { consecutive_failures: u32 },
+}
+
+/// A closed serialization vocabulary for probe evidence. `AccountAvailability` is a provider-crate
+/// enum; mapping it explicitly means adding a variant there cannot silently change what a cache
+/// file written by an older binary is understood to mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CachedAvailability {
+    Unknown,
+    Discovering,
+    Ready,
+    MissingCredential,
+    AuthenticationBlocked,
+    BillingBlocked,
+    PermissionBlocked,
+    RateLimited,
+    Degraded,
+    ConfigurationError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CachedBalance {
+    Unknown,
+    Sufficient,
+    Depleted,
+}
+
+impl CachedAvailability {
+    fn from_live(value: AccountAvailability) -> Self {
+        match value {
+            AccountAvailability::Unknown => Self::Unknown,
+            AccountAvailability::Discovering => Self::Discovering,
+            AccountAvailability::Ready => Self::Ready,
+            AccountAvailability::MissingCredential => Self::MissingCredential,
+            AccountAvailability::AuthenticationBlocked => Self::AuthenticationBlocked,
+            AccountAvailability::BillingBlocked => Self::BillingBlocked,
+            AccountAvailability::PermissionBlocked => Self::PermissionBlocked,
+            AccountAvailability::RateLimited => Self::RateLimited,
+            AccountAvailability::Degraded => Self::Degraded,
+            AccountAvailability::ConfigurationError => Self::ConfigurationError,
+        }
+    }
+
+    fn to_live(self) -> AccountAvailability {
+        match self {
+            Self::Unknown => AccountAvailability::Unknown,
+            Self::Discovering => AccountAvailability::Discovering,
+            Self::Ready => AccountAvailability::Ready,
+            Self::MissingCredential => AccountAvailability::MissingCredential,
+            Self::AuthenticationBlocked => AccountAvailability::AuthenticationBlocked,
+            Self::BillingBlocked => AccountAvailability::BillingBlocked,
+            Self::PermissionBlocked => AccountAvailability::PermissionBlocked,
+            Self::RateLimited => AccountAvailability::RateLimited,
+            Self::Degraded => AccountAvailability::Degraded,
+            Self::ConfigurationError => AccountAvailability::ConfigurationError,
+        }
+    }
+}
+
+impl CachedBalance {
+    fn from_live(value: BalanceAvailability) -> Self {
+        match value {
+            BalanceAvailability::Unknown => Self::Unknown,
+            BalanceAvailability::Sufficient => Self::Sufficient,
+            BalanceAvailability::Depleted => Self::Depleted,
+        }
+    }
+
+    fn to_live(self) -> BalanceAvailability {
+        match self {
+            Self::Unknown => BalanceAvailability::Unknown,
+            Self::Sufficient => BalanceAvailability::Sufficient,
+            Self::Depleted => BalanceAvailability::Depleted,
+        }
+    }
+}
+
+/// Exact cache key for one probe: provider id, endpoint, probe kind, credential scope.
+type ProbeIdentity = (String, String, String, String);
+
+/// What this launch should do about one provider's account probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeDecision {
+    /// A still-fresh observation stands in for the request.
+    Reuse(AccountProbeResult),
+    /// A recent failure is still inside its backoff window. Make no request and learn nothing new.
+    Skip,
+    /// Probe now; `failures` is the consecutive-failure run this attempt would extend.
+    Run { failures: u32 },
+}
+
+impl ProbeCache {
+    fn load(path: &Path) -> Self {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return Self::default();
         };
-        let result = (|| {
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            drop(file);
-            fs::rename(&temporary_path, path)?;
-            // Persist the rename itself where the platform supports directory fsync.
-            if let Some(directory) = directory {
-                let _ = directory.sync_all();
-            }
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary_path);
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.len() > MAX_PROBE_CACHE_BYTES as u64
+        {
+            return Self::default();
         }
-        result
+        let Ok(file) = File::open(path) else {
+            return Self::default();
+        };
+        let Ok(opened_metadata) = file.metadata() else {
+            return Self::default();
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.dev() != opened_metadata.dev()
+                || metadata.ino() != opened_metadata.ino()
+                || opened_metadata.mode() & 0o077 != 0
+            {
+                return Self::default();
+            }
+        }
+        // Same metadata/read-gap rule as the catalog cache: the bounded read, not the stat, is
+        // what actually caps the allocation.
+        let mut bytes = Vec::with_capacity(metadata.len() as usize + 1);
+        let Ok(_) = file
+            .take((MAX_PROBE_CACHE_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+        else {
+            return Self::default();
+        };
+        if bytes.len() > MAX_PROBE_CACHE_BYTES {
+            return Self::default();
+        }
+        serde_json::from_slice::<Self>(&bytes)
+            .ok()
+            .filter(Self::is_valid)
+            .unwrap_or_default()
+    }
+
+    fn is_valid(&self) -> bool {
+        if self.version != PROBE_CACHE_VERSION || self.entries.len() > MAX_PROBE_CACHE_ENTRIES {
+            return false;
+        }
+        let mut identities = BTreeSet::new();
+        self.entries
+            .iter()
+            .all(|entry| entry.is_valid() && identities.insert(entry.identity()))
+    }
+
+    /// Decide the probe for one entry without making any request.
+    fn decide(&self, identity: &ProbeIdentity, now: u64) -> ProbeDecision {
+        let Some(cached) = self
+            .entries
+            .iter()
+            .rev()
+            .find(|cached| &cached.identity() == identity)
+        else {
+            return ProbeDecision::Run { failures: 0 };
+        };
+        // A record stamped in the future is a clock change, not evidence. Re-probe.
+        let Some(age) = now.checked_sub(cached.observed_at_unix_secs) else {
+            return ProbeDecision::Run { failures: 0 };
+        };
+        match cached.outcome {
+            CachedProbeOutcome::Observed {
+                availability,
+                balance,
+            } if age < PROBE_CACHE_TTL_SECS => ProbeDecision::Reuse(AccountProbeResult {
+                availability: availability.to_live(),
+                balance: balance.to_live(),
+            }),
+            CachedProbeOutcome::Observed { .. } => ProbeDecision::Run { failures: 0 },
+            CachedProbeOutcome::Failed {
+                consecutive_failures,
+            } if age < probe_backoff_secs(consecutive_failures) => ProbeDecision::Skip,
+            CachedProbeOutcome::Failed {
+                consecutive_failures,
+            } => ProbeDecision::Run {
+                failures: consecutive_failures,
+            },
+        }
+    }
+
+    /// One current record per identity, newest wins, oldest evicted at the cap.
+    fn upsert(&mut self, record: CachedProbe) {
+        if !record.is_valid() {
+            return;
+        }
+        let identity = record.identity();
+        self.entries
+            .retain(|existing| existing.identity() != identity);
+        self.entries.push(record);
+        while self.entries.len() > MAX_PROBE_CACHE_ENTRIES {
+            self.entries.remove(0);
+        }
+    }
+
+    fn save_atomic(&mut self, path: &Path) -> io::Result<()> {
+        self.version = PROBE_CACHE_VERSION;
+        let bytes = loop {
+            let bytes = serde_json::to_vec(self).map_err(io::Error::other)?;
+            if bytes.len() <= MAX_PROBE_CACHE_BYTES {
+                break bytes;
+            }
+            if self.entries.len() <= 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "provider account-probe cache entry exceeds byte bound",
+                ));
+            }
+            self.entries.remove(0);
+        };
+        write_private_file_atomic(path, &bytes, PROBE_CACHE_FILE)
+    }
+}
+
+impl CachedProbe {
+    fn identity(&self) -> ProbeIdentity {
+        (
+            self.provider_id.clone(),
+            self.api_root.clone(),
+            self.probe.clone(),
+            self.credential_scope.clone(),
+        )
+    }
+
+    fn is_valid(&self) -> bool {
+        valid_cached_text(&self.provider_id, 128, false)
+            && valid_cached_text(&self.api_root, 2_048, false)
+            && account_probe_from_key(&self.probe).is_some()
+            && valid_credential_scope(&self.credential_scope)
+    }
+}
+
+/// One minute, doubling per consecutive failure, capped at a day. Zero failures never backs off.
+fn probe_backoff_secs(consecutive_failures: u32) -> u64 {
+    if consecutive_failures == 0 {
+        return 0;
+    }
+    let exponent = (consecutive_failures - 1).min(MAX_PROBE_FAILURE_EXPONENT);
+    PROBE_BACKOFF_BASE_SECS
+        .checked_shl(exponent)
+        .unwrap_or(PROBE_BACKOFF_CAP_SECS)
+        .min(PROBE_BACKOFF_CAP_SECS)
+}
+
+fn account_probe_key(probe: AccountProbe) -> &'static str {
+    match probe {
+        AccountProbe::DeepSeekBalance => "deepseek-balance",
+        AccountProbe::FireworksSuspendState => "fireworks-suspend-state",
+    }
+}
+
+fn account_probe_from_key(key: &str) -> Option<AccountProbe> {
+    match key {
+        "deepseek-balance" => Some(AccountProbe::DeepSeekBalance),
+        "fireworks-suspend-state" => Some(AccountProbe::FireworksSuspendState),
+        _ => None,
+    }
+}
+
+fn probe_identity(
+    entry: &ProviderEntry,
+    probe: AccountProbe,
+    scope_key: &CatalogCacheScopeKey,
+) -> Option<ProbeIdentity> {
+    Some((
+        entry.id().to_owned(),
+        entry.instance.api_root().as_str().to_owned(),
+        account_probe_key(probe).to_owned(),
+        credential_scope(&entry.instance, scope_key)?,
+    ))
+}
+
+/// Probe outcomes observed by this launch, collected across concurrently resolving instances and
+/// written back once. A best-effort cache must never be able to block or fail discovery.
+#[derive(Clone, Default)]
+struct ProbeUpdates {
+    records: Arc<Mutex<Vec<CachedProbe>>>,
+}
+
+impl ProbeUpdates {
+    fn record(
+        &self,
+        identity: ProbeIdentity,
+        observed_at_unix_secs: u64,
+        outcome: CachedProbeOutcome,
+    ) {
+        let (provider_id, api_root, probe, credential_scope) = identity;
+        let record = CachedProbe {
+            provider_id,
+            api_root,
+            probe,
+            credential_scope,
+            observed_at_unix_secs,
+            outcome,
+        };
+        self.records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(record);
+    }
+
+    fn take(&self) -> Vec<CachedProbe> {
+        std::mem::take(
+            &mut *self
+                .records
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 }
 
@@ -995,19 +1411,63 @@ fn default_catalog_cache_path() -> Option<PathBuf> {
     Some(core_protocol::home::path(&home, "cache/providers").join(CATALOG_CACHE_FILE))
 }
 
+/// The probe cache lives beside the catalog cache and shares its directory guarantees.
+fn probe_cache_path_for(catalog_cache_path: Option<&Path>) -> Option<PathBuf> {
+    Some(catalog_cache_path?.with_file_name(PROBE_CACHE_FILE))
+}
+
 fn default_static_provider_metadata_path() -> Option<PathBuf> {
     let home = PathBuf::from(std::env::var_os("HOME")?);
     home.is_absolute()
         .then(|| core_protocol::home::path(&home, STATIC_PROVIDER_METADATA_FILE))
 }
 
-fn load_static_provider_metadata() -> anyhow::Result<Arc<StaticProviderMetadata>> {
-    let metadata = if let Some(path) = default_static_provider_metadata_path() {
-        StaticProviderMetadata::load_optional(&path)?
-            .unwrap_or_else(StaticProviderMetadata::embedded)
-    } else {
-        StaticProviderMetadata::embedded()
+/// Operator opt-in that restores fail-closed loading of the metadata override.
+const STRICT_STATIC_PROVIDER_METADATA_ENV: &str = "CORE_STRICT_PROVIDER_METADATA";
+
+fn strict_static_provider_metadata() -> bool {
+    std::env::var(STRICT_STATIC_PROVIDER_METADATA_ENV)
+        .is_ok_and(|value| matches!(value.trim(), "1" | "true" | "yes"))
+}
+
+/// Resolve the active document plus, when the override was rejected in the tolerant mode, the
+/// bounded operator warning that names the file and the parse error.
+///
+/// A malformed override is an operator-refresh mistake in ONE data file, not a reason to take the
+/// whole binary offline: the loader error used to propagate through discovery and out of both entry
+/// points, killing even credential-free local commands, with no bypass flag (I-48). It now degrades
+/// to the embedded snapshot; `strict` restores fail-closed loading.
+fn resolve_static_provider_metadata(
+    path: Option<&std::path::Path>,
+    strict: bool,
+) -> Result<(Arc<StaticProviderMetadata>, Option<String>), core_provider::ProviderError> {
+    let Some(path) = path else {
+        return Ok((StaticProviderMetadata::embedded(), None));
     };
+    match StaticProviderMetadata::load_optional(path) {
+        Ok(loaded) => Ok((
+            loaded.unwrap_or_else(StaticProviderMetadata::embedded),
+            None,
+        )),
+        Err(error) if !strict => Ok((
+            StaticProviderMetadata::embedded(),
+            Some(format!(
+                "ignoring the provider metadata override at {}: {error}; using the embedded snapshot (set {STRICT_STATIC_PROVIDER_METADATA_ENV}=1 to fail instead)",
+                path.display()
+            )),
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+fn load_static_provider_metadata() -> anyhow::Result<Arc<StaticProviderMetadata>> {
+    let (metadata, warning) = resolve_static_provider_metadata(
+        default_static_provider_metadata_path().as_deref(),
+        strict_static_provider_metadata(),
+    )?;
+    if let Some(warning) = warning {
+        eprintln!("warning: {warning}");
+    }
     let now = current_unix_secs()
         .ok_or_else(|| anyhow::anyhow!("system clock is before the Unix epoch"))?;
     metadata.validate_capture_times(now)?;
@@ -1079,11 +1539,176 @@ fn apply_probe_result(
     }
 }
 
+/// Everything one instance's network resolution needs. Cloned per instance so eager and deferred
+/// work are literally the same code path.
+#[derive(Clone)]
+struct ResolveContext {
+    health: ProviderHealthStore,
+    probe_cache: Arc<ProbeCache>,
+    probe_updates: ProbeUpdates,
+    cache_scope_key: Option<CatalogCacheScopeKey>,
+}
+
+fn ordered_entries(mut indexed: Vec<(usize, ProviderEntry)>) -> Vec<ProviderEntry> {
+    // The configured order is the operator's order and shows up in the picker; concurrent
+    // completion must not reorder it.
+    indexed.sort_by_key(|(index, _)| *index);
+    indexed.into_iter().map(|(_, entry)| entry).collect()
+}
+
+/// Local half of resolving one instance: a valid cache is exact provider/API/adapter/classifier and
+/// credential-scoped evidence. It may satisfy model discovery until its fixed TTL, but never proves
+/// account health: missing credentials and typed probe failures still gate use.
+fn prime_entry_from_cache(
+    entry: &mut ProviderEntry,
+    cache: &CatalogCache,
+    cache_scope_key: Option<&CatalogCacheScopeKey>,
+) -> bool {
+    if entry.catalog_enabled
+        && let Some(scope_key) = cache_scope_key
+        && let Some(catalog) = cache.lookup(entry, scope_key)
+    {
+        entry.catalog = Some(catalog);
+        entry.catalog_stale = false;
+        entry.catalog_provenance = CatalogProvenance::CachedFresh;
+        return true;
+    }
+    false
+}
+
+/// Network half of resolving one instance. Cache priming already happened.
+async fn resolve_entry(
+    mut entry: ProviderEntry,
+    served_from_cache: bool,
+    context: &ResolveContext,
+) -> ProviderEntry {
+    let ResolveContext {
+        health,
+        probe_cache,
+        probe_updates,
+        cache_scope_key,
+    } = context;
+    if !entry.enabled {
+        return entry;
+    }
+    if !entry.instance.has_credential() {
+        health.mark_missing_credential(entry.id());
+        return entry;
+    }
+    // Provider instances remain concurrent through the outer `join_all`, but evidence for one
+    // instance has a deliberate order: observe its catalog first, then run and apply its typed
+    // account probe. This makes a documented positive balance/suspension observation the later
+    // authority for the exact recovery scope encoded by `ProviderHealthStore::update_from_probe`,
+    // instead of pretending two concurrently completed reads had a meaningful fixed observation
+    // order. Unsupported catalogs (notably GLM) are disabled at construction, so they still make
+    // no speculative `/models` request.
+    if entry.catalog_enabled && !served_from_cache {
+        let result = discover_catalog(&entry.instance).await;
+        apply_catalog_result(&mut entry, health, result);
+    }
+    let Some(probe) = account_probe_for(&entry) else {
+        return entry;
+    };
+    // The probe used to run unconditionally, even behind a catalog cache hit and even for an
+    // account that has been rejecting the same key for weeks. Persisted evidence now decides.
+    let identity = cache_scope_key
+        .as_ref()
+        .and_then(|scope_key| probe_identity(&entry, probe, scope_key));
+    let now = current_unix_secs();
+    let decision = match (&identity, now) {
+        (Some(identity), Some(now)) => probe_cache.decide(identity, now),
+        _ => ProbeDecision::Run { failures: 0 },
+    };
+    match decision {
+        ProbeDecision::Skip => {}
+        ProbeDecision::Reuse(result) => apply_probe_result(&entry, health, probe, Ok(result)),
+        ProbeDecision::Run { failures } => {
+            let result = probe_account(&entry.instance, probe).await;
+            if let (Some(identity), Some(now)) = (identity, now) {
+                probe_updates.record(
+                    identity,
+                    now,
+                    match &result {
+                        Ok(result) => CachedProbeOutcome::Observed {
+                            availability: CachedAvailability::from_live(result.availability),
+                            balance: CachedBalance::from_live(result.balance),
+                        },
+                        Err(_) => CachedProbeOutcome::Failed {
+                            consecutive_failures: failures.saturating_add(1),
+                        },
+                    },
+                );
+            }
+            apply_probe_result(&entry, health, probe, result);
+        }
+    }
+    entry
+}
+
 /// Immutable catalog/configuration plus a shared, interior-mutable account health store.
 #[derive(Clone)]
 pub(crate) struct ProviderDirectory {
     entries: Arc<Vec<ProviderEntry>>,
     health: ProviderHealthStore,
+    /// Instances whose network discovery was deliberately NOT awaited before the first frame.
+    /// `None` once every instance is resolved, which is also the shape every legacy caller gets.
+    deferred: Option<Arc<DeferredDiscovery>>,
+}
+
+/// The background half of a split discovery. Exactly one waiter joins the task; every other clone
+/// of the directory reads the settled vector it published.
+struct DeferredDiscovery {
+    /// Ids whose network resolution is still outstanding. A caller that is about to ROUTE through
+    /// one of them has to settle first, and only the id set can say so: a deferred instance may
+    /// already carry a cache-primed catalog and still be missing its account probe.
+    pending: BTreeSet<String>,
+    state: tokio::sync::Mutex<DeferredState>,
+}
+
+enum DeferredState {
+    Pending(tokio::task::JoinHandle<Vec<ProviderEntry>>),
+    Settled(Arc<Vec<ProviderEntry>>),
+    /// The task was cancelled or panicked. The eagerly resolved view stands; never retry silently,
+    /// because a retry would re-run exactly the requests that just failed to complete.
+    Abandoned,
+}
+
+/// Everything the write-back of a completed discovery needs. Bundled so it can be moved wholesale
+/// into the background task without duplicating the inline path.
+struct DiscoveryPersistence {
+    cache: Arc<CatalogCache>,
+    cache_scope_key: Option<CatalogCacheScopeKey>,
+    cache_path: Option<PathBuf>,
+    probe_cache: Arc<ProbeCache>,
+    probe_cache_path: Option<PathBuf>,
+    probe_updates: ProbeUpdates,
+}
+
+impl DiscoveryPersistence {
+    /// A cache write is best-effort operational state: a read-only home or full disk must not take
+    /// a working provider offline.
+    fn commit(self, discovered: &[ProviderEntry]) {
+        if let (Some(path), Some(scope_key)) = (&self.cache_path, self.cache_scope_key.as_ref()) {
+            let mut next_cache = (*self.cache).clone();
+            let mut changed = false;
+            for entry in discovered {
+                changed |= next_cache.upsert(entry, scope_key);
+            }
+            if changed && next_cache.save_atomic(path).is_err() {
+                eprintln!("warning: provider catalog cache could not be persisted");
+            }
+        }
+        let observed = self.probe_updates.take();
+        if let (Some(path), false) = (&self.probe_cache_path, observed.is_empty()) {
+            let mut next_cache = (*self.probe_cache).clone();
+            for record in observed {
+                next_cache.upsert(record);
+            }
+            if next_cache.save_atomic(path).is_err() {
+                eprintln!("warning: provider account-probe cache could not be persisted");
+            }
+        }
+    }
 }
 
 impl ProviderDirectory {
@@ -1093,7 +1718,42 @@ impl ProviderDirectory {
     pub(crate) fn credential_env_names(&self) -> Vec<String> {
         self.entries
             .iter()
-            .map(|entry| entry.key_env.clone())
+            .filter_map(|entry| entry.credential.env_name().map(str::to_owned))
+            .collect()
+    }
+
+    /// Credential FILES backing configured providers. A file-backed subscription token never
+    /// appears in the environment, so the env-name redaction set alone would let its path — and
+    /// therefore, through any read tool, its value — reach an agent, a tool, or a hook.
+    pub(crate) fn credential_file_paths(&self) -> Vec<PathBuf> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .instance
+                    .credential_source()
+                    .file_path()
+                    .map(Path::to_path_buf)
+            })
+            .collect()
+    }
+
+    /// Credential files that live INSIDE the workspace.
+    ///
+    /// The workspace is precisely the region a tool, a child agent, and a hook may read. Keeping a
+    /// credential VALUE out of provider output is worth nothing if `read_file` can open the file
+    /// it came from, and confinement is owned by another layer, so the composition root refuses
+    /// the route rather than trusting a boundary it does not enforce.
+    pub(crate) fn credential_files_inside(&self, workspace: &Path) -> Vec<PathBuf> {
+        self.credential_file_paths()
+            .into_iter()
+            .filter(|path| {
+                let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
+                let workspace = workspace
+                    .canonicalize()
+                    .unwrap_or_else(|_| workspace.to_path_buf());
+                resolved.starts_with(&workspace)
+            })
             .collect()
     }
 
@@ -1101,6 +1761,30 @@ impl ProviderDirectory {
     /// catalogs concurrently across provider instances. Missing credentials make zero network
     /// requests.
     pub async fn discover(user: &[ProviderConfig]) -> anyhow::Result<Self> {
+        Self::discover_entries(Self::compose_entries(user)?, default_catalog_cache_path()).await
+    }
+
+    /// Discovery for a launch that already knows where it is routing.
+    ///
+    /// Only the instances named in `eager` are resolved before the caller can print anything; the
+    /// rest continue in the background and are joined by [`ProviderDirectory::settle`]. Even the
+    /// eager instances are bounded: `EAGER_DISCOVERY_BUDGET` past their cached evidence, they too
+    /// finish behind the first frame. Awaiting every configured provider is what let one
+    /// black-holed endpoint hold the whole launch for a 15 s catalog deadline plus another for its
+    /// account probe.
+    pub async fn discover_eagerly(
+        user: &[ProviderConfig],
+        eager: &[String],
+    ) -> anyhow::Result<Self> {
+        Self::discover_entries_eagerly(
+            Self::compose_entries(user)?,
+            default_catalog_cache_path(),
+            Some(eager),
+        )
+        .await
+    }
+
+    fn compose_entries(user: &[ProviderConfig]) -> anyhow::Result<Vec<ProviderEntry>> {
         let static_metadata = load_static_provider_metadata()?;
         let mut entries = builtin_entries_with_metadata(static_metadata.clone())?;
         let mut ids: BTreeSet<String> = entries.iter().map(|entry| entry.id().to_owned()).collect();
@@ -1120,13 +1804,22 @@ impl ProviderDirectory {
         if entries.len() > MAX_PROVIDER_INSTANCES {
             anyhow::bail!("provider directory exceeds {MAX_PROVIDER_INSTANCES} instances");
         }
-
-        Self::discover_entries(entries, default_catalog_cache_path()).await
+        Ok(entries)
     }
 
     async fn discover_entries(
         entries: Vec<ProviderEntry>,
         cache_path: Option<PathBuf>,
+    ) -> anyhow::Result<Self> {
+        Self::discover_entries_eagerly(entries, cache_path, None).await
+    }
+
+    /// `eager: None` resolves every instance synchronously — the shape every non-launch caller and
+    /// every test still gets. `Some(ids)` splits the work as described on `discover_eagerly`.
+    async fn discover_entries_eagerly(
+        entries: Vec<ProviderEntry>,
+        cache_path: Option<PathBuf>,
+        eager: Option<&[String]>,
     ) -> anyhow::Result<Self> {
         if entries.len() > MAX_PROVIDER_INSTANCES {
             anyhow::bail!("provider directory exceeds {MAX_PROVIDER_INSTANCES} instances");
@@ -1145,70 +1838,179 @@ impl ProviderDirectory {
             (Some(path), Some(_)) => CatalogCache::load(path),
             _ => CatalogCache::default(),
         });
+        let probe_cache_path = cache_scope_key
+            .as_ref()
+            .and_then(|_| probe_cache_path_for(cache_path.as_deref()));
+        let probe_cache = Arc::new(match &probe_cache_path {
+            Some(path) => ProbeCache::load(path),
+            None => ProbeCache::default(),
+        });
+        let probe_updates = ProbeUpdates::default();
 
-        let discovered = join_all(entries.into_iter().map(|mut entry| {
-            let health = health.clone();
-            let cache = cache.clone();
-            let cache_scope_key = cache_scope_key.clone();
-            async move {
-                // A valid cache is exact provider/API/adapter/classifier and credential-scoped
-                // evidence. It may satisfy model discovery until its fixed TTL, but never proves
-                // account health: missing credentials and typed probe failures still gate use.
-                let mut served_from_cache = false;
-                if entry.catalog_enabled
-                    && let Some(scope_key) = cache_scope_key.as_ref()
-                    && let Some(catalog) = cache.lookup(&entry, scope_key)
-                {
-                    entry.catalog = Some(catalog);
-                    entry.catalog_stale = false;
-                    entry.catalog_provenance = CatalogProvenance::CachedFresh;
-                    served_from_cache = true;
-                }
-                if !entry.enabled {
-                    return entry;
-                }
-                if !entry.instance.has_credential() {
-                    health.mark_missing_credential(entry.id());
-                    return entry;
-                }
-                // Provider instances remain concurrent through the outer `join_all`, but evidence
-                // for one instance has a deliberate order: observe its catalog first, then run and
-                // apply its typed account probe. This makes a documented positive balance/suspension
-                // observation the later authority for the exact recovery scope encoded by
-                // `ProviderHealthStore::update_from_probe`, instead of pretending two concurrently
-                // completed reads had a meaningful fixed observation order. Unsupported catalogs
-                // (notably GLM) are disabled at construction, so they still make no speculative
-                // `/models` request.
-                if entry.catalog_enabled && !served_from_cache {
-                    let result = discover_catalog(&entry.instance).await;
-                    apply_catalog_result(&mut entry, &health, result);
-                }
-                if let Some(probe) = account_probe_for(&entry) {
-                    let result = probe_account(&entry.instance, probe).await;
-                    apply_probe_result(&entry, &health, probe, result);
-                }
-                entry
-            }
-        }))
-        .await;
+        // Cache priming is local evidence: it costs no request, so it happens for EVERY instance
+        // — eager or deferred — before anything is allowed to wait. That is also what makes the
+        // eager timeout safe: the fallback is the catalog the cache already proved.
+        let primed: Vec<(usize, ProviderEntry, bool)> = entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut entry)| {
+                let served = prime_entry_from_cache(&mut entry, &cache, cache_scope_key.as_ref());
+                (index, entry, served)
+            })
+            .collect();
+        let (eager_entries, mut pending): (Vec<_>, Vec<_>) = match eager {
+            None => (primed, Vec::new()),
+            Some(ids) => primed
+                .into_iter()
+                .partition(|(_, entry, _)| ids.iter().any(|id| id == entry.id())),
+        };
 
-        // A cache write is best-effort operational state: a read-only home or full disk must not
-        // take a working provider offline. Only fresh dynamic snapshots are admitted; cached and
-        // operator-manifest catalogs can never recursively refresh their own provenance.
-        if let (Some(path), Some(scope_key)) = (cache_path, cache_scope_key.as_ref()) {
-            let mut next_cache = (*cache).clone();
-            let mut changed = false;
-            for entry in &discovered {
-                changed |= next_cache.upsert(entry, scope_key);
-            }
-            if changed && next_cache.save_atomic(&path).is_err() {
-                eprintln!("warning: provider catalog cache could not be persisted");
+        let context = ResolveContext {
+            health: health.clone(),
+            probe_cache: probe_cache.clone(),
+            probe_updates: probe_updates.clone(),
+            cache_scope_key: cache_scope_key.clone(),
+        };
+        let budget = eager.map(|_| EAGER_DISCOVERY_BUDGET);
+        let mut resolved: Vec<(usize, ProviderEntry)> = Vec::new();
+        for (index, entry, served, settled) in
+            join_all(eager_entries.into_iter().map(|(index, entry, served)| {
+                let context = context.clone();
+                async move {
+                    let Some(budget) = budget else {
+                        return (
+                            index,
+                            resolve_entry(entry, served, &context).await,
+                            served,
+                            true,
+                        );
+                    };
+                    // The bound is the whole point: keep whatever the cache already proved and let
+                    // the slow endpoint finish behind the frame with the deferred instances.
+                    let fallback = entry.clone();
+                    match tokio::time::timeout(budget, resolve_entry(entry, served, &context)).await
+                    {
+                        Ok(entry) => (index, entry, served, true),
+                        Err(_) => (index, fallback, served, false),
+                    }
+                }
+            }))
+            .await
+        {
+            if settled {
+                resolved.push((index, entry));
+            } else {
+                pending.push((index, entry, served));
             }
         }
 
+        let persistence = DiscoveryPersistence {
+            cache,
+            cache_scope_key,
+            cache_path,
+            probe_cache,
+            probe_cache_path,
+            probe_updates,
+        };
+        if pending.is_empty() {
+            let discovered = ordered_entries(resolved);
+            persistence.commit(&discovered);
+            return Ok(Self {
+                entries: Arc::new(discovered),
+                health,
+                deferred: None,
+            });
+        }
+
+        // What the caller sees NOW: the eagerly resolved instances plus the pending ones at their
+        // cache-primed state. Nothing here is a network result the caller has not paid for.
+        let immediate = ordered_entries(
+            resolved
+                .iter()
+                .cloned()
+                .chain(
+                    pending
+                        .iter()
+                        .map(|(index, entry, _)| (*index, entry.clone())),
+                )
+                .collect(),
+        );
+        let deferred_ids: BTreeSet<String> = pending
+            .iter()
+            .map(|(_, entry, _)| entry.id().to_owned())
+            .collect();
+        let handle = tokio::spawn(async move {
+            let settled = join_all(pending.into_iter().map(|(index, entry, served)| {
+                let context = context.clone();
+                async move { (index, resolve_entry(entry, served, &context).await) }
+            }))
+            .await;
+            let discovered = ordered_entries(resolved.into_iter().chain(settled).collect());
+            persistence.commit(&discovered);
+            discovered
+        });
+
         Ok(Self {
-            entries: Arc::new(discovered),
+            entries: Arc::new(immediate),
             health,
+            deferred: Some(Arc::new(DeferredDiscovery {
+                pending: deferred_ids,
+                state: tokio::sync::Mutex::new(DeferredState::Pending(handle)),
+            })),
+        })
+    }
+
+    /// Join deferred discovery so a full-catalog read (the model picker, cross-provider model
+    /// resolution) sees every instance. Idempotent, and cheap once the background task has landed.
+    pub(crate) async fn settle(&mut self) {
+        let Some(deferred) = self.deferred.take() else {
+            return;
+        };
+        let mut state = deferred.state.lock().await;
+        let entries = match std::mem::replace(&mut *state, DeferredState::Abandoned) {
+            DeferredState::Pending(handle) => match handle.await {
+                Ok(entries) => Arc::new(entries),
+                // A cancelled or panicked task leaves the eager view standing. Never retry: the
+                // retry is exactly the request that just failed to finish.
+                Err(_) => return,
+            },
+            DeferredState::Settled(entries) => entries,
+            DeferredState::Abandoned => return,
+        };
+        *state = DeferredState::Settled(entries.clone());
+        self.entries = entries;
+    }
+
+    /// True when this launch is about to read routing evidence that deferred discovery has not
+    /// produced yet, so the caller must [`settle`](Self::settle) first. The common case — a routed
+    /// provider that was resolved eagerly, offering the requested model — never waits.
+    pub(crate) fn needs_settled_catalogs(&self, model_id: Option<&str>, provider_id: &str) -> bool {
+        let Some(deferred) = self.deferred.as_ref() else {
+            return false;
+        };
+        // The routed provider itself. `--resume` adopts the provider recorded in the rollout, which
+        // the launch had no way to name before discovery began, so the eager set can miss exactly
+        // the instance every request is about to go to. Its id, not its catalog, is what decides:
+        // a deferred instance can already carry a cache-primed catalog and still owe its account
+        // probe. Routing on half-resolved evidence is how a launch reports "no selectable model"
+        // for a provider that is perfectly healthy.
+        if deferred.pending.contains(provider_id) {
+            return true;
+        }
+        let Some(model_id) = model_id else {
+            return false;
+        };
+        // A provider-qualified id is resolved against that provider alone.
+        if let Some((qualifier, _)) = model_id.split_once(':')
+            && self.entry(qualifier).is_some()
+        {
+            return deferred.pending.contains(qualifier);
+        }
+        !self.entry(provider_id).is_some_and(|entry| {
+            entry
+                .catalog
+                .as_ref()
+                .is_some_and(|catalog| catalog.models.iter().any(|model| model.raw.id == model_id))
         })
     }
 
@@ -1267,7 +2069,7 @@ impl ProviderDirectory {
                 };
                 Some(format!(
                     "missing credential ({}){cache_note}",
-                    entry.key_env
+                    entry.credential.display()
                 ))
             }
             AccountAvailability::AuthenticationBlocked => Some("authentication failed".into()),
@@ -1400,6 +2202,50 @@ impl ProviderDirectory {
         };
         self.validate_selection(&selection, false)?;
         Ok(selection)
+    }
+
+    /// Say WHY a provider yielded no route, using the evidence the directory already holds.
+    ///
+    /// `default_selection` returns `None` for four unrelated states — no credential, a rejected
+    /// credential, an unreachable provider, and a stale cached catalog — and the composition root
+    /// used to collapse all four into `provider ... has no selectable discovered model`, which
+    /// tells an operator on a clean machine nothing at all (I-05). Each state keeps its own line,
+    /// and a missing credential names the exact variable to set.
+    pub fn resolution_error(&self, provider_id: &str) -> String {
+        let Some(entry) = self.entry(provider_id) else {
+            let known: Vec<&str> = self.entries.iter().map(ProviderEntry::id).collect();
+            return format!(
+                "provider `{provider_id}` is not configured (known: {}); run `core setup` or declare it in ~/.core/config.json",
+                known.join(", ")
+            );
+        };
+        match self.blocked_reason(entry) {
+            Some(reason) => {
+                let remedy = match self.health(entry.id()).availability {
+                    AccountAvailability::MissingCredential => format!(
+                        "; run `core setup --byok {provider_id}`, or set it in the environment"
+                    ),
+                    AccountAvailability::AuthenticationBlocked => format!(
+                        "; the credential ({}) was rejected — run `core setup --byok {provider_id}` to replace it",
+                        entry.credential.display()
+                    ),
+                    _ => String::new(),
+                };
+                format!("provider `{provider_id}` is unavailable: {reason}{remedy}")
+            }
+            // Not blocked and still no model: discovery could not reach the provider, or it
+            // returned nothing this build can dispatch a coding turn against.
+            None => match entry.catalog_error.as_deref() {
+                Some(error) => format!(
+                    "provider `{provider_id}` returned no usable catalog: {error}; check network reachability of {} or pin a model with --model",
+                    entry.instance.api_root().as_str()
+                ),
+                None => format!(
+                    "provider `{provider_id}` has no selectable discovered model at {}; pin one explicitly with --model {provider_id}:<model-id>",
+                    entry.instance.api_root().as_str()
+                ),
+            },
+        }
     }
 
     /// Pick the documented default for an official static schema, otherwise the first compatible
@@ -1559,18 +2405,18 @@ impl ProviderDirectory {
         ))
     }
 
-    /// Return only capabilities documented for this exact endpoint/model pair. The official GLM
-    /// 5.2 model page names the standard Chat Completions id and its 1M/128K bounds; no other route
-    /// inherits those values by family or wire-compatibility heuristics.
+    /// Return only capabilities documented for this exact endpoint/model pair. The route identity
+    /// is the (api_root, model) pair — the exact egress destination plus the model id — so a
+    /// wire-compatible gateway at another API root still inherits nothing. Requiring the GLM
+    /// adapter and error profile as well left every other provider with unknown capabilities, which
+    /// silently disabled the over-window preflight and degraded the statusline (I-30).
     pub fn selection_capabilities(&self, selection: &ModelSelection) -> ModelCapabilities {
         let Some(entry) = self.entry(&selection.provider_id) else {
             return ModelCapabilities::unknown();
         };
         let metadata = entry.instance.static_metadata();
-        if entry.instance.api_root().as_str() == metadata.glm_api_root()
-            && entry.instance.adapter() == AdapterKind::OpenAiCompatibleChat
-            && entry.instance.error_profile() == ErrorProfile::Glm
-            && let Some(capabilities) = metadata.glm_model_capabilities(&selection.model_id)
+        if let Some(capabilities) = metadata
+            .route_model_capabilities(entry.instance.api_root().as_str(), &selection.model_id)
         {
             return ModelCapabilities {
                 context_window_tokens: capabilities.context_window_tokens,
@@ -1869,14 +2715,15 @@ fn builtin_entries_with_metadata(
     BUILTINS
         .iter()
         .map(|builtin| {
-            let credential = environment_credential(builtin.key_env);
+            let credential = builtin_credential(builtin.id, builtin.key_env);
             let instance = ProviderInstance::new(
                 builtin.id,
                 builtin.display_name,
                 builtin.adapter,
                 ApiRoot::parse(builtin.api_root)?,
-                credential,
+                None,
             )?
+            .with_credential_source(credential_source(&credential))
             .with_static_metadata(static_metadata.clone());
             let (catalog_enabled, mut catalog_error) = catalog_configuration(&instance, true);
             // GLM publishes a finite model enum in the exact standard Chat Completions request
@@ -1903,7 +2750,7 @@ fn builtin_entries_with_metadata(
             };
             Ok(ProviderEntry {
                 instance,
-                key_env: builtin.key_env.into(),
+                credential,
                 enabled: true,
                 catalog_enabled,
                 catalog,
@@ -1944,15 +2791,16 @@ fn entry_from_config_with_metadata(
         "openai_chat" => AdapterKind::OpenAiCompatibleChat,
         _ => anyhow::bail!("provider `{}` has an unsupported adapter", config.id),
     };
-    let credential = environment_credential(&config.key_env);
+    let credential = config.resolved_credential().map_err(anyhow::Error::msg)?;
     let display_name = config.display_name.as_deref().unwrap_or(&config.id);
     let mut instance = ProviderInstance::new(
         config.id.clone(),
         display_name,
         adapter,
         ApiRoot::parse(&config.api_root)?,
-        credential,
+        None,
     )?
+    .with_credential_source(credential_source(&credential))
     .with_static_metadata(static_metadata);
     if let Some(profile) = config.error_profile.as_deref() {
         let profile = match profile {
@@ -1987,7 +2835,7 @@ fn entry_from_config_with_metadata(
     };
     Ok(ProviderEntry {
         instance,
-        key_env: config.key_env.clone(),
+        credential,
         enabled: config.enabled,
         catalog_enabled,
         catalog,
@@ -2066,7 +2914,14 @@ fn manual_model_allowed(entry: &ProviderEntry) -> bool {
 /// Account probes are an explicit provider capability, never inferred merely from compatible wire
 /// syntax. DeepSeek exposes a normal-key balance check; Fireworks exposes suspend state on its
 /// separate control plane. All other accounts honestly remain balance-unknown until a typed error.
+///
+/// `catalog = false` is documented as the operator's opt-out from speculative discovery requests
+/// for that instance. It used to gate only `/models` while the account probe kept firing, so the
+/// documented "no discovery traffic" setting still produced a round trip on every launch.
 fn account_probe_for(entry: &ProviderEntry) -> Option<AccountProbe> {
+    if !entry.catalog_enabled {
+        return None;
+    }
     if entry.id() == "deepseek" && entry.instance.api_root().as_str() == DEEPSEEK_API_ROOT {
         Some(AccountProbe::DeepSeekBalance)
     } else if matches!(
@@ -2142,10 +2997,189 @@ fn is_openai_fine_tuned_text_model(model_id: &str) -> bool {
         .any(|prefix| base.starts_with(prefix))
 }
 
+/// Every provider id this configuration can route to, built-ins first. `core setup` offers these
+/// and refuses anything else, so a typo is caught before a credential is written for a route that
+/// does not exist.
+pub(crate) fn configured_provider_ids(user: &[ProviderConfig]) -> Vec<String> {
+    let mut ids: Vec<String> = BUILTINS
+        .iter()
+        .map(|builtin| builtin.id.to_owned())
+        .collect();
+    for configured in user {
+        if !ids.iter().any(|id| id == &configured.id) {
+            ids.push(configured.id.clone());
+        }
+    }
+    ids
+}
+
+/// Build the exact route a provider id resolves to, with a candidate credential supplied directly
+/// and nothing persisted. This is what lets `core setup` reject a wrong key BEFORE writing it.
+fn candidate_instance(
+    provider_id: &str,
+    user: &[ProviderConfig],
+    credential: &str,
+) -> anyhow::Result<ProviderInstance> {
+    let metadata = load_static_provider_metadata()?;
+    if let Some(builtin) = BUILTINS.iter().find(|builtin| builtin.id == provider_id) {
+        return Ok(ProviderInstance::new(
+            builtin.id,
+            builtin.display_name,
+            builtin.adapter,
+            ApiRoot::parse(builtin.api_root)?,
+            Some(credential.to_owned()),
+        )?
+        .with_static_metadata(metadata));
+    }
+    let configured = user
+        .iter()
+        .find(|configured| configured.id == provider_id)
+        .ok_or_else(|| anyhow::anyhow!("provider `{provider_id}` is not configured"))?;
+    let mut entry = entry_from_config_with_metadata(configured, metadata)?;
+    entry.instance = entry
+        .instance
+        .with_credential_source(CredentialSource::env_value(Some(credential.to_owned())));
+    Ok(entry.instance)
+}
+
+/// The outcome of validating a candidate credential against its real endpoint.
+pub(crate) struct CredentialProof {
+    /// The model the validating request actually ran against.
+    pub model_id: String,
+}
+
+/// Dispatch ONE minimal real request with a candidate credential.
+///
+/// A syntactically valid but wrong key passes every startup check today and only fails on the
+/// operator's first real turn, after a wizard has already told them they are set up (I-27). The
+/// only evidence that a credential works is the provider accepting it, so setup asks the provider.
+pub(crate) async fn validate_credential(
+    provider_id: &str,
+    user: &[ProviderConfig],
+    credential: &str,
+) -> Result<CredentialProof, String> {
+    let instance =
+        candidate_instance(provider_id, user, credential).map_err(|error| error.to_string())?;
+    let model_id = validation_model(&instance).await?;
+    let provider = instance
+        .build_turn_provider()
+        .map_err(|error| format!("cannot build a request for `{provider_id}`: {error}"))?;
+    // One token of output against one short message: enough for the provider to authenticate and
+    // authorize the route, cheap enough to run on every setup.
+    let request = TurnRequest {
+        model: model_id.clone(),
+        system: String::new(),
+        messages: vec![core_protocol::Message::user_text("ping")],
+        input_images: Vec::new(),
+        tools: Vec::new(),
+        max_tokens: 16,
+        cache_system: false,
+        thinking_budget: 0,
+        reasoning_effort: core_protocol::ReasoningEffort::Low,
+    };
+    match provider.turn(&request, &mut |_item: StreamItem| {}).await {
+        Ok(_) => Ok(CredentialProof { model_id }),
+        Err(error) => Err(describe_validation_failure(&error)),
+    }
+}
+
+/// Pick a model to validate against without asking the operator for one.
+async fn validation_model(instance: &ProviderInstance) -> Result<String, String> {
+    if instance.api_root().as_str() == instance.static_metadata().glm_api_root()
+        && instance.adapter() == AdapterKind::OpenAiCompatibleChat
+    {
+        return Ok(instance.static_metadata().glm_default_model().to_owned());
+    }
+    match discover_catalog(instance).await {
+        Ok(snapshot) => snapshot
+            .models
+            .iter()
+            .find(|model| matches!(model.selectability, Selectability::Selectable))
+            .map(|model| model.raw.id.clone())
+            .ok_or_else(|| {
+                format!(
+                    "`{}` accepted the credential but published no model this build can run a coding turn against",
+                    instance.id()
+                )
+            }),
+        Err(error) => Err(describe_validation_failure(&error)),
+    }
+}
+
+/// Turn a provider failure into the one line an operator can act on. Provider bodies are never
+/// copied: some gateways echo the credential back inside their error payload.
+fn describe_validation_failure(error: &ProviderError) -> String {
+    match error {
+        ProviderError::MissingCredential { .. } => "the credential was empty".into(),
+        ProviderError::ApiResponse(response) => match response.status {
+            401 | 403 => format!(
+                "the provider rejected this credential (HTTP {}): {}",
+                response.status, response.normalized.public_message
+            ),
+            402 | 429 => format!(
+                "the credential authenticated but the account cannot serve a request (HTTP {}): {}",
+                response.status, response.normalized.public_message
+            ),
+            status => format!(
+                "the provider refused the validating request (HTTP {status}): {}",
+                response.normalized.public_message
+            ),
+        },
+        ProviderError::Api { status, .. } => match status {
+            401 | 403 => format!("the provider rejected this credential (HTTP {status})"),
+            status => format!("the provider refused the validating request (HTTP {status})"),
+        },
+        ProviderError::UnsupportedCatalog { reason, .. } => format!(
+            "this endpoint publishes no model list ({reason}); declare `models` for it in ~/.core/config.json"
+        ),
+        other => format!("the validating request failed: {other}"),
+    }
+}
+
 fn environment_credential(key_env: &str) -> Option<String> {
     std::env::var(key_env)
         .ok()
         .filter(|value| !value.trim().is_empty())
+}
+
+/// Turn a declared credential into the live source a provider resolves on every turn.
+///
+/// The env variant keeps the historical snapshot: a running process's own environment is not a
+/// rotation channel, and re-reading it would change nothing except the failure mode. The file
+/// variant is genuinely re-read, which is what lets a hosted subscription token rotate under a
+/// running Core (I-22).
+fn credential_source(credential: &ProviderCredential) -> CredentialSource {
+    match credential {
+        ProviderCredential::Env { name } => {
+            CredentialSource::env(name.clone(), environment_credential(name))
+        }
+        ProviderCredential::File { path } => CredentialSource::file(PathBuf::from(path)),
+    }
+}
+
+/// The credential a built-in provider uses.
+///
+/// The environment variable still wins: exporting a key is the explicit, per-invocation override
+/// and must behave exactly as before. Only when it is absent does a built-in fall back to the
+/// credential file `core setup` writes, which is what makes the wizard reach a working first turn
+/// without asking an operator to edit `providers` by hand (a built-in id may not be redeclared
+/// there at all).
+fn builtin_credential(provider_id: &str, key_env: &'static str) -> ProviderCredential {
+    if environment_credential(key_env).is_some() {
+        return ProviderCredential::Env {
+            name: key_env.into(),
+        };
+    }
+    match crate::config::credential_file_path(provider_id) {
+        Some(path) if path.exists() => ProviderCredential::File {
+            path: path.display().to_string(),
+        },
+        // Naming the variable an operator would export keeps the "missing credential" line
+        // actionable; a path that does not exist would only say where nothing is.
+        _ => ProviderCredential::Env {
+            name: key_env.into(),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -2215,6 +3249,16 @@ mod tests {
         format!("http://{address}/v1")
     }
 
+    /// An endpoint that is reachable and then silent: the kernel completes the handshake from the
+    /// listener's backlog, so `connect` succeeds and the request waits for a response that never
+    /// comes. This is the shape that used to hold a whole launch for the 15 s discovery deadline.
+    /// The returned listener must stay alive for the duration of the test.
+    fn black_hole_api_root() -> (String, TcpListener) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        (format!("http://{address}/v1"), listener)
+    }
+
     fn offline_entry(id: &str, adapter: AdapterKind, catalog_enabled: bool) -> ProviderEntry {
         ProviderEntry {
             instance: ProviderInstance::new(
@@ -2225,7 +3269,9 @@ mod tests {
                 None,
             )
             .unwrap(),
-            key_env: format!("{id}_KEY").to_ascii_uppercase(),
+            credential: ProviderCredential::Env {
+                name: format!("{id}_KEY").to_ascii_uppercase(),
+            },
             enabled: true,
             catalog_enabled,
             catalog: None,
@@ -2258,7 +3304,9 @@ mod tests {
         let catalog = Some(glm_standard_schema_catalog(&instance).unwrap());
         ProviderEntry {
             instance,
-            key_env: "GLM_API_KEY".into(),
+            credential: ProviderCredential::Env {
+                name: "GLM_API_KEY".into(),
+            },
             enabled: true,
             catalog_enabled,
             catalog,
@@ -2330,7 +3378,9 @@ mod tests {
         let (catalog_enabled, catalog_error) = catalog_configuration(&instance, true);
         ProviderEntry {
             instance,
-            key_env: format!("{}_KEY", id.to_ascii_uppercase()),
+            credential: ProviderCredential::Env {
+                name: format!("{}_KEY", id.to_ascii_uppercase()),
+            },
             enabled: true,
             catalog_enabled,
             catalog: None,
@@ -2400,6 +3450,34 @@ mod tests {
         let mut cache = CatalogCache::default();
         assert!(cache.upsert(entry, &scope_key));
         cache.save_atomic(path).unwrap();
+    }
+
+    /// I-46. A cache-format bump renames the file, so every earlier generation kept sitting in
+    /// `~/.core/cache/providers` holding a full stale catalog nobody reads. Writing the current
+    /// generation reclaims them, and touches nothing else in the directory.
+    #[test]
+    fn d11_46_writing_the_current_catalog_cache_reclaims_the_superseded_one() {
+        let path = test_cache_path("supersede");
+        let parent = path.parent().unwrap().to_path_buf();
+        fs::create_dir_all(&parent).unwrap();
+        let stale = parent.join("catalogs-v1.json");
+        fs::write(&stale, b"{\"version\":1,\"entries\":[]}").unwrap();
+        let unrelated = parent.join("something-else.json");
+        fs::write(&unrelated, b"{}").unwrap();
+
+        let source = catalogued_entry("supersede", "https://gateway.example/v1/", "gpt-4o-mini");
+        seed_cache(&path, &source);
+
+        assert!(path.is_file(), "the current generation is written");
+        assert!(
+            !stale.exists(),
+            "the superseded generation must not sit beside it forever"
+        );
+        assert!(
+            unrelated.exists(),
+            "only Core's own superseded caches are reclaimed"
+        );
+        remove_test_cache(&path);
     }
 
     #[test]
@@ -2645,6 +3723,173 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_launch_waits_only_for_the_provider_it_routes_to() {
+        // Five configured providers, four of them black holes. Discovery used to await all five
+        // before the first byte was printed, so one unreachable entry bought a 15 s black screen.
+        let body = serde_json::json!({ "data": [{ "id": "gpt-4o-mini" }] }).to_string();
+        let (api_root, server) = spawn_json_server(body);
+        let mut entries = vec![policy_entry("routed", &api_root)];
+        let mut listeners = Vec::new();
+        for index in 0..4 {
+            let (root, listener) = black_hole_api_root();
+            listeners.push(listener);
+            entries.push(policy_entry(&format!("unused-{index}"), &root));
+        }
+
+        let started = std::time::Instant::now();
+        let directory =
+            ProviderDirectory::discover_entries_eagerly(entries, None, Some(&["routed".into()]))
+                .await
+                .unwrap();
+        let elapsed = started.elapsed();
+        server.join().unwrap();
+
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "a black-holed endpoint delayed the first frame by {elapsed:?}"
+        );
+        assert_eq!(
+            directory
+                .entry("routed")
+                .and_then(|entry| entry.catalog.as_ref())
+                .map(|catalog| catalog.models[0].raw.id.as_str()),
+            Some("gpt-4o-mini"),
+            "the routed provider is still resolved synchronously"
+        );
+        assert!(
+            directory.deferred.is_some(),
+            "the unreachable providers must still be outstanding, not silently dropped"
+        );
+        for index in 0..4 {
+            assert!(
+                directory
+                    .entry(&format!("unused-{index}"))
+                    .expect("every configured instance is still listed")
+                    .catalog
+                    .is_none(),
+                "an unresolved provider must not appear resolved"
+            );
+        }
+        // Configured order is the operator's order and must survive concurrent completion.
+        assert_eq!(
+            directory
+                .entries()
+                .iter()
+                .map(ProviderEntry::id)
+                .collect::<Vec<_>>(),
+            ["routed", "unused-0", "unused-1", "unused-2", "unused-3"]
+        );
+        drop(listeners);
+    }
+
+    #[tokio::test]
+    async fn settle_publishes_the_catalogs_the_launch_deferred() {
+        let routed = serde_json::json!({ "data": [{ "id": "routed-model" }] }).to_string();
+        let (routed_root, routed_server) = spawn_json_server(routed);
+        let deferred = serde_json::json!({ "data": [{ "id": "deferred-model" }] }).to_string();
+        let (deferred_root, deferred_server) = spawn_json_server(deferred);
+
+        let mut directory = ProviderDirectory::discover_entries_eagerly(
+            vec![
+                policy_entry("routed", &routed_root),
+                policy_entry("later", &deferred_root),
+            ],
+            None,
+            Some(&["routed".into()]),
+        )
+        .await
+        .unwrap();
+        routed_server.join().unwrap();
+        assert!(
+            directory.entry("later").unwrap().catalog.is_none(),
+            "a deferred provider is not resolved before the picker asks for it"
+        );
+        // The picker needs every catalog, so it — and only it — joins the background handle.
+        directory.settle().await;
+        deferred_server.join().unwrap();
+        assert_eq!(
+            directory
+                .entry("later")
+                .and_then(|entry| entry.catalog.as_ref())
+                .map(|catalog| catalog.models[0].raw.id.as_str()),
+            Some("deferred-model")
+        );
+        assert_eq!(
+            directory.entry("routed").unwrap().catalog_provenance,
+            CatalogProvenance::DynamicFresh,
+            "settling must not discard the eagerly resolved evidence"
+        );
+        // Idempotent: the handle is joined once, and a second waiter reads what it published.
+        let mut clone = directory.clone();
+        clone.settle().await;
+        directory.settle().await;
+        assert!(clone.entry("later").unwrap().catalog.is_some());
+    }
+
+    #[tokio::test]
+    async fn only_a_cross_provider_model_lookup_has_to_settle_first() {
+        let body = serde_json::json!({ "data": [{ "id": "gpt-4o-mini" }] }).to_string();
+        let (api_root, server) = spawn_json_server(body);
+        let (black_hole, listener) = black_hole_api_root();
+        let directory = ProviderDirectory::discover_entries_eagerly(
+            vec![
+                policy_entry("routed", &api_root),
+                policy_entry("other", &black_hole),
+            ],
+            None,
+            Some(&["routed".into()]),
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+
+        assert!(
+            !directory.needs_settled_catalogs(Some("gpt-4o-mini"), "routed"),
+            "a model the routed provider already offers must never wait"
+        );
+        assert!(
+            !directory.needs_settled_catalogs(None, "routed"),
+            "the routed provider's own default selection is already resolved"
+        );
+        assert!(
+            directory.needs_settled_catalogs(Some("some-other-model"), "routed"),
+            "an unqualified miss is resolved against every catalog and must settle first"
+        );
+        // A qualifier naming a DEFERRED provider is still a read of that provider's catalog. Only
+        // a qualifier the launch resolved eagerly may skip the wait.
+        assert!(
+            directory.needs_settled_catalogs(Some("other:whatever"), "routed"),
+            "a qualified id routed at a deferred provider must settle before its catalog is read"
+        );
+        assert!(
+            !directory.needs_settled_catalogs(Some("routed:whatever"), "routed"),
+            "a qualifier the launch resolved eagerly never waits"
+        );
+        // The regression this guards: `--resume` adopts the provider recorded in the rollout, so
+        // the routed provider can be one the eager set never covered — with or without a model.
+        // Routing on its unresolved catalog reported "no selectable discovered model" for a
+        // provider that was merely still in flight.
+        assert!(
+            directory.needs_settled_catalogs(None, "other"),
+            "a launch routed at a deferred provider must settle even with no model requested"
+        );
+        assert!(
+            directory.needs_settled_catalogs(Some("gpt-4o-mini"), "other"),
+            "a deferred routed provider must settle before its own catalog is consulted"
+        );
+
+        let fully_resolved = ProviderDirectory::discover_entries(Vec::new(), None)
+            .await
+            .unwrap();
+        assert!(
+            !fully_resolved.needs_settled_catalogs(Some("anything"), "routed"),
+            "a directory with nothing outstanding never waits"
+        );
+        assert!(!fully_resolved.needs_settled_catalogs(None, "routed"));
+        drop(listener);
+    }
+
+    #[tokio::test]
     async fn missing_credential_cannot_load_cached_inventory() {
         let path = test_cache_path("missing-key");
         let api_root = "http://127.0.0.1:9/v1";
@@ -2781,6 +4026,7 @@ mod tests {
         let directory = ProviderDirectory {
             entries: Arc::new(vec![stale, fresh]),
             health,
+            deferred: None,
         };
 
         assert_eq!(
@@ -2813,6 +4059,7 @@ mod tests {
             ProviderDirectory {
                 entries: Arc::new(vec![entry]),
                 health: ProviderHealthStore::new(1),
+                deferred: None,
             }
             .selection_digests(&selection)
         };
@@ -2861,6 +4108,7 @@ mod tests {
             let directory = ProviderDirectory {
                 entries: Arc::new(vec![entry]),
                 health,
+                deferred: None,
             };
             assert!(
                 directory
@@ -2882,6 +4130,7 @@ mod tests {
         let directory = ProviderDirectory {
             entries: Arc::new(vec![entry]),
             health,
+            deferred: None,
         };
         assert!(
             directory
@@ -2925,6 +4174,7 @@ mod tests {
         let directory = ProviderDirectory {
             entries: Arc::new(vec![entry]),
             health,
+            deferred: None,
         };
         assert!(
             directory
@@ -3027,6 +4277,174 @@ mod tests {
         let visible = entry.catalog_error.unwrap();
         assert_eq!(visible, "provider transport failed");
         assert!(!visible.contains("sk-secret"));
+    }
+
+    #[test]
+    fn catalog_disabled_suppresses_the_account_probe_as_documented() {
+        // `catalog = false` is documented as the opt-out from discovery traffic for one instance.
+        // It gated only `GET /models`, so DeepSeek and Fireworks still paid an account round trip
+        // on every single launch despite the operator having turned discovery off.
+        let mut deepseek = policy_entry("deepseek", DEEPSEEK_API_ROOT);
+        assert_eq!(
+            account_probe_for(&deepseek),
+            Some(AccountProbe::DeepSeekBalance)
+        );
+        deepseek.catalog_enabled = false;
+        assert_eq!(account_probe_for(&deepseek), None);
+
+        let fireworks = builtin_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.id() == "fireworks")
+            .unwrap();
+        assert_eq!(
+            account_probe_for(&fireworks),
+            Some(AccountProbe::FireworksSuspendState)
+        );
+        let mut disabled = fireworks;
+        disabled.catalog_enabled = false;
+        assert_eq!(account_probe_for(&disabled), None);
+    }
+
+    #[test]
+    fn probe_cache_reuses_fresh_evidence_and_backs_a_failing_account_off_exponentially() {
+        let path = test_cache_path("probe-decisions");
+        let scope_key = test_scope_key(&path);
+        let entry = policy_entry("deepseek", DEEPSEEK_API_ROOT);
+        let identity =
+            probe_identity(&entry, AccountProbe::DeepSeekBalance, &scope_key).expect("scoped");
+        let now = 1_800_000_000_u64;
+
+        // No record at all: probe, extending a zero-length failure run.
+        let empty = ProbeCache::default();
+        assert_eq!(
+            empty.decide(&identity, now),
+            ProbeDecision::Run { failures: 0 }
+        );
+
+        let observe = |observed_at, outcome| {
+            let mut cache = ProbeCache::default();
+            cache.upsert(CachedProbe {
+                provider_id: identity.0.clone(),
+                api_root: identity.1.clone(),
+                probe: identity.2.clone(),
+                credential_scope: identity.3.clone(),
+                observed_at_unix_secs: observed_at,
+                outcome,
+            });
+            cache
+        };
+        let ready = CachedProbeOutcome::Observed {
+            availability: CachedAvailability::Ready,
+            balance: CachedBalance::Sufficient,
+        };
+        assert_eq!(
+            observe(now - 1, ready).decide(&identity, now),
+            ProbeDecision::Reuse(AccountProbeResult {
+                availability: AccountAvailability::Ready,
+                balance: BalanceAvailability::Sufficient,
+            }),
+            "a fresh observation stands in for the request"
+        );
+        assert_eq!(
+            observe(now - PROBE_CACHE_TTL_SECS, ready).decide(&identity, now),
+            ProbeDecision::Run { failures: 0 },
+            "past the TTL the account is observed again"
+        );
+        // A record stamped in the future is a clock change, not evidence.
+        assert_eq!(
+            observe(now + 1, ready).decide(&identity, now),
+            ProbeDecision::Run { failures: 0 }
+        );
+
+        // The defect: a key rejected weeks ago cost a round trip on EVERY launch, because a failed
+        // probe was never written back at all.
+        let failed = |failures| CachedProbeOutcome::Failed {
+            consecutive_failures: failures,
+        };
+        assert_eq!(
+            observe(now - 1, failed(1)).decide(&identity, now),
+            ProbeDecision::Skip
+        );
+        assert_eq!(
+            observe(now - PROBE_BACKOFF_BASE_SECS, failed(1)).decide(&identity, now),
+            ProbeDecision::Run { failures: 1 },
+            "the run length is carried forward so the next wait doubles"
+        );
+        assert_eq!(probe_backoff_secs(0), 0);
+        assert_eq!(probe_backoff_secs(1), PROBE_BACKOFF_BASE_SECS);
+        assert_eq!(probe_backoff_secs(2), PROBE_BACKOFF_BASE_SECS * 2);
+        assert_eq!(probe_backoff_secs(u32::MAX), PROBE_BACKOFF_CAP_SECS);
+        // Yesterday's failure, today's launch: still inside the capped window, still no request.
+        assert_eq!(
+            observe(now - 20 * 60 * 60, failed(24)).decide(&identity, now),
+            ProbeDecision::Skip
+        );
+
+        // A different credential, endpoint, or probe kind never inherits the verdict.
+        let mut other = identity.clone();
+        other.3 = format!("{}{}", CATALOG_CACHE_SCOPE_PREFIX, "ab".repeat(32));
+        assert_eq!(
+            observe(now - 1, failed(9)).decide(&other, now),
+            ProbeDecision::Run { failures: 0 }
+        );
+        remove_test_cache(&path);
+    }
+
+    #[test]
+    fn probe_cache_round_trips_atomically_and_rejects_corruption() {
+        let path = test_cache_path("probe-round-trip");
+        let probe_path = probe_cache_path_for(Some(&path)).unwrap();
+        let scope_key = test_scope_key(&path);
+        let entry = policy_entry("deepseek", DEEPSEEK_API_ROOT);
+        let identity =
+            probe_identity(&entry, AccountProbe::DeepSeekBalance, &scope_key).expect("scoped");
+
+        let mut cache = ProbeCache::default();
+        cache.upsert(CachedProbe {
+            provider_id: identity.0.clone(),
+            api_root: identity.1.clone(),
+            probe: identity.2.clone(),
+            credential_scope: identity.3.clone(),
+            observed_at_unix_secs: 1_800_000_000,
+            outcome: CachedProbeOutcome::Failed {
+                consecutive_failures: 3,
+            },
+        });
+        cache.save_atomic(&probe_path).unwrap();
+
+        let text = fs::read_to_string(&probe_path).unwrap();
+        assert!(
+            !text.contains("test-key"),
+            "credentials must never be cached"
+        );
+        assert!(text.contains(CATALOG_CACHE_SCOPE_PREFIX));
+        let loaded = ProbeCache::load(&probe_path);
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(loaded.decide(&identity, 1_800_000_001), ProbeDecision::Skip);
+
+        fs::write(&probe_path, br#"{"version":999,"entries":[]}"#).unwrap();
+        assert!(ProbeCache::load(&probe_path).entries.is_empty());
+        fs::write(&probe_path, b"{not-json").unwrap();
+        assert!(ProbeCache::load(&probe_path).entries.is_empty());
+        fs::write(&probe_path, vec![b' '; MAX_PROBE_CACHE_BYTES + 1]).unwrap();
+        assert!(ProbeCache::load(&probe_path).entries.is_empty());
+        // An unrecognized probe kind is not evidence about any probe this binary can run.
+        let unknown = ProbeCache {
+            version: PROBE_CACHE_VERSION,
+            entries: vec![CachedProbe {
+                provider_id: identity.0.clone(),
+                api_root: identity.1.clone(),
+                probe: "some-future-probe".into(),
+                credential_scope: identity.3.clone(),
+                observed_at_unix_secs: 1_800_000_000,
+                outcome: CachedProbeOutcome::Failed {
+                    consecutive_failures: 1,
+                },
+            }],
+        };
+        assert!(!unknown.is_valid());
+        remove_test_cache(&path);
     }
 
     #[test]
@@ -3144,6 +4562,7 @@ mod tests {
         let directory = ProviderDirectory {
             entries: Arc::new(vec![entry]),
             health,
+            deferred: None,
         };
         assert_eq!(
             directory.resolve_model(model_id, Some("openai")).unwrap(),
@@ -3313,6 +4732,159 @@ mod tests {
         );
     }
 
+    /// I-05 — `default_selection` returns `None` for four unrelated states, and the composition
+    /// root collapsed all four into `provider ... has no selectable discovered model`. Each state
+    /// must produce its own message, and a missing credential must name the variable to set.
+    #[tokio::test]
+    async fn i05_each_unresolvable_state_produces_a_distinguishable_message() {
+        // No key: the reason the directory already computed names the exact variable, and the
+        // message points at the wizard instead of at nothing.
+        let directory = ProviderDirectory::discover_entries(vec![glm_static_entry(None)], None)
+            .await
+            .unwrap();
+        assert!(directory.default_selection("glm").is_none());
+        let missing = directory.resolution_error("glm");
+        assert!(missing.contains("GLM_API_KEY"), "{missing}");
+        assert!(missing.contains("core setup --byok glm"), "{missing}");
+        assert!(
+            !missing.contains("has no selectable discovered model"),
+            "the unactionable line must not survive: {missing}"
+        );
+
+        // A rejected key is a different state and says so, naming the credential to replace.
+        let directory =
+            ProviderDirectory::discover_entries(vec![glm_static_entry(Some("wrong".into()))], None)
+                .await
+                .unwrap();
+        directory.health.update_from_error(
+            "glm",
+            &ProviderError::ApiResponse(core_provider::ApiResponseError {
+                status: 401,
+                body: String::new(),
+                body_truncated: false,
+                retry_after: None,
+                normalized: Box::new(core_provider::NormalizedFailure {
+                    adapter: AdapterKind::OpenAiCompatibleChat,
+                    error_profile: ErrorProfile::Glm,
+                    code: Some("invalid_api_key".into()),
+                    public_message: "authentication failed",
+                    scope: core_provider::ErrorScope::Account,
+                    availability: core_provider::AvailabilityTransition::Account(
+                        AccountAvailability::AuthenticationBlocked,
+                    ),
+                    retry: core_provider::RetryDisposition::Never,
+                    request_id: None,
+                }),
+            }),
+        );
+        let rejected = directory.resolution_error("glm");
+        assert!(rejected.contains("authentication failed"), "{rejected}");
+        assert!(rejected.contains("rejected"), "{rejected}");
+        assert_ne!(rejected, missing);
+
+        // An unreachable provider — credentialed, so this is NOT the missing-credential state —
+        // carries its discovery failure and its endpoint.
+        let mut offline = offline_entry("gw", AdapterKind::OpenAiCompatibleChat, true);
+        offline.instance = offline
+            .instance
+            .with_credential_source(CredentialSource::env("GW_KEY", Some("present".into())));
+        let unreachable = ProviderDirectory::discover_entries(vec![offline], None)
+            .await
+            .unwrap();
+        let message = unreachable.resolution_error("gw");
+        assert!(message.contains("127.0.0.1:9"), "{message}");
+        assert!(
+            !message.contains("missing credential"),
+            "an unreachable provider is not a missing credential: {message}"
+        );
+        assert_ne!(message, missing);
+        assert_ne!(message, rejected);
+
+        // A stale cached catalog is display evidence only, and keeps its own line.
+        let mut stale = catalogued_entry("stale", "https://stale.example/v1", "m-1");
+        stale.catalog_stale = true;
+        let stale = ProviderDirectory::discover_entries(vec![stale], None)
+            .await
+            .unwrap();
+        let message_stale = stale.resolution_error("stale");
+        assert!(
+            message_stale.contains("stale cached catalog"),
+            "{message_stale}"
+        );
+        assert_ne!(message_stale, message);
+
+        // A provider that is not configured at all lists what IS configured.
+        let unknown = unreachable.resolution_error("nope");
+        assert!(unknown.contains("not configured"), "{unknown}");
+        assert!(unknown.contains("gw"), "{unknown}");
+    }
+
+    /// I-22 — a built-in provider could only ever read an environment variable, so the wizard had
+    /// nowhere to put a credential (a built-in id may not be redeclared under `providers`). The
+    /// environment still wins; the setup-written file is the fallback.
+    #[test]
+    fn i22_a_builtin_falls_back_to_the_setup_credential_file_only_without_the_variable() {
+        let scratch = std::env::temp_dir().join(format!(
+            "core-builtin-credential-{}-{}",
+            std::process::id(),
+            CACHE_TEST_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        // Without a config root there is nothing to fall back TO, so the variable is still named.
+        assert_eq!(
+            builtin_credential("no-such-provider-id", "SOME_KEY"),
+            ProviderCredential::Env {
+                name: "SOME_KEY".into()
+            },
+            "a missing credential must still name the variable an operator would export"
+        );
+        // A name outside the provider-instance alphabet never becomes a filesystem path.
+        assert_eq!(crate::config::credential_file_path("../escape"), None);
+        assert_eq!(crate::config::credential_file_path(""), None);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// A credential file inside the workspace is reachable by `read_file`, `bash`, a child agent
+    /// and a hook. The composition root refuses that route instead of trusting confinement it
+    /// does not own; a file outside the workspace is not flagged.
+    #[tokio::test]
+    async fn i22_a_credential_file_inside_the_workspace_is_detected() {
+        let workspace = std::env::temp_dir().join(format!(
+            "core-credential-workspace-{}-{}",
+            std::process::id(),
+            CACHE_TEST_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let inside = workspace.join("token");
+        std::fs::write(&inside, "t\n").unwrap();
+
+        let mut config = declaring_config("gw", "https://gw.example/v1", None, BTreeMap::new());
+        config.key_env = None;
+        config.credential = Some(ProviderCredential::File {
+            path: inside.display().to_string(),
+        });
+        config.catalog = false;
+        config.models = vec!["m-1".into()];
+        let directory =
+            ProviderDirectory::discover_entries(vec![entry_from_config(&config).unwrap()], None)
+                .await
+                .unwrap();
+        assert_eq!(
+            directory.credential_files_inside(&workspace),
+            vec![inside.clone()],
+            "a credential inside the workspace must be visible to the composition root"
+        );
+        assert!(
+            directory
+                .credential_files_inside(std::path::Path::new("/nonexistent-elsewhere"))
+                .is_empty()
+        );
+        // Only names leave the directory, never values.
+        assert!(directory.credential_env_names().is_empty());
+        assert_eq!(directory.credential_file_paths(), vec![inside.clone()]);
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
     #[tokio::test]
     async fn glm_static_schema_without_key_is_visible_but_every_leaf_is_disabled() {
         let directory = ProviderDirectory::discover_entries(vec![glm_static_entry(None)], None)
@@ -3352,7 +4924,8 @@ mod tests {
             adapter: "openai_chat".into(),
             error_profile: error_profile.map(Into::into),
             api_root: api_root.into(),
-            key_env: "GATEWAY_KEY".into(),
+            key_env: Some("GATEWAY_KEY".into()),
+            credential: None,
             enabled: true,
             // Discovery off keeps this offline and makes the declared manifest the inventory.
             catalog: false,
@@ -3443,6 +5016,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_bundled_non_glm_route_reports_a_real_context_window() {
+        // Before I-30 the capability gate additionally required the GLM adapter and error profile,
+        // so every other provider resolved to unknown: the over-window preflight (which is gated on
+        // `model_context_window`) never ran, and the statusline fell back to bytes-used.
+        let config = ProviderConfig {
+            id: "anthropic".into(),
+            display_name: Some("Anthropic".into()),
+            adapter: "anthropic_messages".into(),
+            error_profile: Some("anthropic".into()),
+            api_root: "https://api.anthropic.com/v1".into(),
+            key_env: Some("CORE_TEST_ABSENT_ANTHROPIC_KEY".into()),
+            credential: None,
+            enabled: true,
+            catalog: false,
+            models: vec!["claude-opus-4-7".into()],
+            model_capabilities: BTreeMap::new(),
+        };
+        let directory =
+            ProviderDirectory::discover_entries(vec![entry_from_config(&config).unwrap()], None)
+                .await
+                .unwrap();
+
+        let selection = ModelSelection {
+            provider_id: "anthropic".into(),
+            model_id: "claude-opus-4-7".into(),
+        };
+        let capabilities = directory.selection_capabilities(&selection);
+        assert_eq!(capabilities.context_window_tokens, Some(1_000_000));
+        assert_eq!(capabilities.max_output_tokens, Some(128_000));
+        assert!(
+            capabilities
+                .version
+                .as_deref()
+                .is_some_and(|version| version.starts_with("anthropic-model-overview@")),
+            "the provenance is the captured vendor snapshot"
+        );
+        // The window is what the preflight and the percent-remaining statusline read.
+        assert_ne!(capabilities, ModelCapabilities::unknown());
+
+        // A wire-compatible gateway at another API root still inherits nothing.
+        let mut lookalike = config.clone();
+        lookalike.id = "anthropic-lookalike".into();
+        lookalike.api_root = "https://gateway.example/v1".into();
+        let plain =
+            ProviderDirectory::discover_entries(vec![entry_from_config(&lookalike).unwrap()], None)
+                .await
+                .unwrap();
+        assert_eq!(
+            plain.selection_capabilities(&ModelSelection {
+                provider_id: "anthropic-lookalike".into(),
+                model_id: "claude-opus-4-7".into(),
+            }),
+            ModelCapabilities::unknown()
+        );
+    }
+
+    #[test]
+    fn a_malformed_metadata_override_warns_and_falls_back_unless_strict() {
+        let dir = std::env::temp_dir().join(format!(
+            "core-provider-metadata-override-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("provider-metadata.json");
+        std::fs::write(&path, b"{ not json").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        // One bad byte used to propagate out of discovery and take the whole run down (I-48).
+        let (metadata, warning) = resolve_static_provider_metadata(Some(&path), false)
+            .expect("a malformed override no longer prevents startup");
+        assert_eq!(
+            metadata.bundle_revision(),
+            StaticProviderMetadata::embedded().bundle_revision()
+        );
+        let warning = warning.expect("the fallback is announced, never silent");
+        assert!(
+            warning.contains(&path.display().to_string()),
+            "the warning names the file: {warning}"
+        );
+        assert!(
+            warning.contains("schema-v1 JSON"),
+            "the warning names the parse error: {warning}"
+        );
+
+        // The explicit strict flag restores fail-closed loading.
+        assert!(resolve_static_provider_metadata(Some(&path), true).is_err());
+
+        // An absent override is not an error, and a missing home selects the embedded document.
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            resolve_static_provider_metadata(Some(&path), true)
+                .unwrap()
+                .1,
+            None
+        );
+        assert_eq!(
+            resolve_static_provider_metadata(None, true).unwrap().1,
+            None
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
     async fn official_snapshot_outranks_an_operator_declaration_on_the_same_route() {
         let glm_root = StaticProviderMetadata::embedded().glm_api_root().to_owned();
         let mut config = declaring_config(
@@ -3484,7 +5164,8 @@ mod tests {
             adapter: "openai_chat".into(),
             error_profile: None,
             api_root: "https://gateway.example/v1".into(),
-            key_env: "GATEWAY_KEY".into(),
+            key_env: Some("GATEWAY_KEY".into()),
+            credential: None,
             enabled: true,
             catalog: false,
             models: vec!["vendor/model-b".into(), "vendor/model-a".into()],
@@ -3516,6 +5197,7 @@ mod tests {
         let directory = ProviderDirectory {
             entries: Arc::new(vec![entry]),
             health,
+            deferred: None,
         };
         assert_eq!(
             directory
@@ -3545,7 +5227,8 @@ mod tests {
             adapter: "openai_chat".into(),
             error_profile: Some("deepseek".into()),
             api_root: "https://gateway.example/v1".into(),
-            key_env: "GATEWAY_KEY".into(),
+            key_env: Some("GATEWAY_KEY".into()),
+            credential: None,
             enabled: true,
             catalog: false,
             models: Vec::new(),
@@ -3609,6 +5292,7 @@ mod tests {
         let directory = ProviderDirectory {
             entries: Arc::new(vec![entry]),
             health,
+            deferred: None,
         };
 
         assert!(
@@ -3654,6 +5338,7 @@ mod tests {
         let directory = ProviderDirectory {
             entries: Arc::new(vec![entry]),
             health: health.clone(),
+            deferred: None,
         };
         let selection = ModelSelection {
             provider_id: "retry-gateway".into(),
@@ -3714,6 +5399,7 @@ mod tests {
         let directory = ProviderDirectory {
             entries: Arc::new(vec![missing.clone()]),
             health: health.clone(),
+            deferred: None,
         };
         assert!(
             directory
@@ -3727,6 +5413,7 @@ mod tests {
         let directory = ProviderDirectory {
             entries: Arc::new(vec![missing.clone()]),
             health,
+            deferred: None,
         };
         assert_eq!(
             directory.health(missing.id()).balance,
@@ -3744,6 +5431,7 @@ mod tests {
         let directory = ProviderDirectory {
             entries: Arc::new(vec![gateway]),
             health,
+            deferred: None,
         };
         assert_eq!(
             directory
@@ -3764,6 +5452,7 @@ mod tests {
         let directory = ProviderDirectory {
             entries: Arc::new(vec![entry]),
             health,
+            deferred: None,
         };
         assert!(
             directory

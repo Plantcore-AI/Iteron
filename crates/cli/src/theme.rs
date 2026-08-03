@@ -30,7 +30,10 @@ pub enum SynClass {
 }
 
 /// The full palette. All fields are semantic; the render code never names a `Color` directly.
-#[derive(Debug, Clone)]
+///
+/// `PartialEq` exists so late background evidence that agrees with the already-painted theme can
+/// be recognized as a no-op instead of forcing a repaint.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
     pub fg: Color,
     pub muted: Color,

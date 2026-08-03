@@ -27,8 +27,11 @@ mod render;
 mod bundle_adapter;
 #[allow(dead_code)]
 mod client_event;
+mod route;
 mod runtime;
 mod session_view;
+mod setup;
+mod startup;
 mod surface;
 mod theme;
 mod tui;
@@ -46,6 +49,11 @@ use std::path::PathBuf;
 /// Fresh sessions use GLM's built-in provider. The model is deliberately not duplicated here:
 /// `ProviderDirectory::default_selection` resolves GLM's versioned, documented catalog default.
 const BUILTIN_DEFAULT_PROVIDER: &str = "glm";
+
+/// The synthetic id a `--base-url` override runs under. It exists only for the current process,
+/// so a later `--continue` that reads it out of the record has nothing to resolve it against and
+/// must say so explicitly instead of reporting an unknown provider the operator never typed.
+const CLI_OVERRIDE_PROVIDER_ID: &str = "cli-override";
 
 struct StderrDiagnosticDrain {
     receiver: std::sync::mpsc::Receiver<core_kernel::diagnostics::KernelDiagnostic>,
@@ -83,10 +91,103 @@ impl Drop for StderrDiagnosticDrain {
 enum LocalCommand {
     /// Rebuild session metadata and the sessions index from hash-chained rollout truth.
     Reindex,
+    /// Delete old run journals under the runs dir according to an explicit retention policy.
+    /// Journals are append-only and nothing else ever removes them.
+    Prune {
+        /// Delete runs whose last recorded activity is older than this many days.
+        #[arg(long, value_name = "DAYS")]
+        older_than_days: Option<u64>,
+        /// Keep only the newest N runs; delete every older one.
+        #[arg(long, value_name = "N")]
+        keep_last: Option<usize>,
+        /// Print exactly what the policy names without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Run an ultracode workflow (.js) end-to-end, streaming progress to stdout.
     Workflow {
         #[command(subcommand)]
         action: WorkflowAction,
+    },
+    /// First-run setup: choose a hosted plan or your own provider key, and validate it.
+    Setup {
+        /// Sign in with a hosted subscription plan.
+        #[arg(long, conflicts_with = "byok")]
+        plan: bool,
+        /// Bring your own key for this provider id.
+        #[arg(long, value_name = "PROVIDER")]
+        byok: Option<String>,
+    },
+    /// Inspect or drop the credential in use.
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+    /// Read or write one operator setting in the user config.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+    /// Produce the operator pricing material a USD ceiling and a cost display require.
+    Pricing {
+        #[command(subcommand)]
+        action: PricingAction,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+enum AuthAction {
+    /// Print provider, api_root, credential source, validation state, and expiry.
+    Status {
+        /// Limit the report to one provider id.
+        provider: Option<String>,
+    },
+    /// Remove the stored credential, leaving the provider entry intact.
+    Logout {
+        /// Limit the removal to one provider id.
+        provider: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+enum ConfigAction {
+    /// Print one persisted setting, or every settable key.
+    Get {
+        /// The setting to read; omit for all of them.
+        key: Option<String>,
+    },
+    /// Persist one setting atomically at mode 0600.
+    Set {
+        /// The setting to write.
+        key: String,
+        /// Its new value.
+        value: String,
+    },
+}
+
+/// `core pricing …` — the shipped path from "I know what this model costs" to a run that reports a
+/// dollar figure.
+///
+/// Rate cards default to empty, so the pricing port is never installed and any positive `--max-usd`
+/// aborts at startup. Producing a card requires two route digests, a content digest and an HMAC
+/// signature, and the routine that computes the last two was a library function with no subcommand
+/// anywhere — so no public user could ever reach a priced run (I-40).
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+enum PricingAction {
+    /// Print the exact route a rate card must pin for the selected provider and model.
+    PrintDigests,
+    /// Sign an operator-authored rate card and print the `rate_cards[]` entry that installs it.
+    Sign {
+        /// Unsigned rate-card JSON: `{version, route, provenance, issued_at_unix_secs,
+        /// expires_at_unix_secs, rates}`. Use `-` to read stdin.
+        card: PathBuf,
+        /// Environment variable holding exactly 32 bytes of hexadecimal HMAC key material. Only
+        /// the NAME is written to the configuration; the bytes never leave this process.
+        #[arg(long, default_value = "CORE_PRICING_KEY")]
+        key_env: String,
+        /// Signer identity recorded on the artifact.
+        #[arg(long, default_value = "pricing-root-v1")]
+        signer_id: String,
     },
 }
 
@@ -194,10 +295,83 @@ fn assemble_system_prompt(
     }
 }
 
+/// Build identity, stamped by the release build (`.github/workflows/release.yml` exports both
+/// before `cargo build`). Two artifacts cut from different commits both reported `core 0.0.1`,
+/// and there is no self-update or staleness hint, so a user had no way to learn which binary
+/// they were running. An unstamped local build says `unknown` rather than claiming an identity.
+const BUILD_COMMIT: &str = match option_env!("CORE_BUILD_COMMIT") {
+    Some(commit) => commit,
+    None => "unknown",
+};
+const BUILD_DATE: &str = match option_env!("CORE_BUILD_DATE") {
+    Some(date) => date,
+    None => "unknown",
+};
+/// Past this age the compiled-in provider catalog is old enough to have retired model ids, whose
+/// 400 is then classified as permanent. Purely local arithmetic — no network, no update check.
+const BUILD_STALE_AFTER_DAYS: i64 = 90;
+
+/// `--version` text. `-V` keeps the bare `core <semver>` that release smoke tests match exactly.
+fn long_version() -> &'static str {
+    static LONG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    LONG.get_or_init(|| {
+        format!(
+            "{} ({} {})",
+            env!("CARGO_PKG_VERSION"),
+            BUILD_COMMIT,
+            BUILD_DATE
+        )
+    })
+}
+
+/// Days since 1970-01-01 for a proleptic-Gregorian civil date (Howard Hinnant's `days_from_civil`).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+/// Parse a stamped `YYYY-MM-DD` build date into days since the epoch. An unstamped or malformed
+/// value yields `None`, and an unknown age never produces a claim about it.
+fn build_date_days(date: &str) -> Option<i64> {
+    let mut fields = date.split('-');
+    let year: i64 = fields.next()?.parse().ok()?;
+    let month: i64 = fields.next()?.parse().ok()?;
+    let day: i64 = fields.next()?.parse().ok()?;
+    if fields.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some(days_from_civil(year, month, day))
+}
+
+/// One line, on stderr, when this binary is old enough that its compiled-in facts have aged out.
+fn staleness_note(date: &str, now_unix_secs: i64) -> Option<String> {
+    let age = now_unix_secs.div_euclid(86_400) - build_date_days(date)?;
+    (age > BUILD_STALE_AFTER_DAYS).then(|| {
+        format!(
+            "warning: this core build is {age} days old (built {date}, commit {BUILD_COMMIT}); its compiled-in provider catalog may name retired models — reinstall with the installer in the latest release"
+        )
+    })
+}
+
+fn warn_if_stale() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .unwrap_or_default();
+    if let Some(note) = staleness_note(BUILD_DATE, now) {
+        eprintln!("{note}");
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "core",
     version,
+    long_version = long_version(),
     about = "Core Code — a terminal-native coding agent built on a bounded controller."
 )]
 struct Cli {
@@ -255,10 +429,16 @@ struct Cli {
     #[arg(long)]
     max_tokens: Option<u64>,
 
-    /// Force-enable code execution (bash/build/test). Code execution is already ON by default
-    /// (Owner-directed lenient posture); a project `.core/config.json` "allow_code": false or
-    /// `--mode plan` disables it. Code runs in an egress-off sandbox: network denied, writes
-    /// confined to the workspace (ADR-007).
+    /// Wall-clock ceiling for ONE submission, in seconds (bounded invariant; overrides config /
+    /// default). One long refactor turn can reach the 1800s default, which was previously
+    /// settable only by hand-editing the user config.
+    #[arg(long)]
+    max_wall_secs: Option<u64>,
+
+    /// Enable code execution (bash/build/test). OFF by default; only this flag or a trusted
+    /// `~/.core/config.json` "allow_code": true may grant it, and a project `.core/config.json`
+    /// "allow_code": false or `--mode plan` still tightens it back off. Code runs in an egress-off
+    /// sandbox: network denied, writes confined to the workspace (ADR-007).
     #[arg(long)]
     allow_code: bool,
 
@@ -269,9 +449,8 @@ struct Cli {
     dangerously_bypass_permissions: bool,
 
     /// Permission mode: default | acceptEdits | plan | yolo (ADR-007 §3). Reads always auto; the
-    /// mode governs edits/code/etc. Defaults to acceptEdits (edits auto) in BOTH one-shot and the
-    /// TUI (Owner-directed lenient posture); pass `--mode default` for per-edit prompts or
-    /// `--mode plan` for read-only.
+    /// mode governs edits/code/etc. Defaults to `default` (edits ask) in the interactive TUI and to
+    /// `acceptEdits` in one-shot, which has no approval channel; pass `--mode plan` for read-only.
     #[arg(long)]
     mode: Option<String>,
 
@@ -291,6 +470,11 @@ struct Cli {
     /// List sessions in this repo (id, turns, model, cost, title) and exit.
     #[arg(long)]
     sessions: bool,
+
+    /// How many sessions `--sessions` lists. Defaults to one page (200); the machine document
+    /// keeps its published page ceiling and reports `truncated` instead.
+    #[arg(long, value_name = "N")]
+    limit: Option<usize>,
 
     /// Opaque continuation token returned by a prior `session_list_page`.
     #[arg(long, value_name = "TOKEN")]
@@ -348,9 +532,101 @@ struct Cli {
     provider: Option<String>,
 
     /// Trusted one-run OpenAI-compatible API root, including its full path/version prefix. Prefer a
-    /// named provider in ~/.core/config.json for persistent configuration.
+    /// named provider in ~/.core/config.json for persistent configuration. Requires --key-env.
     #[arg(long)]
     base_url: Option<String>,
+
+    /// Environment variable holding the credential for --base-url. Required alongside it: without
+    /// it a gateway would silently receive the default provider's key.
+    #[arg(long, value_name = "NAME")]
+    key_env: Option<String>,
+}
+
+/// The trusted (pre-project-tightening) code-execution grant. Deny-by-default: a public install
+/// executes nothing until the operator says so with `--allow-code` or a `~/.core/config.json`
+/// `"allow_code": true`. Those two are the operator-owned sources; the repository config is not one
+/// (it may only tighten, via `config::tighten_grant`). The internal team edition opts back into the
+/// permissive posture by writing that user-config key (or by passing the flag), which is an
+/// explicit, auditable act rather than a shipped default.
+fn trusted_allow_code(cli_flag: bool, user_config: Option<bool>) -> bool {
+    cli_flag || user_config.unwrap_or(false)
+}
+
+/// The permission mode a run starts in when `--mode` is absent. The interactive TUI has an approval
+/// channel, so it starts in `Default` and prompts before an edit; one-shot has none, so it starts in
+/// `AcceptEdits` (quickstart §4/§5). Neither grants code execution — that is `--allow-code`.
+fn default_permission_mode(one_shot: bool) -> core_protocol::PermissionMode {
+    if one_shot {
+        core_protocol::PermissionMode::AcceptEdits
+    } else {
+        core_protocol::PermissionMode::Default
+    }
+}
+
+/// The session rules a fresh run starts with. Only the operator's code-execution grant is seeded;
+/// everything else is left to the mode×capability table, which is what
+/// `docs/using/permissions-and-sandbox.md` documents. Seeding `web_fetch`/`web_search` as `Auto`
+/// here used to pre-approve egress on every install — an exact-tool rule outranks the table, so the
+/// `irreversible_external` "always asks" row was unreachable and no default install ever prompted
+/// before reaching the network.
+fn initial_permission_rules(allow_code: bool) -> core_protocol::PermissionRules {
+    let mut rules = core_protocol::PermissionRules::new();
+    if allow_code {
+        rules.allow_cap(core_protocol::Capability::CodeExecuting);
+    }
+    rules
+}
+
+/// `--runs-dir` as an absolute location. An absolute value is honoured verbatim; a relative one
+/// (including the `.core/runs` default) resolves under the CANONICALIZED repo, never against the
+/// process working directory — `core -C /elsewhere` must write its audit record under
+/// `/elsewhere/.core/runs`, not beside wherever the shell happened to be.
+fn resolve_runs_dir(cli: &Cli, repo: &std::path::Path) -> PathBuf {
+    if cli.runs_dir.is_absolute() {
+        cli.runs_dir.clone()
+    } else {
+        repo.join(&cli.runs_dir)
+    }
+}
+
+/// `core prune` — the only path that ever deletes a run journal. The policy must be stated: run
+/// journals are append-only and are the sole durable evidence a run happened, so "prune" with no
+/// rule is a question, not a command.
+fn run_prune_command(
+    runs_dir: &std::path::Path,
+    older_than_days: Option<u64>,
+    keep_last: Option<usize>,
+    dry_run: bool,
+) -> anyhow::Result<u8> {
+    if older_than_days.is_none() && keep_last.is_none() {
+        anyhow::bail!(
+            "prune needs an explicit retention policy: --older-than-days <DAYS> and/or --keep-last <N>"
+        );
+    }
+    let policy = core_record::session::PrunePolicy {
+        max_age_secs: older_than_days.map(|days| days.saturating_mul(24 * 60 * 60)),
+        keep_last,
+        dry_run,
+    };
+    let report = core_record::session::prune(runs_dir, &TenantId::default(), &policy)?;
+    let verb = if dry_run { "would remove" } else { "removed" };
+    for run in &report.removed {
+        println!("{verb} {run}");
+    }
+    for run in &report.active {
+        eprintln!("kept {run}: another process is writing it");
+    }
+    for run in &report.ancestors {
+        eprintln!("kept {run}: a retained fork replays through its prefix");
+    }
+    println!(
+        "{verb} {} session{}, {} retained in {}",
+        report.removed.len(),
+        if report.removed.len() == 1 { "" } else { "s" },
+        report.retained,
+        runs_dir.display()
+    );
+    Ok(output::EXIT_SUCCESS)
 }
 
 #[tokio::main]
@@ -366,6 +642,12 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn run_cli() -> anyhow::Result<u8> {
+    // One clock for the whole pre-first-frame path, started before anything else so it brackets
+    // every phase including the staleness check below. Off by default, and off means no clock at all.
+    let mut startup = startup::StartupTiming::from_env();
+    // Before parsing, so `--version` and `--help` carry it too. stderr only: stdout stays a clean
+    // machine contract.
+    warn_if_stale();
     let cli = Cli::parse();
 
     let machine_schema_version = cli.output_schema_version.unwrap_or(output::SCHEMA_VERSION);
@@ -446,19 +728,60 @@ async fn run_cli() -> anyhow::Result<u8> {
         anyhow::bail!("--transcript and --sessions are separate reads; ask for one");
     }
 
+    // Setup, auth, and config configure the machine itself. They must run BEFORE the repository is
+    // resolved and before any provider is constructed: the whole point of `core setup` is that it
+    // works on a machine where no provider resolves yet, and none of the three needs a workspace.
+    match &cli.command {
+        Some(LocalCommand::Setup { plan, byok }) => {
+            let kind = match (plan, byok) {
+                (true, _) => Some(setup::SetupKind::HostedPlan),
+                (false, Some(_)) => Some(setup::SetupKind::Byok),
+                (false, None) => None,
+            };
+            return setup::run_setup(kind, byok.clone()).await;
+        }
+        Some(LocalCommand::Auth { action }) => {
+            return match action {
+                AuthAction::Status { provider } => setup::run_auth_status(provider.clone()).await,
+                AuthAction::Logout { provider } => setup::run_auth_logout(provider.clone()).await,
+            };
+        }
+        Some(LocalCommand::Config { action }) => {
+            return match action {
+                ConfigAction::Get { key } => setup::run_config_get(key.clone()),
+                ConfigAction::Set { key, value } => setup::run_config_set(key, value),
+            };
+        }
+        _ => {}
+    }
+
     let repo = cli
         .repo
         .canonicalize()
         .map_err(|e| anyhow::anyhow!("repo {:?}: {e}", cli.repo))?;
+    // Resolved ONCE, against `-C`, not against the process working directory. Every reader and
+    // writer below shares this value; the workflow branch resolved it correctly while nine other
+    // call sites used the raw default, so `core -C /elsewhere` wrote its audit record next to
+    // whatever directory the process happened to start in.
+    let runs_dir = resolve_runs_dir(&cli, &repo);
 
     if matches!(cli.command, Some(LocalCommand::Reindex)) {
-        let count = core_record::reindex(&cli.runs_dir)?;
+        let count = core_record::reindex(&runs_dir)?;
         println!(
             "reindexed {count} session{} in {}",
             if count == 1 { "" } else { "s" },
-            cli.runs_dir.display()
+            runs_dir.display()
         );
         return Ok(output::EXIT_SUCCESS);
+    }
+
+    if let Some(LocalCommand::Prune {
+        older_than_days,
+        keep_last,
+        dry_run,
+    }) = &cli.command
+    {
+        return run_prune_command(&runs_dir, *older_than_days, *keep_last, *dry_run);
     }
 
     // `core workflow run <script.js>` — runs the ultracode-workflow engine directly. It needs a
@@ -466,6 +789,13 @@ async fn run_cli() -> anyhow::Result<u8> {
     if let Some(LocalCommand::Workflow { action }) = &cli.command {
         let user_file = FileConfig::load_user()?;
         return run_workflow_command(&cli, &repo, &user_file, action).await;
+    }
+
+    // `core pricing …` — operator tooling. It opens no rollout and admits no provider effect, so
+    // it branches out before the agent machinery exactly like `workflow` does.
+    if let Some(LocalCommand::Pricing { action }) = &cli.command {
+        let user_file = FileConfig::load_user()?;
+        return run_pricing_command(&cli, &user_file, action).await;
     }
 
     let mut registry = Registry::coding_agent(&repo)?;
@@ -495,7 +825,7 @@ async fn run_cli() -> anyhow::Result<u8> {
 
     if let Some(run) = cli.timeline.clone() {
         let run = core_protocol::RunId(run);
-        let timed = core_record::replay_run_timed(&cli.runs_dir, &run)?;
+        let timed = core_record::replay_run_timed(&runs_dir, &run)?;
         let report = core_obs::timeline::fold(timed.iter().map(|t| (t.ts_us, &t.event)));
         if cli.output_format.is_machine() {
             println!("{}", serde_json::to_string(&report)?);
@@ -509,7 +839,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         let run = core_protocol::RunId(run);
         if cli.output_schema_version.is_some() {
             let page = session_view::read_transcript_page(
-                &cli.runs_dir,
+                &runs_dir,
                 &run,
                 cli.transcript_cursor.as_deref(),
                 machine_schema_version,
@@ -517,7 +847,15 @@ async fn run_cli() -> anyhow::Result<u8> {
             println!("{}", serde_json::to_string(&page)?);
             return Ok(output::EXIT_SUCCESS);
         }
-        let document = session_view::read_transcript(&cli.runs_dir, &run)?;
+        // Name the run AND the file the read failed on, the way `--fork` already does. Propagating
+        // the `RecordError` unchanged printed `io: <errno text>: <errno text>` — the `#[from]` source
+        // repeated by anyhow's alternate Display — with nothing a reader could act on.
+        let document = session_view::read_transcript(&runs_dir, &run).map_err(|error| {
+            anyhow::anyhow!(
+                "cannot read run {run} at {}: {error}",
+                runs_dir.join(format!("{run}.jsonl")).display()
+            )
+        })?;
         if cli.output_format.is_machine() {
             println!("{}", serde_json::to_string(&document)?);
         } else {
@@ -540,7 +878,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     if cli.sessions {
         if cli.output_schema_version.is_some() {
             let page = session_view::list_sessions_page(
-                &cli.runs_dir,
+                &runs_dir,
                 &tenant,
                 cli.agent_definition_tag.as_deref(),
                 cli.session_limit,
@@ -550,20 +888,24 @@ async fn run_cli() -> anyhow::Result<u8> {
             println!("{}", serde_json::to_string(&page)?);
             return Ok(output::EXIT_SUCCESS);
         }
+        // `--sessions` says "in this repo" and now means it: the same recorded-cwd scope
+        // `--continue` selects on. The listing is also a page, not a linear dump — the runs dir
+        // grows without bound and had no ceiling on this path at all.
+        let limit = cli.limit.unwrap_or(session_view::MAX_SESSIONS_PER_PAGE);
         if cli.output_format.is_machine() {
-            let document = session_view::list_sessions(
-                &cli.runs_dir,
-                &tenant,
-                session_view::MAX_SESSIONS_PER_PAGE,
-            );
+            let document = session_view::list_sessions(&runs_dir, &tenant, Some(&repo), limit);
             println!("{}", serde_json::to_string(&document)?);
             return Ok(output::EXIT_SUCCESS);
         }
-        let metas = core_record::list(&cli.runs_dir, &tenant);
+        let metas = core_record::session::list_scoped(&runs_dir, &tenant, Some(&repo));
         if metas.is_empty() {
-            eprintln!("no sessions in {}", cli.runs_dir.display());
+            eprintln!(
+                "no sessions for {} in {}",
+                repo.display(),
+                runs_dir.display()
+            );
         } else {
-            for m in &metas {
+            for m in metas.iter().take(limit) {
                 let route = if m.provider_id.is_empty() {
                     m.model.clone()
                 } else {
@@ -578,19 +920,25 @@ async fn run_cli() -> anyhow::Result<u8> {
                     m.run_id, m.turns, route, cost, m.title
                 );
             }
+            if metas.len() > limit {
+                eprintln!(
+                    "showing the {limit} most recent of {} sessions; raise --limit or run `core prune`",
+                    metas.len()
+                );
+            }
         }
         return Ok(output::EXIT_SUCCESS);
     }
     if let Some(pid) = cli.fork.clone() {
         let parent = RunId(pid.clone());
-        let ppath = cli.runs_dir.join(format!("{parent}.jsonl"));
+        let ppath = runs_dir.join(format!("{parent}.jsonl"));
         let events = core_record::replay(&ppath)
             .map_err(|e| anyhow::anyhow!("cannot read run {pid}: {e}"))?;
         let at = events
             .last()
             .map(|e| e.seq)
             .ok_or_else(|| anyhow::anyhow!("run {pid} has no events to fork from"))?;
-        let child = core_record::fork(&cli.runs_dir, &parent, at, &tenant)?;
+        let child = core_record::fork(&runs_dir, &parent, at, &tenant)?;
         if cli.output_format.is_machine() {
             println!(
                 "{}",
@@ -712,12 +1060,14 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     let pricing_key_env_names =
         pricing::key_env_names(user_file.rate_cards.as_deref().unwrap_or_default());
+    startup.mark(startup::StartupPhase::Config);
     mcp::register_configured_servers(
         &mut registry,
         user_file.mcp_servers.as_deref().unwrap_or_default(),
         &pricing_key_env_names,
     )
     .await?;
+    startup.mark(startup::StartupPhase::ToolServer);
 
     // Routing-sensitive defaults never consult the repository config. A cloned project must not
     // be able to redirect source code (and an operator credential) to another provider or host.
@@ -744,20 +1094,30 @@ async fn run_cli() -> anyhow::Result<u8> {
     if let Some((api_root, endpoint_origin)) = endpoint_override
         && endpoint_origin.routing_priority() >= provider_origin.routing_priority()
     {
-        let key_env = match provider_name.as_str() {
-            "deepseek" => "DEEPSEEK_API_KEY",
-            "glm" => "GLM_API_KEY",
-            "minimax" => "MINIMAX_API_KEY",
-            "fireworks" => "FIREWORKS_API_KEY",
-            _ => "OPENAI_API_KEY",
-        };
+        // The credential MUST be named explicitly. Deriving it from the provider NAME — which is
+        // resolved before the override is applied, with a silent fallback to `OPENAI_API_KEY` —
+        // meant `core --base-url https://gateway/v1` shipped whatever key the default provider
+        // happened to use to an arbitrary host. A credential leaves this machine only for an
+        // endpoint the operator paired it with in the same breath.
+        let key_env = config::pick_optional_trusted_string(
+            cli.key_env.clone(),
+            config::env_string("CORE_KEY_ENV"),
+            None,
+        )
+        .map(|(name, _)| name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "--base-url needs an explicit credential: pass --key-env <NAME> (or CORE_KEY_ENV) naming the environment variable holding the key for {api_root}, or declare a named provider with its own `credential` in ~/.core/config.json"
+            )
+        })?;
         let temporary = config::ProviderConfig {
-            id: "cli-override".into(),
+            id: CLI_OVERRIDE_PROVIDER_ID.into(),
             display_name: Some("Compatible endpoint override".into()),
             adapter: "openai_chat".into(),
             error_profile: None,
             api_root,
-            key_env: key_env.into(),
+            key_env: Some(key_env),
+            credential: None,
             enabled: true,
             catalog: true,
             models: Vec::new(),
@@ -769,16 +1129,45 @@ async fn run_cli() -> anyhow::Result<u8> {
         };
         validation.validate().map_err(anyhow::Error::msg)?;
         configured_providers.push(temporary);
-        provider_name = "cli-override".into();
+        provider_name = CLI_OVERRIDE_PROVIDER_ID.into();
         provider_origin = endpoint_origin;
         provider_was_explicit = true;
+    } else if cli.key_env.is_some() {
+        anyhow::bail!(
+            "--key-env only names the credential for --base-url; a configured provider declares its own `credential` in ~/.core/config.json"
+        );
     }
-    let provider_directory = providers::ProviderDirectory::discover(&configured_providers).await?;
+    // Only the providers this launch can actually route to are resolved before the first byte is
+    // printed: the selected one, plus any provider named by an explicit model qualifier. The rest
+    // continue in the background and the model picker joins them. Waiting for all of them is why a
+    // launch with five configured providers paid for four it was never going to use.
+    let mut eager_providers = vec![provider_name.clone()];
+    if let Some((model, _)) = model_candidate.as_ref()
+        && let Some((qualifier, _)) = model.split_once(':')
+    {
+        eager_providers.push(qualifier.to_owned());
+    }
+    let mut provider_directory =
+        providers::ProviderDirectory::discover_eagerly(&configured_providers, &eager_providers)
+            .await?;
+    startup.mark(startup::StartupPhase::ProviderDiscover);
     let mut credential_env_names = provider_directory.credential_env_names();
     credential_env_names.extend(pricing_key_env_names);
     credential_env_names.sort();
     credential_env_names.dedup();
     registry.set_sensitive_env_names(credential_env_names.clone());
+    // A file-backed credential is never in the environment, so the env deny-list above says
+    // nothing about it. The one place a tool, a child agent, or a hook can reach a file is the
+    // workspace, so a credential file inside it is refused outright rather than trusted to stay
+    // unread. Credential files outside the workspace remain unreachable by construction.
+    let exposed_credentials = provider_directory.credential_files_inside(&repo);
+    if let Some(path) = exposed_credentials.first() {
+        anyhow::bail!(
+            "credential file {} is inside the workspace, where tools, subagents, and hooks can read it; move it outside {} (for example under ~/.core/credentials)",
+            path.display(),
+            repo.display()
+        );
+    }
 
     // A project may suggest only a bare model within the already trusted provider. Recognize a
     // qualifier only when its left side is an actual provider id, preserving legitimate model ids
@@ -816,14 +1205,16 @@ async fn run_cli() -> anyhow::Result<u8> {
         .or(user_file.max_usd);
     let max_usd = config::tighten_optional(file.max_usd, trusted_max_usd);
     let max_tokens = cli.max_tokens;
-    let trusted_max_wall_secs = user_file.max_wall_secs.unwrap_or(1800);
+    let trusted_max_wall_secs = cli
+        .max_wall_secs
+        .or(user_file.max_wall_secs)
+        .unwrap_or(1800);
     let max_wall_secs = config::tighten(file.max_wall_secs, trusted_max_wall_secs);
-    // Lenient default (Owner-directed 2026-07-21): code execution is ON by default so bash/build/
-    // test run without a flag. A cloned repository is STILL not an authorization principal — a
-    // project `allow_code:false` may TIGHTEN this off and `--mode plan` hard-disables it, while a
-    // project `true` stays inert (only a CLI flag, the user config, or this default may grant it —
-    // never the untrusted repo).
-    let trusted_allow_code = cli.allow_code || user_file.allow_code.unwrap_or(true);
+    // Deny-by-default (README, SECURITY.md, docs/using/permissions-and-sandbox.md all state it):
+    // code execution is OFF until an operator-owned source grants it. A cloned repository is not an
+    // authorization principal — a project `allow_code:false` may TIGHTEN this off and `--mode plan`
+    // hard-disables it, while a project `true` stays inert.
+    let trusted_allow_code = trusted_allow_code(cli.allow_code, user_file.allow_code);
     let allow_code = config::tighten_grant(file.allow_code, trusted_allow_code);
 
     // ---- Validate ALL purely-local arguments BEFORE opening the rollout ----
@@ -833,6 +1224,11 @@ async fn run_cli() -> anyhow::Result<u8> {
     // Nothing here reads the rollout or the agent.
     if cli.verify.is_some() && !allow_code {
         anyhow::bail!("--verify runs a command and requires --allow-code");
+    }
+    // The file config already rejects a zero here; the flag must not be the one path that admits a
+    // ceiling every submission breaches before its first provider call.
+    if cli.max_wall_secs == Some(0) {
+        anyhow::bail!("--max-wall-secs must be >= 1");
     }
     let env_effort = config::env_string("CORE_EFFORT");
     let effort_runtime_override = cli.effort.is_some() || env_effort.is_some();
@@ -857,16 +1253,16 @@ async fn run_cli() -> anyhow::Result<u8> {
             "--output-format is a one-shot option; pass -p/--print with a task (or omit it for the TUI)"
         );
     }
-    // Explicit --mode wins. Otherwise the default is the Owner-directed lenient posture (2026-07-21):
-    // acceptEdits in BOTH one-shot and the interactive TUI — edits auto, code auto (via the default
-    // allow_code grant above), web egress auto (via the seeded per-tool rules below). Pass
-    // `--mode default` to restore per-edit prompts, or `--mode plan` for read-only. (ADR-007 §3, R5.)
+    // Explicit --mode wins. Otherwise the documented posture applies (quickstart §4/§5): the
+    // interactive TUI starts in `default` — reads auto, edits and code ask, because there IS an
+    // approval channel — while one-shot starts in `acceptEdits` because it has none. Code execution
+    // is a separate grant in every mode (ADR-007 §3, R5).
     let mode_runtime_override = cli.mode.is_some();
     let mode = match cli.mode.as_deref() {
         Some(s) => core_protocol::PermissionMode::parse(s).ok_or_else(|| {
             anyhow::anyhow!("unknown --mode `{s}` (default|acceptEdits|plan|yolo)")
         })?,
-        None => core_protocol::PermissionMode::AcceptEdits,
+        None => default_permission_mode(one_shot),
     };
     // A no-terminal invocation that is NOT one-shot would fall into the interactive TUI and die in
     // raw-mode setup with a cryptic OS error (review LOW). Fail clearly, before opening a rollout.
@@ -895,7 +1291,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     // defaults do not silently reinterpret an existing session.
     let resume_id = cli.resume.clone().or_else(|| {
         if cli.continue_recent {
-            match core_record::most_recent(&cli.runs_dir, &repo, &tenant).map(|run| run.0) {
+            match core_record::most_recent(&runs_dir, &repo, &tenant).map(|run| run.0) {
                 Some(id) => {
                     eprintln!("continuing most recent session in this repo: {id}");
                     Some(id)
@@ -915,14 +1311,14 @@ async fn run_cli() -> anyhow::Result<u8> {
     let resumed_run = resume_id.as_ref().map(|id| RunId(id.clone()));
     let mut locked_resume = match &resumed_run {
         Some(run) => Some(
-            Rollout::open_existing(&cli.runs_dir, run, tenant.clone())
+            Rollout::open_existing(&runs_dir, run, tenant.clone())
                 .map_err(|error| anyhow::anyhow!("cannot resume {run}: {error}"))?,
         ),
         None => None,
     };
     let mut resolved_agent_definition_tag = cli.agent_definition_tag.clone();
     if let Some(resume) = &resume_id {
-        let recorded = core_record::load_forked(&cli.runs_dir, &RunId(resume.clone()))?;
+        let recorded = core_record::load_forked(&runs_dir, &RunId(resume.clone()))?;
         let recorded_agent_definition_tag = recorded.iter().find_map(|event| match &event.kind {
             core_protocol::EventKind::RunStart {
                 agent_definition_tag,
@@ -956,12 +1352,25 @@ async fn run_cli() -> anyhow::Result<u8> {
                 model_origin,
                 Some(config::ConfigOrigin::Cli | config::ConfigOrigin::Environment)
             );
-            if !provider_runtime_override {
+            // A recorded route that no longer resolves is not a route. The one-run `--base-url`
+            // id is the only synthetic name Core can write, so name it: adopting it silently
+            // resurfaces "provider `cli-override` has no selectable discovered model" for a
+            // provider the operator never typed.
+            let recorded_is_unresolvable_override = recorded_provider == CLI_OVERRIDE_PROVIDER_ID
+                && provider_directory.entry(&recorded_provider).is_none();
+            if recorded_is_unresolvable_override {
+                eprintln!(
+                    "session {resume} ran against a one-run --base-url endpoint override, which is not part of this invocation; re-run with the same --base-url and --key-env to continue on that endpoint, or declare it as a named provider in ~/.core/config.json. Continuing on `{provider_name}`."
+                );
+            } else if !provider_runtime_override {
                 provider_name = recorded_provider.clone();
                 provider_origin = config::ConfigOrigin::UserConfig;
                 provider_was_explicit = true;
             }
-            if !model_runtime_override && provider_name == recorded_provider {
+            if !recorded_is_unresolvable_override
+                && !model_runtime_override
+                && provider_name == recorded_provider
+            {
                 requested_model = Some(recorded_model);
                 model_origin = Some(config::ConfigOrigin::UserConfig);
             }
@@ -981,6 +1390,14 @@ async fn run_cli() -> anyhow::Result<u8> {
             requested_model = Some(legacy_model);
             model_origin = Some(config::ConfigOrigin::UserConfig);
         }
+    }
+
+    // Last point before any catalog is read for routing, and the first point at which the routed
+    // provider is final: `--resume` adopts the provider recorded in the rollout just above. Join
+    // the deferred half only for the launches that actually need it — a provider outside the eager
+    // set, or an unqualified model the routed provider does not offer.
+    if provider_directory.needs_settled_catalogs(requested_model.as_deref(), &provider_name) {
+        provider_directory.settle().await;
     }
 
     // Resolve one explicit `(provider, model)` pair from the dynamic catalogs. A trusted provider
@@ -1025,7 +1442,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     } else {
         provider_directory
             .default_selection(&provider_name)
-            .ok_or_else(|| format!("provider `{provider_name}` has no selectable discovered model"))
+            .ok_or_else(|| provider_directory.resolution_error(&provider_name))
     };
 
     let (selection, provider_arc) = match selection_result {
@@ -1076,8 +1493,19 @@ async fn run_cli() -> anyhow::Result<u8> {
         .transpose()?
         .flatten();
     if max_usd.is_some_and(|ceiling| ceiling > 0.0) && selected_rate_card.is_none() {
+        // Say how to fix it. This refusal is correct — an unpriced ceiling is not a ceiling — but
+        // without a route to the tooling it reads as "this feature is not for you" (I-40).
         anyhow::bail!(
-            "cannot enforce the requested USD ceiling: the exact selected route has no active verified rate card"
+            "cannot enforce the requested USD ceiling: the exact selected route has no active verified rate card.\n\
+             Produce one with `core pricing print-digests` (the route to pin) then `core pricing sign <card.json>`,\n\
+             and install the printed object under `rate_cards` in ~/.core/config.json."
+        );
+    }
+    if pricing_port.is_some() && selected_rate_card.is_none() && !cli.output_format.is_machine() {
+        // The operator configured cards and none of them matched this route — almost always a
+        // digest that moved. Naming the cause beats leaving the run silently unpriced (I-40).
+        eprintln!(
+            "note: rate cards are configured but none is active for this exact route, so this run reports token usage and no cost. `core pricing print-digests` prints the route to sign."
         );
     }
 
@@ -1097,7 +1525,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         }
     };
     let resume_messages = if resume_id.is_some() {
-        let path = cli.runs_dir.join(format!("{run}.jsonl"));
+        let path = runs_dir.join(format!("{run}.jsonl"));
         let msgs = Agent::messages_from_rollout(&path)?;
         eprintln!(
             "resuming {run}: {} messages reconstructed from the rollout",
@@ -1116,7 +1544,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     };
     let rollout = match locked_resume.take() {
         Some(rollout) => rollout,
-        None => Rollout::open(&cli.runs_dir, &run, tenant.clone())?,
+        None => Rollout::open(&runs_dir, &run, tenant.clone())?,
     };
 
     let budget = Budget {
@@ -1127,17 +1555,44 @@ async fn run_cli() -> anyhow::Result<u8> {
         max_consecutive_tool_errors: 3,
     };
 
+    // ONE route view, built from the values this run dispatches and enforces with. The banner,
+    // the statusline, `/status`, `/config` and `/model` all read it and derive nothing of their
+    // own, so a displayed route cannot disagree with the request that goes out (I-26).
+    let route = route::RouteView::resolve(
+        &provider_directory,
+        &selection,
+        route::RouteLimits {
+            max_turns: budget.max_turns,
+            max_usd: budget.max_usd,
+            max_tokens: budget.max_tokens,
+            max_wall_secs: budget.max_wall_secs,
+        },
+    );
+
     eprintln!(
         "core · repo={} · model={} · run={}",
         repo.display(),
         model,
         run
     );
+    // The endpoint and the credential SOURCE are the two facts a failing BYOK operator needs, and
+    // neither was visible anywhere in the product. They come from the one route view, so the
+    // banner cannot name an endpoint the run is not using.
+    eprintln!(
+        "route: {}:{} · {} · {}",
+        route.provider_id, route.model_id, route.api_root, route.credential
+    );
+    if let Some(reason) = &route.blocked_reason {
+        eprintln!("route blocked: {reason}");
+    }
     eprintln!("record: {}", rollout.path().display());
     // Discover operator + hierarchical repository instructions outside the kernel. Every accepted
     // source gets its own untrusted provenance frame; imports remain confined and the complete
     // merged prefix is bounded by core-ctx before it crosses into the Agent.
-    let home_core = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".core"));
+    // One config root for the whole binary. `CORE_CONFIG_HOME` exists so a container or CI
+    // runner without HOME is usable at all (I-24); resolving instructions and hooks from a
+    // different root than the config would make that fallback a half-measure.
+    let home_core = config::config_home().map(|home| home.join(".core"));
     let SystemPromptAssembly {
         base_system,
         instruction_bytes,
@@ -1212,15 +1667,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     agent.model_max_output_tokens = model_capabilities.max_output_tokens;
     // Build a coherent fresh-session policy before genesis. A resumed session restores its last
     // durable snapshot; only explicit runtime overrides append a new policy event.
-    let mut initial_rules = core_protocol::PermissionRules::new();
-    if allow_code {
-        initial_rules.allow_cap(core_protocol::Capability::CodeExecuting);
-    }
-    // The first-party web tools are pre-approved only at the final permission-gate dimension.
-    // Kernel admission still requires Trusted governing context; exact-tool allow never clears
-    // taint or the task/policy intersection. Git push / publish remain outside this exact allow.
-    initial_rules.set_tool("web_fetch", core_protocol::Verdict::Auto);
-    initial_rules.set_tool("web_search", core_protocol::Verdict::Auto);
+    let initial_rules = initial_permission_rules(allow_code);
     agent.workspace = repo.clone();
     agent.bypass_permissions = cli.dangerously_bypass_permissions;
     if agent.bypass_permissions {
@@ -1304,7 +1751,9 @@ async fn run_cli() -> anyhow::Result<u8> {
                 .compaction
                 .effective_trigger_tokens(
                     agent.model_context_window,
-                    agent.model_max_output_tokens.unwrap_or(8192).min(8192),
+                    // Same resolution as the request path: the declared ceiling is recorded, not
+                    // a clamp, so the digest names the compaction trigger the run actually used.
+                    agent.model_max_output_tokens.unwrap_or(8192),
                 )
                 .to_string(),
             agent.compaction.keep_recent.to_string(),
@@ -1339,7 +1788,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     // Lifecycle hooks (R5) from the USER config ONLY (trust-by-origin: a project/cloned-repo config
     // must never run a command). Empty if there is no ~/.core/config.json hooks block.
-    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+    if let Some(home) = config::config_home() {
         let mut hooks = runtime::hooks::Hooks::load_user(&home);
         // USER config only, exactly like the hooks above: an endpoint is an exfiltration target and
         // a cloned repo must never be able to name one.
@@ -1368,13 +1817,17 @@ async fn run_cli() -> anyhow::Result<u8> {
             attached,
             cli.task,
             provider_directory,
-            provider_id,
+            route,
             completion_notifications.enabled,
+            startup,
         )
         .await?;
         diagnostic_drain.flush();
         return Ok(output::EXIT_SUCCESS);
     }
+    // One-shot has no frame to emit at; the terminal probe never runs, so the breakdown is final
+    // here, before the first paid request.
+    startup.flush();
 
     // ---- one-shot (streaming) mode: requires a task. ----
     let task = cli.task.clone().ok_or_else(|| {
@@ -1517,6 +1970,10 @@ async fn run_cli() -> anyhow::Result<u8> {
 
     eprintln!("{}", "-".repeat(72));
     eprintln!("outcome: {outcome:?}");
+    // `BudgetExhausted("max_turns")` names the ceiling and nothing else. Say what clears it.
+    if let Outcome::BudgetExhausted(reason) = &outcome {
+        eprintln!("remedy: {}", output::budget_remedy(reason));
+    }
     if let Some(error) = &run_error {
         eprintln!("harness error: {error}");
     }
@@ -1579,7 +2036,7 @@ fn parse_workflow_args(args: &Option<String>) -> anyhow::Result<serde_json::Valu
 
 /// Build the DEFAULT workflow spawner: the real [`runtime::KernelSpawner`], so every `agent()`
 /// call runs a genuine child `Agent` (own context + read-only tool loop) via `run_leaf`. Set
-/// `CORE_WORKFLOW_SPAWNER=provider` to fall back to the first-slice single-completion `ProviderSpawner`.
+/// `CORE_WORKFLOW_SPAWNER=provider` to swap in the single-completion `ProviderSpawner` instead.
 ///
 /// The context is filled from the SAME resolved values the main agent path records
 /// (`record_model_selection` inputs): provider handle + model + `provider_id` + the catalog/capability
@@ -1623,8 +2080,93 @@ fn build_workflow_spawner(
     );
     cx.model_context_window = caps.context_window_tokens;
     cx.model_max_output_tokens = caps.max_output_tokens;
-    cx.context_home_dir = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    cx.context_home_dir = config::config_home();
     std::sync::Arc::new(runtime::KernelSpawner::new(cx))
+}
+
+/// `core pricing <print-digests|sign>` — the shipped path to a priced run (I-40).
+///
+/// Neither action opens a rollout, admits a provider effect, or spends a token. `print-digests`
+/// resolves the same route the agent would record and prints it; `sign` turns an operator-authored
+/// card into the exact configuration entry that installs it. Together they close the gap that made
+/// cost display and the USD ceiling unreachable for every public user.
+async fn run_pricing_command(
+    cli: &Cli,
+    user_file: &FileConfig,
+    action: &PricingAction,
+) -> anyhow::Result<u8> {
+    match action {
+        PricingAction::PrintDigests => {
+            // Same trusted precedence as a run (CLI > env > user config > built-in): a route
+            // printed from different inputs than the one recorded would sign the wrong card.
+            let configured_providers = user_file.providers.clone().unwrap_or_default();
+            let (provider_name, _origin) = config::pick_trusted_string(
+                cli.provider.clone(),
+                config::env_string("CORE_PROVIDER"),
+                user_file.provider.clone(),
+                BUILTIN_DEFAULT_PROVIDER,
+            );
+            let directory = providers::ProviderDirectory::discover(&configured_providers).await?;
+            let requested_model = cli
+                .model
+                .clone()
+                .or_else(|| config::env_string("CORE_MODEL"))
+                .or_else(|| user_file.model.clone());
+            let selection = match requested_model.as_deref() {
+                Some(model_id) => directory
+                    .resolve_model(model_id, Some(&provider_name))
+                    .map_err(|error| anyhow::anyhow!("cannot resolve model: {error}"))?,
+                None => directory.default_selection(&provider_name).ok_or_else(|| {
+                    anyhow::anyhow!("provider `{provider_name}` has no selectable model")
+                })?,
+            };
+            let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
+            let route = core_protocol::PricingRoute {
+                provider_id: selection.provider_id.clone(),
+                model_id: selection.model_id.clone(),
+                catalog_digest,
+                capability_digest,
+            };
+            println!("{}", serde_json::to_string_pretty(&route)?);
+            eprintln!(
+                "this is the `route` of a rate card for {}/{}. Both digests pin the exact catalog \
+and capability evidence recorded at selection time; a card signed for a different route is not \
+resolved and the run stays unpriced.",
+                route.provider_id, route.model_id
+            );
+            Ok(output::EXIT_SUCCESS)
+        }
+        PricingAction::Sign {
+            card,
+            key_env,
+            signer_id,
+        } => {
+            let raw = if card.as_os_str() == "-" {
+                std::io::read_to_string(std::io::stdin().lock())?
+            } else {
+                std::fs::read_to_string(card)
+                    .map_err(|error| anyhow::anyhow!("rate card {}: {error}", card.display()))?
+            };
+            let rate_card: core_protocol::RateCard =
+                serde_json::from_str(&raw).map_err(|error| {
+                    anyhow::anyhow!("rate card is not a valid unsigned RateCard document: {error}")
+                })?;
+            let key_material = std::env::var(key_env).map_err(|_| {
+                anyhow::anyhow!("pricing key environment variable `{key_env}` is not set")
+            })?;
+            let entry = pricing::sign_config_entry(rate_card, signer_id, key_env, &key_material)?;
+            // Validate what we are about to hand the operator through the same gate the loader
+            // uses, so a card cannot be published here and rejected at startup.
+            pricing::validate_rate_card_configs(std::slice::from_ref(&entry))
+                .map_err(anyhow::Error::msg)?;
+            println!("{}", serde_json::to_string_pretty(&entry)?);
+            eprintln!(
+                "append this object to `rate_cards` in ~/.core/config.json and export `{key_env}`. \
+Only the variable NAME is written; the key bytes stay in your environment."
+            );
+            Ok(output::EXIT_SUCCESS)
+        }
+    }
 }
 
 /// `core workflow <run|list|resume|watch>` — the ultracode-workflow surface. `run`/`resume`/`watch`
@@ -1642,11 +2184,7 @@ async fn run_workflow_command(
 
     // A relative `--runs-dir` resolves under the canonicalized repo so runs land in the project
     // regardless of the invoking cwd. `<workflows_dir>` holds one directory per run.
-    let runs_dir = if cli.runs_dir.is_absolute() {
-        cli.runs_dir.clone()
-    } else {
-        repo.join(&cli.runs_dir)
-    };
+    let runs_dir = resolve_runs_dir(cli, repo);
     let workflows_dir = runs_dir.join("subagents").join("workflows");
 
     // `list` — enumerate persisted runs; needs no provider or API key.
@@ -1759,6 +2297,12 @@ async fn run_workflow_command(
         .as_ref()
         .and_then(|meta| meta.name.clone())
         .unwrap_or_else(|| "workflow".into());
+    // The declared phases seed the live tree's layout; reading only `name`/`description` here is
+    // what left the parsed `meta.phases` unused.
+    let declared_phases = meta
+        .as_ref()
+        .and_then(|meta| meta.phases.clone())
+        .unwrap_or_default();
     eprintln!(
         "workflow \u{b7} repo={} \u{b7} provider={} \u{b7} model={} \u{b7} run={run_id}",
         repo.display(),
@@ -1821,9 +2365,9 @@ async fn run_workflow_command(
         let environment = theme::capabilities::Environment::capture();
         let detected = theme::Theme::detect_with(environment, None);
         if is_watch {
-            workflow::watch_live(spec, spawner, &name, &detected.theme).await?
+            workflow::watch_live(spec, spawner, &name, &declared_phases, &detected.theme).await?
         } else {
-            workflow::run_live(spec, spawner, &name, &detected.theme).await?
+            workflow::run_live(spec, spawner, &name, &declared_phases, &detected.theme).await?
         }
     } else {
         let sink: std::sync::Arc<dyn core_workflow::ProgressSink> =
@@ -1841,8 +2385,11 @@ async fn run_workflow_command(
     // Record the terminal outcome (enables `list` status + shows the value to a later reader).
     workflow::persist_result(&workflows_dir, &run_id, &report)?;
     eprintln!(
-        "run {run_id} \u{b7} {} \u{b7} cache {} hit / {} miss",
+        "run {run_id} \u{b7} {} \u{b7} {} tok \u{b7} {} tool call(s) \u{b7} {} \u{b7} cache {} hit / {} miss",
         if report.stopped { "stopped" } else { "done" },
+        core_workflow::fmt_count(report.tokens),
+        report.tool_calls,
+        core_workflow::fmt_duration(report.elapsed_ms),
         report.cache_hits,
         report.cache_misses
     );
@@ -1951,6 +2498,89 @@ fn print_timeline(run: &core_protocol::RunId, report: &core_obs::timeline::Timel
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The wall-clock ceiling was the one budget with no flag: the 1800s default was reachable
+    /// only by hand-editing `~/.core/config.json`, even though a single long refactor turn can
+    /// hit it. It now resolves exactly like the other ceilings — flag, then user config, then
+    /// default — and a project config may still only tighten it.
+    #[test]
+    fn the_wall_clock_ceiling_is_settable_per_invocation() {
+        let flagged = Cli::try_parse_from(["core", "--max-wall-secs", "5400"])
+            .expect("--max-wall-secs is a real flag");
+        assert_eq!(flagged.max_wall_secs, Some(5400));
+        assert_eq!(
+            config::tighten(None, flagged.max_wall_secs.unwrap_or(1800)),
+            5400,
+            "the flag outranks the 1800s default"
+        );
+        assert_eq!(
+            config::tighten(Some(600), flagged.max_wall_secs.unwrap_or(1800)),
+            600,
+            "an untrusted project config may still only tighten the operator's ceiling"
+        );
+        assert_eq!(
+            Cli::try_parse_from(["core"])
+                .expect("the flag is optional")
+                .max_wall_secs,
+            None
+        );
+        assert!(
+            Cli::try_parse_from(["core", "--max-wall-secs", "-1"]).is_err(),
+            "a negative ceiling is not a u64"
+        );
+    }
+
+    #[test]
+    fn long_version_identifies_the_exact_build_and_short_version_stays_bare() {
+        // Two artifacts cut from different commits both reported `core 0.0.1`. `--version` now
+        // carries the commit and build date; `-V` keeps the bare semver the release smoke tests
+        // and the installer compare exactly.
+        let long = long_version();
+        assert!(long.starts_with(env!("CARGO_PKG_VERSION")), "{long}");
+        assert!(long.contains(BUILD_COMMIT), "{long}");
+        assert!(long.contains(BUILD_DATE), "{long}");
+        assert!(long.len() > env!("CARGO_PKG_VERSION").len(), "{long}");
+        assert_eq!(
+            long,
+            long_version(),
+            "the rendered identity must be stable within a process"
+        );
+    }
+
+    #[test]
+    fn an_old_binary_says_so_and_a_fresh_one_stays_quiet() {
+        // 2026-01-01, purely as arithmetic: 20454 days after the epoch.
+        let built = "2026-01-01";
+        let built_secs = 20_454 * 86_400;
+        assert_eq!(build_date_days(built), Some(20_454));
+        assert_eq!(staleness_note(built, built_secs), None);
+        assert_eq!(
+            staleness_note(built, built_secs + BUILD_STALE_AFTER_DAYS * 86_400),
+            None,
+            "the threshold itself is not yet stale"
+        );
+        let note = staleness_note(built, built_secs + (BUILD_STALE_AFTER_DAYS + 1) * 86_400)
+            .expect("a binary past the threshold must say so");
+        assert!(note.contains("91 days old"), "{note}");
+        assert!(note.contains(built), "{note}");
+        assert_eq!(note.lines().count(), 1, "the note is one line: {note}");
+    }
+
+    #[test]
+    fn an_unstamped_or_malformed_build_date_makes_no_claim() {
+        // No network is consulted, so an unknown age must stay silent rather than guess.
+        for date in [
+            "unknown",
+            "",
+            "2026-01",
+            "2026-13-01",
+            "2026-01-32",
+            "x-y-z",
+        ] {
+            assert_eq!(build_date_days(date), None, "{date}");
+            assert_eq!(staleness_note(date, 20_454 * 86_400), None, "{date}");
+        }
+    }
 
     #[test]
     fn one_shot_submission_builder_emits_exact_multimodal_sq_operation() {
@@ -2160,6 +2790,124 @@ mod tests {
         }
         assert_eq!(assembly.instruction_bytes.matches("UNTRUSTED").count(), 4);
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn a_default_install_denies_code_execution_until_an_operator_source_grants_it() {
+        // The shipped default was `unwrap_or(true)`, so a public install auto-ran bash/build/test
+        // while README and SECURITY.md both said "code execution is disabled by default".
+        assert!(
+            !trusted_allow_code(false, None),
+            "a default install must not grant code execution"
+        );
+        assert!(trusted_allow_code(true, None), "--allow-code grants it");
+        assert!(
+            trusted_allow_code(false, Some(true)),
+            "the trusted user config grants it — this is how the internal team edition opts in"
+        );
+        assert!(
+            !trusted_allow_code(false, Some(false)),
+            "an explicit user-config false stays off"
+        );
+        // A repository is input, not a principal: it may tighten the grant away but never mint one.
+        assert!(!config::tighten_grant(
+            Some(true),
+            trusted_allow_code(false, None)
+        ));
+        assert!(!config::tighten_grant(
+            Some(false),
+            trusted_allow_code(true, None)
+        ));
+    }
+
+    #[test]
+    fn the_interactive_default_mode_asks_before_an_edit_and_before_code() {
+        use core_protocol::{Capability, PermissionMode, Verdict, gate};
+
+        // Quickstart §4: "The interactive default mode automatically permits reads and asks before
+        // an edit or command." Shipping AcceptEdits in the TUI contradicted that.
+        assert_eq!(default_permission_mode(false), PermissionMode::Default);
+        // Quickstart §5: one-shot has no approval channel, so it stays in acceptEdits.
+        assert_eq!(default_permission_mode(true), PermissionMode::AcceptEdits);
+
+        let rules = initial_permission_rules(false);
+        for (mode, one_shot) in [
+            (PermissionMode::Default, false),
+            (PermissionMode::AcceptEdits, true),
+        ] {
+            assert_eq!(default_permission_mode(one_shot), mode);
+            assert_eq!(
+                gate(mode, &rules, "bash", Capability::CodeExecuting),
+                Verdict::Ask,
+                "a default install must prompt before executing code in {}",
+                mode.label()
+            );
+        }
+        assert_eq!(
+            gate(
+                PermissionMode::Default,
+                &rules,
+                "write_file",
+                Capability::ReversibleLocal
+            ),
+            Verdict::Ask,
+            "the interactive default mode asks before an edit"
+        );
+        assert_eq!(
+            gate(
+                PermissionMode::Default,
+                &rules,
+                "read_file",
+                Capability::ReadOnly
+            ),
+            Verdict::Auto,
+            "reads are never gated"
+        );
+    }
+
+    #[test]
+    fn the_fresh_rule_seed_never_pre_approves_web_egress() {
+        use core_protocol::{Capability, PermissionMode, Verdict, gate};
+
+        // The seed used to set `web_fetch`/`web_search` to Auto unconditionally. An exact-tool rule
+        // outranks the mode table, so the documented "irreversible_external always asks" row was
+        // unreachable and every install reached the network without a prompt.
+        let rules = initial_permission_rules(false);
+        assert!(
+            rules.is_empty(),
+            "a fresh public session seeds no rule at all; the mode table decides"
+        );
+        for mode in [
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Yolo,
+        ] {
+            for tool in ["web_fetch", "web_search"] {
+                assert_eq!(
+                    gate(mode, &rules, tool, Capability::IrreversibleExternal),
+                    Verdict::Ask,
+                    "{tool} must prompt in {}",
+                    mode.label()
+                );
+            }
+        }
+        // The one thing the seed still carries is the operator's explicit code grant.
+        let granted = initial_permission_rules(true);
+        assert_eq!(
+            granted.cap_rule(Capability::CodeExecuting),
+            Some(Verdict::Auto),
+            "--allow-code still seeds the code-execution rule"
+        );
+        assert_eq!(
+            gate(
+                PermissionMode::Default,
+                &granted,
+                "web_fetch",
+                Capability::IrreversibleExternal
+            ),
+            Verdict::Ask,
+            "granting code execution must not drag egress along with it"
+        );
     }
 
     #[test]

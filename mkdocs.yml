@@ -128,6 +128,8 @@ nav:
       - Governance: project/governance.md
       - Maintainer onboarding: maintainer-onboarding.md
       - Repository enforcement: repository-enforcement.md
+      - Decision records:
+          - One workflow renderer: project/decisions/0001-workflow-renderer-convergence.md
       - Development:
           - Setup: development/setup.md
           - Testing: development/testing.md

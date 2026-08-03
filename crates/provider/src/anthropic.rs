@@ -33,6 +33,7 @@ pub struct Anthropic {
     route_scope: String,
     error_profile: ErrorProfile,
     static_metadata: std::sync::Arc<crate::StaticProviderMetadata>,
+    prompt_cache: bool,
     client: reqwest::Client,
 }
 
@@ -68,6 +69,7 @@ impl Anthropic {
                 ErrorProfile::CustomConservative
             },
             static_metadata: crate::StaticProviderMetadata::embedded(),
+            prompt_cache: true,
             api_root,
             client,
         })
@@ -83,6 +85,14 @@ impl Anthropic {
         static_metadata: std::sync::Arc<crate::StaticProviderMetadata>,
     ) -> Self {
         self.static_metadata = static_metadata;
+        self
+    }
+
+    /// Opt this route out of prompt caching. Breakpoints are on by default for every endpoint
+    /// speaking the Messages wire; this is the operator's declaration that one particular
+    /// endpoint rejects `cache_control` outright instead of ignoring it.
+    pub fn with_prompt_cache(mut self, prompt_cache: bool) -> Self {
+        self.prompt_cache = prompt_cache;
         self
     }
 
@@ -104,7 +114,8 @@ impl Anthropic {
         );
         // Stable prefix first (tools -> system), volatile last (messages) — the cache
         // discipline (ADR-002). cache_control on the system block marks the breakpoint.
-        let system = if req.cache_system && capabilities.prompt_cache {
+        let cache_prompt = req.cache_system && self.prompt_cache && capabilities.prompt_cache;
+        let system = if cache_prompt {
             serde_json::json!([{
                 "type": "text",
                 "text": req.system,
@@ -126,10 +137,24 @@ impl Anthropic {
             })
             .collect();
 
+        // The system block alone leaves the transcript uncached, and by turn five the transcript
+        // is over 90% of the request. Roll a second breakpoint along with the conversation: it
+        // sits on the last block of the second-to-last message, so turn N reads every prior turn
+        // from cache and only the newest turn is uncached. Two of the four allowed breakpoints.
+        let transcript_breakpoint = cache_prompt
+            .then(|| req.messages.len().checked_sub(2))
+            .flatten();
         let messages: Vec<serde_json::Value> = req
             .messages
             .iter()
-            .map(|message| msg_to_json(message, &self.route_scope))
+            .enumerate()
+            .map(|(index, message)| {
+                msg_to_json(
+                    message,
+                    &self.route_scope,
+                    transcript_breakpoint == Some(index),
+                )
+            })
             .collect::<Result<_, _>>()?;
 
         let mut body = serde_json::json!({
@@ -184,37 +209,46 @@ struct AnthropicRequestCapabilities {
     semantic_effort: bool,
 }
 
-/// Capabilities are intentionally family allowlists, not guesses from the Messages wire shape.
-/// Older and unknown Claude ids remain usable with the baseline request schema.
+/// Thinking and effort are intentionally family allowlists, not guesses from the Messages wire
+/// shape. Older and unknown Claude ids remain usable with the baseline request schema.
+///
+/// Prompt caching is deliberately NOT in that shape. `cache_control` is a property of the
+/// Messages wire itself, not a per-account entitlement, and gating it on the first-party error
+/// profile (which requires the exact api.anthropic.com root) silently disabled caching for every
+/// Anthropic-wire gateway — kimi, deepseek, GLM — so each of those re-sent the whole prefill
+/// uncached every turn: 95000 uncached prefill tokens in one measured turn. It now defaults on
+/// for anything on this adapter; the endpoint that genuinely rejects the field is declared by the
+/// operator through [`Anthropic::with_prompt_cache`], not inferred from a model name.
 fn anthropic_request_capabilities(
     error_profile: ErrorProfile,
     api_root: &str,
     static_metadata: &crate::StaticProviderMetadata,
     model_id: &str,
 ) -> AnthropicRequestCapabilities {
-    if error_profile != ErrorProfile::Anthropic {
-        return AnthropicRequestCapabilities {
-            prompt_cache: false,
-            extended_thinking: false,
-            semantic_effort: false,
-        };
-    }
+    let first_party = error_profile == ErrorProfile::Anthropic;
     let claude_4 = ["claude-opus-4", "claude-sonnet-4", "claude-haiku-4"]
         .into_iter()
         .any(|family| crate::model_matches_family(model_id, family));
     let sonnet_37 = crate::model_matches_family(model_id, "claude-3-7-sonnet");
-    let cache_only_35 = ["claude-3-5-sonnet", "claude-3-5-haiku"]
-        .into_iter()
-        .any(|family| crate::model_matches_family(model_id, family));
     // The refreshable metadata keeps this narrower than the thinking allowlist: Messages wire
     // compatibility is not evidence that a model accepts `output_config.effort` or its beta header.
-    let semantic_effort = api_root == static_metadata.anthropic_effort_api_root()
+    let semantic_effort = first_party
+        && api_root == static_metadata.anthropic_effort_api_root()
         && static_metadata.anthropic_effort_header(model_id).is_some();
     AnthropicRequestCapabilities {
-        prompt_cache: claude_4 || sonnet_37 || cache_only_35,
-        extended_thinking: claude_4 || sonnet_37,
+        prompt_cache: !predates_prompt_caching(model_id),
+        extended_thinking: first_party && (claude_4 || sonnet_37),
         semantic_effort,
     }
+}
+
+/// The Claude generations that shipped before `cache_control` existed on the Messages wire. This
+/// is a bounded denylist of ids Core knows are too old, not an allowlist: an unrecognized id is a
+/// gateway's own model, and refusing to cache it is what the audit measured as the defect.
+fn predates_prompt_caching(model_id: &str) -> bool {
+    ["claude-1", "claude-2", "claude-instant"]
+        .into_iter()
+        .any(|family| crate::model_matches_family(model_id, family))
 }
 
 fn anthropic_effort_application(
@@ -241,17 +275,22 @@ fn anthropic_effort_application(
     }
 }
 
-fn msg_to_json(m: &Message, route_scope: &str) -> Result<serde_json::Value, ProviderError> {
+fn msg_to_json(
+    m: &Message,
+    route_scope: &str,
+    cache_breakpoint: bool,
+) -> Result<serde_json::Value, ProviderError> {
     let role = match m.role {
         Role::User => "user",
         Role::Assistant => "assistant",
     };
     if m.role == Role::Assistant
-        && let Some(native_content) = matching_native_content(m, route_scope)?
+        && let Some(mut native_content) = matching_native_content(m, route_scope)?
     {
+        mark_cache_breakpoint(&mut native_content, cache_breakpoint);
         return Ok(serde_json::json!({"role": role, "content": native_content}));
     }
-    let content: Vec<serde_json::Value> = m
+    let mut content: Vec<serde_json::Value> = m
         .content
         .iter()
         // Naked thinking lacks the provider signature and must never be replayed. Only a matching,
@@ -271,7 +310,42 @@ fn msg_to_json(m: &Message, route_scope: &str) -> Result<serde_json::Value, Prov
             })),
         })
         .collect();
+    mark_cache_breakpoint(&mut content, cache_breakpoint);
     Ok(serde_json::json!({"role": role, "content": content}))
+}
+
+/// Mark the rolling transcript breakpoint on the last block of one message that can carry it. A
+/// breakpoint caches the prefix up to and including its own block, so stepping back past a
+/// trailing reasoning block only leaves that block uncached and never drops an earlier turn; a
+/// message with no eligible block simply carries no breakpoint that turn.
+fn mark_cache_breakpoint(content: &mut [serde_json::Value], cache_breakpoint: bool) {
+    if !cache_breakpoint {
+        return;
+    }
+    let Some(index) = content.iter().rposition(accepts_cache_control) else {
+        return;
+    };
+    if let Some(object) = content[index].as_object_mut() {
+        object.insert(
+            "cache_control".into(),
+            serde_json::json!({"type": "ephemeral"}),
+        );
+    }
+}
+
+/// Whether a serialized block may carry `cache_control`. The wire accepts it on content-bearing
+/// blocks and rejects it on the model-internal reasoning blocks, whose schema is the closed key
+/// set [`validate_native_content`] already enforces on the way in. A replayed assistant turn can
+/// end in one of those — `redacted_thinking` is pushed to the native payload on its own, and a
+/// turn that stops on refusal or pause after thinking never gets a trailing text block — so the
+/// naive "last block" would have put `cache_control` inside a block that cannot hold it and had
+/// the whole request rejected. Denylist, not allowlist: a content block Core does not emit yet
+/// stays eligible rather than silently losing the transcript breakpoint.
+fn accepts_cache_control(block: &serde_json::Value) -> bool {
+    !matches!(
+        block.get("type").and_then(serde_json::Value::as_str),
+        Some("thinking" | "redacted_thinking")
+    )
 }
 
 fn matching_native_content(
@@ -511,6 +585,12 @@ impl Provider for Anthropic {
             return Err(error);
         }
 
+        // Quota state is on the success headers, so it is knowable here — before a single token
+        // has arrived and long before the 429 that used to be its first symptom (I-53).
+        if let Some(snapshot) = crate::rate_limit_from_headers(resp.headers()) {
+            on_item(StreamItem::RateLimit(snapshot));
+        }
+
         let mut stream = resp.bytes_stream();
         // Buffer RAW bytes: a UTF-8 char can be split across network chunks, and decoding each
         // chunk in isolation corrupts it (code review F2). We decode only the complete-UTF-8
@@ -664,6 +744,41 @@ mod tests {
         }
     }
 
+    /// A request whose transcript already holds `messages` alternating turns.
+    fn conversation(model: &str, messages: usize) -> TurnRequest {
+        let mut request = request(model);
+        request.messages = (0..messages)
+            .map(|index| Message {
+                role: if index % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                content: vec![Block::Text {
+                    text: format!("turn {index}"),
+                }],
+            })
+            .collect();
+        request
+    }
+
+    fn breakpoint_indices(body: &serde_json::Value) -> Vec<usize> {
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                message["content"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|block| block.get("cache_control").is_some())
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
     #[test]
     fn split_frames_handles_partial_chunks() {
         let (frames, rest) =
@@ -709,9 +824,13 @@ mod tests {
             ("claude-3-7-sonnet-latest", true, true, false),
             ("claude-3-5-sonnet-20241022", true, false, false),
             ("claude-3-5-haiku-latest", true, false, false),
-            ("claude-3-opus-20240229", false, false, false),
+            // Prompt caching is a wire property, so it stays on for a model whose thinking and
+            // effort support Core cannot vouch for; only the pre-`cache_control` generations
+            // are excluded.
+            ("claude-3-opus-20240229", true, false, false),
+            ("claude-unknown", true, false, false),
             ("claude-2.1", false, false, false),
-            ("claude-unknown", false, false, false),
+            ("claude-instant-1.2", false, false, false),
         ];
         for (model, prompt_cache, extended_thinking, semantic_effort) in cases {
             assert_eq!(
@@ -729,19 +848,31 @@ mod tests {
                 "{model}"
             );
         }
-        assert_eq!(
-            anthropic_request_capabilities(
-                ErrorProfile::Glm,
-                DEFAULT_API_ROOT,
-                &metadata,
-                "claude-sonnet-4-5",
+        // A gateway inherits neither thinking nor effort — wire compatibility is not an
+        // entitlement — but it does speak the wire, so it keeps its cache breakpoints.
+        for (profile, api_root, model) in [
+            (ErrorProfile::Glm, DEFAULT_API_ROOT, "claude-sonnet-4-5"),
+            (
+                ErrorProfile::CustomConservative,
+                "https://gateway.test/anthropic",
+                "kimi-k2-turbo",
             ),
-            AnthropicRequestCapabilities {
-                prompt_cache: false,
-                extended_thinking: false,
-                semantic_effort: false,
-            }
-        );
+            (
+                ErrorProfile::DeepSeek,
+                "https://api.deepseek.com/anthropic",
+                "deepseek-chat",
+            ),
+        ] {
+            assert_eq!(
+                anthropic_request_capabilities(profile, api_root, &metadata, model),
+                AnthropicRequestCapabilities {
+                    prompt_cache: true,
+                    extended_thinking: false,
+                    semantic_effort: false,
+                },
+                "{model}"
+            );
+        }
     }
 
     #[test]
@@ -823,6 +954,170 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_wire_gateway_caches_and_the_operator_opt_out_suppresses_it() {
+        // Audited on origin/main: prompt caching required the exact api.anthropic.com root, so a
+        // gateway speaking the same Messages wire re-sent the entire prefill uncached every turn
+        // (95000 uncached prefill tokens in one measured turn).
+        let root = ApiRoot::parse("https://gateway.test/anthropic").unwrap();
+        let gateway = Anthropic::with_root("key".into(), root.clone()).unwrap();
+        assert_eq!(gateway.error_profile, ErrorProfile::CustomConservative);
+        let cached = gateway.body(&conversation("kimi-k2-turbo", 3)).unwrap();
+        assert_eq!(cached["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(breakpoint_indices(&cached), vec![1]);
+        // Wire compatibility still buys the gateway nothing it was not measured to have.
+        assert!(cached.get("thinking").is_none());
+        assert!(cached.get("output_config").is_none());
+
+        // The opt-out is the operator declaring that this endpoint rejects `cache_control`, and
+        // it must clear every breakpoint, not just the system one.
+        let opted_out = Anthropic::with_root("key".into(), root)
+            .unwrap()
+            .with_prompt_cache(false);
+        let plain = opted_out.body(&conversation("kimi-k2-turbo", 3)).unwrap();
+        assert!(plain["system"].is_string());
+        assert!(!plain.to_string().contains("cache_control"));
+    }
+
+    #[test]
+    fn transcript_carries_a_rolling_breakpoint_behind_the_newest_turn() {
+        // Audited on origin/main: the only breakpoint sat on the system block, so by turn five
+        // the transcript was over 90% of the request and none of it was cached.
+        let provider =
+            Anthropic::with_root("key".into(), ApiRoot::parse(DEFAULT_API_ROOT).unwrap()).unwrap();
+
+        let body = provider
+            .body(&conversation("claude-sonnet-4-5", 5))
+            .unwrap();
+        assert_eq!(
+            breakpoint_indices(&body),
+            vec![3],
+            "the breakpoint belongs on the second-to-last message: it covers every prior turn \
+             and leaves only the newest turn uncached"
+        );
+        assert_eq!(
+            body["messages"][3]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+        assert_eq!(
+            body.to_string().matches("cache_control").count(),
+            2,
+            "system prefix + rolling transcript, well inside the four-breakpoint limit"
+        );
+
+        // It rolls: one more turn moves the breakpoint forward by one message.
+        let next = provider
+            .body(&conversation("claude-sonnet-4-5", 6))
+            .unwrap();
+        assert_eq!(breakpoint_indices(&next), vec![4]);
+
+        // Nothing sits behind a single-message transcript, so it carries no breakpoint.
+        let first = provider
+            .body(&conversation("claude-sonnet-4-5", 1))
+            .unwrap();
+        assert_eq!(breakpoint_indices(&first), Vec::<usize>::new());
+        assert_eq!(first.to_string().matches("cache_control").count(), 1);
+
+        // A caller that turned caching off gets neither breakpoint.
+        let mut uncached = conversation("claude-sonnet-4-5", 5);
+        uncached.cache_system = false;
+        let uncached = provider.body(&uncached).unwrap();
+        assert!(!uncached.to_string().contains("cache_control"));
+    }
+
+    #[test]
+    fn rolling_breakpoint_lands_on_a_replayed_native_assistant_message() {
+        let provider =
+            Anthropic::with_root("key".into(), ApiRoot::parse(DEFAULT_API_ROOT).unwrap())
+                .unwrap()
+                .with_route_scope("anthropic-a".into())
+                .unwrap();
+        let mut request = conversation("claude-sonnet-4-5", 3);
+        request.messages[1] = Message {
+            role: Role::Assistant,
+            content: vec![Block::ProviderState(ProviderState {
+                route_scope: "anthropic-a".into(),
+                format: ANTHROPIC_CONTENT_BLOCKS_FORMAT.into(),
+                payload: serde_json::json!([
+                    {"type":"thinking","thinking":"private reasoning","signature":"sig"},
+                    {"type":"text","text":"replayed"}
+                ]),
+            })],
+        };
+        let body = provider.body(&request).unwrap();
+        assert_eq!(breakpoint_indices(&body), vec![1]);
+        // Marking the breakpoint must not disturb the replayed blocks themselves.
+        assert_eq!(
+            body["messages"][1]["content"][0]["thinking"],
+            "private reasoning"
+        );
+        assert_eq!(
+            body["messages"][1]["content"][1],
+            serde_json::json!({
+                "type":"text","text":"replayed","cache_control":{"type":"ephemeral"}
+            })
+        );
+    }
+
+    #[test]
+    fn rolling_breakpoint_never_lands_on_a_replayed_reasoning_block() {
+        // A turn that stops on refusal or pause after thinking, or that ends on a
+        // `redacted_thinking` block, replays native content whose last block is a reasoning
+        // block. `cache_control` is not in that block's key set — the wire rejects the whole
+        // request — so the breakpoint has to step back to the last block that can hold it.
+        let provider =
+            Anthropic::with_root("key".into(), ApiRoot::parse(DEFAULT_API_ROOT).unwrap())
+                .unwrap()
+                .with_route_scope("anthropic-a".into())
+                .unwrap();
+        let replayed = |payload: serde_json::Value| Message {
+            role: Role::Assistant,
+            content: vec![Block::ProviderState(ProviderState {
+                route_scope: "anthropic-a".into(),
+                format: ANTHROPIC_CONTENT_BLOCKS_FORMAT.into(),
+                payload,
+            })],
+        };
+
+        let mut request = conversation("claude-sonnet-4-5", 3);
+        request.messages[1] = replayed(serde_json::json!([
+            {"type":"text","text":"replayed"},
+            {"type":"thinking","thinking":"private reasoning","signature":"sig"},
+            {"type":"redacted_thinking","data":"opaque"}
+        ]));
+        let body = provider.body(&request).unwrap();
+        let blocks = body["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(
+            blocks[0],
+            serde_json::json!({
+                "type":"text","text":"replayed","cache_control":{"type":"ephemeral"}
+            }),
+            "the breakpoint belongs on the last block that can carry it"
+        );
+        for kind in ["thinking", "redacted_thinking"] {
+            let reasoning = blocks
+                .iter()
+                .find(|block| block["type"] == kind)
+                .unwrap_or_else(|| panic!("{kind} must survive the replay"));
+            assert!(
+                reasoning.get("cache_control").is_none(),
+                "{kind} has a closed key set on the wire and rejects cache_control"
+            );
+        }
+        // Still exactly two: system prefix plus the rolling transcript breakpoint.
+        assert_eq!(body.to_string().matches("cache_control").count(), 2);
+
+        // Nothing in the message can carry it, so that turn caches the system prefix only
+        // rather than sending a request the wire will reject.
+        let mut reasoning_only = conversation("claude-sonnet-4-5", 3);
+        reasoning_only.messages[1] = replayed(serde_json::json!([
+            {"type":"thinking","thinking":"private reasoning","signature":"sig"}
+        ]));
+        let body = provider.body(&reasoning_only).unwrap();
+        assert_eq!(breakpoint_indices(&body), Vec::<usize>::new());
+        assert_eq!(body.to_string().matches("cache_control").count(), 1);
+    }
+
+    #[test]
     fn direct_instances_have_unique_route_scopes() {
         let first =
             Anthropic::with_root("key".into(), ApiRoot::parse(DEFAULT_API_ROOT).unwrap()).unwrap();
@@ -869,10 +1164,10 @@ mod tests {
             ],
         };
 
-        let exact = msg_to_json(&message, "anthropic-a").unwrap();
+        let exact = msg_to_json(&message, "anthropic-a", false).unwrap();
         assert_eq!(exact["content"], native);
 
-        let portable = msg_to_json(&message, "anthropic-b").unwrap();
+        let portable = msg_to_json(&message, "anthropic-b", false).unwrap();
         assert_eq!(
             portable["content"],
             serde_json::json!([
@@ -910,9 +1205,9 @@ mod tests {
                 },
             ],
         };
-        assert!(msg_to_json(&message, "anthropic-a").is_err());
+        assert!(msg_to_json(&message, "anthropic-a", false).is_err());
         assert_eq!(
-            msg_to_json(&message, "anthropic-b").unwrap()["content"],
+            msg_to_json(&message, "anthropic-b", false).unwrap()["content"],
             serde_json::json!([{"type":"text","text":"portable"}])
         );
     }
@@ -931,7 +1226,7 @@ mod tests {
             ],
         };
         assert_eq!(
-            msg_to_json(&message, "anthropic-a").unwrap()["content"],
+            msg_to_json(&message, "anthropic-a", false).unwrap()["content"],
             serde_json::json!([{"type":"text","text":"visible"}])
         );
     }

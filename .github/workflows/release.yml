@@ -617,12 +617,22 @@ jobs:
           --locked -p core-cli --bin core
           --target "${{ matrix.target }}"
           output::tests::explicit_v4_projection_preserves_the_frozen_terminal_bytes
+      # Stamp the build identity INTO the binary. Two artifacts cut from different commits both
+      # reported `core 0.0.1`, so a user could not tell which one they had and an aged binary had
+      # no way to say so. `--version` carries these; `-V` stays the bare semver matched below.
       - name: Build an auditable release binary
         shell: bash
-        run: >-
-          cargo +"$RUST_VERSION" auditable build
-          --release --locked -p core-cli
-          --target "${{ matrix.target }}"
+        env:
+          CORE_BUILD_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          set -euo pipefail
+          # Derived from SOURCE_DATE_EPOCH, not the wall clock, so the stamp stays reproducible.
+          # `date -d @` is GNU-only and this matrix includes macOS; python3 is on both runners.
+          CORE_BUILD_DATE=$(python3 -c 'import os, time; print(time.strftime("%Y-%m-%d", time.gmtime(int(os.environ["SOURCE_DATE_EPOCH"]))))')
+          export CORE_BUILD_DATE
+          cargo +"$RUST_VERSION" auditable build \
+            --release --locked -p core-cli \
+            --target "${{ matrix.target }}"
       - name: Verify architecture, linkage, and executable smoke tests
         if: matrix.target != 'x86_64-pc-windows-msvc'
         shell: bash
@@ -631,7 +641,10 @@ jobs:
           binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
           target=${{ matrix.target }}
           test -x "$binary"
-          test "$("$binary" --version)" = "core ${{ needs.validate.outputs.version }}"
+          test "$("$binary" -V)" = "core ${{ needs.validate.outputs.version }}"
+          long_version=$("$binary" --version)
+          grep -q "${{ needs.validate.outputs.commit }}" <<<"$long_version"
+          grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}' <<<"$long_version"
           "$binary" --help >/dev/null
           "$binary" --machine-contract > "$RUNNER_TEMP/MACHINE-CONTRACT.json"
           jq -e '
@@ -1067,7 +1080,7 @@ jobs:
             --retry 6 --retry-all-errors --retry-delay 2 \
             "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/install.sh" \
             | sh -s -- --version "$GITHUB_REF_NAME" --bin-dir "$bin_dir"
-          test "$("$bin_dir/core" --version)" = "core ${{ needs.validate.outputs.version }}"
+          test "$("$bin_dir/core" -V)" = "core ${{ needs.validate.outputs.version }}"
       - name: Verify the latest installer redirect
         shell: bash
         run: |
@@ -1077,4 +1090,4 @@ jobs:
             --retry 6 --retry-all-errors --retry-delay 2 \
             "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/install.sh" \
             | sh -s -- --bin-dir "$bin_dir"
-          test "$("$bin_dir/core" --version)" = "core ${{ needs.validate.outputs.version }}"
+          test "$("$bin_dir/core" -V)" = "core ${{ needs.validate.outputs.version }}"
