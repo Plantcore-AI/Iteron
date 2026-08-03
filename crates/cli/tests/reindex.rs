@@ -193,7 +193,8 @@ fn schema_v4_session_argv_is_typed_provider_free_and_tag_preserving() {
             .unwrap();
     }
 
-    let (status, contract, stderr) = run_core(&scratch.home(), &scratch.repo(), &["--machine-contract"]);
+    let (status, contract, stderr) =
+        run_core(&scratch.home(), &scratch.repo(), &["--machine-contract"]);
     assert!(status.success(), "stdout={contract}\nstderr={stderr}");
     let contract: serde_json::Value = serde_json::from_str(contract.trim()).unwrap();
     assert_eq!(contract["cli_stream_versions"], serde_json::json!([4, 5]));
@@ -300,7 +301,11 @@ fn d11_06_a_relative_runs_dir_resolves_against_dash_c_not_the_process_directory(
     let canonical = scratch.repo().canonicalize().unwrap();
 
     // Invoked from the scratch ROOT, not from the repository.
-    let (status, stdout, stderr) = run_core(&scratch.home(), &scratch.0, &["--repo", &repo_arg, "reindex"]);
+    let (status, stdout, stderr) = run_core(
+        &scratch.home(),
+        &scratch.0,
+        &["--repo", &repo_arg, "reindex"],
+    );
     assert!(status.success(), "stdout={stdout}\nstderr={stderr}");
     assert!(
         stdout.contains(&canonical.join(".core/runs").display().to_string()),
