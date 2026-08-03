@@ -24,6 +24,7 @@ use std::collections::BTreeSet;
 mod metrics;
 mod phase;
 pub mod pricing;
+pub mod timeline;
 pub use metrics::{EphemeralTimings, ReproducibleCounters, TimingSnapshot};
 pub use phase::{PhaseSpan, duration_ms_ceil};
 pub use pricing::{

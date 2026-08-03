@@ -18,7 +18,9 @@
 //! detects an altered parent prefix rather than trusting it. Unknown event kinds are tolerated
 //! on replay via `EventKind::Unknown` (R5-review Risk 6), so a cross-version scan does not fail.
 
-use crate::{RecordError, Rollout, ensure_tenant, validate_event_bounds, validated_run_path};
+use crate::{
+    RecordError, Rollout, TimedEvent, ensure_tenant, validate_event_bounds, validated_run_path,
+};
 use core_obs::{CostState, Ledger, PricingPort, PricingReplay};
 use core_protocol::{
     Block, Effort, Event, EventKind, Message, Outcome, Role, RunId, RuntimePolicyEventVersion,
@@ -1479,6 +1481,16 @@ pub fn load_forked(runs_dir: &Path, run: &RunId) -> Result<Vec<Event>, RecordErr
         .into_iter()
         .map(|scoped| scoped.event)
         .collect())
+}
+
+/// Replay ONE run's own chain, keeping each line's segment offset (#102/#104).
+///
+/// Deliberately not fork-expanding. A parent prefix was written by a different process with a
+/// different monotonic origin, so splicing it in would produce segments whose offsets cannot be
+/// compared and a "wall time" that is the sum of two unrelated clocks. A timeline reports the run
+/// it was asked about; the parent has its own.
+pub fn replay_run_timed(runs_dir: &Path, run: &RunId) -> Result<Vec<TimedEvent>, RecordError> {
+    crate::replay_timed(&rollout_path(runs_dir, run)?)
 }
 
 /// [`load_forked`] with the original tenant/run scope retained for every physical event.

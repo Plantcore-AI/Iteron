@@ -30,7 +30,7 @@ pub use checkpoint::{
 };
 pub use session::{
     Provenance, ScopedEvent, SessionAncestryReceipt, SessionMeta, fork, list, load_forked,
-    load_forked_scoped, meta, meta_with_pricing, most_recent, reindex,
+    load_forked_scoped, meta, meta_with_pricing, most_recent, reindex, replay_run_timed,
 };
 
 use core_protocol::{
@@ -787,6 +787,72 @@ impl Drop for Rollout {
 /// Replay: read a rollout back as its event stream, verifying the hash chain as it goes.
 /// This is promise (a)+(b): the recorded decisions and outputs replay exactly. A broken
 /// chain is an error, not a warning — the record is the audit.
+/// One replayed event together with the segment offset its chain line carried (#102).
+///
+/// `ts_us` is `None` for a line written before the field existed. A consumer MUST treat that as
+/// unknown rather than as the segment origin; the whole point of the `Option` is that a timeline
+/// reader cannot silently turn a missing measurement into an instantaneous one.
+#[derive(Debug, Clone)]
+pub struct TimedEvent {
+    pub ts_us: Option<u64>,
+    pub event: Event,
+}
+
+/// Replay, keeping each line's segment offset.
+///
+/// Identical verification to [`replay`] -- same chain check, same tenant check, same torn-tail
+/// tolerance, same authoritative-seq overwrite -- so a timeline can never be read from bytes the
+/// audit path would have rejected. It is a separate entry point rather than a change to `replay`
+/// because every existing caller wants the event stream alone and should not be made to thread a
+/// timing concern it does not use.
+pub fn replay_timed(path: &Path) -> Result<Vec<TimedEvent>, RecordError> {
+    let mut events = Vec::new();
+    let mut prev = ZERO_HASH.to_string();
+    let mut expected_seq = 0u64;
+    let mut tenant: Option<TenantId> = None;
+    visit_record_lines(path, |line| {
+        if line.trim().is_empty() {
+            return Ok(());
+        }
+        let cl: ChainLine = serde_json::from_str(line)?;
+        if cl.seq != expected_seq {
+            return Err(RecordError::SequenceBroken {
+                expected: expected_seq,
+                found: cl.seq,
+            });
+        }
+        if let Some(expected) = &tenant {
+            ensure_tenant(expected, &cl.tenant, cl.seq)?;
+        } else {
+            tenant = Some(TenantId(cl.tenant.clone()));
+        }
+        let computed = hash_line(&prev, cl.seq, &cl.payload);
+        if computed != cl.hash {
+            return Err(RecordError::ChainBroken {
+                seq: cl.seq,
+                stored: cl.hash,
+                computed,
+            });
+        }
+        if cl.prev != prev {
+            return Err(RecordError::ChainBroken {
+                seq: cl.seq,
+                stored: cl.prev,
+                computed: prev.clone(),
+            });
+        }
+        prev = cl.hash;
+        expected_seq = expected_seq.saturating_add(1);
+        let ts_us = cl.ts_us;
+        let mut event: Event = serde_json::from_value(cl.payload)?;
+        validate_event_bounds(&event)?;
+        event.seq = Seq(cl.seq);
+        events.push(TimedEvent { ts_us, event });
+        Ok(())
+    })?;
+    Ok(events)
+}
+
 pub fn replay(path: &Path) -> Result<Vec<Event>, RecordError> {
     let mut events = Vec::new();
     let mut prev = ZERO_HASH.to_string();

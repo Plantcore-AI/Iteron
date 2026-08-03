@@ -288,6 +288,13 @@ struct Cli {
     #[arg(long, value_name = "RUN_ID")]
     transcript: Option<String>,
 
+    /// Read one session's latency timeline and exit: the per-class effect breakdown, the
+    /// distribution behind it, and what could not be accounted for. Pair with
+    /// `--output-format json` for the machine document. Purely offline -- it reads the
+    /// hash-verified record and measures nothing itself.
+    #[arg(long, value_name = "RUN_ID")]
+    timeline: Option<String>,
+
     /// Fork a prior run at its tail into a new branch (shared past, divergent future) and print the
     /// new run id. The fork is tamper-evident: its genesis pins the parent chain's hash at the fork
     /// point (ADR-008 §4), so a later edit to the parent prefix is detected on resume.
@@ -341,6 +348,9 @@ async fn run_cli() -> anyhow::Result<u8> {
             "--output-format json/stream-json is only supported for agent runs and session reads, not local session maintenance"
         );
     }
+    if cli.timeline.is_some() && (cli.transcript.is_some() || cli.sessions) {
+        anyhow::bail!("--timeline, --transcript and --sessions are separate reads; ask for one");
+    }
     if cli.transcript.is_some() && cli.sessions {
         anyhow::bail!("--transcript and --sessions are separate reads; ask for one");
     }
@@ -379,6 +389,18 @@ async fn run_cli() -> anyhow::Result<u8> {
     // MCP server — listing or forking the append-only record needs no API key and must not spawn MCP
     // subprocesses or print connection noise (review: `core --sessions` failed with "no api key"
     // and eagerly started MCP servers, though it never touches the model).
+    if let Some(run) = cli.timeline.clone() {
+        let run = core_protocol::RunId(run);
+        let timed = core_record::replay_run_timed(&cli.runs_dir, &run)?;
+        let report = core_obs::timeline::fold(timed.iter().map(|t| (t.ts_us, &t.event)));
+        if cli.output_format.is_machine() {
+            println!("{}", serde_json::to_string(&report)?);
+        } else {
+            print_timeline(&run, &report);
+        }
+        return Ok(output::EXIT_SUCCESS);
+    }
+
     if let Some(run) = cli.transcript.clone() {
         let run = core_protocol::RunId(run);
         let document = session_view::read_transcript(&cli.runs_dir, &run)?;
@@ -1661,6 +1683,103 @@ async fn run_workflow_command(
 
     println!("{}", serde_json::to_string_pretty(&report.value)?);
     Ok(output::EXIT_SUCCESS)
+}
+
+/// Human rendering of the offline timeline (#104).
+///
+/// Two rules the layout enforces rather than documents. Every unknown prints the word `unknown`,
+/// never a dash or a zero, because a reader skimming a column of numbers will read a zero as a
+/// measurement. And the residual gets its own line with an explanation attached, because a
+/// breakdown that quietly summed to less than the wall clock would be read as a partition, which
+/// it is not: pure tools overlap decode by design.
+fn print_timeline(run: &core_protocol::RunId, report: &core_obs::timeline::Timeline) {
+    fn ms(value: Option<u64>) -> String {
+        value.map_or_else(|| "unknown".into(), |value| format!("{value}ms"))
+    }
+
+    println!("run {}", run.0);
+    println!(
+        "  lines={} timed={}{}",
+        report.coverage.lines,
+        report.coverage.timed_lines,
+        if report.coverage.timed_lines < report.coverage.lines {
+            "  (written before per-line timestamps; spans are unknown)"
+        } else {
+            ""
+        }
+    );
+    println!("  segments={}", report.segments.len());
+    for (index, segment) in report.segments.iter().enumerate() {
+        println!(
+            "    [{index}] seq {}..{}  events={}  span={}",
+            segment.first_seq,
+            segment.last_seq,
+            segment.events,
+            ms(segment.span_ms)
+        );
+    }
+    if report.segments.len() > 1 {
+        println!(
+            "    the gap between segments is a resume: two monotonic origins, so it is unknown, not zero"
+        );
+    }
+
+    if report.turns.count > 0 {
+        println!(
+            "  turns={}  ttft p50={} p90={} max={}  decode p50={} max={}  stream_items={}",
+            report.turns.count,
+            ms(report.turns.ttft.p50_ms),
+            ms(report.turns.ttft.p90_ms),
+            ms(report.turns.ttft.max_ms),
+            ms(report.turns.decode.p50_ms),
+            ms(report.turns.decode.max_ms),
+            report.turns.stream_items,
+        );
+        if report.turns.ttft.unmeasured > 0 {
+            println!(
+                "    {} turn(s) carry no first-token measurement",
+                report.turns.ttft.unmeasured
+            );
+        }
+    }
+
+    for (title, table) in [("effects", &report.effects), ("tools", &report.tools)] {
+        if table.is_empty() {
+            continue;
+        }
+        println!("  {title}:");
+        for (name, distribution) in table.iter() {
+            println!(
+                "    {name:<14} n={:<4} total={:<9} p50={:<9} p90={:<9} p99={:<9} max={}{}",
+                distribution.count,
+                format!("{}ms", distribution.total_ms),
+                ms(distribution.p50_ms),
+                ms(distribution.p90_ms),
+                ms(distribution.p99_ms),
+                ms(distribution.max_ms),
+                if distribution.unmeasured > 0 {
+                    format!("  ({} unmeasured)", distribution.unmeasured)
+                } else {
+                    String::new()
+                }
+            );
+        }
+    }
+
+    println!(
+        "  wall={}  attributed={}ms  residual={}",
+        ms(report.coverage.wall_ms),
+        report.coverage.attributed_ms,
+        report
+            .coverage
+            .residual_ms
+            .map_or_else(|| "unknown".into(), |value| format!("{value}ms")),
+    );
+    if report.coverage.residual_ms.is_some_and(|value| value < 0) {
+        println!(
+            "    negative residual = overlap: pure tools ran during the stream, which is the harness working"
+        );
+    }
 }
 
 #[cfg(test)]
