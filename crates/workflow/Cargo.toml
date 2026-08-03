@@ -15,7 +15,7 @@ core-protocol = { path = "../protocol" }
 core-sched = { path = "../sched" }
 # QuickJS embed — the PROVEN spike pattern (features ["futures","macro"]): AsyncRuntime + LocalSet +
 # spawn_local(rt.drive()); inline `Async(async_fn)` host fns; eval -> Promise -> into_future.
-rquickjs = { version = "0.9", features = ["futures", "macro"] }
+rquickjs = { version = "0.12", features = ["futures", "macro"] }
 tokio = { workspace = true }
 # CancellationToken threaded into every AgentCall + the rquickjs interrupt handler (design B3).
 tokio-util = { version = "0.7" }
