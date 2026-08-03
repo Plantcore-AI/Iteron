@@ -19,12 +19,20 @@ use core_protocol::{
 /// `Rollout::append`, so every recorded event is scrubbed regardless of who emitted it.
 pub fn redact_event(event: &Event) -> Event {
     let kind = match &event.kind {
-        EventKind::ToolDone { result, effect_id } => {
+        EventKind::ToolDone {
+            result,
+            effect_id,
+            tool,
+        } => {
             let mut r = result.clone();
             r.content = scrub(&r.content);
             EventKind::ToolDone {
                 result: r,
                 effect_id: effect_id.clone(),
+                // Scrubbed like `EffectIntent.tool`, and for the same reason: the name is
+                // registry-declared rather than executor-authored, so nothing should match, but
+                // the two sides of one correlation must never be redacted by different rules.
+                tool: tool.as_deref().map(scrub),
             }
         }
         EventKind::EffectIntent {
@@ -916,6 +924,7 @@ mod tests {
                     latency_ms: 0,
                 },
                 effect_id: Some(core_protocol::EffectId("fx1-abc".into())),
+                tool: Some("edit".into()),
             },
         });
         let EventKind::EffectIntent { tool_use_id, .. } = &intent.kind else {

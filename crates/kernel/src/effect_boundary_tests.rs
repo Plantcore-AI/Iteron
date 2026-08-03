@@ -929,6 +929,7 @@ fn a_registry_tool_terminal_is_not_restamped_by_the_boundary() {
                 trust: core_protocol::Trust::Workspace,
             },
             effect_id: Some(effect_id),
+            tool: Some("edit".into()),
         }),
     )
     .expect("settle");

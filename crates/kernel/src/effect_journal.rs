@@ -90,7 +90,9 @@ impl EffectJournal {
                     },
                 );
             }
-            EventKind::ToolDone { result, effect_id } => {
+            EventKind::ToolDone {
+                result, effect_id, ..
+            } => {
                 let key = if let Some(id) = effect_id {
                     Some((event.turn.0, id.0.clone()))
                 } else {

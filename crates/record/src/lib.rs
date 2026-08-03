@@ -296,6 +296,44 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
     Ok(())
 }
 
+/// A tool completion MUST identify itself, and a successful one MUST name its admission (I-42).
+///
+/// The audit that produced this gate read 71 journals: 81 of 198 `tool_done` records carried no
+/// `effect_id`, and 77 of those were *successful* executions — work that ran with no admission
+/// event to correlate it to. The same payload carried no tool name either, so nothing in the
+/// record said what had run. Both holes are closed at the dispatch sites; this is what keeps them
+/// closed, because a silent reappearance of either is indistinguishable, from the record alone,
+/// from a run that simply used no tools.
+///
+/// A missing `effect_id` stays legal for an error result and only for an error result: a refused,
+/// gate-denied, deduplicated or deadline-cancelled call never reached an executor, so there was no
+/// effect to admit and a synthesized identity would be a lie about an admission that never
+/// happened.
+///
+/// This is deliberately a **write-only** gate, applied in [`Rollout::append`] rather than in
+/// `validate_event_bounds`. Records already on disk predate the rule and must stay replayable;
+/// rejecting them at read time would destroy exactly the evidence the audit was built from.
+fn validate_terminal_identity(kind: &EventKind) -> Result<(), &'static str> {
+    let EventKind::ToolDone {
+        result,
+        effect_id,
+        tool,
+    } = kind
+    else {
+        return Ok(());
+    };
+    if !tool.iter().any(|name| !name.is_empty()) {
+        return Err("a tool_done must name the tool that produced it");
+    }
+    if effect_id.is_none() && !result.is_error {
+        return Err(
+            "a successful tool_done must carry the effect id of its admission event; only a call \
+             that failed or was refused before dispatch may omit it",
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn ensure_record_line_size(bytes: usize) -> Result<(), RecordError> {
     if bytes > MAX_RECORD_LINE_BYTES {
         Err(RecordError::RecordLineTooLarge {
@@ -647,6 +685,8 @@ impl Rollout {
         event
             .kind
             .validate_compatibility_tag()
+            .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
+        validate_terminal_identity(&event.kind)
             .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
         validate_event_bounds(event)?;
         // Scrub known-secret shapes from tool output before it enters the durable record
@@ -1340,6 +1380,136 @@ mod tests {
             })
             .unwrap();
         assert_eq!(replay(rollout.path()).unwrap().len(), 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// I-42: 81 of 198 audited `tool_done` records had no `effect_id` and 77 of those were
+    /// successful, so successful work was landing in the record with nothing that admitted it and
+    /// nothing that named it. The gate has to sit at the append boundary rather than in a caller,
+    /// because the whole point is that no caller can quietly regrow the hole.
+    #[test]
+    fn append_refuses_a_tool_terminal_that_names_neither_its_tool_nor_its_admission() {
+        let dir = test_dir("tool-terminal-identity");
+        let run = RunId("tool-terminal-identity".into());
+        let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+        let result = |is_error: bool| core_protocol::ToolResult {
+            tool_use_id: "call-1".into(),
+            content: "ok".into(),
+            is_error,
+            trust: Trust::Workspace,
+            latency_ms: 3,
+        };
+
+        for kind in [
+            // Successful, admitted, but anonymous: the audited shape.
+            EventKind::ToolDone {
+                result: result(false),
+                effect_id: Some(core_protocol::EffectId("fx1-00000000-0000".into())),
+                tool: None,
+            },
+            // Named but empty is the same defect wearing a value.
+            EventKind::ToolDone {
+                result: result(false),
+                effect_id: Some(core_protocol::EffectId("fx1-00000000-0000".into())),
+                tool: Some(String::new()),
+            },
+            // Successful with no admission event: 77 of the 81.
+            EventKind::ToolDone {
+                result: result(false),
+                effect_id: None,
+                tool: Some("read_file".into()),
+            },
+        ] {
+            let error = rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind,
+                })
+                .unwrap_err();
+            assert!(matches!(error, RecordError::InvalidEventSchema { .. }));
+            assert_eq!(rollout.next_sequence(), Seq::ZERO);
+        }
+
+        // A call that never reached an executor has no admission to name, and refusing it would
+        // leave the transcript with a dangling tool_use the provider rejects on the next turn.
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::ToolDone {
+                    result: result(true),
+                    effect_id: None,
+                    tool: Some("bash".into()),
+                },
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::ToolDone {
+                    result: result(false),
+                    effect_id: Some(core_protocol::EffectId("fx1-00000000-0001".into())),
+                    tool: Some("edit".into()),
+                },
+            })
+            .unwrap();
+        assert_eq!(replay(rollout.path()).unwrap().len(), 2);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The gate is write-only. Every rollout the audit read is full of anonymous terminals, and a
+    /// read-time rule would turn the evidence into an unreplayable file.
+    #[test]
+    fn replay_still_reads_the_anonymous_terminals_already_on_disk() {
+        let dir = test_dir("legacy-tool-terminal");
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = RunId("legacy-tool-terminal".into());
+        let path;
+        {
+            let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+            rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::ToolDone {
+                        result: core_protocol::ToolResult {
+                            tool_use_id: "call-1".into(),
+                            content: "ok".into(),
+                            is_error: true,
+                            trust: Trust::Workspace,
+                            latency_ms: 3,
+                        },
+                        effect_id: None,
+                        tool: Some("grep".into()),
+                    },
+                })
+                .unwrap();
+            path = rollout.path().to_path_buf();
+        }
+        // Rewind that line to the shape a pre-I-42 writer produced — a successful terminal with
+        // neither name nor admission — and re-anchor the chain over it, so `replay` is judging the
+        // record and not a corrupted hash.
+        let stored = std::fs::read_to_string(&path).unwrap();
+        let mut line: serde_json::Value = serde_json::from_str(stored.trim()).unwrap();
+        let kind = line["payload"]["kind"].as_object_mut().unwrap();
+        kind.remove("tool");
+        kind["result"]["is_error"] = serde_json::Value::Bool(false);
+        let prev = line["prev"].as_str().unwrap().to_owned();
+        let seq = line["seq"].as_u64().unwrap();
+        line["hash"] = serde_json::Value::String(hash_line(&prev, seq, &line["payload"]));
+        std::fs::write(&path, format!("{}\n", serde_json::to_string(&line).unwrap())).unwrap();
+
+        let events = replay(&path).unwrap();
+        assert!(matches!(
+            events[0].kind,
+            EventKind::ToolDone {
+                effect_id: None,
+                tool: None,
+                ..
+            }
+        ));
         std::fs::remove_dir_all(dir).ok();
     }
 

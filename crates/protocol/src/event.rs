@@ -348,13 +348,37 @@ pub enum EventKind {
     Thinking { delta: String },
     /// A tool_use block completed mid-stream — the dispatch point for pure tools (ADR-004).
     ToolReady { tool: ToolUse, purity_pure: bool },
-    /// A tool finished. `latency_ms` is measured tau_wall contribution. Effecting registry tools
-    /// carry the harness-minted id of their preceding `EffectIntent`; legacy and non-effecting
-    /// results omit it.
+    /// A tool finished. `latency_ms` is measured tau_wall contribution.
+    ///
+    /// # Why the completion names its own tool
+    ///
+    /// The payload used to be exactly `{result, effect_id}`, and `ToolResult` carries only the
+    /// provider's opaque `tool_use_id`, so a completion did not say *what had run*. Answering
+    /// "which tools did this run use" required joining every terminal back to the assistant
+    /// message that emitted its `tool_use` block — and a record whose message was compacted away
+    /// (`EventKind::Compaction` rewrites the working set) could not answer it at all. `None` is
+    /// reserved for records written before this field existed: an empty string would be a claim
+    /// about a tool that never had that name.
+    ///
+    /// # Why a successful terminal always carries an effect id
+    ///
+    /// `effect_id` is the harness-minted id of this call's preceding `EffectIntent`. Every
+    /// dispatch path that can *succeed* crosses the effect boundary, including the ADR-004 pure
+    /// reads that used to commit their terminal locally, so a proven-successful completion always
+    /// names its admission. `None` survives for a refused or failed call — which never reached an
+    /// executor, so there was nothing to admit — and for records written before the boundary went
+    /// universal. `core_record` enforces exactly that split at the durable append boundary; it is
+    /// deliberately not a parse-time rule, because records already on disk must stay readable.
+    ///
+    /// Both fields are additive `Option`s (abi.md §4.3(b)3), so a `None` serializes to the exact
+    /// bytes a historical record holds and `PROTOCOL_VERSION` MUST NOT bump for them.
     ToolDone {
         result: ToolResult,
         #[serde(default)]
         effect_id: Option<EffectId>,
+        /// The registry tool name this completion belongs to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool: Option<String>,
     },
     /// Write-ahead admission for one effecting tool call. This event must be fsynced before the
     /// registry executor is entered. `(turn, id)` is the correlation key; arguments/workspace are
@@ -916,9 +940,49 @@ mod tests {
             terminal,
             EventKind::ToolDone {
                 effect_id: None,
+                tool: None,
                 ..
             }
         ));
+    }
+
+    /// I-42: across 71 audited journals the `tool_done` payload keys were exactly `kind`, `result`
+    /// and `effect_id`, so no completion identified the tool that produced it. The name is additive
+    /// and absent-when-unknown, so a record written before it existed still re-serializes to the
+    /// exact bytes it holds — which is what keeps the rollout hash chain verifiable across the
+    /// change.
+    #[test]
+    fn a_tool_completion_names_its_tool_without_disturbing_the_legacy_bytes() {
+        let result = ToolResult {
+            tool_use_id: "call-1".into(),
+            content: "ok".into(),
+            is_error: false,
+            trust: crate::Trust::Workspace,
+            latency_ms: 3,
+        };
+        let named = serde_json::to_value(EventKind::ToolDone {
+            result: result.clone(),
+            effect_id: Some(EffectId("fx1-00000001-0000".into())),
+            tool: Some("edit".into()),
+        })
+        .unwrap();
+        assert_eq!(named["tool"], "edit");
+        let decoded: EventKind = serde_json::from_value(named).unwrap();
+        assert!(matches!(
+            decoded,
+            EventKind::ToolDone { tool: Some(name), .. } if name == "edit"
+        ));
+
+        let unnamed = serde_json::to_value(EventKind::ToolDone {
+            result,
+            effect_id: None,
+            tool: None,
+        })
+        .unwrap();
+        assert!(
+            unnamed.get("tool").is_none(),
+            "an unknown tool name must not reach the wire as an empty string: {unnamed}"
+        );
     }
 
     #[test]

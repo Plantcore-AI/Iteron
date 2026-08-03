@@ -1,3 +1,4 @@
 {"kind":"turn_end","usage":{"input":101,"output":23,"cache_creation":7,"cache_read":41,"thinking":5},"ttft_ms":312,"decode_ms":1908,"stream_items":47}
 {"kind":"effect_done","id":"effect-4","tool":"provider","duration_ms":2213}
 {"kind":"effect_failed","id":"effect-5","tool":"hook","reason":"hook executor exited non-zero","duration_ms":30001}
+{"kind":"tool_done","result":{"tool_use_id":"call-1","content":"fixture result","is_error":false,"trust":"workspace","latency_ms":3},"effect_id":"effect-1","tool":"edit"}

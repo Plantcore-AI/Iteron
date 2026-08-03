@@ -550,6 +550,9 @@ where
         workspace,
     } = admitted;
     let provider_tool_use_id = intent.call.id.clone();
+    // Carried into the terminal because the completion has to name its own tool (I-42): `effect`
+    // is moved into the boundary and `intent` into the executor, so neither is readable there.
+    let terminal_tool = intent.call.name.clone();
     let terminal_effect_id = effect_id.clone();
     let effect = BrokeredEffect {
         turn,
@@ -575,6 +578,7 @@ where
                 terminal: EventKind::ToolDone {
                     result: result.clone(),
                     effect_id: Some(terminal_effect_id),
+                    tool: Some(terminal_tool),
                 },
                 value: ToolExecution::Definite(result),
             },
@@ -628,6 +632,7 @@ mod tests {
                     latency_ms: 1,
                 },
                 effect_id: id.map(|value| EffectId(value.into())),
+                tool: Some("edit".into()),
             },
         }
     }
@@ -1036,6 +1041,7 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
                 latency_ms: 3,
             },
             effect_id: Some(id.clone()),
+            tool: Some("memory_write".into()),
         }
     }
 
