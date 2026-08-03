@@ -36,6 +36,9 @@ enum StoredLine {
 /// composition-root trust boundary and must be a durably pre-provisioned, application-owned state
 /// directory, not an untrusted workspace path. For a new file, genesis is synced before the parent
 /// directory entry is synced; failure of either operation is reported as durability-unknown.
+/// This namespace-durability contract currently has a supported implementation only on Unix. For
+/// a regular target, other platforms fail with [`DagError::UnsupportedPlatform`] before creating
+/// or opening the log; unsafe file types are still rejected first.
 pub struct TaskDagStore {
     path: PathBuf,
     file: File,
@@ -43,11 +46,11 @@ pub struct TaskDagStore {
     bytes: u64,
     recovered_torn_bytes: u64,
     poisoned: Option<String>,
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     next_append_fault: Option<TestAppendFault>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[derive(Debug, Clone, Copy)]
 pub(super) enum TestAppendFault {
     PartialWrite(usize),
@@ -59,7 +62,7 @@ impl TaskDagStore {
         Self::open_inner(path.into(), config, false)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn open_with_parent_sync_failure(
         path: impl Into<PathBuf>,
         config: Config,
@@ -75,6 +78,7 @@ impl TaskDagStore {
         config.validate().map_err(DagError::InvalidConfig)?;
         let parent = durable_parent(&path)?;
         reject_non_regular_target(&path)?;
+        require_namespace_durability_support()?;
         let mut options = OpenOptions::new();
         options.create(true).read(true).append(true);
         #[cfg(unix)]
@@ -160,7 +164,7 @@ impl TaskDagStore {
                 bytes: encoded.len() as u64,
                 recovered_torn_bytes,
                 poisoned: None,
-                #[cfg(test)]
+                #[cfg(all(test, unix))]
                 next_append_fault: None,
             });
         }
@@ -236,7 +240,7 @@ impl TaskDagStore {
             bytes: retained as u64,
             recovered_torn_bytes,
             poisoned: None,
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             next_append_fault: None,
         })
     }
@@ -273,12 +277,12 @@ impl TaskDagStore {
         if self.bytes.saturating_add(encoded.len() as u64) > MAX_LOG_BYTES {
             return Err(DagError::Capacity { kind: "log bytes" });
         }
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         let append_result = match self.next_append_fault.take() {
             Some(fault) => append_synced_with_fault(&mut self.file, &encoded, fault),
             None => append_synced(&mut self.file, &encoded),
         };
-        #[cfg(not(test))]
+        #[cfg(any(not(test), not(unix)))]
         let append_result = append_synced(&mut self.file, &encoded);
         if let Err(error) = append_result {
             let reason = error.to_string();
@@ -294,7 +298,7 @@ impl TaskDagStore {
         Ok(receipt)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn inject_next_append_fault(&mut self, fault: TestAppendFault) {
         self.next_append_fault = Some(fault);
     }
@@ -321,6 +325,18 @@ fn durable_parent(path: &Path) -> Result<&Path, DagError> {
         )));
     }
     Ok(parent)
+}
+
+#[cfg(unix)]
+fn require_namespace_durability_support() -> Result<(), DagError> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn require_namespace_durability_support() -> Result<(), DagError> {
+    Err(DagError::UnsupportedPlatform {
+        capability: "durable append-only store namespace synchronization",
+    })
 }
 
 fn reject_non_regular_target(path: &Path) -> Result<(), DagError> {
@@ -374,7 +390,7 @@ fn append_synced(file: &mut File, bytes: &[u8]) -> std::io::Result<()> {
     file.sync_data()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn append_synced_with_fault(
     file: &mut File,
     bytes: &[u8],
@@ -397,32 +413,22 @@ fn append_synced_with_fault(
     }
 }
 
+#[cfg(unix)]
 fn sync_parent_entry(parent: &Path, inject_failure: bool) -> std::io::Result<()> {
     if inject_failure {
         return Err(std::io::Error::other(
             "injected parent-directory sync failure",
         ));
     }
-    #[cfg(unix)]
-    {
-        File::open(parent)?.sync_all()
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-        OpenOptions::new()
-            .read(true)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-            .open(parent)?
-            .sync_all()
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = parent;
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "directory synchronization is unsupported on this platform",
-        ))
-    }
+    File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent_entry(_parent: &Path, _inject_failure: bool) -> std::io::Result<()> {
+    // `open_inner` refuses before touching the log on these platforms. Keep this defensive branch
+    // fall-closed as well in case that ordering is refactored.
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "durable parent-namespace synchronization is unsupported on this platform",
+    ))
 }

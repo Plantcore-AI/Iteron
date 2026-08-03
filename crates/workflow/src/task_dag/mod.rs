@@ -85,6 +85,8 @@ pub enum DagError {
     DurabilityUnknown(String),
     #[error("task-DAG store is poisoned after a durability failure: {0}")]
     Poisoned(String),
+    #[error("task-DAG capability is unsupported on this platform: {capability}")]
+    UnsupportedPlatform { capability: &'static str },
 }
 
 #[cfg(test)]

@@ -1,4 +1,7 @@
-use std::fs::{self, OpenOptions};
+use std::fs;
+#[cfg(unix)]
+use std::fs::OpenOptions;
+#[cfg(unix)]
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -418,6 +421,7 @@ fn aggregate_budget_is_reserved_before_children_or_usage_are_admitted() {
     ));
 }
 
+#[cfg(unix)]
 #[test]
 fn store_replays_exact_state_and_repairs_only_a_torn_final_line() {
     let temp = TempDir::new("replay");
@@ -458,6 +462,7 @@ fn store_replays_exact_state_and_repairs_only_a_torn_final_line() {
     assert_eq!(retry.sequence, 1);
 }
 
+#[cfg(unix)]
 #[test]
 fn store_never_rewrites_a_nonempty_file_without_a_durable_genesis() {
     let temp = TempDir::new("partial-genesis");
@@ -471,6 +476,7 @@ fn store_never_rewrites_a_nonempty_file_without_a_durable_genesis() {
     assert_eq!(fs::read(&path).unwrap(), partial);
 }
 
+#[cfg(unix)]
 #[test]
 fn partial_append_is_unknown_then_poisoned_and_same_id_recovers_after_tail_repair() {
     let temp = TempDir::new("partial-append");
@@ -497,6 +503,7 @@ fn partial_append_is_unknown_then_poisoned_and_same_id_recovers_after_tail_repai
     assert!(!receipt.replayed);
 }
 
+#[cfg(unix)]
 #[test]
 fn full_append_with_sync_failure_replays_instead_of_reexecuting() {
     let temp = TempDir::new("full-append-sync-failure");
@@ -523,6 +530,7 @@ fn full_append_with_sync_failure_replays_instead_of_reexecuting() {
     assert!(receipt.replayed);
 }
 
+#[cfg(unix)]
 #[test]
 fn corrupt_durable_prefix_with_a_torn_tail_is_never_truncated() {
     let temp = TempDir::new("corrupt-prefix-torn-tail");
@@ -549,6 +557,7 @@ fn corrupt_durable_prefix_with_a_torn_tail_is_never_truncated() {
     assert_eq!(fs::read(&path).unwrap(), before);
 }
 
+#[cfg(unix)]
 #[test]
 fn fresh_store_requires_preprovisioned_parent_and_parent_sync_success() {
     let temp = TempDir::new("namespace-sync");
@@ -568,6 +577,7 @@ fn fresh_store_requires_preprovisioned_parent_and_parent_sync_success() {
     assert_eq!(reopened.dag().sequence(), 0);
 }
 
+#[cfg(unix)]
 #[test]
 fn store_refuses_config_drift_hash_tampering_and_a_second_writer() {
     let temp = TempDir::new("corrupt");
@@ -822,14 +832,38 @@ fn durable_store_refuses_a_windows_reparse_target() {
     let real = temp.join("real.jsonl");
     fs::write(&real, b"").unwrap();
     let link = temp.join("linked.jsonl");
-    if std::os::windows::fs::symlink_file(&real, &link).is_err() {
-        // Creating a symlink can require Developer Mode or a privilege on older Windows hosts.
-        return;
-    }
+    std::os::windows::fs::symlink_file(&real, &link)
+        .expect("the native Windows test lane must permit reparse-point coverage");
     assert!(matches!(
         TaskDagStore::open(link, config()),
         Err(DagError::Io(_))
     ));
+}
+
+#[cfg(windows)]
+#[test]
+fn normal_windows_store_create_open_and_reopen_fail_closed_before_mutation() {
+    let temp = TempDir::new("windows-store-unsupported");
+    let path = temp.join("dag.jsonl");
+    for _ in 0..2 {
+        assert!(matches!(
+            TaskDagStore::open(&path, config()),
+            Err(DagError::UnsupportedPlatform {
+                capability: "durable append-only store namespace synchronization"
+            })
+        ));
+        assert!(!path.exists());
+    }
+
+    let sentinel = b"pre-existing-store-sentinel";
+    fs::write(&path, sentinel).unwrap();
+    for _ in 0..2 {
+        assert!(matches!(
+            TaskDagStore::open(&path, config()),
+            Err(DagError::UnsupportedPlatform { .. })
+        ));
+        assert_eq!(fs::read(&path).unwrap(), sentinel);
+    }
 }
 
 #[test]
