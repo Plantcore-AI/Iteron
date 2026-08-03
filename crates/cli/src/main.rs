@@ -246,10 +246,10 @@ struct Cli {
     #[arg(long)]
     max_tokens: Option<u64>,
 
-    /// Force-enable code execution (bash/build/test). Code execution is already ON by default
-    /// (Owner-directed lenient posture); a project `.core/config.json` "allow_code": false or
-    /// `--mode plan` disables it. Code runs in an egress-off sandbox: network denied, writes
-    /// confined to the workspace (ADR-007).
+    /// Enable code execution (bash/build/test). OFF by default; only this flag or a trusted
+    /// `~/.core/config.json` "allow_code": true may grant it, and a project `.core/config.json`
+    /// "allow_code": false or `--mode plan` still tightens it back off. Code runs in an egress-off
+    /// sandbox: network denied, writes confined to the workspace (ADR-007).
     #[arg(long)]
     allow_code: bool,
 
@@ -260,9 +260,8 @@ struct Cli {
     dangerously_bypass_permissions: bool,
 
     /// Permission mode: default | acceptEdits | plan | yolo (ADR-007 §3). Reads always auto; the
-    /// mode governs edits/code/etc. Defaults to acceptEdits (edits auto) in BOTH one-shot and the
-    /// TUI (Owner-directed lenient posture); pass `--mode default` for per-edit prompts or
-    /// `--mode plan` for read-only.
+    /// mode governs edits/code/etc. Defaults to `default` (edits ask) in the interactive TUI and to
+    /// `acceptEdits` in one-shot, which has no approval channel; pass `--mode plan` for read-only.
     #[arg(long)]
     mode: Option<String>,
 
@@ -313,6 +312,41 @@ struct Cli {
     /// named provider in ~/.core/config.json for persistent configuration.
     #[arg(long)]
     base_url: Option<String>,
+}
+
+/// The trusted (pre-project-tightening) code-execution grant. Deny-by-default: a public install
+/// executes nothing until the operator says so with `--allow-code` or a `~/.core/config.json`
+/// `"allow_code": true`. Those two are the operator-owned sources; the repository config is not one
+/// (it may only tighten, via `config::tighten_grant`). The internal team edition opts back into the
+/// permissive posture by writing that user-config key (or by passing the flag), which is an
+/// explicit, auditable act rather than a shipped default.
+fn trusted_allow_code(cli_flag: bool, user_config: Option<bool>) -> bool {
+    cli_flag || user_config.unwrap_or(false)
+}
+
+/// The permission mode a run starts in when `--mode` is absent. The interactive TUI has an approval
+/// channel, so it starts in `Default` and prompts before an edit; one-shot has none, so it starts in
+/// `AcceptEdits` (quickstart §4/§5). Neither grants code execution — that is `--allow-code`.
+fn default_permission_mode(one_shot: bool) -> core_protocol::PermissionMode {
+    if one_shot {
+        core_protocol::PermissionMode::AcceptEdits
+    } else {
+        core_protocol::PermissionMode::Default
+    }
+}
+
+/// The session rules a fresh run starts with. Only the operator's code-execution grant is seeded;
+/// everything else is left to the mode×capability table, which is what
+/// `docs/using/permissions-and-sandbox.md` documents. Seeding `web_fetch`/`web_search` as `Auto`
+/// here used to pre-approve egress on every install — an exact-tool rule outranks the table, so the
+/// `irreversible_external` "always asks" row was unreachable and no default install ever prompted
+/// before reaching the network.
+fn initial_permission_rules(allow_code: bool) -> core_protocol::PermissionRules {
+    let mut rules = core_protocol::PermissionRules::new();
+    if allow_code {
+        rules.allow_cap(core_protocol::Capability::CodeExecuting);
+    }
+    rules
 }
 
 #[tokio::main]
@@ -656,12 +690,11 @@ async fn run_cli() -> anyhow::Result<u8> {
     let max_tokens = cli.max_tokens;
     let trusted_max_wall_secs = user_file.max_wall_secs.unwrap_or(1800);
     let max_wall_secs = config::tighten(file.max_wall_secs, trusted_max_wall_secs);
-    // Lenient default (Owner-directed 2026-07-21): code execution is ON by default so bash/build/
-    // test run without a flag. A cloned repository is STILL not an authorization principal — a
-    // project `allow_code:false` may TIGHTEN this off and `--mode plan` hard-disables it, while a
-    // project `true` stays inert (only a CLI flag, the user config, or this default may grant it —
-    // never the untrusted repo).
-    let trusted_allow_code = cli.allow_code || user_file.allow_code.unwrap_or(true);
+    // Deny-by-default (README, SECURITY.md, docs/using/permissions-and-sandbox.md all state it):
+    // code execution is OFF until an operator-owned source grants it. A cloned repository is not an
+    // authorization principal — a project `allow_code:false` may TIGHTEN this off and `--mode plan`
+    // hard-disables it, while a project `true` stays inert.
+    let trusted_allow_code = trusted_allow_code(cli.allow_code, user_file.allow_code);
     let allow_code = config::tighten_grant(file.allow_code, trusted_allow_code);
 
     // ---- Validate ALL purely-local arguments BEFORE opening the rollout ----
@@ -695,16 +728,16 @@ async fn run_cli() -> anyhow::Result<u8> {
             "--output-format is a one-shot option; pass -p/--print with a task (or omit it for the TUI)"
         );
     }
-    // Explicit --mode wins. Otherwise the default is the Owner-directed lenient posture (2026-07-21):
-    // acceptEdits in BOTH one-shot and the interactive TUI — edits auto, code auto (via the default
-    // allow_code grant above), web egress auto (via the seeded per-tool rules below). Pass
-    // `--mode default` to restore per-edit prompts, or `--mode plan` for read-only. (ADR-007 §3, R5.)
+    // Explicit --mode wins. Otherwise the documented posture applies (quickstart §4/§5): the
+    // interactive TUI starts in `default` — reads auto, edits and code ask, because there IS an
+    // approval channel — while one-shot starts in `acceptEdits` because it has none. Code execution
+    // is a separate grant in every mode (ADR-007 §3, R5).
     let mode_runtime_override = cli.mode.is_some();
     let mode = match cli.mode.as_deref() {
         Some(s) => core_protocol::PermissionMode::parse(s).ok_or_else(|| {
             anyhow::anyhow!("unknown --mode `{s}` (default|acceptEdits|plan|yolo)")
         })?,
-        None => core_protocol::PermissionMode::AcceptEdits,
+        None => default_permission_mode(one_shot),
     };
     // A no-terminal invocation that is NOT one-shot would fall into the interactive TUI and die in
     // raw-mode setup with a cryptic OS error (review LOW). Fail clearly, before opening a rollout.
@@ -1033,15 +1066,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     agent.model_max_output_tokens = model_capabilities.max_output_tokens;
     // Build a coherent fresh-session policy before genesis. A resumed session restores its last
     // durable snapshot; only explicit runtime overrides append a new policy event.
-    let mut initial_rules = core_protocol::PermissionRules::new();
-    if allow_code {
-        initial_rules.allow_cap(core_protocol::Capability::CodeExecuting);
-    }
-    // The first-party web tools are pre-approved only at the final permission-gate dimension.
-    // Kernel admission still requires Trusted governing context; exact-tool allow never clears
-    // taint or the task/policy intersection. Git push / publish remain outside this exact allow.
-    initial_rules.set_tool("web_fetch", core_protocol::Verdict::Auto);
-    initial_rules.set_tool("web_search", core_protocol::Verdict::Auto);
+    let initial_rules = initial_permission_rules(allow_code);
     agent.workspace = repo.clone();
     agent.bypass_permissions = cli.dangerously_bypass_permissions;
     if agent.bypass_permissions {
@@ -1875,6 +1900,124 @@ mod tests {
         }
         assert_eq!(assembly.instruction_bytes.matches("UNTRUSTED").count(), 4);
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn a_default_install_denies_code_execution_until_an_operator_source_grants_it() {
+        // The shipped default was `unwrap_or(true)`, so a public install auto-ran bash/build/test
+        // while README and SECURITY.md both said "code execution is disabled by default".
+        assert!(
+            !trusted_allow_code(false, None),
+            "a default install must not grant code execution"
+        );
+        assert!(trusted_allow_code(true, None), "--allow-code grants it");
+        assert!(
+            trusted_allow_code(false, Some(true)),
+            "the trusted user config grants it — this is how the internal team edition opts in"
+        );
+        assert!(
+            !trusted_allow_code(false, Some(false)),
+            "an explicit user-config false stays off"
+        );
+        // A repository is input, not a principal: it may tighten the grant away but never mint one.
+        assert!(!config::tighten_grant(
+            Some(true),
+            trusted_allow_code(false, None)
+        ));
+        assert!(!config::tighten_grant(
+            Some(false),
+            trusted_allow_code(true, None)
+        ));
+    }
+
+    #[test]
+    fn the_interactive_default_mode_asks_before_an_edit_and_before_code() {
+        use core_protocol::{Capability, PermissionMode, Verdict, gate};
+
+        // Quickstart §4: "The interactive default mode automatically permits reads and asks before
+        // an edit or command." Shipping AcceptEdits in the TUI contradicted that.
+        assert_eq!(default_permission_mode(false), PermissionMode::Default);
+        // Quickstart §5: one-shot has no approval channel, so it stays in acceptEdits.
+        assert_eq!(default_permission_mode(true), PermissionMode::AcceptEdits);
+
+        let rules = initial_permission_rules(false);
+        for (mode, one_shot) in [
+            (PermissionMode::Default, false),
+            (PermissionMode::AcceptEdits, true),
+        ] {
+            assert_eq!(default_permission_mode(one_shot), mode);
+            assert_eq!(
+                gate(mode, &rules, "bash", Capability::CodeExecuting),
+                Verdict::Ask,
+                "a default install must prompt before executing code in {}",
+                mode.label()
+            );
+        }
+        assert_eq!(
+            gate(
+                PermissionMode::Default,
+                &rules,
+                "write_file",
+                Capability::ReversibleLocal
+            ),
+            Verdict::Ask,
+            "the interactive default mode asks before an edit"
+        );
+        assert_eq!(
+            gate(
+                PermissionMode::Default,
+                &rules,
+                "read_file",
+                Capability::ReadOnly
+            ),
+            Verdict::Auto,
+            "reads are never gated"
+        );
+    }
+
+    #[test]
+    fn the_fresh_rule_seed_never_pre_approves_web_egress() {
+        use core_protocol::{Capability, PermissionMode, Verdict, gate};
+
+        // The seed used to set `web_fetch`/`web_search` to Auto unconditionally. An exact-tool rule
+        // outranks the mode table, so the documented "irreversible_external always asks" row was
+        // unreachable and every install reached the network without a prompt.
+        let rules = initial_permission_rules(false);
+        assert!(
+            rules.is_empty(),
+            "a fresh public session seeds no rule at all; the mode table decides"
+        );
+        for mode in [
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Yolo,
+        ] {
+            for tool in ["web_fetch", "web_search"] {
+                assert_eq!(
+                    gate(mode, &rules, tool, Capability::IrreversibleExternal),
+                    Verdict::Ask,
+                    "{tool} must prompt in {}",
+                    mode.label()
+                );
+            }
+        }
+        // The one thing the seed still carries is the operator's explicit code grant.
+        let granted = initial_permission_rules(true);
+        assert_eq!(
+            granted.cap_rule(Capability::CodeExecuting),
+            Some(Verdict::Auto),
+            "--allow-code still seeds the code-execution rule"
+        );
+        assert_eq!(
+            gate(
+                PermissionMode::Default,
+                &granted,
+                "web_fetch",
+                Capability::IrreversibleExternal
+            ),
+            Verdict::Ask,
+            "granting code execution must not drag egress along with it"
+        );
     }
 
     #[test]
