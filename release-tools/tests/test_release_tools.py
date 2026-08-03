@@ -1275,6 +1275,9 @@ exit 1
         ):
             self.write(f"windows-dist/{name}", f"{name}\n")
         output = dist / "release-manifest.json"
+        protocol = self.write(
+            "windows-protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 7;\n"
+        )
         manifest.create_release(
             argparse.Namespace(
                 version="0.0.1",
@@ -1282,10 +1285,12 @@ exit 1
                 dist=dist,
                 targets=[target],
                 output=output,
+                protocol_source=protocol,
             )
         )
         result = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(result["targets"][target]["archive"]["name"], base)
+        self.assertEqual(result["protocol_version"], 7)
 
     def test_checksums_reject_unsafe_asset_name(self) -> None:
         dist = self.root / "checksums"
