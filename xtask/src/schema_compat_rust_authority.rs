@@ -12,6 +12,7 @@ const MEMBERS: &[(&str, &str)] = &[
     ("crates/eval", "core-eval"),
     ("crates/evolve", "core-evolve"),
     ("crates/kernel", "core-kernel"),
+    ("crates/marketplace", "core-marketplace"),
     ("crates/mcp", "core-mcp"),
     ("crates/obs", "core-obs"),
     ("crates/protocol", "core-protocol"),

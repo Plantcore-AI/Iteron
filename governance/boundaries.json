@@ -407,6 +407,20 @@
       "checks": ["cargo test -p core-support --locked"]
     },
     {
+      "id": "plugin-marketplace",
+      "title": "Plugin marketplace",
+      "summary": "Fail-closed signature gating, monotonic versions, retained-artifact rollback and honest offline staleness.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        { "kind": "tree", "path": "crates/marketplace" }
+      ],
+      "contracts": ["fail-closed-signature-gate", "no-silent-downgrade"],
+      "checks": ["cargo test -p core-marketplace --locked"]
+    },
+    {
       "id": "context-core",
       "title": "Context core",
       "summary": "Compaction, instruction trust, source access, outline, and stable context estimation.",
@@ -1116,6 +1130,11 @@
           "core-protocol",
           "core-record"
         ],
+        "dev": [],
+        "build": []
+      },
+      "core-marketplace": {
+        "normal": [],
         "dev": [],
         "build": []
       },

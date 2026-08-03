@@ -38,6 +38,7 @@ Core Code has one human Owner/Project Lead and a non-fixed number of human maint
 | `workspace-change-set` — Workspace change set | open | elevated | Open | Open | `crates/changeset/**` |
 | `status-surface` — Status surface | open | elevated | Open | Open | `crates/statusline/**` |
 | `support-bundle` — Support bundle | open | critical | Open | Open | `crates/support/**` |
+| `plugin-marketplace` — Plugin marketplace | open | critical | Open | Open | `crates/marketplace/**` |
 | `context-core` — Context core | open | elevated | Open | Open | `crates/ctx/Cargo.toml`<br>`crates/ctx/src/compact.rs`<br>`crates/ctx/src/context_assembly.rs`<br>`crates/ctx/src/context_port.rs`<br>`crates/ctx/src/context_strategy.rs`<br>`crates/ctx/src/instructions.rs`<br>`crates/ctx/src/lib.rs`<br>`crates/ctx/src/outline.rs`<br>`crates/ctx/src/source.rs` |
 | `context-knowledge` — Context knowledge | open | elevated | Open | Open | `crates/ctx/src/memory.rs`<br>`crates/ctx/src/skills.rs`<br>`crates/ctx/src/skills_metadata.rs`<br>`crates/ctx/tests/skill_frontmatter.rs` |
 | `agent-catalog` — Agent catalog | open | elevated | Open | Open | `crates/agents/Cargo.toml`<br>`crates/agents/src/catalog.rs`<br>`crates/agents/src/def.rs`<br>`crates/agents/src/lib.rs` |
@@ -210,6 +211,13 @@ Deterministic, allowlisted, redacted diagnostic bundle with no transmit path.
 
 - Contracts: `allowlisted-environment-capture`, `deterministic-redacted-bundle`
 - Required checks: `cargo test -p core-support --locked`
+
+### `plugin-marketplace` — Plugin marketplace
+
+Fail-closed signature gating, monotonic versions, retained-artifact rollback and honest offline staleness.
+
+- Contracts: `fail-closed-signature-gate`, `no-silent-downgrade`
+- Required checks: `cargo test -p core-marketplace --locked`
 
 ### `context-core` — Context core
 

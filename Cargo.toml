@@ -16,6 +16,7 @@ members = [
     "crates/sandbox",
     "crates/ctx",
     "crates/verify",
+    "crates/marketplace",
     "crates/mcp",
     "crates/sched",
     "crates/workflow",
