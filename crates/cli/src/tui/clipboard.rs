@@ -5,6 +5,7 @@
 //! this boundary so a copied block cannot smuggle terminal controls or credential-shaped text.
 
 use std::ffi::OsString;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -25,18 +26,76 @@ pub(crate) enum ClipboardError {
     TooLarge,
     #[error("clipboard adapter could not start")]
     Launch,
-    #[error("clipboard write failed after dispatch; clipboard outcome is unknown")]
-    DispatchedWriteOutcomeUnknown,
-    #[error("clipboard adapter failed after dispatch; clipboard outcome is unknown")]
-    DispatchedExitOutcomeUnknown,
     #[error(
-        "clipboard adapter timed out after dispatch and was reaped; clipboard outcome is unknown"
+        "clipboard adapter {stage} failed after dispatch; clipboard outcome is unknown; child {cleanup}"
     )]
-    DispatchedTimeoutOutcomeUnknown,
-    #[error(
-        "clipboard adapter timed out after dispatch and could not be reaped; clipboard outcome is unknown"
-    )]
-    DispatchedTimeoutUnreaped,
+    DispatchedOutcomeUnknown {
+        stage: PostSpawnStage,
+        cleanup: CleanupState,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PostSpawnStage {
+    MissingStdin,
+    Write,
+    Shutdown,
+    Wait,
+    Exit,
+    Timeout,
+}
+
+impl fmt::Display for PostSpawnStage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::MissingStdin => "stdin setup",
+            Self::Write => "write",
+            Self::Shutdown => "stdin shutdown",
+            Self::Wait => "wait",
+            Self::Exit => "exit",
+            Self::Timeout => "timeout",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CleanupState {
+    Reaped,
+    AlreadyReaped,
+    Unreaped,
+}
+
+impl fmt::Display for CleanupState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Reaped => "was explicitly killed and reaped",
+            Self::AlreadyReaped => "had already been reaped",
+            Self::Unreaped => "could not be reaped within the cleanup bound",
+        })
+    }
+}
+
+#[derive(Debug)]
+struct RunReport {
+    result: Result<(), ClipboardError>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    cleanup: Option<CleanupState>,
+}
+
+#[cfg(not(test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InjectedFault {
+    None,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InjectedFault {
+    None,
+    MissingStdin,
+    Write,
+    Shutdown,
+    Wait,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +144,19 @@ async fn copy_text_with_specs(
 }
 
 async fn run(spec: &CommandSpec, bytes: &[u8], deadline: Duration) -> Result<(), ClipboardError> {
+    run_report(spec, bytes, deadline, InjectedFault::None)
+        .await
+        .result
+}
+
+async fn run_report(
+    spec: &CommandSpec,
+    bytes: &[u8],
+    deadline: Duration,
+    fault: InjectedFault,
+) -> RunReport {
+    #[cfg(not(test))]
+    let _ = fault;
     let mut command = tokio::process::Command::new(&spec.program);
     command
         .args(&spec.args)
@@ -96,42 +168,95 @@ async fn run(spec: &CommandSpec, bytes: &[u8], deadline: Duration) -> Result<(),
     for (name, value) in clipboard_environment() {
         command.env(name, value);
     }
-    let mut child = command.spawn().map_err(|_| ClipboardError::Launch)?;
-    let Some(mut stdin) = child.stdin.take() else {
-        let _ = child.start_kill();
-        let _ = tokio::time::timeout(CLIPBOARD_REAP_TIMEOUT, child.wait()).await;
-        return Err(ClipboardError::DispatchedWriteOutcomeUnknown);
-    };
-    let completion = async {
-        stdin
-            .write_all(bytes)
-            .await
-            .map_err(|_| ClipboardError::DispatchedWriteOutcomeUnknown)?;
-        stdin
-            .shutdown()
-            .await
-            .map_err(|_| ClipboardError::DispatchedWriteOutcomeUnknown)?;
-        drop(stdin);
-        let status = child
-            .wait()
-            .await
-            .map_err(|_| ClipboardError::DispatchedExitOutcomeUnknown)?;
-        status
-            .success()
-            .then_some(())
-            .ok_or(ClipboardError::DispatchedExitOutcomeUnknown)
-    };
-    match tokio::time::timeout(deadline, completion).await {
-        Ok(result) => result,
+    let mut child = match command.spawn() {
+        Ok(child) => child,
         Err(_) => {
-            // The timed future dropped ChildStdin. Explicitly kill and bounded-wait so timeout is
-            // not represented as evidence that kill_on_drop eventually reaped the subprocess.
-            let _ = child.start_kill();
-            match tokio::time::timeout(CLIPBOARD_REAP_TIMEOUT, child.wait()).await {
-                Ok(Ok(_)) => Err(ClipboardError::DispatchedTimeoutOutcomeUnknown),
-                Ok(Err(_)) | Err(_) => Err(ClipboardError::DispatchedTimeoutUnreaped),
-            }
+            return RunReport {
+                result: Err(ClipboardError::Launch),
+                cleanup: None,
+            };
         }
+    };
+
+    let stdin = child.stdin.take();
+    #[cfg(test)]
+    let stdin = (fault != InjectedFault::MissingStdin)
+        .then_some(stdin)
+        .flatten();
+    let Some(mut stdin) = stdin else {
+        return post_spawn_error(&mut child, PostSpawnStage::MissingStdin).await;
+    };
+    let deadline = tokio::time::Instant::now() + deadline;
+
+    #[cfg(test)]
+    if fault == InjectedFault::Write {
+        drop(stdin);
+        return post_spawn_error(&mut child, PostSpawnStage::Write).await;
+    }
+    match tokio::time::timeout_at(deadline, stdin.write_all(bytes)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => {
+            drop(stdin);
+            return post_spawn_error(&mut child, PostSpawnStage::Write).await;
+        }
+        Err(_) => {
+            drop(stdin);
+            return post_spawn_error(&mut child, PostSpawnStage::Timeout).await;
+        }
+    }
+
+    #[cfg(test)]
+    if fault == InjectedFault::Shutdown {
+        drop(stdin);
+        return post_spawn_error(&mut child, PostSpawnStage::Shutdown).await;
+    }
+    match tokio::time::timeout_at(deadline, stdin.shutdown()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => {
+            drop(stdin);
+            return post_spawn_error(&mut child, PostSpawnStage::Shutdown).await;
+        }
+        Err(_) => {
+            drop(stdin);
+            return post_spawn_error(&mut child, PostSpawnStage::Timeout).await;
+        }
+    }
+    drop(stdin);
+
+    #[cfg(test)]
+    if fault == InjectedFault::Wait {
+        return post_spawn_error(&mut child, PostSpawnStage::Wait).await;
+    }
+    match tokio::time::timeout_at(deadline, child.wait()).await {
+        Ok(Ok(status)) if status.success() => RunReport {
+            result: Ok(()),
+            cleanup: Some(CleanupState::AlreadyReaped),
+        },
+        Ok(Ok(_)) => RunReport {
+            result: Err(ClipboardError::DispatchedOutcomeUnknown {
+                stage: PostSpawnStage::Exit,
+                cleanup: CleanupState::AlreadyReaped,
+            }),
+            cleanup: Some(CleanupState::AlreadyReaped),
+        },
+        Ok(Err(_)) => post_spawn_error(&mut child, PostSpawnStage::Wait).await,
+        Err(_) => post_spawn_error(&mut child, PostSpawnStage::Timeout).await,
+    }
+}
+
+async fn post_spawn_error(child: &mut tokio::process::Child, stage: PostSpawnStage) -> RunReport {
+    let cleanup = kill_and_reap(child).await;
+    RunReport {
+        result: Err(ClipboardError::DispatchedOutcomeUnknown { stage, cleanup }),
+        cleanup: Some(cleanup),
+    }
+}
+
+async fn kill_and_reap(child: &mut tokio::process::Child) -> CleanupState {
+    let _ = child.start_kill();
+    match tokio::time::timeout(CLIPBOARD_REAP_TIMEOUT, child.wait()).await {
+        Ok(Ok(_)) => CleanupState::Reaped,
+        Ok(Err(_)) | Err(_) => CleanupState::Unreaped,
     }
 }
 
@@ -251,110 +376,5 @@ fn trusted_adapter(_path: &Path) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn copied_text_is_secret_and_terminal_control_safe_and_bounded() {
-        let secret = format!("sk-{}", "a".repeat(48));
-        let safe = safe_text(&format!("before {secret}\u{1b}]52;bad\u{7} after")).unwrap();
-        assert!(!safe.contains(&secret));
-        assert!(!safe.contains('\u{1b}'));
-        assert!(!safe.contains('\u{7}'));
-        assert_eq!(
-            safe_text(&"x".repeat(MAX_CLIPBOARD_BYTES + 1)),
-            Err(ClipboardError::TooLarge)
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn direct_argv_adapter_reports_success_and_typed_failure() {
-        let output = std::env::temp_dir().join(format!(
-            "core-clipboard-{}-{:?}.txt",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_file(&output);
-        let success = [CommandSpec::new("/usr/bin/tee", [output.as_os_str()])];
-        assert!(copy_text_with_specs("你好 😀", &success).await.is_ok());
-        assert_eq!(std::fs::read_to_string(&output).unwrap(), "你好 😀");
-        let _ = std::fs::remove_file(output);
-
-        let failure = [CommandSpec::new(
-            "/usr/bin/false",
-            std::iter::empty::<&str>(),
-        )];
-        assert!(matches!(
-            copy_text_with_specs("text", &failure).await,
-            Err(ClipboardError::DispatchedWriteOutcomeUnknown
-                | ClipboardError::DispatchedExitOutcomeUnknown)
-        ));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn dispatched_failure_never_falls_through_to_a_second_adapter() {
-        let output = std::env::temp_dir().join(format!(
-            "core-clipboard-fallback-{}-{:?}.txt",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_file(&output);
-        let specs = [
-            CommandSpec::new("/usr/bin/false", std::iter::empty::<&str>()),
-            CommandSpec::new("/usr/bin/tee", [output.as_os_str()]),
-        ];
-        assert!(matches!(
-            copy_text_with_specs("must run once", &specs).await,
-            Err(ClipboardError::DispatchedWriteOutcomeUnknown
-                | ClipboardError::DispatchedExitOutcomeUnknown)
-        ));
-        assert!(!output.exists(), "a dispatched failure retried the payload");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn timeout_explicitly_kills_and_reaps_with_unknown_outcome() {
-        let spec = CommandSpec::new("/bin/sleep", ["10"]);
-        let started = std::time::Instant::now();
-        assert_eq!(
-            run(&spec, b"", Duration::from_millis(25)).await,
-            Err(ClipboardError::DispatchedTimeoutOutcomeUnknown)
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "timeout did not complete its bounded kill/reap path"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn adapter_admission_rejects_symlinks_and_non_root_writable_files() {
-        use std::os::unix::fs::{PermissionsExt as _, symlink};
-
-        let root = std::env::temp_dir().join(format!(
-            "core-clipboard-trust-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir(&root).unwrap();
-        let executable = root.join("adapter");
-        std::fs::write(&executable, b"not executable code").unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o777)).unwrap();
-        let link = root.join("adapter-link");
-        symlink("/usr/bin/true", &link).unwrap();
-
-        assert!(!trusted_adapter(&executable));
-        assert!(!trusted_adapter(&link));
-        assert!(
-            installed([
-                CommandSpec::new(executable, std::iter::empty::<&str>()),
-                CommandSpec::new(link, std::iter::empty::<&str>()),
-            ])
-            .is_empty()
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-}
+#[path = "clipboard/tests.rs"]
+mod tests;

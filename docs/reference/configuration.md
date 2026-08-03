@@ -117,15 +117,29 @@ the newest complete block projections at 16 MiB total and 2 MiB per block, a que
 results at 512, and selected pretty/raw detail at 64 KiB. A block excluded by either search budget
 is explicitly marked `search-unindexed`, and the header reports the incomplete block count; no
 prefix-only result is presented as a complete search. `/` edits the filter; `j`/`k` and `n`/`N`
-navigate deterministically;
-`r` toggles pretty/raw; `y` copies the selected block and `Y` the bounded matching-block projection
-through a fixed direct-argv platform adapter; `e` exports the filtered ids and `E` exports all retained blocks
-through the same workspace-confined atomic Markdown writer as `/export`. Copy repeats secret and
-terminal-control scrubbing, admits only fixed root-owned, non-writable, non-symlink stock adapters,
-and reports post-dispatch write/exit/timeout failures as outcome-unknown without trying a second
-adapter. Timeout explicitly kills and bounded-waits the child. Cached row starts make steady-frame
-work and allocation proportional to visible rows rather than transcript length; a bounded reflow
-runs only when the selected block or terminal width changes.
+navigate deterministically; canonical NFC/NFD-equivalent Unicode matches identically. `r` toggles
+pretty/raw; `y` copies the selected block and `Y` the bounded matching-block projection through a
+fixed direct-argv platform adapter; `e` exports the filtered ids and `E` exports all retained blocks
+through the same writer as `/export`. Filtered export refuses when any block is search-unindexed or
+the 512-result cap was reached, rather than publishing a partial result without a marker.
+
+Copy and export run through one visible, single-flight background effect slot, so redraw, runtime
+events, approvals, Ctrl-C, and Ctrl-D remain responsive. Copy repeats secret and terminal-control
+scrubbing, admits only fixed root-owned, non-writable, non-symlink stock adapters, and reports every
+post-dispatch write/shutdown/wait/exit/timeout failure as outcome-unknown without trying a second
+adapter. Every failure before a successful wait explicitly kills and bounded-waits the child; a
+nonzero exit has already been reaped. Export projects and writes on a blocking worker with a
+five-second UI deadline; a deadline keeps the slot reserved until the worker settles and reports the
+outcome as unknown.
+
+On Unix, export opens the workspace and every parent with no-follow directory handles, then creates,
+fsyncs, and exclusively publishes the file relative to the held parent capability. Parent symlink
+swaps cannot redirect the write. Existing explicit filenames are refused; default viewer and
+`/export` filenames allocate a bounded `-2`, `-3`, … version instead of overwriting. Secure export
+currently fails closed on non-Unix platforms. Authority revision notifications make stable frames
+perform no index or result rebuild; cached grapheme-aware row starts keep steady-frame work and
+allocation proportional to visible rows. A bounded reflow runs only when the selected block or
+terminal width changes.
 
 Ctrl-G invokes `external_editor` as an exact argv with the current repository as its working
 directory. Core never shell-splits this array. If the field is absent, a single-token `VISUAL` or

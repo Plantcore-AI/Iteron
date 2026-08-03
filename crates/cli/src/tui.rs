@@ -16,6 +16,8 @@ mod keyboard_enhancement;
 mod mouse_capture;
 mod notification;
 mod terminal_input;
+mod transcript_effect;
+mod transcript_export;
 mod transcript_viewer;
 
 pub(crate) mod app_server;
@@ -52,7 +54,7 @@ use ratatui::{Frame, Terminal};
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::Write;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -799,10 +801,14 @@ impl FirstTokenStall {
 /// TUI state.
 struct App {
     /// The structured semantic transcript (ADR-015): typed self-rendering blocks, not a flat log.
-    transcript: Vec<block::Block>,
+    transcript: Vec<Arc<block::Block>>,
     /// Fullscreen, presentation-only inspection state. Its bounded index reconciles against the
-    /// authoritative transcript's stable ids and revisions whenever the viewer is visible.
+    /// authoritative transcript's stable ids and revisions only when this authority revision
+    /// changes; ordinary redraws never rescan or refold transcript bytes.
     transcript_viewer: transcript_viewer::Viewer,
+    /// Monotonic notification for semantic transcript insertions, mutations, clears, and eviction.
+    /// This is the O(1) stable-frame seam for the fullscreen viewer.
+    transcript_revision: u64,
     /// Monotonic block-id source; a `ToolEnd` mutates its card by id, never by Vec position (R2).
     next_id: u64,
     /// Revealed tool_use id -> the block id of its card, so a late `ToolEnd` finds its originating
@@ -963,8 +969,9 @@ impl App {
             },
         );
         App {
-            transcript: vec![welcome],
+            transcript: vec![Arc::new(welcome)],
             transcript_viewer: transcript_viewer::Viewer::default(),
+            transcript_revision: 0,
             next_id: 1,
             tool_index: std::collections::HashMap::new(),
             pending_tools: VecDeque::new(),
@@ -1214,9 +1221,14 @@ impl App {
     fn push_block(&mut self, kind: block::BlockKind) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.transcript.push(block::Block::new(id, kind));
+        self.transcript.push(Arc::new(block::Block::new(id, kind)));
+        self.mark_transcript_changed();
         self.autoscroll();
         id
+    }
+
+    fn mark_transcript_changed(&mut self) {
+        self.transcript_revision = self.transcript_revision.wrapping_add(1);
     }
 
     /// Echo the operator's submitted prompt as a User block.
@@ -1457,15 +1469,16 @@ impl App {
 
         if let Some(&bid) = self.tool_index.get(id)
             && let Some(b) = self.transcript.iter_mut().find(|b| b.id == bid)
-            && let block::BlockKind::Tool(card) = &mut b.kind
+            && let block::BlockKind::Tool(card) = &mut Arc::make_mut(b).kind
         {
             card.status = status;
             card.output = output;
             card.diff = diff;
             card.exit_code = exit_code;
             card.elapsed = Some(now.saturating_duration_since(card.started));
-            b.touch();
+            Arc::make_mut(b).touch();
             self.tool_index.remove(id);
+            self.mark_transcript_changed();
             self.autoscroll();
             return;
         }
@@ -1509,6 +1522,7 @@ impl App {
         self.transcript
             .iter_mut()
             .find(|block| block.id == block_id)
+            .map(Arc::make_mut)
             .and_then(|block| match &mut block.kind {
                 block::BlockKind::Workflow(card) => Some(card),
                 _ => None,
@@ -1517,6 +1531,17 @@ impl App {
 
     /// Project one id-correlated kernel lifecycle update into one live workflow card.
     fn workflow_event(&mut self, event: WorkflowUiEvent) {
+        let existing_block_id = match &event {
+            WorkflowUiEvent::RunStarted { run_id, .. }
+            | WorkflowUiEvent::PlanReady { run_id, .. }
+            | WorkflowUiEvent::PhaseChanged { run_id, .. }
+            | WorkflowUiEvent::AgentStarted { run_id, .. }
+            | WorkflowUiEvent::AgentActivity { run_id, .. }
+            | WorkflowUiEvent::AgentFinished { run_id, .. }
+            | WorkflowUiEvent::RunFinished { run_id, .. } => {
+                self.workflow_index.get(run_id).copied()
+            }
+        };
         let changed = match event {
             WorkflowUiEvent::RunStarted {
                 run_id,
@@ -1746,6 +1771,15 @@ impl App {
             }
         };
         if changed {
+            if let Some(block_id) = existing_block_id
+                && let Some(block) = self
+                    .transcript
+                    .iter_mut()
+                    .find(|block| block.id == block_id)
+            {
+                Arc::make_mut(block).touch();
+            }
+            self.mark_transcript_changed();
             self.autoscroll();
         }
     }
@@ -1758,6 +1792,7 @@ impl App {
         self.transcript
             .iter_mut()
             .find(|block| block.id == block_id)
+            .map(Arc::make_mut)
             .and_then(|block| match &mut block.kind {
                 block::BlockKind::WorkflowRun(card) => Some(card),
                 _ => None,
@@ -1782,8 +1817,20 @@ impl App {
             let block_id = self.push_block(block::BlockKind::WorkflowRun(card));
             self.workflow_run_index.insert(run_id.to_string(), block_id);
         }
-        if let Some(card) = self.workflow_run_card_mut(run_id) {
+        let changed = if let Some(card) = self.workflow_run_card_mut(run_id) {
             card.ingest(event);
+            true
+        } else {
+            false
+        };
+        if changed {
+            let block_id = self.workflow_run_index.get(run_id).copied();
+            if let Some(block) =
+                block_id.and_then(|id| self.transcript.iter_mut().find(|block| block.id == id))
+            {
+                Arc::make_mut(block).touch();
+            }
+            self.mark_transcript_changed();
         }
         self.autoscroll();
     }
@@ -1792,8 +1839,20 @@ impl App {
     /// agents but stays in the transcript.
     #[allow(dead_code)]
     fn workflow_run_finished(&mut self, run_id: &str) {
-        if let Some(card) = self.workflow_run_card_mut(run_id) {
+        let block_id = self.workflow_run_index.get(run_id).copied();
+        let changed = if let Some(card) = self.workflow_run_card_mut(run_id) {
             card.finished = true;
+            true
+        } else {
+            false
+        };
+        if changed {
+            if let Some(block) =
+                block_id.and_then(|id| self.transcript.iter_mut().find(|block| block.id == id))
+            {
+                Arc::make_mut(block).touch();
+            }
+            self.mark_transcript_changed();
         }
         self.workflow_run_index.remove(run_id);
         self.autoscroll();
@@ -1802,6 +1861,7 @@ impl App {
     /// Toggle the fold of a collapsible block at transcript index `i`.
     fn toggle_fold(&mut self, i: usize) {
         if let Some(b) = self.transcript.get_mut(i) {
+            let b = Arc::make_mut(b);
             let changed = match &mut b.kind {
                 block::BlockKind::Tool(c) => {
                     c.open = !c.open;
@@ -1828,6 +1888,7 @@ impl App {
             };
             if changed {
                 b.touch();
+                self.mark_transcript_changed();
             }
         }
     }
@@ -3229,6 +3290,7 @@ pub async fn run(
     let mut next_frame_at = Instant::now();
     let mut persisted_revision = app.editor.persistence_revision();
     let mut persisted_history_len = app.editor.history_len();
+    let mut transcript_effects = transcript_effect::Supervisor::default();
 
     loop {
         // Kick off the initial task once the terminal is up.
@@ -3303,8 +3365,15 @@ pub async fn run(
                     continue;
                 } else if let Some(cmd) = q.strip_prefix('/') {
                     settle_providers_for(&mut providers, cmd).await;
-                    dispatch_slash_command(&mut term, &mut app, &mut session, &providers, cmd)
-                        .await?;
+                    dispatch_slash_command(
+                        &mut term,
+                        &mut app,
+                        &mut session,
+                        &providers,
+                        &mut transcript_effects,
+                        cmd,
+                    )
+                    .await?;
                 } else if let Some(bash) = q.strip_prefix('!') {
                     // The runtime is resident, so these are always the live values. The old fallback to
                     // `(app.mode, PermissionRules::new())` ran `!bash` against DEFAULT-EMPTY rules
@@ -3374,6 +3443,7 @@ pub async fn run(
             app.next_tool_reveal(),
         );
         let mut next_input = None;
+        let effect_active = transcript_effects.is_active();
         tokio::select! {
             biased;
             result = input_rx.recv(), if input_open => match result {
@@ -3384,6 +3454,12 @@ pub async fn run(
             envelope = events.recv(), if eq_open => match envelope {
                 Some(envelope) => pending_event = Some(envelope),
                 None => eq_open = false,
+            },
+            effect = transcript_effects.recv(), if effect_active => {
+                if let Some(effect) = effect {
+                    apply_transcript_effect_event(&mut app, effect);
+                    redraw = true;
+                }
             },
             () = wake_until(wake) => {}
         }
@@ -3523,8 +3599,12 @@ pub async fn run(
                             app.transcript_viewer
                                 .key(k.code, k.modifiers, &app.transcript)
                         {
-                            handle_transcript_viewer_effect(&mut app, session.workspace(), effect)
-                                .await;
+                            schedule_transcript_viewer_effect(
+                                &mut app,
+                                session.workspace(),
+                                &mut transcript_effects,
+                                effect,
+                            );
                         }
                         continue;
                     }
@@ -3535,7 +3615,8 @@ pub async fn run(
                     if mapped_action == Some(keymap::Action::TranscriptViewer)
                         && app.pending.is_none()
                     {
-                        app.transcript_viewer.open("", &app.transcript);
+                        app.transcript_viewer
+                            .open("", &app.transcript, app.transcript_revision);
                         continue;
                     }
 
@@ -3851,6 +3932,7 @@ pub async fn run(
                                         &mut app,
                                         &mut session,
                                         &providers,
+                                        &mut transcript_effects,
                                         cmd,
                                     )
                                     .await?;
@@ -3970,6 +4052,7 @@ pub async fn run(
                                         &mut app,
                                         &mut session,
                                         &providers,
+                                        &mut transcript_effects,
                                         cmd,
                                     )
                                     .await?;
@@ -4053,6 +4136,7 @@ pub async fn run(
                                 &mut app,
                                 &mut session,
                                 &providers,
+                                &mut transcript_effects,
                                 SlashCommand::Help,
                                 "",
                             )
@@ -4091,6 +4175,7 @@ pub async fn run(
     }
 
     // teardown (the guard also restores on drop; show_cursor is the only extra step).
+    transcript_effects.shutdown().await;
     let _ = term.show_cursor();
     history_writer.finish(app.editor.persistence_state());
     // Dropping the last SQ sender is how the server learns the session is over. Wait for it to run
@@ -4125,6 +4210,7 @@ async fn dispatch_slash_command(
     app: &mut App,
     session: &mut Session,
     providers: &ProviderDirectory,
+    transcript_effects: &mut transcript_effect::Supervisor,
     cmd: &str,
 ) -> anyhow::Result<()> {
     app.push(bold(app.theme.accent), format!("/{cmd}"));
@@ -4144,8 +4230,15 @@ async fn dispatch_slash_command(
 
     match routed.route {
         commands::DispatchRoute::InProcess(command) => {
-            handle_registered_command(app, session, providers, command, &routed.invocation.args)
-                .await;
+            handle_registered_command(
+                app,
+                session,
+                providers,
+                transcript_effects,
+                command,
+                &routed.invocation.args,
+            )
+            .await;
         }
         commands::DispatchRoute::NotHere(commands::TerminalIntercept::Compact) => {
             let focus = routed.invocation.args;
@@ -5584,163 +5677,127 @@ fn ensure_real_workspace_dir(root: &Path, name: &str) -> Result<PathBuf, String>
     Ok(canonical)
 }
 
-/// Resolve an operator-supplied export path inside the workspace. Existing symlinks and parent
-/// symlink escapes are refused; `/export` is a workspace operation, not an ambient filesystem
-/// write primitive.
-fn confined_workspace_output(root: &Path, requested: &str) -> Result<PathBuf, String> {
-    let relative = Path::new(requested);
-    if requested.is_empty()
-        || relative.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
-    {
-        return Err("path must be a non-empty workspace-relative path without `..`".into());
-    }
-    let root = root
-        .canonicalize()
-        .map_err(|error| format!("workspace is unavailable: {error}"))?;
-    let candidate = root.join(relative);
-    let parent = candidate
-        .parent()
-        .ok_or_else(|| "export path has no parent".to_string())?
-        .canonicalize()
-        .map_err(|error| format!("export parent is unavailable: {error}"))?;
-    if !parent.starts_with(&root) {
-        return Err("path escapes the workspace through a symlink".into());
-    }
-    if let Ok(metadata) = std::fs::symlink_metadata(&candidate) {
-        if metadata.file_type().is_symlink() {
-            return Err("target must not be a symlink".into());
-        }
-        if !metadata.is_file() {
-            return Err("target must be a regular file".into());
-        }
-    }
-    Ok(candidate)
-}
-
-fn temporary_peer(path: &Path) -> Result<PathBuf, std::io::Error> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("output path has no parent"))?;
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("output");
-    for ordinal in 0..32_u32 {
-        let candidate = parent.join(format!(".{name}.core-tmp-{}-{ordinal}", std::process::id()));
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists,
-        "could not allocate a temporary output file",
-    ))
-}
-
-/// Same-directory write + fsync + rename, so an interrupted export keeps either the old complete
-/// file or the new complete file rather than a truncated transcript.
-fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
-    let temporary = temporary_peer(path)?;
-    let write = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, path)?;
-        if let Some(parent) = path.parent() {
-            std::fs::File::open(parent)?.sync_all()?;
-        }
-        Ok(())
-    })();
-    if write.is_err() {
-        let _ = std::fs::remove_file(temporary);
-    }
-    write
-}
-
-const MAX_TRANSCRIPT_EXPORT_BYTES: usize = 8 * 1024 * 1024;
-
-/// Build one bounded Markdown snapshot from the semantic block authority. A filtered viewer export
-/// passes stable ids from the synchronized index; ordinary `/export` and `E` pass `None` and use
-/// the same workspace-confined, atomic durability path.
+/// Test seam retained at the composition root: viewer and slash exports share one byte projection.
+#[cfg(test)]
 fn transcript_export_body(
-    blocks: &[block::Block],
+    blocks: &[Arc<block::Block>],
     selected_ids: Option<&[u64]>,
 ) -> Result<Vec<u8>, String> {
-    let selected = selected_ids.map(|ids| {
-        ids.iter()
-            .copied()
-            .collect::<std::collections::HashSet<_>>()
-    });
-    let mut body = String::from("# Core Code transcript\n\n");
-    for block in blocks {
-        if selected
-            .as_ref()
-            .is_some_and(|selected| !selected.contains(&block.id))
-        {
-            continue;
-        }
-        let text = block.to_text();
-        if body.len().saturating_add(text.len()).saturating_add(1) > MAX_TRANSCRIPT_EXPORT_BYTES {
-            return Err("transcript export exceeds the 8 MiB limit".into());
-        }
-        body.push_str(&text);
-        body.push('\n');
-    }
-    Ok(body.into_bytes())
+    transcript_export::body(blocks, selected_ids)
 }
 
+#[cfg(test)]
 fn export_transcript(
     workspace: &Path,
-    blocks: &[block::Block],
+    blocks: &[Arc<block::Block>],
     selected_ids: Option<&[u64]>,
     requested: &str,
 ) -> Result<PathBuf, String> {
-    let path = confined_workspace_output(workspace, requested)?;
-    let body = transcript_export_body(blocks, selected_ids)?;
-    atomic_replace(&path, &body).map_err(|error| error.to_string())?;
-    Ok(path)
+    transcript_export::export(
+        workspace,
+        blocks,
+        selected_ids,
+        requested,
+        transcript_export::CollisionPolicy::Refuse,
+    )
 }
 
-async fn handle_transcript_viewer_effect(
+fn schedule_transcript_viewer_effect(
     app: &mut App,
     workspace: &Path,
+    supervisor: &mut transcript_effect::Supervisor,
     effect: transcript_viewer::Effect,
 ) {
-    match effect {
-        transcript_viewer::Effect::Copy { text, subject } => {
-            match clipboard::copy_text(&text).await {
-                Ok(adapter) => app
-                    .transcript_viewer
-                    .set_notice(format!("copied {subject} via {adapter}")),
-                Err(error) => app
-                    .transcript_viewer
-                    .set_notice(format!("copy failed: {error}")),
-            }
-        }
+    if let Some(active) = supervisor.label() {
+        app.transcript_viewer.set_notice(format!(
+            "{active} already pending; effects are single-flight"
+        ));
+        return;
+    }
+    let request = match effect {
+        transcript_viewer::Effect::Copy { text, subject } => transcript_effect::Request::Copy {
+            text,
+            subject,
+            origin: transcript_effect::Origin::Viewer,
+        },
         transcript_viewer::Effect::Export(scope) => {
-            let ids = app.transcript_viewer.export_ids(scope);
+            let ids = match app.transcript_viewer.export_ids(scope) {
+                Ok(ids) => ids,
+                Err(error) => {
+                    app.transcript_viewer.set_notice(error);
+                    return;
+                }
+            };
             let requested = match scope {
                 transcript_viewer::ExportScope::Filtered => "core-transcript-filtered.md",
                 transcript_viewer::ExportScope::All => "core-transcript.md",
             };
-            match export_transcript(workspace, &app.transcript, ids.as_deref(), requested) {
-                Ok(path) => app
-                    .transcript_viewer
-                    .set_notice(format!("exported -> {}", path.display())),
-                Err(error) => app
-                    .transcript_viewer
-                    .set_notice(format!("export failed: {error}")),
+            transcript_effect::Request::Export {
+                workspace: workspace.to_path_buf(),
+                blocks: app.transcript.clone(),
+                selected_ids: ids,
+                requested: requested.into(),
+                collision: transcript_export::CollisionPolicy::Versioned,
+                origin: transcript_effect::Origin::Viewer,
             }
         }
+    };
+    let label = request.label();
+    if supervisor.start(request).is_ok() {
+        app.transcript_viewer.begin_effect(label);
+    } else {
+        app.transcript_viewer
+            .set_notice("another transcript effect is already pending");
     }
+}
+
+fn schedule_slash_export(
+    app: &mut App,
+    workspace: &Path,
+    supervisor: &mut transcript_effect::Supervisor,
+    requested: &str,
+    collision: transcript_export::CollisionPolicy,
+) {
+    if let Some(active) = supervisor.label() {
+        app.note(
+            block::NoticeLevel::Warn,
+            format!("export not started: {active} already pending"),
+        );
+        return;
+    }
+    let request = transcript_effect::Request::Export {
+        workspace: workspace.to_path_buf(),
+        blocks: app.transcript.clone(),
+        selected_ids: None,
+        requested: requested.into(),
+        collision,
+        origin: transcript_effect::Origin::Slash,
+    };
+    if supervisor.start(request).is_ok() {
+        app.note(block::NoticeLevel::Info, "transcript export pending…");
+    } else {
+        app.note(
+            block::NoticeLevel::Warn,
+            "transcript export not started: another effect is pending",
+        );
+    }
+}
+
+fn apply_transcript_effect_event(app: &mut App, event: transcript_effect::Event) {
+    let message = ui_safe_text(&event.message);
+    if event.origin == transcript_effect::Origin::Viewer && app.transcript_viewer.is_open() {
+        if event.is_final() {
+            app.transcript_viewer.finish_effect(message);
+        } else {
+            app.transcript_viewer.set_notice(message);
+        }
+        return;
+    }
+    let level = match event.level {
+        transcript_effect::Level::Ok => block::NoticeLevel::Ok,
+        transcript_effect::Level::Warn => block::NoticeLevel::Warn,
+    };
+    app.note(level, message);
 }
 
 /// Create an initialization file without a check/write race and make its contents durable before
@@ -5764,6 +5821,7 @@ async fn handle_registered_command(
     app: &mut App,
     session: &mut Session,
     directory: &ProviderDirectory,
+    transcript_effects: &mut transcript_effect::Supervisor,
     command: SlashCommand,
     arg: &str,
 ) {
@@ -5784,6 +5842,7 @@ async fn handle_registered_command(
         }
         SlashCommand::Clear => {
             app.transcript.clear();
+            app.mark_transcript_changed();
             app.tool_index.clear();
             app.workflow_index.clear();
             app.cur_text.clear();
@@ -6512,21 +6571,25 @@ async fn handle_registered_command(
             }
         }
         SlashCommand::Transcript => {
-            app.transcript_viewer.open(arg.trim(), &app.transcript);
+            app.transcript_viewer
+                .open(arg.trim(), &app.transcript, app.transcript_revision);
         }
         SlashCommand::Export => {
-            let requested = if arg.trim().is_empty() {
-                "core-transcript.md"
+            let (requested, collision) = if arg.trim().is_empty() {
+                (
+                    "core-transcript.md",
+                    transcript_export::CollisionPolicy::Versioned,
+                )
             } else {
-                arg.trim()
+                (arg.trim(), transcript_export::CollisionPolicy::Refuse)
             };
-            match export_transcript(session.workspace(), &app.transcript, None, requested) {
-                Ok(path) => app.push(
-                    fg(Color::Green),
-                    format!("exported transcript -> {}", path.display()),
-                ),
-                Err(error) => app.push(fg(Color::Red), format!("export failed: {error}")),
-            }
+            schedule_slash_export(
+                app,
+                session.workspace(),
+                transcript_effects,
+                requested,
+                collision,
+            );
         }
         SlashCommand::Init => {
             let dir = match ensure_real_workspace_dir(session.workspace(), ".core") {
@@ -7896,7 +7959,8 @@ fn draw(f: &mut Frame, app: &mut App) {
         app.transcript_viewer.close();
     }
     if app.transcript_viewer.is_open() {
-        app.transcript_viewer.sync(&app.transcript);
+        app.transcript_viewer
+            .sync_if_changed(&app.transcript, app.transcript_revision);
         transcript_viewer::render(f, &mut app.transcript_viewer, &app.theme);
         return;
     }
@@ -12070,7 +12134,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn export_path_is_workspace_confined_and_atomic() {
+    fn export_path_uses_the_shared_capability_snapshot_writer() {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -12078,26 +12142,23 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let root =
             std::env::temp_dir().join(format!("core-export-test-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(root.join("reports")).unwrap();
-        assert!(confined_workspace_output(&root, "../outside").is_err());
-        assert!(confined_workspace_output(&root, "/tmp/outside").is_err());
-        let output = confined_workspace_output(&root, "reports/session.md").unwrap();
-        atomic_replace(&output, b"first").unwrap();
-        atomic_replace(&output, b"second").unwrap();
-        assert_eq!(std::fs::read(&output).unwrap(), b"second");
         let blocks = vec![
-            block::Block::new(1, block::BlockKind::User("first semantic record".into())),
-            block::Block::new(
+            Arc::new(block::Block::new(
+                1,
+                block::BlockKind::User("first semantic record".into()),
+            )),
+            Arc::new(block::Block::new(
                 2,
                 block::BlockKind::Notice {
                     level: block::NoticeLevel::Info,
                     text: "second semantic record".into(),
                 },
-            ),
+            )),
         ];
         let exported = export_transcript(&root, &blocks, Some(&[2]), "reports/session.md").unwrap();
-        assert_eq!(exported, output);
+        assert_eq!(exported, root.join("reports/session.md"));
         assert_eq!(
-            std::fs::read(&output).unwrap(),
+            std::fs::read(&exported).unwrap(),
             transcript_export_body(&blocks, Some(&[2])).unwrap(),
             "viewer and slash export persist the exact semantic snapshot builder bytes"
         );
@@ -12124,8 +12185,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         std::fs::write(outside.join("target"), "outside").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
         std::os::unix::fs::symlink(outside.join("target"), root.join("linked.md")).unwrap();
-        assert!(confined_workspace_output(&root, "escape/new.md").is_err());
-        assert!(confined_workspace_output(&root, "linked.md").is_err());
+        let blocks = vec![Arc::new(block::Block::new(
+            1,
+            block::BlockKind::User("safe".into()),
+        ))];
+        assert!(export_transcript(&root, &blocks, None, "escape/new.md").is_err());
+        assert!(export_transcript(&root, &blocks, None, "linked.md").is_err());
         std::fs::remove_dir_all(root).ok();
         std::fs::remove_dir_all(outside).ok();
     }
@@ -12155,7 +12220,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn approval_event_preempts_an_open_transcript_viewer_immediately() {
         let mut app = App::new();
-        app.transcript_viewer.open("", &app.transcript);
+        app.transcript_viewer
+            .open("", &app.transcript, app.transcript_revision);
         assert!(app.transcript_viewer.is_open());
         apply_event(
             &mut app,
@@ -12171,5 +12237,37 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(!app.transcript_viewer.is_open());
         assert!(app.pending.is_some());
         assert_eq!(app.approval_choice, ApprovalChoice::Deny);
+    }
+
+    #[tokio::test]
+    async fn pending_transcript_effect_never_blocks_an_approval_transition() {
+        let mut app = App::new();
+        app.transcript_viewer
+            .open("", &app.transcript, app.transcript_revision);
+        let mut effects = transcript_effect::Supervisor::default();
+        effects
+            .start(transcript_effect::Request::Delay {
+                duration: Duration::from_millis(50),
+                origin: transcript_effect::Origin::Viewer,
+            })
+            .unwrap();
+        app.transcript_viewer.begin_effect("test effect");
+
+        apply_event(
+            &mut app,
+            UiEvent::ApprovalRequest {
+                id: SubmissionId(78),
+                tool: "bash".into(),
+                capability: Capability::CodeExecuting,
+                reason: "must preempt background UI effects".into(),
+                arguments: serde_json::json!({"command": "true"}),
+                workspace: "/fixture".into(),
+            },
+        );
+
+        assert!(effects.is_active());
+        assert!(!app.transcript_viewer.is_open());
+        assert!(app.pending.is_some());
+        effects.shutdown().await;
     }
 }

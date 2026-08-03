@@ -1014,6 +1014,16 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
     pty.wait_until("viewer closed after slash entry", |pty| {
         pty.screen_text().contains("Prompt") && !pty.screen_text().contains("y copy block")
     });
+    let slash_export = scratch.repo().join("core-transcript.md");
+    let slash_export_2 = scratch.repo().join("core-transcript-2.md");
+    pty.send(b"/export\r");
+    pty.wait_until("slash export completes off the input path", |_| {
+        slash_export.is_file()
+    });
+    pty.send(b"/export\r");
+    pty.wait_until("default export versions instead of overwriting", |_| {
+        slash_export_2.is_file()
+    });
     pty.send(b"\x03");
     let status = pty.wait_for_exit();
     assert!(status.success(), "normal TUI exit failed: {status}");

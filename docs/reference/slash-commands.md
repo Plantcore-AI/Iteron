@@ -27,7 +27,7 @@ rather than dispatching an incomplete operation.
 | `/rewind` | Branch the conversation from the current point |
 | `/resume` | List sessions and show resume guidance |
 | `/transcript [query]` | Open the fullscreen, bounded transcript search/view surface |
-| `/export [path]` | Write the transcript as Markdown |
+| `/export [path]` | Background-export Markdown without overwriting an existing file |
 | `/agents` | List discovered agent definitions |
 | `/skills` | List discovered skills |
 | `/tools` | List registered tools and capabilities |

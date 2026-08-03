@@ -5,6 +5,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block as WidgetBlock, Borders, Paragraph};
+use unicode_segmentation::UnicodeSegmentation as _;
+use unicode_width::UnicodeWidthStr as _;
 
 use crate::theme;
 
@@ -31,17 +33,11 @@ pub(crate) fn render(frame: &mut Frame, viewer: &mut Viewer, theme: &theme::Them
         area.height.saturating_sub(1 + footer_height),
     );
 
-    let selected = viewer
+    let selected_position = viewer
         .selected_id
-        .and_then(|id| viewer.entries.iter().find(|entry| entry.id == id));
-    let selected_position = selected
-        .and_then(|selected| {
-            viewer
-                .entries
-                .iter()
-                .position(|entry| entry.id == selected.id)
-        })
-        .map_or(0, |position| position + 1);
+        .and_then(|id| viewer.entry_positions.get(&id).copied());
+    let selected = selected_position.and_then(|position| viewer.entries.get(position));
+    let selected_position = selected_position.map_or(0, |position| position + 1);
     let result_status = if viewer.query.is_empty() {
         String::new()
     } else if viewer.results.is_empty() {
@@ -59,12 +55,16 @@ pub(crate) fn render(frame: &mut Frame, viewer: &mut Viewer, theme: &theme::Them
     } else {
         format!(" · search incomplete {} blocks", viewer.incomplete_entries)
     };
+    let effect_status = viewer
+        .pending_effect
+        .map_or_else(String::new, |label| format!(" · {label} pending"));
     let header_text = format!(
-        " Transcript · block {selected_position}/{} · {}{}{} ",
+        " Transcript · block {selected_position}/{} · {}{}{}{} ",
         viewer.entries.len(),
         if viewer.raw { "raw" } else { "pretty" },
         result_status,
         index_status,
+        effect_status,
     );
     let header_style = if theme.mono {
         Style::default()
@@ -172,10 +172,7 @@ pub(crate) fn render(frame: &mut Frame, viewer: &mut Viewer, theme: &theme::Them
     // The ordinary composer set the prior frame's cursor. A resize while fullscreen must not leave
     // that stale coordinate outside the new terminal; keep it on this viewer's bounded filter row.
     let cursor_y = if footer.height > 0 { footer.y } else { area.y };
-    let query_width = query
-        .chars()
-        .map(crate::tui::char_width)
-        .fold(0u16, u16::saturating_add);
+    let query_width = u16::try_from(query.width()).unwrap_or(u16::MAX);
     let desired_x = area.x.saturating_add(8).saturating_add(query_width);
     let cursor_x = desired_x.min(area.x.saturating_add(area.width.saturating_sub(1)));
     frame.set_cursor_position((cursor_x, cursor_y));
@@ -198,17 +195,17 @@ pub(super) fn layout_rows(text: &str, width: u16) -> Vec<(usize, usize)> {
     let mut rows = Vec::new();
     let mut start = 0usize;
     let mut row_width = 0u16;
-    for (offset, character) in text.char_indices() {
+    for (offset, grapheme) in text.grapheme_indices(true) {
         if rows.len() == MAX_DETAIL_ROWS {
             break;
         }
-        if character == '\n' {
+        if grapheme == "\n" {
             rows.push((start, offset));
-            start = offset + character.len_utf8();
+            start = offset + grapheme.len();
             row_width = 0;
             continue;
         }
-        let measured = crate::tui::char_width(character);
+        let measured = u16::try_from(grapheme.width()).unwrap_or(u16::MAX);
         let character_width = if measured > width { 1 } else { measured };
         if row_width.saturating_add(character_width) > width && offset > start {
             rows.push((start, offset));
@@ -242,12 +239,12 @@ pub(super) fn visible_rows(
         .take(height)
         .map(|(start, end)| {
             let row = text[*start..*end]
-                .chars()
-                .map(|character| {
-                    if crate::tui::char_width(character) > width {
-                        '?'
+                .graphemes(true)
+                .map(|grapheme| {
+                    if grapheme.width() > usize::from(width) {
+                        "?"
                     } else {
-                        character
+                        grapheme
                     }
                 })
                 .collect::<String>();
