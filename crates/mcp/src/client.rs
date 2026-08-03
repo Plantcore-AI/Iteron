@@ -570,7 +570,13 @@ mod tests {
 
     #[cfg(unix)]
     async fn wait_until_file_exists(path: &std::path::Path) -> bool {
-        for _ in 0..50 {
+        // Ten seconds, not one. This waits on a real `/bin/bash` being scheduled, reading a line
+        // and writing a file; one second is ample on an idle machine and marginal on a box running
+        // the whole suite in parallel, which made these tests fail for load rather than for a
+        // defect. The loop returns the instant the file appears, so a larger ceiling costs nothing
+        // when the code is correct and only buys patience when the machine is busy -- the same
+        // class of load-dependent bound as #106/#108.
+        for _ in 0..500 {
             if path.is_file() {
                 return true;
             }
