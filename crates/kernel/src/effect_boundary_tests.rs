@@ -80,6 +80,7 @@ async fn every_effect_class_crosses_intent_then_executor_then_exactly_one_termin
         let terminal = EventKind::EffectDone {
             id: id.clone(),
             tool: class.label().unwrap_or("edit").to_string(),
+            duration_ms: None,
         };
 
         let outcome: BrokeredOutcome<()> =
@@ -201,6 +202,7 @@ async fn a_duplicate_effect_identity_is_refused_before_the_executor() {
         let terminal = EventKind::EffectDone {
             id: effect.effect_id.clone(),
             tool: "subagent".into(),
+            duration_ms: None,
         };
         let result: Result<BrokeredOutcome<()>, BrokerError> =
             broker_effect(&mut log, &mut admissions, effect, move || {
@@ -519,7 +521,11 @@ fn replay_reconstructs_pending_and_unknown_across_every_class() {
             0 => settle_effect(
                 &mut log,
                 ticket,
-                Settlement::Definite(EventKind::EffectDone { id, tool: kind }),
+                Settlement::Definite(EventKind::EffectDone {
+                    id,
+                    tool: kind,
+                    duration_ms: None,
+                }),
             )
             .expect("settle done"),
             // Proven failure — still a terminal, so still not pending and not unknown.
@@ -530,6 +536,7 @@ fn replay_reconstructs_pending_and_unknown_across_every_class() {
                     id,
                     tool: kind,
                     reason: "probe failure".into(),
+                    duration_ms: None,
                 }),
             )
             .expect("settle failed"),
@@ -793,5 +800,170 @@ fn every_effect_class_is_reachable_from_a_dispatch_site() {
     assert!(
         missing.is_empty(),
         "these effect classes are declared but never dispatched: {missing:?}"
+    );
+}
+
+// -------------------------------------------------------------------------------------------
+// #101: the boundary measures every class it admits
+// -------------------------------------------------------------------------------------------
+
+/// The whole claim of #101 in one assertion: measuring `open -> settle` ONCE covers all seven
+/// classes. A hand-placed timer per dispatch site would pass a test written per dispatch site and
+/// still miss the eighth class somebody adds next quarter; enumerating `EffectClass::ALL` here is
+/// what makes that impossible.
+#[test]
+fn every_effect_class_records_a_duration_on_its_proven_terminal() {
+    for (ordinal, class) in EffectClass::ALL.iter().copied().enumerate() {
+        let mut log = ProbeLog::default();
+        let mut admissions = EffectAdmissions::default();
+        let turn = TurnId(1);
+        let ticket =
+            open_effect(&mut log, &mut admissions, effect_for(turn, class, ordinal)).expect("open");
+        let id = ticket.effect_id().clone();
+        settle_effect(
+            &mut log,
+            ticket,
+            Settlement::Definite(EventKind::EffectDone {
+                id,
+                tool: class.label().unwrap_or("edit").to_string(),
+                // The caller does NOT measure. The boundary must fill this in, which is exactly
+                // what stops seven dispatch sites from each inventing their own scope.
+                duration_ms: None,
+            }),
+        )
+        .expect("settle");
+        match &log.events[1].kind {
+            EventKind::EffectDone { duration_ms, .. } => assert!(
+                duration_ms.is_some(),
+                "{class:?} settled without a duration; the boundary did not measure it"
+            ),
+            other => panic!("{class:?} settled as {other:?}"),
+        }
+    }
+}
+
+/// A proven failure has a real duration. Reporting `None` here would make every honest failure
+/// look instantaneous, which is the opposite of what an operator debugging a slow failing hook
+/// needs to see.
+#[test]
+fn a_proven_failure_carries_its_duration_too() {
+    let mut log = ProbeLog::default();
+    let mut admissions = EffectAdmissions::default();
+    let turn = TurnId(1);
+    let ticket = open_effect(
+        &mut log,
+        &mut admissions,
+        effect_for(turn, EffectClass::Hook, 0),
+    )
+    .expect("open");
+    let id = ticket.effect_id().clone();
+    settle_effect(
+        &mut log,
+        ticket,
+        Settlement::Definite(EventKind::EffectFailed {
+            id,
+            tool: "hook".into(),
+            reason: "probe failure".into(),
+            duration_ms: None,
+        }),
+    )
+    .expect("settle");
+    assert!(matches!(
+        &log.events[1].kind,
+        EventKind::EffectFailed { duration_ms, .. } if duration_ms.is_some()
+    ));
+}
+
+/// The honest gap. `EffectUnknown` means no terminal was observed, so there is no duration to
+/// report; a number here would claim knowledge the boundary just said it lacks. The field does not
+/// exist on the variant at all, which makes the guarantee structural rather than a convention.
+#[test]
+fn an_unknown_terminal_never_reports_a_duration() {
+    let mut log = ProbeLog::default();
+    let mut admissions = EffectAdmissions::default();
+    let turn = TurnId(1);
+    let ticket = open_effect(
+        &mut log,
+        &mut admissions,
+        effect_for(turn, EffectClass::Provider, 0),
+    )
+    .expect("open");
+    settle_effect(
+        &mut log,
+        ticket,
+        Settlement::Unknown("probe: no terminal observed".into()),
+    )
+    .expect("settle");
+    let encoded = serde_json::to_value(&log.events[1].kind).expect("serialise");
+    assert_eq!(encoded["kind"], "effect_unknown");
+    assert!(
+        encoded.get("duration_ms").is_none(),
+        "an unproven terminal must not carry a duration: {encoded}"
+    );
+}
+
+/// A registry tool settles as `ToolDone`, whose `ToolResult` already carries `latency_ms` measured
+/// at the registry. The boundary must leave it alone: two disagreeing durations for one effect
+/// would be worse than one, and a reader would have no way to know which to trust.
+#[test]
+fn a_registry_tool_terminal_is_not_restamped_by_the_boundary() {
+    let mut log = ProbeLog::default();
+    let mut admissions = EffectAdmissions::default();
+    let turn = TurnId(1);
+    let ticket = open_effect(
+        &mut log,
+        &mut admissions,
+        effect_for(turn, EffectClass::RegistryTool, 0),
+    )
+    .expect("open");
+    let effect_id = ticket.effect_id().clone();
+    settle_effect(
+        &mut log,
+        ticket,
+        Settlement::Definite(EventKind::ToolDone {
+            result: core_protocol::ToolResult {
+                tool_use_id: "call-0".into(),
+                content: "fixture".into(),
+                is_error: false,
+                latency_ms: 7,
+                trust: core_protocol::Trust::Workspace,
+            },
+            effect_id: Some(effect_id),
+        }),
+    )
+    .expect("settle");
+    match &log.events[1].kind {
+        EventKind::ToolDone { result, .. } => assert_eq!(
+            result.latency_ms, 7,
+            "the boundary overwrote the registry's own measurement"
+        ),
+        other => panic!("registry tool settled as {other:?}"),
+    }
+}
+
+/// `None` must not reach the wire. An absent key is the honest encoding of "not measured", and it
+/// is also what keeps every rollout frozen before this change re-serialising byte-identically —
+/// the property `d13_14_frozen_rollouts_hash_verify_replay_and_preserve_shape` pins.
+#[test]
+fn an_unmeasured_terminal_omits_the_key_rather_than_writing_null() {
+    let encoded = serde_json::to_value(EventKind::EffectDone {
+        id: core_protocol::EffectId("effect-1".into()),
+        tool: "provider".into(),
+        duration_ms: None,
+    })
+    .expect("serialise");
+    assert!(
+        encoded.get("duration_ms").is_none(),
+        "an unmeasured duration must be absent, not null: {encoded}"
+    );
+    let measured = serde_json::to_value(EventKind::EffectDone {
+        id: core_protocol::EffectId("effect-1".into()),
+        tool: "provider".into(),
+        duration_ms: Some(0),
+    })
+    .expect("serialise");
+    assert_eq!(
+        measured["duration_ms"], 0,
+        "a measured zero is a real observation and must survive the wire"
     );
 }

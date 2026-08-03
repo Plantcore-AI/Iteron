@@ -96,7 +96,11 @@ impl PricingReplay {
                         binding_epoch: self.binding_epoch,
                     });
             }
-            EventKind::TurnEnd { usage } => {
+            // Replay folds token accounting only. The timing fields are process-local observations
+            // of the run that happened, not reproducible counters, so replay reads past them and
+            // leaves `TimingSnapshot` to report the history as unknown rather than reconstructing a
+            // number it cannot prove.
+            EventKind::TurnEnd { usage, .. } => {
                 ledger.replay_turn(usage);
                 let admitted_attempt = self.open_provider_turns.remove(&(
                     tenant.0.clone(),

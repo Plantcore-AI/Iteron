@@ -125,7 +125,12 @@ fn replay_reconstructs_only_durable_counters_and_marks_wall_time_unknown() {
     let mut restored = Ledger::new();
     for event in [
         event(EventKind::TurnStart),
-        event(EventKind::TurnEnd { usage }),
+        event(EventKind::TurnEnd {
+            usage,
+            ttft_ms: None,
+            decode_ms: None,
+            stream_items: None,
+        }),
         event(EventKind::ToolDone {
             result: results[0].clone(),
             effect_id: None,
@@ -321,7 +326,12 @@ fn pricing_replay_matches_the_committed_golden() {
             rate_card: signed.clone(),
         }),
         event(EventKind::TurnStart),
-        event(EventKind::TurnEnd { usage }),
+        event(EventKind::TurnEnd {
+            usage,
+            ttft_ms: None,
+            decode_ms: None,
+            stream_items: None,
+        }),
         event(EventKind::CostProjected {
             projection: projection.clone(),
         }),
@@ -470,7 +480,12 @@ fn replay_requires_trust_both_hmacs_and_adjacency() {
             rate_card: signed.clone(),
         }),
         event(EventKind::TurnStart),
-        event(EventKind::TurnEnd { usage }),
+        event(EventKind::TurnEnd {
+            usage,
+            ttft_ms: None,
+            decode_ms: None,
+            stream_items: None,
+        }),
         event(EventKind::CostProjected {
             projection: projection.clone(),
         }),
@@ -533,7 +548,12 @@ fn duplicate_local_projection_occurrence_is_rejected_without_double_charge() {
         }),
         event(EventKind::RateCardBound { rate_card: signed }),
         event(EventKind::TurnStart),
-        event(EventKind::TurnEnd { usage }),
+        event(EventKind::TurnEnd {
+            usage,
+            ttft_ms: None,
+            decode_ms: None,
+            stream_items: None,
+        }),
         event(EventKind::CostProjected {
             projection: projection.clone(),
         }),
@@ -550,7 +570,12 @@ fn duplicate_local_projection_occurrence_is_rejected_without_double_charge() {
     // collision exactly. The duplicate projection must be consumed only once.
     observe(
         &mut replay,
-        &event(EventKind::TurnEnd { usage }),
+        &event(EventKind::TurnEnd {
+            usage,
+            ttft_ms: None,
+            decode_ms: None,
+            stream_items: None,
+        }),
         &mut ledger,
     )
     .unwrap();
@@ -591,7 +616,15 @@ fn provider_turn_identity_is_bound_to_the_exact_open_turn_and_attempt() {
         }),
         event(EventKind::RateCardBound { rate_card: signed }),
         event_at(0, EventKind::TurnStart),
-        event_at(1, EventKind::TurnEnd { usage }),
+        event_at(
+            1,
+            EventKind::TurnEnd {
+                usage,
+                ttft_ms: None,
+                decode_ms: None,
+                stream_items: None,
+            },
+        ),
         event_at(1, EventKind::CostProjected { projection }),
     ];
     let mut replay = PricingReplay::trusted(authority);
@@ -630,9 +663,25 @@ fn one_start_cannot_price_two_turn_ends_with_the_same_attempt_number() {
         }),
         event(EventKind::RateCardBound { rate_card: signed }),
         event_at(0, EventKind::TurnStart),
-        event_at(0, EventKind::TurnEnd { usage }),
+        event_at(
+            0,
+            EventKind::TurnEnd {
+                usage,
+                ttft_ms: None,
+                decode_ms: None,
+                stream_items: None,
+            },
+        ),
         event_at(0, EventKind::CostProjected { projection: first }),
-        event_at(1, EventKind::TurnEnd { usage }),
+        event_at(
+            1,
+            EventKind::TurnEnd {
+                usage,
+                ttft_ms: None,
+                decode_ms: None,
+                stream_items: None,
+            },
+        ),
     ] {
         observe(&mut replay, &event, &mut ledger).unwrap();
     }
@@ -698,7 +747,12 @@ fn route_or_binding_change_during_open_turn_cannot_reprice_the_dispatch() {
         event(EventKind::RateCardBound {
             rate_card: signed_b,
         }),
-        event(EventKind::TurnEnd { usage }),
+        event(EventKind::TurnEnd {
+            usage,
+            ttft_ms: None,
+            decode_ms: None,
+            stream_items: None,
+        }),
         event(EventKind::CostProjected {
             projection: projection_b,
         }),
@@ -862,7 +916,15 @@ fn replay_rejects_cross_tenant_run_and_turn_projection_transplants() {
                 },
             ),
             event_at(turn, EventKind::TurnStart),
-            event_at(turn, EventKind::TurnEnd { usage }),
+            event_at(
+                turn,
+                EventKind::TurnEnd {
+                    usage,
+                    ttft_ms: None,
+                    decode_ms: None,
+                    stream_items: None,
+                },
+            ),
             event_at(
                 turn,
                 EventKind::CostProjected {
@@ -927,7 +989,12 @@ fn legacy_identityless_projection_stays_readable_but_unknown() {
         }),
         event(EventKind::RateCardBound { rate_card: signed }),
         event(EventKind::TurnStart),
-        event(EventKind::TurnEnd { usage }),
+        event(EventKind::TurnEnd {
+            usage,
+            ttft_ms: None,
+            decode_ms: None,
+            stream_items: None,
+        }),
         event(EventKind::CostProjected { projection: legacy }),
     ];
     let mut replay = PricingReplay::trusted(authority);
@@ -970,14 +1037,27 @@ fn replay_requires_a_fresh_binding_epoch_after_a_route_switch() {
         event(selection(route())),
         event(EventKind::RateCardBound { rate_card: signed }),
         event(EventKind::TurnStart),
-        event(EventKind::TurnEnd { usage }),
+        event(EventKind::TurnEnd {
+            usage,
+            ttft_ms: None,
+            decode_ms: None,
+            stream_items: None,
+        }),
         event(EventKind::CostProjected {
             projection: first_projection,
         }),
         event(selection(other)),
         event(selection(route())),
         event_at(1, EventKind::TurnStart),
-        event_at(1, EventKind::TurnEnd { usage }),
+        event_at(
+            1,
+            EventKind::TurnEnd {
+                usage,
+                ttft_ms: None,
+                decode_ms: None,
+                stream_items: None,
+            },
+        ),
         event_at(
             1,
             EventKind::CostProjected {

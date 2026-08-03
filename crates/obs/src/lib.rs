@@ -25,7 +25,7 @@ mod metrics;
 mod phase;
 pub mod pricing;
 pub use metrics::{EphemeralTimings, ReproducibleCounters, TimingSnapshot};
-pub use phase::PhaseSpan;
+pub use phase::{PhaseSpan, duration_ms_ceil};
 pub use pricing::{
     HmacPricingAuthority, HmacPricingKey, MAX_TRUSTED_RATE_CARDS, PricingError, PricingPort,
     PricingReplay, sign_rate_card, validate_projection_digest, validate_rate_card_digest,

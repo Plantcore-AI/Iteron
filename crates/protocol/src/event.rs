@@ -393,20 +393,57 @@ pub enum EventKind {
     ///
     /// This is a purely additive top-level tag (abi.md §4.3(b)2): every byte already on disk
     /// decodes unchanged, so `PROTOCOL_VERSION` MUST NOT bump for it.
-    EffectDone { id: EffectId, tool: String },
+    ///
+    /// `duration_ms` is the boundary's own measurement of `open_effect` -> `settle_effect`: the
+    /// whole admitted lifetime of this effect, stamped by [`crate`]'s broker rather than by the
+    /// executor, so every one of the effect classes is measured by the same clock at the same two
+    /// points. It is `Option` because a record written before this field existed has no honest
+    /// value, and a plausible-looking `0` would be a lie about a completed effect.
+    EffectDone {
+        id: EffectId,
+        tool: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+    },
     /// Proven **failed** terminal for a brokered effect. The distinction from
     /// [`EventKind::EffectUnknown`] is the whole point of the boundary: `EffectFailed` means the
     /// executor observed an authoritative negative outcome, so the effect is closed and recovery
     /// owes it nothing; `EffectUnknown` means no terminal could be observed at all, so recovery
     /// must never replay it. Collapsing the two would make every honest failure look unrecoverable
     /// and every unrecoverable dispatch look like an honest failure.
+    ///
+    /// A proven failure has a real duration and hiding it would make every failure look
+    /// instantaneous, so this carries the same measurement as `EffectDone`. `EffectUnknown`
+    /// deliberately does **not**: no terminal was observed, so no honest duration exists.
     EffectFailed {
         id: EffectId,
         tool: String,
         reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
     },
     /// The model turn completed, with usage by cache class.
-    TurnEnd { usage: Usage },
+    ///
+    /// The three timing fields split what `phase_model_ms` folds into one scalar. `ttft_ms` is
+    /// measured to the FIRST stream item of the attempt whichever variant it is — a `ThinkingDelta`
+    /// counts, because extended thinking is the model producing tokens and a TTFT that ignored it
+    /// would report a reasoning turn as pathologically slow. `decode_ms` runs from that first item
+    /// to the turn's completion, and `stream_items` is the raw count so inter-token time is
+    /// derivable by a reader rather than pre-averaged here.
+    ///
+    /// All three are `Option` and that is load-bearing: a non-streaming adapter, a replayed turn,
+    /// or an attempt that failed before its first byte has no TTFT at all, and `0` would claim an
+    /// instantaneous first token. They are **not** a partition of `phase_model_ms`, which remains
+    /// the outer bound: pure tools overlap the stream by design.
+    TurnEnd {
+        usage: Usage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttft_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decode_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stream_items: Option<u32>,
+    },
     /// A run declaring a product: "I produced this", with a content-addressed handle.
     ///
     /// `ArtifactRef` is deliberately a handle rather than inline content, because the evolution
@@ -634,6 +671,59 @@ fn workflow_event_is_v1_compatible(event: &WorkflowEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #103's whole honesty claim, at the wire. A turn that produced no stream item must be
+    /// distinguishable from one whose first token arrived instantly, and `0` cannot carry that
+    /// distinction. Absent means "never observed"; present means "measured, and this is the value".
+    #[test]
+    fn turn_end_timing_distinguishes_unmeasured_from_measured_zero() {
+        let usage = Usage::default();
+        let unmeasured = serde_json::to_value(EventKind::TurnEnd {
+            usage,
+            ttft_ms: None,
+            decode_ms: None,
+            stream_items: None,
+        })
+        .unwrap();
+        for field in ["ttft_ms", "decode_ms", "stream_items"] {
+            assert!(
+                unmeasured.get(field).is_none(),
+                "unmeasured `{field}` must be absent, not null: {unmeasured}"
+            );
+        }
+
+        let measured = serde_json::to_value(EventKind::TurnEnd {
+            usage,
+            ttft_ms: Some(0),
+            decode_ms: Some(0),
+            stream_items: Some(0),
+        })
+        .unwrap();
+        assert_eq!(measured["ttft_ms"], 0);
+        assert_eq!(measured["decode_ms"], 0);
+        assert_eq!(measured["stream_items"], 0);
+    }
+
+    /// A `turn_end` written before #103 existed must still decode, and must decode as "unknown"
+    /// rather than as a fabricated zero. This is the retained-fixture guarantee expressed as a
+    /// unit test so it fails at the type, not three layers away in the corpus gate.
+    #[test]
+    fn a_pre_timing_turn_end_decodes_as_unknown_not_zero() {
+        let event: EventKind = serde_json::from_value(serde_json::json!({
+            "kind": "turn_end",
+            "usage": {"input": 1, "output": 1, "cache_creation": 0, "cache_read": 0, "thinking": 0}
+        }))
+        .unwrap();
+        assert!(matches!(
+            event,
+            EventKind::TurnEnd {
+                ttft_ms: None,
+                decode_ms: None,
+                stream_items: None,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn pre_route_run_start_event_remains_readable() {
