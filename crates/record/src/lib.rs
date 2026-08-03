@@ -53,6 +53,66 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// How hard one append pushes its line toward the platter.
+///
+/// `File::sync_data` is `fcntl(F_FULLFSYNC)` on Apple platforms — it asks the *device* to flush its
+/// own volatile write cache, and profiling measured it at p50 4.09 ms against tens of microseconds
+/// for a plain `fsync(2)` in the same directory. A turn appends 15 to 20 events, so paying the full
+/// barrier on every one of them spends two orders of magnitude more than the turn boundary needs.
+///
+/// What the tiering does NOT change: a *process* crash (panic, SIGKILL, an OOM kill mid-turn) never
+/// loses an appended line under either tier, because `write(2)` already handed the bytes to the
+/// kernel's page cache and the kernel outlives the process. `Barrier::Line` additionally forces
+/// them out to the device, so an OS panic does not lose them either.
+///
+/// What it DOES change, precisely: sudden power loss (or a device that lies about its cache) can
+/// now lose the events appended since the last `Barrier::Turn`. That is the only weakened mode, and
+/// the chain already tolerates it by construction — `scan_tail` truncates a torn trailing line and
+/// resumes, and every surviving line is still chain-verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Barrier {
+    /// Per-event: a plain `fsync(2)`. Kernel and device hold the bytes; the device's write cache
+    /// may still be volatile.
+    Line,
+    /// Turn boundary: the platform's strongest flush (`F_FULLFSYNC` on Apple), which is what
+    /// survives power loss.
+    Turn,
+}
+
+/// Turn boundaries carry the full barrier. `TurnEnd` closes one turn's accounting and `Done` closes
+/// the run; those are the points an operator can observe as "the turn happened", so those are the
+/// points that must survive power loss, not every intermediate phase/tool line inside them.
+fn barrier_for(kind: &EventKind) -> Barrier {
+    match kind {
+        EventKind::TurnEnd { .. } | EventKind::Done { .. } => Barrier::Turn,
+        _ => Barrier::Line,
+    }
+}
+
+/// A plain `fsync(2)`. std has no API for this on Apple platforms: both `sync_all` and `sync_data`
+/// route through `F_FULLFSYNC` there, so the cheap tier has to call libc directly.
+#[cfg(unix)]
+fn sync_line(file: &File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let fd = file.as_raw_fd();
+    loop {
+        // SAFETY: `fd` is borrowed from `file`, which is alive for the whole call, and `fsync`
+        // neither takes ownership of it nor reads caller memory.
+        if unsafe { libc::fsync(fd) } == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_line(file: &File) -> std::io::Result<()> {
+    file.sync_data()
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RecordError {
     #[error("io: {0}")]
@@ -453,6 +513,10 @@ pub struct Rollout {
     /// from here, which is what makes a segment internally exact without claiming to be joinable
     /// to a previous process's segment.
     opened_at: std::time::Instant,
+    /// Barrier tiers this descriptor actually took, counted per tier. The tiering is a *cost*
+    /// property, and timing a disk is not a test, so the counter is how a regression test pins it.
+    #[cfg(test)]
+    barriers_taken: (u64, u64),
 }
 
 impl Rollout {
@@ -535,6 +599,8 @@ impl Rollout {
             // The segment origin. A resumed run reaches here again in a new process, which is
             // precisely why `ts_us` restarts and why the reader treats that drop as a seam.
             opened_at: std::time::Instant::now(),
+            #[cfg(test)]
+            barriers_taken: (0, 0),
         })
     }
 
@@ -624,7 +690,9 @@ impl Rollout {
         Ok((next_seq, event_count, physical_line_count, last))
     }
 
-    /// Append an event. Durably `fsync`s before returning (ADR-008 write-ahead durability), and
+    /// Append an event. Durably `fsync`s before returning (ADR-008 write-ahead durability) at the
+    /// tier [`barrier_for`] assigns — a plain `fsync(2)` inside a turn, the platform's full barrier
+    /// at the turn boundary — and
     /// **only advances the in-memory chain state after durability succeeds** (code review: a
     /// failed write must not leave `last_hash`/`seq` pointing past a line that was never written,
     /// which would silently fork the chain). Once file I/O begins the writer is pessimistically
@@ -697,7 +765,14 @@ impl Rollout {
         // descriptor and chain head.
         self.poisoned = true;
         self.file.write_all(line.as_bytes())?;
-        self.file.sync_data()?; // durable BEFORE we advance state
+        // Durable BEFORE we advance state, at the tier this event's position earns (see `Barrier`).
+        let barrier = barrier_for(&event.kind);
+        match barrier {
+            Barrier::Line => sync_line(&self.file)?,
+            Barrier::Turn => self.file.sync_data()?,
+        }
+        #[cfg(test)]
+        self.observe_barrier(barrier);
         // Only now, after the line is on disk, advance the chain.
         self.last_hash = hash.clone();
         self.seq = seq.next();
@@ -760,6 +835,20 @@ impl Rollout {
                 Err(error)
             }
         }
+    }
+
+    #[cfg(test)]
+    fn observe_barrier(&mut self, barrier: Barrier) {
+        match barrier {
+            Barrier::Line => self.barriers_taken.0 = self.barriers_taken.0.saturating_add(1),
+            Barrier::Turn => self.barriers_taken.1 = self.barriers_taken.1.saturating_add(1),
+        }
+    }
+
+    /// `(cheap fsync appends, full F_FULLFSYNC barriers)` taken by this descriptor.
+    #[cfg(test)]
+    pub(crate) fn barriers_taken(&self) -> (u64, u64) {
+        self.barriers_taken
     }
 
     pub fn path(&self) -> &Path {
@@ -1220,6 +1309,61 @@ mod tests {
                 max: MAX_ROLLOUT_BYTES,
             }) if bytes == MAX_ROLLOUT_BYTES + 1
         ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn i16_only_the_turn_boundary_pays_the_full_barrier() {
+        let dir = test_dir("durability-tiering");
+        let run = RunId("durability-tiering".into());
+        let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+
+        // One turn as the profile measured it: 16 intra-turn phase/tool lines, then the boundary.
+        // Before the fix every one of these was an `F_FULLFSYNC` at p50 4.09 ms.
+        for _ in 0..16 {
+            rollout.append(&ev(0)).unwrap();
+        }
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::TurnEnd {
+                    usage: core_protocol::Usage::default(),
+                    ttft_ms: None,
+                    decode_ms: None,
+                    stream_items: None,
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            rollout.barriers_taken(),
+            (16, 1),
+            "only TurnEnd may pay F_FULLFSYNC; the 16 intra-turn appends take a plain fsync"
+        );
+
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Done {
+                    outcome: "Completed".into(),
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            rollout.barriers_taken(),
+            (16, 2),
+            "the run terminal is a boundary too"
+        );
+
+        // The cheap tier is a durability tier, not a correctness shortcut: the chain still verifies
+        // and replays byte-for-byte, and a reopened writer still recovers the same head.
+        drop(rollout);
+        let path = dir.join("durability-tiering.jsonl");
+        assert_eq!(replay(&path).unwrap().len(), 18);
+        let reopened = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+        assert_eq!(reopened.next_sequence(), Seq(18));
+        drop(reopened);
         let _ = std::fs::remove_dir_all(dir);
     }
 
