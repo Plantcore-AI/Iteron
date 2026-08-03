@@ -1,11 +1,26 @@
 name: ci
+# These lanes no longer run automatically. They need no GitHub-hosted runner, so they run on
+# hardware we already own and publish the same status contexts from there:
+#
+#   rust / macos-15      developer Mac, pre-push
+#   rust / ubuntu-24.04  DGX box
+#   boundary / validate  DGX box
+#   supply / validate    DGX box
+#   docs / strict-build  DGX box  (see docs.yml)
+#
+# all via `release-tools/local_gate.sh <macos|linux>`. A branch ruleset matches a required check
+# by context NAME, not by producer, so the protection is unchanged. What changes is that a status
+# is now executor-attested rather than machine-enforced, and a pull request nobody gates stays
+# blocked; both are documented in CONTRIBUTING.md.
+#
+# `review / required-humans` stays on Actions because it reads the pull request's own review
+# state, which has no local equivalent. The Windows lane will be added here once #38 lands, and
+# Windows is the one platform we cannot self-host.
+#
+# This workflow is kept, in full, behind manual dispatch: it is the fallback when Actions
+# capacity is available again and the reference definition these local lanes mirror.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    types: [opened, synchronize, reopened, edited, ready_for_review]
-  merge_group:
-    types: [checks_requested]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -525,6 +540,36 @@ jobs:
           else
             cargo test --workspace --all-targets --locked
           fi
+
+  evolution-gate:
+    name: gate / evolution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # The evolution rows cite tests in crates/agents and crates/cli as well as crates/evolve, and
+      # the row validator resolves every citation against the checkout. It reads files, not git
+      # history, so a shallow checkout is sufficient here.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: install pinned Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      # Fails on any row that names no plane placement, cites a test that does not exist, names a
+      # world module that is not on disk, or leaves a proven module or algebra operator unclaimed.
+      # There is no target-only state to suppress: an unbacked row is a red gate.
+      - name: evolution conformance rows
+        run: cargo run --locked -p core-evolve --bin evolve-transcript -- gate rows --repo .
+      # Runs the offline transcript twice under each producer order, verifies both hash chains,
+      # replays each promotion journal, exercises the checkpoint algebra, and proves the evaluator
+      # and promotion roles are not interchangeable. Non-zero exit means a module is unproven.
+      - name: evolution-proven gate artifact
+        run: >-
+          cargo run --locked -p core-evolve --bin evolve-transcript -- gate prove --repo .
+          --scratch "$RUNNER_TEMP/evolution-gate"
+      # The gate's own determinism and no-overclaim assertions. Kept separate from the binary run so
+      # a report that passes for the wrong reason still turns this job red.
+      - name: evolution gate assertions
+        run: cargo test --locked -p core-evolve --all-targets
 
   release-build:
     name: release build / ${{ matrix.os }}
