@@ -9,10 +9,12 @@ surface, for example ``core_code_agent:CoreCodeAgent``.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import secrets
 import shlex
 import stat
+import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
@@ -24,8 +26,9 @@ from harbor.models.trial.paths import EnvironmentPaths
 
 _MAX_BINARY_BYTES = 256 * 1024 * 1024
 _SHA256_RE = re.compile(r"(?:sha256:)?([0-9a-f]{64})\Z")
-_ENV_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]{0,127}\Z")
-_REMOTE_BINARY = PurePosixPath("/usr/local/bin/core")
+_CREDENTIAL_ENV_RE = re.compile(
+    r"HARBOR_CORE_[A-Z0-9]{1,32}_(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|TOKEN|SECRET|CREDENTIAL)\Z"
+)
 _BUILTIN_KEY_ENVS = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -37,14 +40,6 @@ _BUILTIN_KEY_ENVS = {
 _ELF_MACHINES = {62: "x86_64", 183: "aarch64"}
 
 
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        while chunk := source.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _normalize_sha256(value: str) -> str:
     match = _SHA256_RE.fullmatch(value)
     if match is None:
@@ -52,9 +47,7 @@ def _normalize_sha256(value: str) -> str:
     return match.group(1)
 
 
-def _linux_binary_arch(path: Path) -> str:
-    with path.open("rb") as source:
-        header = source.read(20)
+def _linux_binary_arch(header: bytes) -> str:
     if (
         len(header) != 20
         or header[:4] != b"\x7fELF"
@@ -71,6 +64,88 @@ def _linux_binary_arch(path: Path) -> str:
         raise ValueError(
             "Core binary architecture must be x86_64 or aarch64"
         ) from error
+
+
+def _open_binary_without_symlinks(path: Path) -> int:
+    """Open one absolute regular-file candidate without following any component."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None:
+        raise ValueError("host does not support no-follow binary snapshotting")
+    if not path.is_absolute() or not path.name or ".." in path.parts:
+        raise ValueError("binary_path must be an absolute normalized file path")
+
+    common = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | nofollow
+    directory_fd = os.open(path.anchor, common | directory)
+    try:
+        for component in path.parts[1:-1]:
+            next_fd = os.open(component, common | directory, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        return os.open(path.name, common, dir_fd=directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _snapshot_binary(
+    path: Path, expected_sha256: str, expected_arch: str
+) -> tuple[tempfile.TemporaryDirectory[str], Path, int]:
+    snapshot_root = tempfile.TemporaryDirectory(prefix="core-harbor-binary-")
+    snapshot = Path(snapshot_root.name) / "core"
+    try:
+        descriptor = _open_binary_without_symlinks(path)
+        with os.fdopen(descriptor, "rb") as source:
+            metadata = os.fstat(source.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("binary_path must be a regular non-symlink file")
+            if metadata.st_size <= 0 or metadata.st_size > _MAX_BINARY_BYTES:
+                raise ValueError(
+                    f"Core binary must contain 1..={_MAX_BINARY_BYTES} bytes"
+                )
+            digest = hashlib.sha256()
+            header = bytearray()
+            remaining = metadata.st_size
+            with snapshot.open("xb") as destination:
+                while remaining:
+                    chunk = source.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError("Core binary changed while being snapshotted")
+                    if len(header) < 20:
+                        header.extend(chunk[: 20 - len(header)])
+                    digest.update(chunk)
+                    destination.write(chunk)
+                    remaining -= len(chunk)
+                if source.read(1):
+                    raise ValueError("Core binary grew while being snapshotted")
+                destination.flush()
+                os.fsync(destination.fileno())
+            after = os.fstat(source.fileno())
+            before_identity = (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            )
+            after_identity = (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
+            if after_identity != before_identity:
+                raise ValueError("Core binary changed while being snapshotted")
+        if digest.hexdigest() != expected_sha256:
+            raise ValueError("Core binary SHA-256 does not match binary_sha256")
+        actual_arch = _linux_binary_arch(bytes(header))
+        if actual_arch != expected_arch:
+            raise ValueError("Core ELF architecture does not match binary_arch")
+        snapshot.chmod(0o400)
+        return snapshot_root, snapshot, metadata.st_size
+    except Exception:
+        snapshot_root.cleanup()
+        raise
 
 
 def _split_model_route(model_name: str, provider: str | None) -> tuple[str, str]:
@@ -135,23 +210,17 @@ class CoreCodeAgent(BaseInstalledAgent):
         path = Path(binary_path)
         if not path.is_absolute():
             raise ValueError("binary_path must be absolute")
-        try:
-            metadata = path.lstat()
-        except OSError as error:
-            raise ValueError(f"cannot inspect Core binary: {error}") from error
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("binary_path must be a regular non-symlink file")
-        if metadata.st_size <= 0 or metadata.st_size > _MAX_BINARY_BYTES:
-            raise ValueError(f"Core binary must contain 1..={_MAX_BINARY_BYTES} bytes")
-        self._binary_path = path.resolve(strict=True)
         self._binary_sha256 = _normalize_sha256(binary_sha256)
-        if _file_sha256(self._binary_path) != self._binary_sha256:
-            raise ValueError("Core binary SHA-256 does not match binary_sha256")
-        actual_arch = _linux_binary_arch(self._binary_path)
         if binary_arch not in set(_ELF_MACHINES.values()):
             raise ValueError("binary_arch must be x86_64 or aarch64")
-        if actual_arch != binary_arch:
-            raise ValueError("Core ELF architecture does not match binary_arch")
+        try:
+            (
+                self._binary_snapshot_root,
+                self._binary_path,
+                self._binary_size,
+            ) = _snapshot_binary(path, self._binary_sha256, binary_arch)
+        except OSError as error:
+            raise ValueError(f"cannot snapshot Core binary: {error}") from error
 
         if not 1 <= max_turns <= 100_000:
             raise ValueError("max_turns must be in 1..=100000")
@@ -161,8 +230,8 @@ class CoreCodeAgent(BaseInstalledAgent):
             raise ValueError("effort is not a supported Core effort level")
         if (base_url is None) != (key_env is None):
             raise ValueError("base_url and key_env must be supplied together")
-        if key_env is not None and _ENV_NAME_RE.fullmatch(key_env) is None:
-            raise ValueError("key_env must be an uppercase ASCII environment name")
+        if key_env is not None and _CREDENTIAL_ENV_RE.fullmatch(key_env) is None:
+            raise ValueError("key_env must use HARBOR_CORE_<LABEL>_<SENSITIVE_SUFFIX>")
         if base_url is not None:
             parsed = urlsplit(base_url)
             if (
@@ -197,25 +266,41 @@ class CoreCodeAgent(BaseInstalledAgent):
         self._autonomous = autonomous
         self._credential_env = credential_env
         nonce = secrets.token_hex(16)
-        self._remote_upload = PurePosixPath(f"/tmp/core-code-upload-{nonce}")
+        self._remote_binary = PurePosixPath(f"/tmp/core-code-bin-{nonce}")
         self._remote_home = PurePosixPath(f"/tmp/core-harbor-home-{nonce}")
         self._remote_config_home = PurePosixPath(f"/tmp/core-harbor-config-{nonce}")
+
+    def close(self) -> None:
+        """Remove the private host snapshot when this adapter is no longer used."""
+        snapshot_root = getattr(self, "_binary_snapshot_root", None)
+        if snapshot_root is not None:
+            snapshot_root.cleanup()
+            self._binary_snapshot_root = None
+
+    def __del__(self) -> None:
+        self.close()
 
     @staticmethod
     def name() -> str:
         return "core-code"
 
     def get_version_command(self) -> str | None:
-        return f"{_REMOTE_BINARY} --version"
+        binary = shlex.quote(self._remote_binary.as_posix())
+        expected = shlex.quote(self._binary_sha256)
+        return (
+            f"set -eu; exec 9< {binary}; "
+            f'test "$(stat -Lc %s /proc/self/fd/9)" -eq {self._binary_size}; '
+            "actual=$(sha256sum /proc/self/fd/9 | awk '{print $1}'); "
+            f'test "$actual" = {expected}; /proc/self/fd/9 --version'
+        )
 
     def parse_version(self, stdout: str) -> str:
         return stdout.strip()
 
     async def install(self, environment: BaseEnvironment) -> None:
-        await environment.upload_file(self._binary_path, self._remote_upload.as_posix())
+        await environment.upload_file(self._binary_path, self._remote_binary.as_posix())
         expected = shlex.quote(self._binary_sha256)
-        uploaded = shlex.quote(self._remote_upload.as_posix())
-        destination = shlex.quote(_REMOTE_BINARY.as_posix())
+        binary = shlex.quote(self._remote_binary.as_posix())
         contract = shlex.quote(
             (EnvironmentPaths.agent_dir / "core-machine-contract.json").as_posix()
         )
@@ -223,17 +308,14 @@ class CoreCodeAgent(BaseInstalledAgent):
         await self.exec_as_root(
             environment,
             command=(
-                f"set -eu; unset {credential_env}; umask 077; "
-                f"trap 'rm -f {uploaded}' EXIT; "
-                f"test -f {uploaded}; test ! -L {uploaded}; "
-                f"test ! -e {destination}; test ! -L {destination}; "
-                f"test ! -e {contract}; test ! -L {contract}; "
-                f"actual=$(sha256sum {uploaded} | awk '{{print $1}}'); "
+                f"set -euC; unset {credential_env}; umask 077; "
+                f"exec 9< {binary}; test -f /proc/self/fd/9; "
+                f'test "$(stat -Lc %s /proc/self/fd/9)" -eq {self._binary_size}; '
+                "actual=$(sha256sum /proc/self/fd/9 | awk '{print $1}'); "
                 f'test "$actual" = {expected}; '
-                f"install -m 0755 {uploaded} {destination}; "
-                f"installed=$(sha256sum {destination} | awk '{{print $1}}'); "
-                f'test "$installed" = {expected}; '
-                f"{destination} --machine-contract > {contract}"
+                "chown 0:0 /proc/self/fd/9; chmod 0555 /proc/self/fd/9; "
+                f"exec 8> {contract}; "
+                "/proc/self/fd/9 --machine-contract >&8"
             ),
         )
 
@@ -244,9 +326,10 @@ class CoreCodeAgent(BaseInstalledAgent):
         del context
         assert self.model_name is not None
         provider, model = _split_model_route(self.model_name, self._provider)
+        binary = self._remote_binary.as_posix()
 
         arguments = [
-            _REMOTE_BINARY.as_posix(),
+            "/proc/self/fd/9",
             "--print",
             "--repo",
             "/app",
@@ -282,20 +365,19 @@ class CoreCodeAgent(BaseInstalledAgent):
             "CORE_CONFIG_HOME": self._remote_config_home.as_posix(),
         }
         runs = EnvironmentPaths.agent_dir / "runs"
+        expected = shlex.quote(self._binary_sha256)
         command = (
-            "set -eu; umask 077; "
-            f"test ! -e {shlex.quote(self._remote_home.as_posix())}; "
-            f"test ! -L {shlex.quote(self._remote_home.as_posix())}; "
-            f"test ! -e {shlex.quote(self._remote_config_home.as_posix())}; "
-            f"test ! -L {shlex.quote(self._remote_config_home.as_posix())}; "
-            f"test ! -e {shlex.quote(runs.as_posix())}; test ! -L {shlex.quote(runs.as_posix())}; "
-            f"test ! -e {output}; test ! -L {output}; "
-            f"install -d -m 0700 {shlex.quote(self._remote_home.as_posix())} "
+            "set -euC; umask 077; "
+            f"mkdir -m 0700 {shlex.quote(self._remote_home.as_posix())} "
             f"{shlex.quote(self._remote_config_home.as_posix())} "
-            f"{shlex.quote(runs.as_posix())}; "
+            f"{shlex.quote(runs.as_posix())}; exec 8> {output}; "
+            f"exec 9< {shlex.quote(binary)}; test -f /proc/self/fd/9; "
+            f'test "$(stat -Lc %s /proc/self/fd/9)" -eq {self._binary_size}; '
+            "actual=$(sha256sum /proc/self/fd/9 | awk '{print $1}'); "
+            f'test "$actual" = {expected}; '
             "if [ -e /app/.core ] || [ -L /app/.core ]; then "
             "echo 'refusing task-provided Core project state' >&2; exit 78; fi; "
-            f"{shlex.join(arguments)} </dev/null | tee {output}"
+            f"{shlex.join(arguments)} </dev/null | tee /proc/self/fd/8"
         )
         await self.exec_as_agent(environment, command=command, env=env, cwd="/app")
 

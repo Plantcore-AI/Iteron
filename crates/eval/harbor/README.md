@@ -26,20 +26,33 @@ and a compatibility run.
 Build one 64-bit little-endian Linux Core ELF binary for the target container
 architecture. Set its absolute host path, lowercase SHA-256, and exact
 `x86_64` or `aarch64` architecture in `terminal-bench-2-1.yaml`. The adapter
-rejects relative paths, symlinks, non-ELF input, architecture mismatch, empty
-or oversized binaries, and digest mismatch. It uploads those exact bytes to an
-unpredictable path in each fresh Harbor environment, rejects destination
-replacement, and verifies the digest before and after installation. It never
+rejects relative paths, `..` traversal, a symlink in any path component,
+non-ELF input, architecture mismatch, empty or oversized binaries, concurrent
+source mutation, and digest mismatch. It copies one bounded, descriptor-held
+file generation into a mode-0400 private host snapshot. Later changes to the
+source path therefore cannot change the bytes Harbor uploads.
+
+The upload uses an unpredictable path in each fresh environment. Root opens
+that uploaded inode once, checks its exact byte count and digest, changes the
+inode to root-owned mode 0555, and executes the same descriptor for the machine
+contract. Every later version or agent invocation reopens, rechecks, and
+executes one descriptor. The contract and JSONL output use shell no-clobber
+creation and are written through already-open descriptors. The adapter never
 downloads `latest` and never reads or writes a credential file.
 
 Provider credentials are passed by Harbor's `agent.env` configuration to the
 installed agent process. Use a host template such as
 `OPENAI_API_KEY: ${OPENAI_API_KEY}`; Harbor keeps the persisted form templated.
 The adapter requires exactly the one canonical credential variable for a
-built-in route, or exactly `key_env` for a custom `base_url`, and rejects every
-additional environment key so `HOME`, Core configuration, proxies, or tuning
-flags cannot silently perturb an arm. Never put a literal credential value in
-YAML or an adapter kwarg.
+built-in route. A custom `base_url` must use exactly a namespaced,
+sensitivity-classified key of the form
+`HARBOR_CORE_<LABEL>_<SENSITIVE_SUFFIX>` (for example,
+`HARBOR_CORE_GATEWAY_API_KEY`). Shell startup, loader, home, path, proxy and
+Core configuration names such as `BASH_ENV`, `LD_PRELOAD`, `HOME`, `PATH`, and
+`CORE_CONFIG_HOME` are not accepted as credential names. Every additional
+environment key is rejected so configuration, proxies, or tuning flags cannot
+silently perturb an arm. Never put a literal credential value in YAML or an
+adapter kwarg.
 
 Core's operator home/config, memory, hooks, MCP declarations, sessions, and
 caches are rooted in unpredictable, fresh `/tmp/core-harbor-*` paths. Any
@@ -47,6 +60,14 @@ task-provided `/app/.core` path is refused because project configuration or an
 agent catalog could perturb one experimental arm. The append-only Core runs,
 unmixed JSONL stdout, and machine contract are written under `/logs/agent`, so
 Harbor captures them with the trial record.
+
+This boundary assumes the pinned, clean official task definitions and a
+trusted Harbor runtime create a fresh container before the agent starts. The
+descriptor and exclusive-creation controls close accidental and unprivileged
+pathname replacement in that environment; they are not a defense against an
+already-compromised container root, a hostile Harbor environment provider, or
+a host process that can alter the private snapshot. Such a threat requires an
+independently attested sandbox/runtime and is outside this adapter's claim.
 
 ## Run
 

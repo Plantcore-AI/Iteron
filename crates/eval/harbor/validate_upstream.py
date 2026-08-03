@@ -155,6 +155,10 @@ def _validate_terminal_bench(path: Path) -> dict[str, Any]:
         environment = task.get("environment", {})
         if not isinstance(timeout, (int, float)) or not 1 <= timeout <= 12_000:
             raise ValueError("agent timeout is outside the audited bound")
+        if environment.get("env") not in (None, {}):
+            raise ValueError(
+                "audited task must not inject a persistent environment map"
+            )
         if environment.get("allow_internet") is not True:
             raise ValueError("all audited TB2.1 tasks must declare allow_internet=true")
         internet_tasks += 1
