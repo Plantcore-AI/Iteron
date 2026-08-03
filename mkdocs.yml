@@ -116,6 +116,7 @@ nav:
       - Static provider metadata: reference/provider-metadata.md
       - Tunable-family registry: reference/tunables.md
       - Output formats: reference/output-formats.md
+      - Agent definitions: reference/agent-definitions.md
       - Files and directories: reference/files-and-directories.md
       - Supported platforms: reference/platforms.md
       - Troubleshooting: reference/troubleshooting.md
