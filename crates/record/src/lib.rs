@@ -29,8 +29,9 @@ pub use checkpoint::{
     rewind_workspace,
 };
 pub use session::{
-    Provenance, ScopedEvent, SessionAncestryReceipt, SessionMeta, fork, list, load_forked,
-    load_forked_scoped, meta, meta_with_pricing, most_recent, reindex, replay_run_timed,
+    Provenance, PrunePolicy, PruneReport, ScopedEvent, SessionAncestryReceipt, SessionMeta, fork,
+    list, list_scoped, load_forked, load_forked_scoped, meta, meta_with_pricing, most_recent,
+    prune, reindex, replay_run_timed,
 };
 
 use core_protocol::{
@@ -418,6 +419,127 @@ pub(crate) fn visit_record_lines_charged(
     visit_record_lines_with_budget(path, total_bytes, total_physical_lines, visitor)
 }
 
+/// The `<repo>/.core` state root a runs directory lives under, if any. A runs dir configured
+/// somewhere else entirely (an absolute `--runs-dir` outside the project) has no state root here
+/// and is left alone: this only ever speaks for Core's own per-repository directory.
+fn state_root_of(runs_dir: &Path) -> Option<PathBuf> {
+    let mut walked = PathBuf::new();
+    let mut root = None;
+    for component in runs_dir.components() {
+        walked.push(component);
+        if root.is_none()
+            && let Component::Normal(name) = component
+            && name.to_str().is_some_and(core_protocol::home::is_home_dir)
+        {
+            // The OUTERMOST `.core` is the one sitting in the repository, which is the directory
+            // git would otherwise stage.
+            root = Some(walked.clone());
+        }
+    }
+    root
+}
+
+/// `create_dir_all` for a runs directory, claiming the git exclusion the first time Core's
+/// per-repository state root comes into existence.
+///
+/// Everything Core keeps per repository — run journals, memory, skills — lands under `<repo>/.core`.
+/// Nothing used to exclude it, so the first `git add -A` after a run committed the session
+/// transcript into the user's own history. This is the one place that knows the directory is new,
+/// so it is the one place that can claim the exclusion exactly once.
+///
+/// Every path that can bring the state directory into being goes through here — a run opening its
+/// rollout, a `reindex`, and the session-index lock — because whichever of them happens to run
+/// first in a fresh repository is the one that has to make the claim.
+pub(crate) fn create_state_dir(dir: &Path) -> std::io::Result<()> {
+    let state_root = state_root_of(dir);
+    let unclaimed = state_root.as_deref().is_some_and(|root| !root.exists());
+    std::fs::create_dir_all(dir)?;
+    if let Some(root) = state_root.filter(|_| unclaimed) {
+        exclude_state_dir_from_git(&root);
+    }
+    Ok(())
+}
+
+/// Exclude the per-repository state directory in `.git/info/exclude` for the repository that owns
+/// `state_root`.
+///
+/// `.git/info/exclude` and not `.gitignore`: the ignore file is the user's, it is tracked, and a
+/// tool that edits it puts its own housekeeping into someone else's commit. `info/exclude` is
+/// per-clone, untracked, and exactly the place for "this working copy has a tool directory in it".
+///
+/// The pattern is two lines, and the second one is load-bearing:
+///
+/// ```text
+/// /.core/**
+/// !/.core/**/
+/// ```
+///
+/// The obvious `/.core/` would ignore the same files, but it also makes `.core` — and under
+/// `/.core/**` alone, `.core/runs` — an *ignored directory entry*. `git add` treats a pathspec that
+/// names an ignored entry as a fatal error, not a no-op, and the checkpoint stages with
+/// `add -A -- . :(top,literal,exclude)<runtime state dir>`, which names it exactly. Either
+/// directory form would therefore have turned every checkpoint in the repository into a hard
+/// failure. Re-including the directories leaves them ordinary and empty in git's eyes while every
+/// file beneath them stays ignored, which is the whole of what this needs to do.
+///
+/// Entirely best effort. A repository we cannot write to is not a reason to fail a run — the worst
+/// case is the status quo, where the directory shows up as untracked.
+fn exclude_state_dir_from_git(state_root: &Path) {
+    let Some(repo_root) = state_root.parent() else {
+        return;
+    };
+    let git_dir = repo_root.join(".git");
+    // Only a real `.git` DIRECTORY is claimed. A `.git` FILE is a worktree or submodule pointer
+    // whose exclude file lives behind an indirection; guessing at it would mean writing into
+    // metadata we did not resolve.
+    if !git_dir.is_dir() {
+        return;
+    }
+    let home = core_protocol::home::HOME_DIR;
+    let files = format!("/{home}/**");
+    let keep_dirs = format!("!/{home}/**/");
+    let already_excluded = |text: &str| {
+        text.lines().any(|line| {
+            let line = line.trim();
+            line == files
+                || line == home
+                || line == format!("{home}/")
+                || line == format!("/{home}/")
+                || line == format!("{home}/**")
+        })
+    };
+    // A project that already ignores the directory (this one does) needs no second declaration —
+    // and could not be helped by one anyway, since `.gitignore` outranks `info/exclude`.
+    if std::fs::read_to_string(repo_root.join(".gitignore"))
+        .is_ok_and(|text| already_excluded(&text))
+    {
+        return;
+    }
+    let info_dir = git_dir.join("info");
+    let exclude = info_dir.join("exclude");
+    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if already_excluded(&existing) {
+        return;
+    }
+    if std::fs::create_dir_all(&info_dir).is_err() {
+        return;
+    }
+    let mut addition = String::new();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        addition.push('\n');
+    }
+    addition.push_str("# Core Code per-repository state (run records, memory, skills).\n");
+    addition.push_str(&files);
+    addition.push('\n');
+    addition.push_str(&keep_dirs);
+    addition.push('\n');
+    let _ = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&exclude)
+        .and_then(|mut file| file.write_all(addition.as_bytes()));
+}
+
 enum SessionProjectionState {
     /// No projection has been loaded for this writer. The first durable `TurnStart` (or an
     /// explicit refresh) performs the one bounded replay needed to initialize it.
@@ -491,7 +613,7 @@ impl Rollout {
     ) -> Result<Self, RecordError> {
         let _ = validated_run_path(dir, run, ".jsonl")?;
         if create {
-            std::fs::create_dir_all(dir)?;
+            create_state_dir(dir)?;
         }
         let dir = dir.canonicalize()?;
         let path = validated_run_path(&dir, run, ".jsonl")?;
@@ -2167,6 +2289,86 @@ AbCdEf1234567890AbCdEf1234567890"
                 );
             }
         }
+    }
+
+    /// I-45. Opening the first rollout in a repository creates `<repo>/.core`. Nothing used to
+    /// exclude it, so the next `git add -A` committed the session transcript, memory and skills
+    /// into the user's own history. The exclusion goes in `.git/info/exclude` — per-clone and
+    /// untracked — and the tracked `.gitignore` is the user's file and is never touched.
+    #[test]
+    fn the_state_directory_excludes_itself_from_git_without_editing_the_users_ignore_file() {
+        let repo = test_dir("git-exclude");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let ignore = repo.join(".gitignore");
+        std::fs::write(&ignore, "target/\n").unwrap();
+
+        let runs = repo.join(".core").join("runs");
+        let rollout = Rollout::open(&runs, &RunId("first".into()), TenantId::default()).unwrap();
+        drop(rollout);
+
+        let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        assert!(
+            exclude.lines().any(|line| line.trim() == "/.core/**"),
+            "the state directory's files must be excluded: {exclude}"
+        );
+        assert!(
+            exclude.lines().any(|line| line.trim() == "!/.core/**/"),
+            "the directories stay un-ignored so a checkpoint pathspec may name them: {exclude}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&ignore).unwrap(),
+            "target/\n",
+            "the user's own ignore file is not ours to edit"
+        );
+
+        // Idempotent: a second run in the same repository does not append a duplicate stanza.
+        let rollout = Rollout::open(&runs, &RunId("second".into()), TenantId::default()).unwrap();
+        drop(rollout);
+        assert_eq!(
+            std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap(),
+            exclude,
+            "the claim is made once, on first creation"
+        );
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// I-45. Opening a rollout is not the only way the state directory comes into being: a bare
+    /// `core reindex` in a fresh repository creates it too, and used to create it unclaimed — the
+    /// index and its lock file were then staged by the next `git add -A`. Whichever path gets there
+    /// first has to make the claim.
+    #[test]
+    fn maintenance_that_creates_the_state_directory_claims_the_exclusion_too() {
+        let repo = test_dir("git-exclude-reindex");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let runs = repo.join(".core").join("runs");
+
+        assert_eq!(session::reindex(&runs).unwrap(), 0);
+
+        let exclude = std::fs::read_to_string(repo.join(".git/info/exclude"))
+            .expect("reindex creating the state directory claims it");
+        assert!(
+            exclude.lines().any(|line| line.trim() == "/.core/**"),
+            "{exclude}"
+        );
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// The exclusion speaks only for Core's own directory: a runs dir configured somewhere else
+    /// entirely has no `.core` state root and must not cause a write into any repository.
+    #[test]
+    fn a_runs_dir_outside_the_state_directory_writes_no_git_exclusion() {
+        let repo = test_dir("git-exclude-foreign");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let runs = repo.join("elsewhere").join("runs");
+
+        let rollout = Rollout::open(&runs, &RunId("only".into()), TenantId::default()).unwrap();
+        drop(rollout);
+
+        assert!(
+            !repo.join(".git/info/exclude").exists(),
+            "an unrelated runs dir is not a reason to write into .git"
+        );
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }
 

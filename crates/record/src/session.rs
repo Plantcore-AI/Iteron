@@ -28,6 +28,7 @@ use core_protocol::{
 };
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1119,14 +1120,7 @@ fn merge_rewrite_index(
 
 fn write_meta_sidecar(runs_dir: &Path, projected: &SessionMeta) -> Result<(), RecordError> {
     let path = per_run_meta_path(runs_dir, &projected.run_id)?;
-    let encoded = serde_json::to_vec_pretty(projected)?;
-    if encoded.len() > crate::cache_io::MAX_SESSION_META_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "session metadata exceeds the cache byte limit",
-        )
-        .into());
-    }
+    let encoded = encode_meta_sidecar(projected)?;
     crate::cache_io::atomic_replace(&path, &encoded)?;
     Ok(())
 }
@@ -1218,12 +1212,42 @@ pub fn list(runs_dir: &Path, tenant: &TenantId) -> Vec<SessionMeta> {
     metas
 }
 
+/// True when a recorded working directory names the requested repository. The literal comparison is
+/// the fast, normal answer (a run records the CLI's already-canonicalized repo). The canonical
+/// comparison is the fallback so a record written under `/var/…` and a `--repo` canonicalized to
+/// `/private/var/…` are not read as two different repositories; `canonical_requested` is resolved
+/// once by the caller rather than once per session.
+fn same_repo(recorded: &Path, requested: &Path, canonical_requested: Option<&Path>) -> bool {
+    if recorded == requested {
+        return true;
+    }
+    match (recorded.canonicalize(), canonical_requested) {
+        (Ok(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// [`list`], optionally narrowed to the runs recorded in one repository. `Some(repo)` is the exact
+/// scope [`most_recent`] selects from, so a listing and a continue cannot disagree about what "this
+/// repository" means; `None` lists every repository the runs dir holds.
+pub fn list_scoped(runs_dir: &Path, tenant: &TenantId, repo: Option<&Path>) -> Vec<SessionMeta> {
+    let metas = list(runs_dir, tenant);
+    let Some(repo) = repo else {
+        return metas;
+    };
+    let canonical = repo.canonicalize().ok();
+    metas
+        .into_iter()
+        .filter(|m| same_repo(&m.cwd, repo, canonical.as_deref()))
+        .collect()
+}
+
 /// The most recent run in `cwd` for `tenant` — the target of `--continue` (R5 design §2.5). Scoped
 /// to `cwd` because the prefix cache is per-repo, so a cross-worktree continue would cache-miss.
 pub fn most_recent(runs_dir: &Path, cwd: &Path, tenant: &TenantId) -> Option<RunId> {
-    list(runs_dir, tenant)
+    list_scoped(runs_dir, tenant, Some(cwd))
         .into_iter()
-        .find(|m| m.cwd == cwd)
+        .next()
         .map(|m| m.run_id)
 }
 
@@ -1234,7 +1258,7 @@ pub fn most_recent(runs_dir: &Path, cwd: &Path, tenant: &TenantId) -> Option<Run
 /// corrupt index is rebuilt from the current candidate without replaying unrelated runs; [`list`]
 /// later restores any omitted entries from their sidecars or authoritative records.
 pub(crate) fn write_meta(runs_dir: &Path, projected: &SessionMeta) -> Result<(), RecordError> {
-    std::fs::create_dir_all(runs_dir)?;
+    crate::create_state_dir(runs_dir)?;
     write_meta_sidecar(runs_dir, projected)?;
     merge_rewrite_index(runs_dir, [projected.clone()])
 }
@@ -1244,18 +1268,207 @@ pub(crate) fn write_meta(runs_dir: &Path, projected: &SessionMeta) -> Result<(),
 /// safe to run. A corrupt/broken rollout is skipped rather than aborting the whole rebuild; returns
 /// the number of runs indexed.
 pub fn reindex(runs_dir: &Path) -> Result<usize, RecordError> {
-    std::fs::create_dir_all(runs_dir)?;
+    crate::create_state_dir(runs_dir)?;
     let mut metas = Vec::new();
     for run in rollout_run_ids(runs_dir) {
         if let Ok(m) = meta_from_replay(runs_dir, &run, None) {
             metas.push(m);
         }
     }
+    // Rebuilding was 91% blocking fsync: every sidecar was rewritten unconditionally, and each
+    // rewrite fsynced its own bytes AND the whole directory. A session whose sidecar already
+    // encodes this exact projection is left alone — refreshing its mtime is the only thing that
+    // would change — and the surviving writes share ONE directory sync at the end.
+    let mut wrote = false;
     for m in &metas {
-        write_meta_sidecar(runs_dir, m)?;
+        let encoded = encode_meta_sidecar(m)?;
+        if sidecar_is_unchanged(runs_dir, m, &encoded) {
+            continue;
+        }
+        let path = per_run_meta_path(runs_dir, &m.run_id)?;
+        crate::cache_io::atomic_replace_deferring_dir_sync(&path, &encoded)?;
+        wrote = true;
+    }
+    if wrote {
+        crate::cache_io::sync_dir(runs_dir)?;
     }
     merge_rewrite_index(runs_dir, metas.iter().cloned())?;
     Ok(metas.len())
+}
+
+/// The exact bytes a sidecar rewrite would persist, bounded the same way the write path bounds them.
+fn encode_meta_sidecar(projected: &SessionMeta) -> Result<Vec<u8>, RecordError> {
+    let encoded = serde_json::to_vec_pretty(projected)?;
+    if encoded.len() > crate::cache_io::MAX_SESSION_META_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "session metadata exceeds the cache byte limit",
+        )
+        .into());
+    }
+    Ok(encoded)
+}
+
+/// True when the persisted sidecar is already byte-identical to `encoded`. The record cursor
+/// (`record_tail_seq` + `record_bytes`) is what moves when a session grows, and it is inside these
+/// bytes; comparing the whole encoding rather than only that cursor means a schema, pricing, or
+/// projection-digest change still forces the rewrite instead of being skipped by a matching tail.
+fn sidecar_is_unchanged(runs_dir: &Path, projected: &SessionMeta, encoded: &[u8]) -> bool {
+    let Ok(path) = per_run_meta_path(runs_dir, &projected.run_id) else {
+        return false;
+    };
+    crate::cache_io::read_session_meta(&path).is_ok_and(|bytes| bytes == encoded)
+}
+
+/// What [`prune`] is allowed to delete. A policy that names nothing deletes nothing: retention is
+/// always explicit, because a run journal is the only durable evidence a run ever happened.
+#[derive(Debug, Clone, Default)]
+pub struct PrunePolicy {
+    /// Delete runs whose last recorded activity is older than this many seconds.
+    pub max_age_secs: Option<u64>,
+    /// Keep the newest N runs; delete every older one.
+    pub keep_last: Option<usize>,
+    /// Select and report without unlinking anything.
+    pub dry_run: bool,
+}
+
+/// What [`prune`] did, and what it declined to do. The two "kept anyway" lists are reported rather
+/// than silently folded into `retained`: a caller that asked for a deletion and did not get one is
+/// entitled to know which rule stopped it.
+#[derive(Debug, Clone, Default)]
+pub struct PruneReport {
+    /// Runs the policy named and whose journal (plus sidecar) was unlinked.
+    pub removed: Vec<RunId>,
+    /// Runs left in place.
+    pub retained: usize,
+    /// Named by the policy, kept because another process holds the writer lock.
+    pub active: Vec<RunId>,
+    /// Named by the policy, kept because a retained fork replays through this run's prefix.
+    pub ancestors: Vec<RunId>,
+}
+
+/// Apply a retention policy to `runs_dir`, deleting the run journals it names and nothing else.
+///
+/// Journals are append-only and no other code path ever removes one, so this is the whole retention
+/// story. Three rules bound it:
+///
+/// * only runs of `tenant` are even considered, so a shared runs dir cannot lose another tenant's
+///   record to a policy that never saw it;
+/// * a run whose writer lock is held is skipped — a live session is not garbage;
+/// * a run a retained fork replays through is skipped, transitively, because deleting it would
+///   leave the survivor with an unreadable logical history rather than a shorter one.
+pub fn prune(
+    runs_dir: &Path,
+    tenant: &TenantId,
+    policy: &PrunePolicy,
+) -> Result<PruneReport, RecordError> {
+    prune_at(runs_dir, tenant, policy, now_secs())
+}
+
+fn prune_at(
+    runs_dir: &Path,
+    tenant: &TenantId,
+    policy: &PrunePolicy,
+    now: u64,
+) -> Result<PruneReport, RecordError> {
+    let metas = list(runs_dir, tenant);
+    let total = metas.len();
+    if policy.max_age_secs.is_none() && policy.keep_last.is_none() {
+        return Ok(PruneReport {
+            retained: total,
+            ..PruneReport::default()
+        });
+    }
+
+    // `list` is newest-first, so the keep-last window is a prefix. Age uses the same recorded
+    // activity timestamp the listing orders by.
+    let mut selected: HashSet<String> = HashSet::new();
+    for (position, meta) in metas.iter().enumerate() {
+        let too_old = policy
+            .max_age_secs
+            .is_some_and(|max_age| now.saturating_sub(meta.updated_at) > max_age);
+        let beyond_window = policy.keep_last.is_some_and(|keep| position >= keep);
+        if too_old || beyond_window {
+            selected.insert(meta.run_id.0.clone());
+        }
+    }
+
+    // Grow the retained set through ancestry to its fixpoint: a fork's prefix is not garbage while
+    // the fork survives, however old the parent is.
+    let mut ancestors: Vec<RunId> = Vec::new();
+    loop {
+        let mut rescued = Vec::new();
+        for meta in &metas {
+            if selected.contains(&meta.run_id.0) {
+                continue;
+            }
+            if let Some(parent) = &meta.parent
+                && selected.contains(&parent.parent_run.0)
+            {
+                rescued.push(parent.parent_run.clone());
+            }
+        }
+        if rescued.is_empty() {
+            break;
+        }
+        for run in rescued {
+            // `remove` reports whether this run was still selected, which dedupes the report: two
+            // forks off one parent rescue it once, not twice.
+            if selected.remove(&run.0) {
+                ancestors.push(run);
+            }
+        }
+    }
+
+    let mut report = PruneReport {
+        ancestors,
+        ..PruneReport::default()
+    };
+    for meta in &metas {
+        if !selected.contains(&meta.run_id.0) {
+            continue;
+        }
+        let run = meta.run_id.clone();
+        let rollout = rollout_path(runs_dir, &run)?;
+        if !rollout_is_idle(&rollout) {
+            report.active.push(run);
+            continue;
+        }
+        if !policy.dry_run {
+            std::fs::remove_file(&rollout)?;
+            // The sidecar is a rebuildable projection of a record that no longer exists.
+            let sidecar = per_run_meta_path(runs_dir, &run)?;
+            if let Err(error) = std::fs::remove_file(&sidecar)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                return Err(error.into());
+            }
+        }
+        report.removed.push(run);
+    }
+    report.retained = total.saturating_sub(report.removed.len());
+    if !policy.dry_run && !report.removed.is_empty() {
+        // Drop the deleted runs from the compact index in one atomic rewrite. `merge_rewrite_index`
+        // re-reads which rollouts exist, so an entry whose journal is gone is not carried over.
+        merge_rewrite_index(runs_dir, [])?;
+    }
+    Ok(report)
+}
+
+/// True when no other process holds this rollout's exclusive writer lock. A live run is never
+/// garbage; the probe releases the lock immediately and only gates a delete this process is about
+/// to perform, so it is a guard, not a claim of ownership.
+fn rollout_is_idle(path: &Path) -> bool {
+    let Ok(file) = OpenOptions::new().read(true).append(true).open(path) else {
+        return false;
+    };
+    match file.try_lock() {
+        Ok(()) => {
+            let _ = file.unlock();
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Mint a fresh, collision-resistant run id (process id + wall-clock nanos), matching the CLI's
@@ -4166,6 +4379,245 @@ mod tests {
         // The scan tolerates the unknown kind rather than failing.
         let m = meta(&dir, &run).unwrap();
         assert_eq!(m.title, "with an unknown event");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+    /// I-46. Journals are append-only and nothing else ever deletes one, so `prune` is the whole
+    /// retention story — and it must delete exactly what its policy names. A policy that names
+    /// nothing, and a dry run, both leave the store untouched.
+    #[test]
+    fn d11_46_prune_removes_exactly_what_the_policy_names_and_nothing_else() {
+        let dir = tmpdir("prune-policy");
+        let tenant = TenantId::default();
+        for index in 0..4 {
+            mk_run(
+                &dir,
+                &RunId(format!("run-{index}")),
+                &tenant,
+                "/repo/prune",
+                "task",
+            );
+        }
+        reindex(&dir).unwrap();
+
+        let report = prune_at(&dir, &tenant, &PrunePolicy::default(), now_secs()).unwrap();
+        assert!(
+            report.removed.is_empty(),
+            "no policy names nothing: {report:?}"
+        );
+        assert_eq!(report.retained, 4);
+        assert_eq!(rollout_run_ids(&dir).len(), 4);
+
+        let dry = PrunePolicy {
+            keep_last: Some(2),
+            dry_run: true,
+            ..PrunePolicy::default()
+        };
+        let report = prune_at(&dir, &tenant, &dry, now_secs()).unwrap();
+        assert_eq!(report.removed.len(), 2);
+        assert_eq!(rollout_run_ids(&dir).len(), 4, "a dry run unlinks nothing");
+
+        // Keep-last is a window on the same newest-first order the listing uses.
+        let survivors: Vec<RunId> = list(&dir, &tenant)
+            .into_iter()
+            .take(2)
+            .map(|m| m.run_id)
+            .collect();
+        let policy = PrunePolicy {
+            keep_last: Some(2),
+            ..PrunePolicy::default()
+        };
+        let report = prune_at(&dir, &tenant, &policy, now_secs()).unwrap();
+        assert_eq!(report.removed.len(), 2);
+        assert_eq!(report.retained, 2);
+        assert!(report.active.is_empty() && report.ancestors.is_empty());
+
+        let mut left: Vec<String> = rollout_run_ids(&dir).into_iter().map(|r| r.0).collect();
+        left.sort();
+        let mut expected: Vec<String> = survivors.iter().map(|r| r.0.clone()).collect();
+        expected.sort();
+        assert_eq!(left, expected, "only the named runs are gone");
+        for run in &report.removed {
+            assert!(
+                !per_run_meta_path(&dir, run).unwrap().exists(),
+                "a deleted run's rebuildable sidecar goes with it"
+            );
+        }
+        for run in &survivors {
+            assert!(per_run_meta_path(&dir, run).unwrap().exists());
+        }
+        assert!(
+            index_path(&dir).exists(),
+            "the shared index is rewritten, never deleted"
+        );
+        assert_eq!(list(&dir, &tenant).len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// I-46. The age rule is measured against the same recorded activity time the listing orders
+    /// by, so the same store answers differently only because the clock moved.
+    #[test]
+    fn d11_46_prune_age_policy_reads_the_recorded_activity_time() {
+        let dir = tmpdir("prune-age");
+        let tenant = TenantId::default();
+        mk_run(&dir, &RunId("young".into()), &tenant, "/repo/age", "task");
+        let now = now_secs();
+        let policy = PrunePolicy {
+            max_age_secs: Some(24 * 60 * 60),
+            ..PrunePolicy::default()
+        };
+
+        let report = prune_at(&dir, &tenant, &policy, now).unwrap();
+        assert!(report.removed.is_empty(), "a fresh record is not garbage");
+        assert_eq!(rollout_run_ids(&dir).len(), 1);
+
+        let report = prune_at(&dir, &tenant, &policy, now + 7 * 24 * 60 * 60).unwrap();
+        assert_eq!(report.removed, vec![RunId("young".into())]);
+        assert!(rollout_run_ids(&dir).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// I-46. A fork stores only its own tail and replays the parent prefix, so deleting an
+    /// ancestor a survivor still needs would leave an unreadable history rather than a shorter
+    /// one. Retention grows through ancestry before anything is unlinked.
+    #[test]
+    fn d11_46_prune_never_orphans_a_surviving_fork() {
+        let dir = tmpdir("prune-ancestry");
+        let tenant = TenantId::default();
+        let parent = RunId("parent".into());
+        mk_run(&dir, &parent, &tenant, "/repo/fork", "parent task");
+        let child = fork(&dir, &parent, Seq(4), &tenant).unwrap();
+
+        // The child is newer, so keep-last(1) names the parent. The parent is kept anyway.
+        let policy = PrunePolicy {
+            keep_last: Some(1),
+            ..PrunePolicy::default()
+        };
+        let report = prune_at(&dir, &tenant, &policy, now_secs()).unwrap();
+        assert!(report.removed.is_empty(), "{report:?}");
+        assert_eq!(report.ancestors, vec![parent.clone()]);
+        assert!(rollout_path(&dir, &parent).unwrap().exists());
+        load_forked(&dir, &child).expect("the survivor's logical history still reads");
+
+        // Two forks off one parent rescue it once. Reporting the same run twice would read as two
+        // separate rules having fired on two separate records.
+        let sibling = fork(&dir, &parent, Seq(4), &tenant).unwrap();
+        let both_forks = PrunePolicy {
+            keep_last: Some(2),
+            ..PrunePolicy::default()
+        };
+        let report = prune_at(&dir, &tenant, &both_forks, now_secs()).unwrap();
+        assert!(report.removed.is_empty(), "{report:?}");
+        assert_eq!(
+            report.ancestors,
+            vec![parent.clone()],
+            "a shared ancestor is named once, not once per fork"
+        );
+        load_forked(&dir, &sibling).expect("the second survivor still reads too");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// I-47. A rebuild used to rewrite every sidecar unconditionally and fsync per file, so a warm
+    /// reindex with nothing to do still refreshed every mtime and paid the whole fsync bill. An
+    /// unchanged projection is now left alone — byte-for-byte, same inode — while a session that
+    /// actually grew is still rebuilt.
+    #[test]
+    fn d11_47_a_warm_reindex_replaces_no_unchanged_sidecar() {
+        let dir = tmpdir("reindex-warm");
+        let tenant = TenantId::default();
+        let run = RunId("warm".into());
+        mk_run(&dir, &run, &tenant, "/repo/warm", "task");
+        assert_eq!(reindex(&dir).unwrap(), 1);
+
+        let sidecar = per_run_meta_path(&dir, &run).unwrap();
+        let before = std::fs::metadata(&sidecar).unwrap();
+        let before_bytes = std::fs::read(&sidecar).unwrap();
+        assert_eq!(reindex(&dir).unwrap(), 1);
+        let after = std::fs::metadata(&sidecar).unwrap();
+
+        assert_eq!(std::fs::read(&sidecar).unwrap(), before_bytes);
+        assert_eq!(
+            before.modified().unwrap(),
+            after.modified().unwrap(),
+            "a warm rebuild must not refresh an mtime"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            assert_eq!(
+                before.ino(),
+                after.ino(),
+                "an unchanged sidecar is not replaced by a rename"
+            );
+        }
+
+        complete_one_turn(&dir, &run, &tenant, "another turn");
+        assert_eq!(reindex(&dir).unwrap(), 1);
+        let grown = std::fs::metadata(&sidecar).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            assert_ne!(
+                before.ino(),
+                grown.ino(),
+                "a changed session is still reindexed"
+            );
+        }
+        let refreshed: SessionMeta =
+            serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+        assert!(refreshed.turns > 1, "{refreshed:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// I-51. `--sessions` promised "in this repo" while listing every repository, and `--continue`
+    /// filtered. Both now select from one scope, including when the record's spelling of the path
+    /// and the caller's canonicalized one differ.
+    #[test]
+    fn d11_51_a_scoped_listing_and_continue_select_from_the_same_set() {
+        let dir = tmpdir("scoped-listing");
+        let tenant = TenantId::default();
+        mk_run(&dir, &RunId("here".into()), &tenant, "/repo/here", "here");
+        mk_run(
+            &dir,
+            &RunId("there".into()),
+            &tenant,
+            "/repo/there",
+            "there",
+        );
+
+        assert_eq!(list_scoped(&dir, &tenant, None).len(), 2, "unscoped is all");
+        let scoped: Vec<String> = list_scoped(&dir, &tenant, Some(Path::new("/repo/here")))
+            .into_iter()
+            .map(|m| m.run_id.0)
+            .collect();
+        assert_eq!(scoped, vec!["here".to_string()]);
+        assert_eq!(
+            most_recent(&dir, Path::new("/repo/here"), &tenant),
+            Some(RunId("here".into())),
+            "continue picks from exactly what the listing showed"
+        );
+        assert!(
+            list_scoped(&dir, &tenant, Some(Path::new("/repo/nowhere"))).is_empty()
+                && most_recent(&dir, Path::new("/repo/nowhere"), &tenant).is_none()
+        );
+
+        // A record written under an uncanonicalized path (`/var/…` on macOS) and a `--repo` the
+        // CLI canonicalized (`/private/var/…`) are one repository, not two.
+        let workspace = tmpdir("scoped-workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        mk_run(
+            &dir,
+            &RunId("spelled".into()),
+            &tenant,
+            &workspace.display().to_string(),
+            "spelled",
+        );
+        let canonical = workspace.canonicalize().unwrap();
+        assert_eq!(list_scoped(&dir, &tenant, Some(&canonical)).len(), 1);
+        assert_eq!(
+            most_recent(&dir, &canonical, &tenant),
+            Some(RunId("spelled".into()))
+        );
+        std::fs::remove_dir_all(&workspace).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 }

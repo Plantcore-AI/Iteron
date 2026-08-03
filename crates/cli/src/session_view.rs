@@ -86,7 +86,7 @@ impl SessionSummary {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SessionListDocument {
     pub schema_version: u32,
-    /// How many sessions the store holds, before the page bound.
+    /// How many sessions matched the request, including its repository scope, before the page bound.
     pub total: usize,
     /// True when `total` exceeded the page bound, so a client knows the list is a page.
     pub truncated: bool,
@@ -106,14 +106,19 @@ pub(crate) struct TranscriptDocument {
 
 /// List sessions for a tenant, bounded and redacted.
 ///
-/// Degrades exactly as the human path does: `core_record::list` falls back to replay when the
-/// index is stale or missing, so a client still gets an answer rather than an error.
+/// `repo` is the same recorded-working-directory scope `--continue` selects from, so a client that
+/// asks for "the sessions in this repository" and a continue that picks one of them cannot be
+/// looking at two different sets. `None` lists every repository the runs dir holds.
+///
+/// Degrades exactly as the human path does: `core_record::list_scoped` falls back to replay when
+/// the index is stale or missing, so a client still gets an answer rather than an error.
 pub(crate) fn list_sessions(
     runs_dir: &Path,
     tenant: &TenantId,
+    repo: Option<&Path>,
     limit: usize,
 ) -> SessionListDocument {
-    let metas = core_record::list(runs_dir, tenant);
+    let metas = core_record::list_scoped(runs_dir, tenant, repo);
     let total = metas.len();
     let limit = limit.min(MAX_SESSIONS_PER_PAGE);
     let sessions = metas

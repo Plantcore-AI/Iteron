@@ -83,6 +83,19 @@ impl Drop for StderrDiagnosticDrain {
 enum LocalCommand {
     /// Rebuild session metadata and the sessions index from hash-chained rollout truth.
     Reindex,
+    /// Delete old run journals under the runs dir according to an explicit retention policy.
+    /// Journals are append-only and nothing else ever removes them.
+    Prune {
+        /// Delete runs whose last recorded activity is older than this many days.
+        #[arg(long, value_name = "DAYS")]
+        older_than_days: Option<u64>,
+        /// Keep only the newest N runs; delete every older one.
+        #[arg(long, value_name = "N")]
+        keep_last: Option<usize>,
+        /// Print exactly what the policy names without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Run an ultracode workflow (.js) end-to-end, streaming progress to stdout.
     Workflow {
         #[command(subcommand)]
@@ -283,6 +296,11 @@ struct Cli {
     #[arg(long)]
     sessions: bool,
 
+    /// How many sessions `--sessions` lists. Defaults to one page (200); the machine document
+    /// keeps its published page ceiling and reports `truncated` instead.
+    #[arg(long, value_name = "N")]
+    limit: Option<usize>,
+
     /// Read one session's transcript and exit. Pair with `--output-format json` for the machine
     /// document; a client should never open a file under `.core/runs` itself.
     #[arg(long, value_name = "RUN_ID")]
@@ -322,6 +340,58 @@ struct Cli {
     base_url: Option<String>,
 }
 
+/// `--runs-dir` as an absolute location. An absolute value is honoured verbatim; a relative one
+/// (including the `.core/runs` default) resolves under the CANONICALIZED repo, never against the
+/// process working directory — `core -C /elsewhere` must write its audit record under
+/// `/elsewhere/.core/runs`, not beside wherever the shell happened to be.
+fn resolve_runs_dir(cli: &Cli, repo: &std::path::Path) -> PathBuf {
+    if cli.runs_dir.is_absolute() {
+        cli.runs_dir.clone()
+    } else {
+        repo.join(&cli.runs_dir)
+    }
+}
+
+/// `core prune` — the only path that ever deletes a run journal. The policy must be stated: run
+/// journals are append-only and are the sole durable evidence a run happened, so "prune" with no
+/// rule is a question, not a command.
+fn run_prune_command(
+    runs_dir: &std::path::Path,
+    older_than_days: Option<u64>,
+    keep_last: Option<usize>,
+    dry_run: bool,
+) -> anyhow::Result<u8> {
+    if older_than_days.is_none() && keep_last.is_none() {
+        anyhow::bail!(
+            "prune needs an explicit retention policy: --older-than-days <DAYS> and/or --keep-last <N>"
+        );
+    }
+    let policy = core_record::PrunePolicy {
+        max_age_secs: older_than_days.map(|days| days.saturating_mul(24 * 60 * 60)),
+        keep_last,
+        dry_run,
+    };
+    let report = core_record::prune(runs_dir, &TenantId::default(), &policy)?;
+    let verb = if dry_run { "would remove" } else { "removed" };
+    for run in &report.removed {
+        println!("{verb} {run}");
+    }
+    for run in &report.active {
+        eprintln!("kept {run}: another process is writing it");
+    }
+    for run in &report.ancestors {
+        eprintln!("kept {run}: a retained fork replays through its prefix");
+    }
+    println!(
+        "{verb} {} session{}, {} retained in {}",
+        report.removed.len(),
+        if report.removed.len() == 1 { "" } else { "s" },
+        report.retained,
+        runs_dir.display()
+    );
+    Ok(output::EXIT_SUCCESS)
+}
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     match run_cli().await {
@@ -359,15 +429,29 @@ async fn run_cli() -> anyhow::Result<u8> {
         .repo
         .canonicalize()
         .map_err(|e| anyhow::anyhow!("repo {:?}: {e}", cli.repo))?;
+    // Resolved ONCE, against `-C`, not against the process working directory. Every reader and
+    // writer below shares this value; the workflow branch resolved it correctly while nine other
+    // call sites used the raw default, so `core -C /elsewhere` wrote its audit record next to
+    // whatever directory the process happened to start in.
+    let runs_dir = resolve_runs_dir(&cli, &repo);
 
     if matches!(cli.command, Some(LocalCommand::Reindex)) {
-        let count = core_record::reindex(&cli.runs_dir)?;
+        let count = core_record::reindex(&runs_dir)?;
         println!(
             "reindexed {count} session{} in {}",
             if count == 1 { "" } else { "s" },
-            cli.runs_dir.display()
+            runs_dir.display()
         );
         return Ok(output::EXIT_SUCCESS);
+    }
+
+    if let Some(LocalCommand::Prune {
+        older_than_days,
+        keep_last,
+        dry_run,
+    }) = &cli.command
+    {
+        return run_prune_command(&runs_dir, *older_than_days, *keep_last, *dry_run);
     }
 
     // `core workflow run <script.js>` — runs the ultracode-workflow engine directly. It needs a
@@ -391,7 +475,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     // and eagerly started MCP servers, though it never touches the model).
     if let Some(run) = cli.timeline.clone() {
         let run = core_protocol::RunId(run);
-        let timed = core_record::replay_run_timed(&cli.runs_dir, &run)?;
+        let timed = core_record::replay_run_timed(&runs_dir, &run)?;
         let report = core_obs::timeline::fold(timed.iter().map(|t| (t.ts_us, &t.event)));
         if cli.output_format.is_machine() {
             println!("{}", serde_json::to_string(&report)?);
@@ -403,7 +487,15 @@ async fn run_cli() -> anyhow::Result<u8> {
 
     if let Some(run) = cli.transcript.clone() {
         let run = core_protocol::RunId(run);
-        let document = session_view::read_transcript(&cli.runs_dir, &run)?;
+        // Name the run AND the file the read failed on, the way `--fork` already does. Propagating
+        // the `RecordError` unchanged printed `io: <errno text>: <errno text>` — the `#[from]` source
+        // repeated by anyhow's alternate Display — with nothing a reader could act on.
+        let document = session_view::read_transcript(&runs_dir, &run).map_err(|error| {
+            anyhow::anyhow!(
+                "cannot read run {run} at {}: {error}",
+                runs_dir.join(format!("{run}.jsonl")).display()
+            )
+        })?;
         if cli.output_format.is_machine() {
             println!("{}", serde_json::to_string(&document)?);
         } else {
@@ -424,20 +516,24 @@ async fn run_cli() -> anyhow::Result<u8> {
         return Ok(output::EXIT_SUCCESS);
     }
     if cli.sessions {
+        // `--sessions` says "in this repo" and now means it: the same recorded-cwd scope
+        // `--continue` selects on. The listing is also a page, not a linear dump — the runs dir
+        // grows without bound and had no ceiling on this path at all.
+        let limit = cli.limit.unwrap_or(session_view::MAX_SESSIONS_PER_PAGE);
         if cli.output_format.is_machine() {
-            let document = session_view::list_sessions(
-                &cli.runs_dir,
-                &tenant,
-                session_view::MAX_SESSIONS_PER_PAGE,
-            );
+            let document = session_view::list_sessions(&runs_dir, &tenant, Some(&repo), limit);
             println!("{}", serde_json::to_string(&document)?);
             return Ok(output::EXIT_SUCCESS);
         }
-        let metas = core_record::list(&cli.runs_dir, &tenant);
+        let metas = core_record::list_scoped(&runs_dir, &tenant, Some(&repo));
         if metas.is_empty() {
-            eprintln!("no sessions in {}", cli.runs_dir.display());
+            eprintln!(
+                "no sessions for {} in {}",
+                repo.display(),
+                runs_dir.display()
+            );
         } else {
-            for m in &metas {
+            for m in metas.iter().take(limit) {
                 let route = if m.provider_id.is_empty() {
                     m.model.clone()
                 } else {
@@ -452,19 +548,25 @@ async fn run_cli() -> anyhow::Result<u8> {
                     m.run_id, m.turns, route, cost, m.title
                 );
             }
+            if metas.len() > limit {
+                eprintln!(
+                    "showing the {limit} most recent of {} sessions; raise --limit or run `core prune`",
+                    metas.len()
+                );
+            }
         }
         return Ok(output::EXIT_SUCCESS);
     }
     if let Some(pid) = cli.fork.clone() {
         let parent = RunId(pid.clone());
-        let ppath = cli.runs_dir.join(format!("{parent}.jsonl"));
+        let ppath = runs_dir.join(format!("{parent}.jsonl"));
         let events = core_record::replay(&ppath)
             .map_err(|e| anyhow::anyhow!("cannot read run {pid}: {e}"))?;
         let at = events
             .last()
             .map(|e| e.seq)
             .ok_or_else(|| anyhow::anyhow!("run {pid} has no events to fork from"))?;
-        let child = core_record::fork(&cli.runs_dir, &parent, at, &tenant)?;
+        let child = core_record::fork(&runs_dir, &parent, at, &tenant)?;
         println!("forked {pid} -> {child}  (resume with --resume {child})");
         return Ok(output::EXIT_SUCCESS);
     }
@@ -755,7 +857,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     // defaults do not silently reinterpret an existing session.
     let resume_id = cli.resume.clone().or_else(|| {
         if cli.continue_recent {
-            match core_record::most_recent(&cli.runs_dir, &repo, &tenant).map(|run| run.0) {
+            match core_record::most_recent(&runs_dir, &repo, &tenant).map(|run| run.0) {
                 Some(id) => {
                     eprintln!("continuing most recent session in this repo: {id}");
                     Some(id)
@@ -775,13 +877,13 @@ async fn run_cli() -> anyhow::Result<u8> {
     let resumed_run = resume_id.as_ref().map(|id| RunId(id.clone()));
     let mut locked_resume = match &resumed_run {
         Some(run) => Some(
-            Rollout::open_existing(&cli.runs_dir, run, tenant.clone())
+            Rollout::open_existing(&runs_dir, run, tenant.clone())
                 .map_err(|error| anyhow::anyhow!("cannot resume {run}: {error}"))?,
         ),
         None => None,
     };
     if let Some(resume) = &resume_id {
-        let recorded = core_record::load_forked(&cli.runs_dir, &RunId(resume.clone()))?;
+        let recorded = core_record::load_forked(&runs_dir, &RunId(resume.clone()))?;
         let last_route = recorded.iter().rev().find_map(|event| match &event.kind {
             core_protocol::EventKind::ModelSelected {
                 provider_id,
@@ -940,7 +1042,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         }
     };
     let resume_messages = if resume_id.is_some() {
-        let path = cli.runs_dir.join(format!("{run}.jsonl"));
+        let path = runs_dir.join(format!("{run}.jsonl"));
         let msgs = Agent::messages_from_rollout(&path)?;
         eprintln!(
             "resuming {run}: {} messages reconstructed from the rollout",
@@ -959,7 +1061,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     };
     let rollout = match locked_resume.take() {
         Some(rollout) => rollout,
-        None => Rollout::open(&cli.runs_dir, &run, tenant.clone())?,
+        None => Rollout::open(&runs_dir, &run, tenant.clone())?,
     };
 
     let budget = Budget {
@@ -1476,11 +1578,7 @@ async fn run_workflow_command(
 
     // A relative `--runs-dir` resolves under the canonicalized repo so runs land in the project
     // regardless of the invoking cwd. `<workflows_dir>` holds one directory per run.
-    let runs_dir = if cli.runs_dir.is_absolute() {
-        cli.runs_dir.clone()
-    } else {
-        repo.join(&cli.runs_dir)
-    };
+    let runs_dir = resolve_runs_dir(cli, repo);
     let workflows_dir = runs_dir.join("subagents").join("workflows");
 
     // `list` — enumerate persisted runs; needs no provider or API key.

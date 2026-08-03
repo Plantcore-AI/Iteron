@@ -473,6 +473,14 @@ impl CatalogCache {
         if result.is_err() {
             let _ = fs::remove_file(&temporary_path);
         }
+        if result.is_ok() && file_name == CATALOG_CACHE_FILE {
+            // A cache-format bump renames the file, so every earlier generation just stayed in
+            // `~/.core/cache/providers` forever — a full stale catalog nobody reads and nothing
+            // deletes. Reclaim them once the current generation is durable on disk.
+            for superseded in 1..CATALOG_CACHE_VERSION {
+                let _ = fs::remove_file(parent.join(format!("catalogs-v{superseded}.json")));
+            }
+        }
         result
     }
 }
@@ -2400,6 +2408,34 @@ mod tests {
         let mut cache = CatalogCache::default();
         assert!(cache.upsert(entry, &scope_key));
         cache.save_atomic(path).unwrap();
+    }
+
+    /// I-46. A cache-format bump renames the file, so every earlier generation kept sitting in
+    /// `~/.core/cache/providers` holding a full stale catalog nobody reads. Writing the current
+    /// generation reclaims them, and touches nothing else in the directory.
+    #[test]
+    fn d11_46_writing_the_current_catalog_cache_reclaims_the_superseded_one() {
+        let path = test_cache_path("supersede");
+        let parent = path.parent().unwrap().to_path_buf();
+        fs::create_dir_all(&parent).unwrap();
+        let stale = parent.join("catalogs-v1.json");
+        fs::write(&stale, b"{\"version\":1,\"entries\":[]}").unwrap();
+        let unrelated = parent.join("something-else.json");
+        fs::write(&unrelated, b"{}").unwrap();
+
+        let source = catalogued_entry("supersede", "https://gateway.example/v1/", "gpt-4o-mini");
+        seed_cache(&path, &source);
+
+        assert!(path.is_file(), "the current generation is written");
+        assert!(
+            !stale.exists(),
+            "the superseded generation must not sit beside it forever"
+        );
+        assert!(
+            unrelated.exists(),
+            "only Core's own superseded caches are reclaimed"
+        );
+        remove_test_cache(&path);
     }
 
     #[test]

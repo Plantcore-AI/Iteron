@@ -120,7 +120,7 @@ fn with_session_index_lock_timeout<T, F>(
 where
     F: FnOnce() -> io::Result<T>,
 {
-    std::fs::create_dir_all(runs_dir)?;
+    crate::create_state_dir(runs_dir)?;
     let lock_path = runs_dir.join(SESSION_INDEX_LOCK_FILE);
     let file = OpenOptions::new()
         .create(true)
@@ -166,17 +166,36 @@ impl Drop for SessionIndexLock {
 }
 
 pub(crate) fn atomic_replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    atomic_replace_with(path, bytes, |_| Ok(()))
+    atomic_replace_with(path, bytes, true, |_| Ok(()))
+}
+
+/// [`atomic_replace`] for one member of a batch: the file's own bytes are still fsynced before the
+/// rename, but the containing directory is not. The caller MUST call [`sync_dir`] once after the
+/// batch, or a crash can leave the renames undurable. Rewriting N sidecars one directory sync at a
+/// time is what made a full reindex 91% blocking fsync.
+pub(crate) fn atomic_replace_deferring_dir_sync(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    atomic_replace_with(path, bytes, false, |_| Ok(()))
+}
+
+/// Make every rename performed in `dir` durable. The batch counterpart of the per-write directory
+/// sync [`atomic_replace`] does inline.
+pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
+    sync_directory(dir)
 }
 
 #[cfg(test)]
 pub(crate) fn fail_before_rename(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    atomic_replace_with(path, bytes, |_| {
+    atomic_replace_with(path, bytes, true, |_| {
         Err(io::Error::other("injected crash before rename"))
     })
 }
 
-fn atomic_replace_with<F>(path: &Path, bytes: &[u8], before_rename: F) -> io::Result<()>
+fn atomic_replace_with<F>(
+    path: &Path,
+    bytes: &[u8],
+    sync_parent: bool,
+    before_rename: F,
+) -> io::Result<()>
 where
     F: FnOnce(&Path) -> io::Result<()>,
 {
@@ -197,7 +216,9 @@ where
     drop(file);
     std::fs::rename(&temp_path, path)?;
     cleanup.0 = None;
-    sync_directory(parent)?;
+    if sync_parent {
+        sync_directory(parent)?;
+    }
     Ok(())
 }
 

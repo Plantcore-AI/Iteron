@@ -86,13 +86,13 @@ fn listing_degrades_to_replay_and_reports_truncation() {
         write_run(&runs.0, &RunId(format!("run-{index}")), &["hi"]);
     }
     // No `sessions.index` is written by this path, so the listing is already the degraded one.
-    let all = list_sessions(&runs.0, &TenantId::default(), MAX_SESSIONS_PER_PAGE);
+    let all = list_sessions(&runs.0, &TenantId::default(), None, MAX_SESSIONS_PER_PAGE);
     assert_eq!(all.schema_version, SESSION_VIEW_SCHEMA_VERSION);
     assert_eq!(all.total, 3, "the replay path still answers");
     assert!(!all.truncated);
     assert_eq!(all.sessions.len(), 3);
 
-    let paged = list_sessions(&runs.0, &TenantId::default(), 2);
+    let paged = list_sessions(&runs.0, &TenantId::default(), None, 2);
     assert_eq!(paged.total, 3);
     assert!(paged.truncated, "a page must say it is a page");
     assert_eq!(paged.sessions.len(), 2);
@@ -103,7 +103,7 @@ fn listing_degrades_to_replay_and_reports_truncation() {
 fn the_page_bound_cannot_be_exceeded_by_the_caller() {
     let runs = runs_dir("bound");
     write_run(&runs.0, &RunId("only".into()), &["hi"]);
-    let document = list_sessions(&runs.0, &TenantId::default(), usize::MAX);
+    let document = list_sessions(&runs.0, &TenantId::default(), None, usize::MAX);
     assert_eq!(document.sessions.len(), 1);
     assert!(!document.truncated);
 }
