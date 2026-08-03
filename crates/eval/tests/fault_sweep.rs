@@ -152,7 +152,9 @@ case "$prompt" in
         ;;
     stalled)
         printf '%s\n' 'injected fake-core stall' >&2
-        sleep 10
+        # Must outlast `run_timeout` by a wide margin, so these cells still time out even when a
+        # loaded machine starts them late. See the note on `run_timeout` (#108).
+        sleep 30
         ;;
     wrong-fix)
         printf 'wrong\n' > "$workspace/status.txt"
@@ -290,13 +292,30 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
         purpose: EvaluationPurpose::Score,
         seeds: 1,
         minimum_seeds: 1,
-        run_timeout: Duration::from_secs(1),
+        // Two constraints pull this value in opposite directions, so it is documented rather
+        // than tuned by feel (#108).
+        //
+        // Too LOW and the near-instant fixtures lose a race: the budget covers the whole cell,
+        // including the workspace checkout and the `/bin/sh` spawn, so under parallel load that
+        // spend can exceed it before `malformed`'s truncated JSON is ever parsed. The runner then
+        // classifies the cell `TimedOut`, which is a correct description of what happened -- the
+        // assertion below is what was wrong, not the runner. Measured at 1s: 5 failures out of 5
+        // on a busy machine, green on an idle one, on an unmodified tree.
+        //
+        // Too HIGH and the `stalled` fixture stops terminating inside the outer bound, because
+        // the same knob is what makes those cells time out at all.
+        //
+        // 8s clears the first with room for a loaded machine, and `stalled` sleeps well past it.
+        // Cells run concurrently (`workers: 50`), so wall time tracks the slowest cell rather
+        // than their sum, and the outer bound below stays comfortable.
+        run_timeout: Duration::from_secs(8),
         checkout_timeout: Duration::from_secs(5),
         oracle_timeout: Duration::from_secs(2),
         max_turns: 4,
     };
 
-    let manifest = tokio::time::timeout(Duration::from_secs(20), run_evaluation(&options))
+    // Cells run concurrently, so this bounds the slowest cell plus overhead, not 24 x run_timeout.
+    let manifest = tokio::time::timeout(Duration::from_secs(60), run_evaluation(&options))
         .await
         .expect("the complete fault sweep must remain bounded")
         .expect("cell failures belong in the artifact, not the top-level result");
