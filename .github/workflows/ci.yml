@@ -275,6 +275,31 @@ jobs:
       - name: test
         run: cargo test --workspace --all-targets --locked
 
+  # Non-blocking by construction (`continue-on-error`). The suite has 1613 functional tests and
+  # not one wall-clock bound, so a one-line concurrency hazard — a lock held across an await, an
+  # fsync moved into a loop — merges green (I-57). This replays a fixed script against the
+  # loopback fixture provider and asserts a loose ceiling on `kernel_tax`, the harness's own
+  # admission/broker/fsync microseconds, so the provider contributes nothing to the number. The
+  # budget sits at 1.75x an observed min-of-5 floor: a 2x regression fails it, ordinary variance
+  # does not. `CORE_HARNESS_TAX_BUDGET_US` re-bases it if this runner is simply slower.
+  harness-latency:
+    name: perf / harness latency
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: install pinned Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      # `--ignored` is the whole gate: the merge lane never spends wall-clock time on timing, and
+      # this job never blocks a merge on a runner having a bad minute.
+      - name: harness-attributable latency budget
+        run: >-
+          cargo test --locked -p core-cli --test harness_latency --
+          --ignored --nocapture
+
   evolution-gate:
     name: gate / evolution
     runs-on: ubuntu-24.04

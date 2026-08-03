@@ -16,6 +16,55 @@ use core_provider::{
     StreamItem, TurnRequest, TurnResult,
 };
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// What a retrying decorator absorbed on behalf of its callers.
+///
+/// Before this existed the attempt counter was a `turn`-local `u32` and the waiting was a bare
+/// `sleep`, so a turn that spent a second in backoff and a turn that answered immediately were
+/// indistinguishable in every record and every summary (I-65). These two numbers are the whole
+/// difference: how many attempts were paid for a single logical turn, and how long the scheduler
+/// made the caller wait for them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RetryAccounting {
+    /// Retried attempts, i.e. one less than the attempts made for every turn that was retried.
+    pub retries: u64,
+    /// Total time slept in backoff. Microseconds, because a jittered first backoff is routinely
+    /// under a millisecond and a millisecond counter would report it as free.
+    pub backoff_us: u64,
+}
+
+impl RetryAccounting {
+    /// Backoff in whole milliseconds, rounded up. A non-zero wait never reports as `0`.
+    pub const fn backoff_ms_ceil(self) -> u64 {
+        self.backoff_us.div_ceil(1_000)
+    }
+}
+
+/// Cumulative, lock-free counters shared with whoever wants to read them. A retry decorator may
+/// be shared by concurrent turns, so this is deliberately additive rather than per-turn state.
+#[derive(Debug, Default)]
+pub struct RetryObservations {
+    retries: AtomicU64,
+    backoff_us: AtomicU64,
+}
+
+impl RetryObservations {
+    fn record_backoff(&self, delay: std::time::Duration) {
+        self.retries.fetch_add(1, Ordering::Relaxed);
+        self.backoff_us.fetch_add(
+            u64::try_from(delay.as_micros()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn snapshot(&self) -> RetryAccounting {
+        RetryAccounting {
+            retries: self.retries.load(Ordering::Relaxed),
+            backoff_us: self.backoff_us.load(Ordering::Relaxed),
+        }
+    }
+}
 
 pub struct RetryProvider {
     inner: Box<dyn Provider>,
@@ -26,6 +75,9 @@ pub struct RetryProvider {
     /// A synchronous probe so tests can observe backoff without sleeping. When set it
     /// short-circuits the clock; production paths leave it `None` and wait on the port.
     sleep_hook: Option<Box<dyn Fn(std::time::Duration) + Send + Sync>>,
+    /// The trace backoff used to leave behind: every retried attempt and every microsecond
+    /// waited, readable by a ledger without instrumenting the provider itself (I-65).
+    observations: Arc<RetryObservations>,
 }
 
 impl RetryProvider {
@@ -46,10 +98,26 @@ impl RetryProvider {
             policy,
             clock,
             sleep_hook: None,
+            observations: Arc::new(RetryObservations::default()),
         }
     }
 
+    /// The live retry counters. Cloning the handle is how a host folds backoff into its ledger
+    /// without owning the decorator or reaching through the `Provider` trait object.
+    pub fn observations(&self) -> Arc<RetryObservations> {
+        Arc::clone(&self.observations)
+    }
+
+    /// Cumulative retries and total waiting so far.
+    pub fn accounting(&self) -> RetryAccounting {
+        self.observations.snapshot()
+    }
+
     async fn sleep(&self, d: std::time::Duration) {
+        // Counted before the wait, not after: a turn cancelled mid-backoff still waited, and a
+        // counter that only credited completed sleeps would report exactly the pathological case
+        // as free.
+        self.observations.record_backoff(d);
         if let Some(h) = &self.sleep_hook {
             h(d);
         } else {
@@ -432,6 +500,88 @@ mod tests {
             3,
             "backed off before each retry"
         );
+    }
+
+    /// I-65: the retried attempts and the waiting used to be a `turn`-local `u32` and a bare
+    /// `sleep`, so a turn that survived three 429s reported exactly what an instant turn did.
+    #[tokio::test]
+    async fn a_retried_turn_reports_its_attempts_and_the_time_it_waited() {
+        let mut rp = RetryProvider::new(
+            Box::new(Flaky {
+                calls: AtomicU32::new(0),
+                fail_n: 3,
+            }),
+            BackoffPolicy {
+                base_ms: 4,
+                cap_ms: 8,
+                max_attempts: 6,
+            },
+        );
+        // Full jitter can pick a sub-millisecond delay, so pin the wait instead of racing a
+        // real clock: the assertion is that waiting is counted at all, not how long it was.
+        rp.sleep_hook = Some(Box::new(|_| {}));
+        let observations = rp.observations();
+        assert_eq!(observations.snapshot(), RetryAccounting::default());
+
+        let req = TurnRequest {
+            model: "m".into(),
+            system: "s".into(),
+            messages: vec![],
+            input_images: Vec::new(),
+            tools: vec![],
+            max_tokens: 10,
+            cache_system: false,
+            thinking_budget: 0,
+            reasoning_effort: core_protocol::ReasoningEffort::Low,
+        };
+        assert!(rp.turn(&req, &mut |_| {}).await.is_ok());
+
+        let accounting = rp.accounting();
+        assert_eq!(
+            accounting.retries, 3,
+            "three retried attempts were paid for one logical turn"
+        );
+        assert!(
+            accounting.backoff_us > 0,
+            "the turn waited in backoff and the record must be able to say so"
+        );
+        assert!(
+            accounting.backoff_ms_ceil() >= 1,
+            "a sub-millisecond wait rounds up rather than reporting as free"
+        );
+        assert_eq!(
+            observations.snapshot(),
+            accounting,
+            "the shared handle and the decorator report the same counters"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_never_retried_reports_no_backoff() {
+        let rp = RetryProvider::new(
+            Box::new(Flaky {
+                calls: AtomicU32::new(0),
+                fail_n: 0,
+            }),
+            BackoffPolicy {
+                base_ms: 1,
+                cap_ms: 2,
+                max_attempts: 6,
+            },
+        );
+        let req = TurnRequest {
+            model: "m".into(),
+            system: "s".into(),
+            messages: vec![],
+            input_images: Vec::new(),
+            tools: vec![],
+            max_tokens: 10,
+            cache_system: false,
+            thinking_budget: 0,
+            reasoning_effort: core_protocol::ReasoningEffort::Low,
+        };
+        assert!(rp.turn(&req, &mut |_| {}).await.is_ok());
+        assert_eq!(rp.accounting(), RetryAccounting::default());
     }
 
     #[tokio::test]

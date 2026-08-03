@@ -88,6 +88,37 @@ enum LocalCommand {
         #[command(subcommand)]
         action: WorkflowAction,
     },
+    /// Produce the operator pricing material a USD ceiling and a cost display require.
+    Pricing {
+        #[command(subcommand)]
+        action: PricingAction,
+    },
+}
+
+/// `core pricing …` — the shipped path from "I know what this model costs" to a run that reports a
+/// dollar figure.
+///
+/// Rate cards default to empty, so the pricing port is never installed and any positive `--max-usd`
+/// aborts at startup. Producing a card requires two route digests, a content digest and an HMAC
+/// signature, and the routine that computes the last two was a library function with no subcommand
+/// anywhere — so no public user could ever reach a priced run (I-40).
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+enum PricingAction {
+    /// Print the exact route a rate card must pin for the selected provider and model.
+    PrintDigests,
+    /// Sign an operator-authored rate card and print the `rate_cards[]` entry that installs it.
+    Sign {
+        /// Unsigned rate-card JSON: `{version, route, provenance, issued_at_unix_secs,
+        /// expires_at_unix_secs, rates}`. Use `-` to read stdin.
+        card: PathBuf,
+        /// Environment variable holding exactly 32 bytes of hexadecimal HMAC key material. Only
+        /// the NAME is written to the configuration; the bytes never leave this process.
+        #[arg(long, default_value = "CORE_PRICING_KEY")]
+        key_env: String,
+        /// Signer identity recorded on the artifact.
+        #[arg(long, default_value = "pricing-root-v1")]
+        signer_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -365,6 +396,13 @@ async fn run_cli() -> anyhow::Result<u8> {
     if let Some(LocalCommand::Workflow { action }) = &cli.command {
         let user_file = FileConfig::load_user()?;
         return run_workflow_command(&cli, &repo, &user_file, action).await;
+    }
+
+    // `core pricing …` — operator tooling. It opens no rollout and admits no provider effect, so
+    // it branches out before the agent machinery exactly like `workflow` does.
+    if let Some(LocalCommand::Pricing { action }) = &cli.command {
+        let user_file = FileConfig::load_user()?;
+        return run_pricing_command(&cli, &user_file, action).await;
     }
 
     let mut registry = Registry::coding_agent(&repo)?;
@@ -897,8 +935,19 @@ async fn run_cli() -> anyhow::Result<u8> {
         .transpose()?
         .flatten();
     if max_usd.is_some_and(|ceiling| ceiling > 0.0) && selected_rate_card.is_none() {
+        // Say how to fix it. This refusal is correct — an unpriced ceiling is not a ceiling — but
+        // without a route to the tooling it reads as "this feature is not for you" (I-40).
         anyhow::bail!(
-            "cannot enforce the requested USD ceiling: the exact selected route has no active verified rate card"
+            "cannot enforce the requested USD ceiling: the exact selected route has no active verified rate card.\n\
+             Produce one with `core pricing print-digests` (the route to pin) then `core pricing sign <card.json>`,\n\
+             and install the printed object under `rate_cards` in ~/.core/config.json."
+        );
+    }
+    if pricing_port.is_some() && selected_rate_card.is_none() && !cli.output_format.is_machine() {
+        // The operator configured cards and none of them matched this route — almost always a
+        // digest that moved. Naming the cause beats leaving the run silently unpriced (I-40).
+        eprintln!(
+            "note: rate cards are configured but none is active for this exact route, so this run reports token usage and no cost. `core pricing print-digests` prints the route to sign."
         );
     }
 
@@ -1437,6 +1486,91 @@ fn build_workflow_spawner(
     cx.model_max_output_tokens = caps.max_output_tokens;
     cx.context_home_dir = std::env::var_os("HOME").map(std::path::PathBuf::from);
     std::sync::Arc::new(runtime::KernelSpawner::new(cx))
+}
+
+/// `core pricing <print-digests|sign>` — the shipped path to a priced run (I-40).
+///
+/// Neither action opens a rollout, admits a provider effect, or spends a token. `print-digests`
+/// resolves the same route the agent would record and prints it; `sign` turns an operator-authored
+/// card into the exact configuration entry that installs it. Together they close the gap that made
+/// cost display and the USD ceiling unreachable for every public user.
+async fn run_pricing_command(
+    cli: &Cli,
+    user_file: &FileConfig,
+    action: &PricingAction,
+) -> anyhow::Result<u8> {
+    match action {
+        PricingAction::PrintDigests => {
+            // Same trusted precedence as a run (CLI > env > user config > built-in): a route
+            // printed from different inputs than the one recorded would sign the wrong card.
+            let configured_providers = user_file.providers.clone().unwrap_or_default();
+            let (provider_name, _origin) = config::pick_trusted_string(
+                cli.provider.clone(),
+                config::env_string("CORE_PROVIDER"),
+                user_file.provider.clone(),
+                BUILTIN_DEFAULT_PROVIDER,
+            );
+            let directory = providers::ProviderDirectory::discover(&configured_providers).await?;
+            let requested_model = cli
+                .model
+                .clone()
+                .or_else(|| config::env_string("CORE_MODEL"))
+                .or_else(|| user_file.model.clone());
+            let selection = match requested_model.as_deref() {
+                Some(model_id) => directory
+                    .resolve_model(model_id, Some(&provider_name))
+                    .map_err(|error| anyhow::anyhow!("cannot resolve model: {error}"))?,
+                None => directory.default_selection(&provider_name).ok_or_else(|| {
+                    anyhow::anyhow!("provider `{provider_name}` has no selectable model")
+                })?,
+            };
+            let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
+            let route = core_protocol::PricingRoute {
+                provider_id: selection.provider_id.clone(),
+                model_id: selection.model_id.clone(),
+                catalog_digest,
+                capability_digest,
+            };
+            println!("{}", serde_json::to_string_pretty(&route)?);
+            eprintln!(
+                "this is the `route` of a rate card for {}/{}. Both digests pin the exact catalog \
+and capability evidence recorded at selection time; a card signed for a different route is not \
+resolved and the run stays unpriced.",
+                route.provider_id, route.model_id
+            );
+            Ok(output::EXIT_SUCCESS)
+        }
+        PricingAction::Sign {
+            card,
+            key_env,
+            signer_id,
+        } => {
+            let raw = if card.as_os_str() == "-" {
+                std::io::read_to_string(std::io::stdin().lock())?
+            } else {
+                std::fs::read_to_string(card)
+                    .map_err(|error| anyhow::anyhow!("rate card {}: {error}", card.display()))?
+            };
+            let rate_card: core_protocol::RateCard =
+                serde_json::from_str(&raw).map_err(|error| {
+                    anyhow::anyhow!("rate card is not a valid unsigned RateCard document: {error}")
+                })?;
+            let key_material = std::env::var(key_env).map_err(|_| {
+                anyhow::anyhow!("pricing key environment variable `{key_env}` is not set")
+            })?;
+            let entry = pricing::sign_config_entry(rate_card, signer_id, key_env, &key_material)?;
+            // Validate what we are about to hand the operator through the same gate the loader
+            // uses, so a card cannot be published here and rejected at startup.
+            pricing::validate_rate_card_configs(std::slice::from_ref(&entry))
+                .map_err(anyhow::Error::msg)?;
+            println!("{}", serde_json::to_string_pretty(&entry)?);
+            eprintln!(
+                "append this object to `rate_cards` in ~/.core/config.json and export `{key_env}`. \
+Only the variable NAME is written; the key bytes stay in your environment."
+            );
+            Ok(output::EXIT_SUCCESS)
+        }
+    }
 }
 
 /// `core workflow <run|list|resume|watch>` — the ultracode-workflow surface. `run`/`resume`/`watch`

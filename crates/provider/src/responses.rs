@@ -1246,7 +1246,11 @@ fn parse_usage(response: &serde_json::Value) -> Result<UsageReport, ProviderErro
     let input = total_input.checked_sub(cache_read).ok_or_else(|| {
         ProviderError::Decode("Responses cached tokens exceeded total input tokens".into())
     })?;
-    Ok(UsageReport::complete(Usage {
+    // The Responses usage schema has no cache-creation member at all: `input_tokens_details`
+    // carries `cached_tokens` and nothing about what wrote them. A `cache_creation: 0` here is
+    // therefore the struct default, not a measurement, and the report says so rather than letting
+    // pricing charge a cache-write rate against a constant zero (I-52).
+    Ok(UsageReport::cache_creation_unreported(Usage {
         input,
         output: required_u64(usage, "output_tokens")?,
         cache_creation: 0,
@@ -1354,6 +1358,11 @@ impl Provider for OpenAiResponses {
 
         let response_retry_after = crate::retry_after_from_headers(response.headers());
         let response_request_id = crate::request_id_from_headers(response.headers());
+        // Quota state is on the success headers, so it is knowable here — before a single token
+        // has arrived and long before the 429 that used to be its first symptom (I-53).
+        if let Some(snapshot) = crate::rate_limit_from_headers(response.headers()) {
+            on_item(StreamItem::RateLimit(snapshot));
+        }
         let mut stream = response.bytes_stream();
         let mut decoder = SseDecoder::default();
         let mut parser =
@@ -1764,8 +1773,10 @@ mod tests {
         assert_eq!(state.format, OPENAI_RESPONSES_OUTPUT_FORMAT);
         assert_eq!(state.payload, expected_native);
         assert!(matches!(&blocks[1], Block::ToolUse(tool) if tool.id == "call_1"));
-        let UsageReport::Complete(usage) = usage else {
-            panic!("fixture supplies complete usage");
+        // The Responses schema has no cache-creation member, so the report names that gap
+        // instead of claiming a measured zero (I-52).
+        let UsageReport::CacheCreationUnreported(usage) = usage else {
+            panic!("fixture supplies usage for every class the Responses schema carries");
         };
         assert_eq!(usage.cache_read, 40);
         assert!(parser.finish().is_ok());
@@ -1858,7 +1869,9 @@ mod tests {
         );
         assert_eq!(
             *usage,
-            UsageReport::complete(Usage {
+            // Not `complete`: the Responses usage schema reports nothing about cache writes, so
+            // `cache_creation: 0` here is the struct default and must never be priced (I-52).
+            UsageReport::cache_creation_unreported(Usage {
                 input: 60,
                 output: 25,
                 cache_creation: 0,
@@ -1866,6 +1879,7 @@ mod tests {
                 thinking: 7
             })
         );
+        assert!(!usage.cache_creation_reported());
     }
 
     #[test]

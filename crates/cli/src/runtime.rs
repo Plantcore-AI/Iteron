@@ -67,6 +67,17 @@ const VERSION_MISMATCH_SUBMISSION_NOTICE: &str =
     "submission rejected: the frontend and Core use different SQ/EQ protocol versions";
 const INCOMPLETE_USAGE_NOTICE: &str =
     "provider completed the turn without an authoritative usage report; cost is unknown";
+/// I-52: the route reported usage but named no cache-creation count, and the bound card charges a
+/// cache-write rate. Pricing the missing count as a measured zero would report the turn as free.
+const UNPRICEABLE_CACHE_CREATION_NOTICE: &str = "this route does not report cache-creation tokens \
+and the bound rate card charges for them; the turn is unpriced rather than priced as free";
+/// Appended to the partial answer a failed stream left behind, so the record — and the model, on
+/// resume — can tell an interrupted response from a finished one (I-39).
+const INTERRUPTED_STREAM_MARKER: &str =
+    "[interrupted: the provider stream ended before this response was complete]";
+/// Ceiling on the partial answer preserved from an interrupted stream. Generous enough for a real
+/// response, bounded because the bytes come from the provider.
+const INTERRUPTED_STREAM_MAX_BYTES: usize = 256 * 1024;
 const IMAGE_INPUT_UNSUPPORTED_NOTICE: &str = "image attachments were omitted because the selected \
 provider does not support image input; continuing with text only";
 const PROVIDER_RUN_NOTICE_LABEL: &str = "provider run notice";
@@ -2024,6 +2035,10 @@ pub struct Agent {
     /// remains source-compatible, but swapping its Arc without recording a new selection is not an
     /// admissible route change.
     selected_provider: Option<std::sync::Arc<dyn Provider>>,
+    /// The most recent quota the provider published on its response headers. Read before the
+    /// first token of the answer, so a shrinking budget is visible while there is still time to
+    /// act on it rather than only after the 429 that already cost a request (I-53).
+    last_rate_limit: Option<core_provider::RateLimitSnapshot>,
     /// Injected, pure pricing strategy port. Its concrete implementation owns trust material; the
     /// kernel stores neither HMAC bytes nor a price table.
     pricing_port: Option<std::sync::Arc<dyn PricingPort>>,
@@ -2222,6 +2237,7 @@ impl Agent {
             model,
             selected_route: None,
             selected_provider: None,
+            last_rate_limit: None,
             pricing_port: None,
             pricing: None,
             usd_budget,
@@ -2297,6 +2313,13 @@ impl Agent {
     /// Effective full rule snapshot.
     pub fn permission_rules(&self) -> &PermissionRules {
         &self.permission_rules
+    }
+
+    /// The quota the provider last published on its response headers, or `None` when this route
+    /// publishes none. Read before the first token of the answer, so a frontend can show a
+    /// shrinking budget before the rejection rather than after it (I-53).
+    pub fn last_rate_limit(&self) -> Option<core_provider::RateLimitSnapshot> {
+        self.last_rate_limit
     }
 
     /// Bind an admitted task envelope. Repeated calls only narrow the previous ceiling.
@@ -2694,7 +2717,14 @@ impl Agent {
         model_ms: u64,
         projected_at_unix_secs: u64,
         stream: StreamTiming,
+        cache_creation_reported: bool,
     ) -> Result<(), KernelError> {
+        // A rate that is never charged cannot be misapplied, so an unreported cache-creation count
+        // only makes the turn unpriceable when the bound card actually bills for cache writes.
+        let unpriceable_cache_creation = !cache_creation_reported
+            && self.pricing.as_ref().is_some_and(|signed| {
+                signed.rate_card.rates.cache_creation_microusd_per_million > 0
+            });
         let projection_identity = CostProjectionIdentity {
             tenant_id: self.rollout.tenant().0.clone(),
             run_id: self.rollout.run_id().0.clone(),
@@ -2703,7 +2733,7 @@ impl Agent {
             attribution: self.projection_attribution.clone(),
         };
         let projection = match (&self.pricing_port, &self.pricing) {
-            (Some(port), Some(rate_card)) => Some(port.project(
+            (Some(port), Some(rate_card)) if !unpriceable_cache_creation => Some(port.project(
                 rate_card,
                 projection_identity.clone(),
                 usage,
@@ -2722,6 +2752,20 @@ impl Agent {
         ) {
             self.mark_usd_unknown();
             return Err(error);
+        }
+        if unpriceable_cache_creation {
+            // Say why, on the record, before the ledger reports an unpriced turn. A silent
+            // downgrade to "unknown" is indistinguishable from a missing rate card.
+            if let Err(error) = self.emit_durable(
+                turn,
+                EventKind::Notice {
+                    text: UNPRICEABLE_CACHE_CREATION_NOTICE.into(),
+                },
+            ) {
+                self.mark_usd_unknown();
+                return Err(error);
+            }
+            self.ui(UiEvent::Notice(UNPRICEABLE_CACHE_CREATION_NOTICE.into()));
         }
         self.ledger.turn(&usage, model_ms);
         let projection = match projection.transpose() {
@@ -2797,8 +2841,15 @@ impl Agent {
         stream: StreamTiming,
     ) -> Result<Option<core_protocol::Usage>, KernelError> {
         match report {
-            UsageReport::Complete(usage) => {
-                self.complete_provider_turn(turn, usage, model_ms, projected_at_unix_secs, stream)?;
+            UsageReport::Complete(usage) | UsageReport::CacheCreationUnreported(usage) => {
+                self.complete_provider_turn(
+                    turn,
+                    usage,
+                    model_ms,
+                    projected_at_unix_secs,
+                    stream,
+                    report.cache_creation_reported(),
+                )?;
                 Ok(Some(usage))
             }
             UsageReport::Incomplete { .. } => {
@@ -3755,6 +3806,61 @@ impl Agent {
 
     /// Record a transcript message AND push it onto the working set — the two must stay in
     /// lockstep so the rollout is a complete, resumable record.
+    /// Durably preserve what a failed turn had already streamed (I-39).
+    ///
+    /// A mid-stream disconnect used to return before the assistant message was appended, so every
+    /// token the operator had watched arrive was destroyed by the failure that interrupted it —
+    /// and only 429/529 are retried, so a connection reset, a DNS failure, a VPN drop and the
+    /// stream idle timeout all took that path. Worse, the `Text`/`Thinking` delta events the
+    /// frozen schema declares had no producer anywhere, so streamed text had no durable channel
+    /// at all.
+    ///
+    /// This is that channel, and it writes two different things for two different readers:
+    /// the coalesced deltas are what was on screen, and the interrupted assistant message is what
+    /// resume and rewind replay into the next request. Both are bounded, both are emitted only on
+    /// this path, and neither claims usage: **no billing semantics change here**. An append
+    /// failure is swallowed on purpose — the provider error is the one worth reporting, and
+    /// losing the record of a partial answer must not also lose the reason it was partial.
+    fn preserve_interrupted_stream(
+        &mut self,
+        turn: TurnId,
+        messages: &mut Vec<Message>,
+        text: &str,
+        thinking: &str,
+    ) {
+        if text.is_empty() && thinking.is_empty() {
+            return;
+        }
+        if !thinking.is_empty() {
+            let _ = self.emit_durable(
+                turn,
+                EventKind::Thinking {
+                    delta: strict_utf8_head(thinking, INTERRUPTED_STREAM_MAX_BYTES),
+                },
+            );
+        }
+        if text.is_empty() {
+            return;
+        }
+        let delta = strict_utf8_head(text, INTERRUPTED_STREAM_MAX_BYTES);
+        let _ = self.emit_durable(
+            turn,
+            EventKind::Text {
+                delta: delta.clone(),
+            },
+        );
+        // The marker is inside the text, not beside it: an assistant message that resume replays
+        // must tell the model where its own answer stopped, and a sibling field would be dropped
+        // the moment the transcript is serialized for a provider.
+        let interrupted = Message {
+            role: Role::Assistant,
+            content: vec![Block::Text {
+                text: format!("{delta}\n\n{INTERRUPTED_STREAM_MARKER}"),
+            }],
+        };
+        let _ = self.commit_message(turn, messages, interrupted);
+    }
+
     fn commit_message(
         &mut self,
         turn: TurnId,
@@ -4774,14 +4880,31 @@ impl Agent {
             // rather than consuming an average this layer pre-computed.
             let mut first_item_at: Option<Instant> = None;
             let mut stream_items: u32 = 0;
+            // I-39: what the model has already said. A mid-stream failure used to return before
+            // the assistant message was appended, so a connection reset destroyed every token the
+            // operator had already watched arrive — and the declared `EventKind::Text`/`Thinking`
+            // deltas had no producer anywhere, leaving streamed text with no durable channel at
+            // all. This buffer is that channel, bounded by the same output ceiling the turn is.
+            let mut streamed_text = String::new();
+            let mut streamed_thinking = String::new();
+            // I-53: transport metadata, captured here and folded into the agent after the turn.
+            let mut observed_rate_limit: Option<core_provider::RateLimitSnapshot> = None;
 
             let mut on_item = |item: StreamItem| {
+                // Quota is read from the response headers, not produced by the model. Counting it
+                // would make time-to-first-token report the moment the headers landed and turn
+                // every stalled prefill into an apparently instant one (#103, I-64).
+                if let StreamItem::RateLimit(snapshot) = item {
+                    observed_rate_limit = Some(snapshot);
+                    return;
+                }
                 if first_item_at.is_none() {
                     first_item_at = Some(Instant::now());
                 }
                 stream_items = stream_items.saturating_add(1);
                 match item {
                     StreamItem::TextDelta(t) => {
+                        streamed_text.push_str(&t);
                         if let Some(tx) = &ui_tx {
                             // Scrub secrets before the assistant text crosses the UI seam (ADR-015 R1):
                             // the record already masks the committed Block::Text, but the live UI / /export
@@ -4791,6 +4914,7 @@ impl Agent {
                         }
                     }
                     StreamItem::ThinkingDelta(t) => {
+                        streamed_thinking.push_str(&t);
                         if let Some(tx) = &ui_tx {
                             let _ = tx.send(UiEvent::Thinking(core_record::redact::scrub(&t)));
                         }
@@ -4845,7 +4969,9 @@ impl Agent {
                             deferred.push((idx, tu));
                         }
                     }
-                    StreamItem::TurnComplete { .. } => {}
+                    // Returned above, before the first-token clock; repeated here only because
+                    // the match is exhaustive by design.
+                    StreamItem::RateLimit(_) | StreamItem::TurnComplete { .. } => {}
                 }
             };
 
@@ -4856,6 +4982,9 @@ impl Agent {
                 Some(refusal) => Err(refusal),
                 None => self.bounded_provider_turn(&req, &mut on_item).await,
             };
+            if let Some(snapshot) = observed_rate_limit {
+                self.last_rate_limit = Some(snapshot);
+            }
             if let Some(ticket) = provider_ticket {
                 let settlement = provider_settlement(turn_id, provider_ordinal, &provider_result);
                 let broker_started = Instant::now();
@@ -4874,6 +5003,13 @@ impl Agent {
                         handle.abort();
                         let _ = handle.await;
                     }
+                    // Before the error leaves: keep what the model already said (I-39).
+                    self.preserve_interrupted_stream(
+                        turn_id,
+                        &mut messages,
+                        &streamed_text,
+                        &streamed_thinking,
+                    );
                     if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
                         return Ok(outcome);
                     }
@@ -9531,6 +9667,147 @@ mod gate_integration_tests {
         drop(parent);
         let _ = std::fs::remove_dir_all(parent_ws);
         let _ = std::fs::remove_dir_all(child_ws);
+    }
+
+    /// Streams real content and then dies mid-stream, exactly like a reset connection, a dropped
+    /// VPN or the 120s stream idle timeout — none of which are retryable, all of which used to
+    /// destroy everything the operator had already watched arrive.
+    struct DiesMidStream;
+
+    #[async_trait::async_trait]
+    impl Provider for DiesMidStream {
+        async fn turn(
+            &self,
+            _req: &TurnRequest,
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            on_item(StreamItem::ThinkingDelta("weighing the options".into()));
+            on_item(StreamItem::TextDelta("the answer begins ".into()));
+            on_item(StreamItem::TextDelta("and continues".into()));
+            Err(ProviderError::Http("connection reset by peer".into()))
+        }
+    }
+
+    /// I-39: a mid-stream failure returned before the assistant message was appended, so a
+    /// connection reset discarded every token already streamed — and the `Text`/`Thinking` delta
+    /// events the frozen schema declares had no producer anywhere, leaving streamed text with no
+    /// durable channel at all. Both halves of that are asserted here.
+    #[tokio::test]
+    async fn a_mid_stream_failure_leaves_the_partial_answer_in_the_record_marked_interrupted() {
+        let ws = temp_ws("mid-stream-failure-preserves-partial");
+        let runs = ws.join(".core/runs");
+        let run = core_protocol::RunId("mid-stream-failure-preserves-partial".into());
+        let rollout = Rollout::open(&runs, &run, core_protocol::TenantId::default()).unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(DiesMidStream),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+
+        assert!(
+            agent.run("answer me").await.is_err(),
+            "the failure is still reported; preserving the partial answer never hides it"
+        );
+
+        let events = core_record::replay(&runs.join(format!("{}.jsonl", run.0))).unwrap();
+        let streamed_text: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::Text { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            streamed_text,
+            vec!["the answer begins and continues"],
+            "the declared Text delta event now has exactly one producer"
+        );
+        let streamed_thinking: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::Thinking { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(streamed_thinking, vec!["weighing the options"]);
+
+        let assistant: Vec<&Message> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::Message { message } if message.role == Role::Assistant => Some(message),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(assistant.len(), 1, "one interrupted assistant message");
+        let Block::Text { text } = &assistant[0].content[0] else {
+            panic!("the preserved partial answer is text");
+        };
+        assert!(text.starts_with("the answer begins and continues"));
+        assert!(
+            text.contains(INTERRUPTED_STREAM_MARKER),
+            "resume must be able to tell a partial answer from a finished one"
+        );
+
+        // No billing semantics changed: nothing claims usage for a turn that never completed.
+        assert_eq!(agent.ledger.turns, 0);
+        assert_eq!(agent.ledger.usage, Usage::default());
+
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    /// A turn that fails before its first byte has nothing to preserve and must not invent an
+    /// empty assistant message.
+    #[tokio::test]
+    async fn a_failure_before_the_first_token_appends_no_interrupted_message() {
+        struct FailsImmediately;
+
+        #[async_trait::async_trait]
+        impl Provider for FailsImmediately {
+            async fn turn(
+                &self,
+                _req: &TurnRequest,
+                _on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<TurnResult, ProviderError> {
+                Err(ProviderError::Http("name resolution failed".into()))
+            }
+        }
+
+        let ws = temp_ws("pre-stream-failure-preserves-nothing");
+        let runs = ws.join(".core/runs");
+        let run = core_protocol::RunId("pre-stream-failure-preserves-nothing".into());
+        let rollout = Rollout::open(&runs, &run, core_protocol::TenantId::default()).unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(FailsImmediately),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+        assert!(agent.run("answer me").await.is_err());
+
+        let events = core_record::replay(&runs.join(format!("{}.jsonl", run.0))).unwrap();
+        assert!(
+            !events.iter().any(|event| matches!(
+                &event.kind,
+                EventKind::Text { .. }
+                    | EventKind::Thinking { .. }
+                    | EventKind::Message {
+                        message: Message {
+                            role: Role::Assistant,
+                            ..
+                        }
+                    }
+            )),
+            "nothing streamed, so nothing is invented"
+        );
+
+        let _ = std::fs::remove_dir_all(ws);
     }
 
     #[tokio::test]
@@ -15259,6 +15536,7 @@ ant-api03-SuperSecretModelToken12345"
                 0,
                 attempt.projected_at_unix_secs(),
                 StreamTiming::default(),
+                true,
             )
             .unwrap();
         attempt.complete();
@@ -15654,6 +15932,87 @@ ant-api03-SuperSecretModelToken12345"
         let _ = std::fs::remove_dir_all(&ws);
     }
 
+    /// I-52: `Usage::cache_creation` had no vendor field to read on OpenAI-compatible routes, so
+    /// it stayed at its struct default and pricing multiplied that constant zero by a cache-write
+    /// rate. A route that reports the count must be priced; a route that does not must be marked
+    /// unpriceable rather than free.
+    #[tokio::test]
+    async fn an_unreported_cache_creation_count_is_unpriceable_not_free() {
+        for (tag, reported) in [("reported", true), ("unreported", false)] {
+            let ws = temp_ws(&format!("cache-creation-{tag}"));
+            let rollout = Rollout::open(
+                &ws.join(".core/runs"),
+                &core_protocol::RunId(format!("cache-creation-{tag}")),
+                core_protocol::TenantId::default(),
+            )
+            .unwrap();
+            let mut agent = Agent::new(
+                std::sync::Arc::new(ScriptedDone),
+                Registry::coding_agent(&ws).unwrap(),
+                rollout,
+                "model-a".into(),
+                "sys".into(),
+                Budget::default(),
+            );
+            agent.workspace = ws.clone();
+            bind_test_pricing(&mut agent);
+            assert!(
+                agent.pricing.as_ref().is_some_and(|signed| signed
+                    .rate_card
+                    .rates
+                    .cache_creation_microusd_per_million
+                    > 0),
+                "the fixture card charges for cache writes, which is what makes silence matter"
+            );
+
+            let usage = Usage {
+                input: 1_000,
+                output: 200,
+                cache_read: 4_000,
+                ..Usage::default()
+            };
+            let report = if reported {
+                UsageReport::complete(usage)
+            } else {
+                UsageReport::cache_creation_unreported(usage)
+            };
+            agent.ledger.attempt();
+            agent
+                .record_provider_usage(TurnId(0), report, 5, 1_000, StreamTiming::default())
+                .unwrap();
+
+            let events = core_record::replay(agent.rollout.path()).unwrap();
+            let projected = events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::CostProjected { .. }));
+            let declined = events.iter().any(|event| {
+                matches!(
+                    &event.kind,
+                    EventKind::Notice { text } if text == UNPRICEABLE_CACHE_CREATION_NOTICE
+                )
+            });
+            if reported {
+                assert!(projected, "a route that reports the field prices it");
+                assert!(!declined);
+                assert!(matches!(agent.ledger.cost_state(), CostState::Known { .. }));
+            } else {
+                assert!(
+                    !projected,
+                    "silence about cache writes must not be priced as a measured zero"
+                );
+                assert!(declined, "the record must say precisely why it is unpriced");
+                assert!(matches!(
+                    agent.ledger.cost_state(),
+                    CostState::Unknown { .. }
+                ));
+            }
+            // Either way the token counts themselves are authoritative and are recorded.
+            assert_eq!(agent.ledger.usage, usage);
+
+            let _ = std::fs::remove_dir_all(&ws);
+        }
+    }
+
     #[tokio::test]
     async fn failed_summarization_closes_positive_usd_budget() {
         let ws = temp_ws("priced-summary-error");
@@ -15740,6 +16099,7 @@ ant-api03-SuperSecretModelToken12345"
                 0,
                 unix_now_secs(),
                 StreamTiming::default(),
+                true,
             )
             .unwrap();
 
@@ -15753,7 +16113,8 @@ ant-api03-SuperSecretModelToken12345"
                 usage,
                 0,
                 unix_now_secs(),
-                StreamTiming::default()
+                StreamTiming::default(),
+                true
             ),
             Err(KernelError::PricingLedger(_))
         ));

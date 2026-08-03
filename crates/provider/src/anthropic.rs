@@ -511,6 +511,12 @@ impl Provider for Anthropic {
             return Err(error);
         }
 
+        // Quota state is on the success headers, so it is knowable here — before a single token
+        // has arrived and long before the 429 that used to be its first symptom (I-53).
+        if let Some(snapshot) = crate::rate_limit_from_headers(resp.headers()) {
+            on_item(StreamItem::RateLimit(snapshot));
+        }
+
         let mut stream = resp.bytes_stream();
         // Buffer RAW bytes: a UTF-8 char can be split across network chunks, and decoding each
         // chunk in isolation corrupts it (code review F2). We decode only the complete-UTF-8

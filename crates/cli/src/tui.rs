@@ -147,6 +147,11 @@ impl Session {
         &self.state.ledger_summary
     }
 
+    /// Provider quota from the last response's headers, if the route publishes any (I-53).
+    pub(crate) fn rate_limit(&self) -> Option<&str> {
+        self.state.rate_limit.as_deref()
+    }
+
     pub(crate) fn compaction_trigger_tokens(&self) -> usize {
         self.facts.compaction_trigger_tokens
     }
@@ -174,6 +179,7 @@ impl Session {
                 unadmitted_steers: Vec::new(),
                 permission_rules: PermissionRules::new(),
                 ledger_summary: String::new(),
+                rate_limit: None,
             },
             facts: app_server::SessionFacts {
                 workspace: std::path::PathBuf::new(),
@@ -749,6 +755,42 @@ struct PendingToolProjection {
     reveal_deadline: Instant,
 }
 
+/// How long a model request may go without a first token before the interface stops calling it
+/// ordinary, and before it stops calling it merely slow. Both sit well inside the 60s response
+/// header deadline and the 120s stream idle deadline, which is the point: the operator learns
+/// which failure they are watching while the request is still open (I-64).
+const FIRST_TOKEN_SLOW_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
+/// The one-keystroke retry offer printed under a failed run (I-39).
+const RETRY_HINT: &str = "ctrl+r re-sends this turn. Whatever the model had already streamed is \
+recorded as an interrupted message, so a retry continues from it rather than from nothing.";
+const FIRST_TOKEN_STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether a silent provider is being described as slow or as stalled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FirstTokenState {
+    Slow,
+    Stalled,
+}
+
+/// A first-token wait long enough to say something about.
+#[derive(Debug, Clone, Copy)]
+struct FirstTokenStall {
+    state: FirstTokenState,
+    waited: std::time::Duration,
+}
+
+impl FirstTokenStall {
+    fn label(self) -> String {
+        let seconds = self.waited.as_secs();
+        match self.state {
+            FirstTokenState::Slow => format!("waiting for the first token · {seconds}s"),
+            FirstTokenState::Stalled => format!(
+                "no response for {seconds}s · the connection may be stalled · esc to interrupt"
+            ),
+        }
+    }
+}
+
 /// TUI state.
 struct App {
     /// The structured semantic transcript (ADR-015): typed self-rendering blocks, not a flat log.
@@ -852,6 +894,16 @@ struct App {
     resume_handoff: Option<String>,
     /// When the current run started (for the elapsed/spinner indicator).
     run_started: Option<Instant>,
+    /// The text of the last plain-text turn, retained only while a failed run offers to re-send
+    /// it. A mid-stream failure is not retried automatically — only 429/529 are, and a bare
+    /// transport error says nothing about whether the provider already billed the request — so
+    /// the operator is the idempotency key, and this makes saying yes one keystroke (I-39).
+    retryable_task: Option<String>,
+    /// When the model phase began without a token yet arriving, and `None` again the instant one
+    /// does. The response-header deadline is 60s and the stream idle deadline 120s, so without
+    /// this a dead connection and a slow prefill looked identical for a full minute (I-64). It is
+    /// the frontend end of the same first-token instrumentation `TurnEnd.ttft_ms` records.
+    awaiting_first_token_since: Option<Instant>,
     /// Currently-running tool calls, ordered by start time. This feeds the one-line activity shelf;
     /// full details remain in correlated transcript cards.
     active_tools: VecDeque<(String, String)>,
@@ -947,6 +999,8 @@ impl App {
             picker: None,
             resume_handoff: None,
             run_started: None,
+            retryable_task: None,
+            awaiting_first_token_since: None,
             active_tools: VecDeque::new(),
             spin: 0,
             row_map: Vec::new(),
@@ -1153,8 +1207,28 @@ impl App {
         self.push_block(block::BlockKind::User(ui_safe_text(&text.into())));
     }
 
+    /// How long the provider has been silent since the model phase opened, and whether that is
+    /// merely slow or long enough to describe as stalled. `None` once a token has arrived, when no
+    /// model request is open, or while the wait is still ordinary (I-64).
+    fn first_token_stall(&self) -> Option<FirstTokenStall> {
+        if !self.running {
+            return None;
+        }
+        let waited = self.awaiting_first_token_since?.elapsed();
+        let state = if waited >= FIRST_TOKEN_STALL_AFTER {
+            FirstTokenState::Stalled
+        } else if waited >= FIRST_TOKEN_SLOW_AFTER {
+            FirstTokenState::Slow
+        } else {
+            return None;
+        };
+        Some(FirstTokenStall { state, waited })
+    }
+
     /// Append streamed assistant text; the in-flight buffer renders as a live markdown block.
     fn stream_text(&mut self, delta: &str) {
+        // A token arrived: this connection is slow at worst, not stalled (I-64).
+        self.awaiting_first_token_since = None;
         self.flush_think();
         if let Some(complete) = self.text_scrubber.push(delta) {
             if complete.is_empty() {
@@ -1168,6 +1242,9 @@ impl App {
 
     /// Append streamed reasoning; the in-flight buffer renders as a live Thinking block (bounded).
     fn stream_think(&mut self, delta: &str) {
+        // Extended thinking is the model producing tokens, so it stops the stall clock exactly
+        // like text does — the same rule `TurnEnd.ttft_ms` already measures by (I-64).
+        self.awaiting_first_token_since = None;
         if let Some(complete) = self.thinking_scrubber.push(delta) {
             if complete.is_empty() {
                 return;
@@ -3236,6 +3313,17 @@ pub async fn run(
                         KeyCode::Esc if menu_open => {
                             app.completion = None;
                         }
+                        // ---- one-keystroke retry of a failed turn (I-39) ----
+                        KeyCode::Char('r')
+                            if ctrl && !app.running && app.retryable_task.is_some() =>
+                        {
+                            let task = app
+                                .retryable_task
+                                .clone()
+                                .expect("guarded by the match arm");
+                            submit_turn(&mut app, &session, &mut notifier, task);
+                            refresh = true;
+                        }
                         // ---- input history (idle, no menu) ----
                         KeyCode::Up if !app.running => {
                             app.editor.history_prev();
@@ -3584,7 +3672,8 @@ fn submit_turn(
     notifier: &mut notification::TerminalNotifier,
     task: String,
 ) {
-    let _ = submit_operation(app, session, notifier, Op::UserInput { text: task });
+    let _ = submit_operation(app, session, notifier, Op::UserInput { text: task.clone() });
+    app.retryable_task = Some(task);
 }
 
 fn submit_operation(
@@ -3601,6 +3690,9 @@ fn submit_operation(
             app.draining = false;
             app.status = "running…".into();
             app.run_started = Some(Instant::now());
+            // A new run must not inherit the previous one's first-token clock; the next
+            // `Phase(Model)` starts it honestly (I-64).
+            app.awaiting_first_token_since = None;
             app.completion = None;
             true
         }
@@ -3684,6 +3776,9 @@ fn submit_composer(
         Op::UserInputV2 { segments }
     };
     if submit_operation(app, session, notifier, op) {
+        // Only the plain-text turn is offered back: re-sending staged attachments would re-read
+        // files that may have changed since, which is a different request, not a retry (I-39).
+        app.retryable_task = staged.is_empty().then(|| text.clone());
         let image_count = staged.len();
         let _ = app.editor.take_submit();
         app.push_user(if text.is_empty() {
@@ -3871,6 +3966,7 @@ fn apply_server_event<T: notification::NotificationTransport + ?Sized>(
             app.interrupting = false;
             app.draining = false;
             app.run_started = None;
+            app.awaiting_first_token_since = None;
             app.flush_text();
             app.pending = None; // a pending approval cannot outlive its run
             app.settle_unfinished_tools();
@@ -3916,11 +4012,21 @@ fn apply_server_event<T: notification::NotificationTransport + ?Sized>(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
             {
+                // Everything already streamed is on the record as an interrupted message, so a
+                // retry continues from evidence rather than from nothing (I-39).
+                let detail = if app.retryable_task.is_some() {
+                    format!("{detail}\n\n{RETRY_HINT}")
+                } else {
+                    detail
+                };
                 app.push_block(block::BlockKind::Error {
                     title: "run failed".into(),
                     detail,
                     open: true,
                 });
+            } else {
+                // The turn landed; there is nothing to re-send.
+                app.retryable_task = None;
             }
             app.status = format!("idle · last: {canonical_outcome}");
             app.last_result = Some(result);
@@ -4923,8 +5029,16 @@ async fn handle_registered_command(
                 kv("mode", session.permission_mode().label()),
                 kv("cwd", &session.workspace().display().to_string()),
                 kv("run", &run),
-                block::PanelRow::Note(session.ledger_summary().to_string()),
             ]);
+            // Before a rejection, not after it: this is the only place the operator can see the
+            // budget shrinking while there is still time to act on it (I-53).
+            rows.push(kv(
+                "provider quota",
+                session
+                    .rate_limit()
+                    .unwrap_or("not published by this route"),
+            ));
+            rows.push(block::PanelRow::Note(session.ledger_summary().to_string()));
             app.panel("≡", "status", rows);
         }
         SlashCommand::Cost => {
@@ -5630,7 +5744,12 @@ fn apply_event(app: &mut App, ev: UiEvent) {
             output,
             diff,
         } => app.tool_end(&id, ok, exit_code, output, diff),
-        UiEvent::Phase(p) => app.status = p.label().into(),
+        UiEvent::Phase(p) => {
+            // Entering the model phase starts the first-token clock; every other phase stops it,
+            // because only a model request can be waiting on a provider's first byte (I-64).
+            app.awaiting_first_token_since = (p == core_protocol::Phase::Model).then(Instant::now);
+            app.status = p.label().into();
+        }
         UiEvent::TurnEnd {
             cost,
             usage,
@@ -6169,6 +6288,18 @@ fn render_status(f: &mut Frame, area: Rect, density: surface::Density, app: &App
             format!("↑ reading history{unread} · ctrl+end to follow"),
             Style::default().fg(th.warn),
         )]
+    } else if let Some(stall) = app.first_token_stall() {
+        // A dead connection and a slow prefill are the same picture for a full minute unless the
+        // interface says which one it is looking at, and it knows: no token has arrived yet
+        // (I-64). Both states still spin, because the request is genuinely still open.
+        let style = match stall.state {
+            FirstTokenState::Slow => accent,
+            FirstTokenState::Stalled => warn,
+        };
+        vec![
+            Span::styled(format!("{} ", SPINNER[app.spin % SPINNER.len()]), style),
+            Span::styled(stall.label(), style),
+        ]
     } else if app.running {
         let phase = match app.status.trim() {
             "" | "running…" => "working",
@@ -9016,6 +9147,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 unadmitted_steers: Vec::new(),
                 permission_rules: PermissionRules::new(),
                 ledger_summary: String::new(),
+                rate_limit: None,
             }),
             summary: Box::new(summary),
         };
@@ -10017,6 +10149,57 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
     }
 
+    /// I-64: the response-header deadline is 60s and the stream idle deadline 120s, so a dead
+    /// connection and a slow prefill used to look identical for a full minute. The interface must
+    /// say which one it is watching, and must stop saying it the instant a token arrives.
+    #[test]
+    fn a_stalled_provider_is_described_differently_from_a_slow_one_before_the_deadline() {
+        let mut app = App::new();
+        app.running = true;
+        apply_event(&mut app, UiEvent::Phase(core_protocol::Phase::Model));
+
+        // An ordinary wait says nothing at all; the phase label already covers it.
+        assert!(app.first_token_stall().is_none());
+
+        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_SLOW_AFTER);
+        let slow = app
+            .first_token_stall()
+            .expect("a slow prefill is described");
+        assert_eq!(slow.state, FirstTokenState::Slow);
+        assert!(slow.label().contains("waiting for the first token"));
+
+        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
+        let stalled = app
+            .first_token_stall()
+            .expect("a stalled stream is described");
+        assert_eq!(stalled.state, FirstTokenState::Stalled);
+        assert!(stalled.label().contains("may be stalled"));
+        assert_ne!(
+            slow.label(),
+            stalled.label(),
+            "the two failures must not share one sentence"
+        );
+        assert!(
+            FIRST_TOKEN_STALL_AFTER < std::time::Duration::from_secs(60),
+            "the operator must learn this before the response-header deadline expires"
+        );
+
+        // Extended thinking is the model producing tokens, so it clears the clock exactly like
+        // text does — the same rule `TurnEnd.ttft_ms` measures by.
+        apply_event(&mut app, UiEvent::Thinking("reasoning".into()));
+        assert!(app.first_token_stall().is_none());
+
+        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
+        apply_event(&mut app, UiEvent::Text("answer".into()));
+        assert!(app.first_token_stall().is_none());
+
+        // Leaving the model phase stops the clock: only a provider request can be waiting on one.
+        apply_event(&mut app, UiEvent::Phase(core_protocol::Phase::Model));
+        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
+        apply_event(&mut app, UiEvent::Phase(core_protocol::Phase::Tools));
+        assert!(app.first_token_stall().is_none());
+    }
+
     #[test]
     fn notifications_use_only_the_out_of_band_writer_and_never_stream_deltas() {
         let mut app = App::new();
@@ -10175,6 +10358,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             unadmitted_steers: Vec::new(),
             permission_rules: PermissionRules::new(),
             ledger_summary: String::new(),
+            rate_limit: None,
         };
 
         clear_last_turn_telemetry_from(&mut app, &state);
