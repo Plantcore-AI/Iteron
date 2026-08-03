@@ -18,7 +18,7 @@ use crate::git_harness::{
     resolve_repository_layout, run_command_bounded,
 };
 #[cfg(test)]
-use crate::git_harness::{NULL_DEVICE, ResolvedGit};
+use crate::git_harness::{NULL_DEVICE, ResolvedGit, shell_script_command};
 use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
 use core_protocol::{Capability, Purity, ToolSpec};
 #[cfg(test)]
@@ -194,15 +194,6 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
-    }
-
-    #[cfg(unix)]
-    fn shell_script_command(path: &Path) -> OsString {
-        let path = path
-            .to_str()
-            .expect("Git test fixture paths must be valid UTF-8");
-        let quoted = path.replace('\'', "'\\''");
-        format!("/bin/sh '{quoted}'").into()
     }
 
     #[cfg(unix)]
