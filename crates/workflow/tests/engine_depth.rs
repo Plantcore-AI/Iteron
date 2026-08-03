@@ -6,12 +6,12 @@
 //!       null-outcome agent replayed as null (the B2 invariant);
 //!   (c) `RunHandle::cancel()` stops a running 2-agent workflow.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use core_workflow::events::NullSink;
+use core_workflow::events::{NullSink, ProgressEvent, ProgressSink};
 use core_workflow::{AgentCall, AgentOutcome, AgentSpawner, RunId, RunSpec, WorkflowEngine};
 
 // ---- (a) schema-forced structured output ---------------------------------------------------------
@@ -89,6 +89,152 @@ return {
 /// Counts every live spawn; returns text for `alpha`, a null outcome for `makenull`.
 struct CountingSpawner {
     spawns: Arc<AtomicUsize>,
+}
+
+#[derive(Default)]
+struct RecordingSink {
+    events: Mutex<Vec<ProgressEvent>>,
+}
+
+impl ProgressSink for RecordingSink {
+    fn emit(&self, event: ProgressEvent) {
+        self.events.lock().unwrap().push(event);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn malformed_routing_metadata_is_negative_replay_evidence_without_a_spawn() {
+    let dir = std::env::temp_dir().join(format!(
+        "core-workflow-request-metadata-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let spawner = Arc::new(CountingSpawner {
+        spawns: spawns.clone(),
+    });
+    let sink = Arc::new(RecordingSink::default());
+    let secret = "ghp_AbCdEf1234567890AbCdEf1234567890";
+    let oversized_agent_type = "a".repeat(core_workflow::spawner::MAX_AGENT_TYPE_BYTES + 1);
+    let oversized_model = "m".repeat(core_workflow::spawner::MAX_AGENT_MODEL_BYTES + 1);
+    let requests = serde_json::json!([
+        {"agentType": "reviewer/child", "label": secret, "phase": secret},
+        {"agentType": oversized_agent_type.clone(), "label": secret, "phase": secret},
+        {"agentType": format!("reviewer\n{secret}\u{1b}[2J"), "label": secret},
+        {"agentType": "reviewer界", "label": secret},
+        {"model": "", "label": secret, "phase": secret},
+        {"model": oversized_model.clone(), "label": secret, "phase": secret},
+        {"model": format!("model\r{secret}\u{202e}"), "label": secret},
+    ]);
+    let request_count = requests.as_array().unwrap().len();
+    let args = serde_json::json!({"requests": requests});
+    let script = r#"export const meta = { name: 'request-metadata', description: '', phases: [] };
+const results = [];
+for (const request of args.requests) {
+  results.push(await agent('safe prompt', request));
+}
+return results;
+"#;
+
+    let first = RunSpec::new(script)
+        .with_args(args.clone())
+        .with_run_id(RunId::new("invalid-1"))
+        .with_workflows_dir(dir.clone());
+    let report = WorkflowEngine::execute(first, spawner.clone(), sink.clone())
+        .await
+        .expect("invalid metadata settles as null");
+    assert_eq!(
+        report.value,
+        serde_json::Value::Array(vec![serde_json::Value::Null; request_count])
+    );
+    assert_eq!(report.cache_hits, 0);
+    assert_eq!(report.cache_misses, request_count);
+    assert_eq!(spawns.load(Ordering::SeqCst), 0);
+
+    {
+        let events = sink.events.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ProgressEvent::AgentQueued { .. }))
+                .count(),
+            request_count
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ProgressEvent::AgentStarted { .. }))
+                .count(),
+            0,
+            "a metadata refusal never starts a child"
+        );
+        let mut finished = 0;
+        for event in events.iter() {
+            match event {
+                ProgressEvent::AgentQueued {
+                    label,
+                    phase,
+                    model,
+                    ..
+                } => {
+                    assert!(label.starts_with("agent "));
+                    assert!(phase.is_none());
+                    assert!(model.is_none());
+                }
+                ProgressEvent::AgentFinished {
+                    label,
+                    error: Some(error),
+                    ..
+                } => {
+                    finished += 1;
+                    assert!(label.starts_with("agent "));
+                    assert!(error.len() <= 128, "{error}");
+                    assert!(!error.chars().any(char::is_control), "{error:?}");
+                    assert!(!error.contains(secret), "{error}");
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(finished, request_count);
+    }
+
+    let journal = std::fs::read_to_string(dir.join("invalid-1/journal.jsonl")).unwrap();
+    assert!(!journal.contains(secret));
+    assert!(!journal.contains(&oversized_agent_type));
+    assert!(!journal.contains(&oversized_model));
+    let result_reasons: Vec<String> = journal
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|line| {
+            line.get("record")?
+                .get("outcome")?
+                .get("reason")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(result_reasons.len(), request_count);
+    assert!(result_reasons.iter().all(|reason| {
+        reason.len() <= 128 && !reason.chars().any(char::is_control) && !reason.contains(secret)
+    }));
+
+    let second = RunSpec::new(script)
+        .with_args(args)
+        .with_run_id(RunId::new("invalid-2"))
+        .with_workflows_dir(dir.clone())
+        .with_resume_from(RunId::new("invalid-1"));
+    let replay = WorkflowEngine::execute(second, spawner, Arc::new(NullSink))
+        .await
+        .expect("negative metadata outcomes replay");
+    assert_eq!(replay.cache_hits, request_count);
+    assert_eq!(replay.cache_misses, 0);
+    assert_eq!(spawns.load(Ordering::SeqCst), 0);
+    assert_eq!(replay.value, report.value);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[async_trait]

@@ -19,8 +19,10 @@ pub enum WorkflowState {
     Skipped,
 }
 
-/// One live milestone. Every field is already truncated to Claude Code's bounds by the emitter
-/// (result_preview 400, last_tool_summary 60) so a sink can render it verbatim.
+/// One live milestone. Every field is already bounded for its purpose by the emitter
+/// (`result_preview` 400, `last_tool_summary` 60). A requested model override is represented by a
+/// static marker because the engine cannot authenticate or safely reflect the raw route id; a sink
+/// can render these fields verbatim.
 #[derive(Debug, Clone)]
 pub enum ProgressEvent {
     /// A `phase(title)` boundary. `index` is the 1-based first-seen order.

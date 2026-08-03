@@ -38,6 +38,50 @@ use super::hooks::Hooks;
 use super::pricing::SharedUsdBudget;
 use super::{Agent, usage_tokens};
 
+const MAX_AGENT_REFUSAL_BYTES: usize = 512;
+const AGENT_REFUSAL_TRUNCATED: &str = " [truncated]";
+
+/// One terminal/journal-safe refusal line. This is the final choke point for child setup and
+/// runtime failures: redact credential shapes, render terminal controls visibly, and retain at
+/// most 512 UTF-8 bytes. Request metadata is never deliberately interpolated by this module, but
+/// this defense also covers OS/library diagnostics returned by later setup stages.
+pub(super) fn safe_agent_refusal(reason: &str) -> String {
+    let scrubbed = core_record::redact::scrub(reason);
+    let content_limit = MAX_AGENT_REFUSAL_BYTES.saturating_sub(AGENT_REFUSAL_TRUNCATED.len());
+    let mut safe = String::with_capacity(scrubbed.len().min(MAX_AGENT_REFUSAL_BYTES));
+    let mut truncated = false;
+    for character in scrubbed.chars() {
+        let codepoint = character as u32;
+        let terminal_unsafe = character.is_control()
+            || matches!(
+                codepoint,
+                0x00AD
+                    | 0x200B..=0x200F
+                    | 0x2028..=0x202E
+                    | 0x2066..=0x2069
+                    | 0xFEFF
+            );
+        let rendered = if terminal_unsafe {
+            character.escape_default().to_string()
+        } else {
+            character.to_string()
+        };
+        if safe.len().saturating_add(rendered.len()) > content_limit {
+            truncated = true;
+            break;
+        }
+        safe.push_str(&rendered);
+    }
+    if truncated {
+        safe.push_str(AGENT_REFUSAL_TRUNCATED);
+    }
+    if safe.trim().is_empty() {
+        "agent request was refused".into()
+    } else {
+        safe
+    }
+}
+
 /// Everything a [`KernelSpawner`] needs to build children WITHOUT a live parent `Agent`. The CLI
 /// fills this once from the resolved provider/route/config, then hands it to [`KernelSpawner::new`].
 /// Every field is cheap to clone or share (the provider/pricing/stop handles are `Arc`s).
@@ -201,6 +245,9 @@ impl KernelSpawner {
     fn build_child(&self, call: &AgentCall, ordinal: u64) -> Result<Agent, String> {
         let cx = &self.cx;
 
+        call.validate_request_metadata()
+            .map_err(|error| safe_agent_refusal(error.public_reason()))?;
+
         // Case-sensitive catalog resolution is an authority decision. Unknown names fail before a
         // rollout or provider effect exists; in particular, the historical magic name `writer`
         // can no longer turn model-controlled data into a coding registry.
@@ -209,11 +256,9 @@ impl KernelSpawner {
             .agent_catalog
             .get(requested_type)
             .cloned()
-            .ok_or_else(|| {
-                format!("unknown executable agent type `{requested_type}` (catalog is pinned)")
-            })?;
+            .ok_or_else(|| "requested agent type is absent from the pinned catalog".to_string())?;
         agent_def.validate().map_err(|reason| {
-            format!("agent definition `{requested_type}` is invalid: {reason}")
+            safe_agent_refusal(&format!("pinned agent definition is invalid: {reason}"))
         })?;
 
         // A definition/call may request a model, but this spawner only owns evidence for the
@@ -223,9 +268,9 @@ impl KernelSpawner {
             (call.model.as_deref(), agent_def.model.as_deref())
             && call_model != definition_model
         {
-            return Err(format!(
-                "agent `{requested_type}` pins model `{definition_model}`, which conflicts with call override `{call_model}`"
-            ));
+            return Err(
+                "agent definition model conflicts with the requested model override".into(),
+            );
         }
         let requested_model = agent_def
             .model
@@ -233,14 +278,11 @@ impl KernelSpawner {
             .or(call.model.as_deref())
             .unwrap_or(&cx.model);
         if requested_model != cx.model {
-            return Err(format!(
-                "agent `{requested_type}` requests model `{requested_model}`, but this spawner is pinned to `{}`; a separately resolved route is required",
-                cx.model
-            ));
+            return Err("requested agent model has no separately resolved route evidence".into());
         }
 
         let mut registry = Registry::read_only(cx.workspace.clone())
-            .map_err(|error| format!("child registry setup failed: {error}"))?;
+            .map_err(|_| "child read-only registry setup failed".to_string())?;
         let allowed_tools = agent_def.tools.narrow();
         let _effective_tools = registry.narrow_to(&allowed_tools);
         registry.set_sensitive_env_names(cx.sensitive_env_names.clone());
@@ -256,7 +298,7 @@ impl KernelSpawner {
         let sub_run = self.mint_run_id(ordinal);
         let subagents_dir = cx.runtime_state_dir.join("subagents");
         let rollout = Rollout::open(&subagents_dir, &sub_run, cx.tenant.clone())
-            .map_err(|error| format!("child rollout could not be opened: {error}"))?;
+            .map_err(|_| "child session record could not be opened".to_string())?;
 
         let mut sub = Agent::new(
             cx.provider.clone(),
@@ -317,7 +359,12 @@ impl KernelSpawner {
             cx.permission_mode,
             cx.permission_rules.clone(),
         )
-        .map_err(|error| format!("child runtime policy rejected: {}", error.public_summary()))?;
+        .map_err(|error| {
+            safe_agent_refusal(&format!(
+                "child runtime policy rejected: {}",
+                error.public_summary()
+            ))
+        })?;
 
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -329,7 +376,9 @@ impl KernelSpawner {
             cx.agent_catalog.execution_digest(),
             Some(agent_def.execution_tag()),
         )
-        .map_err(|error| format!("child genesis failed: {}", error.public_summary()))?;
+        .map_err(|error| {
+            safe_agent_refusal(&format!("child genesis failed: {}", error.public_summary()))
+        })?;
 
         // --- Route + pricing. Public API; `record_model_selection` appends the first durable event
         //     (RouteSelected) to the child rollout. Pricing is optional and only load-bearing when a
@@ -343,10 +392,18 @@ impl KernelSpawner {
             cx.catalog_digest.clone(),
             cx.capability_digest.clone(),
         )
-        .map_err(|error| format!("child route selection failed: {}", error.public_summary()))?;
+        .map_err(|error| {
+            safe_agent_refusal(&format!(
+                "child route selection failed: {}",
+                error.public_summary()
+            ))
+        })?;
         if cx.pricing_port.is_some() {
             let bound = sub.bind_selected_rate_card().map_err(|error| {
-                format!("child pricing bind failed: {}", error.public_summary())
+                safe_agent_refusal(&format!(
+                    "child pricing bind failed: {}",
+                    error.public_summary()
+                ))
             })?;
             if budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) && !bound {
                 return Err("child could not bind a verified rate card for its USD ceiling".into());
@@ -398,7 +455,7 @@ impl AgentSpawner for KernelSpawner {
             Ok(child) => child,
             Err(reason) => {
                 return AgentOutcome::Null {
-                    reason: Some(reason),
+                    reason: Some(safe_agent_refusal(&reason)),
                 };
             }
         };
@@ -442,7 +499,7 @@ impl AgentSpawner for KernelSpawner {
             // A harness/provider/budget error resolves to JS `null` (never a thrown rejection) so a
             // surrounding `parallel`/`pipeline` keeps its other items flowing.
             Err(error) => AgentOutcome::Null {
-                reason: Some(error.public_summary()),
+                reason: Some(safe_agent_refusal(&error.public_summary())),
             },
         }
     }
@@ -453,6 +510,10 @@ mod tests {
     use super::*;
     use core_protocol::{Capability, EventKind};
     use core_provider::{ProviderError, StreamItem, TurnRequest, TurnResult};
+    use core_workflow::{
+        ProgressEvent, ProgressSink, RunId, RunSpec, WorkflowEngine, WorkflowState,
+    };
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     struct NoTurnProvider;
@@ -469,6 +530,17 @@ mod tests {
             _on_item: &mut (dyn FnMut(StreamItem) + Send),
         ) -> Result<TurnResult, ProviderError> {
             panic!("build-child tests must not dispatch a provider turn")
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingSink {
+        events: Mutex<Vec<ProgressEvent>>,
+    }
+
+    impl ProgressSink for RecordingSink {
+        fn emit(&self, event: ProgressEvent) {
+            self.events.lock().unwrap().push(event);
         }
     }
 
@@ -578,29 +650,149 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn unknown_writer_case_drift_and_unresolved_model_fail_before_rollout_creation() {
+    #[tokio::test]
+    async fn adversarial_request_metadata_fails_before_rollout_or_provider_and_is_safe() {
         let root = scratch("refusals");
         let catalog = discovered_catalog(&root);
         let spawner = KernelSpawner::new(context(&root, catalog));
+        let secret = "ghp_AbCdEf1234567890AbCdEf1234567890";
+        let oversized_name = "n".repeat(core_workflow::spawner::MAX_AGENT_TYPE_BYTES + 1);
+        let oversized_model = "m".repeat(core_workflow::spawner::MAX_AGENT_MODEL_BYTES + 1);
+        let controlled_name = format!("reviewer\n{secret}\u{1b}[2J");
+        let controlled_model = format!("model\r{secret}\u{202e}");
 
         for call in [
             call(Some("writer"), None),
             call(Some("Reviewer"), None),
             call(Some("reviewer"), Some("other-model")),
+            call(Some("reviewer/child"), None),
+            call(Some(&oversized_name), None),
+            call(Some(&controlled_name), None),
+            call(Some(secret), None),
+            call(Some("reviewer"), Some(&oversized_model)),
+            call(Some("reviewer"), Some(&controlled_model)),
+            call(Some("reviewer"), Some(secret)),
         ] {
-            let error = match spawner.build_child(&call, 0) {
-                Ok(_) => panic!("authority-widening or unresolved call was admitted"),
-                Err(error) => error,
+            let reason = match spawner.spawn(call).await {
+                AgentOutcome::Null {
+                    reason: Some(reason),
+                } => reason,
+                _ => panic!("authority-widening, malformed, or unresolved call was admitted"),
             };
-            assert!(
-                error.contains("unknown executable agent type")
-                    || error.contains("separately resolved route"),
-                "unexpected refusal: {error}"
-            );
+            assert!(reason.len() <= MAX_AGENT_REFUSAL_BYTES, "{reason}");
+            assert!(!reason.chars().any(char::is_control), "{reason:?}");
+            assert!(!reason.contains(secret), "{reason}");
+            assert!(!reason.contains("other-model"), "{reason}");
+            assert!(!reason.contains(&oversized_name), "{reason}");
+            assert!(!reason.contains(&oversized_model), "{reason}");
         }
         assert!(!root.join("runs/subagents").exists());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn request_refusals_are_safe_across_null_journal_and_progress_surfaces() {
+        let root = scratch("refusal-surfaces");
+        let catalog = discovered_catalog(&root);
+        let spawner = Arc::new(KernelSpawner::new(context(&root, catalog)));
+        let sink = Arc::new(RecordingSink::default());
+        let secret = "ghp_AbCdEf1234567890AbCdEf1234567890";
+        let oversized_name = "n".repeat(core_workflow::spawner::MAX_AGENT_TYPE_BYTES + 1);
+        let oversized_model = "m".repeat(core_workflow::spawner::MAX_AGENT_MODEL_BYTES + 1);
+        let requests = serde_json::json!([
+            {"agentType": "reviewer/child"},
+            {"agentType": oversized_name.clone()},
+            {"agentType": format!("reviewer\n{secret}\u{1b}[2J")},
+            {"agentType": secret},
+            {"agentType": "reviewer", "model": oversized_model.clone()},
+            {"agentType": "reviewer", "model": format!("model\r{secret}\u{202e}")},
+            {"agentType": "reviewer", "model": secret},
+        ]);
+        let request_count = requests.as_array().unwrap().len();
+        let script = r#"export const meta = { name: 'refusals', description: '', phases: [] };
+const results = [];
+for (const request of args.requests) {
+  results.push(await agent('inspect', request));
+}
+return results;
+"#;
+        let spec = RunSpec::new(script)
+            .with_args(serde_json::json!({"requests": requests}))
+            .with_run_id(RunId::new("refusal-surfaces"))
+            .with_workflows_dir(root.join("workflows"));
+        let report = WorkflowEngine::execute(spec, spawner, sink.clone())
+            .await
+            .expect("every refusal settles as null");
+        assert_eq!(
+            report.value,
+            serde_json::Value::Array(vec![serde_json::Value::Null; request_count])
+        );
+        assert!(!root.join("runs/subagents").exists());
+
+        let events = sink.events.lock().unwrap();
+        let rendered_events = format!("{events:?}");
+        assert!(!rendered_events.contains(secret), "{rendered_events}");
+        assert!(!rendered_events.contains(&oversized_name));
+        assert!(!rendered_events.contains(&oversized_model));
+        let errors: Vec<&String> = events
+            .iter()
+            .filter_map(|event| match event {
+                ProgressEvent::AgentFinished {
+                    state: WorkflowState::Error,
+                    error: Some(error),
+                    ..
+                } => Some(error),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), request_count);
+        assert!(errors.iter().all(|error| {
+            error.len() <= MAX_AGENT_REFUSAL_BYTES
+                && !error.chars().any(char::is_control)
+                && !error.contains(secret)
+        }));
+        drop(events);
+
+        let journal =
+            std::fs::read_to_string(root.join("workflows/refusal-surfaces/journal.jsonl")).unwrap();
+        assert!(!journal.contains(secret));
+        assert!(!journal.contains(&oversized_name));
+        assert!(!journal.contains(&oversized_model));
+        let reasons: Vec<String> = journal
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|line| {
+                line.get("record")?
+                    .get("outcome")?
+                    .get("reason")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(reasons.len(), request_count);
+        assert!(reasons.iter().all(|reason| {
+            reason.len() <= MAX_AGENT_REFUSAL_BYTES
+                && !reason.chars().any(char::is_control)
+                && !reason.contains(secret)
+        }));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refusal_chokepoint_redacts_escapes_and_bounds_arbitrary_diagnostics() {
+        let secret = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
+        let safe = safe_agent_refusal(&format!(
+            "setup\n{secret}\r\u{1b}[2J\u{202e}{}",
+            "界".repeat(2_048)
+        ));
+        assert!(safe.len() <= MAX_AGENT_REFUSAL_BYTES, "{}", safe.len());
+        assert!(safe.ends_with(AGENT_REFUSAL_TRUNCATED), "{safe}");
+        assert!(!safe.chars().any(char::is_control), "{safe:?}");
+        assert!(!safe.contains(secret), "{safe}");
+        assert!(safe.contains("\\n"), "{safe}");
+        assert!(safe.contains("\\u{1b}"), "{safe}");
+        assert!(safe.contains("\\u{202e}"), "{safe}");
     }
 
     #[test]

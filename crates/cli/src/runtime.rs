@@ -41,6 +41,7 @@ use core_provider::{
 };
 use core_record::Rollout;
 use core_tools::Registry;
+use core_workflow::AgentCall;
 use diagnostics::{DiagnosticEmitter, KernelDiagnostic};
 use hooks::{HookDecision, HookEvent, Hooks};
 use pricing::{
@@ -7204,7 +7205,7 @@ impl Agent {
     }
 
     /// In-turn `Workflow` tool handler (kernel interception, the workflow analogue of
-    /// `spawn_subagent`). Builds a [`crate::KernelSpawner`] from THIS agent's live route + paths, then
+    /// `spawn_subagent`). Builds a [`KernelSpawner`] from THIS agent's live route + paths, then
     /// drives the run through [`core_workflow::WorkflowEngine::launch`] (background `RunHandle`, review
     /// B3) and `join`s it within the turn so the model receives the aggregated result. The launch
     /// banner (run id) is emitted as a `Notice`, and the re-launchable sidecars are persisted so
@@ -8513,19 +8514,25 @@ impl Agent {
             elapsed_ms: started.elapsed().as_millis() as u64,
             sub_run: Some(sub_run.0.clone()),
             error_code: Some(code.into()),
-            error_detail: Some(detail),
+            error_detail: Some(workflow_spawner::safe_agent_refusal(&detail)),
         };
         let agent_type = task.agent_type.as_deref().unwrap_or("generic");
+        if let Err(error) = AgentCall::validate_agent_type(Some(agent_type)) {
+            return Ok(Err(setup_failure(
+                "invalid_agent_request",
+                error.public_reason().into(),
+            )));
+        }
         let Some(agent_def) = self.agent_catalog.get(agent_type).cloned() else {
             return Ok(Err(setup_failure(
                 "unknown_agent_definition",
-                format!("agent type `{agent_type}` is absent from the pinned catalog"),
+                "requested agent type is absent from the pinned catalog".into(),
             )));
         };
         if let Err(reason) = agent_def.validate() {
             return Ok(Err(setup_failure(
                 "invalid_agent_definition",
-                format!("agent type `{agent_type}` is invalid: {reason}"),
+                format!("pinned agent definition is invalid: {reason}"),
             )));
         }
         if let Some(model) = agent_def.model.as_deref()
@@ -8533,10 +8540,7 @@ impl Agent {
         {
             return Ok(Err(setup_failure(
                 "unresolved_agent_model",
-                format!(
-                    "agent type `{agent_type}` requests model `{model}`, but the run is pinned to `{}`",
-                    self.model
-                ),
+                "requested agent model has no separately resolved route evidence".into(),
             )));
         }
         let mut parent_budget = budget.clone();
@@ -10899,6 +10903,85 @@ mod gate_integration_tests {
             agent.pin_agent_catalog(core_agents::AgentCatalog::builtin_only()),
             Err(KernelError::AgentCatalogAlreadyResolved)
         ));
+        drop(agent);
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
+    #[test]
+    fn internal_fan_refuses_adversarial_agent_types_before_record_or_provider_effect() {
+        let ws = temp_ws("fan-request-metadata");
+        let provider = std::sync::Arc::new(ScriptedEdit::default());
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("fan-request-parent".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let budget = Budget {
+            max_turns: 5,
+            max_usd: None,
+            max_tokens: None,
+            max_wall_secs: 30,
+            max_consecutive_tool_errors: 3,
+        };
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            budget.clone(),
+        );
+        agent.workspace = ws.clone();
+
+        let secret = "ghp_AbCdEf1234567890AbCdEf1234567890";
+        let oversized = "a".repeat(core_workflow::spawner::MAX_AGENT_TYPE_BYTES + 1);
+        let controlled = format!("generic\n{secret}\u{1b}[2J");
+        for (idx, requested) in [
+            "generic/child".to_string(),
+            oversized.clone(),
+            controlled,
+            secret.to_string(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let task = core_agents::AgentTask {
+                id: idx,
+                agent_type: Some(requested),
+                objective: "inspect".into(),
+                scope: core_agents::INVESTIGATOR_SCOPE.into(),
+                deliverable: core_agents::INVESTIGATOR_DELIVERABLE.into(),
+                prompt: "inspect".into(),
+            };
+            let report = match agent.prepare_investigator(
+                "workflow-request-validation",
+                1,
+                "root",
+                core_agents::TaskClass::MultiFile,
+                &task,
+                &budget,
+            ) {
+                Ok(Err(report)) => report,
+                Ok(Ok(_)) => panic!("malformed or unresolved agent type was admitted"),
+                Err(error) => panic!("request refusal damaged the parent record: {error}"),
+            };
+            let detail = report.error_detail.expect("bounded refusal detail");
+            assert!(detail.len() <= 512, "{detail}");
+            assert!(!detail.chars().any(char::is_control), "{detail:?}");
+            assert!(!detail.contains(secret), "{detail}");
+            assert!(!detail.contains(&oversized), "{detail}");
+            assert_eq!(report.ledger.provider_attempts, 0);
+            assert_eq!(report.ledger.tool_calls, 0);
+        }
+
+        assert_eq!(provider.turn.load(Ordering::SeqCst), 0);
+        assert!(
+            core_record::replay(agent.rollout.path())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!ws.join(".core/runs/subagents").exists());
         drop(agent);
         std::fs::remove_dir_all(ws).unwrap();
     }

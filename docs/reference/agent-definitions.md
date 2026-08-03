@@ -19,8 +19,9 @@ maxConsecutiveToolErrors: 2
 Review the assigned area. Report direct evidence with file and line references.
 ```
 
-`name` and the body are required. Names are case-sensitive and use only ASCII letters, digits,
-period, underscore, and hyphen. Unknown or duplicate frontmatter keys are errors. `tools` and
+`name` and the body are required. Names are case-sensitive, at most 128 bytes, and use only ASCII
+letters, digits, period, underscore, and hyphen. Request-side `agentType` values use this exact
+grammar before catalog lookup. Unknown or duplicate frontmatter keys are errors. `tools` and
 `disallowedTools` are mutually exclusive:
 
 - `tools` retains only named tools from Core's built-in read-only registry.
@@ -39,9 +40,12 @@ refused rather than approximated.
 `model: inherit` uses the parent's exact selected route. A different model is accepted only when
 the spawner has separately resolved provider, capability, and pricing evidence for that route. The
 current workflow spawner owns only the parent route and therefore refuses a different model instead
-of reusing incorrect digests.
+of reusing incorrect digests. Request-side model overrides must be non-blank, control-free, and at
+most 512 bytes before any comparison.
 
 Workflow JavaScript selects a definition with `agent(prompt, {agentType: "reviewer"})`. An unknown
 or differently-cased name resolves to `null` with a bounded refusal reason before a rollout or
-provider effect is opened. Each admitted child records a SHA-256 content identity covering its
+provider effect is opened. Refusal reasons are credential-redacted, terminal-safe single lines of
+at most 512 bytes and never quote the caller's raw agent or model metadata. Each admitted child
+records a SHA-256 content identity covering its
 name, system prompt, tool filter, model policy, budget, and trust tier in session genesis.
