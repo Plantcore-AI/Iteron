@@ -692,13 +692,11 @@ impl PtyHarness {
             })
             .expect("resize PTY and deliver SIGWINCH");
         self.wait_until(&format!("redraw at {cols}x{rows}"), |pty| {
-            let (cursor_row, cursor_col) = pty.parser.screen().cursor_position();
             pty.capture.len() > before
                 && pty.parser.screen().size() == (rows, cols)
-                && pty.screen_text().contains("请检查")
+                && (pty.screen_text().contains("请检查")
+                    || pty.screen_text().contains("Transcript"))
                 && !pty.screen_text().contains('�')
-                && cursor_row < rows
-                && cursor_col < cols
         });
         let (cursor_row, cursor_col) = self.parser.screen().cursor_position();
         assert!(cursor_row < rows, "cursor row escaped {cols}x{rows}");
@@ -950,6 +948,73 @@ fn vim_composer_routes_insert_normal_delete_and_return_to_insert() {
             .contains("describe a task, question, or change")
     });
     pty.send(b"\x03"); // Ctrl-C exits the empty TUI.
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "normal TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+}
+
+#[test]
+fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_real() {
+    let scratch = Scratch::new("transcript-viewer");
+    let mut pty = PtyHarness::spawn(&scratch, 100, 28);
+    wait_for_ready(&mut pty);
+
+    let command = "!printf 'needle 你好 😀\\n\\033]52;bad\\a\\n'\r";
+    pty.send(command.as_bytes());
+    pty.wait_until("safe multilingual transcript source", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("needle 你好 😀") && !screen.contains('�')
+    });
+    assert!(
+        !pty.capture
+            .windows(b"\x1b]52;bad".len())
+            .any(|window| window == b"\x1b]52;bad"),
+        "transcript output injected an OSC 52 clipboard command"
+    );
+
+    pty.send(b"\x06"); // default typed transcript_viewer action: Ctrl-F
+    pty.wait_until("fullscreen viewer through typed keymap action", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("Transcript · block") && screen.contains("y copy block")
+    });
+    pty.send("/你好\r".as_bytes());
+    pty.wait_until("deterministic CJK match", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("match 1/") && screen.contains("filter: 你好")
+    });
+    pty.send(b"r");
+    pty.wait_until("raw semantic projection", |pty| {
+        pty.screen_text().contains(" · raw · match")
+    });
+    pty.resize(56, 18);
+    assert!(pty.screen_text().contains("Transcript"));
+    assert!(!pty.screen_text().contains('�'));
+
+    pty.send(b"e");
+    pty.wait_until("filtered atomic transcript export", |pty| {
+        pty.screen_text().contains("exported ->")
+    });
+    let filtered = std::fs::read_to_string(scratch.repo().join("core-transcript-filtered.md"))
+        .expect("filtered viewer export is durable in the workspace");
+    assert!(filtered.starts_with("# Core Code transcript\n\n"));
+    assert!(filtered.contains("needle 你好 😀"));
+
+    pty.send(b"\x1b");
+    pty.wait_until("return from fullscreen viewer", |pty| {
+        pty.screen_text().contains("Prompt") && !pty.screen_text().contains("y copy block")
+    });
+    pty.send(b"/transcript needle\r");
+    pty.wait_until("fullscreen viewer through slash command", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("Transcript · block") && screen.contains("search> needle")
+    });
+    pty.send(b"\r\x1b"); // accept the initial slash query, then close the viewer.
+    pty.wait_until("viewer closed after slash entry", |pty| {
+        pty.screen_text().contains("Prompt") && !pty.screen_text().contains("y copy block")
+    });
+    pty.send(b"\x03");
     let status = pty.wait_for_exit();
     assert!(status.success(), "normal TUI exit failed: {status}");
     assert_termios_restored(&pty);
@@ -1316,6 +1381,10 @@ fn active_ctrl_d_drains_to_a_checkpoint_and_idle_ctrl_d_still_exits() {
         .started
         .recv_timeout(PROVIDER_TIMEOUT)
         .expect("provider turn is admitted before Ctrl-D");
+    pty.send(b"\x06");
+    pty.wait_until("viewer remains reachable during a running turn", |pty| {
+        pty.screen_text().contains("Transcript · block")
+    });
     pty.send(b"\x04");
     pty.wait_until("active Ctrl-D drain status", |pty| {
         let screen = pty.screen_text();

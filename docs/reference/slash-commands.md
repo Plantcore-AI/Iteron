@@ -26,6 +26,7 @@ rather than dispatching an incomplete operation.
 | `/fork` | Branch the current session |
 | `/rewind` | Branch the conversation from the current point |
 | `/resume` | List sessions and show resume guidance |
+| `/transcript [query]` | Open the fullscreen, bounded transcript search/view surface |
 | `/export [path]` | Write the transcript as Markdown |
 | `/agents` | List discovered agent definitions |
 | `/skills` | List discovered skills |

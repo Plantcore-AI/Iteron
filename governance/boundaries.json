@@ -651,7 +651,7 @@
     {
       "id": "cli-tui",
       "title": "CLI TUI",
-      "summary": "Interactive state, input routing, composer, permission UX, sessions, terminal lifecycle, and PTY behavior.",
+      "summary": "Interactive state, input routing, composer, permission UX, sessions, bounded transcript inspection/export, safe clipboard effects, terminal lifecycle, and PTY behavior.",
       "status": "open",
       "risk": "elevated",
       "primary": null,
@@ -667,7 +667,7 @@
         { "kind": "tree", "path": "crates/cli/src/tui" },
         { "kind": "tree", "path": "crates/cli/tests" }
       ],
-      "contracts": ["single-enter-input", "terminal-restoration", "permission-decision-surface"],
+      "contracts": ["single-enter-input", "terminal-restoration", "permission-decision-surface", "semantic-transcript", "streaming-redaction"],
       "checks": ["cargo test -p core-cli tui --locked", "cargo test -p core-cli --test tui_pty --locked"]
     },
     {

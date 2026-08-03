@@ -33,6 +33,7 @@ pub(crate) enum Action {
     ReverseSearch,
     RestoreDraft,
     ToggleFold,
+    TranscriptViewer,
 }
 
 impl Action {
@@ -42,6 +43,7 @@ impl Action {
             "reverse_search" => Some(Self::ReverseSearch),
             "restore_draft" => Some(Self::RestoreDraft),
             "toggle_fold" => Some(Self::ToggleFold),
+            "transcript_viewer" => Some(Self::TranscriptViewer),
             _ => None,
         }
     }
@@ -52,6 +54,7 @@ impl Action {
             Self::ReverseSearch => "reverse_search",
             Self::RestoreDraft => "restore_draft",
             Self::ToggleFold => "toggle_fold",
+            Self::TranscriptViewer => "transcript_viewer",
         }
     }
 }
@@ -151,11 +154,12 @@ impl Keymap {
             (Action::ReverseSearch, Chord::parse("ctrl+r")?),
             (Action::RestoreDraft, Chord::parse("ctrl+z")?),
             (Action::ToggleFold, Chord::parse("ctrl+o")?),
+            (Action::TranscriptViewer, Chord::parse("ctrl+f")?),
         ]);
         for (name, value) in &config.bindings {
             let action = Action::parse(name).ok_or_else(|| {
                 format!(
-                    "unknown keymap action `{name}`; expected external_editor, reverse_search, restore_draft, or toggle_fold"
+                    "unknown keymap action `{name}`; expected external_editor, reverse_search, restore_draft, toggle_fold, or transcript_viewer"
                 )
             })?;
             let chord = Chord::parse(value)?;

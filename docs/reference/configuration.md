@@ -100,8 +100,9 @@ composer has a failed turn, Ctrl-R retains retry compatibility and Ctrl-Shift-R 
 empty-query history walk. Repository configuration cannot choose the operator's retention policy.
 
 `tui_keymap` is operator-owned and reloads on the first key event after `~/.core/config.json`
-changes. The only remappable actions are `external_editor`, `reverse_search`, `restore_draft`, and
-`toggle_fold`; duplicate chords and unknown actions are refused. Ctrl-C, Ctrl-D, Ctrl-J, Ctrl-T,
+changes. The only remappable actions are `external_editor`, `reverse_search`, `restore_draft`,
+`toggle_fold`, and `transcript_viewer`; duplicate chords and unknown actions are refused. Ctrl-C,
+Ctrl-D, Ctrl-J, Ctrl-T,
 Ctrl-V, Enter, Esc, Tab, and Shift-Tab remain reserved for lifecycle, safety, terminal ownership,
 submission, and permission-mode behavior. A malformed hot reload falls back to the built-in map and
 shows a warning rather than leaving the session with a partially applied map. `mode: "vim"` adds a
@@ -109,6 +110,22 @@ small deterministic composer state machine: Esc enters normal mode; `i`, `a`, `A
 to insert mode; `h`/`l`, `0`/`$`, `b`/`w`, `x`, `j`/`k`, and `dd` provide bounded navigation,
 history, deletion, and clear operations. The status line makes `keys:custom`, `vim:insert`, or
 `vim:normal` visible.
+
+Ctrl-F (or `/transcript [query]`) opens the fullscreen semantic transcript viewer. Its index is
+incremental over stable block ids/revisions, evicts records with the retained transcript, and caps
+the newest complete block projections at 16 MiB total and 2 MiB per block, a query at 512 bytes,
+results at 512, and selected pretty/raw detail at 64 KiB. A block excluded by either search budget
+is explicitly marked `search-unindexed`, and the header reports the incomplete block count; no
+prefix-only result is presented as a complete search. `/` edits the filter; `j`/`k` and `n`/`N`
+navigate deterministically;
+`r` toggles pretty/raw; `y` copies the selected block and `Y` the bounded matching-block projection
+through a fixed direct-argv platform adapter; `e` exports the filtered ids and `E` exports all retained blocks
+through the same workspace-confined atomic Markdown writer as `/export`. Copy repeats secret and
+terminal-control scrubbing, admits only fixed root-owned, non-writable, non-symlink stock adapters,
+and reports post-dispatch write/exit/timeout failures as outcome-unknown without trying a second
+adapter. Timeout explicitly kills and bounded-waits the child. Cached row starts make steady-frame
+work and allocation proportional to visible rows rather than transcript length; a bounded reflow
+runs only when the selected block or terminal width changes.
 
 Ctrl-G invokes `external_editor` as an exact argv with the current repository as its working
 directory. Core never shell-splits this array. If the field is absent, a single-token `VISUAL` or

@@ -10,11 +10,13 @@
 //! drains them and redraws. The kernel does the work; this is a thin, replaceable front-end
 //! on the same core (ADR-010: frontends are adapters).
 
+mod clipboard;
 pub(crate) mod hyperlink;
 mod keyboard_enhancement;
 mod mouse_capture;
 mod notification;
 mod terminal_input;
+mod transcript_viewer;
 
 pub(crate) mod app_server;
 pub(crate) mod headless;
@@ -798,6 +800,9 @@ impl FirstTokenStall {
 struct App {
     /// The structured semantic transcript (ADR-015): typed self-rendering blocks, not a flat log.
     transcript: Vec<block::Block>,
+    /// Fullscreen, presentation-only inspection state. Its bounded index reconciles against the
+    /// authoritative transcript's stable ids and revisions whenever the viewer is visible.
+    transcript_viewer: transcript_viewer::Viewer,
     /// Monotonic block-id source; a `ToolEnd` mutates its card by id, never by Vec position (R2).
     next_id: u64,
     /// Revealed tool_use id -> the block id of its card, so a late `ToolEnd` finds its originating
@@ -959,6 +964,7 @@ impl App {
         );
         App {
             transcript: vec![welcome],
+            transcript_viewer: transcript_viewer::Viewer::default(),
             next_id: 1,
             tool_index: std::collections::HashMap::new(),
             pending_tools: VecDeque::new(),
@@ -3384,6 +3390,9 @@ pub async fn run(
         if let Some(input_event) = next_input {
             redraw = true;
             match input_event {
+                CEvent::Paste(pasted) if app.transcript_viewer.is_open() => {
+                    app.transcript_viewer.handle_paste(&pasted, &app.transcript);
+                }
                 // Bracketed paste: insert the WHOLE pasted text (incl. newlines) into the editor
                 // rather than letting each pasted newline submit a partial line (review HIGH).
                 CEvent::Paste(pasted) => {
@@ -3434,6 +3443,11 @@ pub async fn run(
                         ),
                     }
                 }
+                CEvent::Mouse(m) if app.transcript_viewer.is_open() => match m.kind {
+                    MouseEventKind::ScrollUp => app.transcript_viewer.scroll_up(3),
+                    MouseEventKind::ScrollDown => app.transcript_viewer.scroll_down(3),
+                    _ => {}
+                },
                 // Mouse: wheel/trackpad scroll moves the CHAT transcript (prompt history stays on ↑/↓);
                 // a left-click on a card row folds/unfolds it.
                 CEvent::Mouse(m) if app.mouse_capture.is_captured() => match m.kind {
@@ -3492,6 +3506,36 @@ pub async fn run(
                                 format!("could not change terminal mouse capture: {error}"),
                             ),
                         }
+                        continue;
+                    }
+
+                    // Approval and lifecycle keys retain priority over optional fullscreen
+                    // inspection. In particular, a queued approval cannot have its first key
+                    // swallowed before the next draw closes the viewer, and Ctrl-C/Ctrl-D still
+                    // reach the kernel/teardown paths below.
+                    if app.pending.is_some() && app.transcript_viewer.is_open() {
+                        app.transcript_viewer.close();
+                    }
+                    let lifecycle_key =
+                        ctrl && matches!(k.code, KeyCode::Char('c') | KeyCode::Char('d'));
+                    if app.transcript_viewer.is_open() && !lifecycle_key {
+                        if let Some(effect) =
+                            app.transcript_viewer
+                                .key(k.code, k.modifiers, &app.transcript)
+                        {
+                            handle_transcript_viewer_effect(&mut app, session.workspace(), effect)
+                                .await;
+                        }
+                        continue;
+                    }
+                    if lifecycle_key && app.transcript_viewer.is_open() {
+                        app.transcript_viewer.close();
+                    }
+
+                    if mapped_action == Some(keymap::Action::TranscriptViewer)
+                        && app.pending.is_none()
+                    {
+                        app.transcript_viewer.open("", &app.transcript);
                         continue;
                     }
 
@@ -3675,6 +3719,9 @@ pub async fn run(
                             keymap::Action::RestoreDraft | keymap::Action::ReverseSearch => {
                                 continue;
                             }
+                            keymap::Action::TranscriptViewer => unreachable!(
+                                "the global transcript action is routed before modal/editor input"
+                            ),
                         }
                     }
 
@@ -5618,6 +5665,84 @@ fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     write
 }
 
+const MAX_TRANSCRIPT_EXPORT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Build one bounded Markdown snapshot from the semantic block authority. A filtered viewer export
+/// passes stable ids from the synchronized index; ordinary `/export` and `E` pass `None` and use
+/// the same workspace-confined, atomic durability path.
+fn transcript_export_body(
+    blocks: &[block::Block],
+    selected_ids: Option<&[u64]>,
+) -> Result<Vec<u8>, String> {
+    let selected = selected_ids.map(|ids| {
+        ids.iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+    });
+    let mut body = String::from("# Core Code transcript\n\n");
+    for block in blocks {
+        if selected
+            .as_ref()
+            .is_some_and(|selected| !selected.contains(&block.id))
+        {
+            continue;
+        }
+        let text = block.to_text();
+        if body.len().saturating_add(text.len()).saturating_add(1) > MAX_TRANSCRIPT_EXPORT_BYTES {
+            return Err("transcript export exceeds the 8 MiB limit".into());
+        }
+        body.push_str(&text);
+        body.push('\n');
+    }
+    Ok(body.into_bytes())
+}
+
+fn export_transcript(
+    workspace: &Path,
+    blocks: &[block::Block],
+    selected_ids: Option<&[u64]>,
+    requested: &str,
+) -> Result<PathBuf, String> {
+    let path = confined_workspace_output(workspace, requested)?;
+    let body = transcript_export_body(blocks, selected_ids)?;
+    atomic_replace(&path, &body).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+async fn handle_transcript_viewer_effect(
+    app: &mut App,
+    workspace: &Path,
+    effect: transcript_viewer::Effect,
+) {
+    match effect {
+        transcript_viewer::Effect::Copy { text, subject } => {
+            match clipboard::copy_text(&text).await {
+                Ok(adapter) => app
+                    .transcript_viewer
+                    .set_notice(format!("copied {subject} via {adapter}")),
+                Err(error) => app
+                    .transcript_viewer
+                    .set_notice(format!("copy failed: {error}")),
+            }
+        }
+        transcript_viewer::Effect::Export(scope) => {
+            let ids = app.transcript_viewer.export_ids(scope);
+            let requested = match scope {
+                transcript_viewer::ExportScope::Filtered => "core-transcript-filtered.md",
+                transcript_viewer::ExportScope::All => "core-transcript.md",
+            };
+            match export_transcript(workspace, &app.transcript, ids.as_deref(), requested) {
+                Ok(path) => app
+                    .transcript_viewer
+                    .set_notice(format!("exported -> {}", path.display())),
+                Err(error) => app
+                    .transcript_viewer
+                    .set_notice(format!("export failed: {error}")),
+            }
+        }
+    }
+}
+
 /// Create an initialization file without a check/write race and make its contents durable before
 /// reporting success. Existing files are never overwritten.
 fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
@@ -5648,9 +5773,9 @@ async fn handle_registered_command(
                 .iter()
                 .map(|c| item("/", &format!("{} {}", c.name, c.args), c.help))
                 .collect();
-            rows.push(block::PanelRow::Note("keys: ↑↓ history · Ctrl-R search · Ctrl-G external editor · ←→/Ctrl-A/E/U/K/W edit · @file · !shell · Shift+Tab permission mode · Ctrl-T mouse/native selection · Ctrl-C interrupt".into()));
+            rows.push(block::PanelRow::Note("keys: ↑↓ history · Ctrl-R prompt search · Ctrl-F transcript · Ctrl-G external editor · ←→/Ctrl-A/E/U/K/W edit · @file · !shell · Shift+Tab permission mode · Ctrl-T mouse/native selection · Ctrl-C interrupt".into()));
             rows.push(block::PanelRow::Note(
-                "operator config: tui_keymap supports standard/vim and four conflict-checked actions; lifecycle keys remain reserved".into(),
+                "operator config: tui_keymap supports standard/vim and five conflict-checked actions; lifecycle keys remain reserved".into(),
             ));
             rows.push(block::PanelRow::Note(
                 "while running: Enter steer · Tab queue · Ctrl-J newline · Alt-Up edit queued · Ctrl-End follow".into(),
@@ -6386,30 +6511,21 @@ async fn handle_registered_command(
                 );
             }
         }
+        SlashCommand::Transcript => {
+            app.transcript_viewer.open(arg.trim(), &app.transcript);
+        }
         SlashCommand::Export => {
             let requested = if arg.trim().is_empty() {
                 "core-transcript.md"
             } else {
                 arg.trim()
             };
-            let path = match confined_workspace_output(session.workspace(), requested) {
-                Ok(path) => path,
-                Err(error) => {
-                    app.push(fg(Color::Red), format!("export refused: {error}"));
-                    return;
-                }
-            };
-            let mut body = String::from("# Core Code transcript\n\n");
-            for b in &app.transcript {
-                body.push_str(&b.to_text());
-                body.push('\n');
-            }
-            match atomic_replace(&path, body.as_bytes()) {
-                Ok(_) => app.push(
+            match export_transcript(session.workspace(), &app.transcript, None, requested) {
+                Ok(path) => app.push(
                     fg(Color::Green),
                     format!("exported transcript -> {}", path.display()),
                 ),
-                Err(e) => app.push(fg(Color::Red), format!("export failed: {e}")),
+                Err(error) => app.push(fg(Color::Red), format!("export failed: {error}")),
             }
         }
         SlashCommand::Init => {
@@ -6607,6 +6723,7 @@ fn apply_event(app: &mut App, ev: UiEvent) {
             workspace,
         } => {
             app.flush_text();
+            app.transcript_viewer.close();
             app.status = "approval required".into();
             app.approval_choice = ApprovalChoice::Deny;
             app.pending = Some(Pending {
@@ -7773,6 +7890,16 @@ fn push_viewport_rows(
 }
 
 fn draw(f: &mut Frame, app: &mut App) {
+    // A newly arrived capability decision outranks optional inspection chrome. The viewer cannot
+    // hide a fail-closed approval surface while the runtime is blocked on it.
+    if app.pending.is_some() && app.transcript_viewer.is_open() {
+        app.transcript_viewer.close();
+    }
+    if app.transcript_viewer.is_open() {
+        app.transcript_viewer.sync(&app.transcript);
+        transcript_viewer::render(f, &mut app.transcript_viewer, &app.theme);
+        return;
+    }
     // The dock grows for multiline input, bounded to six editable rows. A blocking approval asks
     // for the full six-row decision surface; short terminals degrade through Surface::resolve.
     let n_input_rows = (app.editor.text().split('\n').count().clamp(1, 6) as u16)
@@ -11957,6 +12084,23 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         atomic_replace(&output, b"first").unwrap();
         atomic_replace(&output, b"second").unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"second");
+        let blocks = vec![
+            block::Block::new(1, block::BlockKind::User("first semantic record".into())),
+            block::Block::new(
+                2,
+                block::BlockKind::Notice {
+                    level: block::NoticeLevel::Info,
+                    text: "second semantic record".into(),
+                },
+            ),
+        ];
+        let exported = export_transcript(&root, &blocks, Some(&[2]), "reports/session.md").unwrap();
+        assert_eq!(exported, output);
+        assert_eq!(
+            std::fs::read(&output).unwrap(),
+            transcript_export_body(&blocks, Some(&[2])).unwrap(),
+            "viewer and slash export persist the exact semantic snapshot builder bytes"
+        );
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -12006,5 +12150,26 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         std::fs::remove_dir_all(root).ok();
         std::fs::remove_dir_all(outside).ok();
+    }
+
+    #[test]
+    fn approval_event_preempts_an_open_transcript_viewer_immediately() {
+        let mut app = App::new();
+        app.transcript_viewer.open("", &app.transcript);
+        assert!(app.transcript_viewer.is_open());
+        apply_event(
+            &mut app,
+            UiEvent::ApprovalRequest {
+                id: SubmissionId(77),
+                tool: "bash".into(),
+                capability: Capability::CodeExecuting,
+                reason: "fixture".into(),
+                arguments: serde_json::json!({"command": "true"}),
+                workspace: "/fixture".into(),
+            },
+        );
+        assert!(!app.transcript_viewer.is_open());
+        assert!(app.pending.is_some());
+        assert_eq!(app.approval_choice, ApprovalChoice::Deny);
     }
 }
