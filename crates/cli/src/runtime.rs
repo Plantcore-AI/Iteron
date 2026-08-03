@@ -4607,7 +4607,10 @@ impl Agent {
             }
             let effective_system = self.effective_system();
             let tool_specs = self.registry.specs();
-            let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192).min(8192);
+            // A declared capability is the route's own documented ceiling, so it is used as
+            // declared. 8192 remains the conservative default for an UNKNOWN capability only —
+            // clamping the declared value froze every provider at that default (I-02).
+            let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192);
             // ---- compaction at the window boundary (ADR-002): if the transcript approaches
             // the budget, summarize the middle so a long task does not overflow. Done here, at
             // a turn boundary, because it rewrites the prefix (a cache bomb — do it rarely). ----
@@ -13375,6 +13378,53 @@ ant-api03-SuperSecretModelToken12345"
         }
         assert_eq!(observed_window, Some(1_000_000));
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn a_declared_output_ceiling_reaches_the_request_unclamped() {
+        // The request reservation used to be `unwrap_or(8192).min(8192)`, which froze every
+        // declared capability at the unknown-capability default: GLM's documented 128K arrived as
+        // 8192, and the same expression fed the recorded compaction trigger (I-02).
+        for (label, declared, expected) in [
+            ("declared", Some(128_000_u32), 128_000_u32),
+            ("undeclared", None, 8_192),
+        ] {
+            let ws = temp_ws(&format!("declared-output-ceiling-{label}"));
+            let registry = Registry::coding_agent(&ws).unwrap();
+            let run = core_protocol::RunId(format!("declared-output-ceiling-{label}"));
+            let rollout = Rollout::open(
+                &ws.join(".core/runs"),
+                &run,
+                core_protocol::TenantId::default(),
+            )
+            .unwrap();
+            let provider = std::sync::Arc::new(CaptureSteering::default());
+            let mut agent = Agent::new(
+                provider.clone(),
+                registry,
+                rollout,
+                "glm-5.2".into(),
+                "sys".into(),
+                Budget {
+                    max_turns: 1,
+                    max_usd: None,
+                    max_tokens: None,
+                    max_wall_secs: 30,
+                    max_consecutive_tool_errors: 3,
+                },
+            );
+            agent.workspace = ws.clone();
+            agent.model_context_window = Some(1_000_000);
+            agent.model_max_output_tokens = declared;
+
+            assert_eq!(agent.run("inspect the route").await.unwrap(), Outcome::Done);
+            assert_eq!(
+                provider.requests.lock().unwrap()[0].max_tokens,
+                expected,
+                "{label} output ceiling must reach the provider as resolved"
+            );
+            let _ = std::fs::remove_dir_all(&ws);
+        }
     }
 
     #[tokio::test]

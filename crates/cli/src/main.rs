@@ -1147,7 +1147,9 @@ async fn run_cli() -> anyhow::Result<u8> {
                 .compaction
                 .effective_trigger_tokens(
                     agent.model_context_window,
-                    agent.model_max_output_tokens.unwrap_or(8192).min(8192),
+                    // Same resolution as the request path: the declared ceiling is recorded, not
+                    // a clamp, so the digest names the compaction trigger the run actually used.
+                    agent.model_max_output_tokens.unwrap_or(8192),
                 )
                 .to_string(),
             agent.compaction.keep_recent.to_string(),
