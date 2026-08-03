@@ -1647,7 +1647,9 @@ impl App {
         }
     }
 
-    #[allow(dead_code)] // REPL seam (see workflow_run_index); exercised by tests, live at M9.
+    // REPL seam (see workflow_run_index); exercised by tests. It goes live with ADR-0001 step 1,
+    // which needs a CLI stream schema-version bump to add the `UiEvent` variant that reaches it.
+    #[allow(dead_code)]
     fn workflow_run_card_mut(&mut self, run_id: &str) -> Option<&mut block::WorkflowRunCard> {
         let block_id = *self.workflow_run_index.get(run_id)?;
         self.transcript
@@ -1662,7 +1664,8 @@ impl App {
     /// Upsert one QuickJS `core-workflow` progress event into its one live phase→agent tree card
     /// (design §3.2), creating the card on first sight of a run id. This is the interactive-TUI seam
     /// for a workflow launched from the REPL; the one-shot `core workflow run` command drives an
-    /// equivalent card through its own live loop (`workflow::run_live`).
+    /// equivalent card through its own live loop (`workflow::run_live`). Wired up by ADR-0001
+    /// step 1 (docs/project/decisions/0001-workflow-renderer-convergence.md).
     #[allow(dead_code)]
     fn workflow_run_event(
         &mut self,
@@ -9688,7 +9691,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             }),
         );
         let live = render_text(&mut app, 120, 32);
-        assert!(live.contains("NOW"));
+        // The running investigator keeps its own branch row (I-04): no NOW hoist, no filtered row.
+        assert!(live.contains("inspect the runtime · running"));
         assert!(live.contains("read_file"));
         assert!(live.contains("RESERVE"));
         assert!(live.contains("sequential"));

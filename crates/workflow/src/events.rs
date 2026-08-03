@@ -3,7 +3,10 @@
 //! but stays presentation-agnostic: the CLI's plain renderer (design §3.5) and a future ratatui
 //! tree both consume this one enum. We adopt the 5-state semantic model over the raw wire.
 
-pub const PROGRESS_SINK_PORT_VERSION: u32 = 1;
+/// v2 adds [`ProgressEvent::AgentQueued`]: a declared-but-not-yet-admitted row. A sink built against
+/// v1 cannot render a fixed denominator, so the engine refuses it rather than silently dropping the
+/// queued half of the run.
+pub const PROGRESS_SINK_PORT_VERSION: u32 = 2;
 
 /// The semantic lifecycle state of one agent row (design §3.1). `Queued` and `Skipped` are derived
 /// in the higher layers; the slice emits `Running`/`Done`/`Error`.
@@ -24,6 +27,15 @@ pub enum ProgressEvent {
     Phase { index: usize, title: String },
     /// A `log(msg)` narrator line.
     Log { message: String },
+    /// An `agent()` call was DECLARED and is waiting on a Governor permit. Emitted before the permit
+    /// is requested, so the whole fan is visible (and the done/total denominator fixed) from the
+    /// first frame instead of growing as slots free up.
+    AgentQueued {
+        index: usize,
+        label: String,
+        phase: Option<String>,
+        model: Option<String>,
+    },
     /// An `agent()` call began running (permit acquired).
     AgentStarted {
         index: usize,

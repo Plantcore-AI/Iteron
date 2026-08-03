@@ -197,6 +197,13 @@ pub struct RunReport {
     pub cache_hits: usize,
     /// Agents that ran live (cache misses).
     pub cache_misses: usize,
+    /// Tokens summed across every agent this run settled. Every finish event already carried this;
+    /// nothing aggregated it, so a completed run reported no cost evidence at all.
+    pub tokens: u64,
+    /// Tool calls summed across every agent this run settled.
+    pub tool_calls: u64,
+    /// Wall-clock duration of the whole run.
+    pub elapsed_ms: u64,
 }
 
 /// A background run. Owns the [`CancellationToken`] threaded into every `AgentCall`; [`cancel`] trips

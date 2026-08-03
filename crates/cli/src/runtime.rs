@@ -6232,10 +6232,11 @@ impl Agent {
     /// In-turn `Workflow` tool handler (kernel interception, the workflow analogue of
     /// `spawn_subagent`). Builds a [`crate::KernelSpawner`] from THIS agent's live route + paths, then
     /// drives the run through [`core_workflow::WorkflowEngine::launch`] (background `RunHandle`, review
-    /// B3) and `join`s it within the turn so the model receives the aggregated result. The CC-style
-    /// banner (run id) is emitted as a `Notice` at launch. Deferred: truly detached background
-    /// (returning before completion) + a cross-turn `/workflows` watch surface — those need a session
-    /// lifecycle owner outside a single turn.
+    /// B3) and `join`s it within the turn so the model receives the aggregated result. The launch
+    /// banner (run id) is emitted as a `Notice`, and the re-launchable sidecars are persisted so
+    /// `core workflow list|resume|watch` can see the run. Deferred: truly detached background
+    /// (returning before completion), which needs a session lifecycle owner outside a single turn,
+    /// and live in-turn progress (ADR-0001 step 1).
     async fn launch_workflow(
         &mut self,
         turn_id: TurnId,
@@ -6334,20 +6335,48 @@ impl Agent {
         let spawner: std::sync::Arc<dyn core_workflow::AgentSpawner> =
             std::sync::Arc::new(KernelSpawner::new(cx));
 
+        // Persist the re-launchable sidecars BEFORE the run starts, exactly as `core workflow run`
+        // does. Without them the engine's bare `journal.jsonl` was the only trace of an in-turn run,
+        // so `core workflow list` showed it as an unnamed, model-less row and `resume`/`watch` had
+        // no script to replay.
+        let manifest = crate::workflow::RunManifest {
+            run_id: run_id.clone(),
+            name: workflow_name.clone(),
+            args: args.clone(),
+            provider_id: route.provider_id.clone(),
+            model: route.model_id.clone(),
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs())
+                .unwrap_or(0),
+        };
+        if let Err(error) = crate::workflow::persist_inputs(&workflows_dir, &manifest, &script) {
+            return Err(format!("Workflow: cannot persist run inputs: {error}"));
+        }
+
         let spec = core_workflow::RunSpec::new(script)
             .with_args(args)
             .with_run_id(core_workflow::RunId::new(run_id.clone()))
-            .with_workflows_dir(workflows_dir)
+            .with_workflows_dir(workflows_dir.clone())
             .with_limits(engine_limits);
+        // KNOWN GAP (ADR-0001 step 1, docs/project/decisions/0001-workflow-renderer-convergence.md):
+        // an in-turn run discards every phase, log and agent event, so the operator sees the notice
+        // below and then nothing until the run settles. Forwarding this sink to `self.ui_tx` — the
+        // way `prepare_investigator`'s child forwarder already does — needs a new `UiEvent` variant
+        // to reach `App::workflow_run_event`, and a new `UiEvent` variant is a new
+        // `cli.machine-stream.*` record type, which the release contract only admits on a shared
+        // CLI schema-version bump. Do not paper over it with a stream of `Notice`s.
         let sink: std::sync::Arc<dyn core_workflow::ProgressSink> =
             std::sync::Arc::new(core_workflow::NullSink);
 
-        // The CC-style launch banner (parallels Claude Code's "Task ID / Run ID / use /workflows").
+        // The launch banner. It names the surface that can actually show this run: `/workflows`
+        // summarizes the cards already in THIS transcript, and an in-turn script run has no card
+        // until ADR-0001 step 1 lands, so pointing at it would be a promise the TUI cannot keep.
         self.emit(
             turn_id,
             EventKind::Notice {
                 text: format!(
-                    "Workflow `{workflow_name}` launched (run {run_id}); use /workflows to watch"
+                    "Workflow `{workflow_name}` launched (run {run_id}); `core workflow list` tracks it"
                 ),
             },
         );
@@ -6357,6 +6386,11 @@ impl Agent {
             .join()
             .await
             .map_err(|error| format!("Workflow run failed: {error}"))?;
+        // Record the terminal outcome so `list` reports a settled status instead of a run that is
+        // still "running" because its journal exists.
+        if let Err(error) = crate::workflow::persist_result(&workflows_dir, &run_id, &report) {
+            return Err(format!("Workflow: cannot persist run result: {error}"));
+        }
         let value = serde_json::to_string_pretty(&report.value)
             .unwrap_or_else(|_| report.value.to_string());
         Ok(format!(

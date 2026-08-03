@@ -1391,7 +1391,7 @@ fn parse_workflow_args(args: &Option<String>) -> anyhow::Result<serde_json::Valu
 
 /// Build the DEFAULT workflow spawner: the real [`runtime::KernelSpawner`], so every `agent()`
 /// call runs a genuine child `Agent` (own context + read-only tool loop) via `run_leaf`. Set
-/// `CORE_WORKFLOW_SPAWNER=provider` to fall back to the first-slice single-completion `ProviderSpawner`.
+/// `CORE_WORKFLOW_SPAWNER=provider` to swap in the single-completion `ProviderSpawner` instead.
 ///
 /// The context is filled from the SAME resolved values the main agent path records
 /// (`record_model_selection` inputs): provider handle + model + `provider_id` + the catalog/capability
@@ -1571,6 +1571,12 @@ async fn run_workflow_command(
         .as_ref()
         .and_then(|meta| meta.name.clone())
         .unwrap_or_else(|| "workflow".into());
+    // The declared phases seed the live tree's layout; reading only `name`/`description` here is
+    // what left the parsed `meta.phases` unused.
+    let declared_phases = meta
+        .as_ref()
+        .and_then(|meta| meta.phases.clone())
+        .unwrap_or_default();
     eprintln!(
         "workflow \u{b7} repo={} \u{b7} provider={} \u{b7} model={} \u{b7} run={run_id}",
         repo.display(),
@@ -1633,9 +1639,9 @@ async fn run_workflow_command(
         let environment = theme::capabilities::Environment::capture();
         let detected = theme::Theme::detect_with(environment, None);
         if is_watch {
-            workflow::watch_live(spec, spawner, &name, &detected.theme).await?
+            workflow::watch_live(spec, spawner, &name, &declared_phases, &detected.theme).await?
         } else {
-            workflow::run_live(spec, spawner, &name, &detected.theme).await?
+            workflow::run_live(spec, spawner, &name, &declared_phases, &detected.theme).await?
         }
     } else {
         let sink: std::sync::Arc<dyn core_workflow::ProgressSink> =
@@ -1653,8 +1659,11 @@ async fn run_workflow_command(
     // Record the terminal outcome (enables `list` status + shows the value to a later reader).
     workflow::persist_result(&workflows_dir, &run_id, &report)?;
     eprintln!(
-        "run {run_id} \u{b7} {} \u{b7} cache {} hit / {} miss",
+        "run {run_id} \u{b7} {} \u{b7} {} tok \u{b7} {} tool call(s) \u{b7} {} \u{b7} cache {} hit / {} miss",
         if report.stopped { "stopped" } else { "done" },
+        core_workflow::fmt_count(report.tokens),
+        report.tool_calls,
+        core_workflow::fmt_duration(report.elapsed_ms),
         report.cache_hits,
         report.cache_misses
     );

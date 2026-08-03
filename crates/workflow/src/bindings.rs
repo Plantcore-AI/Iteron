@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use rquickjs::function::Async;
@@ -48,6 +48,8 @@ pub struct RunState {
     agent_calls: AtomicUsize,
     max_agent_calls: usize,
     phases: Mutex<Vec<String>>,
+    tokens: AtomicU64,
+    tool_calls: AtomicU64,
 }
 
 impl RunState {
@@ -58,7 +60,25 @@ impl RunState {
             agent_calls: AtomicUsize::new(0),
             max_agent_calls,
             phases: Mutex::new(Vec::new()),
+            tokens: AtomicU64::new(0),
+            tool_calls: AtomicU64::new(0),
         }
+    }
+
+    /// Fold one settled agent's metrics into the run totals. Every finish event already carries
+    /// them; without this they were reported per row and never summed for the run.
+    fn observe(&self, tokens: u64, tool_calls: u64) {
+        self.tokens.fetch_add(tokens, Ordering::Relaxed);
+        self.tool_calls.fetch_add(tool_calls, Ordering::Relaxed);
+    }
+
+    /// `(tokens, tool_calls)` accumulated across every agent this run settled (cache replays
+    /// included — a replayed outcome cost tokens once and is still part of the run's evidence).
+    pub fn totals(&self) -> (u64, u64) {
+        (
+            self.tokens.load(Ordering::Relaxed),
+            self.tool_calls.load(Ordering::Relaxed),
+        )
     }
 
     /// 1-based declaration-order index, assigned synchronously at `__agent` call time.
@@ -178,6 +198,7 @@ fn emit_finished(env: &AgentEnv, idx: usize, label: String, record: &Record, dur
             Some("unknown journal outcome".into()),
         ),
     };
+    env.state.observe(record.tokens, record.tool_calls);
     env.sink.emit(ProgressEvent::AgentFinished {
         index: idx,
         label,
@@ -366,6 +387,15 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
     };
 
     // --- (3) Governor permit — the one global slot pool, held for the whole call ----------------
+    // The queued row is emitted BEFORE the permit is requested. `parallel()` marshals every
+    // `agent()` call up front, so the whole fan appears at once and the run's denominator is fixed
+    // from the first frame; emitting only on admission made the total climb as slots freed up.
+    env.sink.emit(ProgressEvent::AgentQueued {
+        index: idx,
+        label: label.clone(),
+        phase: raw.phase.clone(),
+        model: raw.model.clone(),
+    });
     let permit = env.gov.acquire().await;
     let started = Instant::now();
     env.sink.emit(ProgressEvent::AgentStarted {
