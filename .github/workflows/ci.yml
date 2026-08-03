@@ -1,11 +1,26 @@
 name: ci
+# These lanes no longer run automatically. They need no GitHub-hosted runner, so they run on
+# hardware we already own and publish the same status contexts from there:
+#
+#   rust / macos-15      developer Mac, pre-push
+#   rust / ubuntu-24.04  DGX box
+#   boundary / validate  DGX box
+#   supply / validate    DGX box
+#   docs / strict-build  DGX box  (see docs.yml)
+#
+# all via `release-tools/local_gate.sh <macos|linux>`. A branch ruleset matches a required check
+# by context NAME, not by producer, so the protection is unchanged. What changes is that a status
+# is now executor-attested rather than machine-enforced, and a pull request nobody gates stays
+# blocked; both are documented in CONTRIBUTING.md.
+#
+# `review / required-humans` stays on Actions because it reads the pull request's own review
+# state, which has no local equivalent. The Windows lane will be added here once #38 lands, and
+# Windows is the one platform we cannot self-host.
+#
+# This workflow is kept, in full, behind manual dispatch: it is the fallback when Actions
+# capacity is available again and the reference definition these local lanes mirror.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    types: [opened, synchronize, reopened, edited, ready_for_review]
-  merge_group:
-    types: [checks_requested]
+  workflow_dispatch:
 
 permissions:
   contents: read
