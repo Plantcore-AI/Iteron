@@ -5,8 +5,9 @@
 
 use anyhow::{Context, Result, bail};
 use core_tunables::{
-    Availability, BenchmarkImpact, DefaultKind, Domain, Family, SourceKind, Trainability,
-    ValueKind, canonical_artifact_json, families, registry_digest, validate_registry,
+    CoreStrategySlot, DefaultKind, Domain, Family, ImplementationStatus, OptimizationClass,
+    RelevanceLevel, SourceKind, SourceTrust, StructuredValueDomain, ValueKind,
+    canonical_artifact_json, families, registry_digest, validate_registry,
 };
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -66,12 +67,14 @@ fn render_markdown() -> Result<String> {
     let digest = registry_digest()?;
     let registry = families();
     let mut domains: BTreeMap<Domain, usize> = BTreeMap::new();
-    let mut availabilities: BTreeMap<Availability, usize> = BTreeMap::new();
+    let mut statuses: BTreeMap<ImplementationStatus, usize> = BTreeMap::new();
     let mut value_kinds: BTreeMap<ValueKind, usize> = BTreeMap::new();
+    let mut optimization: BTreeMap<OptimizationClass, usize> = BTreeMap::new();
     for family in registry {
         *domains.entry(family.domain).or_default() += 1;
-        *availabilities.entry(family.availability).or_default() += 1;
+        *statuses.entry(family.implementation_status).or_default() += 1;
         *value_kinds.entry(family.value_schema.kind).or_default() += 1;
+        *optimization.entry(family.optimization.class).or_default() += 1;
     }
 
     let mut out = String::new();
@@ -87,9 +90,9 @@ fn render_markdown() -> Result<String> {
     )?;
     writeln!(
         out,
-        "Each `value_schema` supplies a serialized value kind, admissible representation, resolver constraint, and unit. Availability is explicit: `active` means an independently consumed production control, `partial` means a staged, grouped, or incompletely wired seam, and `declared` means no current runtime seam.\n"
+        "Every entry carries aliases, a structured activation predicate and inactive reason, provider/capability requirements, one or more of the nine core StrategySlot bindings, source trust, implementation status, a tagged and bounded value domain, formal SWE-bench Pro then Terminal-Bench 2.1 relevance, optimization/search phase, risk, authority, schema version, and an independent SHA-256 semantic digest in the machine artifact.\n"
     )?;
-    writeln!(out, "- Schema: `core-tunables/v1`")?;
+    writeln!(out, "- Schema: `core-tunables/v2`")?;
     writeln!(
         out,
         "- Canonical digest: `{}:{}`",
@@ -99,62 +102,149 @@ fn render_markdown() -> Result<String> {
         out,
         "- Machine artifact: [`tunables.json`](tunables.json)\n"
     )?;
-    writeln!(out, "## Domain counts\n")?;
-    writeln!(out, "| Domain | Families |")?;
-    writeln!(out, "|---|---:|")?;
-    for (domain, count) in domains {
-        writeln!(out, "| `{}` | {} |", domain_name(domain), count)?;
-    }
-    writeln!(out, "\n## Availability counts\n")?;
-    writeln!(out, "| Availability | Families |")?;
-    writeln!(out, "|---|---:|")?;
-    for (availability, count) in availabilities {
-        writeln!(out, "| `{}` | {} |", availability_name(availability), count)?;
-    }
-    writeln!(out, "\n## Value-kind counts\n")?;
-    writeln!(out, "| Value kind | Families |")?;
-    writeln!(out, "|---|---:|")?;
-    for (kind, count) in value_kinds {
-        writeln!(out, "| `{}` | {} |", value_kind_name(kind), count)?;
-    }
+    render_counts(&mut out, "Domain", domains, domain_name)?;
+    render_counts(
+        &mut out,
+        "Implementation status",
+        statuses,
+        implementation_status_name,
+    )?;
+    render_counts(&mut out, "Value kind", value_kinds, value_kind_name)?;
+    render_counts(
+        &mut out,
+        "Optimization class",
+        optimization,
+        optimization_name,
+    )?;
+
     writeln!(out, "\n## Families\n")?;
     writeln!(
         out,
-        "| # | Stable ID | Subsystem domain | Value schema | Default | Source | TB 2.1 | SWE-bench Pro | Trainability | Availability |"
+        "| # | Stable ID | Domain | Structured value domain | Default | Source / trust | SWE | TB 2.1 | Optimization | Status | StrategySlot |"
     )?;
-    writeln!(out, "|---:|---|---|---|---|---|---|---|---|---|")?;
+    writeln!(out, "|---:|---|---|---|---|---|---|---|---|---|---|")?;
     for family in registry {
         render_family(&mut out, family)?;
     }
     writeln!(out, "\n## Authority boundary\n")?;
     writeln!(
         out,
-        "`trainability` is an upper bound on who may propose a value. Runtime admission, operator ceilings, permissions, durability, replay, security, and effect-ledger invariants remain authoritative outside this registry. Benchmark relevance is causal classification, not a score claim."
+        "`optimization.class` is an upper bound on candidate production, not evidence that a live trainer or resolver is wired. `pin` entries remain outside search. Runtime admission, operator ceilings, permissions, durability, replay, security, and effect-ledger invariants remain authoritative outside this registry. Formal benchmark relevance is `high`, `medium`, or `low`; the separately serialized causal path and this registry do not promise a score delta."
     )?;
     Ok(out)
 }
 
+fn render_counts<K: Ord + Copy>(
+    out: &mut String,
+    heading: &str,
+    counts: BTreeMap<K, usize>,
+    name: fn(K) -> &'static str,
+) -> Result<()> {
+    writeln!(out, "\n## {heading} counts\n")?;
+    writeln!(out, "| {heading} | Families |")?;
+    writeln!(out, "|---|---:|")?;
+    for (value, count) in counts {
+        writeln!(out, "| `{}` | {} |", name(value), count)?;
+    }
+    Ok(())
+}
+
 fn render_family(out: &mut String, family: &Family) -> Result<()> {
+    let slots = family
+        .strategy_slots
+        .iter()
+        .copied()
+        .map(slot_name)
+        .collect::<Vec<_>>()
+        .join(", ");
     writeln!(
         out,
-        "| {} | `{}` | `{}` | `{}`: {}; constraint: {}; unit: {} | `{}`: {} | `{}`: `{}` | `{}` | `{}` | `{}` | `{}` |",
+        "| {} | `{}` | `{}` | {} | `{}`: {} | `{}` / `{}` | `{}` | `{}` | `{}` | `{}` | {} |",
         family.ordinal,
         family.id,
         domain_name(family.domain),
-        value_kind_name(family.value_schema.kind),
-        escape_cell(family.value_schema.admissible),
-        escape_cell(family.value_schema.constraint),
-        escape_cell(family.value_schema.unit),
+        escape_cell(&value_domain_summary(family.value_schema.domain)),
         default_name(family.default.kind),
         escape_cell(family.default.value),
         source_name(family.source.kind),
-        escape_cell(family.source.locator),
-        impact_name(family.benchmark.terminal_bench_2_1),
-        impact_name(family.benchmark.swe_bench_pro),
-        trainability_name(family.trainability),
-        availability_name(family.availability),
+        source_trust_name(family.source.trust),
+        relevance_name(family.benchmark_relevance.swe_bench_pro),
+        relevance_name(family.benchmark_relevance.terminal_bench_2_1),
+        optimization_name(family.optimization.class),
+        implementation_status_name(family.implementation_status),
+        slots
+            .split(", ")
+            .map(|slot| format!("`{slot}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
     )?;
     Ok(())
+}
+
+fn value_domain_summary(domain: StructuredValueDomain) -> String {
+    match domain {
+        StructuredValueDomain::Boolean => "boolean".into(),
+        StructuredValueDomain::Numeric { min, max, unit, .. } => format!(
+            "numeric [{}..{}] {}",
+            min.map_or_else(|| "-∞".into(), |value| value.to_string()),
+            max.map_or_else(|| "+∞".into(), |value| value.to_string()),
+            unit
+        ),
+        StructuredValueDomain::FiniteEnum {
+            values,
+            open_catalog,
+            ..
+        } => {
+            if open_catalog {
+                format!("open catalog enum ({} fixed values)", values.len())
+            } else {
+                format!("finite enum [{}]", values.join(", "))
+            }
+        }
+        StructuredValueDomain::Text {
+            min_bytes,
+            max_bytes,
+            format,
+        } => format!(
+            "text bytes [{}..{}], format {format}",
+            min_bytes,
+            max_bytes.map_or_else(|| "+∞".into(), |value| value.to_string())
+        ),
+        StructuredValueDomain::List {
+            min_items,
+            max_items,
+            item_schema,
+            ..
+        } => format!(
+            "list items [{}..{}], {item_schema}",
+            min_items,
+            max_items.map_or_else(|| "+∞".into(), |value| value.to_string())
+        ),
+        StructuredValueDomain::Map {
+            min_entries,
+            max_entries,
+            value_schema,
+            ..
+        } => format!(
+            "map entries [{}..{}], {value_schema}",
+            min_entries,
+            max_entries.map_or_else(|| "+∞".into(), |value| value.to_string())
+        ),
+        StructuredValueDomain::Composite { schema_ref, .. } => {
+            format!("composite {schema_ref}")
+        }
+        StructuredValueDomain::Catalog {
+            min_entries,
+            max_entries,
+            entry_schema,
+            open_catalog,
+        } => format!(
+            "{} catalog entries [{}..{}], {entry_schema}",
+            if open_catalog { "open" } else { "closed" },
+            min_entries,
+            max_entries.map_or_else(|| "+∞".into(), |value| value.to_string())
+        ),
+    }
 }
 
 fn escape_cell(value: &str) -> String {
@@ -184,9 +274,9 @@ fn default_name(value: DefaultKind) -> &'static str {
     match value {
         DefaultKind::Literal => "literal",
         DefaultKind::Derived => "derived",
+        DefaultKind::Dynamic => "dynamic",
         DefaultKind::Catalog => "catalog",
         DefaultKind::OperatorRequired => "operator_required",
-        DefaultKind::Inactive => "inactive",
     }
 }
 
@@ -206,11 +296,24 @@ fn source_name(value: SourceKind) -> &'static str {
     }
 }
 
-fn availability_name(value: Availability) -> &'static str {
+fn source_trust_name(value: SourceTrust) -> &'static str {
     match value {
-        Availability::Active => "active",
-        Availability::Partial => "partial",
-        Availability::Declared => "declared",
+        SourceTrust::Operator => "operator",
+        SourceTrust::Repository => "repository",
+        SourceTrust::Builtin => "builtin",
+        SourceTrust::RuntimeObservation => "runtime_observation",
+        SourceTrust::ProviderAttested => "provider_attested",
+        SourceTrust::GovernedBundle => "governed_bundle",
+        SourceTrust::RegistryDeclaration => "registry_declaration",
+    }
+}
+
+fn implementation_status_name(value: ImplementationStatus) -> &'static str {
+    match value {
+        ImplementationStatus::Full => "full",
+        ImplementationStatus::Partial => "partial",
+        ImplementationStatus::Missing => "missing",
+        ImplementationStatus::FixedHidden => "fixed_hidden",
     }
 }
 
@@ -231,23 +334,36 @@ fn value_kind_name(value: ValueKind) -> &'static str {
     }
 }
 
-fn impact_name(value: BenchmarkImpact) -> &'static str {
+fn relevance_name(value: RelevanceLevel) -> &'static str {
     match value {
-        BenchmarkImpact::None => "none",
-        BenchmarkImpact::Conditional => "conditional",
-        BenchmarkImpact::Indirect => "indirect",
-        BenchmarkImpact::Direct => "direct",
+        RelevanceLevel::Low => "low",
+        RelevanceLevel::Medium => "medium",
+        RelevanceLevel::High => "high",
     }
 }
 
-fn trainability_name(value: Trainability) -> &'static str {
+fn optimization_name(value: OptimizationClass) -> &'static str {
     match value {
-        Trainability::FixedInvariant => "fixed_invariant",
-        Trainability::OperatorOnly => "operator_only",
-        Trainability::OfflineSearch => "offline_search",
-        Trainability::RuntimeAdaptive => "runtime_adaptive",
-        Trainability::CatalogCurated => "catalog_curated",
-        Trainability::Inactive => "inactive",
+        OptimizationClass::P1 => "p1",
+        OptimizationClass::P2 => "p2",
+        OptimizationClass::CStructured => "c_structured",
+        OptimizationClass::CArtifact => "c_artifact",
+        OptimizationClass::CComponent => "c_component",
+        OptimizationClass::Pin => "pin",
+    }
+}
+
+fn slot_name(value: CoreStrategySlot) -> &'static str {
+    match value {
+        CoreStrategySlot::Router => "core/router",
+        CoreStrategySlot::Planner => "core/planner",
+        CoreStrategySlot::Context => "core/context",
+        CoreStrategySlot::Memory => "core/memory",
+        CoreStrategySlot::Scheduler => "core/scheduler",
+        CoreStrategySlot::ToolPolicy => "core/tool_policy",
+        CoreStrategySlot::Verifier => "core/verifier",
+        CoreStrategySlot::ModelRouter => "core/model_router",
+        CoreStrategySlot::Collaboration => "core/collaboration",
     }
 }
 
@@ -270,13 +386,15 @@ mod tests {
     }
 
     #[test]
-    fn human_projection_is_non_vacuous_and_names_the_authority_boundary() {
+    fn human_projection_names_formal_schema_and_authority_boundary() {
         let rendered = render_markdown().unwrap();
         assert!(rendered.contains("**160** stable families"));
-        assert!(rendered.contains("## Value-kind counts"));
-        assert!(rendered.contains("`duration`: positive integer milliseconds"));
+        assert!(rendered.contains("## Implementation status counts"));
+        assert!(rendered.contains("`fixed_hidden`"));
+        assert!(rendered.contains("`c_component`"));
+        assert!(rendered.contains("numeric [1..86400] seconds"));
         assert!(rendered.contains("## Authority boundary"));
-        assert!(rendered.contains("`shell_timeout_output`"));
+        assert!(rendered.contains("`provider_connect_tls_timeout`"));
     }
 
     #[test]

@@ -1,12 +1,231 @@
-use crate::{EXPECTED_FAMILY_COUNT, ValueKind, ValueSchema};
+use crate::{EXPECTED_FAMILY_COUNT, NumericType, StructuredValueDomain, ValueKind, ValueSchema};
+
+macro_rules! structured_domain {
+    (Bool, $description:literal, $unit:literal) => {
+        StructuredValueDomain::Boolean
+    };
+    (Enum, "low, medium, high, xhigh, max, ultracode", $unit:literal) => {
+        StructuredValueDomain::FiniteEnum {
+            values: &["low", "medium", "high", "xhigh", "max", "ultracode"],
+            open_catalog: false,
+            catalog_ref: None,
+        }
+    };
+    (Enum, $description:literal, $unit:literal) => {
+        StructuredValueDomain::FiniteEnum {
+            values: &[],
+            open_catalog: true,
+            catalog_ref: Some("core://tunables/catalogs/admitted-values-v1"),
+        }
+    };
+    (Count, "positive integer", $unit:literal) => {
+        StructuredValueDomain::Numeric {
+            numeric_type: NumericType::Integer,
+            min: Some(1),
+            max: Some(1_000_000),
+            unit: $unit,
+        }
+    };
+    (Count, $description:literal, $unit:literal) => {
+        StructuredValueDomain::Numeric {
+            numeric_type: NumericType::Integer,
+            min: Some(0),
+            max: Some(1_000_000),
+            unit: $unit,
+        }
+    };
+    (Duration, "positive integer seconds", $unit:literal) => {
+        StructuredValueDomain::Numeric {
+            numeric_type: NumericType::Integer,
+            min: Some(1),
+            max: Some(86_400),
+            unit: $unit,
+        }
+    };
+    (Duration, "positive integer milliseconds", $unit:literal) => {
+        StructuredValueDomain::Numeric {
+            numeric_type: NumericType::Integer,
+            min: Some(1),
+            max: Some(86_400_000),
+            unit: $unit,
+        }
+    };
+    (Duration, $description:literal, $unit:literal) => {
+        StructuredValueDomain::Numeric {
+            numeric_type: NumericType::Integer,
+            min: Some(0),
+            max: Some(86_400_000),
+            unit: $unit,
+        }
+    };
+    (Bytes, "positive integer bytes", $unit:literal) => {
+        StructuredValueDomain::Numeric {
+            numeric_type: NumericType::Integer,
+            min: Some(1),
+            max: Some(1_073_741_824),
+            unit: $unit,
+        }
+    };
+    (Bytes, $description:literal, $unit:literal) => {
+        StructuredValueDomain::Numeric {
+            numeric_type: NumericType::Integer,
+            min: Some(0),
+            max: Some(1_073_741_824),
+            unit: $unit,
+        }
+    };
+    (Ratio, $description:literal, $unit:literal) => {
+        StructuredValueDomain::Numeric {
+            numeric_type: NumericType::Decimal,
+            min: Some(0),
+            max: Some(1),
+            unit: $unit,
+        }
+    };
+    (Decimal, $description:literal, $unit:literal) => {
+        StructuredValueDomain::Numeric {
+            numeric_type: NumericType::Decimal,
+            min: Some(0),
+            max: Some(1_000_000_000),
+            unit: $unit,
+        }
+    };
+    (String, $description:literal, $unit:literal) => {
+        StructuredValueDomain::Text {
+            min_bytes: 0,
+            max_bytes: Some(1_048_576),
+            format: $unit,
+        }
+    };
+    (List, $description:literal, $unit:literal) => {
+        StructuredValueDomain::List {
+            min_items: 0,
+            max_items: Some(4_096),
+            item_schema: "core://tunables/schemas/namespaced-id-v1",
+            unique_items: true,
+        }
+    };
+    (Map, $description:literal, $unit:literal) => {
+        StructuredValueDomain::Map {
+            min_entries: 0,
+            max_entries: Some(4_096),
+            key_schema: "core://tunables/schemas/namespaced-id-v1",
+            value_schema: "core://tunables/schemas/bounded-map-value-v1",
+        }
+    };
+    (Policy, $description:literal, $unit:literal) => {
+        StructuredValueDomain::Composite {
+            schema_ref: "core://tunables/schemas/bounded-policy-v1",
+            max_bytes: 262_144,
+            max_nodes: 4_096,
+            max_depth: 32,
+        }
+    };
+    (Catalog, $description:literal, $unit:literal) => {
+        StructuredValueDomain::Catalog {
+            min_entries: 0,
+            max_entries: Some(10_000),
+            entry_schema: "core://tunables/schemas/versioned-catalog-entry-v1",
+            open_catalog: true,
+        }
+    };
+}
 
 macro_rules! schema {
-    ($kind:ident, $admissible:literal, $constraint:literal, $unit:literal) => {
+    (Enum, "low, medium, high, xhigh, max, ultracode", $constraint:literal, $unit:literal) => {
+        ValueSchema {
+            kind: ValueKind::Enum,
+            domain: StructuredValueDomain::FiniteEnum {
+                values: &["low", "medium", "high", "xhigh", "max", "ultracode"],
+                open_catalog: false,
+                catalog_ref: None,
+            },
+            description: "low, medium, high, xhigh, max, ultracode",
+            constraints: &[$constraint],
+        }
+    };
+    (Count, "positive integer", $constraint:literal, $unit:literal) => {
+        ValueSchema {
+            kind: ValueKind::Count,
+            domain: StructuredValueDomain::Numeric {
+                numeric_type: NumericType::Integer,
+                min: Some(1),
+                max: Some(1_000_000),
+                unit: $unit,
+            },
+            description: "positive integer",
+            constraints: &[$constraint],
+        }
+    };
+    (Duration, "positive integer seconds", $constraint:literal, $unit:literal) => {
+        ValueSchema {
+            kind: ValueKind::Duration,
+            domain: StructuredValueDomain::Numeric {
+                numeric_type: NumericType::Integer,
+                min: Some(1),
+                max: Some(86_400),
+                unit: $unit,
+            },
+            description: "positive integer seconds",
+            constraints: &[$constraint],
+        }
+    };
+    (Duration, "positive integer milliseconds", $constraint:literal, $unit:literal) => {
+        ValueSchema {
+            kind: ValueKind::Duration,
+            domain: StructuredValueDomain::Numeric {
+                numeric_type: NumericType::Integer,
+                min: Some(1),
+                max: Some(86_400_000),
+                unit: $unit,
+            },
+            description: "positive integer milliseconds",
+            constraints: &[$constraint],
+        }
+    };
+    (Bytes, "positive integer bytes", $constraint:literal, $unit:literal) => {
+        ValueSchema {
+            kind: ValueKind::Bytes,
+            domain: StructuredValueDomain::Numeric {
+                numeric_type: NumericType::Integer,
+                min: Some(1),
+                max: Some(1_073_741_824),
+                unit: $unit,
+            },
+            description: "positive integer bytes",
+            constraints: &[$constraint],
+        }
+    };
+    (String, "absolute HTTP or HTTPS URI", $constraint:literal, $unit:literal) => {
+        ValueSchema {
+            kind: ValueKind::String,
+            domain: StructuredValueDomain::Text {
+                min_bytes: 1,
+                max_bytes: Some(1_048_576),
+                format: $unit,
+            },
+            description: "absolute HTTP or HTTPS URI",
+            constraints: &[$constraint],
+        }
+    };
+    (String, "non-empty command string", $constraint:literal, $unit:literal) => {
+        ValueSchema {
+            kind: ValueKind::String,
+            domain: StructuredValueDomain::Text {
+                min_bytes: 1,
+                max_bytes: Some(1_048_576),
+                format: $unit,
+            },
+            description: "non-empty command string",
+            constraints: &[$constraint],
+        }
+    };
+    ($kind:ident, $description:literal, $constraint:literal, $unit:literal) => {
         ValueSchema {
             kind: ValueKind::$kind,
-            admissible: $admissible,
-            constraint: $constraint,
-            unit: $unit,
+            domain: structured_domain!($kind, $description, $unit),
+            description: $description,
+            constraints: &[$constraint],
         }
     };
 }
@@ -16,7 +235,7 @@ macro_rules! schema {
 /// The fixed-size array makes omission a compile error; registry validation additionally rejects
 /// blank domain text. Ordinals are stable and never reused.
 #[rustfmt::skip]
-const VALUE_SCHEMAS: [ValueSchema; EXPECTED_FAMILY_COUNT] = [
+static VALUE_SCHEMAS: [ValueSchema; EXPECTED_FAMILY_COUNT] = [
     // A — active public configuration families.
     schema!(Enum, "configured provider identifier", "must resolve to an admitted provider route", "provider id"), // 1 provider
     schema!(Enum, "model identifier advertised by the selected provider", "must satisfy the route capability envelope", "model id"), // 2 model
@@ -88,7 +307,7 @@ const VALUE_SCHEMAS: [ValueSchema; EXPECTED_FAMILY_COUNT] = [
     schema!(Policy, "registered deterministic join and reduction policy", "preserves declaration order and single-writer authority", "policy object"), // 64 join_reduce
     schema!(Policy, "positive aggregate calls, tokens, wall, cost, and concurrency ceilings", "all workflow tasks share one parent-bounded ledger", "policy object"), // 65 workflow_aggregate
     schema!(Policy, "bounded retry count and non-negative jitter window", "must fit remaining request deadline and never duplicate terminal effects", "policy object"), // 66 schema_retry_jitter
-    schema!(Count, "non-negative integer", "cannot exceed the parent delegation-depth ceiling", "levels"), // 67 delegation_depth
+    schema!(Duration, "positive integer seconds", "fixed transport default remains bounded by the request and run deadlines", "seconds"), // 67 provider_connect_tls_timeout
     schema!(Policy, "positive image count, byte, dimension, frame, and decode ceilings", "aggregate decode work remains within the fixed admission envelope", "policy object"), // 68 multimodal_input_admission_decode_envelope
     schema!(Policy, "positive submission/event entry and byte capacities", "queues remain bounded with typed overflow behavior", "policy object"), // 69 app_server_sq_eq_backpressure
     schema!(Policy, "positive discovery budget, cache TTL, and failure-backoff values", "account probes remain bounded and never invent provider capability", "policy object"), // 70 provider_discovery_account_probe_cache_policy
