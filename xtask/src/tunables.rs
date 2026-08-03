@@ -93,7 +93,7 @@ fn render_markdown() -> Result<String> {
     )?;
     writeln!(
         out,
-        "Every entry carries aliases, a structured activation predicate and inactive reason, provider/capability requirements, one or more of the nine core StrategySlot bindings, source trust, implementation status, a tagged and bounded value domain, formal SWE-bench Pro then Terminal-Bench 2.1 relevance, optimization/search phase, risk, authority, schema version, and an independent SHA-256 semantic digest in the machine artifact.\n"
+        "Every entry carries a canonical runtime-control semantic key, aliases, a structured activation predicate and inactive reason, provider/capability requirements, one or more of the nine core StrategySlot bindings, exact source provenance, implementation status, a tagged and bounded value domain, formal SWE-bench Pro then Terminal-Bench 2.1 relevance, optimization/search phase, risk, authority, schema version, and an independent SHA-256 family digest in the machine artifact. Semantic keys—not family digests—enforce single ownership of runtime controls.\n"
     )?;
     writeln!(out, "- Schema: `core-tunables/v2`")?;
     writeln!(
@@ -123,9 +123,12 @@ fn render_markdown() -> Result<String> {
     writeln!(out, "\n## Families\n")?;
     writeln!(
         out,
-        "| # | Stable ID | Domain | Structured value domain | Default | Source / trust | Requirements | SWE | TB 2.1 | Optimization | Status | StrategySlot |"
+        "| # | Stable ID | Semantic key | Domain | Structured value domain | Default | Source / trust / locator | Requirements | SWE | TB 2.1 | Optimization | Status | StrategySlot |"
     )?;
-    writeln!(out, "|---:|---|---|---|---|---|---|---|---|---|---|---|")?;
+    writeln!(
+        out,
+        "|---:|---|---|---|---|---|---|---|---|---|---|---|---|"
+    )?;
     for family in registry {
         render_family(&mut out, family)?;
     }
@@ -166,9 +169,10 @@ fn render_family(out: &mut String, family: &Family) -> Result<()> {
         .iter()
         .map(|binding| {
             format!(
-                "{}/{}",
+                "{}/{} ({})",
                 source_name(binding.kind),
-                source_trust_name(binding.trust)
+                source_trust_name(binding.trust),
+                binding.locator
             )
         })
         .collect::<Vec<_>>()
@@ -192,9 +196,10 @@ fn render_family(out: &mut String, family: &Family) -> Result<()> {
     };
     writeln!(
         out,
-        "| {} | `{}` | `{}` | {} | `{}`: {} | {} | {} | `{}` | `{}` | `{}` | `{}` | {} |",
+        "| {} | `{}` | `{}` | `{}` | {} | `{}`: {} | {} | {} | `{}` | `{}` | `{}` | `{}` | {} |",
         family.ordinal,
         family.id,
+        family.semantic_key,
         domain_name(family.domain),
         escape_cell(&value_domain_summary(family.value_schema.domain)),
         default_name(family.default.kind),
@@ -382,6 +387,7 @@ fn source_name(value: SourceKind) -> &'static str {
     match value {
         SourceKind::Cli => "cli",
         SourceKind::OperatorInput => "operator_input",
+        SourceKind::RustBuilder => "rust_builder",
         SourceKind::UserConfig => "user_config",
         SourceKind::ProjectConfig => "project_config",
         SourceKind::Environment => "environment",

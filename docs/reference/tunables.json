@@ -1,7 +1,7 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "db088d2900f790fa1d705dc8ad4948f4cc7d46cb8a977bc1db5404331d298f5d"
+    "value": "1d3d5787eb4b47c9428b264aad5d01dc74791427570643d32984824a3249f304"
   },
   "payload": {
     "schema_version": 2,
@@ -96,11 +96,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d87bd0ac7f7148bc9301b9f59ad5b2a4d671dffa7e917cab2f84d547a1e771dc"
+          "value": "ff88e6160db37397a1cab7681b93cf3af71995865b8d395f8c8bbc346b777aa8"
         },
         "schema_version": 1,
         "ordinal": 1,
         "id": "provider",
+        "semantic_key": "provider",
         "aliases": [
           "provider_id"
         ],
@@ -196,11 +197,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "862f2f8976c4053cd2f15d503ae62279b86c2087491728deb7be7f07a6554fe4"
+          "value": "d622d4a734daec50037b1aff55cd6482a7480db84090565400d74ff3404e33a2"
         },
         "schema_version": 1,
         "ordinal": 2,
         "id": "model",
+        "semantic_key": "model",
         "aliases": [
           "model_id"
         ],
@@ -302,11 +304,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8709b04618ea4a8dc90d91063a69b14bccaa90ef8002c9ff992765f02500d428"
+          "value": "3947ed9d2d93234b8f4749ca4711dd9bc17956b8100feebc779eaa20a0e906af"
         },
         "schema_version": 1,
         "ordinal": 3,
         "id": "base_url",
+        "semantic_key": "base_url",
         "aliases": [],
         "domain": "provider",
         "summary": "Override the provider API root.",
@@ -394,11 +397,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "6fbae723fa6b07a4140fc9943f32335edade42638f7ed3e34b1792cf36095e0a"
+          "value": "6cb9721362daa0b292845c923560bad7da99415f2508ff720b7ad23e8f1746b6"
         },
         "schema_version": 1,
         "ordinal": 4,
         "id": "effort",
+        "semantic_key": "effort",
         "aliases": [
           "reasoning_effort"
         ],
@@ -502,11 +506,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "80515c3fc40970be171ecca710d704e5be69227943aa86b1ff65996787e6c472"
+          "value": "dfad7ca315edfa9bc79c33614d4b313f2bd4bf77ff97794d197d7b448f8ff81b"
         },
         "schema_version": 1,
         "ordinal": 5,
         "id": "max_turns",
+        "semantic_key": "max_turns",
         "aliases": [],
         "domain": "budget",
         "summary": "Bound provider attempts for one run.",
@@ -601,11 +606,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5c4a191b3aa389b13117e7b5c61861bbacfbd85244cc291e3278009948008951"
+          "value": "49aea59a84ed21ad2566fb120b0c665fb310dfe88452145e14ee35d548446bcd"
         },
         "schema_version": 1,
         "ordinal": 6,
         "id": "max_usd",
+        "semantic_key": "max_usd",
         "aliases": [],
         "domain": "budget",
         "summary": "Bound signed monetary spend for one run.",
@@ -693,11 +699,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ff063cdc72d74b0afe2df9765d688addcc9dd4d0467c03c7fdabc9fd8da742ed"
+          "value": "fdb283b5e7ca02d583eb98909e839cf2208f3f733a9a809d075a0fabf52f04a4"
         },
         "schema_version": 1,
         "ordinal": 7,
         "id": "max_tokens",
+        "semantic_key": "max_tokens",
         "aliases": [],
         "domain": "budget",
         "summary": "Bound aggregate token use for one run.",
@@ -778,11 +785,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7cac293517e2ff6c3535806c133cebaea957289e58bb0a3e089f41593ffb9392"
+          "value": "05b911c1e10bd2e39ba9a549f21f7da4d29f159a078cb0b3788183c2477f40f8"
         },
         "schema_version": 1,
         "ordinal": 8,
         "id": "max_wall_secs",
+        "semantic_key": "max_wall_secs",
         "aliases": [
           "wall_timeout"
         ],
@@ -864,11 +872,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a04ae8d7a55a9f070ecce309413391f7bcdec5a2e9e2880571d79984ec075f1e"
+          "value": "7869bb8a9eabc5922c4e163bc146656e860cd6d4497a9f6cdb1bf7c2f9321496"
         },
         "schema_version": 1,
         "ordinal": 9,
         "id": "allow_code",
+        "semantic_key": "allow_code",
         "aliases": [],
         "domain": "governance",
         "summary": "Admit repository code execution when the operator allows it.",
@@ -945,11 +954,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "785579c354a9373388a99c0ab9f77811fe5626d61e752ab94e8fbf22e4dbbf7c"
+          "value": "258bd9fb4b2a4c09137ad4024328cfec96ec65f750195d13a2a0942c707c4b94"
         },
         "schema_version": 1,
         "ordinal": 10,
         "id": "permission_mode",
+        "semantic_key": "permission_mode",
         "aliases": [],
         "domain": "governance",
         "summary": "Select the operator permission posture.",
@@ -1033,11 +1043,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3313fa8ef2fe98b36f9b4b60af772d1eaf1aab1299975137f8c4140b1d7c7056"
+          "value": "ed71ee3d260e747eaded06a82f9916bae03f25ac6db907bc070bb7fc81bab031"
         },
         "schema_version": 1,
         "ordinal": 11,
         "id": "permission_rules",
+        "semantic_key": "permission_rules",
         "aliases": [],
         "domain": "governance",
         "summary": "Set per-capability allow, ask, or deny rules.",
@@ -1129,11 +1140,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e995bf8dee4232722db0d96c889a1ee070e1ae858298a40797924cdf8e9d21cc"
+          "value": "279e209dee88ee8c08a8a727e972f710a1439bfa88d177ba378ddc2bc6ee5faa"
         },
         "schema_version": 1,
         "ordinal": 12,
         "id": "bypass_permissions",
+        "semantic_key": "bypass_permissions",
         "aliases": [],
         "domain": "governance",
         "summary": "Explicitly bypass interactive permission prompts.",
@@ -1210,11 +1222,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "448442951a46a8595fb0bf51c225cf466a52bdc248a8ca3181df92ddf64a2dc8"
+          "value": "f0a1428be25ac4101d7508fdc46c441233622abf3a7dad29083cbc0e8e4b32ff"
         },
         "schema_version": 1,
         "ordinal": 13,
         "id": "compaction_trigger",
+        "semantic_key": "compaction_trigger",
         "aliases": [],
         "domain": "context",
         "summary": "Choose when context compaction starts.",
@@ -1341,11 +1354,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4c55ec7bff96db5141c1f3b10bb7504c32f14241c464e5d518c6b37642f5eeae"
+          "value": "2617846d902edd25be3d0e29eb7a87a64d790dc753c0b4bd48dce3c597dda04d"
         },
         "schema_version": 1,
         "ordinal": 14,
         "id": "verify_command",
+        "semantic_key": "verify_command",
         "aliases": [
           "verification_command"
         ],
@@ -1433,11 +1447,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ff46427d311ba919fa300ba6396d14a62ca8584dc37086c25bd2169956f8e415"
+          "value": "3fc6ff80144da0aeb9783b32e6f7a8f79e568d87beda809066d326ad863dede0"
         },
         "schema_version": 1,
         "ordinal": 15,
         "id": "retry_backoff_base",
+        "semantic_key": "retry_backoff_base",
         "aliases": [],
         "domain": "runtime",
         "summary": "Set the initial provider retry delay.",
@@ -1529,11 +1544,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d63c7dc04bbcbb7c45303f0d602539baf3c67c4b1aaf32b76ba6d0b2139a0702"
+          "value": "b3113a3a5642d4fe71e758f513e45d5a363aceaaf422f5b12415b147d41bb08f"
         },
         "schema_version": 1,
         "ordinal": 16,
         "id": "retry_backoff_cap",
+        "semantic_key": "retry_backoff_cap",
         "aliases": [],
         "domain": "runtime",
         "summary": "Cap provider retry delay.",
@@ -1625,11 +1641,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b015b42175806af7d0ba0547e7c47dd5e4267d1cca9e2c22fffbb5e15d043c96"
+          "value": "53ebc09b2b7f1a8aa4679f5b68eed76e84ccceb9f6b7e7c276fb206138d1d675"
         },
         "schema_version": 1,
         "ordinal": 17,
         "id": "retry_max_attempts",
+        "semantic_key": "retry_max_attempts",
         "aliases": [],
         "domain": "runtime",
         "summary": "Bound staged provider retries.",
@@ -1721,11 +1738,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "33ad5b91896f28e015908f46b73a4e2b37d6bf7806056be63df8c324ac58caf3"
+          "value": "37ae20dae0476a3a0c5086915bcea9a13a73018e75b55de5d32e70293b43771a"
         },
         "schema_version": 1,
         "ordinal": 18,
         "id": "egress_allow",
+        "semantic_key": "egress_allow",
         "aliases": [],
         "domain": "governance",
         "summary": "Declare an egress allow policy surface.",
@@ -1808,11 +1826,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4e7282829cd9f8bb3d372a09feeda0bdea95e30b717b42f26b6f19f4bd822949"
+          "value": "fd65846414daebedbc75fbe3b820cd25db2a10c0a7d113876415b28cff535668"
         },
         "schema_version": 1,
         "ordinal": 19,
         "id": "request_output_cap",
+        "semantic_key": "request_output_cap",
         "aliases": [],
         "domain": "provider",
         "summary": "Reserve and cap provider response tokens.",
@@ -1914,11 +1933,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e9791f801209ff63453cafc4ccd98dd5b8cc4f471bad3adb8ad43bb3879a126c"
+          "value": "d6fb53d632d79ff504e5f9d17a18c392ab2e70e6956e65241f671ad1f106e335"
         },
         "schema_version": 1,
         "ordinal": 20,
         "id": "effort_reasoning_map",
+        "semantic_key": "effort_reasoning_map",
         "aliases": [],
         "domain": "reasoning",
         "summary": "Map effort tiers onto provider reasoning controls.",
@@ -2013,11 +2033,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ec81a8117e1cb82370deed4f8505eff4d7a7faee00ac94c660041b5b4619298f"
+          "value": "e688e1ff4aa20ea4a7f6edc6a9ea7a0674a3c211a9aa52c35a156e481ed5ae20"
         },
         "schema_version": 1,
         "ordinal": 21,
         "id": "thinking_map",
+        "semantic_key": "thinking_map",
         "aliases": [],
         "domain": "reasoning",
         "summary": "Map effort onto explicit thinking budgets.",
@@ -2118,11 +2139,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ec04b965127012afd16bc6fbb33ed071b58dfd445969b27db6c8af9c54d8ee20"
+          "value": "dac05cdf70c2b8e178c89f7261ae19dc1dc4736ca232a3bcd0f134bd567f40b8"
         },
         "schema_version": 1,
         "ordinal": 22,
         "id": "orchestration_map",
+        "semantic_key": "orchestration_map",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Map effort onto orchestration eligibility.",
@@ -2220,20 +2242,20 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "35e7b324fa3b1c7c672a3eecb6f44fa873afc583f6fdca563e897909c8049d8f"
+          "value": "f255cb9a98077d0db1d1580f47e03c2a169d30009523eada741dbca295909af1"
         },
         "schema_version": 1,
         "ordinal": 23,
         "id": "prompt_cache",
+        "semantic_key": "prompt_cache",
         "aliases": [],
         "domain": "provider",
-        "summary": "Control provider prompt-cache use.",
+        "summary": "Enable or disable prompt-cache breakpoint emission for one built provider route.",
         "activation": {
           "predicate": {
-            "type": "runtime_derived",
-            "seam": "crates/cli/src/providers.rs"
+            "type": "always"
           },
-          "inactive_reason": "grouped_or_incomplete_seam"
+          "inactive_reason": null
         },
         "requirements": {
           "provider": "selected_route",
@@ -2246,90 +2268,44 @@
           "core/context"
         ],
         "default": {
-          "kind": "derived",
+          "kind": "literal",
           "resolver": {
-            "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/prompt_cache-v1"
+            "type": "literal"
           },
           "requirement": "optional",
-          "value": null
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
         },
         "source": {
           "bindings": [
             {
-              "kind": "user_config",
+              "kind": "rust_builder",
               "trust": "operator",
-              "locator": "provider prompt-cache opt-out"
+              "locator": "core_provider::ProviderInstance::with_prompt_cache"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/provider/src/anthropic.rs"
+              "locator": "core_provider::ProviderInstance::new"
             }
           ]
         },
         "value_schema": {
           "schema_id": "core://tunables/families/prompt_cache/value-v1",
-          "kind": "policy",
+          "kind": "bool",
           "domain": {
-            "type": "object",
-            "fields": [
-              {
-                "name": "enabled",
-                "required": true,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "boolean"
-                  }
-                }
-              },
-              {
-                "name": "breakpoint",
-                "required": false,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "enum",
-                    "values": [
-                      "none",
-                      "rolling",
-                      "explicit"
-                    ],
-                    "catalog_id": null
-                  }
-                }
-              },
-              {
-                "name": "ttl_seconds",
-                "required": false,
-                "domain": {
-                  "type": "scalar",
-                  "domain": {
-                    "type": "integer",
-                    "min": 0,
-                    "max": 86400,
-                    "unit": "seconds"
-                  }
-                }
-              }
-            ],
-            "additional_fields": false
+            "type": "scalar",
+            "domain": {
+              "type": "boolean"
+            }
           },
           "rules": [
             {
-              "type": "requires",
-              "if_field": "enabled",
-              "equals": {
-                "type": "boolean",
-                "value": true
-              },
-              "then_field": "breakpoint"
-            },
-            {
               "type": "external_ceiling",
-              "field": "ttl_seconds",
-              "ceiling": "operator_authority"
+              "field": "$",
+              "ceiling": "provider_capability"
             }
           ]
         },
@@ -2340,9 +2316,9 @@
             "swe_bench_pro": "conditional",
             "terminal_bench_2_1": "conditional"
           },
-          "rationale": "Control provider prompt-cache use."
+          "rationale": "Enable or disable prompt-cache breakpoint emission for one built provider route."
         },
-        "implementation_status": "partial",
+        "implementation_status": "full",
         "optimization": {
           "class": "p1",
           "search_phase": "p1",
@@ -2354,11 +2330,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "6ce433e14ea14248aa7e25f69758e0594e674fc1b3d6f08be8ce6cab4f474870"
+          "value": "4a10b5d6c02cf1d84b6924472fd903a4a2626cd76f4edce909f54daefea134c9"
         },
         "schema_version": 1,
         "ordinal": 24,
         "id": "compaction_adaptive",
+        "semantic_key": "compaction_adaptive",
         "aliases": [],
         "domain": "context",
         "summary": "Adapt compaction to model and transcript state.",
@@ -2479,11 +2456,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "10658a4988d9732717c4442c661011c1cbcb67425fedc658677908b0623e63a5"
+          "value": "dc5d1a74338072c78ed30230edfcd4d5ae789e67615eddcab4834c3f10a9176f"
         },
         "schema_version": 1,
         "ordinal": 25,
         "id": "compaction_keep_recent",
+        "semantic_key": "compaction_keep_recent",
         "aliases": [],
         "domain": "context",
         "summary": "Choose the verbatim recent-turn retention window.",
@@ -2561,11 +2539,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "17bfeb534efd078a9ca110b7968ea6195d2fb2850ac0b9aa46c3804b430b0798"
+          "value": "2343b7348f6d8c7619e239fbdb20fb4b4a25d7b1034341f6b4273392a1c9beee"
         },
         "schema_version": 1,
         "ordinal": 26,
         "id": "token_estimator",
+        "semantic_key": "token_estimator",
         "aliases": [],
         "domain": "context",
         "summary": "Estimate tokens for admission and compaction.",
@@ -2667,11 +2646,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8b82a5d1f51bdd008792599bbdfc70c4ad204c626d5f8bdc8067c9744e398944"
+          "value": "22ac31c74c8a953dedd6548f1dd4dd1fe0bf7c282268be6d35c71a0473a54ca0"
         },
         "schema_version": 1,
         "ordinal": 27,
         "id": "summary_profile",
+        "semantic_key": "summary_profile",
         "aliases": [],
         "domain": "context",
         "summary": "Choose the compaction summary shape and budget.",
@@ -2796,11 +2776,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "152c7ad6c0f1d4e8cedaa335f325e11fd05f409ad5106f25ccaea92ae812e7cf"
+          "value": "e689477a269ca1817686451a76a36e7f66ba1edeaee7a5c508893b00b3b7a055"
         },
         "schema_version": 1,
         "ordinal": 28,
         "id": "compaction_failure",
+        "semantic_key": "compaction_failure",
         "aliases": [],
         "domain": "context",
         "summary": "Choose bounded behavior when compaction fails.",
@@ -2881,11 +2862,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4b7ff0bab094edc70b81b70bb17c5fcd1f6f146d908d03e23ebcac9a75606417"
+          "value": "c7b32daa18e8730da8eb4d390767e0b3bbc0b88238c37375f7b44b7dd8dc6a2d"
         },
         "schema_version": 1,
         "ordinal": 29,
         "id": "instruction_discovery_render",
+        "semantic_key": "instruction_discovery_render",
         "aliases": [],
         "domain": "context",
         "summary": "Discover and render repository instruction files.",
@@ -3018,11 +3000,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fcd870734f919bd9ad51d0e5bbc1c3414a375d04fb9c47af868fbe8efec9d2a8"
+          "value": "ad16b88beb3e251dd89a1f0f91b803f2addd86d93674f8ea04cb941002a1b2d4"
         },
         "schema_version": 1,
         "ordinal": 30,
         "id": "memory_enable",
+        "semantic_key": "memory_enable",
         "aliases": [],
         "domain": "memory",
         "summary": "Enable durable memory retrieval and writes.",
@@ -3100,11 +3083,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "72a2285ecb258abd9efc9814cbfcc4341fccca79654c37524c55673454bdd623"
+          "value": "1af2e62fa4f197e047cdd76a224b0196793a4d8b607a6634bd69665a1dd12153"
         },
         "schema_version": 1,
         "ordinal": 31,
         "id": "memory_budgets",
+        "semantic_key": "memory_budgets",
         "aliases": [],
         "domain": "memory",
         "summary": "Bound memory retrieval, render, and write work.",
@@ -3242,11 +3226,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "60ebc60e7ce30cdabeef2d5f8fc612ef364b19df5e2141697bd3cfb5991e86de"
+          "value": "2027f722dfc12df3151b1fb5c0b8ed843f7817b2243c5e9fb88ecea2b44fb8e4"
         },
         "schema_version": 1,
         "ordinal": 32,
         "id": "bm25",
+        "semantic_key": "bm25",
         "aliases": [],
         "domain": "context",
         "summary": "Tune lexical retrieval scoring.",
@@ -3339,11 +3324,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "17c7bcc315824cf3f5608b9a8d870de061d3a33d919d783b2e4101c29a32d06c"
+          "value": "04e850d66f0830a92a6aa55b36e5663f574ba3f596bae2e492e3520e170c6cac"
         },
         "schema_version": 1,
         "ordinal": 33,
         "id": "skill_listing_budget",
+        "semantic_key": "skill_listing_budget",
         "aliases": [],
         "domain": "context",
         "summary": "Bound skill catalog text exposed to the model.",
@@ -3422,11 +3408,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e9ad7dab6eeb0fc709615febd8fc61605b4990de3951a96cbf8e37641bd70dea"
+          "value": "4f18e035d7a3a76850cc88fabb2a5d695ac3e7366646e959989da61bf72ad7bf"
         },
         "schema_version": 1,
         "ordinal": 34,
         "id": "max_consecutive_tool_errors",
+        "semantic_key": "max_consecutive_tool_errors",
         "aliases": [],
         "domain": "budget",
         "summary": "Stop a run after repeated tool failures.",
@@ -3505,11 +3492,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8cd1db0ba5e0cc550345aa28163fa1eeab1bcb9430d8a0c004f06b54a9cce690"
+          "value": "8e243fa7dd4adb6df23ebae85a4e50d334fbafaa318a23cac13258e23456916c"
         },
         "schema_version": 1,
         "ordinal": 35,
         "id": "pure_overlap",
+        "semantic_key": "pure_overlap",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Allow eligible pure tools to overlap inference.",
@@ -3585,11 +3573,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2b52319cda0a9f3bad643e1c7fe47e2f4bcce64ac578622b1df22703b31c761f"
+          "value": "c963bf35a0705a222b1d07641e43a703934b1238ef2a96c61368d4293479f562"
         },
         "schema_version": 1,
         "ordinal": 36,
         "id": "pure_concurrency",
+        "semantic_key": "pure_concurrency",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Bound concurrent pure tool calls.",
@@ -3668,11 +3657,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "19407367c99d84eca28cb43133221ca0b0e2130d25f3de9ef6c1ff4d774a891f"
+          "value": "587e9e09b032b0b3953b843c0621e568eaa33e4d203fa89fcca0c1cf7465aa83"
         },
         "schema_version": 1,
         "ordinal": 37,
         "id": "failed_action_dedup",
+        "semantic_key": "failed_action_dedup",
         "aliases": [],
         "domain": "tooling",
         "summary": "Suppress repeated identical failed actions.",
@@ -3785,11 +3775,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "674a2d4626d3a8cb62730c3eeca955c67400084ae2450873c81af4e2c72ec26f"
+          "value": "163b787728368e78566630a291eca9f16ad8f3c1220ce87ba240c59a6aed8831"
         },
         "schema_version": 1,
         "ordinal": 38,
         "id": "pure_memo_cache",
+        "semantic_key": "pure_memo_cache",
         "aliases": [],
         "domain": "tooling",
         "summary": "Memoize deterministic pure tool results.",
@@ -3900,11 +3891,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "cf3b22bb557eee3e2bbee114eb8b37bcf26e2581e29bccc9480104297b276236"
+          "value": "3f12a1814d07a70b89f1f574036f48ff3389e140a9b93b6dd40dab12b9e2bf4b"
         },
         "schema_version": 1,
         "ordinal": 39,
         "id": "shell_timeout_output",
+        "semantic_key": "shell_timeout_output",
         "aliases": [
           "shell_execution_envelope"
         ],
@@ -4055,11 +4047,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7ac8c30a7fc18680520ac69a1435a63c17005c94410b9ee7a3713302b13b16bc"
+          "value": "cb455641ca50003d981be8e44ff059d9f417b8f099d690cba94cef97dd0ea6e8"
         },
         "schema_version": 1,
         "ordinal": 40,
         "id": "read_file_limits",
+        "semantic_key": "read_file_limits",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound file-read bytes and line ranges.",
@@ -4180,11 +4173,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0f13dc6ac081f72fd773354f140227820983af02a45418f5b8fc453d580ba265"
+          "value": "22aae4223f9fe9b3236802d98bf46d14ec87c92a12107bad6d8b41e2aeb8816f"
         },
         "schema_version": 1,
         "ordinal": 41,
         "id": "list_dir_limits",
+        "semantic_key": "list_dir_limits",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound directory listing work and output.",
@@ -4300,11 +4294,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e6539a366c317e6657ce6496164991a0f24248fe6469abb9032ad2213b6550dc"
+          "value": "cfad248db1cd13b331e0ac6ca666e68846a1c9507d3817c0237c3641ce82f3f8"
         },
         "schema_version": 1,
         "ordinal": 42,
         "id": "glob_limits",
+        "semantic_key": "glob_limits",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound glob traversal and results.",
@@ -4420,11 +4415,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c52b8e1d6645ad4ee91e8ad6e2b09436539d57cb0efd199de7c68399ac65bbc7"
+          "value": "8aa8ef9ac1fae0ea834d07aac575e916472bc6ddb0449da2b162955d16eee3f9"
         },
         "schema_version": 1,
         "ordinal": 43,
         "id": "grep_limits",
+        "semantic_key": "grep_limits",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound text search traversal and output.",
@@ -4545,11 +4541,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "bfad135cdda1feabbf6001296fc3459df3d757aece650c1ec077c26323f2526a"
+          "value": "5c345ba2097aa6f9acbdba88652532f1cd8b0ce2957b00b9c7cfa6cc4035890c"
         },
         "schema_version": 1,
         "ordinal": 44,
         "id": "repo_map",
+        "semantic_key": "repo_map",
         "aliases": [],
         "domain": "context",
         "summary": "Bound and shape repository-map construction.",
@@ -4665,11 +4662,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2df19f5c8c84a9eeaf7aba4eaa3cb74d0713468fae28e49978ab3306fdcb42e3"
+          "value": "3d0c8c7f85ba36a803bbcd6ab19c9d5dc2cce6dc22f2e43b662313cc6e144b46"
         },
         "schema_version": 1,
         "ordinal": 45,
         "id": "git_limits",
+        "semantic_key": "git_limits",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound Git observation and diff output.",
@@ -4803,11 +4801,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b3913af9038dfcff1d0e6793cc057b1c0356f196e4a18bbf409338d39b77200a"
+          "value": "15f152f08c61610be13e646f3bc5d300562262bc9401b1b60cec9918b2534302"
         },
         "schema_version": 1,
         "ordinal": 46,
         "id": "web_fetch_limits",
+        "semantic_key": "web_fetch_limits",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound fetched bytes, redirects, and elapsed time.",
@@ -4941,11 +4940,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "70006f73bd2392ebb6ad6f2dd258313a2b43ee9544c152def251a30b868b4c44"
+          "value": "f185a5ed755c48741cf5c194474ecf90af745f965aa0638411587c5b9469b30c"
         },
         "schema_version": 1,
         "ordinal": 47,
         "id": "web_search_cap",
+        "semantic_key": "web_search_cap",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound web-search results admitted to context.",
@@ -5024,11 +5024,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "665b3eeeaf31ee7b371f9f1d2ad7c3ebd21bbdc80280a81c11b6d3434fd973c3"
+          "value": "c129bad4f7d8d511733d72fb165aae691231b9dac25afb9b3f140bd1675f57fc"
         },
         "schema_version": 1,
         "ordinal": 48,
         "id": "verifier_attempts",
+        "semantic_key": "verifier_attempts",
         "aliases": [],
         "domain": "verification",
         "summary": "Bound verification repair attempts.",
@@ -5107,11 +5108,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9c03fe36fa497d1003071ba14769a3bb949981ae35e5562216c8027f7e77a49e"
+          "value": "f73c68f20252f8eaa3f6eceafbbfeda6a6327b34a43a34013eb39f5130c986be"
         },
         "schema_version": 1,
         "ordinal": 49,
         "id": "verifier_feedback_tails",
+        "semantic_key": "verifier_feedback_tails",
         "aliases": [],
         "domain": "verification",
         "summary": "Bound failure feedback returned to the model.",
@@ -5235,11 +5237,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "bb2e49d4c00e1db5493dcf46008d7223ac5db58d4d5142d3568c182a8a6b12ed"
+          "value": "c22dedcf07549bddbba0ace5a30284258ed4edc6be33ca896355916c7ff5f268"
         },
         "schema_version": 1,
         "ordinal": 50,
         "id": "verifier_timeout",
+        "semantic_key": "verifier_timeout",
         "aliases": [],
         "domain": "verification",
         "summary": "Bound each verification command.",
@@ -5318,11 +5321,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "51e64c00fb214ba1d47113ceea7b71bcd5c9eb46d708f00d5431bcddf0891a6e"
+          "value": "cc518a9fdd156bf2c5bfa04d161a37fb1c43e6510acc84269565d33389a4e93a"
         },
         "schema_version": 1,
         "ordinal": 51,
         "id": "route_topology",
+        "semantic_key": "route_topology",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Choose direct versus orchestrated run topology.",
@@ -5403,11 +5407,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f3729f9829cc94b390cc955a79e7c780aba2a79541fb238df7be6d7aad54f54a"
+          "value": "bee3cbac263f7a2af5783bb59dd26725fc5d085eee9a523cffa09ac1f97a7cd7"
         },
         "schema_version": 1,
         "ordinal": 52,
         "id": "decomposition_profile",
+        "semantic_key": "decomposition_profile",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Choose task decomposition shape.",
@@ -5534,11 +5539,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ad6ba1241008f40852ff613f5b77836b3e2ab3b8bb3cb149aec77daa0e429173"
+          "value": "6bab8d4ab0bd3be2078096c166ff4e4f31cd88ec61b11c5a57079f4fe27c2bcb"
         },
         "schema_version": 1,
         "ordinal": 53,
         "id": "fan_breadth",
+        "semantic_key": "fan_breadth",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Bound investigator fan-out breadth.",
@@ -5617,11 +5623,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5aefaf3292bef13d0da914956b6917962c6584c4846c5d90bd9977ffec1bec75"
+          "value": "86c9731151d5ba4785ccad52f0b86e1d66f5181ef9a646597da3eb182382a0a1"
         },
         "schema_version": 1,
         "ordinal": 54,
         "id": "admission",
+        "semantic_key": "admission",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Admit bounded child work under parent ceilings.",
@@ -5738,11 +5745,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ba3fea32c89936fd30c7eefccb314f49b6d3d3f1e55c97411a09fb85946b7fea"
+          "value": "52c907571ce332fc8a5b6405bb2f4c339ab1237c948f39f3866ab8b5203d5859"
         },
         "schema_version": 1,
         "ordinal": 55,
         "id": "writer_fan_turn_split",
+        "semantic_key": "writer_fan_turn_split",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Split turns between investigators and the writer.",
@@ -5828,11 +5836,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7902aeee4b9fccb55327a57ea46a1143abead87e5958a933b0ffa64deb3b2c9c"
+          "value": "0a99e3edfcdec6d2167648f24bb60c6b66d85c0ae60771d04aad5ecc6454ebd4"
         },
         "schema_version": 1,
         "ordinal": 56,
         "id": "worker_min_turns",
+        "semantic_key": "worker_min_turns",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Reserve a minimum useful child turn allocation.",
@@ -5911,11 +5920,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "025bfbf86faf7e6696503106f097a536ea97b01f2ba6a79a8903f5345e46a2bf"
+          "value": "1c546daa007c8d12c402fda12161b7abadc07adb393c3e6b09a9c0de424a9c60"
         },
         "schema_version": 1,
         "ordinal": 57,
         "id": "wall_split",
+        "semantic_key": "wall_split",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Split remaining wall time across child work.",
@@ -6001,11 +6011,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "33cfd584022c094d251c0f19740b9eb746c7b28bb25904539328b9c8f5162384"
+          "value": "8f12ff362d5f50c002331cf0c64cded919d9d2040297b42595f079ac497c1e48"
         },
         "schema_version": 1,
         "ordinal": 58,
         "id": "token_split",
+        "semantic_key": "token_split",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Split remaining tokens across child work.",
@@ -6091,11 +6102,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1b6b94d655d9de7159166d40380722c8d78d62ceaeba04ecd0e7b8c909e1fc40"
+          "value": "f21e2c505ff15fa40d8061615e6715052ee312440bbf9652ad4acbd9278d03ea"
         },
         "schema_version": 1,
         "ordinal": 59,
         "id": "fan_concurrency",
+        "semantic_key": "fan_concurrency",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Bound simultaneous investigator agents.",
@@ -6174,11 +6186,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c4d2664654c290db55f42f24f12566bf38109f74c5666a389e9b67a66bd0c458"
+          "value": "dcc0c44fa42b68b93906b4ca6f1e50d1be350c0eb2d6e94a7dfa506e300be61c"
         },
         "schema_version": 1,
         "ordinal": 60,
         "id": "child_ceiling",
+        "semantic_key": "child_ceiling",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Intersect every child with an immutable parent ceiling.",
@@ -6319,11 +6332,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "acfdc68a3f708e118308f3a8266c05f85c3689ec1489214362ab63acdd91e81f"
+          "value": "2dea550c7b748f51f053312bba6959b796e2fdc71f14875f92b2e4f0273c308f"
         },
         "schema_version": 1,
         "ordinal": 61,
         "id": "direct_child_allocation",
+        "semantic_key": "direct_child_allocation",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Allocate budget to directly spawned children.",
@@ -6449,11 +6463,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "cdadf689dbe681a7a6e191503f51d17b2e79ac4c918f10539fe627669ea724ea"
+          "value": "0a8a8ab9964cbdfde48913f37d18699659ed587f7be4d21a4e7ec1e5c3fe62f2"
         },
         "schema_version": 1,
         "ordinal": 62,
         "id": "subagent_effort_inheritance",
+        "semantic_key": "subagent_effort_inheritance",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Choose bounded subagent reasoning effort.",
@@ -6540,11 +6555,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "67a675377da079fcc8e15425a1aba86460562fa7449a0debe8e0ca2a500c30cf"
+          "value": "e36a497836f70dc2306f4b8d11463a8a56860cdb2ad074c7b644787fa7cedc67"
         },
         "schema_version": 1,
         "ordinal": 63,
         "id": "report_budget",
+        "semantic_key": "report_budget",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Bound child report size admitted to the writer.",
@@ -6623,11 +6639,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "6407da219dcf8742098f51f0bd7d368462a266ab796edca7da3b2cfb36aae094"
+          "value": "20ec174094def6e955312e05b3d7732106e2e43f1d8ba60aff74756d155da7a3"
         },
         "schema_version": 1,
         "ordinal": 64,
         "id": "join_reduce",
+        "semantic_key": "join_reduce",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Choose deterministic join and reduction policy.",
@@ -6742,11 +6759,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "eb221bef94812c4e51bd406901550bd096931c9aaa4723067d936b9fd85b4ef6"
+          "value": "83c7417111c8f2004d14111a7159d3bef34d2640892d2bd10b2d5a42eb947e04"
         },
         "schema_version": 1,
         "ordinal": 65,
         "id": "workflow_aggregate",
+        "semantic_key": "workflow_aggregate",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Bound aggregate workflow calls and resources.",
@@ -6885,11 +6903,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d62f3133a765b10916a2d031b9e32278d21b812bb37d4080596defbf3f39c2ff"
+          "value": "642ff1c92f23ed139bb88bc694f7eacf635f86282c27c26ea1da7d97eab07b03"
         },
         "schema_version": 1,
         "ordinal": 66,
         "id": "schema_retry_jitter",
+        "semantic_key": "schema_retry_jitter",
         "aliases": [],
         "domain": "runtime",
         "summary": "Bound schema-repair retries and jitter.",
@@ -7010,11 +7029,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c193c36da5eb9d5cb8bfa3d9dbf01dc594afe4c2b6445d4aecd9bb066b667ec5"
+          "value": "2c121751005072249df94b9637c25632c632dc724b6eea5c63395e142d56d936"
         },
         "schema_version": 1,
         "ordinal": 67,
         "id": "provider_connect_tls_timeout",
+        "semantic_key": "provider_connect_tls_timeout",
         "aliases": [
           "connect_tls_timeout",
           "http_connect_timeout"
@@ -7097,11 +7117,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2c1c4faf58908c28ea924a1d25f3355696316e2e2cafecc0aa32fe46b636e0b6"
+          "value": "c7d169aacdcd687293f48bcd71d030520bb4a31aea38ab5e60d475b46708663e"
         },
         "schema_version": 1,
         "ordinal": 68,
         "id": "multimodal_input_admission_decode_envelope",
+        "semantic_key": "multimodal_input_admission_decode_envelope",
         "aliases": [],
         "domain": "runtime",
         "summary": "Bound image count, bytes, dimensions, frames, and decode work.",
@@ -7291,11 +7312,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ba2e21ca5023dcccfa3151b29807ed7b16d1e70f9e5e07410949ce8a4e05a8cb"
+          "value": "bfa43a906e297d1a072e23dfcb993aa6397a1d5fa0f8e3fb3df79780df2d2d08"
         },
         "schema_version": 1,
         "ordinal": 69,
         "id": "app_server_sq_eq_backpressure",
+        "semantic_key": "app_server_sq_eq_backpressure",
         "aliases": [],
         "domain": "runtime",
         "summary": "Bound submission and event queues with typed drop policy.",
@@ -7484,11 +7506,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "dc12b4709ac4e56d77d7bfc0d4367838f1ed94702eaf25dfd60627a5a14dcafe"
+          "value": "307f05158859fa008e426b7ab350d9539fbc300f2099d8de56fb56ce0e346a0b"
         },
         "schema_version": 1,
         "ordinal": 70,
         "id": "provider_discovery_account_probe_cache_policy",
+        "semantic_key": "provider_discovery_account_probe_cache_policy",
         "aliases": [],
         "domain": "provider",
         "summary": "Bound provider startup discovery, probe freshness, and failure backoff.",
@@ -7652,11 +7675,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "130bbc218b1b0a8f0ab1e3482224f6a062b3420e953880f7fb5fad63be8c3d80"
+          "value": "0ba83b6dfb710e328ae75b0382e046b0f38fcb616b222be3741776e3453046b5"
         },
         "schema_version": 1,
         "ordinal": 71,
         "id": "operator_prompt_stream",
+        "semantic_key": "operator_prompt_stream",
         "aliases": [],
         "domain": "context",
         "summary": "Operator-authored task and steering text.",
@@ -7743,11 +7767,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4c994b88d51d71db58727e1249d465abdc2f9ee4da21d7240b0afdd5f6481fb6"
+          "value": "0cc73b0968072aaf32ccd6f1c384e48c656f7bdb66680fb5ceb07c7a31a5a3f4"
         },
         "schema_version": 1,
         "ordinal": 72,
         "id": "builtin_prompt_corpus",
+        "semantic_key": "builtin_prompt_corpus",
         "aliases": [],
         "domain": "reasoning",
         "summary": "Built-in system and workflow prompt corpus.",
@@ -7877,11 +7902,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b5231474e880acb7d3be4a1a68d0b237d379aee50ac1893f73381cffd5f5b4ff"
+          "value": "55de343bbd2320ec07d636e6a10a6ab1b7ad700fd47c124354cc463811c8a279"
         },
         "schema_version": 1,
         "ordinal": 73,
         "id": "instruction_bundle",
+        "semantic_key": "instruction_bundle",
         "aliases": [],
         "domain": "context",
         "summary": "Repository and user instruction content.",
@@ -8012,11 +8038,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "56c0bab3323f1507f029445dc0fe725caed0ce7f70b90743c9c1f062c9db40e5"
+          "value": "0255bf1fedcf99b2b68143bd8ad3f4557244343a924e7ecd0af4390b092219ec"
         },
         "schema_version": 1,
         "ordinal": 74,
         "id": "memory_corpus",
+        "semantic_key": "memory_corpus",
         "aliases": [],
         "domain": "memory",
         "summary": "Durable admitted memory records.",
@@ -8153,11 +8180,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ed6a4adeb2f1f74590a3bc5cf194aa27fd103b60a678f29598a32fe567e48705"
+          "value": "4c1efa486a5f8dda98e015900deeb2765c47641d0b6af80a71e4b56252f01915"
         },
         "schema_version": 1,
         "ordinal": 75,
         "id": "skill_catalog",
+        "semantic_key": "skill_catalog",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Discovered skill metadata and instructions.",
@@ -8290,11 +8318,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "da835b65f4dd44c47028a1dd02638dd6aa66020599d22fea5d19d452a5bbbe84"
+          "value": "5353d48f01e15b4eb6fbec3d4dd3f1b963de53c76eabfec218c9488bb8ba9354"
         },
         "schema_version": 1,
         "ordinal": 76,
         "id": "agent_catalog",
+        "semantic_key": "agent_catalog",
         "aliases": [
           "agent_definition_catalog"
         ],
@@ -8431,11 +8460,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2afc5b882b8633e2af61b7f3f1965f7fdb54a008cd033181a18e458226351310"
+          "value": "f88325c2f53eeaccedf317419c695357688adb79361adf4f468deff7d9639233"
         },
         "schema_version": 1,
         "ordinal": 77,
         "id": "provider_model_capability_catalog",
+        "semantic_key": "provider_model_capability_catalog",
         "aliases": [],
         "domain": "provider",
         "summary": "Provider and model capability evidence.",
@@ -8592,11 +8622,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "de8de405de4e40ab59351eec54096e7496e4436fa0aaa2f96d030502a4bc3bbe"
+          "value": "9403a99e1127e4d397d94e4f8d8b2ac344db82903cb483154605de92ef1f6a23"
         },
         "schema_version": 1,
         "ordinal": 78,
         "id": "mcp_topology_tool_catalog",
+        "semantic_key": "mcp_topology_tool_catalog",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Configured MCP servers and their tool schemas.",
@@ -8729,11 +8760,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b6c244138635cdc3697fb86a3ac2a1ff48ac92dbedae5353056eee605c4f12c3"
+          "value": "9f6d803e3625d39375f4ffe685f7bdb3ec2dd10cda3f8c8af68843ccf8e697b0"
         },
         "schema_version": 1,
         "ordinal": 79,
         "id": "hooks_map",
+        "semantic_key": "hooks_map",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Lifecycle hook declarations and selectors.",
@@ -8866,11 +8898,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e6d76eb13f4f9235360146a09f6e61dd29069b8ce3d6fca18da0cf968e9dadbd"
+          "value": "bc1764993fb56b06c9d2b2bbd6058cb8b3d30ebaabed7f120af26ccf18a31cb1"
         },
         "schema_version": 1,
         "ordinal": 80,
         "id": "workflow_graph",
+        "semantic_key": "workflow_graph",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Declared workflow task graph.",
@@ -8999,11 +9032,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ac0f4a82ec248cc9b03246c9d9c6c8e03f6dc6416f1103bc6eccfdc7ab88f2e5"
+          "value": "a942714ee092b0f62187e9796503d5bdc1102b011cfcda5be081c66a0be7088a"
         },
         "schema_version": 1,
         "ordinal": 81,
         "id": "tool_action_space",
+        "semantic_key": "tool_action_space",
         "aliases": [],
         "domain": "tooling",
         "summary": "Registered tool schemas and capability classes.",
@@ -9136,11 +9170,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "56a1913f6f10f4a44b981517ed62c1a11cbd769351eb7f775b186a4ffab94633"
+          "value": "956bfa29ddb1a26b2e2e61ff3453dd1e3578b591663ab739ffdd8e909c674132"
         },
         "schema_version": 1,
         "ordinal": 82,
         "id": "rate_card_catalog",
+        "semantic_key": "rate_card_catalog",
         "aliases": [],
         "domain": "observability",
         "summary": "Signed provider pricing evidence.",
@@ -9275,11 +9310,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fa55124aed43f26d6e83949db1515bfee02cf8abc2d3d2371b9b345dc579b05c"
+          "value": "023209fe52cd79021fba9d16a38f18c6ab96069a609bf0c723d13f1fec111d5d"
         },
         "schema_version": 1,
         "ordinal": 83,
         "id": "router_lexicons",
+        "semantic_key": "router_lexicons",
         "aliases": [],
         "domain": "reasoning",
         "summary": "Lexical signals used by routing policy.",
@@ -9416,11 +9452,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b754fd26cdb8e42c0ae99c4dd15312edb299e3d10e0f3d44956b4b5e6a4571c2"
+          "value": "8db97a98a10c8d029430cdad43fbafb03f50ae03fa715eb449e1b942925b7fcb"
         },
         "schema_version": 1,
         "ordinal": 84,
         "id": "environment_snapshot",
+        "semantic_key": "environment_snapshot",
         "aliases": [],
         "domain": "context",
         "summary": "Durable bounded repository and process environment facts.",
@@ -9509,11 +9546,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1dbd11bbb70446bdb0fbaed5dc006d591e753055c71ea52541673bddaa5d5131"
+          "value": "a64717144609c0e0efab2721e67f4ecdb7d3577380d97a99b77c85eecb92763f"
         },
         "schema_version": 1,
         "ordinal": 85,
         "id": "web_search_backend_catalog",
+        "semantic_key": "web_search_backend_catalog",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Available web-search backend definitions.",
@@ -9651,11 +9689,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "60d6de46ade2fd13253a14e331ea0cfe4c3d4c4cef51d52829be468bc5a7ca18"
+          "value": "552f0ffc6423266f1b7d163cf6564a0b6d8f2cbe74ac1e188ca2f1560d58ebc7"
         },
         "schema_version": 1,
         "ordinal": 86,
         "id": "model_fallback_chain",
+        "semantic_key": "model_fallback_chain",
         "aliases": [],
         "domain": "provider",
         "summary": "Choose an ordered model fallback chain.",
@@ -9737,11 +9776,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c250f6b0c3bf4f355f21fa73ec6c7a3572eb1f7e2dd2c76727b0e325ee468bad"
+          "value": "6a2f20b8e3940b69c9e38beb8e342024834bacce103baa617f6b528d4abbc5f8"
         },
         "schema_version": 1,
         "ordinal": 87,
         "id": "failover_eligible_error_taxonomy",
+        "semantic_key": "failover_eligible_error_taxonomy",
         "aliases": [],
         "domain": "provider",
         "summary": "Classify provider errors that may admit failover.",
@@ -9907,11 +9947,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d8646ffde6f2d78364dc6dc5034d7b2f12b75e57826694bcf70542f3a57f622b"
+          "value": "2a20d5a349447c255f53d0b14a488d62ac1e7acff6450121920ce67619be83b8"
         },
         "schema_version": 1,
         "ordinal": 88,
         "id": "route_quality_cost_latency_objective_weights",
+        "semantic_key": "route_quality_cost_latency_objective_weights",
         "aliases": [],
         "domain": "reasoning",
         "summary": "Weight route quality, cost, and latency objectives.",
@@ -10006,11 +10047,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5efca1857ee5845ac28fd9f4ff7393b477e24db6427d998a211a827229b00600"
+          "value": "7ed4cce049fa2643a134583171ebd9a5f0a25e1d8ec922e07eaf9ed5516bf9b2"
         },
         "schema_version": 1,
         "ordinal": 89,
         "id": "provider_health_circuit_breaker_state_policy",
+        "semantic_key": "provider_health_circuit_breaker_state_policy",
         "aliases": [],
         "domain": "provider",
         "summary": "Derive route health and circuit-breaker state.",
@@ -10144,11 +10186,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "648e19a4d319e0ad84bbd6796e87743b65b9fc8cccaa30fb83374b03835b521c"
+          "value": "3ceb9ddbf8d711384f855985daa08f8658741a3c2dbc9e3408649928ed2ed662"
         },
         "schema_version": 1,
         "ordinal": 90,
         "id": "hedged_request_policy",
+        "semantic_key": "hedged_request_policy",
         "aliases": [],
         "domain": "provider",
         "summary": "Choose bounded duplicate-request hedging.",
@@ -10314,11 +10357,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "35584fcaf2de7f490baf6a9850c3228d28d2747e873bf4b50e428a50ebcab37d"
+          "value": "a84e9fd3eae2ecfdbeff43e838aa465a5cca085790abc97094b4781fcbbc9471"
         },
         "schema_version": 1,
         "ordinal": 91,
         "id": "provider_service_tier",
+        "semantic_key": "provider_service_tier",
         "aliases": [],
         "domain": "provider",
         "summary": "Select a provider service tier.",
@@ -10400,11 +10444,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e7bec93a56d55681f25a4190320b7effef0e095c9e9a622507ce1ac7b787ccdd"
+          "value": "e8d64cbadd270ac59217fb6cb86cea10997915b26da7a424273dead52e90afb0"
         },
         "schema_version": 1,
         "ordinal": 92,
         "id": "response_verbosity",
+        "semantic_key": "response_verbosity",
         "aliases": [],
         "domain": "reasoning",
         "summary": "Select response verbosity independently of effort.",
@@ -10492,11 +10537,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d3e069590d87285a2ec465c63082e0a0e6406c124ece38aa5bdd8e1121ff08df"
+          "value": "2d39230c83035c5a01ee1166712532b7232136031054d4000f4065a3cfed92b8"
         },
         "schema_version": 1,
         "ordinal": 93,
         "id": "role_specific_model_map",
+        "semantic_key": "role_specific_model_map",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Map agent roles to admitted model routes.",
@@ -10591,11 +10637,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2bdf8d5e9047623431d4afbf6b5ab7f41af89e068415b86223ba3e53930d92a4"
+          "value": "c6674b4de2dabd99a1cd4c13de578c51d84f51bcb5dc124838ed6b7f5931abb6"
         },
         "schema_version": 1,
         "ordinal": 94,
         "id": "provider_request_total_deadline",
+        "semantic_key": "provider_request_total_deadline",
         "aliases": [
           "provider_request_deadline"
         ],
@@ -10678,11 +10725,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "bf74e635efc7dc7f424edb294161d3eae2bb44156b6f2e7dc53ba4c68c2c66f6"
+          "value": "b4dc510139d0a5aa9c9c4b36f70d44a923ae01365995c455c7a1a14f95fb6992"
         },
         "schema_version": 1,
         "ordinal": 95,
         "id": "stream_idle_watchdog",
+        "semantic_key": "stream_idle_watchdog",
         "aliases": [
           "stream_idle_timeout"
         ],
@@ -10764,11 +10812,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "01b76140d3656008e586959dcbb8e31ee8396f3e26a823db8b1a81be0ebe5792"
+          "value": "c780f549ba6c150a7c7b626bf994eb60dc03f813080a2f601b29e33374ff0fb7"
         },
         "schema_version": 1,
         "ordinal": 96,
         "id": "context_window_override_reserve",
+        "semantic_key": "context_window_override_reserve",
         "aliases": [],
         "domain": "context",
         "summary": "Resolve the effective context window and output reserve.",
@@ -10920,11 +10969,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "259ec41a03d9ff43e327f34f3368fc2897810b6a8552f5ed0d4330ab6c3fd7d8"
+          "value": "b823bc93684630efe4bd513124754bac9d91d2935c24e51791a9d47c358d3a89"
         },
         "schema_version": 1,
         "ordinal": 97,
         "id": "system_prefix_budget",
+        "semantic_key": "system_prefix_budget",
         "aliases": [],
         "domain": "context",
         "summary": "Bound the stable system prefix.",
@@ -11003,11 +11053,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c583199b21af615408f644a1b95f14a9bd958927547cea3a3534af35ea2d0284"
+          "value": "9ec2f54fc7c72f7f324cd0791c28a174646248a751e95342ea51d8b283ead018"
         },
         "schema_version": 1,
         "ordinal": 98,
         "id": "conversation_history_budget",
+        "semantic_key": "conversation_history_budget",
         "aliases": [],
         "domain": "context",
         "summary": "Bound conversation history admitted to a request.",
@@ -11086,11 +11137,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fa740ac8bd6248ba4c6a8213fae01c47148f0750147f8f6f7a22d5c3795df0bb"
+          "value": "a47ccdeae0ec06afe4894e0d29520de534f02382a1d3d3d02293b2c1dce1db01"
         },
         "schema_version": 1,
         "ordinal": 99,
         "id": "tool_result_history_budget",
+        "semantic_key": "tool_result_history_budget",
         "aliases": [],
         "domain": "context",
         "summary": "Bound retained tool-result history.",
@@ -11169,11 +11221,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e169fc30c7a7b18877fc76fc137cc22a4d8f66f79266ba413031acedbd8a666c"
+          "value": "e0615c2a501401fae3cf96c7c5e2c2ba758c2c1f22e64c2277996ae3effbb16c"
         },
         "schema_version": 1,
         "ordinal": 100,
         "id": "multimodal_token_budget",
+        "semantic_key": "multimodal_token_budget",
         "aliases": [],
         "domain": "context",
         "summary": "Bound multimodal content admitted to model context.",
@@ -11258,11 +11311,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "59e8c682b61e57679d15689936a78a7b616b5f62524ebbcd44e5444324b20318"
+          "value": "6bb76a2d21d796ab2dfa8f379d4dea4265242f53f669f86c40968f9b486bed06"
         },
         "schema_version": 1,
         "ordinal": 101,
         "id": "auto_compaction_enable",
+        "semantic_key": "auto_compaction_enable",
         "aliases": [],
         "domain": "context",
         "summary": "Enable automatic bounded context compaction.",
@@ -11339,11 +11393,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7fa9edd95a706b7be921dc945746f805b8803d35659f6ba1099d22ea11652f5c"
+          "value": "f295640c7621bd3816a27ee85992e31ddedd530a9851f4d845ac806b402f3dd4"
         },
         "schema_version": 1,
         "ordinal": 102,
         "id": "compaction_cooldown_hysteresis",
+        "semantic_key": "compaction_cooldown_hysteresis",
         "aliases": [],
         "domain": "context",
         "summary": "Avoid repeated compaction around the trigger boundary.",
@@ -11477,11 +11532,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f45a6fefa8eac6192a7ce6cc2f5a0e4343a9aa9cf89745714880d8d1a9913f7b"
+          "value": "0d94c88b1d31cab22867114b82352d2109824169eee4f0fa632ae7b84db7b74e"
         },
         "schema_version": 1,
         "ordinal": 103,
         "id": "multi_stage_summary_topology",
+        "semantic_key": "multi_stage_summary_topology",
         "aliases": [],
         "domain": "context",
         "summary": "Choose a bounded summary-stage topology.",
@@ -11565,11 +11621,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "17c24df4e7e4c41ab5cf987610dc638e2f46897bead339cb5824c399e7313d39"
+          "value": "559586bff6eb1b0bd4766de1880a5ed367f0d48f2f0b75de2cda71c7a3fb7171"
         },
         "schema_version": 1,
         "ordinal": 104,
         "id": "summary_consistency_coverage_check",
+        "semantic_key": "summary_consistency_coverage_check",
         "aliases": [],
         "domain": "verification",
         "summary": "Check summary consistency and evidence coverage.",
@@ -11648,11 +11705,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "607ee810ffa20c21e0bf5189c4cb77b88be47bb524565ed675ab552b38fa1f89"
+          "value": "3ede5b5ffb0684b9817b3180f6d2244438eacd544219907355d3ed3bfce0ddcd"
         },
         "schema_version": 1,
         "ordinal": 105,
         "id": "hybrid_retrieval_fusion_weights",
+        "semantic_key": "hybrid_retrieval_fusion_weights",
         "aliases": [],
         "domain": "memory",
         "summary": "Fuse lexical and optional retrieval signals.",
@@ -11762,11 +11820,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b603e04b925c58095dbc80ac2e0eab66b027759a2a93b75585f23eb64d4f35df"
+          "value": "a5aa598023f9ba1c1ffcf2b5983aedf7d93cfeccf93faa653cce615b921a943c"
         },
         "schema_version": 1,
         "ordinal": 106,
         "id": "retrieval_recency_decay",
+        "semantic_key": "retrieval_recency_decay",
         "aliases": [],
         "domain": "memory",
         "summary": "Apply bounded recency decay to retrieval scores.",
@@ -11856,11 +11915,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c130cd0a3b94d12526034d02e1b211ca6c151cf252fd06f49a82028088a8033f"
+          "value": "a4c83c50830b2938aaee72704a334a046fbf2301eb7469fb7b38b50f4d646f65"
         },
         "schema_version": 1,
         "ordinal": 107,
         "id": "context_novelty_dedup_threshold",
+        "semantic_key": "context_novelty_dedup_threshold",
         "aliases": [],
         "domain": "context",
         "summary": "Suppress duplicate or low-novelty context.",
@@ -11948,11 +12008,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "824fe2a0243d3a2dd35ab1b3b07c889ca5890d824a75bb1f1bc98ebedbd79ccc"
+          "value": "7c52a30cd97eea0451ba8b3a7b0923da11f631171c5a6adea78318c78673ed8f"
         },
         "schema_version": 1,
         "ordinal": 108,
         "id": "persistent_pty_backend",
+        "semantic_key": "persistent_pty_backend",
         "aliases": [],
         "domain": "tooling",
         "summary": "Select a persistent PTY backend.",
@@ -12040,11 +12101,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c3b32118215448a105dba085755f491b48393ef86f1ca063aac769e9e718c5d4"
+          "value": "10b18f0d46f7cbd808464301a6cbf1dfba36981dafe007c66fc6e128f352f264"
         },
         "schema_version": 1,
         "ordinal": 109,
         "id": "concurrent_background_job_cap",
+        "semantic_key": "concurrent_background_job_cap",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound concurrent background jobs.",
@@ -12125,11 +12187,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d7ce07fa573c43e8f51a6f9feaec5bfa148d6a69ae06090d351270d1ca41f1f0"
+          "value": "d7d1316ce24a30e1c83f4a4180b819213e69a7df145f87257fbcaf323f5c24bb"
         },
         "schema_version": 1,
         "ordinal": 110,
         "id": "job_idle_stall_timeout",
+        "semantic_key": "job_idle_stall_timeout",
         "aliases": [],
         "domain": "tooling",
         "summary": "Stop a background job that is idle or stalled.",
@@ -12207,11 +12270,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e96771763de1c7f569eb9f95ec6a3453040ef28e95a40193cd38f06b08c30884"
+          "value": "14159c20fb837fc870a5067055c5b183ab31efc1af90cacb3626717a997c4daf"
         },
         "schema_version": 1,
         "ordinal": 111,
         "id": "interactive_stdin_wait_policy",
+        "semantic_key": "interactive_stdin_wait_policy",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound waits for interactive process input.",
@@ -12327,11 +12391,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d484189884735cd3cc636f2dd800fac9f5a05144978ac3a72004f98bb812da95"
+          "value": "654367ecbd9d3ee4f9ecacf0247fda474dae9c93cca8a686779f94cc8ffc8cff"
         },
         "schema_version": 1,
         "ordinal": 112,
         "id": "process_signal_kill_escalation",
+        "semantic_key": "process_signal_kill_escalation",
         "aliases": [],
         "domain": "tooling",
         "summary": "Escalate process-group termination and reap children.",
@@ -12412,11 +12477,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "149ea33733fd346e1e7982ea57d6e5d2361f96ba6b27b4d49cac088c48886869"
+          "value": "4b17c7842922d53e84b9ff3daa26d8de6dfc58f53e317d8301fae0853216ae92"
         },
         "schema_version": 1,
         "ordinal": 113,
         "id": "process_cwd_continuity",
+        "semantic_key": "process_cwd_continuity",
         "aliases": [],
         "domain": "tooling",
         "summary": "Preserve process and working-directory continuity.",
@@ -12555,11 +12621,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4bb8517f28ccf753163c43502d53450266ea90c63b8093de6c5afe92ca2bd8f7"
+          "value": "0d7e807f2d7446f3daa0ec5d0dece3627e98fa9eb5d133722ceb6cde38cb2d39"
         },
         "schema_version": 1,
         "ordinal": 114,
         "id": "child_process_environment_reuse",
+        "semantic_key": "child_process_environment_reuse",
         "aliases": [],
         "domain": "tooling",
         "summary": "Reuse a bounded child-process environment snapshot.",
@@ -12723,11 +12790,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3dd3686bc1c7b97fc13147586d71cade43e64c26781e1412af7d77297d76b499"
+          "value": "28c4f0ce96bcdd30f255410ee1a921b6508aff4bb997b1f0daf0c4c271a4505c"
         },
         "schema_version": 1,
         "ordinal": 115,
         "id": "effecting_tool_concurrency",
+        "semantic_key": "effecting_tool_concurrency",
         "aliases": [
           "effecting_tool_parallelism"
         ],
@@ -12815,11 +12883,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "dade8696800593ec84b860d3d6492af53ce5799d55bc2430de44c479b71efae2"
+          "value": "3bc910b2c43e394d4281ef16e6d4ace7e9795b41c87e7fb46a4b083d0aaf6c82"
         },
         "schema_version": 1,
         "ordinal": 116,
         "id": "write_set_conflict_admission",
+        "semantic_key": "write_set_conflict_admission",
         "aliases": [],
         "domain": "tooling",
         "summary": "Admit concurrent writes only when declared write sets do not overlap.",
@@ -12958,11 +13027,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "60db0bf9a7c8002d9ac6b2183143042ab88ee8d7fce0203d5ff23d0b62bfdf7a"
+          "value": "269d9418ff79d59aac151c9e109003498c91e43d28777a22635c281b7f819d51"
         },
         "schema_version": 1,
         "ordinal": 117,
         "id": "tool_output_spill_to_disk_policy",
+        "semantic_key": "tool_output_spill_to_disk_policy",
         "aliases": [],
         "domain": "tooling",
         "summary": "Spill bounded tool output outside model context.",
@@ -13095,11 +13165,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "af17d0ed575f70897bd02fd3436bc12edd4296cab8bd6c98ecb41d64e2f2aac3"
+          "value": "23160358058d48228ea1da4d34e90f9e9dec85d62a9e7cbf2b1227df25212e7d"
         },
         "schema_version": 1,
         "ordinal": 118,
         "id": "binary_media_inspection_routing",
+        "semantic_key": "binary_media_inspection_routing",
         "aliases": [],
         "domain": "tooling",
         "summary": "Route binary and media inspection by capability.",
@@ -13235,11 +13306,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "57171b418ca94592c3e86164f7b266ed4da9959c4e0a5b32d2b26459317d7667"
+          "value": "0c26f6ba25d3df1eaaeb6d811dedaceed361fc094c762969447e91352ddcdc9e"
         },
         "schema_version": 1,
         "ordinal": 119,
         "id": "lsp_server_language_selection",
+        "semantic_key": "lsp_server_language_selection",
         "aliases": [],
         "domain": "tooling",
         "summary": "Select LSP servers for discovered languages.",
@@ -13371,11 +13443,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "259aa032d79b74f05d739625851b9de25931d0f44b390a1fa1a81a2cdab8c075"
+          "value": "ee40eda3a4cad61317700f592a7d07abb6e2eef485528959fb7e22876cfd074b"
         },
         "schema_version": 1,
         "ordinal": 120,
         "id": "lsp_timeout_restart_policy",
+        "semantic_key": "lsp_timeout_restart_policy",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound LSP requests and server restarts.",
@@ -13507,11 +13580,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "cbc0732352a25263644e9783b96e2596bf8d7e1d66d2dc1cea59f64b908c8d3d"
+          "value": "31b9525235588cf8e77a24d85981838720e942f5881f7e8b964d66ed3974d92b"
         },
         "schema_version": 1,
         "ordinal": 121,
         "id": "lsp_result_context_budget",
+        "semantic_key": "lsp_result_context_budget",
         "aliases": [],
         "domain": "context",
         "summary": "Bound LSP evidence admitted to context.",
@@ -13591,11 +13665,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "929436e55f4803e00e9904146d4873b89809a638ba01e6a300420f9b32375212"
+          "value": "690cbc221c864f37e156ebe97eb3520f92c82f77efbbc4bd13807bc0d3486be2"
         },
         "schema_version": 1,
         "ordinal": 122,
         "id": "tool_result_cache_ttl",
+        "semantic_key": "tool_result_cache_ttl",
         "aliases": [],
         "domain": "tooling",
         "summary": "Bound deterministic tool-result cache reuse.",
@@ -13674,11 +13749,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "79395d8f89df17afab89b456beb738678d0b3f91212a9abc2f7d5b3580e3f66a"
+          "value": "166d1068195003e6a91030546375b8f1efd7aaa603f671834ec6de6e9dfafeab"
         },
         "schema_version": 1,
         "ordinal": 123,
         "id": "test_selection_strategy",
+        "semantic_key": "test_selection_strategy",
         "aliases": [],
         "domain": "verification",
         "summary": "Select the verification command and evidence scope.",
@@ -13804,11 +13880,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "cb34444ad841e68e573204702e4bac9934c238011eb453e72dbab997c8a73329"
+          "value": "286fa2c7831b9354f8cc8c060df912c90b95624a3fe92e4d0f43b2840f9fe353"
         },
         "schema_version": 1,
         "ordinal": 124,
         "id": "incremental_versus_full_verification",
+        "semantic_key": "incremental_versus_full_verification",
         "aliases": [],
         "domain": "verification",
         "summary": "Choose incremental or full verification by risk.",
@@ -13890,11 +13967,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c3f0aa8b06d82a7c037e366f8f4ec67ab8c535066d69e371844e42dab2a60e05"
+          "value": "3e39fbb39654d63522126db392a8c95641332ce6e2b16a817be08288da43aa86"
         },
         "schema_version": 1,
         "ordinal": 125,
         "id": "flaky_test_detection_quarantine",
+        "semantic_key": "flaky_test_detection_quarantine",
         "aliases": [],
         "domain": "verification",
         "summary": "Detect disagreement and quarantine flaky evidence.",
@@ -14055,11 +14133,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "01aeb60a0aa076881382662be204d9909fa665e829c4462f911721bd439871a9"
+          "value": "55e822865936e44faefe892a3bffe8f5d2d58d455c726b12c8e76a285bec7c1e"
         },
         "schema_version": 1,
         "ordinal": 126,
         "id": "failure_classification_taxonomy",
+        "semantic_key": "failure_classification_taxonomy",
         "aliases": [],
         "domain": "verification",
         "summary": "Classify verification failures with a versioned taxonomy.",
@@ -14190,11 +14269,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "cce3a39a0d3ccf325969722a351b5c57884a972866801de4e053f12bdd21e073"
+          "value": "71f671bf6e8afb1824236b51e921029315d7dc2434de05811ec7c6afcadeae65"
         },
         "schema_version": 1,
         "ordinal": 127,
         "id": "retry_eligibility_policy",
+        "semantic_key": "retry_eligibility_policy",
         "aliases": [],
         "domain": "verification",
         "summary": "Retry only verification outcomes that are eligible.",
@@ -14319,11 +14399,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7dc8cab1e207d929cf6c70aa6e844a050da6a263c3ddb02c4663d56064808cbd"
+          "value": "b23eee8878dc3941d7c62959c4bf02cf49b4c0db5e398f042c4000651d71081e"
         },
         "schema_version": 1,
         "ordinal": 128,
         "id": "rollback_on_verification_failure",
+        "semantic_key": "rollback_on_verification_failure",
         "aliases": [],
         "domain": "verification",
         "summary": "Rollback selected workspace changes after verification failure.",
@@ -14406,11 +14487,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8562c0cffe5a11b30e38fa7c1ca43bf85a080a4d0da7a02f77ce53053863d499"
+          "value": "ea56f7dddfb34d0fe28b36ee146dc4143286b2bc1d0a13dc14d128c2d458eba7"
         },
         "schema_version": 1,
         "ordinal": 129,
         "id": "workspace_checkpoint_cadence",
+        "semantic_key": "workspace_checkpoint_cadence",
         "aliases": [],
         "domain": "verification",
         "summary": "Choose durable workspace checkpoint boundaries.",
@@ -14562,11 +14644,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9b880a2dcd3e5f9440ee6197a78e8e3d8398414950939354863304ab28bf0fcb"
+          "value": "1ca87764fbda292b9f9d1fbfaed31df0860cb5e64a0dced7ede4fcf037dfadc5"
         },
         "schema_version": 1,
         "ordinal": 130,
         "id": "selective_restore_scope",
+        "semantic_key": "selective_restore_scope",
         "aliases": [],
         "domain": "verification",
         "summary": "Choose an explicit user-authorized restore scope.",
@@ -14701,11 +14784,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d90ea378ebe3bee799942f534a695a340915b40ea1f040adc5a30b908f9d71bf"
+          "value": "33d3df5bce4604b4cb87322669fb72e6a599928baa470293fd4d266767303239"
         },
         "schema_version": 1,
         "ordinal": 131,
         "id": "verification_quorum_consensus",
+        "semantic_key": "verification_quorum_consensus",
         "aliases": [],
         "domain": "verification",
         "summary": "Require bounded verifier agreement.",
@@ -14848,11 +14932,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2228bd776d8cc46bbe2d099f3e9e7ebcaeae562a333fa8fd6c25fc7adbe270e7"
+          "value": "6543149a4df74f29ccaf9d55434c9fc1c32202d7191c4d50adbae084ef062f3f"
         },
         "schema_version": 1,
         "ordinal": 132,
         "id": "recovery_escalation_policy",
+        "semantic_key": "recovery_escalation_policy",
         "aliases": [],
         "domain": "verification",
         "summary": "Escalate verification recovery from retry to replan to stop.",
@@ -14936,11 +15021,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "6be6c3cd29e607a98343919992ae5401ad2624460f3f88cfd62aa323e41a7bb8"
+          "value": "e6239bca923a8def95c2ddb27a66795b8154c396962157f69ae6dcb06d5124dc"
         },
         "schema_version": 1,
         "ordinal": 133,
         "id": "per_agent_model",
+        "semantic_key": "per_agent_model",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Choose a model for one admitted agent.",
@@ -15024,11 +15110,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4da9fe3d541d809065b0a3def1e9776ce05e25f18ea457bfbec26ac04653e1c0"
+          "value": "61dbb60f4f5f32788c0b7246a1a447bcc40167f7003e6c78e5b11573d6f6cff9"
         },
         "schema_version": 1,
         "ordinal": 134,
         "id": "per_agent_effort_thinking",
+        "semantic_key": "per_agent_effort_thinking",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Choose effort and thinking for one admitted agent.",
@@ -15119,11 +15206,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b4822376bf82004260d0158572704b812117173c486d0cb8add5f35e2d841997"
+          "value": "c2c51faafd791b75988ec6cc7f8528b503b702d24f19cf5d7c92308fe3c81a7f"
         },
         "schema_version": 1,
         "ordinal": 135,
         "id": "per_agent_tool_profile",
+        "semantic_key": "per_agent_tool_profile",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Narrow the tool profile for one admitted agent.",
@@ -15217,11 +15305,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c87987aa5aea5d40245a132964e824b25dc6e7ccb9a405e5a33916525b44cd5a"
+          "value": "a0bcf18b13fc7da50520908696963e427fdd3bf23b97a300d324443690c47506"
         },
         "schema_version": 1,
         "ordinal": 136,
         "id": "per_agent_memory_scope",
+        "semantic_key": "per_agent_memory_scope",
         "aliases": [],
         "domain": "memory",
         "summary": "Choose isolated or explicitly shared agent memory.",
@@ -15355,11 +15444,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a0b3452a5d0fc97c9732f80ce34b7a5d1a291c4f7df5e63ae419445a657fe532"
+          "value": "836fe8c1d0984fce3058acc2865412225b3371fbff11e38b2d95ff8611a59592"
         },
         "schema_version": 1,
         "ordinal": 137,
         "id": "spawn_depth_control",
+        "semantic_key": "spawn_depth_control",
         "aliases": [
           "agent_spawn_depth"
         ],
@@ -15442,11 +15532,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "45badb918bbcd24db7f204aa74c8e194002737aa2d9e978a9bd7a0ef48b0b845"
+          "value": "4e8e5a42129c2efb31afcd4f1be8376c705ccb0bab8f0d5fe635270de1b890fa"
         },
         "schema_version": 1,
         "ordinal": 138,
         "id": "per_session_spawn_cap",
+        "semantic_key": "per_session_spawn_cap",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Bound total agent spawns in one session.",
@@ -15525,11 +15616,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d4cf3224c0efbbd621400a1467bdd743552951cad65a58b0b97a9ec2ae7adb54"
+          "value": "b9c067763a6bbe85d648c260aac5cf599a8bc1253660444f590aba3ae0f808e6"
         },
         "schema_version": 1,
         "ordinal": 139,
         "id": "task_priority_scheduling",
+        "semantic_key": "task_priority_scheduling",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Schedule ready tasks by bounded priority.",
@@ -15667,11 +15759,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8c5d4c655a8fed85851f020fe90cd8d9a5d076428e52bffb2fb0c020d06dcb69"
+          "value": "2cf7a7676c8605ff128ff787f495949def0dace2366e09893a2427bcf6e1292a"
         },
         "schema_version": 1,
         "ordinal": 140,
         "id": "speculative_sibling_count",
+        "semantic_key": "speculative_sibling_count",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Bound speculative sibling agents.",
@@ -15756,11 +15849,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "6102409de85d743235abff34edbacca4dc48e845838a09683acb93e57be3af71"
+          "value": "aae9b7d9c7996ef08dad6030cbf99520b0e99dc95b4e0a6ca31630117c1b6543"
         },
         "schema_version": 1,
         "ordinal": 141,
         "id": "speculative_sibling_cancellation",
+        "semantic_key": "speculative_sibling_cancellation",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Cancel losing speculative siblings from evidence.",
@@ -15889,11 +15983,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "73edbc114eedb7c13ce1ea1d4479dad43c5366b31a7c331c23566a4dae1d47d0"
+          "value": "8a41efbdccaed72d72a1542dee627ad312cc9d616308fa84f136848dda4c7c02"
         },
         "schema_version": 1,
         "ordinal": 142,
         "id": "early_stop_quorum_policy",
+        "semantic_key": "early_stop_quorum_policy",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Stop a fan only after required evidence reaches quorum.",
@@ -16030,11 +16125,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "aa09cd5f31770543e78de0afce658be702ed77945072f021d937373eab202c11"
+          "value": "f6a61334520d0c637fcf80a815fa9924c2bc6a3c42ffc744adc8c383e1af693a"
         },
         "schema_version": 1,
         "ordinal": 143,
         "id": "writer_worktree_isolation_mode",
+        "semantic_key": "writer_worktree_isolation_mode",
         "aliases": [],
         "domain": "governance",
         "summary": "Isolate write-capable agents in worktrees.",
@@ -16112,11 +16208,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7c325e8214aa9e89ca6b6cb9ff5e4120618028a886286d57d54f878bd908303f"
+          "value": "558fc07f934f34f214bd60789a30a9958657552f91329dc444a58e0e3412abda"
         },
         "schema_version": 1,
         "ordinal": 144,
         "id": "merge_conflict_arbitration",
+        "semantic_key": "merge_conflict_arbitration",
         "aliases": [],
         "domain": "verification",
         "summary": "Arbitrate verified child merges and conflicts.",
@@ -16238,11 +16335,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "de5fd7a31ceef506ca83dc4786740d24edba31d9c577782f8f0cb98e73cf7c6f"
+          "value": "005be968db63914997a8d55a5377e68a4aca3752b1824927c3e9a862323ccc24"
         },
         "schema_version": 1,
         "ordinal": 145,
         "id": "inter_agent_messaging_topology",
+        "semantic_key": "inter_agent_messaging_topology",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Route bounded agent reports through the parent.",
@@ -16330,11 +16428,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7190f58f32bb7a74c7db6d28e0d03527d3536f9c79d2dcbac17263cb9e5cf08f"
+          "value": "1ec495b45ab8baa4fb65ca688398a170bca8f864c7c357762314515ea7ad5bcf"
         },
         "schema_version": 1,
         "ordinal": 146,
         "id": "task_retry_reassignment_policy",
+        "semantic_key": "task_retry_reassignment_policy",
         "aliases": [],
         "domain": "orchestration",
         "summary": "Retry or reassign a failed agent task.",
@@ -16454,11 +16553,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7ef5ce2c76d8bd97c3a5075af24258e4cd30d50855e250688f7c9a274143ffd2"
+          "value": "232605947fb44411a6823ea81698a0af5add4e46e5ce5e847afc8e2b7f462dc9"
         },
         "schema_version": 1,
         "ordinal": 147,
         "id": "mcp_transport_selection",
+        "semantic_key": "mcp_transport_selection",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Select an admitted MCP transport.",
@@ -16540,11 +16640,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "64ebf1afce898c37ffaec3446f3bfad2678f143c3b4fd51afb68cfd618dfc6a1"
+          "value": "c7895eb5847e35c2204c06794d3cd1fad4fa6cb5bf16cb650c7f863f216e3cec"
         },
         "schema_version": 1,
         "ordinal": 148,
         "id": "deferred_discovery_threshold",
+        "semantic_key": "deferred_discovery_threshold",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Defer MCP discovery after a bounded threshold.",
@@ -16627,11 +16728,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ef1b418647e8a2fda87f4e8ad460c296cab658a5fb9a5955178f11c7268e0cd7"
+          "value": "b30d028c80d8702748787e96f1eca262846653379b5a30faa2e29365ee61b8cd"
         },
         "schema_version": 1,
         "ordinal": 149,
         "id": "mcp_reconnect_backoff",
+        "semantic_key": "mcp_reconnect_backoff",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Bound MCP reconnect attempts and delay.",
@@ -16750,11 +16852,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f843b044010bc78416e755baa2feb7e11cae9d954bb640f722361a3a8e11d026"
+          "value": "3325d284fea1da5c82843497fcbb3dbf407a816f79a5b0b74dc6b2651d5dca67"
         },
         "schema_version": 1,
         "ordinal": 150,
         "id": "per_server_startup_deadline",
+        "semantic_key": "per_server_startup_deadline",
         "aliases": [
           "mcp_server_startup_timeout"
         ],
@@ -16834,11 +16937,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "908fa48de01da7a21ce98e5927670ff389c21aab376e1eecd764dd283bb876fd"
+          "value": "e69c960820ca9e6ea9e606f1e205418cb23b1265115aa2954b0852d28769463a"
         },
         "schema_version": 1,
         "ordinal": 151,
         "id": "per_tool_mcp_deadline",
+        "semantic_key": "per_tool_mcp_deadline",
         "aliases": [
           "mcp_tool_timeout"
         ],
@@ -16918,11 +17022,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3afebf5928c23214dfaba880b65d447405cee232d60e4cb5805d45236af652f1"
+          "value": "ab0eb4feb4f2ff107a200ff6955a9423ad55b3c8226408eb42f3e6ee23838b90"
         },
         "schema_version": 1,
         "ordinal": 152,
         "id": "mcp_result_cap_spill_policy",
+        "semantic_key": "mcp_result_cap_spill_policy",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Cap or spill MCP results before model exposure.",
@@ -17088,11 +17193,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5be220e5631b64613cfa5a25a1c35c51383b95daaf7112ecd08ad26bc3fe9226"
+          "value": "5417ea1bded36b17705fc456974a71f31eadfdbf7d8c00d2391b70a47b1a758c"
         },
         "schema_version": 1,
         "ordinal": 153,
         "id": "oauth_auth_lifecycle_policy",
+        "semantic_key": "oauth_auth_lifecycle_policy",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Manage MCP OAuth and authentication lifecycle.",
@@ -17216,11 +17322,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3af914f1f24378b864e7ffcf8fd8e4550e2e12fd5039d0b6a2319bf9061a4191"
+          "value": "df002892daf9526c8305c32246295414e39c5c2be3449723a6c8d0fd076910c4"
         },
         "schema_version": 1,
         "ordinal": 154,
         "id": "resource_prompt_plugin_capability_exposure",
+        "semantic_key": "resource_prompt_plugin_capability_exposure",
         "aliases": [],
         "domain": "extensibility",
         "summary": "Expose trusted MCP resources, prompts, and plugin capabilities.",
@@ -17400,11 +17507,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "482803904707bad5e078866f3df878a1cd3996350520419b26d7b5785f5d8fd7"
+          "value": "e4f1854595476c0aa0e5bda40cd796f8b8ce95a32e11fe99111e01e2eec5330d"
         },
         "schema_version": 1,
         "ordinal": 155,
         "id": "request_compression_policy",
+        "semantic_key": "request_compression_policy",
         "aliases": [],
         "domain": "provider",
         "summary": "Select provider request compression.",
@@ -17485,11 +17593,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4af37fe18ecf09de525beadde219aed82f699528b9021acb2de4ffa88de05a07"
+          "value": "fa6276184f20412494b24b63db604c3c87fa78086c4a1903f38b6b152f026719"
         },
         "schema_version": 1,
         "ordinal": 156,
         "id": "http_pool_keepalive_idle_policy",
+        "semantic_key": "http_pool_keepalive_idle_policy",
         "aliases": [],
         "domain": "provider",
         "summary": "Bound HTTP pool idle and TCP keepalive behavior.",
@@ -17624,11 +17733,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5e12eb8daebf7dd325f3bf1329abe64d474c6f0bf92274cf4c628b53ebc6c3ed"
+          "value": "fe0a3d924f767e87845a4f1916d53c93fff3b41fb7f243f8d1880129893df3f6"
         },
         "schema_version": 1,
         "ordinal": 157,
         "id": "rate_limit_aware_admission",
+        "semantic_key": "rate_limit_aware_admission",
         "aliases": [],
         "domain": "provider",
         "summary": "Gate new provider work from observed rate-limit headroom.",
@@ -17796,20 +17906,20 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0be679499876e3bbe2a5638e8bfffba515a82404a971dea587bf9046df7ab497"
+          "value": "f15b53f73315709bccf6a2604c490a27bbc4b6cd771a2d28ca9ff2709111a10f"
         },
         "schema_version": 1,
         "ordinal": 158,
         "id": "prompt_cache_ttl_breakpoint_strategy",
+        "semantic_key": "prompt_cache_ttl_breakpoint_strategy",
         "aliases": [],
         "domain": "context",
-        "summary": "Choose prompt-cache lifetime and breakpoints.",
+        "summary": "Declare prompt-cache lifetime and breakpoint strategy when an independent control is implemented.",
         "activation": {
           "predicate": {
-            "type": "runtime_derived",
-            "seam": "crates/provider/src/anthropic.rs"
+            "type": "unavailable"
           },
-          "inactive_reason": "grouped_or_incomplete_seam"
+          "inactive_reason": "not_implemented"
         },
         "requirements": {
           "provider": "selected_route",
@@ -17823,25 +17933,20 @@
           "core/model_router"
         ],
         "default": {
-          "kind": "derived",
+          "kind": "dynamic",
           "resolver": {
-            "type": "builtin",
-            "resolver_id": "core://tunables/resolvers/prompt_cache_ttl_breakpoint_strategy-v1"
+            "type": "operator",
+            "input_id": "core://tunables/operator-inputs/prompt_cache_ttl_breakpoint_strategy-v1"
           },
-          "requirement": "optional",
+          "requirement": "required",
           "value": null
         },
         "source": {
           "bindings": [
             {
-              "kind": "user_config",
-              "trust": "operator",
-              "locator": "provider prompt-cache opt-out"
-            },
-            {
-              "kind": "builtin",
-              "trust": "builtin",
-              "locator": "crates/provider/src/anthropic.rs"
+              "kind": "registry",
+              "trust": "registry_declaration",
+              "locator": "crates/tunables/src/families.rs"
             }
           ]
         },
@@ -17929,9 +18034,9 @@
             "swe_bench_pro": "indirect",
             "terminal_bench_2_1": "indirect"
           },
-          "rationale": "Choose prompt-cache lifetime and breakpoints."
+          "rationale": "Declare prompt-cache lifetime and breakpoint strategy when an independent control is implemented."
         },
-        "implementation_status": "partial",
+        "implementation_status": "missing",
         "optimization": {
           "class": "p2",
           "search_phase": "p2",
@@ -17943,11 +18048,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b2d7779d3ba0b751e3921739df886f1921cbe22d387ada84e1b871fa2f33f5c0"
+          "value": "06b5e07ecba1edeb5e4d262279a9f67516b0def405b14ceb0ac7ffdb6df9b57e"
         },
         "schema_version": 1,
         "ordinal": 159,
         "id": "session_isolation_profile",
+        "semantic_key": "session_isolation_profile",
         "aliases": [],
         "domain": "governance",
         "summary": "Choose an isolation profile for sessions and evaluations.",
@@ -18037,11 +18143,12 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "994ad99d9d432a0a66919d6b104f01e3c9d1a26e77e915a1e0dcbea3a076adce"
+          "value": "207ca3a394a12a1156f5d265606ac87c274acdb444f0399b1160609e54aee99f"
         },
         "schema_version": 1,
         "ordinal": 160,
         "id": "replay_divergence_detection_policy",
+        "semantic_key": "replay_divergence_detection_policy",
         "aliases": [],
         "domain": "verification",
         "summary": "Reject replay state that diverges from durable evidence.",

@@ -178,21 +178,11 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
         },
         [external_rule!("$", OperatorAuthority)]
     ),
-    object_schema!(
+    scalar_schema!(
         "prompt_cache",
-        [
-            scalar_field!("enabled", true, bool_domain!()),
-            scalar_field!(
-                "breakpoint",
-                false,
-                finite_enum_domain!("none", "rolling", "explicit")
-            ),
-            scalar_field!("ttl_seconds", false, int_domain!(0, 86_400, "seconds"))
-        ],
-        [
-            requires_bool_rule!("enabled", true, "breakpoint"),
-            external_rule!("ttl_seconds", OperatorAuthority)
-        ]
+        Bool,
+        bool_domain!(),
+        [external_rule!("$", ProviderCapability)]
     ),
     object_schema!(
         "compaction_adaptive",

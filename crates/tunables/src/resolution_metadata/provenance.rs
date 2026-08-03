@@ -85,7 +85,7 @@ pub(super) const SOURCES: [SourceSpec; crate::EXPECTED_FAMILY_COUNT] = [
     source!(Builtin, Builtin, "crates/cli/src/providers.rs"), // 20 effort_reasoning_map
     source!(Builtin, Builtin, "crates/cli/src/providers.rs"), // 21 thinking_map
     source!(Builtin, Builtin, "crates/cli/src/runtime.rs"), // 22 orchestration_map
-    source!([(UserConfig, Operator, "provider prompt-cache opt-out"), (Builtin, Builtin, "crates/provider/src/anthropic.rs")]), // 23 prompt_cache
+    source!([(RustBuilder, Operator, "core_provider::ProviderInstance::with_prompt_cache"), (Builtin, Builtin, "core_provider::ProviderInstance::new")]), // 23 prompt_cache
     source!(DerivedPolicy, Builtin, "crates/ctx/src/compact.rs"), // 24 compaction_adaptive
     source!(Builtin, Builtin, "crates/ctx/src/compact.rs"), // 25 compaction_keep_recent
     source!(Builtin, Builtin, "crates/ctx/src/lib.rs"), // 26 token_estimator
@@ -220,7 +220,7 @@ pub(super) const SOURCES: [SourceSpec; crate::EXPECTED_FAMILY_COUNT] = [
     source!(Registry, RegistryDeclaration, "crates/tunables/src/families.rs"), // 155 request_compression_policy
     source!(Builtin, Builtin, "crates/provider/src/catalog.rs"), // 156 http_pool_keepalive_idle_policy
     source!(RuntimeObservation, RuntimeObservation, "crates/cli/src/runtime.rs"), // 157 rate_limit_aware_admission
-    source!([(UserConfig, Operator, "provider prompt-cache opt-out"), (Builtin, Builtin, "crates/provider/src/anthropic.rs")]), // 158 prompt_cache_ttl_breakpoint_strategy
+    source!(Registry, RegistryDeclaration, "crates/tunables/src/families.rs"), // 158 prompt_cache_ttl_breakpoint_strategy
     source!(Builtin, Builtin, "crates/record/src/lib.rs"), // 159 session_isolation_profile
     source!(Builtin, Builtin, "crates/record/src/lib.rs"), // 160 replay_divergence_detection_policy
 ];
@@ -249,7 +249,7 @@ pub(super) const ACTIVATIONS: [ActivationSpec; crate::EXPECTED_FAMILY_COUNT] = [
     always!(), // 20 effort_reasoning_map
     always!(), // 21 thinking_map
     always!(), // 22 orchestration_map
-    runtime_derived!("crates/cli/src/providers.rs"), // 23 prompt_cache
+    always!(), // 23 prompt_cache
     always!(), // 24 compaction_adaptive
     always!(), // 25 compaction_keep_recent
     always!(), // 26 token_estimator
@@ -384,7 +384,7 @@ pub(super) const ACTIVATIONS: [ActivationSpec; crate::EXPECTED_FAMILY_COUNT] = [
     unavailable!(), // 155 request_compression_policy
     always!(), // 156 http_pool_keepalive_idle_policy
     unavailable!(), // 157 rate_limit_aware_admission
-    runtime_derived!("crates/provider/src/anthropic.rs"), // 158 prompt_cache_ttl_breakpoint_strategy
+    unavailable!(), // 158 prompt_cache_ttl_breakpoint_strategy
     runtime_derived!("crates/record/src/lib.rs"), // 159 session_isolation_profile
     always!(), // 160 replay_divergence_detection_policy
 ];

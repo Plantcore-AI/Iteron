@@ -1,10 +1,10 @@
 use core_tunables::{
-    ActivationPredicate, CausalPath, CoreStrategySlot, DefaultKind, DefaultResolver,
-    DefaultValueRequirement, EXPECTED_FAMILY_COUNT, ImplementationStatus, InactiveReason,
-    ProviderRequirement, REGISTRY_DIGEST_SHA256, RelevanceLevel, SCALAR_CATALOGS, SourceKind,
-    SourceTrust, StructuredValueDomain, TunableValue, TunableValueField, ValueKind,
-    canonical_artifact, canonical_artifact_json, canonical_payload_json, families,
-    family_semantic_digest, registry_digest, validate_registry,
+    ActivationPredicate, CausalPath, CoreStrategySlot, CrossFieldRule, DefaultKind,
+    DefaultResolver, DefaultValueRequirement, EXPECTED_FAMILY_COUNT, ExternalCeiling,
+    ImplementationStatus, InactiveReason, ProviderRequirement, REGISTRY_DIGEST_SHA256,
+    RelevanceLevel, SCALAR_CATALOGS, ScalarDomain, SourceKind, SourceTrust, StructuredValueDomain,
+    TunableValue, TunableValueField, ValueKind, canonical_artifact, canonical_artifact_json,
+    canonical_payload_json, families, family_semantic_digest, registry_digest, validate_registry,
 };
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
@@ -732,6 +732,10 @@ fn exact_160_entry_contract_is_pinned_per_ordinal() {
         assert_eq!(usize::from(family.ordinal), ordinal);
         assert_eq!(family.id, EXPECTED_IDS[index], "ordinal {ordinal}");
         assert_eq!(
+            family.semantic_key, EXPECTED_IDS[index],
+            "ordinal {ordinal}"
+        );
+        assert_eq!(
             (
                 family.benchmark_relevance.swe_bench_pro,
                 family.benchmark_relevance.terminal_bench_2_1,
@@ -886,6 +890,75 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     assert_eq!(prompt.source.bindings[0].kind, SourceKind::OperatorInput);
     assert_eq!(prompt.source.bindings[0].trust, SourceTrust::Operator);
 
+    let prompt_cache = family("prompt_cache");
+    assert_eq!(
+        prompt_cache.implementation_status,
+        ImplementationStatus::Full
+    );
+    assert_eq!(prompt_cache.default.kind, DefaultKind::Literal);
+    assert_eq!(
+        prompt_cache.default.value,
+        Some(TunableValue::Boolean { value: true })
+    );
+    assert_eq!(prompt_cache.value_schema.kind, ValueKind::Bool);
+    assert!(matches!(
+        prompt_cache.value_schema.domain,
+        StructuredValueDomain::Scalar {
+            domain: ScalarDomain::Boolean
+        }
+    ));
+    assert_eq!(
+        prompt_cache
+            .source
+            .bindings
+            .iter()
+            .map(|binding| binding.kind)
+            .collect::<Vec<_>>(),
+        vec![SourceKind::RustBuilder, SourceKind::Builtin]
+    );
+    assert_eq!(
+        prompt_cache.source.bindings[0].locator,
+        "core_provider::ProviderInstance::with_prompt_cache"
+    );
+    assert!(prompt_cache.value_schema.rules.iter().any(|rule| matches!(
+        rule,
+        CrossFieldRule::ExternalCeiling {
+            field: "$",
+            ceiling: ExternalCeiling::ProviderCapability,
+        }
+    )));
+    let prompt_cache_schema = serde_json::to_string(&prompt_cache.value_schema).unwrap();
+    assert!(!prompt_cache_schema.contains("ttl"));
+    assert!(!prompt_cache_schema.contains("breakpoint"));
+
+    let prompt_cache_strategy = family("prompt_cache_ttl_breakpoint_strategy");
+    assert_eq!(
+        prompt_cache_strategy.implementation_status,
+        ImplementationStatus::Missing
+    );
+    assert!(matches!(
+        prompt_cache_strategy.activation.predicate,
+        ActivationPredicate::Unavailable
+    ));
+    assert_eq!(prompt_cache_strategy.source.bindings.len(), 1);
+    assert_eq!(
+        prompt_cache_strategy.source.bindings[0].kind,
+        SourceKind::Registry
+    );
+    assert_eq!(prompt_cache_strategy.default.kind, DefaultKind::Dynamic);
+    assert_eq!(
+        prompt_cache_strategy.default.requirement,
+        DefaultValueRequirement::Required
+    );
+    assert!(matches!(
+        prompt_cache_strategy.default.resolver,
+        DefaultResolver::Operator { .. }
+    ));
+    let prompt_cache_strategy_schema =
+        serde_json::to_string(&prompt_cache_strategy.value_schema).unwrap();
+    assert!(prompt_cache_strategy_schema.contains("ttl_seconds"));
+    assert!(prompt_cache_strategy_schema.contains("breakpoint"));
+
     assert_eq!(
         family("token_estimator").requirements.provider,
         ProviderRequirement::None
@@ -918,6 +991,7 @@ fn activation_source_and_default_invariants_hold_for_every_entry() {
             let expected = match binding.kind {
                 SourceKind::Cli
                 | SourceKind::OperatorInput
+                | SourceKind::RustBuilder
                 | SourceKind::UserConfig
                 | SourceKind::Environment => SourceTrust::Operator,
                 SourceKind::ProjectConfig | SourceKind::Catalog => SourceTrust::Repository,
@@ -1063,9 +1137,9 @@ fn corrections_remove_alias_and_cover_multi_slot_effects() {
 #[test]
 fn status_shape_and_semantic_digest_contract_are_exact() {
     for (status, expected) in [
-        (ImplementationStatus::Full, 27),
-        (ImplementationStatus::Partial, 54),
-        (ImplementationStatus::Missing, 26),
+        (ImplementationStatus::Full, 28),
+        (ImplementationStatus::Partial, 52),
+        (ImplementationStatus::Missing, 27),
         (ImplementationStatus::FixedHidden, 53),
     ] {
         assert_eq!(
@@ -1078,12 +1152,10 @@ fn status_shape_and_semantic_digest_contract_are_exact() {
         );
     }
 
-    let mut digests = BTreeSet::new();
     for family in families() {
         let digest = family_semantic_digest(family).unwrap();
         assert_eq!(digest.algorithm, "sha256");
         assert_eq!(digest.value.len(), 64);
-        assert!(digests.insert(digest.value), "{}", family.id);
     }
 
     let mut changed = *family("provider");

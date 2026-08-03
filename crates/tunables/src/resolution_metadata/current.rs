@@ -23,7 +23,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     derived_default!("effort_reasoning_map"), // 20 effort_reasoning_map
     derived_default!("thinking_map"),     // 21 thinking_map
     derived_default!("orchestration_map"), // 22 orchestration_map
-    derived_default!("prompt_cache"),     // 23 prompt_cache
+    literal_default!(boolean_value!(true)), // 23 prompt_cache
     derived_default!("compaction_adaptive"), // 24 compaction_adaptive
     derived_default!("compaction_keep_recent"), // 25 compaction_keep_recent
     derived_default!("token_estimator"),  // 26 token_estimator

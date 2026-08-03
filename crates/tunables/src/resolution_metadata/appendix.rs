@@ -146,7 +146,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 75] = [
             "unknown_quota" => enum_value!("conservative"),
         )
     ), // 157 rate_limit_aware_admission
-    derived_default!("prompt_cache_ttl_breakpoint_strategy"), // 158
+    operator_default!("prompt_cache_ttl_breakpoint_strategy"), // 158
     literal_default!(enum_value!("hermetic")), // 159
     literal_default!(object_value!(
         "verify_hash_chain" => boolean_value!(true),

@@ -125,6 +125,7 @@ pub enum SourceTrust {
 pub enum SourceKind {
     Cli,
     OperatorInput,
+    RustBuilder,
     UserConfig,
     ProjectConfig,
     Environment,
@@ -550,6 +551,9 @@ pub struct Family {
     pub schema_version: u16,
     pub ordinal: u16,
     pub id: &'static str,
+    /// Canonical runtime-control ownership key. Renaming an ID or moving an ordinal does not
+    /// create a second semantic owner for the same control.
+    pub semantic_key: &'static str,
     pub aliases: &'static [&'static str],
     pub domain: Domain,
     pub summary: &'static str,

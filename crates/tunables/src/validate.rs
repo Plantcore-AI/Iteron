@@ -11,7 +11,7 @@ mod default_value;
 mod value;
 
 /// Stable identities retired because they duplicate another semantic family.
-const SEMANTIC_DUPLICATE_DENYLIST: &[&str] = &["delegation_depth"];
+const SEMANTIC_DUPLICATE_DENYLIST: &[&str] = &["delegation_depth", "workflow_spawn_cap"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
@@ -61,11 +61,11 @@ pub enum RegistryError {
     LearnableInvariant(&'static str),
     #[error("family `{0}` claims implemented code but cites only the registry")]
     ImplementedRegistryOnly(&'static str),
-    #[error("families `{first}` and `{second}` have the same semantic digest `{digest}`")]
-    DuplicateSemanticDigest {
+    #[error("families `{first}` and `{second}` both own runtime control `{semantic_key}`")]
+    DuplicateSemanticKey {
         first: &'static str,
         second: &'static str,
-        digest: String,
+        semantic_key: &'static str,
     },
     #[error("registry digest mismatch: expected `{expected}`, computed `{actual}`")]
     RegistryDigestMismatch {
@@ -80,7 +80,6 @@ pub fn validate_registry() -> Result<(), RegistryError> {
     validate_scalar_catalogs()?;
     let registry = families();
     validate_families(registry)?;
-    validate_semantic_digests(registry)?;
     let actual = crate::canonical::registry_digest_unvalidated()?.value;
     if actual != crate::REGISTRY_DIGEST_SHA256 {
         return Err(RegistryError::RegistryDigestMismatch {
@@ -112,7 +111,7 @@ fn validate_families(registry: &[crate::Family]) -> Result<(), RegistryError> {
             actual: registry.len(),
         });
     }
-    let mut identities = BTreeMap::<&'static str, &'static str>::new();
+    validate_semantic_ownership(registry)?;
     for (index, family) in registry.iter().enumerate() {
         let expected = u16::try_from(index + 1).expect("160 ordinals fit in u16");
         if family.ordinal != expected {
@@ -128,14 +127,41 @@ fn validate_families(registry: &[crate::Family]) -> Result<(), RegistryError> {
                 actual: family.schema_version,
             });
         }
-        validate_identity(family.id)?;
-        if identities.insert(family.id, family.id).is_some() {
-            return Err(RegistryError::DuplicateFamilyId(family.id));
-        }
         if family.summary.trim().is_empty()
             || family.benchmark_relevance.rationale.trim().is_empty()
         {
             return Err(RegistryError::IncompleteMetadata(family.id));
+        }
+    }
+    for family in registry {
+        validate_activation(family)?;
+        validate_source(family)?;
+        validate_default(family)?;
+        validate_requirements_and_slots(family)?;
+        value::validate_family_value(family)?;
+        validate_optimization(family)?;
+    }
+    Ok(())
+}
+
+/// Enforce semantic ownership without consulting ordinals, stable IDs as ownership keys, family
+/// digests, or the global golden digest. This is the check that prevents a renamed or moved entry
+/// from creating a second registry identity for one canonical runtime control.
+fn validate_semantic_ownership(registry: &[crate::Family]) -> Result<(), RegistryError> {
+    let mut identities = BTreeMap::<&'static str, &'static str>::new();
+    let mut semantic_keys = BTreeMap::<&'static str, &'static str>::new();
+    for family in registry {
+        validate_identity(family.id)?;
+        validate_identity(family.semantic_key)?;
+        if identities.insert(family.id, family.id).is_some() {
+            return Err(RegistryError::DuplicateFamilyId(family.id));
+        }
+        if let Some(first) = semantic_keys.insert(family.semantic_key, family.id) {
+            return Err(RegistryError::DuplicateSemanticKey {
+                first,
+                second: family.id,
+                semantic_key: family.semantic_key,
+            });
         }
     }
     for family in registry {
@@ -149,12 +175,6 @@ fn validate_families(registry: &[crate::Family]) -> Result<(), RegistryError> {
                 });
             }
         }
-        validate_activation(family)?;
-        validate_source(family)?;
-        validate_default(family)?;
-        validate_requirements_and_slots(family)?;
-        value::validate_family_value(family)?;
-        validate_optimization(family)?;
     }
     Ok(())
 }
@@ -212,6 +232,7 @@ fn expected_trust(kind: SourceKind) -> SourceTrust {
     match kind {
         SourceKind::Cli
         | SourceKind::OperatorInput
+        | SourceKind::RustBuilder
         | SourceKind::UserConfig
         | SourceKind::Environment => SourceTrust::Operator,
         SourceKind::ProjectConfig | SourceKind::Catalog => SourceTrust::Repository,
@@ -348,17 +369,43 @@ fn validate_optimization(family: &crate::Family) -> Result<(), RegistryError> {
     Ok(())
 }
 
-fn validate_semantic_digests(registry: &[crate::Family]) -> Result<(), RegistryError> {
-    let mut digests = BTreeMap::<String, &'static str>::new();
-    for family in registry {
-        let digest = crate::family_semantic_digest(family)?.value;
-        if let Some(first) = digests.insert(digest.clone(), family.id) {
-            return Err(RegistryError::DuplicateSemanticDigest {
-                first,
-                second: family.id,
-                digest,
-            });
-        }
+#[cfg(test)]
+mod tests {
+    use super::{RegistryError, validate_semantic_ownership};
+
+    #[test]
+    fn retired_workflow_spawn_cap_identity_and_alias_are_rejected_without_a_digest() {
+        let mut reintroduced = crate::families()[137];
+        reintroduced.id = "workflow_spawn_cap";
+        reintroduced.ordinal = 65_000;
+        assert!(matches!(
+            validate_semantic_ownership(&[reintroduced]),
+            Err(RegistryError::SemanticDuplicate("workflow_spawn_cap"))
+        ));
+
+        let mut reintroduced_alias = crate::families()[137];
+        reintroduced_alias.aliases = &["workflow_spawn_cap"];
+        assert!(matches!(
+            validate_semantic_ownership(&[reintroduced_alias]),
+            Err(RegistryError::SemanticDuplicate("workflow_spawn_cap"))
+        ));
     }
-    Ok(())
+
+    #[test]
+    fn semantic_key_rejects_a_control_copied_under_a_new_id_and_ordinal() {
+        let original = crate::families()[137];
+        let mut disguised_duplicate = original;
+        disguised_duplicate.id = "renamed_session_spawn_control";
+        disguised_duplicate.aliases = &[];
+        disguised_duplicate.ordinal = 65_000;
+
+        assert!(matches!(
+            validate_semantic_ownership(&[original, disguised_duplicate]),
+            Err(RegistryError::DuplicateSemanticKey {
+                first: "per_session_spawn_cap",
+                second: "renamed_session_spawn_control",
+                semantic_key: "per_session_spawn_cap",
+            })
+        ));
+    }
 }
