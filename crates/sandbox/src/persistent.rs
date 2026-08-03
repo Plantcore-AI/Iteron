@@ -175,7 +175,7 @@ pub async fn spawn_confined_process(
 ) -> Result<ConfinedProcess, SandboxError> {
     #[cfg(target_os = "linux")]
     {
-        let Some(binary) = crate::bubblewrap::usable_bwrap_off_worker().await else {
+        let Some(binary) = crate::bubblewrap::Bubblewrap::usable_bwrap_off_worker().await else {
             return Err(SandboxError::Unsupported);
         };
         let mut process = tokio::process::Command::new(binary);
