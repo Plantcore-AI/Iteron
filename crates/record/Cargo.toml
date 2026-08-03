@@ -13,3 +13,9 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
+
+# Tiered durability (I-16): `File::sync_data` is `fcntl(F_FULLFSYNC)` on Apple platforms, and std
+# offers no way to ask for a plain `fsync(2)`. Per-event appends need the cheap barrier; only the
+# turn boundary pays for the device cache flush.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

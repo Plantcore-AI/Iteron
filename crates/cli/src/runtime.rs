@@ -3591,6 +3591,20 @@ impl Agent {
         }
     }
 
+    /// Refresh the rebuildable session sidecars, charged to the same meter as a durable append.
+    ///
+    /// This is not free bookkeeping: `refresh_session_cache` rewrites the per-run `.meta.json` and
+    /// `sessions.index`, and each rewrite ends in a directory fsync. Called once per turn from
+    /// `advance_turn` and once at each run boundary, it was real durability cost that no meter saw,
+    /// so `kernel_tax` under-reported what the record actually costs. Failure stays best-effort:
+    /// the cache is rebuildable and the append-only rollout is the sole authoritative result.
+    fn refresh_session_cache_metered(&mut self) {
+        let fsync_started = Instant::now();
+        let _ = self.rollout.refresh_session_cache();
+        self.ledger
+            .record_fsync_latency_us(elapsed_us(fsync_started));
+    }
+
     fn diagnostic_record_append_failed(&self) {
         self.diagnostics
             .emit(KernelDiagnostic::RecordAppendFailed {});
@@ -3689,7 +3703,11 @@ impl Agent {
         event: HookEvent,
         context_json: &str,
     ) -> Result<hooks::HookDecision, KernelError> {
-        if self.hooks.is_empty() {
+        // Per EVENT, not per hook map: a run with only a `Stop` hook configured has nothing to say
+        // about `PreToolUse`, so brokering it would append an intent and a terminal (and pay their
+        // barriers) to call zero commands. The boundary still covers every dispatch that can
+        // actually start a process, which is the only thing it was ever protecting.
+        if self.hooks.is_empty_for(event) {
             return Ok(hooks::HookDecision::Allow);
         }
         let class = effect_class::EffectClass::Hook;
@@ -4420,7 +4438,7 @@ impl Agent {
         // Every exit from the admitted run loop is a session boundary, including provider,
         // pricing, transcript, or tool errors after a durable TurnEnd. Keep cache failure
         // best-effort so the append-only rollout remains the sole authoritative result.
-        let _ = self.rollout.refresh_session_cache();
+        self.refresh_session_cache_metered();
         outcome
     }
 
@@ -4482,7 +4500,7 @@ impl Agent {
             self.brokered_hook(TurnId(self.seq_turn), HookEvent::Stop, &ctx)
                 .await?;
         }
-        let _ = self.rollout.refresh_session_cache();
+        self.refresh_session_cache_metered();
         outcome
     }
 
@@ -5839,7 +5857,7 @@ impl Agent {
             .seq_turn
             .checked_add(1)
             .ok_or(KernelError::IdentityExhausted("turn"))?;
-        let _ = self.rollout.refresh_session_cache();
+        self.refresh_session_cache_metered();
         self.seq_turn = next;
         Ok(())
     }
@@ -17127,6 +17145,86 @@ ant-api03-SuperSecretModelToken12345"
         assert!(blocked, "the read must be blocked by the PreToolUse hook");
         let leaked = events.iter().any(|e| matches!(&e.kind, EventKind::ToolDone { result, .. } if result.content.contains("TOP-SECRET-CONTENT")));
         assert!(!leaked, "a blocked read must NOT return the file content");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn i17_an_unrelated_hook_does_not_broker_the_tool_lifecycle() {
+        // The broker short-circuit used to ask "does this operator use hooks at all". With a `Stop`
+        // hook configured, every PreToolUse and PostToolUse dispatch therefore crossed the boundary
+        // — an intent append, a terminal append and their barriers — to run zero commands.
+        let ws = temp_ws("hook-per-event-shortcircuit");
+        std::fs::write(ws.join("secret.txt"), "content").unwrap();
+        let home = ws.join("home");
+        std::fs::create_dir_all(home.join(".core")).unwrap();
+        std::fs::write(
+            home.join(".core").join("config.json"),
+            r#"{"hooks":{"Stop":["true"]}}"#,
+        )
+        .unwrap();
+        let runs = ws.join(".core/runs");
+        let run = core_protocol::RunId("hook-per-event-shortcircuit".into());
+        let rollout = Rollout::open(&runs, &run, core_protocol::TenantId::default()).unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(ScriptedRead::default()),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+        agent.hooks = hooks::Hooks::load_user(&home);
+        assert!(!agent.hooks.is_empty(), "the run must have a hook configured");
+        agent.run("read secret.txt").await.unwrap();
+
+        let events = core_record::replay(&runs.join(format!("{run}.jsonl"))).unwrap();
+        let brokered: Vec<String> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::EffectIntent {
+                    tool, arguments, ..
+                } if tool == "hook" => Some(
+                    arguments
+                        .get("event")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("?")
+                        .to_string(),
+                ),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            brokered,
+            vec!["Stop".to_string()],
+            "only the configured event may cross the effect boundary"
+        );
+        // The tool itself still ran and is still fully journalled; this narrows the hook class only.
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(&event.kind, EventKind::ToolDone { .. })),
+            "the read must still execute and record its terminal"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn i17_the_per_turn_session_cache_refresh_is_charged_to_the_kernel_tax() {
+        // `refresh_session_cache` rewrites two sidecars and fsyncs their directory on every turn
+        // advance. Outside the meter it was invisible durability cost, so `kernel_tax` understated
+        // what a turn actually pays for the record.
+        let ws = temp_ws("session-cache-metered");
+        let mut agent = agent_for(&ws);
+        agent
+            .emit_durable(TurnId(0), EventKind::TurnStart)
+            .expect("seed a turn so the projection has something to persist");
+        let before = agent.ledger.kernel_tax().record_fsync_latency_us;
+        agent.advance_turn().unwrap();
+        assert!(
+            agent.ledger.kernel_tax().record_fsync_latency_us > before,
+            "the turn-advance cache refresh must appear in the ledger, not beside it"
+        );
         let _ = std::fs::remove_dir_all(&ws);
     }
 

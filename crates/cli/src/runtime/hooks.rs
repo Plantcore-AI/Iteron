@@ -115,6 +115,17 @@ impl Hooks {
         self.by_event.values().all(|v| v.is_empty())
     }
 
+    /// True when no command is bound to this exact lifecycle event.
+    ///
+    /// The whole-map [`Self::is_empty`] is the wrong question at a dispatch site: it answers "does
+    /// this operator use hooks at all", and a dispatch site needs "does anything actually run
+    /// here". Asking the coarse question made one configured `Stop` hook route every `PreToolUse`
+    /// and `PostToolUse` through the effect broker — an intent append, a terminal append and their
+    /// fsyncs per tool call — to invoke nothing.
+    pub fn is_empty_for(&self, event: HookEvent) -> bool {
+        self.commands(event).is_empty()
+    }
+
     fn commands(&self, event: HookEvent) -> &[String] {
         self.by_event
             .get(event.key())
