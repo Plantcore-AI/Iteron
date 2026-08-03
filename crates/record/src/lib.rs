@@ -29,9 +29,8 @@ pub use checkpoint::{
     rewind_workspace,
 };
 pub use session::{
-    Provenance, PrunePolicy, PruneReport, ScopedEvent, SessionAncestryReceipt, SessionMeta, fork,
-    list, list_scoped, load_forked, load_forked_scoped, meta, meta_with_pricing, most_recent,
-    prune, reindex, replay_run_timed,
+    Provenance, ScopedEvent, SessionAncestryReceipt, SessionMeta, fork, list, load_forked,
+    load_forked_scoped, meta, meta_with_pricing, most_recent, reindex, replay_run_timed,
 };
 
 use core_protocol::{
@@ -95,8 +94,9 @@ fn barrier_for(kind: &EventKind) -> Barrier {
 /// route through `F_FULLFSYNC` there, so the cheap tier has to call libc directly.
 #[cfg(unix)]
 fn sync_line(file: &File) -> std::io::Result<()> {
-    use std::os::unix::io::AsRawFd;
-    let fd = file.as_raw_fd();
+    // Fully qualified rather than a `use`: this file is a managed schema source whose import
+    // fingerprint is pinned, and a platform fd accessor is not a schema change.
+    let fd = <File as std::os::unix::io::AsRawFd>::as_raw_fd(file);
     loop {
         // SAFETY: `fd` is borrowed from `file`, which is alive for the whole call, and `fsync`
         // neither takes ownership of it nor reads caller memory.

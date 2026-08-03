@@ -603,12 +603,12 @@ fn run_prune_command(
             "prune needs an explicit retention policy: --older-than-days <DAYS> and/or --keep-last <N>"
         );
     }
-    let policy = core_record::PrunePolicy {
+    let policy = core_record::session::PrunePolicy {
         max_age_secs: older_than_days.map(|days| days.saturating_mul(24 * 60 * 60)),
         keep_last,
         dry_run,
     };
-    let report = core_record::prune(runs_dir, &TenantId::default(), &policy)?;
+    let report = core_record::session::prune(runs_dir, &TenantId::default(), &policy)?;
     let verb = if dry_run { "would remove" } else { "removed" };
     for run in &report.removed {
         println!("{verb} {run}");
@@ -897,7 +897,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             println!("{}", serde_json::to_string(&document)?);
             return Ok(output::EXIT_SUCCESS);
         }
-        let metas = core_record::list_scoped(&runs_dir, &tenant, Some(&repo));
+        let metas = core_record::session::list_scoped(&runs_dir, &tenant, Some(&repo));
         if metas.is_empty() {
             eprintln!(
                 "no sessions for {} in {}",

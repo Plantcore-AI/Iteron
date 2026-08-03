@@ -231,7 +231,7 @@ pub(crate) fn list_sessions(
     repo: Option<&Path>,
     limit: usize,
 ) -> SessionListDocument {
-    let metas = core_record::list_scoped(runs_dir, tenant, repo);
+    let metas = core_record::session::list_scoped(runs_dir, tenant, repo);
     let total = metas.len();
     let limit = limit.min(MAX_SESSIONS_PER_PAGE);
     let sessions = metas
