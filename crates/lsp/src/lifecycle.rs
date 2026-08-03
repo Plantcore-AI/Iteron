@@ -1,25 +1,25 @@
-//! Server session state machine and restart policy.
+//! Language-server session state and finite restart policy.
 //!
-//! The LSP handshake has a rule that is easy to get wrong and expensive to debug: between
-//! `initialize` and the `initialized` notification the server may answer *only* the initialize
-//! request. Sending `textDocument/definition` into that window is a protocol violation, and real
-//! servers respond by either erroring or hanging. So readiness is a state here, not a boolean that
-//! a caller sets when it feels ready.
-//!
-//! Crash recovery is a budget rather than a retry loop. A server that dies on a malformed file in
-//! the workspace dies again immediately on restart, and an unbounded loop turns one bad file into
-//! a spawn storm.
+//! Readiness, shutdown acknowledgement, exit notification, clean EOF, crash and restart backoff are
+//! distinct states/events. This prevents an EOF before the shutdown response from being mislabeled
+//! clean, and prevents a caller from scheduling a delay then immediately spawning anyway.
 
-use crate::LspError;
+use crate::{
+    HEALTHY_RESTART_RESET_AFTER_MS, HEALTHY_RESTART_RESET_AFTER_SUCCESSES, LspError,
+    MAX_RESTART_ATTEMPTS, MAX_RESTART_BACKOFF_MS, MIN_RESTART_BACKOFF_MS,
+};
 
-/// Where a session is in its lifecycle. `Crashed` is distinct from `Exited`: an exit we asked for
-/// is success, an exit we did not ask for is a fault that consumes restart budget.
+/// Where a session is in its lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     Uninitialized,
     Initializing,
     Ready,
     ShuttingDown,
+    Exiting,
+    AwaitingExitStatus,
+    AwaitingStreamClose,
+    RestartBackoff,
     Exited,
     Crashed,
 }
@@ -27,37 +27,44 @@ pub enum State {
 impl State {
     pub fn label(self) -> &'static str {
         match self {
-            State::Uninitialized => "uninitialized",
-            State::Initializing => "initializing",
-            State::Ready => "ready",
-            State::ShuttingDown => "shutting down",
-            State::Exited => "exited",
-            State::Crashed => "crashed",
+            Self::Uninitialized => "uninitialized",
+            Self::Initializing => "initializing",
+            Self::Ready => "ready",
+            Self::ShuttingDown => "shutting down",
+            Self::Exiting => "exit sent",
+            Self::AwaitingExitStatus => "awaiting exit status",
+            Self::AwaitingStreamClose => "awaiting stream close",
+            Self::RestartBackoff => "restart backoff",
+            Self::Exited => "exited",
+            Self::Crashed => "crashed",
         }
     }
 }
 
-/// Inputs that move a session. Everything that can change state is one of these, so a transition
-/// cannot be performed by an unrelated code path reaching in and assigning.
+/// Inputs that move a session. The driver must distinguish a clean frame-boundary EOF from an
+/// observed process failure; neither is inferred from a string or exit timing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
-    /// `initialize` request sent.
     InitializeSent,
-    /// `initialize` result received and `initialized` notification sent.
+    /// Initialize result received and `initialized` notification sent.
     Initialized,
-    /// `shutdown` request sent.
     ShutdownSent,
-    /// `exit` observed after a shutdown we requested.
-    ExitedCleanly,
-    /// Process died without a shutdown handshake, or the stream broke.
-    Died,
+    /// Shutdown result received and the one-way `exit` notification sent.
+    ExitSent,
+    /// Clean EOF at a frame boundary.
+    StreamClosed,
+    /// The supervised process exited with the protocol-required success status.
+    ProcessExitedSuccessfully,
+    /// Non-success process status, broken frame, or transport I/O error.
+    ProcessFailed,
 }
 
-#[derive(Debug, Clone, Copy)]
+/// Validated, finite restart configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RestartPolicy {
-    pub max_attempts: u32,
-    pub base_backoff_ms: u64,
-    pub max_backoff_ms: u64,
+    max_attempts: u32,
+    base_backoff_ms: u64,
+    max_backoff_ms: u64,
 }
 
 impl Default for RestartPolicy {
@@ -71,12 +78,46 @@ impl Default for RestartPolicy {
 }
 
 impl RestartPolicy {
-    /// Exponential backoff, saturating at `max_backoff_ms`.
-    ///
-    /// `attempt` is 1-based: the delay before the first restart is `base_backoff_ms`. Shifting is
-    /// bounded before it is applied, because `1u64 << 64` is undefined behaviour in release and a
-    /// panic in debug, and a server that crashes 64 times is exactly how you would reach it.
-    pub fn backoff_ms(&self, attempt: u32) -> u64 {
+    pub fn new(
+        max_attempts: u32,
+        base_backoff_ms: u64,
+        max_backoff_ms: u64,
+    ) -> Result<Self, LspError> {
+        if !(1..=MAX_RESTART_ATTEMPTS).contains(&max_attempts) {
+            return Err(LspError::InvalidRestartAttempts {
+                value: max_attempts,
+                max: MAX_RESTART_ATTEMPTS,
+            });
+        }
+        validate_backoff("base", base_backoff_ms)?;
+        validate_backoff("maximum", max_backoff_ms)?;
+        if base_backoff_ms > max_backoff_ms {
+            return Err(LspError::InvalidRestartBackoffOrder {
+                base_ms: base_backoff_ms,
+                max_ms: max_backoff_ms,
+            });
+        }
+        Ok(Self {
+            max_attempts,
+            base_backoff_ms,
+            max_backoff_ms,
+        })
+    }
+
+    pub fn max_attempts(self) -> u32 {
+        self.max_attempts
+    }
+
+    pub fn base_backoff_ms(self) -> u64 {
+        self.base_backoff_ms
+    }
+
+    pub fn max_backoff_ms(self) -> u64 {
+        self.max_backoff_ms
+    }
+
+    /// Exponential backoff, saturating at the validated maximum.
+    pub fn backoff_ms(self, attempt: u32) -> u64 {
         let steps = attempt.saturating_sub(1).min(32);
         self.base_backoff_ms
             .saturating_mul(1u64 << steps)
@@ -84,11 +125,27 @@ impl RestartPolicy {
     }
 }
 
+fn validate_backoff(field: &'static str, value_ms: u64) -> Result<(), LspError> {
+    if !(MIN_RESTART_BACKOFF_MS..=MAX_RESTART_BACKOFF_MS).contains(&value_ms) {
+        return Err(LspError::InvalidRestartBackoff {
+            field,
+            value_ms,
+            min_ms: MIN_RESTART_BACKOFF_MS,
+            max_ms: MAX_RESTART_BACKOFF_MS,
+        });
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct Session {
     state: State,
     policy: RestartPolicy,
     restarts: u32,
+    last_now_ms: Option<u64>,
+    restart_not_before_ms: Option<u64>,
+    ready_since_ms: Option<u64>,
+    successful_requests: u32,
 }
 
 impl Session {
@@ -97,6 +154,10 @@ impl Session {
             state: State::Uninitialized,
             policy,
             restarts: 0,
+            last_now_ms: None,
+            restart_not_before_ms: None,
+            ready_since_ms: None,
+            successful_requests: 0,
         }
     }
 
@@ -108,13 +169,10 @@ impl Session {
         self.restarts
     }
 
-    /// True only in `Ready`. Callers gate every non-handshake request on this.
     pub fn accepts_requests(&self) -> bool {
         self.state == State::Ready
     }
 
-    /// Reject a request that cannot legally be sent yet, naming the state so the failure is
-    /// diagnosable without attaching a debugger to the server.
     pub fn guard_request(&self) -> Result<(), LspError> {
         if self.accepts_requests() {
             Ok(())
@@ -125,31 +183,61 @@ impl Session {
         }
     }
 
-    /// Apply an event. Illegal transitions are ignored rather than panicking: these events arrive
-    /// from a peer we do not control, and a server that sends `initialized` twice must not be able
-    /// to abort the agent.
-    pub fn apply(&mut self, event: Event) -> State {
-        self.state = match (self.state, event) {
+    /// Apply a timestamped event. Illegal peer transitions remain inert, while early restart is a
+    /// typed error because it would bypass a security-relevant spawn-storm bound.
+    pub fn apply(&mut self, event: Event, now_ms: u64) -> Result<State, LspError> {
+        self.observe_clock(now_ms)?;
+        if self.state == State::RestartBackoff && event == Event::InitializeSent {
+            let not_before = self
+                .restart_not_before_ms
+                .expect("restart backoff state has a deadline");
+            if now_ms < not_before {
+                return Err(LspError::RestartBackoffActive {
+                    remaining_ms: not_before - now_ms,
+                });
+            }
+            self.state = State::Initializing;
+            self.restart_not_before_ms = None;
+            return Ok(self.state);
+        }
+
+        let next = match (self.state, event) {
             (State::Uninitialized, Event::InitializeSent) => State::Initializing,
             (State::Initializing, Event::Initialized) => State::Ready,
             (State::Ready, Event::ShutdownSent) => State::ShuttingDown,
-            (State::ShuttingDown, Event::ExitedCleanly) => State::Exited,
-            // A death in any live state is a crash. A death after we asked to shut down is the
-            // clean path and is handled by the arm above.
+            (State::ShuttingDown, Event::ExitSent) => State::Exiting,
+            (State::Exiting, Event::StreamClosed) => State::AwaitingExitStatus,
+            (State::Exiting, Event::ProcessExitedSuccessfully) => State::AwaitingStreamClose,
+            (State::AwaitingExitStatus, Event::ProcessExitedSuccessfully)
+            | (State::AwaitingStreamClose, Event::StreamClosed) => State::Exited,
             (
                 State::Uninitialized | State::Initializing | State::Ready | State::ShuttingDown,
-                Event::Died,
+                Event::StreamClosed,
+            )
+            | (
+                State::Uninitialized | State::Initializing | State::Ready | State::ShuttingDown,
+                Event::ProcessExitedSuccessfully,
+            )
+            | (
+                State::Uninitialized
+                | State::Initializing
+                | State::Ready
+                | State::ShuttingDown
+                | State::Exiting
+                | State::AwaitingExitStatus
+                | State::AwaitingStreamClose,
+                Event::ProcessFailed,
             ) => State::Crashed,
             (current, _) => current,
         };
-        self.state
+        self.set_state(next, now_ms);
+        Ok(self.state)
     }
 
-    /// Consume one unit of restart budget and report how long to wait.
-    ///
-    /// Only a crashed session may restart. Restarting an `Exited` session would resurrect a server
-    /// the caller deliberately shut down.
-    pub fn plan_restart(&mut self) -> Result<u64, LspError> {
+    /// Consume one restart unit and enter an enforced backoff state. The returned delay is for
+    /// scheduling/telemetry; `apply(InitializeSent, ...)` independently enforces it.
+    pub fn plan_restart(&mut self, now_ms: u64) -> Result<u64, LspError> {
+        self.observe_clock(now_ms)?;
         if self.state != State::Crashed {
             return Err(LspError::NotReady {
                 state: self.state.label(),
@@ -160,126 +248,64 @@ impl Session {
                 attempts: self.restarts,
             });
         }
-        self.restarts += 1;
-        self.state = State::Uninitialized;
-        Ok(self.policy.backoff_ms(self.restarts))
+        self.restarts = self.restarts.saturating_add(1);
+        let delay = self.policy.backoff_ms(self.restarts);
+        self.state = State::RestartBackoff;
+        self.restart_not_before_ms = Some(now_ms.saturating_add(delay));
+        Ok(delay)
     }
 
-    /// A session that has served a request without dying has proven the workspace is not
-    /// instantly fatal, so its budget is returned. Without this, a long-lived session that
-    /// crashes once a week would eventually refuse to restart for a reason a week old.
-    pub fn note_healthy(&mut self) {
-        if self.state == State::Ready {
+    /// Record a successfully served request. Restart credit is restored only after both a fixed
+    /// healthy uptime and several successes, so one response cannot sustain an infinite crash loop.
+    /// Returns true exactly when credit was restored.
+    pub fn note_request_succeeded(&mut self, now_ms: u64) -> Result<bool, LspError> {
+        self.observe_clock(now_ms)?;
+        self.guard_request()?;
+        self.successful_requests = self
+            .successful_requests
+            .saturating_add(1)
+            .min(HEALTHY_RESTART_RESET_AFTER_SUCCESSES);
+        let ready_since = self.ready_since_ms.expect("ready state has an epoch");
+        let stable = now_ms.saturating_sub(ready_since) >= HEALTHY_RESTART_RESET_AFTER_MS
+            && self.successful_requests >= HEALTHY_RESTART_RESET_AFTER_SUCCESSES;
+        if stable && self.restarts > 0 {
             self.restarts = 0;
+            return Ok(true);
         }
+        Ok(false)
+    }
+
+    fn set_state(&mut self, next: State, now_ms: u64) {
+        if next == self.state {
+            return;
+        }
+        self.state = next;
+        if next == State::Ready {
+            self.ready_since_ms = Some(now_ms);
+            self.successful_requests = 0;
+        } else {
+            self.ready_since_ms = None;
+            self.successful_requests = 0;
+        }
+        if next == State::Crashed || next == State::Exited {
+            self.restart_not_before_ms = None;
+        }
+    }
+
+    fn observe_clock(&mut self, now_ms: u64) -> Result<(), LspError> {
+        if let Some(previous_ms) = self.last_now_ms
+            && now_ms < previous_ms
+        {
+            return Err(LspError::ClockRegressed {
+                previous_ms,
+                current_ms: now_ms,
+            });
+        }
+        self.last_now_ms = Some(now_ms);
+        Ok(())
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn ready() -> Session {
-        let mut s = Session::new(RestartPolicy::default());
-        s.apply(Event::InitializeSent);
-        s.apply(Event::Initialized);
-        s
-    }
-
-    #[test]
-    fn requests_are_refused_until_the_handshake_completes() {
-        let mut s = Session::new(RestartPolicy::default());
-        assert!(matches!(
-            s.guard_request(),
-            Err(LspError::NotReady {
-                state: "uninitialized"
-            })
-        ));
-
-        // The window the spec forbids: initialize sent, initialized not yet exchanged.
-        s.apply(Event::InitializeSent);
-        assert!(matches!(
-            s.guard_request(),
-            Err(LspError::NotReady {
-                state: "initializing"
-            })
-        ));
-
-        s.apply(Event::Initialized);
-        assert!(s.guard_request().is_ok());
-    }
-
-    #[test]
-    fn a_duplicate_initialized_does_not_move_a_ready_session() {
-        let mut s = ready();
-        assert_eq!(s.apply(Event::Initialized), State::Ready);
-    }
-
-    #[test]
-    fn clean_shutdown_is_not_a_crash_and_costs_no_budget() {
-        let mut s = ready();
-        s.apply(Event::ShutdownSent);
-        assert_eq!(s.apply(Event::ExitedCleanly), State::Exited);
-        assert_eq!(s.restarts(), 0);
-        // An exited session is not restartable; that would resurrect a deliberate shutdown.
-        assert!(matches!(s.plan_restart(), Err(LspError::NotReady { .. })));
-    }
-
-    #[test]
-    fn an_unrequested_death_is_a_crash_from_any_live_state() {
-        for build in [
-            || Session::new(RestartPolicy::default()),
-            || {
-                let mut s = Session::new(RestartPolicy::default());
-                s.apply(Event::InitializeSent);
-                s
-            },
-            ready,
-        ] {
-            let mut s = build();
-            assert_eq!(s.apply(Event::Died), State::Crashed);
-        }
-    }
-
-    #[test]
-    fn restart_budget_is_finite_and_backoff_grows() {
-        let mut s = ready();
-        let mut delays = Vec::new();
-        for _ in 0..3 {
-            s.apply(Event::Died);
-            delays.push(s.plan_restart().unwrap());
-            s.apply(Event::InitializeSent);
-            s.apply(Event::Initialized);
-        }
-        assert_eq!(delays, vec![250, 500, 1000]);
-
-        // Fourth crash exceeds the budget rather than spawning again.
-        s.apply(Event::Died);
-        assert_eq!(
-            s.plan_restart(),
-            Err(LspError::RestartBudgetExhausted { attempts: 3 })
-        );
-    }
-
-    #[test]
-    fn a_healthy_session_earns_its_budget_back() {
-        let mut s = ready();
-        s.apply(Event::Died);
-        s.plan_restart().unwrap();
-        s.apply(Event::InitializeSent);
-        s.apply(Event::Initialized);
-        assert_eq!(s.restarts(), 1);
-
-        s.note_healthy();
-        assert_eq!(s.restarts(), 0);
-    }
-
-    #[test]
-    fn backoff_saturates_instead_of_overflowing() {
-        let policy = RestartPolicy::default();
-        // The shift is clamped, so a pathological attempt count returns the ceiling rather than
-        // panicking on overflow.
-        assert_eq!(policy.backoff_ms(u32::MAX), policy.max_backoff_ms);
-        assert_eq!(policy.backoff_ms(1), 250);
-    }
-}
+#[path = "lifecycle_tests.rs"]
+mod tests;
