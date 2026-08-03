@@ -90,6 +90,23 @@ sha, host, lane = record["sha"], record["host"], record["lane"]
 # A status can only be attached to a commit the remote already has. When this runs straight out
 # of a pre-push hook the push has not happened yet, so wait for the commit to appear rather than
 # failing with a 422. If it never appears the push failed, and publishing nothing is correct.
+def still_reachable():
+    """Is this commit still on a local branch, i.e. could it ever be pushed?
+
+    Waiting on the clock alone is wrong for the commonest development loop there is: amend,
+    force-push, amend again. Each amended push leaves the previous SHA orphaned, and a publisher
+    waiting on it polls GitHub every few seconds for the full timeout before giving up on a
+    commit that stopped being reachable the moment it was rewritten. Give up as soon as no
+    branch contains it -- that is the fact that decides the outcome, not elapsed time.
+    """
+    listed = subprocess.run(
+        ["git", "branch", "--all", "--contains", sha, "--format=%(refname)"],
+        capture_output=True,
+    )
+    # An unknown object also fails here, which is the same verdict: nothing will publish it.
+    return listed.returncode == 0 and listed.stdout.strip() != b""
+
+
 deadline = time.monotonic() + wait
 while True:
     probe = subprocess.run(
@@ -98,6 +115,12 @@ while True:
     )
     if probe.returncode == 0:
         break
+    if not still_reachable():
+        print(
+            f"commit {sha[:8]} was rewritten and is on no branch; publishing nothing",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if time.monotonic() >= deadline:
         print(f"commit {sha[:8]} is not on the remote; publishing nothing", file=sys.stderr)
         sys.exit(1)
