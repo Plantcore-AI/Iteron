@@ -20,6 +20,14 @@ use std::time::{Duration, Instant};
 
 /// Bounded connect timeout shared by every adapter's HTTP client.
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long an idle pooled connection is kept for the next turn. A coding turn is mostly the
+/// operator (or the model) thinking, and reqwest's 90s default evicts the connection during that
+/// pause: the next turn then pays a full TCP+TLS handshake again, measured at 0.78-1.02s on this
+/// network. 300s covers a long think without holding a connection open indefinitely.
+const HTTP_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+/// TCP keepalive on the pooled connection, so a NAT or middlebox on the path does not silently
+/// drop a connection that is being kept for exactly that long think.
+const HTTP_TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
 /// The concrete HTTP client an adapter dispatches through. Re-exported so a host
 /// implementing [`HttpTransport`] can name the port's return type without
@@ -58,6 +66,10 @@ impl HttpTransport for DefaultHttpTransport {
     fn client(&self) -> Result<HttpClient, ProviderError> {
         reqwest::Client::builder()
             .connect_timeout(HTTP_CONNECT_TIMEOUT)
+            // Connection reuse is a latency policy, not a tuning detail: without these two the
+            // pool drops the connection across a long think and the next turn re-handshakes.
+            .pool_idle_timeout(HTTP_POOL_IDLE_TIMEOUT)
+            .tcp_keepalive(HTTP_TCP_KEEPALIVE)
             // The configured API root is an authority boundary. Never replay an
             // API key, prompt, or POST body through an endpoint-chosen redirect.
             .redirect(reqwest::redirect::Policy::none())
@@ -257,6 +269,7 @@ pub struct ProviderInstance {
     catalog_strategy: CatalogStrategy,
     credential: Option<String>,
     static_metadata: Arc<crate::StaticProviderMetadata>,
+    prompt_cache: bool,
 }
 
 impl fmt::Debug for ProviderInstance {
@@ -277,6 +290,7 @@ impl fmt::Debug for ProviderInstance {
                 "credential",
                 &self.credential.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("prompt_cache", &self.prompt_cache)
             .finish()
     }
 }
@@ -350,6 +364,7 @@ impl ProviderInstance {
             catalog_strategy,
             credential,
             static_metadata: crate::StaticProviderMetadata::embedded(),
+            prompt_cache: true,
         })
     }
 
@@ -393,6 +408,22 @@ impl ProviderInstance {
     /// root is conservative and intentionally ignores provider-specific numeric business codes.
     pub fn with_error_profile(mut self, error_profile: ErrorProfile) -> Self {
         self.error_profile = error_profile;
+        self
+    }
+
+    /// Whether this route may mark prompt-cache breakpoints. Default on.
+    pub fn prompt_cache(&self) -> bool {
+        self.prompt_cache
+    }
+
+    /// Opt one configured route out of prompt caching.
+    ///
+    /// `cache_control` is part of the Anthropic Messages wire, not a per-account entitlement, so
+    /// every adapter speaking that wire marks breakpoints by default. This is the escape hatch
+    /// for the rare gateway that rejects the field outright rather than ignoring it; it is the
+    /// operator declaring an endpoint fact, never a guess Core makes from a model name.
+    pub fn with_prompt_cache(mut self, prompt_cache: bool) -> Self {
+        self.prompt_cache = prompt_cache;
         self
     }
 
@@ -459,6 +490,7 @@ impl ProviderInstance {
                 crate::Anthropic::with_root(credential, self.api_root.clone())?
                     .with_error_profile(self.error_profile)
                     .with_static_metadata(self.static_metadata.clone())
+                    .with_prompt_cache(self.prompt_cache)
                     .with_route_scope(self.id.clone())?,
             )),
             AdapterKind::OpenAiCompatibleChat => Ok(Box::new(
@@ -2822,6 +2854,87 @@ mod tests {
             }
         });
         (format!("http://{address}"), receiver, handle)
+    }
+
+    #[test]
+    fn default_transport_pins_the_connection_reuse_policy() {
+        // reqwest exposes no getter for either option, so the audited policy is pinned as named
+        // constants applied in the single client constructor; the behavioural half of this pin is
+        // `a_second_turn_reuses_the_pooled_connection`.
+        assert_eq!(HTTP_POOL_IDLE_TIMEOUT, Duration::from_secs(300));
+        assert_eq!(HTTP_TCP_KEEPALIVE, Duration::from_secs(30));
+        assert!(
+            HTTP_POOL_IDLE_TIMEOUT > Duration::from_secs(90),
+            "the pool must outlive a think longer than reqwest's 90s default, or the next turn \
+             pays a fresh TLS handshake"
+        );
+        assert!(DefaultHttpTransport.client().is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_second_turn_reuses_the_pooled_connection() {
+        // Audited on origin/main: with no pool idle timeout and no TCP keepalive, the connection
+        // was gone after a long think and the next turn re-handshaked (0.78-1.02s measured).
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            // Exactly one accept: both turns must arrive on the same connection.
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            for _ in 0..2 {
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                loop {
+                    let read = stream.read(&mut chunk).unwrap();
+                    assert!(read > 0, "client closed the pooled connection");
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                // Keep-alive: no `Connection: close`, so the connection returns to the pool.
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}"
+                )
+                .unwrap();
+                stream.flush().unwrap();
+            }
+            // A connection the client opened instead of reusing is still queued in the backlog.
+            listener.set_nonblocking(true).unwrap();
+            sender.send(listener.accept().is_ok()).unwrap();
+        });
+
+        let client = DefaultHttpTransport.client().unwrap();
+        let url = format!("http://{address}/v1/messages");
+        for _ in 0..2 {
+            let response = client.get(&url).send().await.unwrap();
+            assert!(response.status().is_success());
+            // The body must be drained before the connection can return to the pool.
+            response.bytes().await.unwrap();
+            // Stands in for the think between two turns.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            !receiver.recv().unwrap(),
+            "the second turn opened a new connection instead of reusing the pooled one"
+        );
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn prompt_cache_is_on_by_default_and_opt_out_survives_construction() {
+        let instance = instance(AdapterKind::AnthropicMessages);
+        assert!(instance.prompt_cache(), "caching is the default");
+        let opted_out = instance.clone().with_prompt_cache(false);
+        assert!(!opted_out.prompt_cache());
+        // The opt-out is a route fact, so it must survive the clone the directory keeps and
+        // still build a turn provider.
+        assert!(!opted_out.clone().prompt_cache());
+        assert!(opted_out.build_turn_provider().is_ok());
     }
 
     #[test]
