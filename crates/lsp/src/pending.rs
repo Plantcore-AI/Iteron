@@ -27,6 +27,9 @@ pub struct Expired {
 #[derive(Debug, Clone)]
 pub struct PendingRequests {
     entries: HashMap<u64, Entry>,
+    /// Highest id ever admitted. Ids are never reissued, so a late reply cannot be matched to a
+    /// different request that happens to reuse the number.
+    high_water: Option<u64>,
     capacity: usize,
     timed_out: u64,
     cancelled: u64,
@@ -43,6 +46,7 @@ impl PendingRequests {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             entries: HashMap::new(),
+            high_water: None,
             capacity,
             timed_out: 0,
             cancelled: 0,
@@ -83,10 +87,14 @@ impl PendingRequests {
                 limit: self.capacity,
             });
         }
-        // Inserting over a live id would discard the first caller's method and deadline: its
-        // reply could never be matched and nothing would ever sweep it. Ids are the caller's to
-        // allocate, so a collision is a bug to surface rather than absorb.
-        if self.entries.contains_key(&id) {
+        // An id is never reissued, not merely never duplicated *while live*.
+        //
+        // Rejecting only live ids leaves the dangerous case open: retire request 7, reissue 7, and
+        // a delayed reply to the first is matched to the second. The caller then receives a
+        // definition for a position it never asked about, which is worse than a lost reply because
+        // it is indistinguishable from a correct answer. Monotonicity closes that in O(1) without
+        // retaining a set of every id ever seen.
+        if self.high_water.is_some_and(|hw| id <= hw) {
             self.rejected += 1;
             return Err(LspError::DuplicateRequestId { id });
         }
@@ -97,6 +105,7 @@ impl PendingRequests {
                 deadline_ms: now_ms.saturating_add(timeout_ms),
             },
         );
+        self.high_water = Some(id);
         Ok(())
     }
 
@@ -187,11 +196,30 @@ mod tests {
     }
 
     #[test]
-    fn an_id_is_reusable_once_its_request_is_retired() {
+    fn an_id_is_never_reissued_even_after_its_request_is_retired() {
+        // This test previously asserted the opposite, which was the bug: retire 7, reissue 7, and
+        // a delayed reply to the first request is matched to the second. The caller then gets a
+        // definition for a position it never asked about -- indistinguishable from a correct
+        // answer, which makes it worse than a lost reply.
         let mut p = PendingRequests::default();
         p.issue(7, "definition", 0, 1_000).unwrap();
         assert!(p.resolve(7));
-        assert!(p.issue(7, "hover", 0, 1_000).is_ok());
+        assert_eq!(
+            p.issue(7, "hover", 0, 1_000),
+            Err(LspError::DuplicateRequestId { id: 7 })
+        );
+        // Moving forward is fine; only going back is refused.
+        assert!(p.issue(8, "hover", 0, 1_000).is_ok());
+    }
+
+    #[test]
+    fn an_id_below_the_high_water_mark_is_refused_even_if_never_used() {
+        let mut p = PendingRequests::default();
+        p.issue(100, "definition", 0, 1_000).unwrap();
+        assert!(matches!(
+            p.issue(5, "hover", 0, 1_000),
+            Err(LspError::DuplicateRequestId { id: 5 })
+        ));
     }
 
     #[test]
@@ -233,7 +261,9 @@ mod tests {
     #[test]
     fn expiry_is_ordered_by_id_not_by_hash_iteration() {
         let mut p = PendingRequests::default();
-        for id in [30u64, 10, 20] {
+        // Issued ascending, because ids are monotonic. `HashMap` iteration order is randomised
+        // per process regardless of insertion order, so this still catches unsorted output.
+        for id in [10u64, 20, 30] {
             p.issue(id, "hover", 0, 5).unwrap();
         }
         let ids: Vec<u64> = p.expire(1_000).into_iter().map(|e| e.id).collect();

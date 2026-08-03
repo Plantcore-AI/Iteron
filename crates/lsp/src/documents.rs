@@ -22,6 +22,11 @@ pub enum Publish {
 #[derive(Debug, Clone, Default)]
 struct Document {
     version: i32,
+    /// Bumped on every open. Version numbers restart when an editor reopens a file, so `(uri,
+    /// version)` alone cannot distinguish "version 1 of the file I have now" from "version 1 of
+    /// the file I closed a minute ago" -- and a diagnostic from the previous incarnation would
+    /// match on both fields and be accepted as current.
+    incarnation: u64,
     diagnostics: Vec<serde_json::Value>,
 }
 
@@ -29,6 +34,7 @@ struct Document {
 #[derive(Debug, Clone, Default)]
 pub struct DocumentStore {
     docs: HashMap<String, Document>,
+    next_incarnation: u64,
     stale_drops: u64,
     unknown_drops: u64,
 }
@@ -40,14 +46,54 @@ impl DocumentStore {
 
     /// Begin tracking a document. Re-opening resets it: the server is told the text afresh, so any
     /// diagnostics held from the previous incarnation describe text that is no longer authoritative.
-    pub fn open(&mut self, uri: impl Into<String>, version: i32) {
+    pub fn open(&mut self, uri: impl Into<String>, version: i32) -> u64 {
+        self.next_incarnation += 1;
+        let incarnation = self.next_incarnation;
         self.docs.insert(
             uri.into(),
             Document {
                 version,
+                incarnation,
                 diagnostics: Vec::new(),
             },
         );
+        incarnation
+    }
+
+    /// The token identifying the *current* incarnation of a document, if it is open.
+    ///
+    /// A caller that issued a request against a document should carry this alongside the version
+    /// and present it when the answer arrives; see [`publish_for`].
+    pub fn incarnation(&self, uri: &str) -> Option<u64> {
+        self.docs.get(uri).map(|d| d.incarnation)
+    }
+
+    /// Apply a publish that names the incarnation it was computed against.
+    ///
+    /// Rejects anything from a previous incarnation even when the version matches, which is the
+    /// case plain version comparison cannot see: close a file, reopen it, and the editor's version
+    /// numbering starts again from the beginning.
+    pub fn publish_for(
+        &mut self,
+        uri: &str,
+        incarnation: u64,
+        version: Option<i32>,
+        diagnostics: Vec<serde_json::Value>,
+    ) -> Publish {
+        match self.docs.get(uri) {
+            Some(doc) if doc.incarnation != incarnation => {
+                self.stale_drops += 1;
+                Publish::Stale {
+                    have: doc.version,
+                    incoming: version.unwrap_or(doc.version),
+                }
+            }
+            Some(_) => self.publish(uri, version, diagnostics),
+            None => {
+                self.unknown_drops += 1;
+                Publish::Unknown
+            }
+        }
     }
 
     /// Record an edit.
@@ -212,6 +258,39 @@ mod tests {
         assert!(!store.close("file:///a.rs"));
         assert_eq!(
             store.publish("file:///a.rs", Some(1), vec![diag("x")]),
+            Publish::Unknown
+        );
+    }
+
+    #[test]
+    fn a_diagnostic_from_a_previous_incarnation_is_refused_even_at_a_matching_version() {
+        // The case plain version comparison cannot see: an editor's version numbering restarts on
+        // reopen, so (uri, version=1) is ambiguous between the file open now and the one closed a
+        // moment ago. Without an incarnation token the stale publish looks perfectly current.
+        let mut store = DocumentStore::new();
+        let first = store.open("file:///a.rs", 1);
+        store.close("file:///a.rs");
+        let second = store.open("file:///a.rs", 1);
+        assert_ne!(first, second, "each open is a distinct incarnation");
+
+        let outcome = store.publish_for("file:///a.rs", first, Some(1), vec![diag("ghost")]);
+        assert!(matches!(outcome, Publish::Stale { .. }), "{outcome:?}");
+        assert!(store.diagnostics("file:///a.rs").is_empty());
+        assert_eq!(store.stale_drops(), 1);
+
+        // The current incarnation is accepted at the same version.
+        assert_eq!(
+            store.publish_for("file:///a.rs", second, Some(1), vec![diag("real")]),
+            Publish::Accepted
+        );
+        assert_eq!(store.diagnostics("file:///a.rs").len(), 1);
+    }
+
+    #[test]
+    fn an_incarnation_publish_for_an_unopened_document_is_unknown() {
+        let mut store = DocumentStore::new();
+        assert_eq!(
+            store.publish_for("file:///gone.rs", 1, Some(1), vec![diag("x")]),
             Publish::Unknown
         );
     }
