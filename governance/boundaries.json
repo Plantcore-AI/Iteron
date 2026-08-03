@@ -583,10 +583,12 @@
         { "kind": "file", "path": "crates/cli/src/mcp.rs" },
         { "kind": "file", "path": "crates/cli/src/pricing.rs" },
         { "kind": "file", "path": "crates/cli/src/providers.rs" },
+        { "kind": "file", "path": "crates/cli/src/route.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/pricing.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/strategy_runtime.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/workflow_spawner.rs" },
+        { "kind": "file", "path": "crates/cli/src/setup.rs" },
         { "kind": "file", "path": "crates/cli/src/startup.rs" },
         { "kind": "file", "path": "crates/cli/src/workflow.rs" }
       ],
