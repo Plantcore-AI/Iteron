@@ -246,6 +246,12 @@ struct Cli {
     #[arg(long)]
     max_tokens: Option<u64>,
 
+    /// Wall-clock ceiling for ONE submission, in seconds (bounded invariant; overrides config /
+    /// default). One long refactor turn can reach the 1800s default, which was previously
+    /// settable only by hand-editing the user config.
+    #[arg(long)]
+    max_wall_secs: Option<u64>,
+
     /// Force-enable code execution (bash/build/test). Code execution is already ON by default
     /// (Owner-directed lenient posture); a project `.core/config.json` "allow_code": false or
     /// `--mode plan` disables it. Code runs in an egress-off sandbox: network denied, writes
@@ -654,7 +660,10 @@ async fn run_cli() -> anyhow::Result<u8> {
         .or(user_file.max_usd);
     let max_usd = config::tighten_optional(file.max_usd, trusted_max_usd);
     let max_tokens = cli.max_tokens;
-    let trusted_max_wall_secs = user_file.max_wall_secs.unwrap_or(1800);
+    let trusted_max_wall_secs = cli
+        .max_wall_secs
+        .or(user_file.max_wall_secs)
+        .unwrap_or(1800);
     let max_wall_secs = config::tighten(file.max_wall_secs, trusted_max_wall_secs);
     // Lenient default (Owner-directed 2026-07-21): code execution is ON by default so bash/build/
     // test run without a flag. A cloned repository is STILL not an authorization principal — a
@@ -671,6 +680,11 @@ async fn run_cli() -> anyhow::Result<u8> {
     // Nothing here reads the rollout or the agent.
     if cli.verify.is_some() && !allow_code {
         anyhow::bail!("--verify runs a command and requires --allow-code");
+    }
+    // The file config already rejects a zero here; the flag must not be the one path that admits a
+    // ceiling every submission breaches before its first provider call.
+    if cli.max_wall_secs == Some(0) {
+        anyhow::bail!("--max-wall-secs must be >= 1");
     }
     let env_effort = config::env_string("CORE_EFFORT");
     let effort_runtime_override = cli.effort.is_some() || env_effort.is_some();
@@ -1329,6 +1343,10 @@ async fn run_cli() -> anyhow::Result<u8> {
 
     eprintln!("{}", "-".repeat(72));
     eprintln!("outcome: {outcome:?}");
+    // `BudgetExhausted("max_turns")` names the ceiling and nothing else. Say what clears it.
+    if let Outcome::BudgetExhausted(reason) = &outcome {
+        eprintln!("remedy: {}", output::budget_remedy(reason));
+    }
     if let Some(error) = &run_error {
         eprintln!("harness error: {error}");
     }
@@ -1666,6 +1684,37 @@ async fn run_workflow_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The wall-clock ceiling was the one budget with no flag: the 1800s default was reachable
+    /// only by hand-editing `~/.core/config.json`, even though a single long refactor turn can
+    /// hit it. It now resolves exactly like the other ceilings — flag, then user config, then
+    /// default — and a project config may still only tighten it.
+    #[test]
+    fn the_wall_clock_ceiling_is_settable_per_invocation() {
+        let flagged = Cli::try_parse_from(["core", "--max-wall-secs", "5400"])
+            .expect("--max-wall-secs is a real flag");
+        assert_eq!(flagged.max_wall_secs, Some(5400));
+        assert_eq!(
+            config::tighten(None, flagged.max_wall_secs.or(Some(1800)).unwrap()),
+            5400,
+            "the flag outranks the 1800s default"
+        );
+        assert_eq!(
+            config::tighten(Some(600), flagged.max_wall_secs.or(Some(1800)).unwrap()),
+            600,
+            "an untrusted project config may still only tighten the operator's ceiling"
+        );
+        assert_eq!(
+            Cli::try_parse_from(["core"])
+                .expect("the flag is optional")
+                .max_wall_secs,
+            None
+        );
+        assert!(
+            Cli::try_parse_from(["core", "--max-wall-secs", "-1"]).is_err(),
+            "a negative ceiling is not a u64"
+        );
+    }
 
     #[test]
     fn one_shot_submission_builder_emits_exact_multimodal_sq_operation() {

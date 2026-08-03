@@ -2987,6 +2987,52 @@ impl Agent {
             .saturating_sub(self.ledger.provider_attempts)
     }
 
+    /// The turn ceiling and what has already been charged against it, read as one pair so a
+    /// frontend can never print a ceiling from one instant beside a count from another.
+    pub fn turn_budget(&self) -> TurnBudgetState {
+        TurnBudgetState {
+            max_turns: self.budget.max_turns,
+            used: self.ledger.provider_attempts,
+        }
+    }
+
+    /// Set the session turn ceiling in place, write-ahead.
+    ///
+    /// `max_turns` is the one ceiling an operator can saturate without having spent anything:
+    /// `provider_attempts` only ever saturating-adds, subagent attempts are charged to the parent,
+    /// and resume deliberately restores the count so it cannot be laundered by reconnecting. That
+    /// is correct as an aggregate guarantee and unusable as a stop: before this existed, the
+    /// ceiling was fixed at startup, so a long session that reached it ended every later
+    /// submission immediately and the only exit was restarting the process.
+    ///
+    /// The escape hatch is explicit rather than automatic. Nothing here resets `provider_attempts`
+    /// — the count keeps meaning "provider calls this session made" across resume — and the new
+    /// ceiling is appended to the record BEFORE memory changes, so a reader of the log can always
+    /// tell why more turns were admitted than the run started with. A failed append leaves the old
+    /// ceiling in force.
+    pub fn set_turn_ceiling(&mut self, max_turns: u32) -> Result<TurnBudgetState, KernelError> {
+        if max_turns == 0 {
+            return Err(KernelError::InvalidBudget(
+                "max_turns must be >= 1 (0 would disable the turn budget)",
+            ));
+        }
+        let previous = self.budget.max_turns;
+        if max_turns != previous {
+            let used = self.ledger.provider_attempts;
+            self.emit_durable(
+                TurnId(self.seq_turn),
+                EventKind::Notice {
+                    text: format!(
+                        "operator set the session turn ceiling: {previous} -> {max_turns} ({used} \
+                         provider attempts already charged)"
+                    ),
+                },
+            )?;
+            self.budget.max_turns = max_turns;
+        }
+        Ok(self.turn_budget())
+    }
+
     /// Install the inbound approvals channel (the TUI's answer path). When set, an `Ask` verdict
     /// prompts the operator and blocks (interrupt-bounded) for the answer; without it, `Ask` denies.
     pub fn set_approvals(&mut self, rx: tokio::sync::mpsc::UnboundedReceiver<SqEnvelope>) {
@@ -7821,6 +7867,21 @@ pub struct CompactionReport {
     pub after: usize,
 }
 
+/// The session turn ceiling beside the attempts already charged against it (`/budget`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnBudgetState {
+    pub max_turns: u32,
+    /// Cumulative admitted provider attempts, including every subagent charged to this parent.
+    pub used: u32,
+}
+
+impl TurnBudgetState {
+    /// Attempts still admissible before the next submission stops immediately.
+    pub fn remaining(&self) -> u32 {
+        self.max_turns.saturating_sub(self.used)
+    }
+}
+
 #[cfg(test)]
 mod capability_tests {
     use super::{bypass_verdict, effective_capability, is_trust_mutating_path};
@@ -10418,6 +10479,101 @@ ant-api03-SuperSecretModelToken12345"
             assert_eq!(projected.last_outcome, Some(expected));
             let _ = std::fs::remove_dir_all(ws);
         }
+    }
+
+    /// `provider_attempts` only ever saturating-adds and resume restores it, so a session that
+    /// reached `max_turns` ended every later submission immediately and the only exit was killing
+    /// the process. The ceiling has to be movable from inside the session.
+    #[tokio::test]
+    async fn a_saturated_turn_ceiling_is_recoverable_without_restarting_the_session() {
+        let ws = temp_ws("turn-ceiling-raise");
+        let provider = std::sync::Arc::new(MeteredProvider {
+            calls: AtomicUsize::new(0),
+            continuation: false,
+        });
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("turn-ceiling-raise".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 1,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        assert_eq!(agent.run("first").await.unwrap(), Outcome::Done);
+        assert_eq!(
+            agent.follow_up("second").await.unwrap(),
+            Outcome::BudgetExhausted("max_turns"),
+            "the cumulative ceiling stops the next submission before any provider call"
+        );
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+        let raised = agent.set_turn_ceiling(3).expect("the ceiling is raisable");
+        assert_eq!(
+            raised,
+            TurnBudgetState {
+                max_turns: 3,
+                used: 1,
+            },
+            "raising the ceiling must not launder the attempts already charged"
+        );
+        assert_eq!(raised.remaining(), 2);
+        assert_eq!(agent.follow_up("third").await.unwrap(), Outcome::Done);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(agent.turn_budget().used, 2);
+
+        // The widening is in the record, so a later reader can tell why more turns were admitted
+        // than the run started with.
+        let raw = std::fs::read_to_string(agent.rollout.path()).unwrap();
+        assert!(
+            raw.contains("operator set the session turn ceiling: 1 -> 3"),
+            "the raise must be journaled, not applied silently"
+        );
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn a_turn_ceiling_change_is_refused_before_it_can_disable_the_budget() {
+        let ws = temp_ws("turn-ceiling-refusals");
+        let mut agent = agent_for(&ws);
+        let before = agent.turn_budget();
+        assert!(matches!(
+            agent.set_turn_ceiling(0),
+            Err(KernelError::InvalidBudget(_))
+        ));
+        assert_eq!(agent.turn_budget(), before, "a refusal changes nothing");
+
+        // Write-ahead: the ceiling in memory may never be one a crash would fail to explain.
+        agent.fail_next_durable_append = Some(DurableAppendFault::Notice);
+        assert!(matches!(
+            agent.set_turn_ceiling(before.max_turns + 10),
+            Err(KernelError::Record(_))
+        ));
+        assert_eq!(
+            agent.turn_budget(),
+            before,
+            "a failed append leaves the old ceiling in force"
+        );
+
+        // An unchanged ceiling is a no-op, not an append.
+        let events = core_record::replay(agent.rollout.path()).unwrap().len();
+        assert_eq!(agent.set_turn_ceiling(before.max_turns).unwrap(), before);
+        assert_eq!(
+            core_record::replay(agent.rollout.path()).unwrap().len(),
+            events
+        );
+        let _ = std::fs::remove_dir_all(ws);
     }
 
     #[tokio::test]

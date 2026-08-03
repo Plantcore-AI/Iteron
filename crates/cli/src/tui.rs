@@ -3922,6 +3922,22 @@ fn apply_server_event<T: notification::NotificationTransport + ?Sized>(
                     open: true,
                 });
             }
+            // A budget stop is not a failure and gets no error block, so without this the operator
+            // saw only `idle · last: budget_exhausted` — true, and silent about the fact that the
+            // turn ceiling is raisable in place.
+            if canonical_outcome == "budget_exhausted" {
+                let reason = result
+                    .get("reason")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                app.note(
+                    block::NoticeLevel::Warn,
+                    format!(
+                        "stopped on the {reason} ceiling — {}",
+                        crate::output::budget_remedy(reason)
+                    ),
+                );
+            }
             app.status = format!("idle · last: {canonical_outcome}");
             app.last_result = Some(result);
             if let Some(trigger) = completion_notification {
@@ -4933,6 +4949,65 @@ async fn handle_registered_command(
                 "cost",
                 vec![block::PanelRow::Note(session.ledger_summary().to_string())],
             );
+        }
+        SlashCommand::Budget => {
+            // The turn ceiling counts the whole session, so it is the one budget an operator can
+            // saturate mid-task with no way out except restarting the process. `/budget <turns>`
+            // is that way out; the bare form shows how close the session already is.
+            let requested = arg.trim();
+            let set = if requested.is_empty() {
+                None
+            } else {
+                match requested.parse::<u32>() {
+                    Ok(turns) => Some(turns),
+                    Err(_) => {
+                        app.push(fg(Color::Red), "usage: /budget [turns]");
+                        return;
+                    }
+                }
+            };
+            match session
+                .control(app_server::Control::TurnBudget { set })
+                .await
+            {
+                Some(app_server::ControlReply::TurnBudget(state)) => {
+                    if set.is_some() {
+                        app.note(
+                            block::NoticeLevel::Ok,
+                            format!(
+                                "turn ceiling is now {} ({} used, {} left this session)",
+                                state.max_turns,
+                                state.used,
+                                state.remaining()
+                            ),
+                        );
+                    } else {
+                        app.panel(
+                            "◷",
+                            "turn budget",
+                            vec![
+                                kv("ceiling", &state.max_turns.to_string()),
+                                kv(
+                                    "used",
+                                    &format!("{} (this session, subagents included)", state.used),
+                                ),
+                                kv("remaining", &state.remaining().to_string()),
+                                block::PanelRow::Note(
+                                    "/budget <turns> raises the ceiling without restarting".into(),
+                                ),
+                            ],
+                        );
+                    }
+                }
+                Some(app_server::ControlReply::Refused(reason)) => app.note(
+                    block::NoticeLevel::Err,
+                    format!("the turn ceiling was not changed: {reason}"),
+                ),
+                _ => app.note(
+                    block::NoticeLevel::Err,
+                    "the runtime is no longer reachable",
+                ),
+            }
         }
         SlashCommand::Context => {
             let mut rows = Vec::new();
@@ -9040,6 +9115,67 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(
             notification_bytes, b"\x07",
             "the authoritative RunEnded boundary emits one run-complete notification"
+        );
+    }
+
+    /// A budget stop is not an error, so it produced no block at all: the operator saw
+    /// `idle · last: budget_exhausted` and nothing about the session turn ceiling being raisable
+    /// in place. The terminal boundary has to say what clears the ceiling it just hit.
+    #[test]
+    fn a_budget_stop_tells_the_operator_which_ceiling_and_how_to_clear_it() {
+        let mut app = App::new();
+        app.running = true;
+        let (sq, _rx) = tokio::sync::mpsc::channel(1);
+        let mut session = Session::for_test(sq);
+        let event = app_server::ServerEvent::RunEnded {
+            snapshot: Box::new(app_server::SessionSnapshot {
+                mode: PermissionMode::default(),
+                effort: Effort::default(),
+                model: "test-model".into(),
+                cost: CostState::default(),
+                last_turn_usage: None,
+                unadmitted_steers: Vec::new(),
+                permission_rules: PermissionRules::new(),
+                ledger_summary: String::new(),
+            }),
+            summary: Box::new(app_server::TerminalSummary {
+                outcome: core_protocol::Outcome::BudgetExhausted("max_turns"),
+                assistant_text: String::new(),
+                run_id: "run-budget-remedy".into(),
+                cost: CostState::default(),
+                turns: 40,
+                kernel_tax: core_obs::KernelTax::default(),
+                error: None,
+                memo_hits: 0,
+                memo_misses: 0,
+            }),
+        };
+        let mut notifier = notification::TerminalNotifier::new(false);
+        notifier.begin_run();
+        let mut notification_bytes = Vec::new();
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let drain = Arc::new(AtomicBool::new(false));
+
+        apply_server_event(
+            &mut app,
+            &mut session,
+            event,
+            &mut notifier,
+            &mut notification_bytes,
+            &interrupt,
+            &drain,
+        );
+
+        assert_eq!(app.status, "idle · last: budget_exhausted");
+        let notice = app
+            .transcript
+            .last()
+            .expect("the budget stop leaves a notice")
+            .to_text();
+        assert!(notice.contains("max_turns"), "{notice:?} names the ceiling");
+        assert!(
+            notice.contains("/budget"),
+            "{notice:?} names the in-session command that raises the ceiling"
         );
     }
 
