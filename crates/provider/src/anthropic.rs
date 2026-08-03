@@ -314,19 +314,38 @@ fn msg_to_json(
     Ok(serde_json::json!({"role": role, "content": content}))
 }
 
-/// Mark the rolling transcript breakpoint on the last block of one message. A breakpoint covers
-/// everything before it, so the position — not the block — is what matters; a message that
-/// serialized to no blocks at all simply carries no breakpoint.
+/// Mark the rolling transcript breakpoint on the last block of one message that can carry it. A
+/// breakpoint caches the prefix up to and including its own block, so stepping back past a
+/// trailing reasoning block only leaves that block uncached and never drops an earlier turn; a
+/// message with no eligible block simply carries no breakpoint that turn.
 fn mark_cache_breakpoint(content: &mut [serde_json::Value], cache_breakpoint: bool) {
     if !cache_breakpoint {
         return;
     }
-    if let Some(object) = content.last_mut().and_then(serde_json::Value::as_object_mut) {
+    let Some(index) = content.iter().rposition(accepts_cache_control) else {
+        return;
+    };
+    if let Some(object) = content[index].as_object_mut() {
         object.insert(
             "cache_control".into(),
             serde_json::json!({"type": "ephemeral"}),
         );
     }
+}
+
+/// Whether a serialized block may carry `cache_control`. The wire accepts it on content-bearing
+/// blocks and rejects it on the model-internal reasoning blocks, whose schema is the closed key
+/// set [`validate_native_content`] already enforces on the way in. A replayed assistant turn can
+/// end in one of those — `redacted_thinking` is pushed to the native payload on its own, and a
+/// turn that stops on refusal or pause after thinking never gets a trailing text block — so the
+/// naive "last block" would have put `cache_control` inside a block that cannot hold it and had
+/// the whole request rejected. Denylist, not allowlist: a content block Core does not emit yet
+/// stays eligible rather than silently losing the transcript breakpoint.
+fn accepts_cache_control(block: &serde_json::Value) -> bool {
+    !matches!(
+        block.get("type").and_then(serde_json::Value::as_str),
+        Some("thinking" | "redacted_thinking")
+    )
 }
 
 fn matching_native_content(
@@ -1022,6 +1041,65 @@ mod tests {
                 "type":"text","text":"replayed","cache_control":{"type":"ephemeral"}
             })
         );
+    }
+
+    #[test]
+    fn rolling_breakpoint_never_lands_on_a_replayed_reasoning_block() {
+        // A turn that stops on refusal or pause after thinking, or that ends on a
+        // `redacted_thinking` block, replays native content whose last block is a reasoning
+        // block. `cache_control` is not in that block's key set — the wire rejects the whole
+        // request — so the breakpoint has to step back to the last block that can hold it.
+        let provider =
+            Anthropic::with_root("key".into(), ApiRoot::parse(DEFAULT_API_ROOT).unwrap())
+                .unwrap()
+                .with_route_scope("anthropic-a".into())
+                .unwrap();
+        let replayed = |payload: serde_json::Value| Message {
+            role: Role::Assistant,
+            content: vec![Block::ProviderState(ProviderState {
+                route_scope: "anthropic-a".into(),
+                format: ANTHROPIC_CONTENT_BLOCKS_FORMAT.into(),
+                payload,
+            })],
+        };
+
+        let mut request = conversation("claude-sonnet-4-5", 3);
+        request.messages[1] = replayed(serde_json::json!([
+            {"type":"text","text":"replayed"},
+            {"type":"thinking","thinking":"private reasoning","signature":"sig"},
+            {"type":"redacted_thinking","data":"opaque"}
+        ]));
+        let body = provider.body(&request).unwrap();
+        let blocks = body["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(
+            blocks[0],
+            serde_json::json!({
+                "type":"text","text":"replayed","cache_control":{"type":"ephemeral"}
+            }),
+            "the breakpoint belongs on the last block that can carry it"
+        );
+        for kind in ["thinking", "redacted_thinking"] {
+            let reasoning = blocks
+                .iter()
+                .find(|block| block["type"] == kind)
+                .unwrap_or_else(|| panic!("{kind} must survive the replay"));
+            assert!(
+                reasoning.get("cache_control").is_none(),
+                "{kind} has a closed key set on the wire and rejects cache_control"
+            );
+        }
+        // Still exactly two: system prefix plus the rolling transcript breakpoint.
+        assert_eq!(body.to_string().matches("cache_control").count(), 2);
+
+        // Nothing in the message can carry it, so that turn caches the system prefix only
+        // rather than sending a request the wire will reject.
+        let mut reasoning_only = conversation("claude-sonnet-4-5", 3);
+        reasoning_only.messages[1] = replayed(serde_json::json!([
+            {"type":"thinking","thinking":"private reasoning","signature":"sig"}
+        ]));
+        let body = provider.body(&reasoning_only).unwrap();
+        assert_eq!(breakpoint_indices(&body), Vec::<usize>::new());
+        assert_eq!(body.to_string().matches("cache_control").count(), 1);
     }
 
     #[test]
