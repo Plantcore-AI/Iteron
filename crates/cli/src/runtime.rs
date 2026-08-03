@@ -8651,7 +8651,10 @@ impl Agent {
         let Ok(messages) = Self::messages_from_rollout(&path) else {
             return;
         };
-        let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192).min(8192);
+        // Same ceiling rule as the request path: a declared capability is used as declared, and
+        // 8192 is the default for an UNKNOWN one only (#I-02). Clamping here would plan against a
+        // window the route does not actually have.
+        let request_max_tokens = self.model_max_output_tokens.unwrap_or(8192);
         let Some(plan) = self.compaction.plan_at_turn_end(
             &self.effective_system(),
             &messages,
@@ -8665,6 +8668,12 @@ impl Agent {
         let after = 2 + plan.keep_verbatim.len();
         if let Ok(summary) = self.summarize(&plan.to_summarize, None).await {
             self.record_compaction(before, &plan, &summary, after);
+            // The in-memory working set was captured by `drive_admitted` BEFORE this ran, so it
+            // still holds the pre-compaction transcript. Dropping it makes the next follow-up
+            // replay from the rollout, which now carries the compaction — the one case where the
+            // #I-21 shortcut must not be taken, and it costs one replay per compaction rather
+            // than one per turn.
+            self.working_set = None;
         }
     }
 
@@ -11059,12 +11068,21 @@ mod gate_integration_tests {
             vec!["rendezvous".to_string(); 2],
             "a hook bound to Stop says nothing about a read and must not serialise one"
         );
-        assert!(
-            !recorded_events(&ws, &run).iter().any(|event| matches!(
-                &event.kind,
-                EventKind::EffectIntent { tool, .. } if tool == "rendezvous_read"
-            )),
-            "an early-dispatched read never enters the gated deferred path"
+        // Concurrency is proven by the fixture itself, not by an event count: `rendezvous_read`
+        // only completes when both callers are inside it at once, so two recorded results ARE the
+        // overlap. What the record must additionally show is that early dispatch did not cost the
+        // reads their admission — #I-42 closed exactly that hole, and the fast path now opens its
+        // effect at the collection boundary rather than skipping it.
+        let admissions = recorded_events(&ws, &run)
+            .into_iter()
+            .filter(|event| {
+                matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "rendezvous_read")
+            })
+            .count();
+        assert_eq!(
+            admissions, 2,
+            "an early-dispatched read is still an admitted read: overlap is not bought by dropping \
+             its admission from the record"
         );
         std::fs::remove_dir_all(ws).ok();
     }
