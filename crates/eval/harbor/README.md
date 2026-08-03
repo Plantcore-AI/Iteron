@@ -63,11 +63,15 @@ Harbor captures them with the trial record.
 
 This boundary assumes the pinned, clean official task definitions and a
 trusted Harbor runtime create a fresh container before the agent starts. The
-descriptor and exclusive-creation controls close accidental and unprivileged
-pathname replacement in that environment; they are not a defense against an
-already-compromised container root, a hostile Harbor environment provider, or
-a host process that can alter the private snapshot. Such a threat requires an
-independently attested sandbox/runtime and is outside this adapter's claim.
+exclusive opens prevent pre-open clobber, and held descriptors prevent a path
+swap from redirecting bytes while each command is writing. They do not bind
+Harbor's later, pathname-based artifact collection to that inode after the
+descriptor closes: a concurrent same-UID or root process could still replace
+the captured directory entry. The adapter is not a defense against such a
+process, an already-compromised container root, a hostile Harbor environment
+provider, or a host process that can alter the private snapshot. Those threats
+require an independently attested sandbox/runtime and are outside this
+adapter's claim.
 
 ## Run
 
