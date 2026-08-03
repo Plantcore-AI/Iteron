@@ -1,5 +1,5 @@
 use super::*;
-use crate::git_harness::{NULL_DEVICE, resolve_git_executable};
+use crate::git_harness::{NULL_DEVICE, resolve_git_executable, shell_script_command};
 use core_protocol::ToolUse;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -180,7 +180,7 @@ async fn d3_09_g2_clean_filter_cannot_execute_from_status_or_log() {
         &[
             OsStr::new("config"),
             OsStr::new("filter.evil.clean"),
-            filter.as_os_str(),
+            shell_script_command(&filter).as_os_str(),
         ],
     );
     std::fs::write(temp.0.join(".gitattributes"), "* filter=evil\n").unwrap();
