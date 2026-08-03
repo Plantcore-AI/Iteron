@@ -471,16 +471,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-lsp"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
 name = "core-mcp"
 version = "0.0.1"
 dependencies = [

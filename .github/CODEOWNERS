@@ -31,7 +31,6 @@
 /crates/eval/** @fr0m-scratch
 /crates/evolve/** @fr0m-scratch
 /crates/kernel/** @fr0m-scratch
-/crates/lsp/** @fr0m-scratch
 /crates/mcp/** @fr0m-scratch
 /crates/obs/** @fr0m-scratch
 /crates/protocol/** @fr0m-scratch

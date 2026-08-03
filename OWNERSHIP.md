@@ -36,7 +36,6 @@ Core Code has one human Owner/Project Lead and a non-fixed number of human maint
 | `provider-adapters` — Provider adapters | open | elevated | Open | Open | `crates/provider/src/anthropic.rs`<br>`crates/provider/src/openai.rs`<br>`crates/provider/src/responses.rs` |
 | `mcp-interop` — MCP interoperability | open | critical | Open | Open | `crates/mcp/**` |
 | `workspace-change-set` — Workspace change set | open | elevated | Open | Open | `crates/changeset/**` |
-| `language-server-lifecycle` — Language server lifecycle | open | elevated | Open | Open | `crates/lsp/**` |
 | `status-surface` — Status surface | open | elevated | Open | Open | `crates/statusline/**` |
 | `support-bundle` — Support bundle | open | critical | Open | Open | `crates/support/**` |
 | `context-core` — Context core | open | elevated | Open | Open | `crates/ctx/Cargo.toml`<br>`crates/ctx/src/compact.rs`<br>`crates/ctx/src/context_assembly.rs`<br>`crates/ctx/src/context_port.rs`<br>`crates/ctx/src/context_strategy.rs`<br>`crates/ctx/src/instructions.rs`<br>`crates/ctx/src/lib.rs`<br>`crates/ctx/src/outline.rs`<br>`crates/ctx/src/source.rs` |
@@ -197,13 +196,6 @@ Complete staged/unstaged/untracked change classification from porcelain status, 
 
 - Contracts: `complete-change-truth`
 - Required checks: `cargo test -p core-changeset --locked`
-
-### `language-server-lifecycle` — Language server lifecycle
-
-LSP framing, handshake state, restart budget, document versions, and bounded in-flight requests.
-
-- Contracts: `bounded-lsp-framing`, `versioned-diagnostics`
-- Required checks: `cargo test -p core-lsp --locked`
 
 ### `status-surface` — Status surface
 
