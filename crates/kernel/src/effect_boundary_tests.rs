@@ -582,6 +582,11 @@ struct EffectPrimitive {
     guidance: &'static str,
 }
 
+// `run_one_with_sensitive_env_names` was split too: the outer function resolves the interpreter
+// (the musl artifact's natural home has `/bin/sh` and no `/bin/bash`, and a platform with neither
+// must say so rather than no-op forever) and the spawn moved to `run_one_with_shell` with the body.
+// The hook is still the one child process the kernel starts directly, still behind brokered_hook.
+//
 // `drive_admitted` was split: the outer function now only captures the working set the loop
 // finished with (so an in-process follow-up need not rebuild it from the rollout), and the body
 // moved to `drive_admitted_loop`. Both names are admitted because the boundary semantics did not
@@ -634,7 +639,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     },
     EffectPrimitive {
         needle: "tokio::process::Command::new(",
-        allowed_in: &["run_one_with_sensitive_env_names"],
+        allowed_in: &["run_one_with_sensitive_env_names", "run_one_with_shell"],
         guidance: "the kernel starts exactly one kind of child process directly — a hook — and it \
                    does so behind Agent::brokered_hook. Anything else belongs in a world module \
                    reached through the boundary",
