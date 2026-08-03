@@ -12,6 +12,7 @@
 
 pub mod documents;
 pub mod framing;
+pub mod intel;
 pub mod lifecycle;
 pub mod pending;
 
@@ -62,6 +63,17 @@ pub const MIN_RESTART_BACKOFF_MS: u64 = 1;
 pub const MAX_RESTART_BACKOFF_MS: u64 = 60_000;
 pub const HEALTHY_RESTART_RESET_AFTER_MS: u64 = 60_000;
 pub const HEALTHY_RESTART_RESET_AFTER_SUCCESSES: u32 = 3;
+
+/// How many locations one answer may carry into the agent's context. `references` on a common
+/// symbol legitimately returns thousands; forwarding all of them would spend the whole context
+/// window on one tool result. The excess is counted and reported, never silently dropped.
+pub const MAX_LOCATIONS: usize = 200;
+pub const MAX_LOCATION_INPUTS: usize = 4_096;
+
+/// Hover output is context, not an arbitrary server-owned document. Both retained text and the
+/// number of fragments inspected are capped and truncation remains observable.
+pub const MAX_HOVER_BYTES: usize = 64 * 1024;
+pub const MAX_HOVER_FRAGMENTS: usize = 256;
 
 /// Typed failures. Every variant is a decision some caller has to make, which is why none of them
 /// collapse into a stringly-typed catch-all.
@@ -135,4 +147,12 @@ pub enum LspError {
     },
     #[error("base restart backoff {base_ms}ms exceeds maximum {max_ms}ms")]
     InvalidRestartBackoffOrder { base_ms: u64, max_ms: u64 },
+    #[error("result was computed against version {issued}, document is now at {have}")]
+    StaleResult { have: i32, issued: i32 },
+    #[error("document {uri} is not open")]
+    UnknownDocument { uri: String },
+    #[error("location limit {value} is outside [1, {max}]")]
+    InvalidLocationLimit { value: usize, max: usize },
+    #[error("result claims future version {issued}, document is at {have}")]
+    FutureResult { have: i32, issued: i32 },
 }
