@@ -209,3 +209,90 @@ async fn incompatible_spawner_port_version_fails_before_the_script() {
     .unwrap_err();
     assert!(error.to_string().contains("AgentSpawner port version"));
 }
+
+/// The queued half of a fan must be visible before any permit is granted. `AgentStarted` used to be
+/// emitted only once the Governor admitted a call, so at concurrency 2 a six-agent run showed two
+/// rows and a denominator that climbed as slots freed up. Every `AgentQueued` must therefore precede
+/// every `AgentStarted`, and the run report must carry the summed tokens/tool calls + an elapsed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queued_rows_precede_every_permit_and_the_report_carries_totals() {
+    let spawner = Arc::new(MockSpawner { delay_ms: 40 });
+    let sink = Arc::new(VecSink::default());
+    let script = r#"export const meta = { name: 'fan', description: '', phases: ['explore'] };
+return await parallel([
+  () => agent('A'), () => agent('B'), () => agent('C'),
+  () => agent('D'), () => agent('E'), () => agent('F'),
+]);"#;
+    let spec = RunSpec::new(script).with_limits(RunLimits::new(2, 16).unwrap());
+    let report = WorkflowEngine::execute(spec, spawner, sink.clone())
+        .await
+        .expect("fan runs");
+
+    let events = sink.events.lock().unwrap();
+    let at = |want: fn(&ProgressEvent) -> bool| {
+        events
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| want(event))
+            .map(|(at, _)| at)
+            .collect::<Vec<_>>()
+    };
+    let queued = at(|e| matches!(e, ProgressEvent::AgentQueued { .. }));
+    let started = at(|e| matches!(e, ProgressEvent::AgentStarted { .. }));
+    let finished = at(|e| matches!(e, ProgressEvent::AgentFinished { .. }));
+    assert_eq!(queued.len(), 6, "every declared agent announces itself");
+    assert_eq!(started.len(), 6, "every agent is eventually admitted");
+    // No agent's first sighting is its admission: a row exists for it while it waits for a slot.
+    for index in 1..=6usize {
+        let queued_at = events
+            .iter()
+            .position(|e| matches!(e, ProgressEvent::AgentQueued { index: i, .. } if *i == index));
+        let started_at = events
+            .iter()
+            .position(|e| matches!(e, ProgressEvent::AgentStarted { index: i, .. } if *i == index));
+        assert!(
+            queued_at < started_at,
+            "agent #{index} was admitted before it was ever declared: {events:?}"
+        );
+    }
+    // The denominator is FIXED before any row settles: at concurrency 2 the last two agents used to
+    // appear only after the first four had finished, so `done/total` grew while it was being read.
+    assert!(
+        queued.iter().max() < finished.iter().min(),
+        "the fan was still declaring itself after a row settled: {events:?}"
+    );
+    assert!(
+        queued.iter().max() > started.iter().min(),
+        "this run must actually contend for permits, or it proves nothing: {events:?}"
+    );
+
+    // 6 agents x 7 tokens each, summed once for the run.
+    assert_eq!(report.tokens, 42);
+    assert_eq!(report.tool_calls, 0);
+    assert!(report.elapsed_ms > 0, "the run carries a wall clock");
+}
+
+struct WrongVersionSink;
+
+impl ProgressSink for WrongVersionSink {
+    fn port_version(&self) -> u32 {
+        1
+    }
+
+    fn emit(&self, _event: ProgressEvent) {
+        panic!("an incompatible sink must be rejected before dispatch")
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn incompatible_sink_port_version_fails_before_the_script() {
+    let error = WorkflowEngine::run(
+        "return 'unreachable';",
+        serde_json::Value::Null,
+        Arc::new(MockSpawner { delay_ms: 0 }),
+        Arc::new(WrongVersionSink),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("ProgressSink port version"));
+}

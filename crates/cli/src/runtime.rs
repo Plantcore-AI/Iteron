@@ -6930,10 +6930,11 @@ impl Agent {
     /// In-turn `Workflow` tool handler (kernel interception, the workflow analogue of
     /// `spawn_subagent`). Builds a [`crate::KernelSpawner`] from THIS agent's live route + paths, then
     /// drives the run through [`core_workflow::WorkflowEngine::launch`] (background `RunHandle`, review
-    /// B3) and `join`s it within the turn so the model receives the aggregated result. The CC-style
-    /// banner (run id) is emitted as a `Notice` at launch. Deferred: truly detached background
-    /// (returning before completion) + a cross-turn `/workflows` watch surface — those need a session
-    /// lifecycle owner outside a single turn.
+    /// B3) and `join`s it within the turn so the model receives the aggregated result. The launch
+    /// banner (run id) is emitted as a `Notice`, and the re-launchable sidecars are persisted so
+    /// `core workflow list|resume|watch` can see the run. Deferred: truly detached background
+    /// (returning before completion), which needs a session lifecycle owner outside a single turn,
+    /// and live in-turn progress (ADR-0001 step 1).
     async fn launch_workflow(
         &mut self,
         turn_id: TurnId,
@@ -7067,12 +7068,14 @@ impl Agent {
             return Err(format!("Workflow: cannot persist run inputs: {error}"));
         }
 
-        // The CC-style launch banner (parallels Claude Code's "Task ID / Run ID / use /workflows").
+        // The launch banner. It names the surface that can actually show this run: `/workflows`
+        // summarizes the cards already in THIS transcript, and an in-turn script run has no card
+        // until ADR-0001 step 1 lands, so pointing at it would be a promise the TUI cannot keep.
         self.emit(
             turn_id,
             EventKind::Notice {
                 text: format!(
-                    "Workflow `{workflow_name}` launched (run {run_id}); use /workflows to watch"
+                    "Workflow `{workflow_name}` launched (run {run_id}); `core workflow list` tracks it"
                 ),
             },
         );
@@ -7119,6 +7122,12 @@ impl Agent {
                     stopped: true,
                     cache_hits: 0,
                     cache_misses: 0,
+                    // A run that never produced a report has no authoritative totals to state.
+                    // Zero here means "none were settled", which is true: the engine failed before
+                    // it could aggregate any. It is not a claim that the run was free.
+                    tokens: 0,
+                    tool_calls: 0,
+                    elapsed_ms: 0,
                 };
                 let _ = crate::workflow::persist_result(&workflows_dir, &run_id, &failed);
                 return Err(message);

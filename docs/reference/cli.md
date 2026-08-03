@@ -52,6 +52,27 @@ User config also supports a wall-clock ceiling; the current CLI has no
 | `--resume RUN_ID` | Resume a named run |
 | `--fork RUN_ID` | Create a child run at the parent's durable tail and exit |
 
+## Workflows
+
+`core workflow` runs a JavaScript workflow script through the embedded engine.
+Scripts call `agent()`, `parallel()`, `pipeline()`, `phase()`, and `log()`; an
+optional leading `export const meta = { name, description, phases }` names the
+run and lays its phase boxes out in advance. An example script ships at
+`crates/workflow/examples/repo-audit.js`.
+
+| Subcommand | Meaning |
+| --- | --- |
+| `core workflow run SCRIPT [--args JSON]` | Execute a script now and print its return value |
+| `core workflow list` | List persisted runs (id, status, agents, model) |
+| `core workflow resume RUN_ID [--script PATH] [--args JSON]` | Replay a prior run's journaled agent outcomes and continue |
+| `core workflow watch RUN_ID [--args JSON]` | Re-launch a prior run in the background and attach the live tree |
+
+On a TTY the run renders a live phase and agent tree; piped or in CI it prints
+one line per event. Every run persists `script.js`, `run.json`, `journal.jsonl`,
+and `result.json` under `<runs-dir>/subagents/workflows/<run-id>/`, so `list`,
+`resume`, and `watch` work from a later process. `--repo` and `--runs-dir` apply
+as they do to a normal run.
+
 ## Standard options
 
 | Option | Meaning |

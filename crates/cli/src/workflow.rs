@@ -19,13 +19,14 @@ const SUBAGENT_SYSTEM: &str = "You are a focused sub-agent inside a Core Code wo
 given task directly and concisely in plain text. Do not ask clarifying questions; produce exactly \
 the requested output and nothing else.";
 
-/// FIRST-SLICE SPAWNER: one real provider completion per `agent()` call.
+/// OPT-IN FALLBACK SPAWNER: one real provider completion per `agent()` call.
 ///
-/// This is genuine model output (not a mock), but it is a single turn with no tools and no child
-/// `Agent` loop. The upgrade seam is documented: swap this for a `run_leaf`-based owned child
-/// `Agent` (fresh read-only `Registry`, child `Rollout`, inherited route/pricing) — see
-/// `crates/kernel` `prepare_investigator`/`PreparedInvestigator::run`. The trait boundary does not
-/// change, so nothing above this line moves when that lands.
+/// This is NOT the default. `core workflow run|resume|watch` builds a
+/// [`crate::runtime::KernelSpawner`] — an owned child `Agent` with a read-only `Registry`, its own
+/// child `Rollout`, and the parent's inherited route/pricing. This single-turn spawner is reached
+/// only through `CORE_WORKFLOW_SPAWNER=provider`, where it is useful precisely because it has no
+/// tools and no child `Agent` loop: it isolates provider behavior from harness behavior. The trait
+/// boundary is the same for both, so nothing above this line depends on which one is installed.
 pub struct ProviderSpawner {
     provider: Arc<dyn Provider>,
     model: String,
@@ -105,6 +106,9 @@ impl ProgressSink for StdoutProgressSink {
                 format!("\u{2500}\u{2500} {title} \u{2500}\u{2500}")
             }
             ProgressEvent::Log { message } => format!("\u{276f} {message}"),
+            ProgressEvent::AgentQueued { index, label, .. } => {
+                format!("[queued] #{index} {label}")
+            }
             ProgressEvent::AgentStarted {
                 index,
                 label,
@@ -326,15 +330,25 @@ pub async fn run_live(
     spec: RunSpec,
     spawner: Arc<dyn AgentSpawner>,
     name: &str,
+    phases: &[String],
     theme: &crate::theme::Theme,
 ) -> anyhow::Result<RunReport> {
-    let card = Arc::new(std::sync::Mutex::new(crate::block::WorkflowRunCard::new(
+    let card = Arc::new(std::sync::Mutex::new(new_run_card(
         spec.run_id.as_str(),
         name,
+        phases,
     )));
     let sink: Arc<dyn ProgressSink> = Arc::new(CardProgressSink::new(card.clone()));
     let future = WorkflowEngine::execute(spec, spawner, sink);
     render_live(card, future, theme).await
+}
+
+/// One live card seeded with the script's DECLARED `meta.phases`, so every phase box is laid out on
+/// the first frame instead of appearing only once execution reaches it.
+fn new_run_card(run_id: &str, name: &str, phases: &[String]) -> crate::block::WorkflowRunCard {
+    let mut card = crate::block::WorkflowRunCard::new(run_id, name);
+    card.declare_phases(phases.iter().cloned());
+    card
 }
 
 /// Launch a run in the BACKGROUND (via [`WorkflowEngine::launch`] → `RunHandle`, review B3) and
@@ -345,11 +359,13 @@ pub async fn watch_live(
     spec: RunSpec,
     spawner: Arc<dyn AgentSpawner>,
     name: &str,
+    phases: &[String],
     theme: &crate::theme::Theme,
 ) -> anyhow::Result<RunReport> {
-    let card = Arc::new(std::sync::Mutex::new(crate::block::WorkflowRunCard::new(
+    let card = Arc::new(std::sync::Mutex::new(new_run_card(
         spec.run_id.as_str(),
         name,
+        phases,
     )));
     let sink: Arc<dyn ProgressSink> = Arc::new(CardProgressSink::new(card.clone()));
     let handle = WorkflowEngine::launch(spec, spawner, sink);
@@ -580,6 +596,9 @@ mod tests {
                 stopped: false,
                 cache_hits: 0,
                 cache_misses: 2,
+                tokens: 1_234,
+                tool_calls: 7,
+                elapsed_ms: 4_200,
             },
         )
         .unwrap();
@@ -633,6 +652,9 @@ mod tests {
                 stopped: true,
                 cache_hits: 0,
                 cache_misses: 0,
+                tokens: 0,
+                tool_calls: 0,
+                elapsed_ms: 0,
             },
         )
         .unwrap();
