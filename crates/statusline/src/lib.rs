@@ -16,10 +16,12 @@
 pub mod safe_text;
 pub mod terminal;
 pub mod title;
+pub mod width;
 
 pub use safe_text::{MAX_FIELD_BYTES, Unsafe, check, lossy};
 pub use terminal::{Capabilities, Color, Presentation, Rgb, contrast_ratio, meets_aa};
 pub use title::{restore_title, set_title, title_stack_pop, title_stack_push};
+pub use width::{char_cells, str_cells, truncate_to_cells};
 
 /// Placeholder for a value that was not measured. Deliberately not `0`, not `-`, and not empty:
 /// it has to be visibly *absent* rather than plausibly small.
@@ -31,6 +33,16 @@ pub enum ConfigError {
     UnknownField { name: String, known: String },
     #[error("status line requests {count} fields, over the {limit} limit")]
     TooManyFields { count: usize, limit: usize },
+    #[error("field {name:?} appears twice; a status line must not show one fact in two places")]
+    DuplicateField { name: String },
+    #[error("percent {value} is over 100")]
+    PercentOutOfRange { value: u16 },
+    #[error("field {field:?} takes {expected}, not {got}")]
+    WrongValueKind {
+        field: &'static str,
+        expected: &'static str,
+        got: &'static str,
+    },
 }
 
 /// The closed set of things a status line may show.
@@ -47,6 +59,12 @@ pub enum Field {
 
 /// A status line may not grow without bound; it shares one terminal row with the prompt.
 pub const MAX_FIELDS: usize = 8;
+
+/// Cells the whole rendered row may occupy. Measured in cells, not bytes: eight fields of 256
+/// bytes each would be a ~2 KiB "one-row" status line, and a CJK row overflows a byte budget long
+/// before it overflows a cell budget. The row is elided to fit rather than allowed to wrap, because
+/// a wrapped status line pushes the prompt off-screen on every redraw.
+pub const MAX_ROW_CELLS: usize = 120;
 
 impl Field {
     pub fn name(self) -> &'static str {
@@ -101,6 +119,56 @@ pub enum Value {
 }
 
 impl Value {
+    /// The kind name, for reporting a field/value mismatch.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Value::Unknown => "unknown",
+            Value::Text(_) => "text",
+            Value::Count(_) => "count",
+            Value::Milli(_) => "milli",
+            Value::Percent(_) => "percent",
+        }
+    }
+
+    /// Check that this value is one the field can actually take, and that it is in range.
+    ///
+    /// Without this, `Field::Model` paired with `Percent(200)` is representable and renders as
+    /// "200%" beside a model name -- nonsense the type system was not stopping.
+    pub fn check(&self, field: Field) -> Result<(), ConfigError> {
+        if let Value::Percent(p) = self
+            && *p > 100
+        {
+            return Err(ConfigError::PercentOutOfRange {
+                value: u16::from(*p),
+            });
+        }
+        if matches!(self, Value::Unknown) {
+            return Ok(());
+        }
+        let ok = match field {
+            Field::Model | Field::Branch | Field::Cwd | Field::SessionId => {
+                matches!(self, Value::Text(_))
+            }
+            Field::Tokens => matches!(self, Value::Count(_)),
+            Field::CostUsd => matches!(self, Value::Milli(_)),
+            Field::ContextPercent => matches!(self, Value::Percent(_)),
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(ConfigError::WrongValueKind {
+                field: field.name(),
+                expected: match field {
+                    Field::Model | Field::Branch | Field::Cwd | Field::SessionId => "text",
+                    Field::Tokens => "count",
+                    Field::CostUsd => "milli",
+                    Field::ContextPercent => "percent",
+                },
+                got: self.kind(),
+            })
+        }
+    }
+
     /// Render one value, escaping-safe. Untrusted text goes through the lossy path so a hostile
     /// branch name degrades the display instead of driving the terminal.
     pub fn render(&self) -> String {
@@ -133,6 +201,15 @@ impl StatusLine {
                 limit: MAX_FIELDS,
             });
         }
+        // One fact shown twice is a configuration mistake, not a layout choice: the two copies can
+        // disagree the instant one is stale, and a reader cannot tell which is current.
+        for (i, f) in fields.iter().enumerate() {
+            if fields[..i].contains(f) {
+                return Err(ConfigError::DuplicateField {
+                    name: f.name().to_owned(),
+                });
+            }
+        }
         Ok(Self { fields })
     }
 
@@ -146,11 +223,14 @@ impl StatusLine {
     /// disappears changes the shape of the line, and an operator reading a line whose columns move
     /// cannot tell absence from a layout change.
     pub fn render(&self, lookup: impl Fn(Field) -> Value) -> String {
-        self.fields
+        let row = self
+            .fields
             .iter()
             .map(|f| lookup(*f).render())
             .collect::<Vec<_>>()
-            .join(" | ")
+            .join(" | ");
+        // Elided to fit the row rather than allowed to wrap.
+        width::truncate_to_cells(&row, MAX_ROW_CELLS)
     }
 }
 
@@ -221,6 +301,62 @@ mod tests {
                 count: MAX_FIELDS + 1,
                 limit: MAX_FIELDS
             })
+        );
+    }
+
+    #[test]
+    fn a_percent_over_100_is_refused() {
+        assert_eq!(
+            Value::Percent(101).check(Field::ContextPercent),
+            Err(ConfigError::PercentOutOfRange { value: 101 })
+        );
+        assert!(Value::Percent(100).check(Field::ContextPercent).is_ok());
+    }
+
+    #[test]
+    fn a_value_of_the_wrong_kind_for_its_field_is_refused() {
+        // Previously representable: a model name rendered as "200%" beside itself.
+        assert!(matches!(
+            Value::Percent(50).check(Field::Model),
+            Err(ConfigError::WrongValueKind { field: "model", .. })
+        ));
+        assert!(matches!(
+            Value::Text("x".into()).check(Field::Tokens),
+            Err(ConfigError::WrongValueKind {
+                field: "tokens",
+                ..
+            })
+        ));
+        assert!(Value::Count(5).check(Field::Tokens).is_ok());
+        assert!(Value::Milli(1).check(Field::CostUsd).is_ok());
+    }
+
+    #[test]
+    fn unknown_is_acceptable_for_every_field() {
+        for f in Field::ALL {
+            assert!(Value::Unknown.check(f).is_ok(), "{f:?}");
+        }
+    }
+
+    #[test]
+    fn a_duplicated_field_is_refused() {
+        assert_eq!(
+            StatusLine::from_names(["model", "branch", "model"]),
+            Err(ConfigError::DuplicateField {
+                name: "model".into()
+            })
+        );
+    }
+
+    #[test]
+    fn the_rendered_row_is_bounded_in_cells_not_bytes() {
+        // Eight fields of long CJK text: a byte budget would pass this and the row would wrap.
+        let line = StatusLine::from_names(["model", "branch", "cwd", "session"]).unwrap();
+        let rendered = line.render(|_| Value::Text("中文".repeat(200)));
+        assert!(
+            str_cells(&rendered) <= MAX_ROW_CELLS,
+            "row was {} cells, over the {MAX_ROW_CELLS} budget",
+            str_cells(&rendered)
         );
     }
 
