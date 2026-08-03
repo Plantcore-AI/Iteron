@@ -1198,14 +1198,33 @@ mod tests {
     use crate::types::{BenchmarkReference, Partition};
     use std::process::Command;
 
+    /// A path no other caller in this process can also produce.
+    ///
+    /// The pid and the clock are not enough. Six tests reach here through `fixture_repo`, all
+    /// with the same label, all in one test binary, and `SystemTime` does not actually resolve
+    /// to nanoseconds on macOS. Two threads that read it in the same tick built the same path,
+    /// `create_dir_all` succeeded for both because it is idempotent, and then both ran `git
+    /// init` in one directory -- where the loser fails copying a template hook that the winner
+    /// has already written:
+    ///
+    /// ```text
+    /// fatal: cannot copy '.../templates/hooks/push-to-checkout.sample'
+    ///   to '.../.git/hooks/push-to-checkout.sample': File exists
+    /// ```
+    ///
+    /// It only shows up under `cargo test --workspace`, which is why it read as a Windows or a
+    /// CI problem rather than as this. The counter makes the name unique by construction.
     fn unique_dir(label: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir().join(format!(
-            "core-eval-{label}-{}-{}",
+            "core-eval-{label}-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
         ))
     }
 
