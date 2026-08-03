@@ -153,7 +153,10 @@ fn validate_member_identities_and_paths(root: &Path) -> Result<()> {
         if !package_name.starts_with("core-") {
             bail!("added workspace member '{member}' is not an internal `core-` package");
         }
-        if names.insert(package_name.to_owned(), member.clone()).is_some() {
+        if names
+            .insert(package_name.to_owned(), member.clone())
+            .is_some()
+        {
             bail!("added workspace member '{member}' collides with a trusted package name");
         }
     }
