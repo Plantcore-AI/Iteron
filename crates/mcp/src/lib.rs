@@ -22,6 +22,7 @@ pub mod client;
 mod evidence;
 mod pagination;
 mod protocol_version;
+pub mod reconnect;
 mod tool_catalog;
 mod tool_filter;
 
