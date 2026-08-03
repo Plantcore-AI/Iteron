@@ -225,6 +225,13 @@ pub struct Ledger {
     /// bounded inline collection path instead. This is an admission-pressure signal, not an
     /// execution error.
     pub tool_inline_overflow_events: u64,
+    /// Provider attempts a scheduler retried on this run's behalf, and the total time it spent
+    /// waiting between them. Backoff used to leave no trace at all: the attempt counter was a
+    /// scheduler-local `u32` and the wait was a bare sleep, so a run that spent a second riding
+    /// out 429s was indistinguishable from one that answered immediately (I-65). These are
+    /// separate from `provider_attempts`, which counts admissions the kernel journalled.
+    pub provider_retries: u64,
+    pub provider_backoff_ms: u64,
     /// Wall-clock is process-local and private so callers must acknowledge replay completeness
     /// through [`Self::timings`] instead of reading a plausible-looking restored zero.
     timings: EphemeralTimings,
@@ -252,6 +259,14 @@ impl Ledger {
     /// when the provider returns authoritative usage.
     pub fn attempt(&mut self) {
         self.provider_attempts = self.provider_attempts.saturating_add(1);
+    }
+
+    /// Fold in what a retrying scheduler absorbed: `retries` attempts it re-sent and the total
+    /// time it waited before them. Milliseconds are rounded up by the caller so a sub-millisecond
+    /// jittered backoff is reported as waiting rather than as free.
+    pub fn record_provider_retries(&mut self, retries: u64, backoff_ms: u64) {
+        self.provider_retries = self.provider_retries.saturating_add(retries);
+        self.provider_backoff_ms = self.provider_backoff_ms.saturating_add(backoff_ms);
     }
 
     /// Stable, record-derived accounting with all ephemeral timing excluded by construction.
@@ -397,6 +412,10 @@ impl Ledger {
         self.tool_inline_overflow_events = self
             .tool_inline_overflow_events
             .saturating_add(child.tool_inline_overflow_events);
+        self.provider_retries = self.provider_retries.saturating_add(child.provider_retries);
+        self.provider_backoff_ms = self
+            .provider_backoff_ms
+            .saturating_add(child.provider_backoff_ms);
         self.priced_turns = self.priced_turns.saturating_add(child.priced_turns);
         if let Some(amount) = self.amount_microusd.checked_add(child.amount_microusd) {
             self.amount_microusd = amount;
@@ -675,6 +694,16 @@ impl Ledger {
             self.tool_errors,
             self.tool_inline_overflow_events,
         );
+        // Only when it happened. A run that never retried has nothing to say here, and a
+        // permanent `retries=0` segment would train readers to stop seeing the field (I-65).
+        let stable = if self.provider_retries > 0 {
+            format!(
+                "{stable} | retries={} backoff={}ms",
+                self.provider_retries, self.provider_backoff_ms
+            )
+        } else {
+            stable
+        };
         match self.timings() {
             TimingSnapshot::Complete(timings) => {
                 let overlap_pct = if timings.tool_wall_ms > 0 {
@@ -753,6 +782,28 @@ mod tests {
                 reason: CostUnknownReason::NoVerifiedRateCard
             }
         );
+    }
+
+    /// I-65: backoff used to leave no trace. A retried turn must be able to say how many attempts
+    /// it took and how long it waited, and a run that never retried must stay silent about it.
+    #[test]
+    fn retries_and_backoff_reach_the_summary_and_survive_a_child_merge() {
+        let mut ledger = Ledger::new();
+        assert!(
+            !ledger.summary().contains("retries="),
+            "a run that never retried claims nothing about backoff"
+        );
+
+        ledger.record_provider_retries(2, 1_090);
+        assert_eq!(ledger.provider_retries, 2);
+        assert_eq!(ledger.provider_backoff_ms, 1_090);
+        assert!(ledger.summary().contains("retries=2 backoff=1090ms"));
+
+        let mut child = Ledger::new();
+        child.record_provider_retries(1, 10);
+        ledger.merge(&child);
+        assert_eq!(ledger.provider_retries, 3);
+        assert_eq!(ledger.provider_backoff_ms, 1_100);
     }
 
     #[test]

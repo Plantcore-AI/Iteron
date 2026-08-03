@@ -147,6 +147,9 @@ pub(crate) struct SessionSnapshot {
     pub(crate) permission_rules: core_protocol::PermissionRules,
     /// The ledger line the status panel prints.
     pub(crate) ledger_summary: String,
+    /// One line of provider quota, read from the response headers of the last request. `None`
+    /// when the route publishes none — a row of dashes reads like an exhausted budget (I-53).
+    pub(crate) rate_limit: Option<String>,
 }
 
 /// The EQ payload.
@@ -1066,6 +1069,10 @@ fn snapshot_of(agent: &mut Agent) -> SessionSnapshot {
         unadmitted_steers: agent.take_unadmitted_steers(),
         permission_rules: agent.permission_rules().clone(),
         ledger_summary: agent.ledger.summary(),
+        rate_limit: agent
+            .last_rate_limit()
+            .as_ref()
+            .and_then(core_provider::RateLimitSnapshot::summary),
     }
 }
 
@@ -1087,6 +1094,7 @@ mod tests {
             unadmitted_steers: Vec::new(),
             permission_rules: core_protocol::PermissionRules::new(),
             ledger_summary: String::new(),
+            rate_limit: None,
         })
     }
 

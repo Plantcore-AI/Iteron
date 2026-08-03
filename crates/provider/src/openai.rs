@@ -651,15 +651,40 @@ fn validate_stream_end(
     Ok(())
 }
 
+/// The spellings an OpenAI-compatible vendor uses for "prompt tokens written into the cache".
+///
+/// Both are nested under `prompt_tokens_details` and both are a subset of `prompt_tokens`, exactly
+/// like `cached_tokens` — so they are subtracted from the uncached input the same way. A vendor
+/// that uses neither reports nothing about cache writes, which is a different fact from reporting
+/// zero of them (I-52).
+const CACHE_CREATION_DETAIL_KEYS: [&str; 2] = ["cache_creation_tokens", "cache_write_tokens"];
+
+/// What one streamed chunk said about usage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReportedUsage {
+    /// The chunk carried no usage object at all.
+    Absent,
+    /// The chunk carried a usage report. `cache_creation` says whether that report named a
+    /// cache-creation count; when it did not, `Usage::cache_creation` is a default, not a
+    /// measurement, and must not be priced as a measured zero.
+    Present { cache_creation: bool },
+}
+
+impl ReportedUsage {
+    const fn present(self) -> bool {
+        matches!(self, Self::Present { .. })
+    }
+}
+
 fn apply_reported_usage(
     chunk: &serde_json::Value,
     usage: &mut Usage,
-) -> Result<bool, ProviderError> {
+) -> Result<ReportedUsage, ProviderError> {
     let Some(raw) = chunk.get("usage") else {
-        return Ok(false);
+        return Ok(ReportedUsage::Absent);
     };
     if raw.is_null() {
-        return Ok(false);
+        return Ok(ReportedUsage::Absent);
     }
     let object = raw.as_object().ok_or_else(|| {
         ProviderError::Decode("OpenAI-compatible usage field was not an object".into())
@@ -676,6 +701,7 @@ fn apply_reported_usage(
     };
     let total_input = required_token("prompt_tokens")?;
     usage.output = required_token("completion_tokens")?;
+    let mut cache_creation_reported = false;
     if let Some(details) = object
         .get("prompt_tokens_details")
         .filter(|value| !value.is_null())
@@ -695,8 +721,27 @@ fn apply_reported_usage(
                 )
             })?;
         }
+        if let Some(written) = CACHE_CREATION_DETAIL_KEYS
+            .into_iter()
+            .find_map(|key| details.get(key).filter(|value| !value.is_null()))
+        {
+            usage.cache_creation = written.as_u64().ok_or_else(|| {
+                ProviderError::Decode(
+                    "OpenAI-compatible usage contained a non-integer token count".into(),
+                )
+            })?;
+            cache_creation_reported = true;
+        }
     }
-    usage.input = total_input.checked_sub(usage.cache_read).ok_or_else(|| {
+    let cached_prompt = usage
+        .cache_read
+        .checked_add(usage.cache_creation)
+        .ok_or_else(|| {
+            ProviderError::Decode(
+                "OpenAI-compatible cached token counts overflowed the prompt total".into(),
+            )
+        })?;
+    usage.input = total_input.checked_sub(cached_prompt).ok_or_else(|| {
         ProviderError::Decode(
             "OpenAI-compatible cached token count exceeded total prompt tokens".into(),
         )
@@ -721,7 +766,9 @@ fn apply_reported_usage(
             })?;
         }
     }
-    Ok(true)
+    Ok(ReportedUsage::Present {
+        cache_creation: cache_creation_reported,
+    })
 }
 
 #[async_trait::async_trait]
@@ -779,6 +826,12 @@ impl Provider for OpenAiCompat {
             return Err(error);
         }
 
+        // Quota state is on the success headers, so it is knowable here — before a single token
+        // has arrived and long before the 429 that used to be its first symptom (I-53).
+        if let Some(snapshot) = crate::rate_limit_from_headers(resp.headers()) {
+            on_item(StreamItem::RateLimit(snapshot));
+        }
+
         let mut stream = resp.bytes_stream();
         // Buffer RAW bytes and decode only the complete-UTF-8 prefix: a char split across chunks
         // would be corrupted by per-chunk lossy decode (code review OAI-1, the anthropic F2 bug).
@@ -789,6 +842,7 @@ impl Provider for OpenAiCompat {
         let mut tools: Vec<ToolAcc> = Vec::new();
         let mut usage = Usage::default();
         let mut saw_usage = false;
+        let mut saw_cache_creation = false;
         let mut stop: Option<StopReason> = None;
         let mut saw_done = false;
         let mut total_stream_bytes = 0usize;
@@ -878,12 +932,18 @@ impl Provider for OpenAiCompat {
                     OpenAiSseLine::Chunk(value) => value,
                 };
                 let reported_usage = apply_reported_usage(&v, &mut usage)?;
-                if reported_usage && saw_usage {
+                if reported_usage.present() && saw_usage {
                     return Err(ProviderError::Decode(
                         "OpenAI-compatible stream emitted more than one usage report".into(),
                     ));
                 }
-                saw_usage |= reported_usage;
+                saw_usage |= reported_usage.present();
+                saw_cache_creation |= matches!(
+                    reported_usage,
+                    ReportedUsage::Present {
+                        cache_creation: true
+                    }
+                );
                 let choice = match v.pointer("/choices/0") {
                     Some(c) => c,
                     None if stop.is_some()
@@ -1018,10 +1078,13 @@ impl Provider for OpenAiCompat {
         let stop = stop.ok_or_else(|| {
             ProviderError::Decode("OpenAI-compatible stream ended before finish_reason".into())
         })?;
-        let usage = if saw_usage {
-            UsageReport::complete(usage)
-        } else {
-            UsageReport::provider_omitted()
+        let usage = match (saw_usage, saw_cache_creation) {
+            (true, true) => UsageReport::complete(usage),
+            // The route answered with usage but said nothing about cache writes. Reporting this as
+            // a complete report would hand pricing a default `cache_creation: 0` to multiply by a
+            // cache-write rate and call free (I-52).
+            (true, false) => UsageReport::cache_creation_unreported(usage),
+            (false, _) => UsageReport::provider_omitted(),
         };
 
         // Assemble. Tool calls are known complete only now (no per-call stop event), so we emit
@@ -1240,8 +1303,14 @@ mod tests {
             cache_read: 7,
             thinking: 6,
         };
-        assert!(!apply_reported_usage(&serde_json::json!({}), &mut usage).unwrap());
-        assert!(!apply_reported_usage(&serde_json::json!({"usage":null}), &mut usage).unwrap());
+        assert_eq!(
+            apply_reported_usage(&serde_json::json!({}), &mut usage).unwrap(),
+            ReportedUsage::Absent
+        );
+        assert_eq!(
+            apply_reported_usage(&serde_json::json!({"usage":null}), &mut usage).unwrap(),
+            ReportedUsage::Absent
+        );
         assert!(apply_reported_usage(&serde_json::json!({"usage":{}}), &mut usage).is_err());
         assert_eq!(UsageReport::provider_omitted().complete_usage(), None);
         assert!(
@@ -1257,6 +1326,7 @@ mod tests {
                 &mut usage,
             )
             .unwrap()
+            .present()
         );
         assert_eq!(usage, Usage::default());
         assert_eq!(
@@ -1274,6 +1344,78 @@ mod tests {
                     }
                 }),
                 &mut usage,
+            )
+            .is_err()
+        );
+    }
+
+    /// I-52: the mapper assigned output, cache read and input and left cache creation at its
+    /// struct default, so every OpenAI-compatible route reported a measured zero it never
+    /// measured. A route that names the count must be priced; a route that stays silent must be
+    /// reported as unreported, not as free.
+    #[test]
+    fn cache_creation_is_read_where_a_vendor_reports_it_and_named_unreported_where_it_does_not() {
+        for key in CACHE_CREATION_DETAIL_KEYS {
+            let mut usage = Usage::default();
+            assert_eq!(
+                apply_reported_usage(
+                    &serde_json::json!({
+                        "usage": {
+                            "prompt_tokens": 100,
+                            "completion_tokens": 5,
+                            "prompt_tokens_details": {"cached_tokens": 60, key: 30}
+                        }
+                    }),
+                    &mut usage,
+                )
+                .unwrap(),
+                ReportedUsage::Present {
+                    cache_creation: true
+                },
+                "{key} is a cache-creation count and must be read"
+            );
+            assert_eq!(usage.cache_creation, 30);
+            assert_eq!(usage.cache_read, 60);
+            assert_eq!(
+                usage.input, 10,
+                "written prompt tokens are a subset of prompt_tokens, exactly like cached ones"
+            );
+        }
+
+        let mut usage = Usage::default();
+        assert_eq!(
+            apply_reported_usage(
+                &serde_json::json!({
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 5,
+                        "prompt_tokens_details": {"cached_tokens": 60}
+                    }
+                }),
+                &mut usage,
+            )
+            .unwrap(),
+            ReportedUsage::Present {
+                cache_creation: false
+            },
+            "silence about cache writes must not be reported as a measured zero"
+        );
+        assert_eq!(usage.cache_creation, 0);
+        assert_eq!(usage.input, 40);
+        assert!(!UsageReport::cache_creation_unreported(usage).cache_creation_reported());
+
+        // A vendor whose cache classes exceed its own prompt total is a decode failure, not a
+        // silently negative input count.
+        assert!(
+            apply_reported_usage(
+                &serde_json::json!({
+                    "usage": {
+                        "prompt_tokens": 50,
+                        "completion_tokens": 1,
+                        "prompt_tokens_details": {"cached_tokens": 40, "cache_creation_tokens": 20}
+                    }
+                }),
+                &mut Usage::default(),
             )
             .is_err()
         );

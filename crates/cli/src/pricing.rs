@@ -54,6 +54,65 @@ impl RateCardConfig {
             signature: self.signature.clone(),
         }
     }
+
+    /// Render a signed artifact as the exact `rate_cards[]` entry `~/.core/config.json` accepts.
+    ///
+    /// Without this, producing a card meant hand-assembling four route fields, a content digest
+    /// and an HMAC signature, and the only routine that could compute the last two was a library
+    /// function with no subcommand anywhere — so across 71 recorded runs not one had a USD figure
+    /// while together they burned about four million tokens (I-40).
+    pub fn from_signed(signed: &SignedRateCard, key_env: &str) -> Self {
+        Self {
+            version: signed.rate_card.version,
+            provider_id: signed.rate_card.route.provider_id.clone(),
+            model_id: signed.rate_card.route.model_id.clone(),
+            catalog_digest: signed.rate_card.route.catalog_digest.clone(),
+            capability_digest: signed.rate_card.route.capability_digest.clone(),
+            provenance: signed.rate_card.provenance.clone(),
+            issued_at_unix_secs: signed.rate_card.issued_at_unix_secs,
+            expires_at_unix_secs: signed.rate_card.expires_at_unix_secs,
+            rates: signed.rate_card.rates,
+            signer_id: signed.signer_id.clone(),
+            key_env: key_env.to_owned(),
+            rate_card_digest: signed.rate_card_digest.clone(),
+            signature: signed.signature.clone(),
+        }
+    }
+}
+
+/// Sign one operator-authored rate card with key material read from `key_env`, and return the
+/// configuration entry that installs it. The key bytes never enter the returned value, are never
+/// echoed on error, and are zeroized when the parsed key drops.
+pub fn sign_config_entry(
+    rate_card: RateCard,
+    signer_id: &str,
+    key_env: &str,
+    key_material: &str,
+) -> anyhow::Result<RateCardConfig> {
+    validate_key_env(key_env).map_err(anyhow::Error::msg)?;
+    let key = decode_signing_key(key_env, key_material)?;
+    let signed = core_obs::sign_rate_card(rate_card, signer_id, key)
+        .map_err(|error| anyhow::anyhow!("cannot sign this rate card: {error}"))?;
+    Ok(RateCardConfig::from_signed(&signed, key_env))
+}
+
+/// Parse 32 bytes of hexadecimal key material without ever including it in an error.
+fn decode_signing_key(key_env: &str, value: &str) -> anyhow::Result<[u8; 32]> {
+    let trimmed = value.trim();
+    let invalid = || {
+        anyhow::anyhow!(
+            "pricing key environment variable `{key_env}` must contain exactly 32 bytes of hexadecimal key material"
+        )
+    };
+    if trimmed.len() != 64 {
+        return Err(invalid());
+    }
+    let mut key = [0u8; 32];
+    for (index, byte) in key.iter_mut().enumerate() {
+        *byte =
+            u8::from_str_radix(&trimmed[index * 2..index * 2 + 2], 16).map_err(|_| invalid())?;
+    }
+    Ok(key)
 }
 
 pub fn validate_rate_card_configs(cards: &[RateCardConfig]) -> Result<(), String> {
@@ -220,6 +279,106 @@ mod tests {
         };
         assert!(error.contains("CORE_PRICING_TEST_KEY"));
         assert!(!error.contains(secret));
+    }
+
+    /// I-40: producing a card required two route digests, a content digest and an HMAC
+    /// signature, and the only routine that could compute the last two had no subcommand. The
+    /// signing path must now hand an operator something the loader accepts unchanged.
+    #[test]
+    fn shipped_signing_produces_a_configuration_entry_the_loader_accepts() {
+        let key = [3u8; 32];
+        let hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+        let rate_card = RateCard {
+            version: PricingVersion::V1,
+            route: PricingRoute {
+                provider_id: "provider-a".into(),
+                model_id: "model-a".into(),
+                catalog_digest: format!("sha256:{}", "a".repeat(64)),
+                capability_digest: format!("sha256:{}", "b".repeat(64)),
+            },
+            provenance: "operator-manifest@v1".into(),
+            issued_at_unix_secs: NOW - 60,
+            expires_at_unix_secs: NOW + 60,
+            rates: TokenRateCard {
+                input_microusd_per_million: 3_000_000,
+                output_microusd_per_million: 15_000_000,
+                cache_creation_microusd_per_million: 3_750_000,
+                cache_read_microusd_per_million: 300_000,
+                thinking_microusd_per_million: 15_000_000,
+            },
+        };
+        let entry = sign_config_entry(
+            rate_card.clone(),
+            "pricing-root-v1",
+            "CORE_PRICING_TEST_KEY",
+            &hex,
+        )
+        .expect("shipped tooling signs an operator-authored card");
+
+        validate_rate_card_configs(std::slice::from_ref(&entry))
+            .expect("the entry the operator is handed must pass the loader's own gate");
+        assert_eq!(entry.key_env, "CORE_PRICING_TEST_KEY");
+        let serialized = serde_json::to_string(&entry).unwrap();
+        assert!(
+            !serialized.contains(&hex),
+            "key material must never reach the configuration document"
+        );
+
+        // End to end: the entry resolves the exact route it was signed for.
+        let authority = load_authority_with(&[entry], |_| Some(hex.clone().into()))
+            .unwrap()
+            .unwrap();
+        assert!(
+            authority
+                .resolve_rate_card(&rate_card.route, NOW)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn signing_refuses_bad_key_material_without_echoing_it() {
+        let rate_card = RateCard {
+            version: PricingVersion::V1,
+            route: PricingRoute {
+                provider_id: "provider-a".into(),
+                model_id: "model-a".into(),
+                catalog_digest: format!("sha256:{}", "a".repeat(64)),
+                capability_digest: format!("sha256:{}", "b".repeat(64)),
+            },
+            provenance: "operator-manifest@v1".into(),
+            issued_at_unix_secs: NOW - 60,
+            expires_at_unix_secs: NOW + 60,
+            rates: TokenRateCard {
+                input_microusd_per_million: 1,
+                output_microusd_per_million: 1,
+                cache_creation_microusd_per_million: 1,
+                cache_read_microusd_per_million: 1,
+                thinking_microusd_per_million: 1,
+            },
+        };
+        let secret = "not-hexadecimal-and-far-too-short";
+        let error = sign_config_entry(
+            rate_card.clone(),
+            "pricing-root-v1",
+            "CORE_PRICING_TEST_KEY",
+            secret,
+        )
+        .expect_err("32 bytes of hex or nothing")
+        .to_string();
+        assert!(error.contains("CORE_PRICING_TEST_KEY"));
+        assert!(!error.contains(secret));
+
+        assert!(
+            sign_config_entry(
+                rate_card,
+                "pricing-root-v1",
+                "lowercase_env",
+                &"0".repeat(64)
+            )
+            .is_err(),
+            "the key_env name is validated here, not only at load time"
+        );
     }
 
     #[test]

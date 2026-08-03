@@ -39,6 +39,11 @@ pub enum StreamItem {
     /// A `tool_use` block just completed: its input is fully known. THE flagship dispatch
     /// point. Emitted at `content_block_stop`, before the turn ends.
     ToolUseComplete(ToolUse),
+    /// The caller's remaining quota, read from the response headers before the first token of the
+    /// answer. This is the whole point of the variant: rate-limit state used to become visible
+    /// only after a 429 had already been paid for (I-53). Adapters emit it at most once per turn
+    /// and only when the route published something.
+    RateLimit(crate::RateLimitSnapshot),
     /// The turn ended. Carries the assembled blocks, stop reason, and usage by cache class.
     TurnComplete {
         blocks: Vec<Block>,
