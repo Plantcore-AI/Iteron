@@ -727,13 +727,21 @@ fn object_integer(id: &str, name: &str) -> i64 {
 fn exact_160_entry_contract_is_pinned_per_ordinal() {
     validate_registry().unwrap();
     assert_eq!(families().len(), EXPECTED_FAMILY_COUNT);
+    let mut semantic_keys = BTreeSet::new();
     for (index, family) in families().iter().enumerate() {
         let ordinal = index + 1;
         assert_eq!(usize::from(family.ordinal), ordinal);
         assert_eq!(family.id, EXPECTED_IDS[index], "ordinal {ordinal}");
-        assert_eq!(
-            family.semantic_key, EXPECTED_IDS[index],
-            "ordinal {ordinal}"
+        assert!(
+            family.semantic_key.starts_with("core.control."),
+            "{}",
+            family.id
+        );
+        assert_ne!(family.semantic_key, family.id, "ordinal {ordinal}");
+        assert!(
+            semantic_keys.insert(family.semantic_key),
+            "duplicate control key {}",
+            family.semantic_key
         );
         assert_eq!(
             (
@@ -759,6 +767,7 @@ fn exact_160_entry_contract_is_pinned_per_ordinal() {
             format!("core://tunables/families/{}/value-v1", family.id)
         );
     }
+    assert_eq!(semantic_keys.len(), EXPECTED_FAMILY_COUNT);
 }
 
 #[test]
@@ -920,6 +929,10 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
         prompt_cache.source.bindings[0].locator,
         "core_provider::ProviderInstance::with_prompt_cache"
     );
+    assert_eq!(
+        prompt_cache.semantic_key,
+        "core.control.provider.prompt_cache_emission"
+    );
     assert!(prompt_cache.value_schema.rules.iter().any(|rule| matches!(
         rule,
         CrossFieldRule::ExternalCeiling {
@@ -948,16 +961,48 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     assert_eq!(prompt_cache_strategy.default.kind, DefaultKind::Dynamic);
     assert_eq!(
         prompt_cache_strategy.default.requirement,
-        DefaultValueRequirement::Required
+        DefaultValueRequirement::Optional
     );
     assert!(matches!(
         prompt_cache_strategy.default.resolver,
-        DefaultResolver::Operator { .. }
+        DefaultResolver::ProviderCapability {
+            capability: "prompt_cache_ttl_breakpoint_strategy"
+        }
     ));
+    assert_eq!(
+        prompt_cache_strategy.semantic_key,
+        "core.control.provider.prompt_cache_policy"
+    );
+    assert!(
+        prompt_cache_strategy
+            .value_schema
+            .rules
+            .iter()
+            .any(|rule| matches!(
+                rule,
+                CrossFieldRule::ExternalCeiling {
+                    field: "$",
+                    ceiling: ExternalCeiling::ProviderCapability,
+                }
+            ))
+    );
     let prompt_cache_strategy_schema =
         serde_json::to_string(&prompt_cache_strategy.value_schema).unwrap();
     assert!(prompt_cache_strategy_schema.contains("ttl_seconds"));
     assert!(prompt_cache_strategy_schema.contains("breakpoint"));
+    let breakpoint_owners = families()
+        .iter()
+        .filter(|family| {
+            serde_json::to_string(&family.value_schema)
+                .unwrap()
+                .contains("breakpoint")
+        })
+        .map(|family| family.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        breakpoint_owners,
+        vec!["prompt_cache_ttl_breakpoint_strategy"]
+    );
 
     assert_eq!(
         family("token_estimator").requirements.provider,

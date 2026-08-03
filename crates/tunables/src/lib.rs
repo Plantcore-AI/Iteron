@@ -20,6 +20,7 @@ mod metadata;
 mod requirements;
 mod resolution_metadata;
 mod schema_catalog;
+mod semantic_keys;
 mod strategy_slots;
 mod types;
 mod validate;
@@ -60,4 +61,4 @@ pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v1";
 pub const DIGEST_ALGORITHM: &str = "sha256";
 /// Golden digest for revision 2; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "1d3d5787eb4b47c9428b264aad5d01dc74791427570643d32984824a3249f304";
+    "5dc9790a4ea2f20f00173965bc5937aecaac89d677b8fcc02b2cb87974986502";

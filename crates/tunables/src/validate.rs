@@ -27,6 +27,8 @@ pub enum RegistryError {
     },
     #[error("invalid stable family id or alias `{0}`")]
     InvalidFamilyId(&'static str),
+    #[error("invalid runtime-control semantic key `{0}`")]
+    InvalidSemanticKey(&'static str),
     #[error("duplicate stable family id `{0}`")]
     DuplicateFamilyId(&'static str),
     #[error("alias `{alias}` on `{owner}` collides with `{existing}`")]
@@ -147,12 +149,12 @@ fn validate_families(registry: &[crate::Family]) -> Result<(), RegistryError> {
 /// Enforce semantic ownership without consulting ordinals, stable IDs as ownership keys, family
 /// digests, or the global golden digest. This is the check that prevents a renamed or moved entry
 /// from creating a second registry identity for one canonical runtime control.
-fn validate_semantic_ownership(registry: &[crate::Family]) -> Result<(), RegistryError> {
+pub(crate) fn validate_semantic_ownership(registry: &[crate::Family]) -> Result<(), RegistryError> {
     let mut identities = BTreeMap::<&'static str, &'static str>::new();
     let mut semantic_keys = BTreeMap::<&'static str, &'static str>::new();
     for family in registry {
         validate_identity(family.id)?;
-        validate_identity(family.semantic_key)?;
+        validate_semantic_key(family.semantic_key)?;
         if identities.insert(family.id, family.id).is_some() {
             return Err(RegistryError::DuplicateFamilyId(family.id));
         }
@@ -183,16 +185,39 @@ fn validate_identity(identity: &'static str) -> Result<(), RegistryError> {
     if SEMANTIC_DUPLICATE_DENYLIST.contains(&identity) {
         return Err(RegistryError::SemanticDuplicate(identity));
     }
-    if identity.is_empty()
-        || !identity
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-        || identity.starts_with('_')
-        || identity.ends_with('_')
-    {
+    if !valid_key_segment(identity) {
         return Err(RegistryError::InvalidFamilyId(identity));
     }
     Ok(())
+}
+
+fn validate_semantic_key(key: &'static str) -> Result<(), RegistryError> {
+    let Some(path) = key.strip_prefix("core.control.") else {
+        return Err(RegistryError::InvalidSemanticKey(key));
+    };
+    let mut segments = path.split('.');
+    let Some(area) = segments.next() else {
+        return Err(RegistryError::InvalidSemanticKey(key));
+    };
+    let Some(control) = segments.next() else {
+        return Err(RegistryError::InvalidSemanticKey(key));
+    };
+    if !valid_key_segment(area)
+        || !valid_key_segment(control)
+        || segments.any(|segment| !valid_key_segment(segment))
+    {
+        return Err(RegistryError::InvalidSemanticKey(key));
+    }
+    Ok(())
+}
+
+fn valid_key_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        && !segment.starts_with('_')
+        && !segment.ends_with('_')
 }
 
 fn validate_activation(family: &crate::Family) -> Result<(), RegistryError> {
@@ -388,24 +413,6 @@ mod tests {
         assert!(matches!(
             validate_semantic_ownership(&[reintroduced_alias]),
             Err(RegistryError::SemanticDuplicate("workflow_spawn_cap"))
-        ));
-    }
-
-    #[test]
-    fn semantic_key_rejects_a_control_copied_under_a_new_id_and_ordinal() {
-        let original = crate::families()[137];
-        let mut disguised_duplicate = original;
-        disguised_duplicate.id = "renamed_session_spawn_control";
-        disguised_duplicate.aliases = &[];
-        disguised_duplicate.ordinal = 65_000;
-
-        assert!(matches!(
-            validate_semantic_ownership(&[original, disguised_duplicate]),
-            Err(RegistryError::DuplicateSemanticKey {
-                first: "per_session_spawn_cap",
-                second: "renamed_session_spawn_control",
-                semantic_key: "per_session_spawn_cap",
-            })
         ));
     }
 }

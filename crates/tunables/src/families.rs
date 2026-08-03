@@ -3,18 +3,19 @@ use crate::metadata::{
     OptimizationSeed, aliases, authority, optimization, requirements, risk, strategy_slots,
 };
 use crate::resolution_metadata::{activation_spec, default_spec, source_spec};
+use crate::semantic_keys::semantic_key;
 use crate::value_schemas::value_schema;
 use crate::{CausalPath as Path, Domain, FAMILY_SCHEMA_VERSION, Family, ImplementationStatus};
 
 macro_rules! family {
-    ($status:ident; $ordinal:literal, $id:literal, $domain:ident, $summary:literal,
+    ($status:ident; $ordinal:literal, $id:literal, $semantic_key:expr, $domain:ident, $summary:literal,
      $default_kind:ident, $default:literal, $source_kind:ident, $locator:literal,
      $tb:ident, $swe:ident, $optimization_seed:ident) => {
         Family {
             schema_version: FAMILY_SCHEMA_VERSION,
             ordinal: $ordinal,
             id: $id,
-            semantic_key: $id,
+            semantic_key: $semantic_key,
             aliases: aliases($ordinal),
             domain: Domain::$domain,
             summary: $summary,
@@ -42,19 +43,27 @@ macro_rules! family {
 }
 
 macro_rules! full {
-    ($($args:tt)*) => { family!(Full; $($args)*) };
+    ($ordinal:literal, $id:literal, $($rest:tt)*) => {
+        family!(Full; $ordinal, $id, semantic_key($ordinal), $($rest)*)
+    };
 }
 
 macro_rules! partial {
-    ($($args:tt)*) => { family!(Partial; $($args)*) };
+    ($ordinal:literal, $id:literal, $($rest:tt)*) => {
+        family!(Partial; $ordinal, $id, semantic_key($ordinal), $($rest)*)
+    };
 }
 
 macro_rules! missing {
-    ($($args:tt)*) => { family!(Missing; $($args)*) };
+    ($ordinal:literal, $id:literal, $($rest:tt)*) => {
+        family!(Missing; $ordinal, $id, semantic_key($ordinal), $($rest)*)
+    };
 }
 
 macro_rules! fixed {
-    ($($args:tt)*) => { family!(FixedHidden; $($args)*) };
+    ($ordinal:literal, $id:literal, $($rest:tt)*) => {
+        family!(FixedHidden; $ordinal, $id, semantic_key($ordinal), $($rest)*)
+    };
 }
 
 /// The declaration order is canonical and ordinals are never reused.
@@ -245,4 +254,51 @@ static FAMILIES: &[Family] = &[
 
 pub fn families() -> &'static [Family] {
     FAMILIES
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RegistryError;
+
+    #[test]
+    fn independent_control_key_rejects_two_ordinary_declarations() {
+        let first = family!(Partial;
+            137,
+            "session_spawn_limit",
+            "core.control.orchestration.session_spawn_budget",
+            Orchestration,
+            "First declaration for a session spawn control.",
+            Derived,
+            "bounded session allocation",
+            Builtin,
+            "crates/workflow/src/lib.rs",
+            Direct,
+            Indirect,
+            OfflineSearch
+        );
+        let second = family!(Partial;
+            138,
+            "session_spawn_limit_v2",
+            "core.control.orchestration.session_spawn_budget",
+            Orchestration,
+            "Renamed declaration for the same session spawn control.",
+            Derived,
+            "bounded session allocation",
+            Builtin,
+            "crates/workflow/src/lib.rs",
+            Direct,
+            Indirect,
+            OfflineSearch
+        );
+
+        assert!(matches!(
+            crate::validate::validate_semantic_ownership(&[first, second]),
+            Err(RegistryError::DuplicateSemanticKey {
+                first: "session_spawn_limit",
+                second: "session_spawn_limit_v2",
+                semantic_key: "core.control.orchestration.session_spawn_budget",
+            })
+        ));
+    }
 }

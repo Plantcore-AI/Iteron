@@ -551,8 +551,8 @@ pub struct Family {
     pub schema_version: u16,
     pub ordinal: u16,
     pub id: &'static str,
-    /// Canonical runtime-control ownership key. Renaming an ID or moving an ordinal does not
-    /// create a second semantic owner for the same control.
+    /// Canonical runtime-control ownership key from the independent control-key ledger. It is not
+    /// derived from the display ID or ordinal, so either can change without creating a new owner.
     pub semantic_key: &'static str,
     pub aliases: &'static [&'static str],
     pub domain: Domain,

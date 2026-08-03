@@ -312,7 +312,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             )
         ],
         [
-            external_rule!("ttl_seconds", OperatorAuthority),
+            external_rule!("$", ProviderCapability),
             external_rule!("scope", TenantScope)
         ]
     ),
