@@ -614,9 +614,32 @@ mod tests {
         assert!(error.contains("common-directory"));
     }
 
+    #[test]
+    fn hardened_command_environment_disables_partial_clone_lazy_fetch() {
+        let temp = TestDir::new("no-lazy-fetch");
+        let workspace = temp.0.join("workspace");
+        std::fs::create_dir_all(workspace.join(".git")).unwrap();
+        let git = ResolvedGit {
+            executable: std::env::current_exe().unwrap(),
+            safe_path: None,
+        };
+        let repository = resolve_repository_layout(&workspace).unwrap();
+
+        // Inspect the exact child environment instead of execing a just-written probe script:
+        // busy Linux CI filesystems can transiently reject that fixture with ETXTBSY.
+        let command = hardened_git_command(&git, &repository, &[]);
+        let lazy_fetch = command
+            .as_std()
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new("GIT_NO_LAZY_FETCH"))
+            .and_then(|(_, value)| value);
+
+        assert_eq!(lazy_fetch, Some(OsStr::new("1")));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
-    async fn hardened_command_disables_partial_clone_lazy_fetch() {
+    async fn hardened_git_invocation_disables_partial_clone_lazy_fetch() {
         // This test used to fabricate a synthetic Git binary, so it never paid the cost of real
         // Git. Driving the resolved system Git through `setup_git` makes it a fourth real-Git
         // fixture, and it holds a five-second deadline while doing so, which is exactly the

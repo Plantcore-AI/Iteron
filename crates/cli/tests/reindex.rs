@@ -18,6 +18,7 @@ impl Scratch {
             std::env::temp_dir().join(format!("core-cli-reindex-{}-{serial}", std::process::id()));
         std::fs::create_dir_all(root.join("repo")).unwrap();
         std::fs::create_dir_all(root.join("runs")).unwrap();
+        std::fs::create_dir_all(root.join("home")).unwrap();
         Self(root)
     }
 
@@ -28,6 +29,10 @@ impl Scratch {
     fn runs(&self) -> PathBuf {
         self.0.join("runs")
     }
+
+    fn home(&self) -> PathBuf {
+        self.0.join("home")
+    }
 }
 
 impl Drop for Scratch {
@@ -36,17 +41,33 @@ impl Drop for Scratch {
     }
 }
 
-fn run_core(repo: &Path, arguments: &[&str]) -> (ExitStatus, String, String) {
+fn run_core(home: &Path, repo: &Path, arguments: &[&str]) -> (ExitStatus, String, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_core"));
     command
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env(
+            "PATH",
+            if cfg!(windows) {
+                std::env::var_os("PATH").unwrap_or_default()
+            } else {
+                "/usr/bin:/bin".into()
+            },
+        )
         .env("LANG", "C.UTF-8")
         .current_dir(repo)
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if cfg!(windows) {
+        for name in ["SystemRoot", "WINDIR"] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+    }
     let mut child = command.spawn().unwrap();
     let deadline = Instant::now() + PROCESS_TIMEOUT;
     let status = loop {
@@ -119,6 +140,7 @@ fn d9_10_g1_reindex_subcommand_repairs_corrupt_cache_and_sessions_listing() {
     let repo_arg = scratch.repo().display().to_string();
     let runs_arg = scratch.runs().display().to_string();
     let (status, stdout, stderr) = run_core(
+        &scratch.home(),
         &scratch.repo(),
         &["--repo", &repo_arg, "--runs-dir", &runs_arg, "reindex"],
     );
@@ -135,6 +157,7 @@ fn d9_10_g1_reindex_subcommand_repairs_corrupt_cache_and_sessions_listing() {
     assert_eq!(meta["title"], "repairable session title");
 
     let (status, sessions, stderr) = run_core(
+        &scratch.home(),
         &scratch.repo(),
         &["--repo", &repo_arg, "--runs-dir", &runs_arg, "--sessions"],
     );
@@ -170,7 +193,8 @@ fn schema_v4_session_argv_is_typed_provider_free_and_tag_preserving() {
             .unwrap();
     }
 
-    let (status, contract, stderr) = run_core(&scratch.repo(), &["--machine-contract"]);
+    let (status, contract, stderr) =
+        run_core(&scratch.home(), &scratch.repo(), &["--machine-contract"]);
     assert!(status.success(), "stdout={contract}\nstderr={stderr}");
     let contract: serde_json::Value = serde_json::from_str(contract.trim()).unwrap();
     assert_eq!(contract["cli_stream_versions"], serde_json::json!([4, 5]));
@@ -179,6 +203,7 @@ fn schema_v4_session_argv_is_typed_provider_free_and_tag_preserving() {
     let repo_arg = scratch.repo().display().to_string();
     let runs_arg = scratch.runs().display().to_string();
     let (status, page, stderr) = run_core(
+        &scratch.home(),
         &scratch.repo(),
         &[
             "--repo",
@@ -204,6 +229,7 @@ fn schema_v4_session_argv_is_typed_provider_free_and_tag_preserving() {
     assert_eq!(page["sessions"][0]["agent_definition_tag"], "reviewer-a");
 
     let (status, forked, stderr) = run_core(
+        &scratch.home(),
         &scratch.repo(),
         &[
             "--repo",
@@ -275,7 +301,11 @@ fn d11_06_a_relative_runs_dir_resolves_against_dash_c_not_the_process_directory(
     let canonical = scratch.repo().canonicalize().unwrap();
 
     // Invoked from the scratch ROOT, not from the repository.
-    let (status, stdout, stderr) = run_core(&scratch.0, &["--repo", &repo_arg, "reindex"]);
+    let (status, stdout, stderr) = run_core(
+        &scratch.home(),
+        &scratch.0,
+        &["--repo", &repo_arg, "reindex"],
+    );
     assert!(status.success(), "stdout={stdout}\nstderr={stderr}");
     assert!(
         stdout.contains(&canonical.join(".core/runs").display().to_string()),
@@ -292,6 +322,7 @@ fn d11_06_a_relative_runs_dir_resolves_against_dash_c_not_the_process_directory(
 
     let runs_arg = scratch.runs().display().to_string();
     let (status, stdout, stderr) = run_core(
+        &scratch.home(),
         &scratch.0,
         &["--repo", &repo_arg, "--runs-dir", &runs_arg, "reindex"],
     );
@@ -311,6 +342,7 @@ fn d11_50_a_transcript_read_failure_names_the_run_and_the_file() {
     let runs_arg = scratch.runs().display().to_string();
 
     let (status, stdout, stderr) = run_core(
+        &scratch.home(),
         &scratch.repo(),
         &[
             "--repo",
@@ -363,6 +395,7 @@ fn d11_51_sessions_lists_only_the_repository_continue_would_select_from() {
     let repo_arg = scratch.repo().display().to_string();
     let runs_arg = scratch.runs().display().to_string();
     let (status, stdout, stderr) = run_core(
+        &scratch.home(),
         &scratch.repo(),
         &["--repo", &repo_arg, "--runs-dir", &runs_arg, "--sessions"],
     );
@@ -375,6 +408,7 @@ fn d11_51_sessions_lists_only_the_repository_continue_would_select_from() {
 
     let elsewhere_arg = elsewhere.display().to_string();
     let (status, stdout, stderr) = run_core(
+        &scratch.home(),
         &scratch.repo(),
         &[
             "--repo",
@@ -405,6 +439,7 @@ fn d11_46_the_session_list_is_paged_and_prune_enforces_an_explicit_policy() {
     let repo_arg = scratch.repo().display().to_string();
     let runs_arg = scratch.runs().display().to_string();
     let (status, stdout, stderr) = run_core(
+        &scratch.home(),
         &scratch.repo(),
         &[
             "--repo",
@@ -429,6 +464,7 @@ fn d11_46_the_session_list_is_paged_and_prune_enforces_an_explicit_policy() {
 
     // A prune with no rule is a question, not a command.
     let (status, stdout, stderr) = run_core(
+        &scratch.home(),
         &scratch.repo(),
         &["--repo", &repo_arg, "--runs-dir", &runs_arg, "prune"],
     );
@@ -437,6 +473,7 @@ fn d11_46_the_session_list_is_paged_and_prune_enforces_an_explicit_policy() {
     assert_eq!(count_rollouts(&scratch.runs()), 3);
 
     let (status, stdout, stderr) = run_core(
+        &scratch.home(),
         &scratch.repo(),
         &[
             "--repo",

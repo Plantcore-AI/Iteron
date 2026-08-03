@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "scripted_task": "Return exactly: parity reply",
+  "task_fixture": "crates/cli/tests/fixtures/client-parity-task.txt",
+  "task_fixture_sha256": "577841ee6e0be6a74d233b18cf3c5ec09ea5430c9b1be1bcd24578279d54f779",
+  "proof_scope": {
+    "comparison": "Raw pairwise equality of result-v5 Values captured from the one-shot final_result call, a headless result frame, and the TUI RunEnded branch.",
+    "normalization": "Only the headless protocol envelope and one-shot line formatting are excluded; no result-v5 field is normalized."
+  },
+  "process_smoke_references": [
+    {
+      "client": "tui",
+      "path": "crates/cli/tests/tui_pty.rs",
+      "selector": "fn client_parity_scripted_task_reaches_tui_done_presentation()",
+      "scope": "shared scripted task, parity reply, native done presentation, and clean process exit"
+    },
+    {
+      "client": "one-shot",
+      "path": "crates/cli/tests/one_shot_output.rs",
+      "selector": "fn client_parity_scripted_task_completes_in_one_shot()",
+      "scope": "shared scripted task, parity result-v5 object, and process exit"
+    },
+    {
+      "client": "headless",
+      "path": "crates/cli/tests/headless_serve.rs",
+      "selector": "fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server()",
+      "scope": "shared scripted task and parity result-v5 frame from a real server process"
+    }
+  ],
+  "clients": [
+    {
+      "client": "tui",
+      "presentation": {
+        "kind": "native_terminal",
+        "visible_status": "idle · last: done",
+        "emits_machine_object": false,
+        "result_capture": "The result below is the TUI's internal canonical RunEnded projection used by the production-path parity test; it is not rendered as JSON to the operator."
+      },
+      "result": {
+        "schema_version": 5,
+        "type": "result",
+        "outcome": "done",
+        "reason": null,
+        "success": true,
+        "assistant_text": "parity reply",
+        "run_id": "run-client-parity",
+        "cost_usd": 0.0,
+        "cost_status": "zero",
+        "cost_reason": null,
+        "turns": 1,
+        "kernel_tax": {
+          "admission_latency_us": 0,
+          "broker_latency_us": 0,
+          "record_fsync_latency_us": 0,
+          "estimated_tokens": 0,
+          "failed_runs": 0
+        },
+        "exit_code": 0,
+        "error": null
+      }
+    },
+    {
+      "client": "one-shot",
+      "presentation": {
+        "kind": "machine_object",
+        "wire_shape": "one JSON object followed by newline",
+        "emits_machine_object": true
+      },
+      "result": {
+        "schema_version": 5,
+        "type": "result",
+        "outcome": "done",
+        "reason": null,
+        "success": true,
+        "assistant_text": "parity reply",
+        "run_id": "run-client-parity",
+        "cost_usd": 0.0,
+        "cost_status": "zero",
+        "cost_reason": null,
+        "turns": 1,
+        "kernel_tax": {
+          "admission_latency_us": 0,
+          "broker_latency_us": 0,
+          "record_fsync_latency_us": 0,
+          "estimated_tokens": 0,
+          "failed_runs": 0
+        },
+        "exit_code": 0,
+        "error": null
+      }
+    },
+    {
+      "client": "headless",
+      "presentation": {
+        "kind": "machine_object",
+        "wire_shape": "versioned result frame containing result",
+        "emits_machine_object": true
+      },
+      "result": {
+        "schema_version": 5,
+        "type": "result",
+        "outcome": "done",
+        "reason": null,
+        "success": true,
+        "assistant_text": "parity reply",
+        "run_id": "run-client-parity",
+        "cost_usd": 0.0,
+        "cost_status": "zero",
+        "cost_reason": null,
+        "turns": 1,
+        "kernel_tax": {
+          "admission_latency_us": 0,
+          "broker_latency_us": 0,
+          "record_fsync_latency_us": 0,
+          "estimated_tokens": 0,
+          "failed_runs": 0
+        },
+        "exit_code": 0,
+        "error": null
+      }
+    }
+  ]
+}

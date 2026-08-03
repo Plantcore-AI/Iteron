@@ -1,0 +1,3 @@
+# Machine contracts, scripts, and source fixtures must keep the same bytes on every release host.
+# Binary files remain unmodified because `text=auto` classifies them as binary.
+* text=auto eol=lf

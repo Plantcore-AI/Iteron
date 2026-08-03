@@ -5,6 +5,7 @@
 /governance/** @fr0m-scratch
 /release-tools/** @fr0m-scratch
 /xtask/** @fr0m-scratch
+/.gitattributes @fr0m-scratch
 /.gitignore @fr0m-scratch
 /AGENTS.md @fr0m-scratch
 /CHANGELOG.md @fr0m-scratch
@@ -117,9 +118,12 @@
 /crates/cli/src/pricing.rs @fr0m-scratch
 /crates/cli/src/providers.rs @fr0m-scratch
 /crates/cli/src/render.rs @fr0m-scratch
+/crates/cli/src/route.rs @fr0m-scratch
 /crates/cli/src/runtime.rs @fr0m-scratch
 /crates/cli/src/session_view.rs @fr0m-scratch
 /crates/cli/src/session_view_tests.rs @fr0m-scratch
+/crates/cli/src/setup.rs @fr0m-scratch
+/crates/cli/src/startup.rs @fr0m-scratch
 /crates/cli/src/surface.rs @fr0m-scratch
 /crates/cli/src/theme.rs @fr0m-scratch
 /crates/cli/src/tui.rs @fr0m-scratch

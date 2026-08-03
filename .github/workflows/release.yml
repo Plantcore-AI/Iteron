@@ -33,6 +33,7 @@ jobs:
     outputs:
       commit: ${{ steps.metadata.outputs.commit }}
       source-date-epoch: ${{ steps.metadata.outputs.source-date-epoch }}
+      tree: ${{ steps.metadata.outputs.tree }}
       version: ${{ steps.metadata.outputs.version }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -66,6 +67,8 @@ jobs:
           fi
 
           [[ "$tag_commit" =~ ^[0-9a-f]{40}$ ]]
+          tested_tree=$(git rev-parse "$tag_commit^{tree}")
+          [[ "$tested_tree" =~ ^[0-9a-f]{40}$ ]]
           candidate_root=$RUNNER_TEMP/core-schema-candidate
           test ! -e "$candidate_root"
           git worktree add --detach "$candidate_root" "$tag_commit"
@@ -169,6 +172,7 @@ jobs:
           {
             echo "commit=$tag_commit"
             echo "source-date-epoch=$epoch"
+            echo "tree=$tested_tree"
             echo "version=$version"
           } >> "$GITHUB_OUTPUT"
       - name: Validate against the previous immutable schema release
@@ -557,6 +561,9 @@ jobs:
             binary: core.exe
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
     env:
       CARGO_INCREMENTAL: 0
       CARGO_TARGET_DIR: ${{ github.workspace }}/target/release-build
@@ -567,6 +574,15 @@ jobs:
         with:
           ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
+      - name: Normalize Windows build paths for native tools
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          workspace=$(cygpath -m "$GITHUB_WORKSPACE")
+          {
+            echo "CARGO_TARGET_DIR=$workspace/target/release-build"
+            echo "RUSTFLAGS=--remap-path-prefix=$workspace=/workspace -C strip=symbols"
+          } >> "$GITHUB_ENV"
       # Keep this identical to CI's narrow Ubuntu 24.04 bwrap authorization. The profile grants
       # user namespaces only to the root-owned system binary and leaves the global restriction on.
       - name: Install Linux build and sandbox dependencies
@@ -688,6 +704,74 @@ jobs:
           if (-not ($contract.cli_stream_versions -contains 4)) {
             throw "core.exe does not retain CLI stream schema 4"
           }
+      - name: Complete one task with the native release client
+        id: native-client
+        run: >-
+          "${{ matrix.python }}" -I release-tools/smoke_release_client.py
+          --binary "$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
+      - name: Run native version-independence proof
+        id: native-version-independence
+        if: >-
+          success() &&
+          (matrix.target == 'x86_64-unknown-linux-musl' ||
+          matrix.target == 'x86_64-pc-windows-msvc')
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          target=${{ matrix.target }}
+          max_log_bytes=1048576
+
+          run_exact() {
+            label=$1
+            shift
+            log="$RUNNER_TEMP/core-native-version-$label.log"
+            test ! -e "$log"
+            set +e
+            "$@" 2>&1 | head -c "$((max_log_bytes + 1))" > "$log"
+            pipeline_status=("${PIPESTATUS[@]}")
+            set -e
+            test "${#pipeline_status[@]}" -eq 2
+            status=${pipeline_status[0]}
+            capture_status=${pipeline_status[1]}
+            test "$capture_status" -eq 0
+            bytes=$(wc -c < "$log" | tr -d '[:space:]')
+            [[ "$bytes" =~ ^[0-9]+$ ]]
+            if [[ "$bytes" -gt "$max_log_bytes" ]]; then
+              printf 'native version proof %s exceeded %s bytes\n' \
+                "$label" "$max_log_bytes" >&2
+              exit 1
+            fi
+            cat "$log"
+            test "$status" -eq 0
+            summaries=$(grep -Ec \
+              '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in .+$' \
+              "$log" || true)
+            test "$summaries" -eq 1
+          }
+
+          run_exact tui \
+            cargo +"$RUST_VERSION" test --locked -p core-cli --bin core \
+              --target "$target" \
+              tui::app_server::tests::version_skew_is_refused_up_front -- --exact
+          run_exact one-shot \
+            cargo +"$RUST_VERSION" test --locked -p core-cli \
+              --test one_shot_output --target "$target" \
+              one_shot_refuses_app_server_version_skew_before_provider_dispatch \
+              -- --exact
+          run_exact headless \
+            cargo +"$RUST_VERSION" test --locked -p core-cli \
+              --test headless_serve --target "$target" \
+              no_tty_skew_reconnect_and_result_v5_share_one_headless_server \
+              -- --exact
+          if [[ "$target" == x86_64-pc-windows-msvc ]]; then
+            run_exact conpty \
+              cargo +"$RUST_VERSION" test --locked -p core-cli \
+                --test windows_conpty --target "$target" \
+                native_conpty_rejects_version_skew_before_terminal_takeover \
+                -- --exact
+          fi
       - name: Generate and normalize the binary SBOM
         shell: bash
         run: |

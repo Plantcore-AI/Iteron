@@ -31,17 +31,146 @@ jobs:
       - name: install pinned Rust toolchain
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: materialize trusted base policy
+        id: policy
+        shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           POLICY_ROOT: ${{ runner.temp }}/core-policy-base
-        run: git worktree add --detach "$POLICY_ROOT" "$BASE_SHA"
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          candidate_sha=$(git rev-parse --verify 'HEAD^{commit}')
+          [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$BASE_SHA" "$candidate_sha"
+          git worktree add --detach "$POLICY_ROOT" "$BASE_SHA"
+          echo "policy-sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
+      - name: materialize one-time trusted-policy compatibility projection
+        id: compatibility
+        shell: bash
+        env:
+          LEGACY_POLICY_ANCHOR_SHA: 6b850ca79b3a167a25357f873841e2bedcbad59a
+          LEGACY_PARSER_BLOB_OID: 1758a24e092648a71469f3e3cfbac45a9cb204b7
+          COMPATIBILITY_POLICY_SHA: 2c17775f7df54581eebee3fe49b00d5d0db16fe9
+          POLICY_SHA: ${{ steps.policy.outputs.policy-sha }}
+          PROJECTION_ROOT: ${{ runner.temp }}/core-policy-candidate-projection
+          COMPATIBILITY_POLICY_ROOT: ${{ runner.temp }}/core-policy-compatibility
+        run: |
+          set -euo pipefail
+          candidate_root=$GITHUB_WORKSPACE
+          compatibility_active=false
+          legacy_parser=xtask/src/schema_compat_rust_cli_parse.rs
+
+          test "$(git cat-file -t "$LEGACY_POLICY_ANCHOR_SHA")" = commit
+          read -r anchor_mode anchor_type anchor_oid anchor_path \
+            <<<"$(git ls-tree "$LEGACY_POLICY_ANCHOR_SHA" -- "$legacy_parser")"
+          test "$anchor_mode" = 100644
+          test "$anchor_type" = blob
+          test "$anchor_oid" = "$LEGACY_PARSER_BLOB_OID"
+          test "$anchor_path" = "$legacy_parser"
+
+          if git merge-base --is-ancestor \
+            "$LEGACY_POLICY_ANCHOR_SHA" "$POLICY_SHA"; then
+            read -r parser_mode parser_type parser_oid parser_path \
+              <<<"$(git ls-tree "$POLICY_SHA" -- "$legacy_parser")"
+          fi
+
+          if [[ "${parser_mode:-}" == 100644 \
+            && "${parser_type:-}" == blob \
+            && "${parser_oid:-}" == "$LEGACY_PARSER_BLOB_OID" \
+            && "${parser_path:-}" == "$legacy_parser" ]]; then
+            candidate_sha=$(git rev-parse --verify 'HEAD^{commit}')
+            [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
+            test "$(git cat-file -t "$COMPATIBILITY_POLICY_SHA")" = commit
+            git merge-base --is-ancestor \
+              "$LEGACY_POLICY_ANCHOR_SHA" "$COMPATIBILITY_POLICY_SHA"
+            git merge-base --is-ancestor \
+              "$COMPATIBILITY_POLICY_SHA" "$candidate_sha"
+
+            for pinned_path in \
+              governance/client-conformance.json \
+              governance/schema-compatibility.json \
+              crates/cli/tests/golden/input_attachment_stream_v5.jsonl \
+              crates/eval/src/contract.rs \
+              crates/cli/src/main.rs \
+              crates/cli/src/output.rs
+            do
+              read -r candidate_mode candidate_type candidate_oid candidate_path \
+                <<<"$(git ls-tree "$candidate_sha" -- "$pinned_path")"
+              read -r policy_mode policy_type policy_oid policy_path \
+                <<<"$(git ls-tree "$COMPATIBILITY_POLICY_SHA" -- "$pinned_path")"
+              test "$candidate_mode" = 100644
+              test "$candidate_type" = blob
+              [[ "$candidate_oid" =~ ^[0-9a-f]{40}$ ]]
+              test "$candidate_path" = "$pinned_path"
+              test "$policy_mode" = 100644
+              test "$policy_type" = blob
+              [[ "$policy_oid" =~ ^[0-9a-f]{40}$ ]]
+              test "$policy_oid" = "$candidate_oid"
+              test "$policy_path" = "$pinned_path"
+            done
+
+            test ! -e "$PROJECTION_ROOT"
+            test ! -e "$COMPATIBILITY_POLICY_ROOT"
+            git worktree add --detach "$PROJECTION_ROOT" "$candidate_sha"
+            git worktree add --detach \
+              "$COMPATIBILITY_POLICY_ROOT" "$COMPATIBILITY_POLICY_SHA"
+            test -z "$(git -C "$PROJECTION_ROOT" status --porcelain=v1 \
+              --untracked-files=all)"
+
+            manifest=$PROJECTION_ROOT/governance/schema-compatibility.json
+            projected_manifest=$PROJECTION_ROOT/governance/.schema-compatibility.projected.json
+            test ! -L "$manifest"
+            test ! -e "$projected_manifest"
+            test ! -L "$projected_manifest"
+            test "$(jq '
+              [.surfaces[]
+                | select(.id == "cli.machine-stream.input-attachment")]
+              | length
+            ' "$manifest")" = 1
+            jq '
+              .surfaces |= map(
+                select(.id != "cli.machine-stream.input-attachment")
+              )
+            ' "$manifest" > "$projected_manifest"
+            mv "$projected_manifest" "$manifest"
+            test "$(jq '
+              [.surfaces[]
+                | select(.id == "cli.machine-stream.input-attachment")]
+              | length
+            ' "$manifest")" = 0
+
+            git -C "$PROJECTION_ROOT" rm --quiet -- \
+              crates/cli/tests/golden/input_attachment_stream_v5.jsonl
+            git -C "$PROJECTION_ROOT" checkout "$POLICY_SHA" -- \
+              crates/cli/src/main.rs crates/eval/src/contract.rs
+
+            projected_paths=$RUNNER_TEMP/core-policy-projected-paths
+            test ! -e "$projected_paths"
+            git -C "$PROJECTION_ROOT" diff --name-only HEAD -- > "$projected_paths"
+            diff -u <(printf '%s\n' \
+              crates/cli/src/main.rs \
+              crates/cli/tests/golden/input_attachment_stream_v5.jsonl \
+              crates/eval/src/contract.rs \
+              governance/schema-compatibility.json) "$projected_paths"
+            test -z "$(git -C "$PROJECTION_ROOT" status --porcelain=v1 \
+              --untracked-files=all | grep '^??' || true)"
+
+            candidate_root=$PROJECTION_ROOT
+            compatibility_active=true
+          fi
+
+          {
+            echo "active=$compatibility_active"
+            echo "candidate-root=$candidate_root"
+          } >> "$GITHUB_OUTPUT"
       - name: build trusted base validator
         working-directory: ${{ runner.temp }}/core-policy-base
         run: cargo build --locked -p core-xtask
       - name: validate candidate ownership contract
         env:
+          CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
-        run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries check'
+        run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check'
       - name: collect current GitHub reviews
         env:
           GH_TOKEN: ${{ github.token }}
@@ -54,7 +183,19 @@ jobs:
       - name: enforce registered human review groups
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CANDIDATE_ROOT: ${{ steps.compatibility.outputs.candidate-root }}
           POLICY_BIN: ${{ runner.temp }}/core-policy-base/target/debug/core-xtask
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           REVIEWS_FILE: ${{ runner.temp }}/reviews.json
-        run: '"$POLICY_BIN" --repo "$GITHUB_WORKSPACE" boundaries check-reviews --base "$BASE_SHA"'
+        run: '"$POLICY_BIN" --repo "$CANDIDATE_ROOT" boundaries check-reviews --base "$BASE_SHA"'
+      - name: build one-time compatibility validator
+        if: steps.compatibility.outputs.active == 'true'
+        working-directory: ${{ runner.temp }}/core-policy-compatibility
+        run: cargo build --locked -p core-xtask
+      - name: validate real candidate with one-time compatibility policy
+        if: steps.compatibility.outputs.active == 'true'
+        env:
+          COMPATIBILITY_POLICY_BIN: ${{ runner.temp }}/core-policy-compatibility/target/debug/core-xtask
+        run: >-
+          "$COMPATIBILITY_POLICY_BIN" --repo "$GITHUB_WORKSPACE"
+          boundaries check

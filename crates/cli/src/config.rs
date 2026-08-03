@@ -507,7 +507,8 @@ impl FileConfig {
     /// Load the USER config `~/.core/config.json` (trust-by-origin). ONLY the user's own config may
     /// declare command-spawning entries — `mcp_servers` spawns a subprocess at startup, so a project/
     /// cloned-repo config must never supply them (else cloning a hostile repo = RCE). Mirrors
-    /// `Hooks::load_user`. Absent HOME/file → default; malformed → error (fail loud on your own config).
+    /// `Hooks::load_user`. Absent operator home/file → default; malformed → error (fail loud on
+    /// your own config).
     pub fn load_user() -> anyhow::Result<FileConfig> {
         let Some(path) = user_config_path() else {
             return Ok(FileConfig::default());
@@ -525,12 +526,14 @@ impl FileConfig {
 ///
 /// `CORE_CONFIG_HOME` takes precedence so a container image, a CI runner, or a `sudo -E`
 /// invocation with no `HOME` is still configurable; without it there is no supported way to point
-/// Core at a config at all in those environments.
+/// Core at a config at all in those environments. Otherwise the one operator-home resolution in
+/// `core_protocol::home::operator` decides, so a native Windows process with only `USERPROFILE`
+/// (or `HOMEDRIVE` + `HOMEPATH`) resolves the same `.core` root the rest of the binary uses.
 pub(crate) fn config_home() -> Option<std::path::PathBuf> {
     std::env::var_os("CORE_CONFIG_HOME")
         .filter(|value| !value.is_empty())
-        .or_else(|| std::env::var_os("HOME").filter(|value| !value.is_empty()))
         .map(std::path::PathBuf::from)
+        .or_else(core_protocol::home::operator)
 }
 
 /// Absolute path of the operator-owned user config, if a config root is resolvable.

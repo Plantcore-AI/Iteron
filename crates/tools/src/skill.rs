@@ -32,8 +32,10 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                 if name.is_empty() {
                     return err_result(id, "use_skill needs a `name`".into());
                 }
-                let user = user_skills_dir().unwrap_or_default();
-                let catalog = SkillCatalog::discover(&user, &root);
+                let catalog = match user_skills_dir() {
+                    Some(user) => SkillCatalog::discover(&user, &root),
+                    None => SkillCatalog::discover_without_user(&root),
+                };
                 match catalog.get(&name) {
                     Some(skill) => {
                         let trust = skill.trust;

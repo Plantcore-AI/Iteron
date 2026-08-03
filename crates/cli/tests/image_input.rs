@@ -1,5 +1,3 @@
-#![cfg(unix)]
-
 #[path = "../src/image_input.rs"]
 mod image_input;
 
@@ -407,8 +405,14 @@ fn fifo_devices_and_symlinks_are_rejected_before_any_image_read() {
 
 #[test]
 fn explicit_path_parser_accepts_only_a_whole_local_image_reference() {
+    #[cfg(unix)]
     let absolute_path = "/tmp/photo.PNG";
+    #[cfg(windows)]
+    let absolute_path = r"C:\tmp\photo.PNG";
+    #[cfg(unix)]
     let spaced_absolute_path = "/tmp/My Photo.jpg";
+    #[cfg(windows)]
+    let spaced_absolute_path = r"C:\tmp\My Photo.jpg";
 
     let absolute = parse_explicit_image_path(absolute_path).unwrap().unwrap();
     assert_eq!(absolute.path(), Path::new(absolute_path));
@@ -419,6 +423,7 @@ fn explicit_path_parser_accepts_only_a_whole_local_image_reference() {
         parse_explicit_image_path(&quoted).unwrap().unwrap().path(),
         Path::new(spaced_absolute_path)
     );
+    #[cfg(not(windows))]
     assert_eq!(
         parse_explicit_image_path("My\\ Photo.webp")
             .unwrap()
@@ -426,12 +431,33 @@ fn explicit_path_parser_accepts_only_a_whole_local_image_reference() {
             .path(),
         Path::new("My Photo.webp")
     );
+    #[cfg(unix)]
     assert_eq!(
         parse_explicit_image_path("file:///tmp/a%20b.gif")
             .unwrap()
             .unwrap()
             .path(),
         Path::new("/tmp/a b.gif")
+    );
+    #[cfg(windows)]
+    assert_eq!(
+        parse_explicit_image_path("file:///C:/tmp/a%20b.gif")
+            .unwrap()
+            .unwrap()
+            .path(),
+        Path::new(r"C:\tmp\a b.gif")
+    );
+    #[cfg(windows)]
+    assert!(
+        parse_explicit_image_path(r"\\server\share\implicit-auth.png")
+            .unwrap()
+            .is_none()
+    );
+    #[cfg(windows)]
+    assert!(
+        parse_explicit_image_path("//server/share/implicit-auth.png")
+            .unwrap()
+            .is_none()
     );
     assert!(parse_explicit_image_path("photo.png").unwrap().is_some());
     assert!(parse_explicit_image_path("./photo.png").unwrap().is_some());
@@ -461,7 +487,10 @@ fn explicit_path_parser_accepts_only_a_whole_local_image_reference() {
 
 #[test]
 fn image_mentions_are_explicit_bounded_and_do_not_match_email_or_prose() {
+    #[cfg(unix)]
     let first = "/tmp/a.png";
+    #[cfg(windows)]
+    let first = "C:/tmp/a.png";
     let text = format!(
         "compare @image({first}) with @./b.webp; then @final.gif. \
                 ignore person@example.png and @image please"

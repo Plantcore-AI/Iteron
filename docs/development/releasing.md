@@ -27,13 +27,13 @@ be green before the Owner creates the tag.
 Every platform archive contains the `core` or `core.exe` binary, `LICENSE`, `README.md`, audited
 third-party licenses and notices, an SPDX SBOM, and build metadata. The release
 also publishes `SHA256SUMS`, a versioned machine-readable manifest, a receipt containing the
-SHA-256 and size of the final canonical manifest bytes, the installer, and GitHub artifact
+SHA-256 and size of the final canonical manifest bytes, the POSIX installer, and GitHub artifact
 attestations. CLI stream versions come from each built binary's `--machine-contract` report and
 remain distinct from the resident queue `protocol_version`.
 
 The first supported targets are documented by the release workflow and
-installation guide. A target enters the installer allowlist only after a native
-runner builds, tests, packages, and installs it successfully.
+installation guide. A target enters the public distribution matrix only after a
+native runner builds, tests, packages, and smoke-tests it successfully.
 
 ## Publication order
 
