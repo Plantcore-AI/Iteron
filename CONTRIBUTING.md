@@ -110,6 +110,66 @@ cargo test --workspace --all-targets --locked
 The [testing guide](docs/development/testing.md) explains focused crate tests,
 all-target tests, PTY evidence, sandbox tests, network opt-ins, and CI parity.
 
+### Required checks run off GitHub Actions
+
+Most gates no longer run on a GitHub-hosted runner. They need no property a
+hosted runner provides, so they run on hardware the project already owns and
+publish the same status contexts from there:
+
+```sh
+./release-tools/local_gate.sh macos   # rust / macos-15
+./release-tools/local_gate.sh linux   # rust / ubuntu-24.04, boundary / validate,
+                                      # supply / validate, docs / strict-build
+```
+
+A runner does not need a credential. If the machine running a lane is shared, or
+has no `gh`, record the run there and publish it from a machine that is
+authenticated — a `statuses: write` token on a shared box would let anyone on it
+mint a green check for this repository:
+
+```sh
+runner$ ./release-tools/local_gate.sh linux --emit /tmp/gate.json
+local$  scp runner:/tmp/gate.json . && ./release-tools/local_gate.sh --publish gate.json
+```
+
+The linux lane's `boundaries check-pr` reads the pull request body, so run that
+lane **after** opening the pull request. Where `gh` is available the body is
+fetched automatically; where it is not, hand it over explicitly:
+
+```sh
+local$  gh pr view --json body --jq .body > /tmp/body.txt
+runner$ GATE_PR_BODY_FILE=/tmp/body.txt ./release-tools/local_gate.sh linux --emit /tmp/gate.json
+```
+
+The lane fails rather than skipping that check. `boundary / validate` is a
+required context, and publishing it after quietly dropping one of its checks
+would be exactly the silent downgrade this arrangement exists to prevent.
+
+A branch ruleset matches a required check by context *name*, not by producer, so
+the protection is unchanged. Two consequences you need to know about, because
+neither is discoverable from a red pull request:
+
+- **A pull request nobody gates stays blocked.** The contexts never appear, so
+  the merge button stays disabled. That is the design, not a broken repository.
+  If you do not have a machine that can run a lane, say so on the pull request
+  and a maintainer will run it for you.
+- **A published status is executor-attested, not machine-enforced.** Anyone with
+  push access could post a green status without running anything. The status
+  description records the host and the commit that was actually tested, so this
+  is auditable after the fact, but it is weaker than a hosted runner and is
+  accepted deliberately.
+
+`review / required-humans` still runs on Actions: it reads the pull request's own
+review state, which has no local equivalent. The Windows lane will run there too,
+since Windows is the one platform this project cannot self-host.
+
+`ci.yml` retains every lane behind `workflow_dispatch`. It is the reference
+definition these local lanes mirror, and the fallback when hosted capacity is
+available. Note that a manual dispatch skips the base-relative boundary steps,
+which are guarded on `pull_request`/`merge_group`; `local_gate.sh linux`
+reproduces those against `git merge-base origin/main HEAD`, including building
+the validator from the base commit so a change cannot loosen the rule judging it.
+
 ### Evidence by change type
 
 | Area | Minimum evidence |

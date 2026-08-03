@@ -1,0 +1,351 @@
+#!/usr/bin/env bash
+# Run a CI lane off GitHub Actions and report the result as a commit status.
+#
+# The org's Actions minutes are a scarce shared resource, so the gates that do not need a
+# GitHub-hosted runner run on hardware we already own: the macOS lane on a developer Mac before
+# push, the Linux lane on the DGX box. The branch ruleset still requires the same status
+# contexts, and a ruleset matches a context by NAME rather than by producer, so reporting the
+# same names here keeps the protection intact without burning a runner minute.
+#
+#   ./release-tools/local_gate.sh macos                    # run + publish
+#   ./release-tools/local_gate.sh linux --emit out.json    # run, record, publish nothing
+#   ./release-tools/local_gate.sh --publish out.json       # publish a recorded run
+#   ./release-tools/local_gate.sh linux --dry-run          # run, publish nothing, record nothing
+#
+# The emit/publish split exists so a runner does not need a token. The Linux box is shared, and a
+# `statuses: write` credential there would let any of its users mint a green check for this
+# repository; it also has no `gh` installed. So it records a result and an authenticated machine
+# publishes it:
+#
+#   linux$ ./release-tools/local_gate.sh linux --emit /tmp/gate.json
+#   mac$   scp linux:/tmp/gate.json . && ./release-tools/local_gate.sh --publish gate.json
+#
+# What this trades away, stated plainly because it must not be discovered later:
+#
+#   1. A reported status is only as trustworthy as whoever holds the token. Anyone with push
+#      access can post a green status without running anything. This moves the gate from
+#      machine-enforced to executor-attested. The audit trail is the status `description`, which
+#      records the host and the commit actually tested.
+#   2. A pull request nobody runs this for simply never acquires the contexts, so it stays
+#      blocked. That is deliberate, not a malfunction, and CONTRIBUTING says so.
+#
+# `review / required-humans` is intentionally NOT reported here: it reads the pull request's own
+# review state, which does not exist locally. It stays on GitHub, as does the Windows lane.
+
+set -euo pipefail
+
+# Git exports its internal environment to hooks: GIT_DIR, GIT_INDEX_FILE, GIT_WORK_TREE,
+# GIT_QUARANTINE_PATH and friends. Those are inherited by everything this script runs, and the
+# test suite creates throwaway repositories with `git init`. With GIT_DIR set, every one of those
+# is redirected at the REAL repository instead of its fixture directory, which during `git push`
+# shows up as
+#
+#     error: could not lock config file .../core/.git/config: File exists
+#     fatal: could not set 'core.repositoryformatversion' to '0'
+#
+# and a batch of unrelated-looking test failures. The lock is the only reason those writes did not
+# land in the live repository, so scrub the whole namespace rather than the variables seen so far.
+while IFS='=' read -r name _; do
+  case "$name" in
+    GIT_*) unset "$name" ;;
+  esac
+done < <(env)
+
+readonly REPO_SLUG="${GATE_REPO:-Plantcore-AI/core}"
+readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+usage() {
+  printf 'usage: %s <macos|linux> [--dry-run] [--emit FILE]\n' "${BASH_SOURCE[0]}" >&2
+  printf '       %s --publish FILE\n' "${BASH_SOURCE[0]}" >&2
+  exit 2
+}
+
+lane=""
+dry_run=0
+emit=""
+publish=""
+while (( $# )); do
+  case "$1" in
+    macos|linux) [[ -z "$lane" ]] || usage; lane="$1" ;;
+    --dry-run) dry_run=1 ;;
+    --emit) shift; emit="${1:-}"; [[ -n "$emit" ]] || usage ;;
+    --publish) shift; publish="${1:-}"; [[ -n "$publish" ]] || usage ;;
+    *) printf 'unknown argument: %s\n' "$1" >&2; usage ;;
+  esac
+  shift
+done
+
+# Publishing a recorded run is a separate mode: it needs a token but no toolchain, no checkout
+# state, and no gates.
+if [[ -n "$publish" ]]; then
+  [[ -z "$lane" ]] || usage
+  [[ -r "$publish" ]] || { printf 'cannot read %s\n' "$publish" >&2; exit 2; }
+  python3 - "$publish" "$REPO_SLUG" "${GATE_PUBLISH_WAIT:-0}" <<'PY'
+import json, subprocess, sys, time
+path, slug, wait = sys.argv[1], sys.argv[2], int(sys.argv[3])
+record = json.load(open(path))
+sha, host, lane = record["sha"], record["host"], record["lane"]
+
+# A status can only be attached to a commit the remote already has. When this runs straight out
+# of a pre-push hook the push has not happened yet, so wait for the commit to appear rather than
+# failing with a 422. If it never appears the push failed, and publishing nothing is correct.
+deadline = time.monotonic() + wait
+while True:
+    probe = subprocess.run(
+        ["gh", "api", f"repos/{slug}/commits/{sha}", "--silent"],
+        capture_output=True,
+    )
+    if probe.returncode == 0:
+        break
+    if time.monotonic() >= deadline:
+        print(f"commit {sha[:8]} is not on the remote; publishing nothing", file=sys.stderr)
+        sys.exit(1)
+    time.sleep(5)
+
+failed = 0
+for context, state in record["results"].items():
+    if state != "success":
+        failed = 1
+    description = f"{lane} lane on {host} @ {sha[:8]}"[:139]
+    subprocess.run(
+        ["gh", "api", f"repos/{slug}/statuses/{sha}", "--method", "POST",
+         "-f", f"state={state}", "-f", f"context={context}",
+         "-f", f"description={description}", "--silent"],
+        check=True,
+    )
+    print(f"  {context:<26} {state}")
+sys.exit(failed)
+PY
+  exit $?
+fi
+
+[[ -n "$lane" ]] || usage
+
+# Report against the commit that was actually tested, not a moving branch name.
+readonly SHA="${GATE_SHA:-$(git rev-parse HEAD)}"
+readonly HOST="$(uname -s)/$(uname -m) $(hostname -s 2>/dev/null || echo unknown)"
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  printf 'refusing to gate a dirty worktree: the status would name a commit that was not what ran\n' >&2
+  git status --short >&2
+  exit 1
+fi
+
+post_status() {
+  local context="$1" state="$2" description="$3"
+  if (( dry_run )) || [[ -n "$emit" ]]; then
+    printf '  [not published] %-26s %s\n' "$context" "$state"
+    return 0
+  fi
+  # A failure to publish must not be mistaken for a passing gate.
+  if ! gh api "repos/${REPO_SLUG}/statuses/${SHA}" \
+      --method POST \
+      -f state="$state" \
+      -f context="$context" \
+      -f description="${description:0:139}" \
+      --silent; then
+    printf 'could not publish status %s for %s\n' "$context" "$SHA" >&2
+    return 1
+  fi
+}
+
+declare -a CONTEXTS
+if [[ "$lane" == macos ]]; then
+  CONTEXTS=("rust / macos-15")
+else
+  CONTEXTS=(
+    "rust / ubuntu-24.04"
+    "boundary / validate"
+    "supply / validate"
+    "docs / strict-build"
+    "supply / dependency audit"
+  )
+fi
+
+printf '== gate lane=%s sha=%s host=%s\n' "$lane" "${SHA:0:8}" "$HOST"
+for context in "${CONTEXTS[@]}"; do
+  post_status "$context" pending "queued on ${HOST}"
+done
+
+# Each gate records its own outcome so one failure does not hide the rest.
+#
+# Deliberately an indexed array parallel to CONTEXTS rather than an associative one: macOS ships
+# bash 3.2, where `declare -A` is a syntax error, and the macOS lane has to run on the Mac.
+#
+# `run_gate` must ALWAYS succeed: the script runs under `set -e`, so a non-zero return here would
+# abort before the publishing loop and strand every context on `pending` — the exact opposite of
+# recording a failure. A gate's verdict travels in RESULTS, never in the exit status.
+RESULTS=()
+for _ in "${CONTEXTS[@]}"; do RESULTS+=(""); done
+
+index_of() {
+  local needle="$1" i
+  for i in "${!CONTEXTS[@]}"; do
+    [[ "${CONTEXTS[$i]}" == "$needle" ]] && { printf '%s' "$i"; return 0; }
+  done
+  return 1
+}
+
+result_of() {
+  local i
+  i="$(index_of "$1")" || return 1
+  printf '%s' "${RESULTS[$i]}"
+}
+
+run_gate() {
+  local context="$1"; shift
+  local i
+  i="$(index_of "$context")" || { printf 'unknown context %s\n' "$context" >&2; return 0; }
+  printf '\n-- %s\n' "$context"
+  if "$@"; then
+    RESULTS[$i]=success
+    printf -- '-- %s: PASS\n' "$context"
+  else
+    RESULTS[$i]=failure
+    printf -- '-- %s: FAIL\n' "$context"
+  fi
+  return 0
+}
+
+# A crash between the `pending` posts and the publishing loop would otherwise leave the contexts
+# pending forever, which reads as "still running" rather than "this run died".
+publish_pending_as_failure() {
+  local code=$?
+  (( code == 0 )) && return 0
+  printf '\ngate aborted (exit %s); marking unresolved contexts failed\n' "$code" >&2
+  local context
+  for context in "${CONTEXTS[@]}"; do
+    [[ -n "$(result_of "$context" || true)" ]] && continue
+    post_status "$context" failure "gate aborted on ${HOST} @ ${SHA:0:8}" || true
+  done
+}
+trap publish_pending_as_failure EXIT
+
+rust_lane() {
+  cargo fmt --all -- --check \
+    && cargo check --workspace --all-targets --locked \
+    && cargo clippy --workspace --all-targets --locked -- -D warnings \
+    && cargo test --workspace --all-targets --locked
+}
+
+boundary_lane() {
+  # Mirrors the boundary job, including the part that is easy to leave out and thereby ship a
+  # weaker gate under the same context name.
+  #
+  # The workflow does NOT validate a candidate with the candidate's own validator: it builds
+  # core-xtask from the merge base and runs THAT binary against the working tree, so a change
+  # cannot loosen the rule that is judging it. Reproduce that here or do not claim this context.
+  #
+  # Needs full history: the W1 freeze commit is resolved through `git rev-parse`.
+  set -o pipefail
+  cargo run --locked -p core-xtask -- conformance kernel || return 1
+  cargo run --locked -p core-xtask -- boundaries check || return 1
+
+  local base
+  base="$(git merge-base "${GATE_BASE_REF:-origin/main}" HEAD)" || return 1
+  if [[ "$base" == "$(git rev-parse HEAD)" ]]; then
+    printf 'HEAD is the base; no base-relative boundary checks to run\n'
+    return 0
+  fi
+  printf 'base-relative checks against %s\n' "${base:0:8}"
+
+  local policy_root="${TMPDIR:-/tmp}/core-policy-base-${base:0:12}"
+  if [[ ! -d "$policy_root" ]]; then
+    git worktree add --detach "$policy_root" "$base" >/dev/null || return 1
+  fi
+  # The base validator needs its OWN target directory. An ambient CARGO_TARGET_DIR is shared with
+  # the candidate build, so without this the base `core-xtask` overwrites the candidate's binary
+  # in a directory both builds treat as theirs — and the validator that judges the change would
+  # be whichever one was compiled last.
+  local policy_target="$policy_root/.gate-target"
+  local policy_bin="$policy_target/debug/core-xtask"
+  ( cd "$policy_root" && CARGO_TARGET_DIR="$policy_target" cargo build --locked -p core-xtask ) \
+    || return 1
+  [[ -x "$policy_bin" ]] || { printf 'base validator did not build at %s\n' "$policy_bin" >&2; return 1; }
+
+  "$policy_bin" --repo "$ROOT" boundaries check-base --base "$base" || return 1
+  "$policy_bin" --repo "$ROOT" schema-compat check-base --base "$base" || return 1
+  "$policy_bin" --repo "$ROOT" boundaries check || return 1
+
+  # `check-pr` validates that the pull request BODY declares the boundaries and overlays the diff
+  # touches, so it needs text that only exists once a pull request does. The workflow guards this
+  # same step on `pull_request`, so requiring one here is parity rather than an extra hurdle.
+  #
+  # It is deliberately not skipped-and-still-green: this context is required by the ruleset, and
+  # publishing it after quietly dropping one of its checks is the silent downgrade this whole
+  # lane exists to avoid.
+  local body_file="${GATE_PR_BODY_FILE:-}"
+  if [[ -z "$body_file" && -z "${PR_BODY:-}" ]] && command -v gh >/dev/null; then
+    body_file="$(mktemp)"
+    if ! gh pr view --repo "$REPO_SLUG" --json body --jq .body > "$body_file" 2>/dev/null \
+       || [[ ! -s "$body_file" ]]; then
+      rm -f "$body_file"
+      body_file=""
+    fi
+  fi
+  if [[ -n "$body_file" ]]; then
+    PR_BODY="$(cat "$body_file")"
+  fi
+  if [[ -z "${PR_BODY:-}" ]]; then
+    printf 'cannot run `boundaries check-pr`: no pull request body available.\n' >&2
+    printf 'Open the pull request first, or pass one explicitly:\n' >&2
+    printf '  gh pr view --json body --jq .body > /tmp/body.txt\n' >&2
+    printf '  GATE_PR_BODY_FILE=/tmp/body.txt %s linux\n' "${BASH_SOURCE[0]}" >&2
+    return 1
+  fi
+  PR_BODY="$PR_BODY" "$policy_bin" --repo "$ROOT" boundaries check-pr --base "$base" || return 1
+}
+
+docs_lane() {
+  # Hash-locked, same as the workflow. The venv is cached next to the target dir, not in the tree.
+  local venv="${GATE_DOCS_VENV:-${TMPDIR:-/tmp}/core-docs-venv}"
+  if [[ ! -x "$venv/bin/mkdocs" ]]; then
+    python3 -m venv "$venv" || return 1
+    "$venv/bin/python" -m pip install --disable-pip-version-check --require-hashes \
+      -r requirements-docs.lock >/dev/null || return 1
+  fi
+  NO_MKDOCS_2_WARNING=true PYTHONUTF8=1 "$venv/bin/mkdocs" build --strict --clean
+}
+
+if [[ "$lane" == macos ]]; then
+  run_gate "rust / macos-15" rust_lane
+else
+  run_gate "rust / ubuntu-24.04" rust_lane
+  run_gate "boundary / validate" boundary_lane
+  run_gate "supply / validate" bash release-tools/validate.sh
+  run_gate "docs / strict-build" docs_lane
+  # No host argument: the script detects its own. The workflow passes `linux-x86_64` because a
+  # GitHub runner is x86_64; naming that here would fetch an x86_64 `cargo-audit` onto whatever
+  # this box actually is, and it fails its own version pin rather than running.
+  run_gate "supply / dependency audit" bash release-tools/audit_dependencies.sh
+fi
+
+printf '\n== results\n'
+failed=0
+for context in "${CONTEXTS[@]}"; do
+  # `|| true`: under `set -e` a lookup miss here would abort mid-publish.
+  state="$(result_of "$context" || true)"; state="${state:-failure}"
+  [[ "$state" == success ]] || failed=1
+  post_status "$context" "$state" "${lane} lane on ${HOST} @ ${SHA:0:8}"
+  printf '  %-26s %s\n' "$context" "$state"
+done
+
+if [[ -n "$emit" ]]; then
+  # A gate that cannot record its verdict has not produced evidence, so this failing is fatal
+  # even when every gate passed.
+  {
+    printf '{"sha":"%s","host":"%s","lane":"%s","results":{' "$SHA" "$HOST" "$lane"
+    sep=""
+    for context in "${CONTEXTS[@]}"; do
+      emit_state="$(result_of "$context" || true)"
+      printf '%s"%s":"%s"' "$sep" "$context" "${emit_state:-failure}"
+      sep=","
+    done
+    printf '}}\n'
+  } > "$emit" || { printf 'could not write %s\n' "$emit" >&2; exit 1; }
+  printf '\nrecorded to %s; publish it from a machine with a token:\n' "$emit"
+  printf '  ./release-tools/local_gate.sh --publish %s\n' "$(basename "$emit")"
+fi
+
+exit "$failed"
