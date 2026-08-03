@@ -147,6 +147,54 @@ impl ProgressSink for StdoutProgressSink {
     }
 }
 
+/// A [`ProgressSink`] that keeps only the reasons agents DEGRADED — the in-turn (`Workflow` tool)
+/// counterpart of [`StdoutProgressSink`], which has no terminal to render to.
+///
+/// A degraded `agent()` resolves to JS `null`, and the idiomatic `parallel(...).filter(Boolean)`
+/// then removes it from the script's return value. Without this the model receives a plausible
+/// short result and no indication that an aggregate ceiling, a provider error, or a budget
+/// exhaustion silently removed agents from its run.
+#[derive(Default)]
+pub struct DegradedAgentSink {
+    reasons: std::sync::Mutex<Vec<String>>,
+}
+
+impl DegradedAgentSink {
+    pub fn new() -> Self {
+        DegradedAgentSink::default()
+    }
+
+    /// One line per degraded agent, in completion order.
+    pub fn reasons(&self) -> Vec<String> {
+        self.reasons
+            .lock()
+            .map(|reasons| reasons.clone())
+            .unwrap_or_default()
+    }
+}
+
+impl ProgressSink for DegradedAgentSink {
+    fn emit(&self, event: ProgressEvent) {
+        let ProgressEvent::AgentFinished {
+            index,
+            label,
+            state,
+            error,
+            ..
+        } = event
+        else {
+            return;
+        };
+        if matches!(state, WorkflowState::Done) {
+            return;
+        }
+        if let Ok(mut reasons) = self.reasons.lock() {
+            let detail = error.unwrap_or_else(|| "error".into());
+            reasons.push(format!("#{index} {label}: {detail}"));
+        }
+    }
+}
+
 /// A [`ProgressSink`] that folds every engine event into a shared live [`crate::block::WorkflowRunCard`]
 /// — the TTY counterpart of [`StdoutProgressSink`]. Reading the card each frame + this upsert IS the
 /// design §3.2 store step; the live loop below drives the render.
@@ -469,4 +517,171 @@ pub fn list_runs(workflows_dir: &Path) -> Vec<RunListing> {
             .then(b.run_id.cmp(&a.run_id))
     });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_workflow::{RunId, RunReport};
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "core-cli-workflow-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn a_run_that_only_wrote_a_journal_lists_as_an_unnamed_running_stub() {
+        // The in-turn (`Workflow` tool) path used to do exactly this: write its journal into the
+        // directory `core workflow list` enumerates and never call either persistence helper. This
+        // pins what that looked like, so the assertion below is a real difference.
+        let workflows_dir = scratch_dir("orphan");
+        let run = run_dir(&workflows_dir, "wf_orphan");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("journal.jsonl"), b"").unwrap();
+
+        let listed = list_runs(&workflows_dir);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "workflow");
+        assert_eq!(listed[0].model, "");
+        assert_eq!(listed[0].status, "running");
+
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+    }
+
+    #[test]
+    fn a_persisted_run_lists_with_its_name_model_and_terminal_state() {
+        let workflows_dir = scratch_dir("persisted");
+        let manifest = RunManifest {
+            run_id: "wf_persisted".into(),
+            name: "triage".into(),
+            args: serde_json::json!({ "topic": "flaky test" }),
+            provider_id: "anthropic".into(),
+            model: "core-model-1".into(),
+            created_at: 42,
+        };
+        persist_inputs(&workflows_dir, &manifest, "export const meta = {};").unwrap();
+        std::fs::write(
+            run_dir(&workflows_dir, "wf_persisted").join("journal.jsonl"),
+            b"",
+        )
+        .unwrap();
+        persist_result(
+            &workflows_dir,
+            "wf_persisted",
+            &RunReport {
+                run_id: RunId::new("wf_persisted"),
+                value: serde_json::json!(["a", "b"]),
+                stopped: false,
+                cache_hits: 0,
+                cache_misses: 2,
+            },
+        )
+        .unwrap();
+
+        let listed = list_runs(&workflows_dir);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "triage");
+        assert_eq!(listed[0].model, "core-model-1");
+        assert_eq!(
+            listed[0].status, "done",
+            "a completed run must reach a terminal state, not stay `running` forever"
+        );
+        assert_eq!(
+            load_script(&workflows_dir, "wf_persisted").as_deref(),
+            Some("export const meta = {};"),
+            "the inputs sidecar makes the run re-launchable"
+        );
+
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+    }
+
+    #[test]
+    fn a_run_whose_join_failed_still_settles_to_a_terminal_state() {
+        // The in-turn path returns early when the engine hands back an error — now a reachable
+        // path, because the journal refuses a second writer for a colliding run id instead of
+        // interleaving into it. `persist_inputs` has ALREADY created the directory `list`
+        // enumerates, so a failure that skipped `persist_result` would sit there as a stub
+        // forever: the same permanent pollution as never persisting at all.
+        let workflows_dir = scratch_dir("failed");
+        let manifest = RunManifest {
+            run_id: "wf_failed".into(),
+            name: "triage".into(),
+            args: serde_json::Value::Null,
+            provider_id: "anthropic".into(),
+            model: "core-model-1".into(),
+            created_at: 7,
+        };
+        persist_inputs(&workflows_dir, &manifest, "export const meta = {};").unwrap();
+        assert_eq!(
+            list_runs(&workflows_dir)[0].status,
+            "pending",
+            "inputs alone are not a terminal state"
+        );
+
+        persist_result(
+            &workflows_dir,
+            "wf_failed",
+            &RunReport {
+                run_id: RunId::new("wf_failed"),
+                value: serde_json::json!({ "error": "Workflow run failed: journal locked" }),
+                stopped: true,
+                cache_hits: 0,
+                cache_misses: 0,
+            },
+        )
+        .unwrap();
+
+        let listed = list_runs(&workflows_dir);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "triage");
+        assert_eq!(listed[0].model, "core-model-1");
+        assert_eq!(
+            listed[0].status, "stopped",
+            "a run that failed to join must reach a terminal state, not linger as running"
+        );
+
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+    }
+
+    #[test]
+    fn the_degraded_sink_keeps_only_the_agents_that_did_not_complete() {
+        let sink = DegradedAgentSink::new();
+        sink.emit(ProgressEvent::AgentFinished {
+            index: 1,
+            label: "ok".into(),
+            state: WorkflowState::Done,
+            tokens: 10,
+            tool_calls: 0,
+            duration_ms: 5,
+            result_preview: None,
+            last_tool_summary: None,
+            error: None,
+        });
+        sink.emit(ProgressEvent::AgentFinished {
+            index: 2,
+            label: "starved".into(),
+            state: WorkflowState::Error,
+            tokens: 0,
+            tool_calls: 0,
+            duration_ms: 1,
+            result_preview: None,
+            last_tool_summary: None,
+            error: Some("agent call ceiling 1 reached".into()),
+        });
+        sink.emit(ProgressEvent::Log {
+            message: "narration".into(),
+        });
+
+        assert_eq!(
+            sink.reasons(),
+            vec!["#2 starved: agent call ceiling 1 reached".to_string()],
+            "an exhausted budget must stay visible instead of being filtered away as a null"
+        );
+    }
 }

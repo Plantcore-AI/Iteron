@@ -10,10 +10,13 @@
 //!
 //! This is a deliberately lightweight writer, NOT the hash-chained `core-record` rollout — resume is
 //! keyed by content hash, not `Seq`, so the heavier format buys nothing here (design §6). It does
-//! reuse the rollout's exclusive-append discipline via a single `Mutex<File>` opened in append mode.
+//! reuse the rollout's exclusive-append discipline: the OS-level exclusive lock `Rollout::open`
+//! takes, held for the journal's whole lifetime, PLUS the `Mutex<File>` that serializes this
+//! process's own writers. The process-local mutex alone would let a second process (or a second
+//! in-turn run that collided on a run id) interleave its lines into the same file.
 
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -147,6 +150,11 @@ impl Journal {
     /// Open a journal. `path` (if set) is this run's `journal.jsonl`, created (with parents) and
     /// opened for append. `resume` (if set) is a prior run's `journal.jsonl` whose records are loaded
     /// as the cache — the resume replay source. A missing/short resume file loads as empty (fresh).
+    ///
+    /// The append sink takes the same OS-level exclusive lock `Rollout::open` takes, so a second
+    /// writer for the same run is REFUSED (`WouldBlock`) rather than silently interleaving its
+    /// append stream into another run's replay evidence. The lock is released when the returned
+    /// `Journal` (hence the `File`) drops.
     pub fn open(path: Option<PathBuf>, resume: Option<PathBuf>) -> io::Result<Self> {
         let mut cache = HashMap::new();
         if let Some(resume_path) = resume {
@@ -157,7 +165,22 @@ impl Journal {
                 if let Some(parent) = p.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                Some(OpenOptions::new().create(true).append(true).open(&p)?)
+                let file = OpenOptions::new().create(true).append(true).open(&p)?;
+                match file.try_lock() {
+                    Ok(()) => {}
+                    Err(TryLockError::WouldBlock) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            format!(
+                                "workflow journal {} already has an active writer; \
+                                 another run is using this run id",
+                                p.display()
+                            ),
+                        ));
+                    }
+                    Err(TryLockError::Error(source)) => return Err(source),
+                }
+                Some(file)
             }
             None => None,
         };
@@ -349,6 +372,36 @@ mod tests {
         );
         assert!(journal.get("v2:never").is_none());
         assert!(journal.flush().is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_second_writer_for_the_same_run_is_refused_not_interleaved() {
+        let dir = std::env::temp_dir().join(format!(
+            "core-workflow-journal-lock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("journal.jsonl");
+
+        let held = Journal::open(Some(path.clone()), None).expect("first writer");
+        match Journal::open(Some(path.clone()), None) {
+            Ok(_) => panic!("a second writer for the same run must be refused, not interleaved"),
+            Err(error) => assert_eq!(
+                error.kind(),
+                io::ErrorKind::WouldBlock,
+                "contention is reported as WouldBlock, like the rollout's WriterBusy"
+            ),
+        }
+
+        // The lock is the file's, so it is released when the journal drops — a later run of the
+        // same id (a resume) still opens.
+        drop(held);
+        Journal::open(Some(path.clone()), None).expect("writer after the first one drops");
 
         let _ = fs::remove_dir_all(&dir);
     }
