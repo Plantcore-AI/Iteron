@@ -28,9 +28,12 @@ pub(crate) use retry::{RetryConfig, load_retry_environment, resolve_retry_policy
 pub(crate) use schema::{FILE_CONFIG_SCHEMA_VERSION, FileConfigSchemaError};
 
 #[derive(Debug, Serialize, Deserialize)]
-// `deny_unknown_fields` fails loud on a typo'd key (e.g. `max_turn`) instead of silently ignoring it —
-// a silently-dropped budget/security knob is a production footgun.
-#[serde(default, deny_unknown_fields)]
+// The TOP level is deliberately NOT `deny_unknown_fields`. One config is explicitly shared across
+// machines through dotfiles, so a decorative key written by a newer binary would otherwise brick
+// every older binary on the same machine rather than degrading. Unknown top-level keys are
+// collected, warned about once, and ignored. Strict rejection is retained exactly where a silently
+// dropped key would be a security or spend decision: `providers`, `mcp_servers`, and `hooks`.
+#[serde(default)]
 pub struct FileConfig {
     /// On-disk schema. Legacy files without this field are migrated from v0 before decoding.
     #[serde(default = "schema::current_version")]
@@ -75,6 +78,11 @@ pub struct FileConfig {
     /// config before the dedicated hook loader can read it, making every configured hook brick
     /// startup. Keep the raw command lists here; only the trusted user-config loader executes them.
     pub hooks: Option<BTreeMap<String, Vec<String>>>,
+    /// Top-level keys this binary does not know. Retained so the parser can WARN about each one
+    /// (a typo must still be visible) and so `core config set` round-trips a newer binary's field
+    /// instead of deleting it. Never consumed as configuration.
+    #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unknown: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for FileConfig {
@@ -97,6 +105,7 @@ impl Default for FileConfig {
             rate_cards: None,
             mcp_servers: None,
             hooks: None,
+            unknown: BTreeMap::new(),
         }
     }
 }
@@ -123,8 +132,71 @@ pub struct McpServerConfig {
     pub tools: core_mcp::McpToolFilter,
 }
 
-/// One operator-defined provider instance. Credentials remain indirect: Core reads the named
-/// environment variable at call time and never persists a plaintext key in configuration.
+/// Where one provider instance's credential comes from.
+///
+/// `key_env` alone could only ever name an environment variable, which cannot describe a hosted
+/// subscription token: such a token is issued to a file, carries an expiry, and rotates while
+/// Core is running. The tagged form says which of the two it is; the value itself is still never
+/// written into configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProviderCredential {
+    /// A process-environment variable name, read by the composition root.
+    Env { name: String },
+    /// An operator-owned credential file: either one bare token line, or
+    /// `{"token": "...", "expires_at_unix": <seconds>}`. Must be mode 0600.
+    File { path: String },
+}
+
+impl ProviderCredential {
+    /// Value-free display used by `/config`, `/status`, and `core auth status`.
+    pub fn display(&self) -> String {
+        match self {
+            Self::Env { name } => format!("env {name}"),
+            Self::File { path } => format!("file {path}"),
+        }
+    }
+
+    /// The environment variable name, when this credential is env-backed. Only names — never
+    /// values — leave configuration, and this is what the redaction set is built from.
+    pub fn env_name(&self) -> Option<&str> {
+        match self {
+            Self::Env { name } => Some(name),
+            Self::File { .. } => None,
+        }
+    }
+
+    fn validate(&self, provider_id: &str) -> Result<(), String> {
+        match self {
+            Self::Env { name } => {
+                if name.is_empty()
+                    || name.len() > 128
+                    || !name.bytes().all(|byte| {
+                        byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                    })
+                {
+                    return Err(format!(
+                        "provider `{provider_id}` credential env name must be an uppercase ASCII environment name"
+                    ));
+                }
+                Ok(())
+            }
+            Self::File { path } => {
+                if path.trim().is_empty() || path.len() > 4096 || path.contains('\0') {
+                    return Err(format!(
+                        "provider `{provider_id}` credential file path must be 1..=4096 bytes and contain no NUL"
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// One operator-defined provider instance. Credentials remain indirect: configuration names an
+/// environment variable or a credential file, never a plaintext key, and the named source is
+/// resolved on every turn (see `core_provider::CredentialSource`) so a token can rotate under a
+/// running process.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
@@ -137,7 +209,13 @@ pub struct ProviderConfig {
     pub error_profile: Option<String>,
     /// Full API root, including the provider's version/path prefix.
     pub api_root: String,
-    pub key_env: String,
+    /// DEPRECATED alias for `credential: {"type":"env","name":"..."}`. Every released v2 document
+    /// spells it this way, so it keeps loading verbatim. Adding an alias-preserving field is
+    /// additive and deliberately does NOT bump the schema version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<ProviderCredential>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Some compatible gateways do not expose `GET models`; keep this explicit.
@@ -177,6 +255,34 @@ pub struct ProviderModelCapabilities {
 
 fn default_true() -> bool {
     true
+}
+
+impl ProviderConfig {
+    /// Collapse the deprecated alias and the tagged field into one answer. Two spellings that
+    /// disagree are a contradiction about which credential a paid request uses, so they fail
+    /// closed rather than silently picking one.
+    pub fn resolved_credential(&self) -> Result<ProviderCredential, String> {
+        match (&self.credential, &self.key_env) {
+            (Some(credential), None) => Ok(credential.clone()),
+            (None, Some(name)) => Ok(ProviderCredential::Env {
+                name: name.clone(),
+            }),
+            (Some(credential), Some(name)) => {
+                if credential.env_name() == Some(name.as_str()) {
+                    Ok(credential.clone())
+                } else {
+                    Err(format!(
+                        "provider `{}` declares both `credential` and the deprecated `key_env` with different sources; keep one",
+                        self.id
+                    ))
+                }
+            }
+            (None, None) => Err(format!(
+                "provider `{}` must declare a `credential` ({{\"type\":\"env\",\"name\":\"…\"}} or {{\"type\":\"file\",\"path\":\"…\"}})",
+                self.id
+            )),
+        }
+    }
 }
 
 impl FileConfig {
@@ -282,17 +388,7 @@ impl FileConfig {
                     ));
                 }
                 validate_api_root(&provider.id, &provider.api_root)?;
-                if provider.key_env.is_empty()
-                    || provider.key_env.len() > 128
-                    || !provider.key_env.bytes().all(|byte| {
-                        byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
-                    })
-                {
-                    return Err(format!(
-                        "provider `{}` key_env must be an uppercase ASCII environment name",
-                        provider.id
-                    ));
-                }
+                provider.resolved_credential()?.validate(&provider.id)?;
                 if provider
                     .display_name
                     .as_ref()
@@ -408,10 +504,9 @@ impl FileConfig {
     /// cloned-repo config must never supply them (else cloning a hostile repo = RCE). Mirrors
     /// `Hooks::load_user`. Absent HOME/file → default; malformed → error (fail loud on your own config).
     pub fn load_user() -> anyhow::Result<FileConfig> {
-        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        let Some(path) = user_config_path() else {
             return Ok(FileConfig::default());
         };
-        let path = core_protocol::home::path(&home, "config.json");
         let Some(text) = read_bounded_config(&path, true)? else {
             return Ok(FileConfig::default());
         };
@@ -419,6 +514,296 @@ impl FileConfig {
             anyhow::Error::new(error).context(format!("failed to load {}", path.display()))
         })
     }
+}
+
+/// The root that holds the operator's `.core` directory.
+///
+/// `CORE_CONFIG_HOME` takes precedence so a container image, a CI runner, or a `sudo -E`
+/// invocation with no `HOME` is still configurable; without it there is no supported way to point
+/// Core at a config at all in those environments.
+pub(crate) fn config_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("CORE_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var_os("HOME").filter(|value| !value.is_empty()))
+        .map(std::path::PathBuf::from)
+}
+
+/// Absolute path of the operator-owned user config, if a config root is resolvable.
+pub(crate) fn user_config_path() -> Option<std::path::PathBuf> {
+    config_home().map(|home| core_protocol::home::path(&home, "config.json"))
+}
+
+/// The directory credential files written by `core setup` live in: `<config root>/.core/credentials`.
+pub(crate) fn credentials_dir() -> Option<std::path::PathBuf> {
+    config_home().map(|home| core_protocol::home::path(&home, "credentials"))
+}
+
+/// The credential file `core setup` writes for one provider id.
+///
+/// The id is already constrained to the provider-instance alphabet, but this is the function that
+/// turns operator text into a filesystem path, so it refuses anything that is not that alphabet
+/// rather than trusting a caller to have validated first.
+pub(crate) fn credential_file_path(provider_id: &str) -> Option<std::path::PathBuf> {
+    if provider_id.is_empty()
+        || provider_id.len() > 64
+        || !provider_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return None;
+    }
+    credentials_dir().map(|directory| directory.join(provider_id))
+}
+
+/// Every key `core config set` accepts, with the parser that turns operator text into the typed
+/// field. A closed list is the point: a settable key is a supported key, and a typo is refused
+/// rather than persisted into a document the next launch silently ignores.
+const SETTABLE_KEYS: &[&str] = &[
+    "provider",
+    "model",
+    "base_url",
+    "effort",
+    "max_turns",
+    "max_usd",
+    "max_wall_secs",
+    "allow_code",
+    "completion_notifications",
+    "compaction_trigger_tokens",
+];
+
+/// Apply one settable key to an in-memory document. Callers that need several keys to land
+/// together (a `/model` choice is a provider AND a model) compose them inside one
+/// [`update_user_config`] transaction rather than issuing two writes.
+pub(crate) fn apply_setting(
+    config: &mut FileConfig,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    let parse_u32 = |value: &str| {
+        value
+            .parse::<u32>()
+            .map_err(|_| format!("`{key}` must be a non-negative integer, got `{value}`"))
+    };
+    let parse_u64 = |value: &str| {
+        value
+            .parse::<u64>()
+            .map_err(|_| format!("`{key}` must be a non-negative integer, got `{value}`"))
+    };
+    let parse_bool = |value: &str| match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(format!("`{key}` must be true or false, got `{other}`")),
+    };
+    match key {
+        "provider" => config.provider = Some(value.to_owned()),
+        "model" => config.model = Some(value.to_owned()),
+        "base_url" => config.base_url = Some(value.to_owned()),
+        "effort" => config.effort = Some(value.to_owned()),
+        "max_turns" => config.max_turns = Some(parse_u32(value)?),
+        "max_usd" => {
+            config.max_usd = Some(
+                value
+                    .trim_start_matches('$')
+                    .parse::<f64>()
+                    .map_err(|_| format!("`{key}` must be a number, got `{value}`"))?,
+            )
+        }
+        "max_wall_secs" => config.max_wall_secs = Some(parse_u64(value)?),
+        "allow_code" => config.allow_code = Some(parse_bool(value)?),
+        "completion_notifications" => config.completion_notifications = Some(parse_bool(value)?),
+        "compaction_trigger_tokens" => {
+            config.compaction_trigger_tokens = Some(
+                value
+                    .parse::<usize>()
+                    .map_err(|_| format!("`{key}` must be a non-negative integer, got `{value}`"))?,
+            )
+        }
+        other => {
+            return Err(format!(
+                "unknown config key `{other}`; settable keys: {}",
+                SETTABLE_KEYS.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Render one key's effective value from a decoded document, for `core config get`.
+pub(crate) fn setting_value(config: &FileConfig, key: &str) -> Option<String> {
+    match key {
+        "provider" => config.provider.clone(),
+        "model" => config.model.clone(),
+        "base_url" => config.base_url.clone(),
+        "effort" => config.effort.clone(),
+        "max_turns" => config.max_turns.map(|value| value.to_string()),
+        "max_usd" => config.max_usd.map(|value| format!("{value}")),
+        "max_wall_secs" => config.max_wall_secs.map(|value| value.to_string()),
+        "allow_code" => config.allow_code.map(|value| value.to_string()),
+        "completion_notifications" => config
+            .completion_notifications
+            .map(|value| value.to_string()),
+        "compaction_trigger_tokens" => config
+            .compaction_trigger_tokens
+            .map(|value| value.to_string()),
+        _ => None,
+    }
+}
+
+/// Every settable key and its currently persisted value.
+pub(crate) fn settable_keys() -> &'static [&'static str] {
+    SETTABLE_KEYS
+}
+
+/// An advisory exclusive lock on the user config, held for one read-modify-write.
+///
+/// `rename` alone makes each individual write atomic but does NOT make a read-modify-write
+/// serializable: two concurrent `core config set` calls would both read the old document and the
+/// loser's field would vanish. The lock closes that window; a stale lock older than its timeout is
+/// broken so a killed process cannot wedge configuration forever.
+struct ConfigLock {
+    path: std::path::PathBuf,
+}
+
+const CONFIG_LOCK_STALE_SECS: u64 = 30;
+
+impl ConfigLock {
+    fn acquire(config_path: &Path) -> anyhow::Result<Self> {
+        let path = config_path.with_extension("json.lock");
+        for _ in 0..300 {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => return Ok(Self { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = std::fs::metadata(&path)
+                        .and_then(|metadata| metadata.modified())
+                        .map(|modified| {
+                            modified.elapsed().map(|age| age.as_secs()).unwrap_or(0)
+                                > CONFIG_LOCK_STALE_SECS
+                        })
+                        .unwrap_or(false);
+                    if stale {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        anyhow::bail!(
+            "{}: another process is writing the config; try again",
+            path.display()
+        )
+    }
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Read the user config for a read-modify-write. A document that does not parse is returned as an
+/// error: rewriting it would destroy an operator's file to "fix" a typo they can see and correct.
+fn read_user_config_for_write(path: &Path) -> anyhow::Result<FileConfig> {
+    match read_bounded_config(path, true)? {
+        Some(text) => FileConfig::parse(&text).map_err(|error| {
+            anyhow::Error::new(error).context(format!(
+                "refusing to rewrite {}: the existing document does not parse",
+                path.display()
+            ))
+        }),
+        None => Ok(FileConfig::default()),
+    }
+}
+
+/// Serialize and install a config document atomically at mode 0600.
+///
+/// Unset keys are dropped rather than written as `null`. This file is hand-edited by operators, so
+/// persisting one setting must not turn a three-line document into a wall of nulls — and a written
+/// `null` is indistinguishable from a deliberate value to a reader that is not this binary.
+fn write_user_config(path: &Path, config: &FileConfig) -> anyhow::Result<()> {
+    config.validate().map_err(anyhow::Error::msg)?;
+    let mut document = serde_json::to_value(config)?;
+    if let Some(object) = document.as_object_mut() {
+        object.retain(|_, value| !value.is_null());
+    }
+    let mut text = serde_json::to_string_pretty(&document)?;
+    text.push('\n');
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    write_private_atomic(path, text.as_bytes())
+}
+
+/// Write bytes to `path` through a same-directory temp file plus `rename`, at mode 0600.
+///
+/// A reader therefore observes either the whole previous document or the whole new one, never a
+/// half-written credential or a truncated config.
+pub(crate) fn write_private_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{}: has no parent directory", path.display()))?;
+    std::fs::create_dir_all(parent)?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let temp = parent.join(format!(
+        ".{}.{}.{nonce}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("config"),
+        std::process::id()
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let result = (|| -> std::io::Result<()> {
+        let mut file = options.open(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result.map_err(|error| anyhow::anyhow!("{}: {error}", path.display()))
+}
+
+/// THE single writer for operator configuration. Every product path that persists an operator
+/// choice — `core config set`, `core setup`, `/model`, `core auth logout` — mutates the document
+/// through this function, so there is exactly one place that locks, validates, and installs.
+pub(crate) fn update_user_config(
+    mutate: impl FnOnce(&mut FileConfig) -> Result<(), String>,
+) -> anyhow::Result<std::path::PathBuf> {
+    let path = user_config_path().ok_or_else(|| {
+        anyhow::anyhow!("no config root: set HOME or CORE_CONFIG_HOME before writing configuration")
+    })?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let _lock = ConfigLock::acquire(&path)?;
+    let mut config = read_user_config_for_write(&path)?;
+    mutate(&mut config).map_err(anyhow::Error::msg)?;
+    config.schema_version = FILE_CONFIG_SCHEMA_VERSION;
+    write_user_config(&path, &config)?;
+    Ok(path)
+}
+
+/// `core config set <key> <value>`.
+pub(crate) fn set_user_setting(key: &str, value: &str) -> anyhow::Result<std::path::PathBuf> {
+    update_user_config(|config| apply_setting(config, key, value))
 }
 
 /// Read configuration through a bounded descriptor. Project configuration is opened with
@@ -858,8 +1243,12 @@ mod tests {
 
     #[test]
     fn rejects_typos_and_bad_numeric_knobs() {
-        // deny_unknown_fields: a typo'd key is an error, not silently dropped
-        assert!(serde_json::from_str::<FileConfig>(r#"{"max_turn": 5}"#).is_err());
+        // A typo'd top-level key is no longer a hard startup failure — one config is shared
+        // across binaries through dotfiles, so an unknown key degrades (I-24) — but it is still
+        // retained and warned about rather than silently dropped.
+        let typo = serde_json::from_str::<FileConfig>(r#"{"max_turn": 5}"#).unwrap();
+        assert!(typo.unknown.contains_key("max_turn"));
+        assert_eq!(typo.max_turns, None);
         // range validation catches disabled/negative budgets
         assert!(
             serde_json::from_str::<FileConfig>(r#"{"max_turns":0}"#)
@@ -1008,6 +1397,146 @@ mod tests {
         assert!(duplicate.validate().is_err());
     }
 
+    /// I-23 — the credential field could only ever be `key_env`, an uppercase ASCII environment
+    /// name, which cannot describe a hosted subscription token. This fixture pins BOTH spellings:
+    /// every released v2 document keeps loading verbatim, and the tagged form describes a file.
+    #[test]
+    fn i23_a_fixture_pins_both_credential_spellings() {
+        const FIXTURE: &str = r#"{
+            "schema_version": 2,
+            "providers": [
+                {
+                    "id": "legacy",
+                    "adapter": "openai_chat",
+                    "api_root": "https://legacy.example/v1",
+                    "key_env": "LEGACY_KEY"
+                },
+                {
+                    "id": "plan",
+                    "adapter": "openai_chat",
+                    "api_root": "https://plan.example/v1",
+                    "credential": { "type": "file", "path": "/home/op/.core/credentials/plan" }
+                },
+                {
+                    "id": "tagged-env",
+                    "adapter": "openai_chat",
+                    "api_root": "https://tagged.example/v1",
+                    "credential": { "type": "env", "name": "TAGGED_KEY" }
+                }
+            ]
+        }"#;
+        let config = FileConfig::parse(FIXTURE).expect("both spellings load");
+        config.validate().expect("both spellings validate");
+        // An alias-preserving additive field is NOT a schema break, so the version is unchanged.
+        assert_eq!(config.schema_version, FILE_CONFIG_SCHEMA_VERSION);
+        let providers = config.providers.as_deref().unwrap();
+        assert_eq!(
+            providers[0].resolved_credential().unwrap(),
+            ProviderCredential::Env {
+                name: "LEGACY_KEY".into()
+            }
+        );
+        assert_eq!(
+            providers[1].resolved_credential().unwrap(),
+            ProviderCredential::File {
+                path: "/home/op/.core/credentials/plan".into()
+            }
+        );
+        assert_eq!(
+            providers[2].resolved_credential().unwrap(),
+            ProviderCredential::Env {
+                name: "TAGGED_KEY".into()
+            }
+        );
+        assert_eq!(
+            providers[1].resolved_credential().unwrap().display(),
+            "file /home/op/.core/credentials/plan"
+        );
+
+        // Round-tripping keeps each entry's own spelling: rewriting the document to persist an
+        // unrelated key must not silently migrate an operator's file under them.
+        let rendered = serde_json::to_string(&config).unwrap();
+        assert!(rendered.contains(r#""key_env":"LEGACY_KEY""#), "{rendered}");
+        assert!(rendered.contains(r#""type":"file""#), "{rendered}");
+    }
+
+    /// Two spellings that disagree are a contradiction about which credential a PAID request
+    /// uses. There is no safe way to pick one, so the config fails closed.
+    #[test]
+    fn i23_contradictory_credential_spellings_fail_closed() {
+        let error = FileConfig::parse(
+            r#"{"schema_version":2,"providers":[{"id":"gw","adapter":"openai_chat","api_root":"https://gw.example/v1","key_env":"A_KEY","credential":{"type":"env","name":"B_KEY"}}]}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("keep one"), "{error}");
+
+        // Agreeing spellings are redundant, not contradictory, and are accepted.
+        FileConfig::parse(
+            r#"{"schema_version":2,"providers":[{"id":"gw","adapter":"openai_chat","api_root":"https://gw.example/v1","key_env":"A_KEY","credential":{"type":"env","name":"A_KEY"}}]}"#,
+        )
+        .expect("agreeing spellings are not a contradiction");
+
+        // Declaring neither is still a hard error: a provider with no credential source cannot
+        // dispatch, and discovering that at the first paid turn is the failure mode being fixed.
+        let error = FileConfig::parse(
+            r#"{"schema_version":2,"providers":[{"id":"gw","adapter":"openai_chat","api_root":"https://gw.example/v1"}]}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("must declare a `credential`"), "{error}");
+    }
+
+    /// The env spelling keeps its exact historical validation: only an uppercase ASCII
+    /// environment name, so a path or a shell expression can never be smuggled in as one.
+    #[test]
+    fn i23_an_env_credential_keeps_its_exact_name_validation() {
+        for rejected in ["lowercase", "HAS SPACE", "WITH-DASH", ""] {
+            let error = FileConfig::parse(&format!(
+                r#"{{"schema_version":2,"providers":[{{"id":"gw","adapter":"openai_chat","api_root":"https://gw.example/v1","key_env":"{rejected}"}}]}}"#
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains("uppercase ASCII environment name"),
+                "`{rejected}`: {error}"
+            );
+        }
+        for rejected in ["", "   "] {
+            let error = FileConfig::parse(&format!(
+                r#"{{"schema_version":2,"providers":[{{"id":"gw","adapter":"openai_chat","api_root":"https://gw.example/v1","credential":{{"type":"file","path":"{rejected}"}}}}]}}"#
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("credential file path"), "`{rejected}`: {error}");
+        }
+    }
+
+    /// I-24 — strict rejection is retained exactly where a silently dropped key would be a
+    /// security or spend decision, and relaxed only at the decorative top level.
+    #[test]
+    fn i24_security_sensitive_objects_stay_strict_while_the_top_level_degrades() {
+        for strict in [
+            r#"{"providers":[{"id":"gw","adapter":"openai_chat","api_root":"https://gw.example/v1","key_env":"GW_KEY","unexpected":1}]}"#,
+            r#"{"mcp_servers":{"srv":{"command":"x","args":[],"unexpected":1}}}"#,
+        ] {
+            assert!(
+                FileConfig::parse(strict).is_err(),
+                "a security-sensitive sub-object must stay strict: {strict}"
+            );
+        }
+        // The top level degrades: an unknown key is retained (so a rewrite cannot delete a newer
+        // binary's field) and never consumed as configuration.
+        let config = FileConfig::parse(r#"{"schema_version":2,"written_by_a_newer_core":{"a":1}}"#)
+            .expect("an unknown top-level key loads");
+        assert!(config.unknown.contains_key("written_by_a_newer_core"));
+        let rendered = serde_json::to_string(&config).unwrap();
+        assert!(
+            rendered.contains("written_by_a_newer_core"),
+            "a rewrite must round-trip the field it does not understand: {rendered}"
+        );
+    }
+
     #[test]
     fn provider_http_requires_an_exact_loopback_host() {
         let config_with_root = |api_root: &str| FileConfig {
@@ -1017,7 +1546,8 @@ mod tests {
                 adapter: "openai_chat".into(),
                 error_profile: None,
                 api_root: api_root.into(),
-                key_env: "LOCAL_KEY".into(),
+                key_env: Some("LOCAL_KEY".into()),
+                credential: None,
                 enabled: true,
                 catalog: true,
                 models: Vec::new(),

@@ -21,6 +21,7 @@ use crate::commands::{self, SlashCommand};
 use crate::editor::Editor;
 use crate::image_input::{self, ImageAttachments};
 use crate::providers::{ModelSelection, ProviderDirectory};
+use crate::route::RouteView;
 use crate::runtime::{
     UiEvent, WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi, WorkflowUiEvent,
 };
@@ -820,8 +821,10 @@ struct App {
     mode: PermissionMode,
     effort: Effort,
     model: String,
-    /// Provider identity is independent from model identity. The pair changes atomically.
-    provider_id: String,
+    /// THE resolved route: provider, model, api_root, adapter, credential source, catalog
+    /// provenance and the run's effective limits. Every display reads this and derives nothing of
+    /// its own, so what is on screen is the request that goes out (I-26).
+    route: RouteView,
     /// Cumulative run economics. Unknown is first-class; the UI never formats an unverified rate.
     cost: CostState,
     /// Provider-reported usage for the most recently completed direct model request. This is not
@@ -932,7 +935,7 @@ impl App {
             mode: PermissionMode::default(),
             effort: Effort::default(),
             model: String::new(),
-            provider_id: String::new(),
+            route: RouteView::unresolved(),
             cost: CostState::Zero,
             last_turn_usage: None,
             last_context: None,
@@ -2700,7 +2703,7 @@ pub async fn run(
     attached: app_server::Attached,
     initial_task: Option<String>,
     providers: ProviderDirectory,
-    provider_id: String,
+    route: RouteView,
     completion_notifications: bool,
 ) -> anyhow::Result<()> {
     eprintln!(
@@ -2759,7 +2762,7 @@ pub async fn run(
     app.effort = initial_state.effort;
     app.model = initial_state.model.clone();
     app.model_context_window = facts.initial_model_context_window;
-    app.provider_id = provider_id;
+    app.route = route;
     let provider_credential_envs = providers.credential_env_names();
 
     let mut session = Session::new(handle.client, handle.control, initial_state, facts);
@@ -3951,7 +3954,8 @@ async fn apply_model_selection(
         }
     };
 
-    let changed = session.model() != selection.model_id || app.provider_id != selection.provider_id;
+    let changed =
+        session.model() != selection.model_id || app.route.provider_id != selection.provider_id;
     let provider_name = directory
         .entry(&selection.provider_id)
         .map(|entry| entry.display_name().to_owned())
@@ -3992,8 +3996,32 @@ async fn apply_model_selection(
     };
 
     app.model = state.model.clone();
-    app.provider_id = selection.provider_id.clone();
+    // Re-derive the ONE route view from the directory, so the statusline, /status and /config all
+    // move together with the request the next turn dispatches. The model comes from the state the
+    // runtime actually reached, not from what was requested of it.
+    let applied = ModelSelection {
+        provider_id: selection.provider_id.clone(),
+        model_id: state.model.clone(),
+    };
+    app.route = app.route.reselect(directory, &applied);
     app.model_context_window = capabilities.context_window_tokens;
+    // A model chosen in the TUI is an operator decision, and until now it evaporated at exit:
+    // nothing in the product ever wrote the user config (I-25). Persist it through the same single
+    // atomic writer `core config set` uses, so the next launch starts on the route the operator
+    // picked (I-26). Provider and model go in ONE transaction: persisting the model alone would
+    // leave the next launch pairing a new model with the previous provider.
+    let persisted_provider = applied.provider_id.clone();
+    let persisted_model = applied.model_id.clone();
+    match crate::config::update_user_config(move |config| {
+        crate::config::apply_setting(config, "provider", &persisted_provider)?;
+        crate::config::apply_setting(config, "model", &persisted_model)
+    }) {
+        Ok(_) => {}
+        Err(error) => app.note(
+            block::NoticeLevel::Warn,
+            format!("route applied for this session but not persisted: {error}"),
+        ),
+    }
     if changed {
         clear_last_turn_telemetry_from(app, &state);
     }
@@ -4567,7 +4595,7 @@ fn open_picker(app: &mut App, session: &Session, directory: &ProviderDirectory, 
             let cur = session.model().to_string();
             (
                 "Model",
-                model_picker_items(directory, &app.provider_id, &cur),
+                model_picker_items(directory, &app.route.provider_id, &cur),
             )
         }
         "effort" => {
@@ -4860,7 +4888,7 @@ async fn handle_registered_command(
                 let value = arg.strip_prefix("retry").unwrap_or_default().trim();
                 let selection = match model_retry_selection(
                     directory,
-                    &app.provider_id,
+                    &app.route.provider_id,
                     session.model(),
                     value,
                 ) {
@@ -4885,7 +4913,7 @@ async fn handle_registered_command(
                     ),
                 }
             } else {
-                match directory.resolve_model(arg, Some(&app.provider_id)) {
+                match directory.resolve_model(arg, Some(&app.route.provider_id)) {
                     Ok(selection) => {
                         apply_model_selection(app, session, directory, selection).await
                     }
@@ -4906,11 +4934,15 @@ async fn handle_registered_command(
                 .and_then(|s| s.to_str())
                 .unwrap_or("?")
                 .to_string();
-            let mut rows = vec![
-                kv("provider", &app.provider_id),
-                kv("model", session.model()),
-                kv("effort requested", session.effort().label()),
-            ];
+            // Every route row comes from the one resolved view; only the live runtime policy
+            // (effort/mode/cwd) is read off the session.
+            let mut rows: Vec<block::PanelRow> = app
+                .route
+                .rows()
+                .iter()
+                .map(|(key, value)| kv(key, value))
+                .collect();
+            rows.push(kv("effort requested", session.effort().label()));
             if let Some(application) = app.effort_application {
                 rows.push(kv(
                     "effort applied",
@@ -5371,36 +5403,56 @@ async fn handle_registered_command(
             app.panel("◇", "skills", rows);
         }
         SlashCommand::Config => {
-            let mut rows = vec![
-                kv(
-                    "provider",
-                    if app.provider_id.is_empty() {
-                        "(unresolved)"
-                    } else {
-                        &app.provider_id
-                    },
-                ),
-                kv("model", session.model()),
-                kv("effort", session.effort().label()),
-                kv("mode", session.permission_mode().label()),
-            ];
-            match crate::config::FileConfig::load(session.workspace()) {
-                Ok(f) => {
-                    // human values, never raw Option Debug (`Some(5.0)`/`None` in a panel is a toy tell)
-                    let mt = f
-                        .max_turns
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|| "default".into());
-                    let mu = f
-                        .max_usd
-                        .map(|v| format!("${v:.2}"))
-                        .unwrap_or_else(|| "none".into());
-                    rows.push(kv("max_turns", &mt));
-                    rows.push(kv("max_usd", &mu));
-                }
-                Err(e) => rows.push(block::PanelRow::Note(format!("config load failed: {e}"))),
+            // `/config` used to re-read the REPOSITORY config document, so it reported what was on
+            // disk instead of the layered value the kernel enforces: `core --max-turns 5` printed
+            // `max_turns: default`. It reads the one resolved route and the same effective limits
+            // the budget was built from (I-26).
+            let mut rows: Vec<block::PanelRow> = app
+                .route
+                .rows()
+                .iter()
+                .map(|(key, value)| kv(key, value))
+                .collect();
+            rows.push(kv("effort", session.effort().label()));
+            rows.push(kv("mode", session.permission_mode().label()));
+            for (key, value) in app.route.limits.rows() {
+                rows.push(kv(key, &value));
             }
+            rows.push(block::PanelRow::Note(
+                "persist a choice with `core config set <key> <value>`".into(),
+            ));
             app.panel("⚙", "config", rows);
+        }
+        SlashCommand::Login => {
+            // The credential half of the setup state machine deliberately does NOT run here. A
+            // pasted key inside the TUI would land in a rendered, scrollable transcript buffer;
+            // `core setup` owns collection precisely so a secret never reaches this surface.
+            // What `/login` runs is the rest of the same machine: name the credential source, then
+            // ask the provider whether it actually works, which is the check that used to happen
+            // only on the first paid turn.
+            let provider_id = if arg.trim().is_empty() {
+                app.route.provider_id.clone()
+            } else {
+                arg.trim().to_owned()
+            };
+            let mut rows = vec![
+                kv("provider", &provider_id),
+                kv("api_root", &app.route.api_root),
+                kv("credential", &app.route.credential),
+            ];
+            match directory.entry(&provider_id) {
+                Some(entry) => {
+                    rows.push(kv("state", &directory.status_label(entry)));
+                    if let Some(reason) = directory.blocked_reason(entry) {
+                        rows.push(kv("blocked", &reason));
+                    }
+                }
+                None => rows.push(kv("state", &directory.resolution_error(&provider_id))),
+            }
+            rows.push(block::PanelRow::Note(format!(
+                "sign in or replace this credential with `core setup --byok {provider_id}` (or `core setup --plan`); inspect it with `core auth status`"
+            )));
+            app.panel("⚿", "login", rows);
         }
         SlashCommand::Tools => {
             // Visualize every tool + its capability tier + purity (user: tool 所有能的可视化).
@@ -6651,19 +6703,9 @@ fn format_attachment_size(bytes: usize) -> String {
 }
 
 fn route_label(app: &App) -> String {
-    if app.model.is_empty() {
-        return String::new();
-    }
-    let model = app
-        .model
-        .split(['/', ':'])
-        .next_back()
-        .unwrap_or(&app.model);
-    if app.provider_id.is_empty() {
-        model.to_string()
-    } else {
-        format!("{}/{model}", app.provider_id)
-    }
+    // The statusline used to build `provider/model` out of two loose `App` fields. It reads the
+    // one route view now, so it cannot label a request the run is not making (I-26).
+    app.route.short_label()
 }
 
 fn footer_spans(text: &str, theme: &theme::Theme) -> Vec<Span<'static>> {
@@ -8314,7 +8356,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let mut app = App::new();
         app.theme = theme::Theme::dark();
-        app.provider_id = "glm".into();
+        app.route.provider_id = "glm".into();
+        app.route.model_id = "glm-5.2".into();
         app.model = "glm-5.2".into();
         app.effort = Effort::High;
         let expected = surface::Surface::resolve(Rect::new(0, 0, 80, 12), 1, 0, true, false);
@@ -8386,7 +8429,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             let mut app = App::new();
             app.theme = theme::Theme::dark();
             app.model = "claude-sonnet-4-5".into();
-            app.provider_id = "anthropic".into();
+            app.route.provider_id = "anthropic".into();
+            app.route.model_id = "claude-sonnet-4-5".into();
             let screen = render_text(&mut app, width, height);
             assert!(
                 screen.contains("██████╗"),
@@ -10192,7 +10236,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let mut app = App::new();
         app.model = "gpt-5".into();
-        app.provider_id = "openai".into();
+        app.route.provider_id = "openai".into();
+        app.route.model_id = "gpt-5".into();
         app.effort = Effort::High;
         let usage = Usage {
             input: 30,

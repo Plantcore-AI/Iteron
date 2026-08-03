@@ -85,6 +85,13 @@ pub(super) fn parse(text: &str) -> Result<FileConfig, FileConfigSchemaError> {
     // fields instead of inheriting JSON-map last-write-wins behavior from the version probe.
     let mut config: FileConfig = serde_json::from_str(text)
         .map_err(|error| FileConfigSchemaError::CurrentSchema(error.to_string()))?;
+    // A decorative or newer-binary top-level key degrades instead of bricking startup, but it is
+    // never silent: a typo'd budget knob must still be visible to the operator who wrote it.
+    for key in config.unknown.keys() {
+        eprintln!(
+            "warning: ignoring unknown top-level config key `{key}` (this Core binary does not know it; check for a typo or upgrade Core)"
+        );
+    }
     if source_version < FILE_CONFIG_SCHEMA_VERSION {
         config.schema_version = FILE_CONFIG_SCHEMA_VERSION;
     }

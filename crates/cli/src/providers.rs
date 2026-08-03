@@ -4,14 +4,14 @@
 //! `core-provider`; this layer supplies built-in instance definitions, merges trusted user config,
 //! performs bounded discovery concurrently, and resolves an explicit `(provider, model)` pair.
 
-use crate::config::ProviderConfig;
+use crate::config::{ProviderConfig, ProviderCredential};
 use core_provider::catalog::glm_standard_schema_catalog;
 use core_provider::{
     AccountAvailability, AccountProbe, AccountProbeResult, AdapterKind, ApiRoot,
-    BalanceAvailability, CatalogSnapshot, CatalogStrategy, Compatibility, ErrorProfile,
-    HealthReportingProvider, ModelDescriptor, ModelFamily, Provider, ProviderError, ProviderHealth,
-    ProviderHealthStore, ProviderInstance, RawModel, Selectability, StaticProviderMetadata,
-    StreamItem, TurnRequest, TurnResult, discover_catalog, probe_account,
+    BalanceAvailability, CatalogSnapshot, CatalogStrategy, Compatibility, CredentialSource,
+    ErrorProfile, HealthReportingProvider, ModelDescriptor, ModelFamily, Provider, ProviderError,
+    ProviderHealth, ProviderHealthStore, ProviderInstance, RawModel, Selectability,
+    StaticProviderMetadata, StreamItem, TurnRequest, TurnResult, discover_catalog, probe_account,
 };
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
@@ -100,10 +100,28 @@ enum CatalogProvenance {
     OperatorExplicit,
 }
 
+impl CatalogProvenance {
+    /// Operator-facing name for the evidence class behind the visible model inventory.
+    fn label(&self) -> String {
+        match self {
+            Self::Unavailable => "unavailable".into(),
+            Self::DynamicFresh => "provider catalog (fresh)".into(),
+            Self::CachedFresh => "provider catalog (cached)".into(),
+            Self::StaticOfficial { version, source } => {
+                format!("official static schema {version} ({source})")
+            }
+            Self::OperatorManifest => "operator manifest".into(),
+            Self::OperatorExplicit => "operator-typed model".into(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ProviderEntry {
     pub instance: ProviderInstance,
-    pub key_env: String,
+    /// Where this instance's credential is declared. Only the NAME (an environment variable or a
+    /// file path) lives here; the value is resolved per turn inside the provider instance.
+    pub credential: ProviderCredential,
     pub enabled: bool,
     pub catalog_enabled: bool,
     pub catalog: Option<CatalogSnapshot>,
@@ -126,6 +144,16 @@ impl ProviderEntry {
 
     pub fn display_name(&self) -> &str {
         self.instance.display_name()
+    }
+
+    /// Value-free credential provenance for `/status`, `/config`, and `core auth status`.
+    pub fn credential_display(&self) -> String {
+        self.instance.credential_status().display()
+    }
+
+    /// The evidence class behind this entry's visible model inventory.
+    pub fn catalog_provenance_label(&self) -> String {
+        self.catalog_provenance.label()
     }
 }
 
@@ -1093,7 +1121,42 @@ impl ProviderDirectory {
     pub(crate) fn credential_env_names(&self) -> Vec<String> {
         self.entries
             .iter()
-            .map(|entry| entry.key_env.clone())
+            .filter_map(|entry| entry.credential.env_name().map(str::to_owned))
+            .collect()
+    }
+
+    /// Credential FILES backing configured providers. A file-backed subscription token never
+    /// appears in the environment, so the env-name redaction set alone would let its path — and
+    /// therefore, through any read tool, its value — reach an agent, a tool, or a hook.
+    pub(crate) fn credential_file_paths(&self) -> Vec<PathBuf> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .instance
+                    .credential_source()
+                    .file_path()
+                    .map(Path::to_path_buf)
+            })
+            .collect()
+    }
+
+    /// Credential files that live INSIDE the workspace.
+    ///
+    /// The workspace is precisely the region a tool, a child agent, and a hook may read. Keeping a
+    /// credential VALUE out of provider output is worth nothing if `read_file` can open the file
+    /// it came from, and confinement is owned by another layer, so the composition root refuses
+    /// the route rather than trusting a boundary it does not enforce.
+    pub(crate) fn credential_files_inside(&self, workspace: &Path) -> Vec<PathBuf> {
+        self.credential_file_paths()
+            .into_iter()
+            .filter(|path| {
+                let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
+                let workspace = workspace
+                    .canonicalize()
+                    .unwrap_or_else(|_| workspace.to_path_buf());
+                resolved.starts_with(&workspace)
+            })
             .collect()
     }
 
@@ -1267,7 +1330,7 @@ impl ProviderDirectory {
                 };
                 Some(format!(
                     "missing credential ({}){cache_note}",
-                    entry.key_env
+                    entry.credential.display()
                 ))
             }
             AccountAvailability::AuthenticationBlocked => Some("authentication failed".into()),
@@ -1400,6 +1463,50 @@ impl ProviderDirectory {
         };
         self.validate_selection(&selection, false)?;
         Ok(selection)
+    }
+
+    /// Say WHY a provider yielded no route, using the evidence the directory already holds.
+    ///
+    /// `default_selection` returns `None` for four unrelated states — no credential, a rejected
+    /// credential, an unreachable provider, and a stale cached catalog — and the composition root
+    /// used to collapse all four into `provider ... has no selectable discovered model`, which
+    /// tells an operator on a clean machine nothing at all (I-05). Each state keeps its own line,
+    /// and a missing credential names the exact variable to set.
+    pub fn resolution_error(&self, provider_id: &str) -> String {
+        let Some(entry) = self.entry(provider_id) else {
+            let known: Vec<&str> = self.entries.iter().map(ProviderEntry::id).collect();
+            return format!(
+                "provider `{provider_id}` is not configured (known: {}); run `core setup` or declare it in ~/.core/config.json",
+                known.join(", ")
+            );
+        };
+        match self.blocked_reason(entry) {
+            Some(reason) => {
+                let remedy = match self.health(entry.id()).availability {
+                    AccountAvailability::MissingCredential => format!(
+                        "; run `core setup --byok {provider_id}`, or set it in the environment"
+                    ),
+                    AccountAvailability::AuthenticationBlocked => format!(
+                        "; the credential ({}) was rejected — run `core setup --byok {provider_id}` to replace it",
+                        entry.credential.display()
+                    ),
+                    _ => String::new(),
+                };
+                format!("provider `{provider_id}` is unavailable: {reason}{remedy}")
+            }
+            // Not blocked and still no model: discovery could not reach the provider, or it
+            // returned nothing this build can dispatch a coding turn against.
+            None => match entry.catalog_error.as_deref() {
+                Some(error) => format!(
+                    "provider `{provider_id}` returned no usable catalog: {error}; check network reachability of {} or pin a model with --model",
+                    entry.instance.api_root().as_str()
+                ),
+                None => format!(
+                    "provider `{provider_id}` has no selectable discovered model at {}; pin one explicitly with --model {provider_id}:<model-id>",
+                    entry.instance.api_root().as_str()
+                ),
+            },
+        }
     }
 
     /// Pick the documented default for an official static schema, otherwise the first compatible
@@ -1869,14 +1976,15 @@ fn builtin_entries_with_metadata(
     BUILTINS
         .iter()
         .map(|builtin| {
-            let credential = environment_credential(builtin.key_env);
+            let credential = builtin_credential(builtin.id, builtin.key_env);
             let instance = ProviderInstance::new(
                 builtin.id,
                 builtin.display_name,
                 builtin.adapter,
                 ApiRoot::parse(builtin.api_root)?,
-                credential,
+                None,
             )?
+            .with_credential_source(credential_source(&credential))
             .with_static_metadata(static_metadata.clone());
             let (catalog_enabled, mut catalog_error) = catalog_configuration(&instance, true);
             // GLM publishes a finite model enum in the exact standard Chat Completions request
@@ -1903,7 +2011,7 @@ fn builtin_entries_with_metadata(
             };
             Ok(ProviderEntry {
                 instance,
-                key_env: builtin.key_env.into(),
+                credential,
                 enabled: true,
                 catalog_enabled,
                 catalog,
@@ -1944,15 +2052,16 @@ fn entry_from_config_with_metadata(
         "openai_chat" => AdapterKind::OpenAiCompatibleChat,
         _ => anyhow::bail!("provider `{}` has an unsupported adapter", config.id),
     };
-    let credential = environment_credential(&config.key_env);
+    let credential = config.resolved_credential().map_err(anyhow::Error::msg)?;
     let display_name = config.display_name.as_deref().unwrap_or(&config.id);
     let mut instance = ProviderInstance::new(
         config.id.clone(),
         display_name,
         adapter,
         ApiRoot::parse(&config.api_root)?,
-        credential,
+        None,
     )?
+    .with_credential_source(credential_source(&credential))
     .with_static_metadata(static_metadata);
     if let Some(profile) = config.error_profile.as_deref() {
         let profile = match profile {
@@ -1987,7 +2096,7 @@ fn entry_from_config_with_metadata(
     };
     Ok(ProviderEntry {
         instance,
-        key_env: config.key_env.clone(),
+        credential,
         enabled: config.enabled,
         catalog_enabled,
         catalog,
@@ -2142,10 +2251,186 @@ fn is_openai_fine_tuned_text_model(model_id: &str) -> bool {
         .any(|prefix| base.starts_with(prefix))
 }
 
+/// Every provider id this configuration can route to, built-ins first. `core setup` offers these
+/// and refuses anything else, so a typo is caught before a credential is written for a route that
+/// does not exist.
+pub(crate) fn configured_provider_ids(user: &[ProviderConfig]) -> Vec<String> {
+    let mut ids: Vec<String> = BUILTINS.iter().map(|builtin| builtin.id.to_owned()).collect();
+    for configured in user {
+        if !ids.iter().any(|id| id == &configured.id) {
+            ids.push(configured.id.clone());
+        }
+    }
+    ids
+}
+
+/// Build the exact route a provider id resolves to, with a candidate credential supplied directly
+/// and nothing persisted. This is what lets `core setup` reject a wrong key BEFORE writing it.
+fn candidate_instance(
+    provider_id: &str,
+    user: &[ProviderConfig],
+    credential: &str,
+) -> anyhow::Result<ProviderInstance> {
+    let metadata = load_static_provider_metadata()?;
+    if let Some(builtin) = BUILTINS.iter().find(|builtin| builtin.id == provider_id) {
+        return Ok(ProviderInstance::new(
+            builtin.id,
+            builtin.display_name,
+            builtin.adapter,
+            ApiRoot::parse(builtin.api_root)?,
+            Some(credential.to_owned()),
+        )?
+        .with_static_metadata(metadata));
+    }
+    let configured = user
+        .iter()
+        .find(|configured| configured.id == provider_id)
+        .ok_or_else(|| anyhow::anyhow!("provider `{provider_id}` is not configured"))?;
+    let mut entry = entry_from_config_with_metadata(configured, metadata)?;
+    entry.instance = entry
+        .instance
+        .with_credential_source(CredentialSource::env_value(Some(credential.to_owned())));
+    Ok(entry.instance)
+}
+
+/// The outcome of validating a candidate credential against its real endpoint.
+pub(crate) struct CredentialProof {
+    /// The model the validating request actually ran against.
+    pub model_id: String,
+}
+
+/// Dispatch ONE minimal real request with a candidate credential.
+///
+/// A syntactically valid but wrong key passes every startup check today and only fails on the
+/// operator's first real turn, after a wizard has already told them they are set up (I-27). The
+/// only evidence that a credential works is the provider accepting it, so setup asks the provider.
+pub(crate) async fn validate_credential(
+    provider_id: &str,
+    user: &[ProviderConfig],
+    credential: &str,
+) -> Result<CredentialProof, String> {
+    let instance =
+        candidate_instance(provider_id, user, credential).map_err(|error| error.to_string())?;
+    let model_id = validation_model(&instance).await?;
+    let provider = instance
+        .build_turn_provider()
+        .map_err(|error| format!("cannot build a request for `{provider_id}`: {error}"))?;
+    // One token of output against one short message: enough for the provider to authenticate and
+    // authorize the route, cheap enough to run on every setup.
+    let request = TurnRequest {
+        model: model_id.clone(),
+        system: String::new(),
+        messages: vec![core_protocol::Message::user_text("ping")],
+        input_images: Vec::new(),
+        tools: Vec::new(),
+        max_tokens: 16,
+        cache_system: false,
+        thinking_budget: 0,
+        reasoning_effort: core_protocol::ReasoningEffort::Low,
+    };
+    match provider.turn(&request, &mut |_item: StreamItem| {}).await {
+        Ok(_) => Ok(CredentialProof { model_id }),
+        Err(error) => Err(describe_validation_failure(&error)),
+    }
+}
+
+/// Pick a model to validate against without asking the operator for one.
+async fn validation_model(instance: &ProviderInstance) -> Result<String, String> {
+    if instance.api_root().as_str() == instance.static_metadata().glm_api_root()
+        && instance.adapter() == AdapterKind::OpenAiCompatibleChat
+    {
+        return Ok(instance.static_metadata().glm_default_model().to_owned());
+    }
+    match discover_catalog(instance).await {
+        Ok(snapshot) => snapshot
+            .models
+            .iter()
+            .find(|model| matches!(model.selectability, Selectability::Selectable))
+            .map(|model| model.raw.id.clone())
+            .ok_or_else(|| {
+                format!(
+                    "`{}` accepted the credential but published no model this build can run a coding turn against",
+                    instance.id()
+                )
+            }),
+        Err(error) => Err(describe_validation_failure(&error)),
+    }
+}
+
+/// Turn a provider failure into the one line an operator can act on. Provider bodies are never
+/// copied: some gateways echo the credential back inside their error payload.
+fn describe_validation_failure(error: &ProviderError) -> String {
+    match error {
+        ProviderError::MissingCredential { .. } => "the credential was empty".into(),
+        ProviderError::ApiResponse(response) => match response.status {
+            401 | 403 => format!(
+                "the provider rejected this credential (HTTP {}): {}",
+                response.status, response.normalized.public_message
+            ),
+            402 | 429 => format!(
+                "the credential authenticated but the account cannot serve a request (HTTP {}): {}",
+                response.status, response.normalized.public_message
+            ),
+            status => format!(
+                "the provider refused the validating request (HTTP {status}): {}",
+                response.normalized.public_message
+            ),
+        },
+        ProviderError::Api { status, .. } => match status {
+            401 | 403 => format!("the provider rejected this credential (HTTP {status})"),
+            status => format!("the provider refused the validating request (HTTP {status})"),
+        },
+        ProviderError::UnsupportedCatalog { reason, .. } => format!(
+            "this endpoint publishes no model list ({reason}); declare `models` for it in ~/.core/config.json"
+        ),
+        other => format!("the validating request failed: {other}"),
+    }
+}
+
 fn environment_credential(key_env: &str) -> Option<String> {
     std::env::var(key_env)
         .ok()
         .filter(|value| !value.trim().is_empty())
+}
+
+/// Turn a declared credential into the live source a provider resolves on every turn.
+///
+/// The env variant keeps the historical snapshot: a running process's own environment is not a
+/// rotation channel, and re-reading it would change nothing except the failure mode. The file
+/// variant is genuinely re-read, which is what lets a hosted subscription token rotate under a
+/// running Core (I-22).
+fn credential_source(credential: &ProviderCredential) -> CredentialSource {
+    match credential {
+        ProviderCredential::Env { name } => {
+            CredentialSource::env(name.clone(), environment_credential(name))
+        }
+        ProviderCredential::File { path } => CredentialSource::file(PathBuf::from(path)),
+    }
+}
+
+/// The credential a built-in provider uses.
+///
+/// The environment variable still wins: exporting a key is the explicit, per-invocation override
+/// and must behave exactly as before. Only when it is absent does a built-in fall back to the
+/// credential file `core setup` writes, which is what makes the wizard reach a working first turn
+/// without asking an operator to edit `providers` by hand (a built-in id may not be redeclared
+/// there at all).
+fn builtin_credential(provider_id: &str, key_env: &'static str) -> ProviderCredential {
+    if environment_credential(key_env).is_some() {
+        return ProviderCredential::Env {
+            name: key_env.into(),
+        };
+    }
+    match crate::config::credential_file_path(provider_id) {
+        Some(path) if path.exists() => ProviderCredential::File {
+            path: path.display().to_string(),
+        },
+        // Naming the variable an operator would export keeps the "missing credential" line
+        // actionable; a path that does not exist would only say where nothing is.
+        _ => ProviderCredential::Env {
+            name: key_env.into(),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -2225,7 +2510,9 @@ mod tests {
                 None,
             )
             .unwrap(),
-            key_env: format!("{id}_KEY").to_ascii_uppercase(),
+            credential: ProviderCredential::Env {
+                name: format!("{id}_KEY").to_ascii_uppercase(),
+            },
             enabled: true,
             catalog_enabled,
             catalog: None,
@@ -2258,7 +2545,9 @@ mod tests {
         let catalog = Some(glm_standard_schema_catalog(&instance).unwrap());
         ProviderEntry {
             instance,
-            key_env: "GLM_API_KEY".into(),
+            credential: ProviderCredential::Env {
+                name: "GLM_API_KEY".into(),
+            },
             enabled: true,
             catalog_enabled,
             catalog,
@@ -2330,7 +2619,9 @@ mod tests {
         let (catalog_enabled, catalog_error) = catalog_configuration(&instance, true);
         ProviderEntry {
             instance,
-            key_env: format!("{}_KEY", id.to_ascii_uppercase()),
+            credential: ProviderCredential::Env {
+                name: format!("{}_KEY", id.to_ascii_uppercase()),
+            },
             enabled: true,
             catalog_enabled,
             catalog: None,
@@ -3313,6 +3604,158 @@ mod tests {
         );
     }
 
+    /// I-05 — `default_selection` returns `None` for four unrelated states, and the composition
+    /// root collapsed all four into `provider ... has no selectable discovered model`. Each state
+    /// must produce its own message, and a missing credential must name the variable to set.
+    #[tokio::test]
+    async fn i05_each_unresolvable_state_produces_a_distinguishable_message() {
+        // No key: the reason the directory already computed names the exact variable, and the
+        // message points at the wizard instead of at nothing.
+        let directory = ProviderDirectory::discover_entries(vec![glm_static_entry(None)], None)
+            .await
+            .unwrap();
+        assert!(directory.default_selection("glm").is_none());
+        let missing = directory.resolution_error("glm");
+        assert!(missing.contains("GLM_API_KEY"), "{missing}");
+        assert!(missing.contains("core setup --byok glm"), "{missing}");
+        assert!(
+            !missing.contains("has no selectable discovered model"),
+            "the unactionable line must not survive: {missing}"
+        );
+
+        // A rejected key is a different state and says so, naming the credential to replace.
+        let directory = ProviderDirectory::discover_entries(
+            vec![glm_static_entry(Some("wrong".into()))],
+            None,
+        )
+        .await
+        .unwrap();
+        directory.health.update_from_error(
+            "glm",
+            &ProviderError::ApiResponse(core_provider::ApiResponseError {
+                status: 401,
+                body: String::new(),
+                body_truncated: false,
+                retry_after: None,
+                normalized: Box::new(core_provider::NormalizedFailure {
+                    adapter: AdapterKind::OpenAiCompatibleChat,
+                    error_profile: ErrorProfile::Glm,
+                    code: Some("invalid_api_key".into()),
+                    public_message: "authentication failed",
+                    scope: core_provider::ErrorScope::Account,
+                    availability: core_provider::AvailabilityTransition::Account(
+                        AccountAvailability::AuthenticationBlocked,
+                    ),
+                    retry: core_provider::RetryDisposition::Never,
+                    request_id: None,
+                }),
+            }),
+        );
+        let rejected = directory.resolution_error("glm");
+        assert!(rejected.contains("authentication failed"), "{rejected}");
+        assert!(rejected.contains("rejected"), "{rejected}");
+        assert_ne!(rejected, missing);
+
+        // An unreachable provider — credentialed, so this is NOT the missing-credential state —
+        // carries its discovery failure and its endpoint.
+        let mut offline = offline_entry("gw", AdapterKind::OpenAiCompatibleChat, true);
+        offline.instance = offline
+            .instance
+            .with_credential_source(CredentialSource::env("GW_KEY", Some("present".into())));
+        let unreachable = ProviderDirectory::discover_entries(vec![offline], None)
+            .await
+            .unwrap();
+        let message = unreachable.resolution_error("gw");
+        assert!(message.contains("127.0.0.1:9"), "{message}");
+        assert!(
+            !message.contains("missing credential"),
+            "an unreachable provider is not a missing credential: {message}"
+        );
+        assert_ne!(message, missing);
+        assert_ne!(message, rejected);
+
+        // A stale cached catalog is display evidence only, and keeps its own line.
+        let mut stale = catalogued_entry("stale", "https://stale.example/v1", "m-1");
+        stale.catalog_stale = true;
+        let stale = ProviderDirectory::discover_entries(vec![stale], None)
+            .await
+            .unwrap();
+        let message_stale = stale.resolution_error("stale");
+        assert!(message_stale.contains("stale cached catalog"), "{message_stale}");
+        assert_ne!(message_stale, message);
+
+        // A provider that is not configured at all lists what IS configured.
+        let unknown = unreachable.resolution_error("nope");
+        assert!(unknown.contains("not configured"), "{unknown}");
+        assert!(unknown.contains("gw"), "{unknown}");
+    }
+
+    /// I-22 — a built-in provider could only ever read an environment variable, so the wizard had
+    /// nowhere to put a credential (a built-in id may not be redeclared under `providers`). The
+    /// environment still wins; the setup-written file is the fallback.
+    #[test]
+    fn i22_a_builtin_falls_back_to_the_setup_credential_file_only_without_the_variable() {
+        let scratch = std::env::temp_dir().join(format!(
+            "core-builtin-credential-{}-{}",
+            std::process::id(),
+            CACHE_TEST_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        // Without a config root there is nothing to fall back TO, so the variable is still named.
+        assert_eq!(
+            builtin_credential("no-such-provider-id", "SOME_KEY"),
+            ProviderCredential::Env {
+                name: "SOME_KEY".into()
+            },
+            "a missing credential must still name the variable an operator would export"
+        );
+        // A name outside the provider-instance alphabet never becomes a filesystem path.
+        assert_eq!(crate::config::credential_file_path("../escape"), None);
+        assert_eq!(crate::config::credential_file_path(""), None);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// A credential file inside the workspace is reachable by `read_file`, `bash`, a child agent
+    /// and a hook. The composition root refuses that route instead of trusting confinement it
+    /// does not own; a file outside the workspace is not flagged.
+    #[tokio::test]
+    async fn i22_a_credential_file_inside_the_workspace_is_detected() {
+        let workspace = std::env::temp_dir().join(format!(
+            "core-credential-workspace-{}-{}",
+            std::process::id(),
+            CACHE_TEST_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let inside = workspace.join("token");
+        std::fs::write(&inside, "t\n").unwrap();
+
+        let mut config = declaring_config("gw", "https://gw.example/v1", None, BTreeMap::new());
+        config.key_env = None;
+        config.credential = Some(ProviderCredential::File {
+            path: inside.display().to_string(),
+        });
+        config.catalog = false;
+        config.models = vec!["m-1".into()];
+        let directory =
+            ProviderDirectory::discover_entries(vec![entry_from_config(&config).unwrap()], None)
+                .await
+                .unwrap();
+        assert_eq!(
+            directory.credential_files_inside(&workspace),
+            vec![inside.clone()],
+            "a credential inside the workspace must be visible to the composition root"
+        );
+        assert!(
+            directory
+                .credential_files_inside(std::path::Path::new("/nonexistent-elsewhere"))
+                .is_empty()
+        );
+        // Only names leave the directory, never values.
+        assert!(directory.credential_env_names().is_empty());
+        assert_eq!(directory.credential_file_paths(), vec![inside.clone()]);
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
     #[tokio::test]
     async fn glm_static_schema_without_key_is_visible_but_every_leaf_is_disabled() {
         let directory = ProviderDirectory::discover_entries(vec![glm_static_entry(None)], None)
@@ -3352,7 +3795,8 @@ mod tests {
             adapter: "openai_chat".into(),
             error_profile: error_profile.map(Into::into),
             api_root: api_root.into(),
-            key_env: "GATEWAY_KEY".into(),
+            key_env: Some("GATEWAY_KEY".into()),
+            credential: None,
             enabled: true,
             // Discovery off keeps this offline and makes the declared manifest the inventory.
             catalog: false,
@@ -3484,7 +3928,8 @@ mod tests {
             adapter: "openai_chat".into(),
             error_profile: None,
             api_root: "https://gateway.example/v1".into(),
-            key_env: "GATEWAY_KEY".into(),
+            key_env: Some("GATEWAY_KEY".into()),
+            credential: None,
             enabled: true,
             catalog: false,
             models: vec!["vendor/model-b".into(), "vendor/model-a".into()],
@@ -3545,7 +3990,8 @@ mod tests {
             adapter: "openai_chat".into(),
             error_profile: Some("deepseek".into()),
             api_root: "https://gateway.example/v1".into(),
-            key_env: "GATEWAY_KEY".into(),
+            key_env: Some("GATEWAY_KEY".into()),
+            credential: None,
             enabled: true,
             catalog: false,
             models: Vec::new(),
