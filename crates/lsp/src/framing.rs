@@ -7,9 +7,12 @@
 
 use crate::{
     DEFAULT_BODY_READ_TIMEOUT_MS, DEFAULT_HEADER_READ_TIMEOUT_MS, LspError, MAX_CONTENT_BYTES,
-    MAX_HEADER_BYTES, MAX_READ_TIMEOUT_MS, MIN_READ_TIMEOUT_MS,
+    MAX_HEADER_BYTES, MAX_MESSAGE_JSON_ARRAY_ITEMS, MAX_MESSAGE_JSON_DEPTH, MAX_MESSAGE_JSON_NODES,
+    MAX_MESSAGE_JSON_OBJECT_MEMBERS, MAX_MESSAGE_JSON_STRING_BYTES, MAX_READ_TIMEOUT_MS,
+    MIN_READ_TIMEOUT_MS,
 };
-use std::time::Duration;
+use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
+use std::{fmt, time::Duration};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt};
 
 const HEADER_TERMINATOR: &[u8] = b"\r\n\r\n";
@@ -192,8 +195,262 @@ where
     })?;
 
     let text = std::str::from_utf8(&body).map_err(|_| LspError::InvalidUtf8)?;
+    inspect_json_envelope(text)?;
     let value = serde_json::from_str(text).map_err(|e| LspError::Json(e.to_string()))?;
     Ok(Some(value))
+}
+
+/// Validate syntax and cap the retained JSON tree before constructing a `Value` DOM.
+///
+/// `Content-Length` bounds wire bytes, but a compact array of primitives can allocate many times
+/// its wire size as `Value` slots. This first pass retains no tree: it only counts decoded strings,
+/// nodes, object members, array items, and nesting depth with a streaming Serde visitor.
+fn inspect_json_envelope(text: &str) -> Result<(), LspError> {
+    let mut envelope = JsonEnvelope::default();
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let result = EnvelopeSeed {
+        envelope: &mut envelope,
+        depth: 0,
+        slot: Slot::Root,
+    }
+    .deserialize(&mut deserializer);
+    if let Some(error) = envelope.error.take() {
+        return Err(error);
+    }
+    result.map_err(|error| LspError::Json(error.to_string()))?;
+    deserializer
+        .end()
+        .map_err(|error| LspError::Json(error.to_string()))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Slot {
+    Root,
+    ArrayItem,
+    ObjectValue,
+}
+
+#[derive(Debug, Default)]
+struct JsonEnvelope {
+    nodes: usize,
+    string_bytes: usize,
+    object_members: usize,
+    array_items: usize,
+    error: Option<LspError>,
+}
+
+impl JsonEnvelope {
+    fn enter<E>(&mut self, depth: usize, slot: Slot) -> Result<(), E>
+    where
+        E: de::Error,
+    {
+        if depth > MAX_MESSAGE_JSON_DEPTH {
+            return self.reject::<E>("depth", depth, MAX_MESSAGE_JSON_DEPTH);
+        }
+        if matches!(slot, Slot::ArrayItem) {
+            self.array_items = self.array_items.saturating_add(1);
+            if self.array_items > MAX_MESSAGE_JSON_ARRAY_ITEMS {
+                return self.reject::<E>(
+                    "array items",
+                    self.array_items,
+                    MAX_MESSAGE_JSON_ARRAY_ITEMS,
+                );
+            }
+        }
+        self.nodes = self.nodes.saturating_add(1);
+        if self.nodes > MAX_MESSAGE_JSON_NODES {
+            return self.reject::<E>("nodes", self.nodes, MAX_MESSAGE_JSON_NODES);
+        }
+        Ok(())
+    }
+
+    fn member<E>(&mut self) -> Result<(), E>
+    where
+        E: de::Error,
+    {
+        self.object_members = self.object_members.saturating_add(1);
+        if self.object_members > MAX_MESSAGE_JSON_OBJECT_MEMBERS {
+            return self.reject::<E>(
+                "object members",
+                self.object_members,
+                MAX_MESSAGE_JSON_OBJECT_MEMBERS,
+            );
+        }
+        Ok(())
+    }
+
+    fn string<E>(&mut self, bytes: usize) -> Result<(), E>
+    where
+        E: de::Error,
+    {
+        self.string_bytes = self.string_bytes.saturating_add(bytes);
+        if self.string_bytes > MAX_MESSAGE_JSON_STRING_BYTES {
+            return self.reject::<E>(
+                "decoded string bytes",
+                self.string_bytes,
+                MAX_MESSAGE_JSON_STRING_BYTES,
+            );
+        }
+        Ok(())
+    }
+
+    fn reject<E>(&mut self, dimension: &'static str, value: usize, limit: usize) -> Result<(), E>
+    where
+        E: de::Error,
+    {
+        self.error = Some(LspError::JsonEnvelopeExceeded {
+            dimension,
+            value,
+            limit,
+        });
+        Err(E::custom("JSON resource envelope exceeded"))
+    }
+}
+
+struct EnvelopeSeed<'a> {
+    envelope: &'a mut JsonEnvelope,
+    depth: usize,
+    slot: Slot,
+}
+
+impl<'de> DeserializeSeed<'de> for EnvelopeSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        self.envelope.enter::<D::Error>(self.depth, self.slot)?;
+        deserializer.deserialize_any(EnvelopeVisitor {
+            envelope: self.envelope,
+            depth: self.depth,
+        })
+    }
+}
+
+struct EnvelopeVisitor<'a> {
+    envelope: &'a mut JsonEnvelope,
+    depth: usize,
+}
+
+impl<'de> Visitor<'de> for EnvelopeVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value within the resource envelope")
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, _value: f64) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_unit<E>(self) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<(), E>
+    where
+        E: de::Error,
+    {
+        self.envelope.string::<E>(value.len())
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<(), E>
+    where
+        E: de::Error,
+    {
+        self.envelope.string::<E>(value.len())
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<(), A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while sequence
+            .next_element_seed(EnvelopeSeed {
+                envelope: self.envelope,
+                depth: self.depth.saturating_add(1),
+                slot: Slot::ArrayItem,
+            })?
+            .is_some()
+        {}
+        Ok(())
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<(), A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        while map
+            .next_key_seed(KeySeed {
+                envelope: self.envelope,
+            })?
+            .is_some()
+        {
+            map.next_value_seed(EnvelopeSeed {
+                envelope: self.envelope,
+                depth: self.depth.saturating_add(1),
+                slot: Slot::ObjectValue,
+            })?;
+        }
+        Ok(())
+    }
+}
+
+struct KeySeed<'a> {
+    envelope: &'a mut JsonEnvelope,
+}
+
+impl<'de> DeserializeSeed<'de> for KeySeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(KeyVisitor {
+            envelope: self.envelope,
+        })
+    }
+}
+
+struct KeyVisitor<'a> {
+    envelope: &'a mut JsonEnvelope,
+}
+
+impl Visitor<'_> for KeyVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a bounded JSON object key")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<(), E>
+    where
+        E: de::Error,
+    {
+        self.envelope.member::<E>()?;
+        self.envelope.string::<E>(value.len())
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<(), E>
+    where
+        E: de::Error,
+    {
+        self.visit_str::<E>(&value)
+    }
 }
 
 /// Accumulate bytes up to the blank line that ends the header block.
@@ -415,6 +672,101 @@ mod tests {
         bytes.extend_from_slice(&[0xff, 0xfe, 0xfd, 0xfc]);
         let mut r = cursor(&bytes);
         assert_eq!(read_message(&mut r).await, Err(LspError::InvalidUtf8));
+    }
+
+    #[tokio::test]
+    async fn near_limit_wide_array_is_refused_before_dom_amplification() {
+        let mut body = String::with_capacity(12 * 1024 * 1024);
+        body.push('[');
+        for index in 0..=MAX_MESSAGE_JSON_ARRAY_ITEMS {
+            if index != 0 {
+                body.push(',');
+            }
+            body.push('0');
+            body.extend(std::iter::repeat_n(' ', 180));
+        }
+        body.push(']');
+        assert!(body.len() > MAX_CONTENT_BYTES / 2);
+        assert!(body.len() <= MAX_CONTENT_BYTES);
+
+        let mut reader = cursor(&encode(&body).unwrap());
+        assert_eq!(
+            read_message(&mut reader).await,
+            Err(LspError::JsonEnvelopeExceeded {
+                dimension: "array items",
+                value: MAX_MESSAGE_JSON_ARRAY_ITEMS + 1,
+                limit: MAX_MESSAGE_JSON_ARRAY_ITEMS
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn near_limit_wide_object_is_refused_before_dom_amplification() {
+        use std::fmt::Write as _;
+
+        let mut body = String::with_capacity(12 * 1024 * 1024);
+        body.push('{');
+        for index in 0..=MAX_MESSAGE_JSON_OBJECT_MEMBERS {
+            if index != 0 {
+                body.push(',');
+            }
+            write!(&mut body, "\"k{index}\":0").unwrap();
+            body.extend(std::iter::repeat_n(' ', 170));
+        }
+        body.push('}');
+        assert!(body.len() > MAX_CONTENT_BYTES / 2);
+        assert!(body.len() <= MAX_CONTENT_BYTES);
+
+        let mut reader = cursor(&encode(&body).unwrap());
+        assert_eq!(
+            read_message(&mut reader).await,
+            Err(LspError::JsonEnvelopeExceeded {
+                dimension: "object members",
+                value: MAX_MESSAGE_JSON_OBJECT_MEMBERS + 1,
+                limit: MAX_MESSAGE_JSON_OBJECT_MEMBERS
+            })
+        );
+    }
+
+    #[test]
+    fn decoded_strings_nodes_and_depth_have_independent_pre_dom_envelopes() {
+        let large = "x".repeat(MAX_MESSAGE_JSON_STRING_BYTES / 2 + 1);
+        let strings = serde_json::to_string(&vec![large.clone(), large]).unwrap();
+        assert!(matches!(
+            inspect_json_envelope(&strings),
+            Err(LspError::JsonEnvelopeExceeded {
+                dimension: "decoded string bytes",
+                ..
+            })
+        ));
+
+        let item = r#"{"k":0}"#;
+        let mixed = format!(
+            "[{}]",
+            std::iter::repeat_n(item, 50_000)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(matches!(
+            inspect_json_envelope(&mixed),
+            Err(LspError::JsonEnvelopeExceeded {
+                dimension: "nodes",
+                ..
+            })
+        ));
+
+        let deep = format!(
+            "{}0{}",
+            "[".repeat(MAX_MESSAGE_JSON_DEPTH + 1),
+            "]".repeat(MAX_MESSAGE_JSON_DEPTH + 1)
+        );
+        assert!(matches!(
+            inspect_json_envelope(&deep),
+            Err(LspError::JsonEnvelopeExceeded {
+                dimension: "depth",
+                ..
+            })
+        ));
     }
 
     #[test]

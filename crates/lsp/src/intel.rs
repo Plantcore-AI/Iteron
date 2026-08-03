@@ -6,7 +6,8 @@
 
 use crate::{
     LspError, MAX_HOVER_BYTES, MAX_HOVER_FRAGMENTS, MAX_LOCATION_INPUTS, MAX_LOCATIONS,
-    documents::{DocumentStore, validate_document_uri},
+    MAX_LSP_POSITION,
+    documents::{DocumentSnapshot, DocumentStore, range_components, validate_document_uri},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -52,6 +53,13 @@ impl Query {
     /// layer preserves already-correct percent encoding rather than rewriting it.
     pub fn params(self, uri: &str, at: Position) -> Result<Value, LspError> {
         validate_document_uri(uri)?;
+        if at.line > MAX_LSP_POSITION || at.character > MAX_LSP_POSITION {
+            return Err(LspError::InvalidPosition {
+                line: at.line,
+                character: at.character,
+                max: MAX_LSP_POSITION,
+            });
+        }
         let mut params = json!({
             "textDocument": { "uri": uri },
             "position": { "line": at.line, "character": at.character },
@@ -123,13 +131,14 @@ fn location_from(item: &Value) -> Option<Location> {
     }
 
     let uri = item.get("targetUri").and_then(Value::as_str)?;
-    // If a selection range is present but malformed, reject the link. Falling back in that case
-    // would let a bad preferred coordinate silently choose the much broader body range.
-    let range = match item.get("targetSelectionRange") {
-        Some(value) => range_from(value)?,
-        None => range_from(item.get("targetRange")?)?,
-    };
-    location(uri, range)
+    // All three fields are required by LocationLink. The narrower selection must be contained in
+    // the target range; otherwise consumers could navigate outside the server's claimed target.
+    let target = range_from(item.get("targetRange")?)?;
+    let selection = range_from(item.get("targetSelectionRange")?)?;
+    if target.start > selection.start || selection.end > target.end {
+        return None;
+    }
+    location(uri, selection)
 }
 
 fn location(uri: &str, range: Range) -> Option<Location> {
@@ -143,17 +152,16 @@ fn location(uri: &str, range: Range) -> Option<Location> {
 }
 
 fn range_from(value: &Value) -> Option<Range> {
+    let (start, end) = range_components(value)?;
     Some(Range {
-        start: position_from(value.get("start")?)?,
-        end: position_from(value.get("end")?)?,
-    })
-}
-
-fn position_from(value: &Value) -> Option<Position> {
-    Some(Position {
-        // `as_u64` rejects negative and fractional values instead of wrapping or rounding.
-        line: u32::try_from(value.get("line")?.as_u64()?).ok()?,
-        character: u32::try_from(value.get("character")?.as_u64()?).ok()?,
+        start: Position {
+            line: start.0,
+            character: start.1,
+        },
+        end: Position {
+            line: end.0,
+            character: end.1,
+        },
     })
 }
 
@@ -161,8 +169,16 @@ fn position_from(value: &Value) -> Option<Position> {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct HoverText {
     pub text: Option<String>,
-    /// Encoded UTF-8 bytes omitted from inspected, otherwise-valid fragments.
+    pub range: Option<Range>,
+    /// Source UTF-8 bytes seen in otherwise-valid inspected fragments.
+    pub source_bytes: usize,
+    /// Source bytes actually retained. `retained_source_bytes + truncated_bytes == source_bytes`.
+    pub retained_source_bytes: usize,
+    /// Encoded source bytes omitted from inspected, otherwise-valid fragments. Synthesized
+    /// separators are deliberately excluded.
     pub truncated_bytes: usize,
+    /// Separator bytes synthesized and retained between fragments.
+    pub separator_bytes: usize,
     pub malformed: usize,
     /// Array fragments beyond the hard inspection ceiling.
     pub uninspected: usize,
@@ -170,11 +186,27 @@ pub struct HoverText {
 
 /// Flatten `MarkupContent`, `MarkedString`, a bare string, or an array of those into plain text.
 pub fn parse_hover_text(value: &Value) -> HoverText {
-    let Some(contents) = value.get("contents") else {
+    if value.is_null() {
         return HoverText::default();
+    }
+    let Some(object) = value.as_object() else {
+        return HoverText {
+            malformed: 1,
+            ..HoverText::default()
+        };
+    };
+    let mut result = HoverText::default();
+    if let Some(range) = object.get("range") {
+        match range_from(range) {
+            Some(range) => result.range = Some(range),
+            None => result.malformed = result.malformed.saturating_add(1),
+        }
+    }
+    let Some(contents) = object.get("contents") else {
+        result.malformed = result.malformed.saturating_add(1);
+        return result;
     };
     let mut output = String::new();
-    let mut result = HoverText::default();
     match contents {
         Value::Array(items) => {
             let inspected = items.len().min(MAX_HOVER_FRAGMENTS);
@@ -192,16 +224,12 @@ pub fn parse_hover_text(value: &Value) -> HoverText {
 }
 
 fn append_hover_item(item: &Value, output: &mut String, result: &mut HoverText) {
-    let fragment = match item {
-        Value::String(text) => Some(text.as_str()),
-        Value::Object(_) => item.get("value").and_then(Value::as_str),
-        _ => None,
-    };
+    let fragment = hover_fragment(item);
     let Some(fragment) = fragment else {
         result.malformed = result.malformed.saturating_add(1);
         return;
     };
-    let fragment = fragment.trim();
+    result.source_bytes = result.source_bytes.saturating_add(fragment.len());
     if fragment.is_empty() {
         return;
     }
@@ -209,25 +237,38 @@ fn append_hover_item(item: &Value, output: &mut String, result: &mut HoverText) 
     let separator = if output.is_empty() { "" } else { "\n\n" };
     let remaining = MAX_HOVER_BYTES.saturating_sub(output.len());
     if separator.len() > remaining {
-        result.truncated_bytes = result
-            .truncated_bytes
-            .saturating_add(separator.len())
-            .saturating_add(fragment.len());
+        result.truncated_bytes = result.truncated_bytes.saturating_add(fragment.len());
         return;
     }
     let prefix_bytes = utf8_prefix_len(fragment, remaining - separator.len());
     if prefix_bytes == 0 {
-        result.truncated_bytes = result
-            .truncated_bytes
-            .saturating_add(separator.len())
-            .saturating_add(fragment.len());
+        result.truncated_bytes = result.truncated_bytes.saturating_add(fragment.len());
         return;
     }
     output.push_str(separator);
     output.push_str(&fragment[..prefix_bytes]);
+    result.separator_bytes = result.separator_bytes.saturating_add(separator.len());
+    result.retained_source_bytes = result.retained_source_bytes.saturating_add(prefix_bytes);
     result.truncated_bytes = result
         .truncated_bytes
         .saturating_add(fragment.len() - prefix_bytes);
+}
+
+fn hover_fragment(item: &Value) -> Option<&str> {
+    match item {
+        Value::String(text) => Some(text),
+        Value::Object(object) => {
+            let value = object.get("value")?.as_str()?;
+            match (object.get("kind"), object.get("language")) {
+                (Some(kind), None) if matches!(kind.as_str(), Some("plaintext" | "markdown")) => {
+                    Some(value)
+                }
+                (None, Some(language)) if language.as_str().is_some() => Some(value),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 fn utf8_prefix_len(text: &str, max_bytes: usize) -> usize {
@@ -240,25 +281,27 @@ fn utf8_prefix_len(text: &str, max_bytes: usize) -> usize {
 
 /// Snapshot freshness check for a positional answer. A future driver must repeat this check at the
 /// effect/commit boundary; this pure helper does not make a later edit atomic with the check.
-pub fn ensure_fresh(
-    store: &DocumentStore,
-    uri: &str,
-    issued_at_version: i32,
-) -> Result<(), LspError> {
-    validate_document_uri(uri)?;
-    match store.version(uri) {
-        Some(current) if current == issued_at_version => Ok(()),
-        Some(current) if issued_at_version < current => Err(LspError::StaleResult {
-            have: current,
-            issued: issued_at_version,
-        }),
-        Some(current) => Err(LspError::FutureResult {
-            have: current,
-            issued: issued_at_version,
-        }),
-        None => Err(LspError::UnknownDocument {
-            uri: uri.to_owned(),
-        }),
+pub fn ensure_fresh(store: &DocumentStore, issued: &DocumentSnapshot) -> Result<(), LspError> {
+    validate_document_uri(&issued.uri)?;
+    let current = store.snapshot(&issued.uri)?;
+    if current.incarnation != issued.incarnation {
+        return Err(LspError::StaleDocumentIncarnation {
+            have: current.incarnation,
+            issued: issued.incarnation,
+        });
+    }
+    if current.version == issued.version {
+        Ok(())
+    } else if issued.version < current.version {
+        Err(LspError::StaleResult {
+            have: current.version,
+            issued: issued.version,
+        })
+    } else {
+        Err(LspError::FutureResult {
+            have: current.version,
+            issued: issued.version,
+        })
     }
 }
 

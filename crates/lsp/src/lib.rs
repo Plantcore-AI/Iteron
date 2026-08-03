@@ -24,6 +24,14 @@ pub const MAX_HEADER_BYTES: usize = 8 * 1024;
 /// payload and well below a size that would let one message exhaust the agent's memory.
 pub const MAX_CONTENT_BYTES: usize = 16 * 1024 * 1024;
 
+/// A frame is scanned with a streaming deserializer before any `serde_json::Value` tree is built.
+/// These limits bound the DOM overhead that a compact but extremely wide JSON body could induce.
+pub const MAX_MESSAGE_JSON_NODES: usize = 96 * 1024;
+pub const MAX_MESSAGE_JSON_STRING_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_MESSAGE_JSON_OBJECT_MEMBERS: usize = 64 * 1024;
+pub const MAX_MESSAGE_JSON_ARRAY_ITEMS: usize = 64 * 1024;
+pub const MAX_MESSAGE_JSON_DEPTH: usize = 64;
+
 /// How many requests may be in flight before the caller must wait. Backpressure is a bound on
 /// *our* memory, so it is enforced on admission rather than by dropping an already-sent request.
 pub const MAX_IN_FLIGHT: usize = 256;
@@ -44,6 +52,14 @@ pub const MAX_DIAGNOSTIC_BYTES_TOTAL: usize = 16 * 1024 * 1024;
 pub const MAX_DIAGNOSTIC_JSON_NODES: usize = 32 * 1024;
 pub const MAX_DIAGNOSTIC_JSON_NODES_TOTAL: usize = 256 * 1024;
 pub const MAX_DIAGNOSTIC_JSON_DEPTH: usize = 64;
+pub const MAX_DIAGNOSTIC_MESSAGE_BYTES: usize = 64 * 1024;
+pub const MAX_DIAGNOSTIC_SOURCE_BYTES: usize = 1024;
+pub const MAX_DIAGNOSTIC_CODE_BYTES: usize = 4 * 1024;
+pub const MAX_DIAGNOSTIC_RELATED_INFORMATION: usize = 64;
+pub const MAX_DIAGNOSTIC_RELATED_MESSAGE_BYTES: usize = 16 * 1024;
+
+/// LSP `uinteger` is bounded to 2^31-1 even though Rust's natural storage type is wider.
+pub const MAX_LSP_POSITION: u32 = i32::MAX as u32;
 
 /// Request deadlines are mandatory and cannot be configured into an effective infinity.
 pub const MIN_REQUEST_TIMEOUT_MS: u64 = 1;
@@ -95,6 +111,12 @@ pub enum LspError {
     InvalidUtf8,
     #[error("body was not valid json: {0}")]
     Json(String),
+    #[error("JSON {dimension} envelope is {value} (limit {limit}) before DOM construction")]
+    JsonEnvelopeExceeded {
+        dimension: &'static str,
+        value: usize,
+        limit: usize,
+    },
     #[error("{phase} read timed out after {limit_ms}ms; the stream must be discarded")]
     ReadTimeout { phase: &'static str, limit_ms: u64 },
     #[error("{kind} timeout {value_ms}ms is outside [{min_ms}, {max_ms}]ms")]
@@ -110,6 +132,10 @@ pub enum LspError {
     InvalidPendingCapacity { value: usize, max: usize },
     #[error("request id {id} is already in flight")]
     DuplicateRequestId { id: u64 },
+    #[error("request ids are exhausted for generation {generation}")]
+    RequestIdExhausted { generation: u64 },
+    #[error("the monotonic {kind} sequence is exhausted")]
+    SequenceExhausted { kind: &'static str },
     #[error("request {id} timed out after {elapsed_ms}ms")]
     Timeout { id: u64, elapsed_ms: u64 },
     #[error("injected monotonic clock regressed from {previous_ms}ms to {current_ms}ms")]
@@ -132,6 +158,8 @@ pub enum LspError {
     DiagnosticStoreFull { value: usize, limit: usize },
     #[error("diagnostic store would retain {value} JSON nodes (global limit {limit})")]
     DiagnosticNodeStoreFull { value: usize, limit: usize },
+    #[error("diagnostic {index} is malformed: {reason}")]
+    MalformedDiagnostic { index: usize, reason: &'static str },
     #[error("server is {state}, which cannot accept requests")]
     NotReady { state: &'static str },
     #[error("restart backoff has {remaining_ms}ms remaining")]
@@ -157,4 +185,8 @@ pub enum LspError {
     InvalidLocationLimit { value: usize, max: usize },
     #[error("result claims future version {issued}, document is at {have}")]
     FutureResult { have: i32, issued: i32 },
+    #[error("result was computed for document incarnation {issued}, current incarnation is {have}")]
+    StaleDocumentIncarnation { have: u64, issued: u64 },
+    #[error("position ({line}, {character}) exceeds the LSP ceiling {max}")]
+    InvalidPosition { line: u32, character: u32, max: u32 },
 }

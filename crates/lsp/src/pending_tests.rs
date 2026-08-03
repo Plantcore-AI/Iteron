@@ -1,27 +1,32 @@
 use super::*;
 
+fn pending(generation: u64, capacity: usize) -> PendingRequests {
+    PendingRequests::with_capacity(generation, capacity).unwrap()
+}
+
 #[test]
 fn construction_and_admission_have_hard_bounds() {
     assert_eq!(
-        PendingRequests::with_capacity(0).unwrap_err(),
+        PendingRequests::with_capacity(7, 0).unwrap_err(),
         LspError::InvalidPendingCapacity {
             value: 0,
             max: MAX_IN_FLIGHT
         }
     );
     assert_eq!(
-        PendingRequests::with_capacity(MAX_IN_FLIGHT + 1).unwrap_err(),
+        PendingRequests::with_capacity(7, MAX_IN_FLIGHT + 1).unwrap_err(),
         LspError::InvalidPendingCapacity {
             value: MAX_IN_FLIGHT + 1,
             max: MAX_IN_FLIGHT
         }
     );
 
-    let mut pending = PendingRequests::with_capacity(2).unwrap();
-    pending.issue(1, "definition", 0, 1_000).unwrap();
-    pending.issue(2, "hover", 0, 1_000).unwrap();
+    let mut pending = pending(7, 2);
+    let first = pending.issue("definition", 0, 1_000).unwrap();
+    let second = pending.issue("hover", 0, 1_000).unwrap();
+    assert_eq!((first.id, second.id), (1, 2));
     assert_eq!(
-        pending.issue(3, "references", 0, 1_000),
+        pending.issue("references", 0, 1_000),
         Err(LspError::Backpressure { limit: 2 })
     );
     assert_eq!(pending.in_flight(), 2);
@@ -29,38 +34,75 @@ fn construction_and_admission_have_hard_bounds() {
 }
 
 #[test]
-fn duplicate_ids_never_replace_a_live_waiter() {
-    let mut pending = PendingRequests::with_capacity(1).unwrap();
-    pending.issue(7, "original", 10, 100).unwrap();
+fn ids_are_monotonic_and_never_reused_after_retirement() {
+    let mut pending = PendingRequests::new(41);
+    let first = pending.issue("definition", 0, 1_000).unwrap();
     assert_eq!(
-        pending.issue(7, "replacement", 10, 100),
-        Err(LspError::DuplicateRequestId { id: 7 })
+        pending.resolve(41, first.id, 1).unwrap(),
+        ReplyDisposition::Accepted(first)
     );
-    let expired = pending.expire(110).unwrap();
-    assert_eq!(expired[0].method, "original");
-    assert_eq!(pending.rejected(), 1);
+    let second = pending.issue("hover", 1, 1_000).unwrap();
+    assert_eq!(second.id, first.id + 1);
+    assert_eq!(second.generation, 41);
+    assert_eq!(second.method, "hover");
 }
 
 #[test]
-fn an_id_is_reusable_after_the_original_request_retires() {
-    let mut pending = PendingRequests::default();
-    pending.issue(7, "definition", 0, 1_000).unwrap();
-    assert_eq!(pending.resolve(7, 1).unwrap(), ReplyDisposition::Accepted);
-    pending.issue(7, "hover", 1, 1_000).unwrap();
+fn a_duplicate_reply_is_typed_and_cannot_resolve_a_new_request() {
+    let mut pending = PendingRequests::new(9);
+    let first = pending.issue("definition", 0, 100).unwrap();
+    assert_eq!(
+        pending.resolve(9, first.id, 1).unwrap(),
+        ReplyDisposition::Accepted(first)
+    );
+    let second = pending.issue("hover", 1, 100).unwrap();
+
+    assert_eq!(
+        pending.resolve(9, first.id, 2).unwrap(),
+        ReplyDisposition::Duplicate(first)
+    );
+    assert_eq!(pending.in_flight(), 1);
+    assert_eq!(
+        pending.resolve(9, second.id, 2).unwrap(),
+        ReplyDisposition::Accepted(second)
+    );
+}
+
+#[test]
+fn an_old_generation_cannot_alias_the_same_wire_id_in_a_new_generation() {
+    let mut old = PendingRequests::new(10);
+    let old_request = old.issue("definition", 0, 100).unwrap();
+    let mut current = PendingRequests::new(11);
+    let current_request = current.issue("hover", 0, 100).unwrap();
+    assert_eq!(old_request.id, current_request.id);
+
+    assert_eq!(
+        current.resolve(10, old_request.id, 1).unwrap(),
+        ReplyDisposition::ForeignGeneration {
+            expected: 11,
+            received: 10,
+            id: old_request.id
+        }
+    );
+    assert_eq!(current.in_flight(), 1);
+    assert_eq!(
+        current.resolve(11, current_request.id, 1).unwrap(),
+        ReplyDisposition::Accepted(current_request)
+    );
 }
 
 #[test]
 fn request_deadlines_cannot_be_disabled_or_made_effectively_infinite() {
-    let mut pending = PendingRequests::default();
+    let mut pending = PendingRequests::new(1);
     assert!(matches!(
-        pending.issue(1, "hover", 0, 0),
+        pending.issue("hover", 0, 0),
         Err(LspError::InvalidTimeout {
             kind: "request",
             ..
         })
     ));
     assert!(matches!(
-        pending.issue(2, "hover", 0, MAX_REQUEST_TIMEOUT_MS + 1),
+        pending.issue("hover", 0, MAX_REQUEST_TIMEOUT_MS + 1),
         Err(LspError::InvalidTimeout {
             kind: "request",
             ..
@@ -70,82 +112,97 @@ fn request_deadlines_cannot_be_disabled_or_made_effectively_infinite() {
 }
 
 #[test]
-fn expiry_reports_total_elapsed_time_at_and_after_the_deadline() {
-    let mut pending = PendingRequests::default();
-    pending.issue(1, "definition", 1_000, 500).unwrap();
+fn expiry_reports_total_elapsed_time_and_stable_id_order() {
+    let mut pending = PendingRequests::new(4);
+    let first = pending.issue("definition", 1_000, 500).unwrap();
+    let second = pending.issue("hover", 1_000, 500).unwrap();
     assert!(pending.expire(1_499).unwrap().is_empty());
     assert_eq!(
         pending.expire(1_500).unwrap(),
-        vec![Expired {
-            id: 1,
-            method: "definition",
-            elapsed_ms: 500
-        }]
+        vec![
+            Expired {
+                generation: 4,
+                id: first.id,
+                method: "definition",
+                elapsed_ms: 500
+            },
+            Expired {
+                generation: 4,
+                id: second.id,
+                method: "hover",
+                elapsed_ms: 500
+            }
+        ]
     );
-
-    pending.issue(2, "hover", 2_000, 10).unwrap();
-    assert_eq!(pending.expire(2_100).unwrap()[0].elapsed_ms, 100);
     assert_eq!(pending.timed_out(), 2);
+    assert!(matches!(
+        pending.resolve(4, first.id, 1_500).unwrap(),
+        ReplyDisposition::Late(Expired { id, .. }) if id == first.id
+    ));
 }
 
 #[test]
-fn late_replies_are_not_live_and_expiry_order_is_stable() {
-    let mut pending = PendingRequests::default();
-    for id in [30u64, 10, 20] {
-        pending.issue(id, "hover", 0, 5).unwrap();
-    }
-    let ids: Vec<u64> = pending
-        .expire(1_000)
-        .unwrap()
-        .into_iter()
-        .map(|entry| entry.id)
-        .collect();
-    assert_eq!(ids, vec![10, 20, 30]);
+fn cancellation_remains_charged_until_response_or_expiry() {
+    let mut pending = pending(15, 2);
+    let first = pending.issue("hover", 0, 10).unwrap();
+    let second = pending.issue("definition", 0, 20).unwrap();
     assert_eq!(
-        pending.resolve(10, 1_000).unwrap(),
-        ReplyDisposition::Unknown
+        pending.cancel(15, first.id, 1).unwrap(),
+        CancelDisposition::CancellationRequested(first)
     );
-}
-
-#[test]
-fn cancellation_is_counted_separately() {
-    let mut pending = PendingRequests::default();
-    pending.issue(1, "hover", 0, 1_000).unwrap();
-    assert_eq!(pending.cancel(1, 1).unwrap(), CancelDisposition::Cancelled);
-    assert_eq!(pending.cancel(1, 1).unwrap(), CancelDisposition::Unknown);
-    assert_eq!(pending.cancelled(), 1);
-    assert_eq!(pending.timed_out(), 0);
-}
-
-#[test]
-fn reply_and_cancel_enforce_deadlines_without_a_prior_sweep() {
-    let mut pending = PendingRequests::default();
-    pending.issue(1, "hover", 0, 10).unwrap();
     assert_eq!(
-        pending.resolve(1, 10).unwrap(),
+        pending.cancel(15, second.id, 1).unwrap(),
+        CancelDisposition::CancellationRequested(second)
+    );
+    assert_eq!(pending.in_flight(), 2);
+    assert_eq!(pending.cancelling(), 2);
+    assert_eq!(
+        pending.issue("references", 1, 100),
+        Err(LspError::Backpressure { limit: 2 })
+    );
+
+    assert_eq!(
+        pending.resolve(15, first.id, 2).unwrap(),
+        ReplyDisposition::Cancelled(first)
+    );
+    let replacement = pending.issue("references", 2, 100).unwrap();
+    assert!(
+        replacement.id > second.id,
+        "a cancelled id must never be reused"
+    );
+    assert_eq!(pending.expire(20).unwrap()[0].id, second.id);
+    assert_eq!(pending.cancelled(), 2);
+}
+
+#[test]
+fn repeated_cancel_is_idempotent_and_deadline_is_enforced_without_sweep() {
+    let mut pending = PendingRequests::new(2);
+    let request = pending.issue("hover", 0, 10).unwrap();
+    assert_eq!(
+        pending.cancel(2, request.id, 1).unwrap(),
+        CancelDisposition::CancellationRequested(request)
+    );
+    assert_eq!(
+        pending.cancel(2, request.id, 2).unwrap(),
+        CancelDisposition::AlreadyCancelling(request)
+    );
+    assert_eq!(pending.cancelled(), 1);
+    assert_eq!(
+        pending.resolve(2, request.id, 10).unwrap(),
         ReplyDisposition::Late(Expired {
-            id: 1,
+            generation: 2,
+            id: request.id,
             method: "hover",
             elapsed_ms: 10
         })
     );
-    pending.issue(2, "definition", 10, 10).unwrap();
-    assert_eq!(
-        pending.cancel(2, 20).unwrap(),
-        CancelDisposition::TimedOut(Expired {
-            id: 2,
-            method: "definition",
-            elapsed_ms: 10
-        })
-    );
-    assert_eq!(pending.timed_out(), 2);
-    assert_eq!(pending.cancelled(), 0);
+    assert_eq!(pending.timed_out(), 1);
 }
 
 #[test]
 fn a_regressed_clock_is_typed_and_does_not_expire_early() {
-    let mut pending = PendingRequests::default();
-    pending.issue(1, "hover", 100, 50).unwrap();
+    let mut pending = PendingRequests::new(1);
+    pending.issue("hover", 100, 50).unwrap();
     assert_eq!(
         pending.expire(99),
         Err(LspError::ClockRegressed {
@@ -159,9 +216,29 @@ fn a_regressed_clock_is_typed_and_does_not_expire_early() {
 
 #[test]
 fn deadline_addition_saturates_without_panicking() {
-    let mut pending = PendingRequests::default();
-    pending
-        .issue(1, "hover", u64::MAX - 1, MAX_REQUEST_TIMEOUT_MS)
+    let mut pending = PendingRequests::new(1);
+    let request = pending
+        .issue("hover", u64::MAX - 1, MAX_REQUEST_TIMEOUT_MS)
         .unwrap();
-    assert_eq!(pending.expire(u64::MAX).unwrap()[0].elapsed_ms, 1);
+    assert_eq!(pending.expire(u64::MAX).unwrap()[0].id, request.id);
+}
+
+#[test]
+fn tombstones_are_bounded_but_old_ids_remain_unusable() {
+    let mut pending = pending(3, 1);
+    let first = pending.issue("one", 0, 10).unwrap();
+    assert!(matches!(
+        pending.resolve(3, first.id, 1).unwrap(),
+        ReplyDisposition::Accepted(_)
+    ));
+    let second = pending.issue("two", 1, 10).unwrap();
+    pending.resolve(3, second.id, 2).unwrap();
+
+    assert_eq!(
+        pending.resolve(3, first.id, 2).unwrap(),
+        ReplyDisposition::Retired {
+            generation: 3,
+            id: first.id
+        }
+    );
 }
