@@ -262,7 +262,9 @@ fn is_emitter_binding(statement: &syn::Stmt) -> bool {
     binding.ident == "emitter"
         && binding.mutability.is_some()
         && path_is(&call.func, &["Emitter", "new"])
-        && call.args.len() == 1
+        && call.args.len() == 2
+        && path_is(&call.args[0], &["output_format"])
+        && path_is(&call.args[1], &["machine_schema_version"])
 }
 
 fn path_is(expression: &syn::Expr, expected: &[&str]) -> bool {

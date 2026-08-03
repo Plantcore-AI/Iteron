@@ -297,6 +297,9 @@ pub struct Event {
 /// admitted at its owning boundary before the kernel combines their already-bounded bytes.
 pub const MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES: usize = 4 * 1024;
 
+/// Maximum UTF-8 bytes in immutable operator-defined run grouping metadata.
+pub const MAX_AGENT_DEFINITION_TAG_BYTES: usize = 128;
+
 /// Exact frontend-observed environment facts captured for a fresh run. The text is data, not an
 /// instruction source, and keeps its own provenance so combining it cannot silently raise trust.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -527,6 +530,10 @@ pub enum EventKind {
         forked_at: Option<u64>,
         parent_hash_at_seq: Option<String>,
         config_digest: String,
+        /// Bounded operator-defined grouping metadata. It is immutable for a run, inherited by a
+        /// fork, and absent on legacy records.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_definition_tag: Option<String>,
         /// Invocation-independent monetary ceiling. Missing on legacy records. Forks copy the
         /// effective value into their own genesis so rewinding cannot silently remove it.
         #[serde(default)]
@@ -841,6 +848,7 @@ mod tests {
                     forked_at: None,
                     parent_hash_at_seq: None,
                     config_digest: String::new(),
+                    agent_definition_tag: None,
                     max_usd: None,
                 },
             },
@@ -1148,6 +1156,7 @@ mod tests {
             forked_at: None,
             parent_hash_at_seq: None,
             config_digest: String::new(),
+            agent_definition_tag: None,
             max_usd: None,
         };
         let encoded = serde_json::to_value(current).unwrap();

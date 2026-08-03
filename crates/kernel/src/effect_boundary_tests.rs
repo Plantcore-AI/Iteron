@@ -353,6 +353,7 @@ async fn fsynced_intent_crash_reconciles_unknown_without_replay_then_forks_a_div
                     forked_at: None,
                     parent_hash_at_seq: None,
                     config_digest: "fixture-config".into(),
+                    agent_definition_tag: None,
                     max_usd: None,
                 },
             })

@@ -7802,6 +7802,7 @@ mod tests {
             provider_id: provider_id.into(),
             model: model.into(),
             effort: Effort::Medium,
+            agent_definition_tag: None,
             title: title.into(),
             created_at: updated_at.saturating_sub(10),
             updated_at,

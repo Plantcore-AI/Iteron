@@ -18,6 +18,7 @@ pub use core_kernel::{diagnostics, effect_admission, effect_class, effect_journa
 pub mod hooks;
 mod pricing;
 mod strategy_runtime;
+pub mod telemetry;
 mod workflow_spawner;
 use core_ctx::{CompactionPolicy, ContextEstimate};
 // The uncached projection is now only a test oracle: the turn loop reads `Agent::context_estimator`.
@@ -2346,6 +2347,10 @@ pub struct Agent {
     failed_actions: std::collections::HashMap<String, String>,
     /// Lifecycle hooks (R5), loaded from the USER config only (trust-by-origin). Empty by default.
     pub hooks: Hooks,
+    /// The operator-authorised telemetry export target (#105). `None` -- the default -- means no
+    /// effect is ever admitted, so an unconfigured run is byte-identical to one in a build without
+    /// the exporter.
+    pub telemetry: Option<telemetry::TelemetrySink>,
     /// One absolute wall deadline shared by decomposition, fan-out, compaction, retries, and the
     /// writer loop. `drive()` must never reset it after orchestration has already spent time.
     run_deadline: Option<Instant>,
@@ -2448,6 +2453,7 @@ impl Agent {
             delegation_depth: 0,
             failed_actions: std::collections::HashMap::new(),
             hooks: Hooks::default(),
+            telemetry: None,
             run_deadline: None,
         }
     }
@@ -4031,6 +4037,80 @@ impl Agent {
         }
     }
 
+    /// Export the run's telemetry projection across the effect boundary (#105).
+    ///
+    /// Returns immediately when no sink is configured, which is the default: no config, no effect,
+    /// no journal entry, no measurable difference. That is the whole meaning of "off".
+    ///
+    /// When it IS configured, the egress crosses the same broker as every other world effect, so a
+    /// stalled collector is bounded and reaped, and a crash mid-POST leaves an `EffectUnknown` that
+    /// recovery refuses to replay -- a retried export would duplicate spans, and a duplicated span
+    /// is a wrong dashboard rather than a missing one.
+    ///
+    /// The payload is a PROJECTION: `core_obs::otel::project` reads events the record already
+    /// holds and measures nothing, so the exporter cannot disagree with the audit log it exports.
+    async fn brokered_telemetry_export(&mut self, turn: TurnId) -> Result<(), KernelError> {
+        let Some(sink) = self.telemetry.clone() else {
+            return Ok(());
+        };
+        let Ok(timed) = core_record::replay_timed(self.rollout.path()) else {
+            // A rollout that will not replay is an audit problem, not a telemetry problem, and it
+            // is already reported by every other reader. Exporting a partial projection from bytes
+            // the audit path rejected is the one thing this must not do.
+            return Ok(());
+        };
+        let events: Vec<&core_protocol::Event> = timed.iter().map(|entry| &entry.event).collect();
+        let timeline = core_obs::timeline::fold(timed.iter().map(|e| (e.ts_us, &e.event)));
+        let payload = core_obs::otel::project(&self.rollout.run_id().0, &events, &timeline);
+        if payload.dropped > 0 {
+            // Counted, never silent. A consumer that saw the cap and no drop count would believe
+            // it had seen the whole run.
+            self.ui(UiEvent::Notice(format!(
+                "telemetry export dropped {} span(s) at the payload bound",
+                payload.dropped
+            )));
+        }
+
+        let class = effect_class::EffectClass::Telemetry;
+        let ordinal = self.next_effect_ordinal(turn, class);
+        let effect = KernelEffect {
+            turn,
+            class,
+            ordinal,
+            capability: Capability::IrreversibleExternal,
+            audit_arguments: serde_json::json!({
+                "endpoint": sink.endpoint(),
+                "spans": payload.spans.len(),
+                "metrics": payload.metrics.len(),
+                "dropped": payload.dropped,
+            }),
+            workspace: self.workspace.as_path(),
+        };
+        let Agent {
+            rollout,
+            effect_admissions,
+            ..
+        } = self;
+        let outcome = broker_kernel_effect(rollout, effect_admissions, effect, || async move {
+            match sink.send(&payload).await {
+                Some(_) => effects::EffectDisposition::Definite {
+                    terminal: effect_done_terminal(turn, class, ordinal),
+                    value: (),
+                },
+                // Dispatched, no authoritative terminal observed. Never retried.
+                None => effects::EffectDisposition::Unknown {
+                    reason: "telemetry collector returned no observable terminal".into(),
+                    value: (),
+                },
+            }
+        })
+        .await;
+        match outcome {
+            Ok(_) => Ok(()),
+            Err(error) => Err(self.effect_boundary_failed(error)),
+        }
+    }
+
     /// Refuse blind replay across the edit/process crash window. A durable intent without a
     /// correlated ToolDone is conservatively materialized as EffectUnknown; an existing Unknown
     /// remains blocking until a future broker/reconciler appends authoritative completion.
@@ -4379,6 +4459,7 @@ impl Agent {
         cwd: String,
         created_at: u64,
         config_digest: String,
+        agent_definition_tag: Option<String>,
     ) -> Result<(), KernelError> {
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
         self.reconcile_usd_budget_for_genesis();
@@ -4386,6 +4467,14 @@ impl Agent {
             validate_route_identifier("model_id", &self.model, 512, false)?;
         }
         validate_route_digest("config_digest", &config_digest)?;
+        if let Some(tag) = &agent_definition_tag {
+            validate_route_identifier(
+                "agent_definition_tag",
+                tag,
+                core_protocol::MAX_AGENT_DEFINITION_TAG_BYTES,
+                false,
+            )?;
+        }
         self.emit_durable(
             TurnId(0),
             EventKind::RunStart {
@@ -4403,6 +4492,7 @@ impl Agent {
                 forked_at: None,
                 parent_hash_at_seq: None,
                 config_digest,
+                agent_definition_tag,
                 max_usd: self.effective_max_usd(),
             },
         )?;
@@ -4887,6 +4977,10 @@ impl Agent {
             self.brokered_hook(TurnId(self.seq_turn), HookEvent::Stop, &ctx)
                 .await?;
         }
+        // After the Stop hook, so the export includes the hook's own effect: the exporter is the
+        // last thing the run does, and it exports what the run actually did.
+        self.brokered_telemetry_export(TurnId(self.seq_turn))
+            .await?;
         self.refresh_session_cache_metered();
         outcome
     }
@@ -12086,6 +12180,7 @@ mod gate_integration_tests {
                         forked_at: None,
                         parent_hash_at_seq: None,
                         config_digest: String::new(),
+                        agent_definition_tag: None,
                         max_usd: None,
                     },
                 })
@@ -12167,7 +12262,7 @@ mod gate_integration_tests {
                 .permission_rules
                 .set_cap(Capability::CodeExecuting, Verdict::Auto);
             original
-                .record_genesis(ws.display().to_string(), 1, String::new())
+                .record_genesis(ws.display().to_string(), 1, String::new(), None)
                 .unwrap();
             original
                 .transition_effort(Effort::Max, RuntimePolicySource::Operator)
@@ -14015,7 +14110,7 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent
-            .record_genesis(ws.display().to_string(), 1, String::new())
+            .record_genesis(ws.display().to_string(), 1, String::new(), None)
             .unwrap();
 
         assert_eq!(agent.run("finish the task").await.unwrap(), Outcome::Done);
@@ -14136,7 +14231,7 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent
-            .record_genesis(ws.display().to_string(), 1, String::new())
+            .record_genesis(ws.display().to_string(), 1, String::new(), None)
             .unwrap();
 
         assert!(matches!(
@@ -14637,7 +14732,12 @@ ant-api03-SuperSecretModelToken12345"
             "the live provider proposal must use the same post-scrub bytes as the record"
         );
         agent
-            .record_genesis("/workspace".into(), 1, format!("sha256:{}", "c".repeat(64)))
+            .record_genesis(
+                "/workspace".into(),
+                1,
+                format!("sha256:{}", "c".repeat(64)),
+                None,
+            )
             .unwrap();
         agent.resolve_injection(TurnId(0), "fresh").unwrap();
         let effective = agent.effective_system();
@@ -14968,7 +15068,12 @@ ant-api03-SuperSecretModelToken12345"
                 .set_environment_context(original_environment.into(), Trust::Workspace)
                 .unwrap();
             fresh
-                .record_genesis("/original".into(), 7, format!("sha256:{}", "c".repeat(64)))
+                .record_genesis(
+                    "/original".into(),
+                    7,
+                    format!("sha256:{}", "c".repeat(64)),
+                    None,
+                )
                 .unwrap();
             // Simulate process loss after genesis but before `run` resolves ContextInjection.
         }
@@ -16301,6 +16406,7 @@ ant-api03-SuperSecretModelToken12345"
                     ws.display().to_string(),
                     1,
                     format!("sha256:{}", "c".repeat(64)),
+                    None,
                 )
                 .unwrap();
             agent.budget.max_usd = proposed;
@@ -16341,6 +16447,7 @@ ant-api03-SuperSecretModelToken12345"
                 ws.display().to_string(),
                 1,
                 format!("sha256:{}", "c".repeat(64)),
+                None,
             )
             .unwrap();
         agent.budget.max_usd = Some(0.25);
@@ -16694,6 +16801,7 @@ ant-api03-SuperSecretModelToken12345"
                 ws.display().to_string(),
                 1,
                 format!("sha256:{}", "c".repeat(64)),
+                None,
             )
             .unwrap();
         agent
@@ -17037,6 +17145,7 @@ ant-api03-SuperSecretModelToken12345"
                     ws.display().to_string(),
                     1,
                     format!("sha256:{}", "c".repeat(64)),
+                    None,
                 )
                 .unwrap();
         }
@@ -17090,6 +17199,7 @@ ant-api03-SuperSecretModelToken12345"
                     ws.display().to_string(),
                     1,
                     format!("sha256:{}", "c".repeat(64)),
+                    None,
                 )
                 .unwrap();
             agent
@@ -17179,6 +17289,7 @@ ant-api03-SuperSecretModelToken12345"
                     ws.display().to_string(),
                     1,
                     format!("sha256:{}", "c".repeat(64)),
+                    None,
                 )
                 .unwrap();
             let events = core_record::replay(original.rollout.path()).unwrap();
@@ -17264,6 +17375,7 @@ ant-api03-SuperSecretModelToken12345"
                         ws.display().to_string(),
                         1,
                         format!("sha256:{}", "c".repeat(64)),
+                        None,
                     )
                     .unwrap();
                 original
@@ -17362,6 +17474,7 @@ ant-api03-SuperSecretModelToken12345"
                         forked_at: None,
                         parent_hash_at_seq: None,
                         config_digest: format!("sha256:{}", "c".repeat(64)),
+                        agent_definition_tag: None,
                         max_usd: Some(1.0),
                     },
                 })
@@ -17954,7 +18067,7 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent
-            .record_genesis(ws.display().to_string(), 1, String::new())
+            .record_genesis(ws.display().to_string(), 1, String::new(), None)
             .unwrap();
         agent
             .record_model_selection(
@@ -18055,7 +18168,7 @@ ant-api03-SuperSecretModelToken12345"
             );
             agent.workspace = ws.clone();
             agent
-                .record_genesis(ws.display().to_string(), 1, String::new())
+                .record_genesis(ws.display().to_string(), 1, String::new(), None)
                 .unwrap();
             agent
                 .record_model_selection(

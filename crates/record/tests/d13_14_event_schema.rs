@@ -824,6 +824,7 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             forked_at: _,
             parent_hash_at_seq: _,
             config_digest: _,
+            agent_definition_tag: _,
             max_usd: _,
         } => "run_start",
         EventKind::ModelSelected {

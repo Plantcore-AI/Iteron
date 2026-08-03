@@ -24,6 +24,8 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `-p`, `--print` | One-shot / non-interactive: run the task, stream text, exit (like `claude -p`). Requires a task. Without -p, core opens the interactive TUI (the default). |
 | `--image <PATH>` | Attach a local PNG, JPEG, GIF, or WebP to a one-shot task. Repeat up to the bounded attachment limit; bytes are sniffed before they enter the SQ. Repeatable. |
 | `--output-format <OUTPUT_FORMAT>` | One-shot stdout contract: text \| json \| stream-json. Machine formats keep stdout as valid JSON/JSONL; diagnostics continue on stderr. Only valid in one-shot mode. Default `text`. |
+| `--output-schema-version <VERSION>` | Pin a published machine stdout schema. Supported versions are reported by `--machine-contract`; omission keeps the current v5 default. |
+| `--machine-contract` | Print the bounded, provider-free CLI capability report as JSON and exit. |
 | `-C`, `--repo <REPO>` | The repository to work in (defaults to the current directory). Default `.`. |
 | `--model <MODEL>` | Model id (overrides config / default). |
 | `--max-turns <MAX_TURNS>` | Max turns (bounded invariant; overrides config / default). |
@@ -38,7 +40,12 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `-c`, `--continue` | Continue the most recent session in this repo (like `claude --continue`). |
 | `--sessions` | List sessions in this repo (id, turns, model, cost, title) and exit. |
 | `--limit <N>` | How many sessions `--sessions` lists. Defaults to one page (200); the machine document keeps its published page ceiling and reports `truncated` instead. |
+| `--session-cursor <TOKEN>` | Opaque continuation token returned by a prior `session_list_page`. |
+| `--session-limit <SESSION_LIMIT>` | Maximum session rows in one machine page. |
+| `--agent-definition-tag <TAG>` | Bounded immutable grouping metadata for a fresh run, or an exact filter for `--sessions`. |
 | `--transcript <RUN_ID>` | Read one session's transcript and exit. Pair with `--output-format json` for the machine document; a client should never open a file under `.core/runs` itself. |
+| `--otel-export <RUN_ID>` | Project one session into its OTel export payload and print it, without sending anything anywhere (#105). The offline half of the exporter: same projection the live sink ships, so an operator can see exactly what would leave the machine before enabling it. |
+| `--transcript-cursor <TOKEN>` | Opaque continuation token returned by a prior `session_transcript_page`. |
 | `--timeline <RUN_ID>` | Read one session's latency timeline and exit: the per-class effect breakdown, the distribution behind it, and what could not be accounted for. Pair with `--output-format json` for the machine document. Purely offline -- it reads the hash-verified record and measures nothing itself. |
 | `--fork <FORK>` | Fork a prior run at its tail into a new branch (shared past, divergent future) and print the new run id. The fork is tamper-evident: its genesis pins the parent chain's hash at the fork point (ADR-008 §4), so a later edit to the parent prefix is detected on resume. |
 | `--verify <VERIFY>` | Verification gate: a test command the harness runs itself when the agent claims done. If it fails, "done" is refused and the failure is fed back (don't trust the self-report). e.g. --verify "python3 -m pytest -q". Requires --allow-code. |

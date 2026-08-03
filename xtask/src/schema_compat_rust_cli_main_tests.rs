@@ -39,8 +39,8 @@ fn run_cli_retains_both_event_drains_and_exclusive_stdout() {
     );
     assert!(validate(&stdout).is_err());
     let shadow = source.replacen(
-        "let mut emitter = Emitter::new(output_format);",
-        "use crate::evil::{self as output, Emitter};\n    let mut emitter = Emitter::new(output_format);",
+        "let mut emitter = Emitter::new(output_format, machine_schema_version);",
+        "use crate::evil::{self as output, Emitter};\n    let mut emitter = Emitter::new(output_format, machine_schema_version);",
         1,
     );
     assert!(validate(&shadow).is_err());

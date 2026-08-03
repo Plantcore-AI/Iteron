@@ -400,6 +400,15 @@ struct Cli {
     #[arg(long, value_enum, default_value = "text")]
     output_format: OutputFormat,
 
+    /// Pin a published machine stdout schema. Supported versions are reported by
+    /// `--machine-contract`; omission keeps the current v5 default.
+    #[arg(long, value_name = "VERSION")]
+    output_schema_version: Option<u32>,
+
+    /// Print the bounded, provider-free CLI capability report as JSON and exit.
+    #[arg(long)]
+    machine_contract: bool,
+
     /// The repository to work in (defaults to the current directory).
     #[arg(short = 'C', long, default_value = ".")]
     repo: PathBuf,
@@ -467,10 +476,32 @@ struct Cli {
     #[arg(long, value_name = "N")]
     limit: Option<usize>,
 
+    /// Opaque continuation token returned by a prior `session_list_page`.
+    #[arg(long, value_name = "TOKEN")]
+    session_cursor: Option<String>,
+
+    /// Maximum session rows in one machine page.
+    #[arg(long, default_value_t = session_view::MAX_SESSIONS_PER_PAGE)]
+    session_limit: usize,
+
+    /// Bounded immutable grouping metadata for a fresh run, or an exact filter for `--sessions`.
+    #[arg(long, value_name = "TAG")]
+    agent_definition_tag: Option<String>,
+
     /// Read one session's transcript and exit. Pair with `--output-format json` for the machine
     /// document; a client should never open a file under `.core/runs` itself.
     #[arg(long, value_name = "RUN_ID")]
     transcript: Option<String>,
+
+    /// Project one session into its OTel export payload and print it, without sending anything
+    /// anywhere (#105). The offline half of the exporter: same projection the live sink ships, so
+    /// an operator can see exactly what would leave the machine before enabling it.
+    #[arg(long, value_name = "RUN_ID")]
+    otel_export: Option<String>,
+
+    /// Opaque continuation token returned by a prior `session_transcript_page`.
+    #[arg(long, value_name = "TOKEN")]
+    transcript_cursor: Option<String>,
 
     /// Read one session's latency timeline and exit: the per-class effect breakdown, the
     /// distribution behind it, and what could not be accounted for. Pair with
@@ -619,15 +650,75 @@ async fn run_cli() -> anyhow::Result<u8> {
     warn_if_stale();
     let cli = Cli::parse();
 
-    // `--sessions` and `--fork` predate the one-shot machine contract and intentionally keep their
-    // human output. Reject the combination instead of silently contaminating JSON stdout.
-    // `--fork` and the local subcommands mutate state and predate the machine contract, so they
-    // keep their human output. `--sessions` and `--transcript` are read-only and now publish a
-    // machine document: a client that is not a terminal otherwise has to read `.core/runs` itself
-    // and couple to a private layout the record layer is free to change (#77).
-    if cli.output_format.is_machine() && (cli.fork.is_some() || cli.command.is_some()) {
+    let machine_schema_version = cli.output_schema_version.unwrap_or(output::SCHEMA_VERSION);
+    if !output::SUPPORTED_SCHEMA_VERSIONS.contains(&machine_schema_version) {
         anyhow::bail!(
-            "--output-format json/stream-json is only supported for agent runs and session reads, not local session maintenance"
+            "unsupported --output-schema-version {machine_schema_version}; supported versions: 4, 5"
+        );
+    }
+    if cli.output_schema_version.is_some()
+        && !cli.output_format.is_machine()
+        && !cli.machine_contract
+    {
+        anyhow::bail!("--output-schema-version requires --output-format json or stream-json");
+    }
+    if cli.output_schema_version.is_some() && (cli.timeline.is_some() || cli.otel_export.is_some())
+    {
+        anyhow::bail!(
+            "--output-schema-version applies to agent runs and schema-selected session operations"
+        );
+    }
+    if let Some(tag) = cli.agent_definition_tag.as_deref() {
+        session_view::validate_agent_definition_tag(tag)?;
+    }
+    if cli.machine_contract {
+        if cli.task.is_some()
+            || cli.command.is_some()
+            || cli.sessions
+            || cli.transcript.is_some()
+            || cli.otel_export.is_some()
+            || cli.timeline.is_some()
+            || cli.fork.is_some()
+            || cli.resume.is_some()
+            || cli.continue_recent
+        {
+            anyhow::bail!("--machine-contract is a standalone capability query");
+        }
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "schema_version": 1,
+                "type": "machine_contract",
+                "cli_stream_versions": output::SUPPORTED_SCHEMA_VERSIONS,
+                "default_cli_stream_version": output::SCHEMA_VERSION,
+                "resident_protocol_version": core_protocol::PROTOCOL_VERSION,
+            }))?
+        );
+        return Ok(output::EXIT_SUCCESS);
+    }
+
+    // Local maintenance subcommands predate the machine contract and keep human output. Session
+    // list/transcript reads and fork now have explicit typed machine frames; no client needs to
+    // couple to the private `.core/runs` layout (#77/#179).
+    if cli.output_format.is_machine() && cli.command.is_some() {
+        anyhow::bail!(
+            "--output-format json/stream-json is not supported for local maintenance subcommands"
+        );
+    }
+    if cli.session_cursor.is_some() && !cli.sessions {
+        anyhow::bail!("--session-cursor requires --sessions");
+    }
+    if cli.transcript_cursor.is_some() && cli.transcript.is_none() {
+        anyhow::bail!("--transcript-cursor requires --transcript RUN_ID");
+    }
+    if cli.agent_definition_tag.is_some()
+        && (cli.transcript.is_some()
+            || cli.otel_export.is_some()
+            || cli.timeline.is_some()
+            || cli.fork.is_some())
+    {
+        anyhow::bail!(
+            "--agent-definition-tag applies to a fresh/resumed run or a --sessions filter; forks inherit it"
         );
     }
     if cli.timeline.is_some() && (cli.transcript.is_some() || cli.sessions) {
@@ -719,6 +810,19 @@ async fn run_cli() -> anyhow::Result<u8> {
     // MCP server — listing or forking the append-only record needs no API key and must not spawn MCP
     // subprocesses or print connection noise (review: `core --sessions` failed with "no api key"
     // and eagerly started MCP servers, though it never touches the model).
+    if let Some(run) = cli.otel_export.clone() {
+        let run = core_protocol::RunId(run);
+        let timed = core_record::replay_run_timed(&cli.runs_dir, &run)?;
+        let events: Vec<&core_protocol::Event> = timed.iter().map(|entry| &entry.event).collect();
+        let timeline = core_obs::timeline::fold(timed.iter().map(|e| (e.ts_us, &e.event)));
+        let payload = core_obs::otel::project(&run.0, &events, &timeline);
+        println!("{}", serde_json::to_string(&payload)?);
+        if payload.dropped > 0 {
+            eprintln!("{} span(s) dropped at the payload bound", payload.dropped);
+        }
+        return Ok(output::EXIT_SUCCESS);
+    }
+
     if let Some(run) = cli.timeline.clone() {
         let run = core_protocol::RunId(run);
         let timed = core_record::replay_run_timed(&runs_dir, &run)?;
@@ -733,6 +837,16 @@ async fn run_cli() -> anyhow::Result<u8> {
 
     if let Some(run) = cli.transcript.clone() {
         let run = core_protocol::RunId(run);
+        if cli.output_schema_version.is_some() {
+            let page = session_view::read_transcript_page(
+                &runs_dir,
+                &run,
+                cli.transcript_cursor.as_deref(),
+                machine_schema_version,
+            )?;
+            println!("{}", serde_json::to_string(&page)?);
+            return Ok(output::EXIT_SUCCESS);
+        }
         // Name the run AND the file the read failed on, the way `--fork` already does. Propagating
         // the `RecordError` unchanged printed `io: <errno text>: <errno text>` — the `#[from]` source
         // repeated by anyhow's alternate Display — with nothing a reader could act on.
@@ -762,6 +876,18 @@ async fn run_cli() -> anyhow::Result<u8> {
         return Ok(output::EXIT_SUCCESS);
     }
     if cli.sessions {
+        if cli.output_schema_version.is_some() {
+            let page = session_view::list_sessions_page(
+                &runs_dir,
+                &tenant,
+                cli.agent_definition_tag.as_deref(),
+                cli.session_limit,
+                cli.session_cursor.as_deref(),
+                machine_schema_version,
+            )?;
+            println!("{}", serde_json::to_string(&page)?);
+            return Ok(output::EXIT_SUCCESS);
+        }
         // `--sessions` says "in this repo" and now means it: the same recorded-cwd scope
         // `--continue` selects on. The listing is also a page, not a linear dump — the runs dir
         // grows without bound and had no ceiling on this path at all.
@@ -813,7 +939,21 @@ async fn run_cli() -> anyhow::Result<u8> {
             .map(|e| e.seq)
             .ok_or_else(|| anyhow::anyhow!("run {pid} has no events to fork from"))?;
         let child = core_record::fork(&runs_dir, &parent, at, &tenant)?;
-        println!("forked {pid} -> {child}  (resume with --resume {child})");
+        if cli.output_format.is_machine() {
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "schema_version": machine_schema_version,
+                    "type": "session_fork_result",
+                    "parent_run_id": pid,
+                    "child_run_id": child.to_string(),
+                    "fork_point": at.0,
+                    "status": "created",
+                }))?
+            );
+        } else {
+            println!("forked {pid} -> {child}  (resume with --resume {child})");
+        }
         return Ok(output::EXIT_SUCCESS);
     }
 
@@ -1176,8 +1316,25 @@ async fn run_cli() -> anyhow::Result<u8> {
         ),
         None => None,
     };
+    let mut resolved_agent_definition_tag = cli.agent_definition_tag.clone();
     if let Some(resume) = &resume_id {
         let recorded = core_record::load_forked(&runs_dir, &RunId(resume.clone()))?;
+        let recorded_agent_definition_tag = recorded.iter().find_map(|event| match &event.kind {
+            core_protocol::EventKind::RunStart {
+                agent_definition_tag,
+                ..
+            } => Some(agent_definition_tag.clone()),
+            _ => None,
+        });
+        let recorded_agent_definition_tag = recorded_agent_definition_tag.flatten();
+        if let Some(requested) = cli.agent_definition_tag.as_deref()
+            && recorded_agent_definition_tag.as_deref() != Some(requested)
+        {
+            anyhow::bail!(
+                "--agent-definition-tag cannot change on resume; omit it or repeat the recorded tag"
+            );
+        }
+        resolved_agent_definition_tag = recorded_agent_definition_tag;
         let last_route = recorded.iter().rev().find_map(|event| match &event.kind {
             core_protocol::EventKind::ModelSelected {
                 provider_id,
@@ -1608,7 +1765,12 @@ async fn run_cli() -> anyhow::Result<u8> {
     // Record the session genesis header on a FRESH run (SESS-4): cwd/model/effort/created_at, so
     // `--sessions` has metadata and a `--fork` inherits it. Resume already has a genesis.
     if let Some(created_at) = fresh_created_at {
-        agent.record_genesis(repo.display().to_string(), created_at, config_digest)?;
+        agent.record_genesis(
+            repo.display().to_string(),
+            created_at,
+            config_digest,
+            resolved_agent_definition_tag.clone(),
+        )?;
     }
     // Record the actual route before any turn can use it. On resume this appends an explicit new
     // selection, so a changed provider/model is never hidden behind the old genesis model string.
@@ -1628,8 +1790,12 @@ async fn run_cli() -> anyhow::Result<u8> {
     // must never run a command). Empty if there is no ~/.core/config.json hooks block.
     if let Some(home) = config::config_home() {
         let mut hooks = runtime::hooks::Hooks::load_user(&home);
+        // USER config only, exactly like the hooks above: an endpoint is an exfiltration target and
+        // a cloned repo must never be able to name one.
+        let telemetry = runtime::telemetry::TelemetrySink::load_user(&home);
         hooks.set_sensitive_env_names(credential_env_names);
         agent.hooks = hooks;
+        agent.telemetry = telemetry;
         if !agent.hooks.is_empty() {
             eprintln!("hooks: loaded from ~/.core/config.json (user config)");
         }
@@ -1704,7 +1870,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         });
     }
 
-    let mut emitter = Emitter::new(output_format);
+    let mut emitter = Emitter::new(output_format, machine_schema_version);
     let mut output_error: Option<std::io::Error> = None;
 
     // Every one-shot format routes through UiEvent. This keeps human text out of the kernel's raw

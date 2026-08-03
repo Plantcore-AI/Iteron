@@ -16,6 +16,8 @@ use serde_json::{Value, json};
 use std::io::{self, Write};
 
 pub const SCHEMA_VERSION: u32 = 5;
+pub const LEGACY_SCHEMA_VERSION: u32 = 4;
+pub const SUPPORTED_SCHEMA_VERSIONS: [u32; 2] = [LEGACY_SCHEMA_VERSION, SCHEMA_VERSION];
 pub const EXIT_SUCCESS: u8 = 0;
 pub const EXIT_HARNESS: u8 = 2;
 pub const EXIT_BUDGET: u8 = 3;
@@ -525,6 +527,33 @@ fn write_json_line(mut writer: impl Write, value: &Value) -> io::Result<()> {
     writer.flush()
 }
 
+/// Project a current machine record onto one explicitly selected public CLI schema.
+///
+/// Schema v4 differs from v5 only at the terminal: v5 added `kernel_tax`. Keeping the projection
+/// at the final stdout seam lets the runtime continue producing one current vocabulary while an
+/// older client receives the exact frozen v4 bytes it already knows how to parse.
+pub(crate) fn project_schema(mut value: Value, schema_version: u32) -> io::Result<Value> {
+    if !SUPPORTED_SCHEMA_VERSIONS.contains(&schema_version) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unsupported CLI output schema version {schema_version}"),
+        ));
+    }
+    let fields = value.as_object_mut().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "machine output record must be a JSON object",
+        )
+    })?;
+    fields.insert("schema_version".into(), Value::from(schema_version));
+    if schema_version == LEGACY_SCHEMA_VERSION
+        && fields.get("type").and_then(Value::as_str) == Some("result")
+    {
+        fields.remove("kernel_tax");
+    }
+    Ok(value)
+}
+
 fn display_notice_on_stderr(message: &str) {
     let message = core_protocol::text::head(&scrub(message), MAX_STDERR_NOTICE_BYTES);
     // Notices are observational. A closed stderr must not suppress the final JSON result or alter
@@ -535,6 +564,7 @@ fn display_notice_on_stderr(message: &str) {
 /// Stateful stdout writer for a single one-shot invocation.
 pub struct Emitter {
     format: OutputFormat,
+    schema_version: u32,
     stream_turn: u32,
     assistant_scrubber: StreamingScrubber,
     thinking_scrubber: StreamingScrubber,
@@ -542,9 +572,10 @@ pub struct Emitter {
 }
 
 impl Emitter {
-    pub fn new(format: OutputFormat) -> Self {
+    pub fn new(format: OutputFormat, schema_version: u32) -> Self {
         Self {
             format,
+            schema_version,
             stream_turn: 0,
             assistant_scrubber: StreamingScrubber::default(),
             thinking_scrubber: StreamingScrubber::default(),
@@ -575,6 +606,7 @@ impl Emitter {
 
     fn write_stream_event(&mut self, event: UiEvent) -> io::Result<()> {
         let value = stream_event(event, &mut self.stream_turn);
+        let value = project_schema(value, self.schema_version)?;
         write_json_line(std::io::stdout().lock(), &value)
     }
 
@@ -598,6 +630,11 @@ impl Emitter {
         media_type: core_protocol::ImageMediaType,
         encoded_bytes: usize,
     ) -> io::Result<()> {
+        // v4 predates this record type. Its frozen stream is preserved byte-for-byte; the image
+        // remains part of the admitted task, but no unknown metadata frame is invented for v4.
+        if self.schema_version == LEGACY_SCHEMA_VERSION {
+            return Ok(());
+        }
         if let Some(value) =
             input_attachment_record(self.format, ordinal, media_type, encoded_bytes)?
         {
@@ -662,7 +699,8 @@ impl Emitter {
             OutputFormat::Json => {}
         }
         if self.format.is_machine() {
-            write_json_line(std::io::stdout().lock(), value)?;
+            let value = project_schema(value.clone(), self.schema_version)?;
+            write_json_line(std::io::stdout().lock(), &value)?;
         }
         Ok(())
     }
@@ -791,6 +829,30 @@ mod tests {
         assert_eq!(value["exit_code"], 0);
         assert!(value["reason"].is_null());
         assert!(value["error"].is_null());
+    }
+
+    #[test]
+    fn explicit_v4_projection_preserves_the_frozen_terminal_bytes() {
+        let current = final_result(
+            &Outcome::Done,
+            "golden reply",
+            "<RUN_ID>",
+            &CostState::Unknown {
+                reason: core_obs::CostUnknownReason::NoVerifiedRateCard,
+            },
+            1,
+            KernelTax::default(),
+            None,
+        );
+        let legacy = project_schema(current, LEGACY_SCHEMA_VERSION).unwrap();
+        assert_eq!(
+            legacy,
+            serde_json::from_str::<Value>(include_str!(
+                "../tests/golden/one_shot_json_success_v4.json"
+            ))
+            .unwrap()
+        );
+        assert!(legacy.get("kernel_tax").is_none());
     }
 
     #[test]

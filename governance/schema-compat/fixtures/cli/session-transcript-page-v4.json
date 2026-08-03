@@ -1,0 +1,1 @@
+{"schema_version":4,"type":"session_transcript_page","run_id":"run-fixture","events":[{"seq":1,"turn":1,"kind":{"kind":"text","delta":"fixture"}}],"older_cursor":null}
