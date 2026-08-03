@@ -1,0 +1,59 @@
+{
+  "cli_stream_versions": [4, 5],
+  "command": "core",
+  "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "default_cli_stream_version": 5,
+  "installer": {
+    "name": "install.sh",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "size": 1024
+  },
+  "legal": {
+    "licenses": {
+      "name": "THIRD_PARTY_LICENSES.html",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "size": 2048
+    },
+    "notices": {
+      "name": "THIRD_PARTY_NOTICES.txt",
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "size": 512
+    }
+  },
+  "product": "Core Code",
+  "protocol_version": 1,
+  "repository": "https://github.com/Plantcore-AI/core",
+  "schema_version": 3,
+  "tag": "v0.0.1",
+  "targets": {
+    "x86_64-pc-windows-msvc": {
+      "archive": {
+        "name": "core-code-v0.0.1-x86_64-pc-windows-msvc.zip",
+        "sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+        "size": 4096
+      },
+      "capability_report": {
+        "name": "core-code-v0.0.1-x86_64-pc-windows-msvc.zip.machine-contract.json",
+        "sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+        "size": 136
+      },
+      "provenance": {
+        "name": "core-code-v0.0.1-x86_64-pc-windows-msvc.zip.provenance.json",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "size": 1024
+      },
+      "sbom": {
+        "name": "core-code-v0.0.1-x86_64-pc-windows-msvc.zip.spdx.json",
+        "sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+        "size": 2048
+      },
+      "sbom_attestation": {
+        "name": "core-code-v0.0.1-x86_64-pc-windows-msvc.zip.sbom-attestation.json",
+        "sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+        "size": 1024
+      },
+      "target": "x86_64-pc-windows-msvc"
+    }
+  },
+  "version": "0.0.1"
+}

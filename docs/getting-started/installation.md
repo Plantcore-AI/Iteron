@@ -1,7 +1,7 @@
 # Installation
 
-Core Code publishes pre-alpha binaries for macOS and Linux. Rust 1.90 or newer
-is required only when building from source.
+Core Code publishes pre-alpha binaries for macOS and Linux plus a bounded Windows x86-64
+one-shot artifact. Rust 1.90 or newer is required only when building from source.
 
 !!! warning "Pre-alpha software"
     A verified release is not a compatibility or unattended-safety promise.
@@ -51,9 +51,12 @@ downloaded release asset with `--help` to inspect the complete interface.
 | macOS, Intel | `x86_64-apple-darwin` | `macos-15-intel` |
 | Linux, arm64 | `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` |
 | Linux, x86-64 | `x86_64-unknown-linux-musl` | `ubuntu-24.04` |
+| Windows, x86-64 one-shot CLI | `x86_64-pc-windows-msvc` | `windows-2025` |
 
-Each target is built, tested, packaged, and installed on a native hosted runner.
-Windows is not a supported runtime target today.
+Each target is built, compatibility-tested, packaged, and smoke-tested on a native hosted runner.
+The POSIX `install.sh` remains limited to macOS and Linux. The Windows ZIP is the verified
+`core.exe` one-shot boundary used by downstream installers; it does not claim Windows TUI,
+ConPTY, resident-server, or sandbox support.
 
 ## Linux prerequisite for code execution
 
@@ -72,7 +75,7 @@ commands.
 Every release publishes:
 
 - deterministic platform archives;
-- `SHA256SUMS` and `release-manifest.json`;
+- `SHA256SUMS`, `release-manifest.json`, and `release-manifest.receipt.json`;
 - the Apache-2.0 license and audited third-party notices;
 - an SPDX SBOM for each target;
 - GitHub artifact attestations and offline provenance bundles.
@@ -88,8 +91,10 @@ gh attestation verify core-code-v0.0.1-aarch64-apple-darwin.tar.gz \
 
 A checksum fetched from the same release detects corruption. The GitHub
 attestation additionally binds an artifact to this repository and its release
-workflow. Inspect `release-manifest.json` for the release commit, target set,
-artifact sizes, and digests.
+workflow. The receipt identifies the exact final manifest bytes; the manifest identifies each
+archive and the CLI stream versions reported by every packaged binary. This content addressing
+proves byte integrity, not publisher authenticity by itself. Platform signing is outside this
+release slice.
 
 ## Build from source
 

@@ -12,6 +12,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -27,6 +28,7 @@ import package  # noqa: E402
 import render_installer  # noqa: E402
 import sbom  # noqa: E402
 import schema_release  # noqa: E402
+import verify_release  # noqa: E402
 from common import ReleaseToolError, sha256_file  # noqa: E402
 
 
@@ -45,7 +47,9 @@ class ReleaseToolsTest(unittest.TestCase):
         path.chmod(mode)
         return path
 
-    def package_arguments(self, output: Path) -> argparse.Namespace:
+    def package_arguments(
+        self, output: Path, target: str = "aarch64-apple-darwin"
+    ) -> argparse.Namespace:
         return argparse.Namespace(
             binary=self.write("core", "#!/bin/sh\nprintf 'core 0.0.1\\n'\n", 0o755),
             license=self.write("LICENSE", "Apache-2.0\n"),
@@ -55,7 +59,7 @@ class ReleaseToolsTest(unittest.TestCase):
             sbom=self.write("SBOM.spdx.json", "{}\n"),
             build_info=self.write("BUILD-INFO.json", "{}\n"),
             version="0.0.1",
-            target="aarch64-apple-darwin",
+            target=target,
             source_date_epoch=1_700_000_000,
             output_dir=output,
         )
@@ -109,6 +113,33 @@ class ReleaseToolsTest(unittest.TestCase):
             package.MAX_UNPACKED_TAR_BYTES,
         )
 
+    def test_windows_zip_is_deterministic_exact_and_contains_core_exe(self) -> None:
+        target = "x86_64-pc-windows-msvc"
+        first = package.build_archive(
+            self.package_arguments(self.root / "windows-first", target)
+        )
+        second = package.build_archive(
+            self.package_arguments(self.root / "windows-second", target)
+        )
+        self.assertEqual(sha256_file(first), sha256_file(second))
+        self.assertEqual(first.suffix, ".zip")
+        root = "core-code-v0.0.1-x86_64-pc-windows-msvc"
+        with zipfile.ZipFile(first) as archive:
+            self.assertEqual(
+                archive.namelist(),
+                [
+                    f"{root}/",
+                    f"{root}/core.exe",
+                    f"{root}/LICENSE",
+                    f"{root}/README.md",
+                    f"{root}/THIRD_PARTY_LICENSES.html",
+                    f"{root}/THIRD_PARTY_NOTICES.txt",
+                    f"{root}/SBOM.spdx.json",
+                    f"{root}/BUILD-INFO.json",
+                ],
+            )
+            self.assertTrue(all(not member.is_dir() for member in archive.infolist()[1:]))
+
     def test_fetch_tool_extracts_only_one_regular_binary(self) -> None:
         archive_path = self.root / "tool.tar.gz"
         with tarfile.open(archive_path, "w:gz") as archive:
@@ -130,6 +161,13 @@ class ReleaseToolsTest(unittest.TestCase):
             archive.addfile(link)
         with self.assertRaises(ReleaseToolError):
             fetch_tool.extract_binary(bad_archive, "tool", self.root / "bad")
+
+        windows_archive = self.root / "tool.zip"
+        with zipfile.ZipFile(windows_archive, "w") as archive:
+            archive.writestr("nested/tool.exe", b"windows-tool")
+        windows_output = self.root / "bin/tool.exe"
+        fetch_tool.extract_binary(windows_archive, "tool.exe", windows_output)
+        self.assertEqual(windows_output.read_bytes(), b"windows-tool")
 
     def test_fetch_tool_rejects_untrusted_redirect_hops(self) -> None:
         fetch_tool.validate_download_url(
@@ -418,6 +456,11 @@ exit 1
             workflow.count("git rev-parse 'HEAD^{commit}'"), 2
         )
         self.assertIn("core-release-workspace-status", workflow)
+        self.assertIn("x86_64-pc-windows-msvc", workflow)
+        self.assertIn("content-canary:", workflow)
+        self.assertIn("release-manifest.receipt.json", workflow)
+        self.assertIn("verify_release.py artifact", workflow)
+        self.assertIn("MACHINE-CONTRACT.json", workflow)
         self.assertIn(
             'CARGO_TARGET_DIR="$RUNNER_TEMP/core-schema-bootstrap-target"', workflow
         )
@@ -660,12 +703,28 @@ exit 1
         base = f"core-code-v0.0.1-{target}.tar.gz"
         for name in (
             base,
+            f"{base}.machine-contract.json",
             f"{base}.provenance.json",
             f"{base}.spdx.json",
             f"{base}.sbom-attestation.json",
         ):
-            self.write(f"dist/{name}", f"{name}\n")
+            if name.endswith(".machine-contract.json"):
+                self.write(
+                    f"dist/{name}",
+                    json.dumps(
+                        {
+                            "cli_stream_versions": [4, 5],
+                            "default_cli_stream_version": 5,
+                            "resident_protocol_version": 7,
+                            "schema_version": 1,
+                            "type": "machine_contract",
+                        }
+                    ),
+                )
+            else:
+                self.write(f"dist/{name}", f"{name}\n")
         output = dist / "release-manifest.json"
+        receipt = dist / "release-manifest.receipt.json"
         protocol = self.write(
             "protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 7;\n"
         )
@@ -676,16 +735,170 @@ exit 1
                 dist=dist,
                 targets=[target],
                 output=output,
+                receipt=receipt,
                 protocol_source=protocol,
             )
         )
         result = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(result["product"], "Core Code")
         self.assertEqual(result["targets"][target]["archive"]["name"], base)
+        self.assertEqual(result["targets"][target]["target"], target)
+        self.assertEqual(result["cli_stream_versions"], [4, 5])
+        self.assertEqual(result["default_cli_stream_version"], 5)
         # A client pins on the protocol the binary speaks, so the manifest must carry the number
         # the crate declares rather than one restated here.
         self.assertEqual(result["protocol_version"], 7)
-        self.assertEqual(result["schema_version"], 2)
+        self.assertEqual(result["schema_version"], 3)
+        receipt_document = json.loads(receipt.read_text(encoding="utf-8"))
+        self.assertEqual(receipt_document["manifest"]["sha256"], sha256_file(output))
+        self.assertEqual(receipt_document["manifest"]["size"], output.stat().st_size)
+
+    def test_release_manifest_rejects_capability_field_substitution(self) -> None:
+        report = self.write(
+            "capability.json",
+            json.dumps(
+                {
+                    "cli_stream_versions": [4, 5],
+                    "default_cli_stream_version": 5,
+                    "resident_protocol_version": 1,
+                    "schema_version": 1,
+                    "type": "machine_contract",
+                }
+            ),
+        )
+        self.assertEqual(manifest.read_capability_report(report)["cli_stream_versions"], [4, 5])
+        report.write_text(
+            '{"protocol_version":4,"default_cli_stream_version":5,'
+            '"resident_protocol_version":1,"schema_version":1,"type":"machine_contract"}',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ReleaseToolError, "fields"):
+            manifest.read_capability_report(report)
+
+    def test_release_manifest_rejects_target_capability_disagreement(self) -> None:
+        dist = self.root / "disagree-dist"
+        dist.mkdir()
+        for name in ("install.sh", "THIRD_PARTY_LICENSES.html", "THIRD_PARTY_NOTICES.txt"):
+            self.write(f"disagree-dist/{name}", name)
+        targets = ("aarch64-apple-darwin", "x86_64-pc-windows-msvc")
+        for index, target in enumerate(targets):
+            base = (
+                f"core-code-v0.0.1-{target}.zip"
+                if target.endswith("windows-msvc")
+                else f"core-code-v0.0.1-{target}.tar.gz"
+            )
+            for suffix in ("", ".provenance.json", ".spdx.json", ".sbom-attestation.json"):
+                self.write(f"disagree-dist/{base}{suffix}", f"{base}{suffix}")
+            self.write(
+                f"disagree-dist/{base}.machine-contract.json",
+                json.dumps(
+                    {
+                        "cli_stream_versions": [4, 5] if index == 0 else [5],
+                        "default_cli_stream_version": 5,
+                        "resident_protocol_version": 1,
+                        "schema_version": 1,
+                        "type": "machine_contract",
+                    }
+                ),
+            )
+        protocol = self.write("disagree-protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 1;\n")
+        with self.assertRaisesRegex(ReleaseToolError, "disagree"):
+            manifest.create_release(
+                argparse.Namespace(
+                    version="0.0.1",
+                    commit="a" * 40,
+                    dist=dist,
+                    targets=list(targets),
+                    output=dist / "release-manifest.json",
+                    receipt=dist / "release-manifest.receipt.json",
+                    protocol_source=protocol,
+                )
+            )
+
+    def test_checked_in_release_manifest_schema_keeps_cli_and_resident_versions_distinct(self) -> None:
+        schema = json.loads(
+            (TOOLS / "schemas/release-manifest-v3.schema.json").read_text(encoding="utf-8")
+        )
+        fixture = json.loads(
+            (TOOLS / "fixtures/release-manifest-v3.json").read_text(encoding="utf-8")
+        )
+        required = set(schema["required"])
+        self.assertIn("cli_stream_versions", required)
+        self.assertIn("default_cli_stream_version", required)
+        self.assertIn("protocol_version", required)
+        self.assertEqual(fixture["schema_version"], 3)
+        self.assertEqual(fixture["cli_stream_versions"], [4, 5])
+        self.assertEqual(fixture["protocol_version"], 1)
+
+    def test_content_identity_rejects_one_flipped_manifest_or_archive_byte(self) -> None:
+        for name in ("release-manifest.json", "core-code-v0.0.1-fixture.tar.gz"):
+            with self.subTest(name=name):
+                path = self.write(name, "original bytes\n")
+                evidence = {
+                    "name": path.name,
+                    "sha256": sha256_file(path),
+                    "size": path.stat().st_size,
+                }
+                verify_release.exact_digest(path, evidence, name, 1024)
+                path.write_bytes(path.read_bytes()[:-1] + b"!")
+                with self.assertRaisesRegex(ReleaseToolError, "content identity"):
+                    verify_release.exact_digest(path, evidence, name, 1024)
+
+    def test_content_verifier_extracts_the_exact_windows_command_before_smoke(self) -> None:
+        target = "x86_64-pc-windows-msvc"
+        dist = self.root / "verified-dist"
+        arguments = self.package_arguments(dist, target)
+        archive = package.build_archive(arguments)
+        for name, content in (
+            ("install.sh", "#!/bin/sh\n"),
+            ("THIRD_PARTY_LICENSES.html", "licenses\n"),
+            ("THIRD_PARTY_NOTICES.txt", "notices\n"),
+            (f"{archive.name}.provenance.json", "{}\n"),
+            (f"{archive.name}.spdx.json", "{}\n"),
+            (f"{archive.name}.sbom-attestation.json", "{}\n"),
+        ):
+            self.write(f"verified-dist/{name}", content)
+        report = self.write(
+            f"verified-dist/{archive.name}.machine-contract.json",
+            json.dumps(
+                {
+                    "cli_stream_versions": [4, 5],
+                    "default_cli_stream_version": 5,
+                    "resident_protocol_version": 1,
+                    "schema_version": 1,
+                    "type": "machine_contract",
+                }
+            ),
+        )
+        protocol = self.write("verified-protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 1;\n")
+        manifest_path = dist / "release-manifest.json"
+        receipt_path = dist / "release-manifest.receipt.json"
+        manifest.create_release(
+            argparse.Namespace(
+                version="0.0.1",
+                commit="a" * 40,
+                dist=dist,
+                targets=[target],
+                output=manifest_path,
+                receipt=receipt_path,
+                protocol_source=protocol,
+            )
+        )
+        verifier_arguments = argparse.Namespace(
+            manifest=manifest_path,
+            receipt=receipt_path,
+            archive=archive,
+            capability_report=report,
+            target=target,
+            extract_dir=self.root / "verified-extract",
+        )
+        binary = verify_release.verify_artifact(verifier_arguments)
+        self.assertEqual(binary.name, "core.exe")
+        self.assertEqual(binary.read_bytes(), arguments.binary.read_bytes())
+        archive.write_bytes(archive.read_bytes() + b"tamper")
+        verifier_arguments.extract_dir = self.root / "tampered-extract"
+        with self.assertRaisesRegex(ReleaseToolError, "content identity"):
+            verify_release.verify_artifact(verifier_arguments)
 
     def test_release_manifest_reads_protocol_version_from_the_declaring_crate(self) -> None:
         # The real crate, not a fixture: if this drifts from the shipped binary the field is a lie.
