@@ -497,7 +497,11 @@ mod tests {
         assert!(rendered.contains("## Implementation status counts"));
         assert!(rendered.contains("`fixed_hidden`"));
         assert!(rendered.contains("`c_component`"));
-        assert!(rendered.contains("numeric [1..86400] seconds"));
+        // The projection renders the JSON Schema type verbatim, and that type is `integer`, not
+        // `numeric` -- see `docs/reference/tunables.md` row 67 for `provider_connect_tls_timeout`.
+        // `tunables generate` reports no drift, so the generator and the committed doc agree and it
+        // is this expectation that was stale.
+        assert!(rendered.contains("integer [1..86400] seconds"));
         assert!(rendered.contains("## Authority boundary"));
         assert!(rendered.contains("`provider_connect_tls_timeout`"));
     }
