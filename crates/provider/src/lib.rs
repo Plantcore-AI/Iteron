@@ -27,7 +27,8 @@ pub use anthropic::Anthropic;
 pub use catalog::{
     AccountAvailability, AccountProbe, AccountProbeResult, AdapterKind, ApiRoot,
     BalanceAvailability, BuiltinProvider, CatalogSnapshot, CatalogStrategy, Compatibility,
-    ErrorProfile, ModelDescriptor, ModelFamily, ModelHealth, ProviderHealth, ProviderHealthStore,
+    CredentialKind, CredentialSource, CredentialStatus, ErrorProfile, FileCredential,
+    ModelDescriptor, ModelFamily, ModelHealth, ProviderHealth, ProviderHealthStore,
     ProviderInstance, RawModel, Selectability, discover_catalog, probe_account,
 };
 pub use openai::OpenAiCompat;

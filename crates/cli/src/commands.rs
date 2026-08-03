@@ -35,6 +35,7 @@ pub enum SlashCommand {
     Mcp,
     Hooks,
     Config,
+    Login,
     Theme,
     Init,
     Quit,
@@ -86,6 +87,7 @@ impl SlashCommand {
             | Self::Mcp
             | Self::Hooks
             | Self::Config
+            | Self::Login
             | Self::Theme
             | Self::Init
             | Self::Quit => DispatchRoute::InProcess(self),
@@ -258,7 +260,13 @@ pub const COMMANDS: &[Cmd] = &[
         command: SlashCommand::Config,
         name: "config",
         args: "",
-        help: "show session + file config",
+        help: "show the resolved route + effective limits",
+    },
+    Cmd {
+        command: SlashCommand::Login,
+        name: "login",
+        args: "",
+        help: "check the current credential against the provider (setup runs in `core setup`)",
     },
     Cmd {
         command: SlashCommand::Theme,

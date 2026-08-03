@@ -27,8 +27,10 @@ mod render;
 mod bundle_adapter;
 #[allow(dead_code)]
 mod client_event;
+mod route;
 mod runtime;
 mod session_view;
+mod setup;
 mod startup;
 mod surface;
 mod theme;
@@ -47,6 +49,11 @@ use std::path::PathBuf;
 /// Fresh sessions use GLM's built-in provider. The model is deliberately not duplicated here:
 /// `ProviderDirectory::default_selection` resolves GLM's versioned, documented catalog default.
 const BUILTIN_DEFAULT_PROVIDER: &str = "glm";
+
+/// The synthetic id a `--base-url` override runs under. It exists only for the current process,
+/// so a later `--continue` that reads it out of the record has nothing to resolve it against and
+/// must say so explicitly instead of reporting an unknown provider the operator never typed.
+const CLI_OVERRIDE_PROVIDER_ID: &str = "cli-override";
 
 struct StderrDiagnosticDrain {
     receiver: std::sync::mpsc::Receiver<core_kernel::diagnostics::KernelDiagnostic>,
@@ -101,6 +108,55 @@ enum LocalCommand {
     Workflow {
         #[command(subcommand)]
         action: WorkflowAction,
+    },
+    /// First-run setup: choose a hosted plan or your own provider key, and validate it.
+    Setup {
+        /// Sign in with a hosted subscription plan.
+        #[arg(long, conflicts_with = "byok")]
+        plan: bool,
+        /// Bring your own key for this provider id.
+        #[arg(long, value_name = "PROVIDER")]
+        byok: Option<String>,
+    },
+    /// Inspect or drop the credential in use.
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+    /// Read or write one operator setting in the user config.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+enum AuthAction {
+    /// Print provider, api_root, credential source, validation state, and expiry.
+    Status {
+        /// Limit the report to one provider id.
+        provider: Option<String>,
+    },
+    /// Remove the stored credential, leaving the provider entry intact.
+    Logout {
+        /// Limit the removal to one provider id.
+        provider: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+enum ConfigAction {
+    /// Print one persisted setting, or every settable key.
+    Get {
+        /// The setting to read; omit for all of them.
+        key: Option<String>,
+    },
+    /// Persist one setting atomically at mode 0600.
+    Set {
+        /// The setting to write.
+        key: String,
+        /// Its new value.
+        value: String,
     },
 }
 
@@ -341,9 +397,14 @@ struct Cli {
     provider: Option<String>,
 
     /// Trusted one-run OpenAI-compatible API root, including its full path/version prefix. Prefer a
-    /// named provider in ~/.core/config.json for persistent configuration.
+    /// named provider in ~/.core/config.json for persistent configuration. Requires --key-env.
     #[arg(long)]
     base_url: Option<String>,
+
+    /// Environment variable holding the credential for --base-url. Required alongside it: without
+    /// it a gateway would silently receive the default provider's key.
+    #[arg(long, value_name = "NAME")]
+    key_env: Option<String>,
 }
 
 /// The trusted (pre-project-tightening) code-execution grant. Deny-by-default: a public install
@@ -466,6 +527,37 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     if cli.transcript.is_some() && cli.sessions {
         anyhow::bail!("--transcript and --sessions are separate reads; ask for one");
+    }
+
+    // Setup, auth, and config configure the machine itself. They must run BEFORE the repository is
+    // resolved and before any provider is constructed: the whole point of `core setup` is that it
+    // works on a machine where no provider resolves yet, and none of the three needs a workspace.
+    match &cli.command {
+        Some(LocalCommand::Setup { plan, byok }) => {
+            let kind = match (plan, byok) {
+                (true, _) => Some(setup::SetupKind::HostedPlan),
+                (false, Some(_)) => Some(setup::SetupKind::Byok),
+                (false, None) => None,
+            };
+            return setup::run_setup(kind, byok.clone()).await;
+        }
+        Some(LocalCommand::Auth { action }) => {
+            return match action {
+                AuthAction::Status { provider } => {
+                    setup::run_auth_status(provider.clone()).await
+                }
+                AuthAction::Logout { provider } => {
+                    setup::run_auth_logout(provider.clone()).await
+                }
+            };
+        }
+        Some(LocalCommand::Config { action }) => {
+            return match action {
+                ConfigAction::Get { key } => setup::run_config_get(key.clone()),
+                ConfigAction::Set { key, value } => setup::run_config_set(key, value),
+            };
+        }
+        _ => {}
     }
 
     let repo = cli
@@ -751,20 +843,30 @@ async fn run_cli() -> anyhow::Result<u8> {
     if let Some((api_root, endpoint_origin)) = endpoint_override
         && endpoint_origin.routing_priority() >= provider_origin.routing_priority()
     {
-        let key_env = match provider_name.as_str() {
-            "deepseek" => "DEEPSEEK_API_KEY",
-            "glm" => "GLM_API_KEY",
-            "minimax" => "MINIMAX_API_KEY",
-            "fireworks" => "FIREWORKS_API_KEY",
-            _ => "OPENAI_API_KEY",
-        };
+        // The credential MUST be named explicitly. Deriving it from the provider NAME — which is
+        // resolved before the override is applied, with a silent fallback to `OPENAI_API_KEY` —
+        // meant `core --base-url https://gateway/v1` shipped whatever key the default provider
+        // happened to use to an arbitrary host. A credential leaves this machine only for an
+        // endpoint the operator paired it with in the same breath.
+        let key_env = config::pick_optional_trusted_string(
+            cli.key_env.clone(),
+            config::env_string("CORE_KEY_ENV"),
+            None,
+        )
+        .map(|(name, _)| name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "--base-url needs an explicit credential: pass --key-env <NAME> (or CORE_KEY_ENV) naming the environment variable holding the key for {api_root}, or declare a named provider with its own `credential` in ~/.core/config.json"
+            )
+        })?;
         let temporary = config::ProviderConfig {
-            id: "cli-override".into(),
+            id: CLI_OVERRIDE_PROVIDER_ID.into(),
             display_name: Some("Compatible endpoint override".into()),
             adapter: "openai_chat".into(),
             error_profile: None,
             api_root,
-            key_env: key_env.into(),
+            key_env: Some(key_env),
+            credential: None,
             enabled: true,
             catalog: true,
             models: Vec::new(),
@@ -776,9 +878,13 @@ async fn run_cli() -> anyhow::Result<u8> {
         };
         validation.validate().map_err(anyhow::Error::msg)?;
         configured_providers.push(temporary);
-        provider_name = "cli-override".into();
+        provider_name = CLI_OVERRIDE_PROVIDER_ID.into();
         provider_origin = endpoint_origin;
         provider_was_explicit = true;
+    } else if cli.key_env.is_some() {
+        anyhow::bail!(
+            "--key-env only names the credential for --base-url; a configured provider declares its own `credential` in ~/.core/config.json"
+        );
     }
     // Only the providers this launch can actually route to are resolved before the first byte is
     // printed: the selected one, plus any provider named by an explicit model qualifier. The rest
@@ -799,6 +905,18 @@ async fn run_cli() -> anyhow::Result<u8> {
     credential_env_names.sort();
     credential_env_names.dedup();
     registry.set_sensitive_env_names(credential_env_names.clone());
+    // A file-backed credential is never in the environment, so the env deny-list above says
+    // nothing about it. The one place a tool, a child agent, or a hook can reach a file is the
+    // workspace, so a credential file inside it is refused outright rather than trusted to stay
+    // unread. Credential files outside the workspace remain unreachable by construction.
+    let exposed_credentials = provider_directory.credential_files_inside(&repo);
+    if let Some(path) = exposed_credentials.first() {
+        anyhow::bail!(
+            "credential file {} is inside the workspace, where tools, subagents, and hooks can read it; move it outside {} (for example under ~/.core/credentials)",
+            path.display(),
+            repo.display()
+        );
+    }
 
     // A project may suggest only a bare model within the already trusted provider. Recognize a
     // qualifier only when its left side is an actual provider id, preserving legitimate model ids
@@ -966,12 +1084,25 @@ async fn run_cli() -> anyhow::Result<u8> {
                 model_origin,
                 Some(config::ConfigOrigin::Cli | config::ConfigOrigin::Environment)
             );
-            if !provider_runtime_override {
+            // A recorded route that no longer resolves is not a route. The one-run `--base-url`
+            // id is the only synthetic name Core can write, so name it: adopting it silently
+            // resurfaces "provider `cli-override` has no selectable discovered model" for a
+            // provider the operator never typed.
+            let recorded_is_unresolvable_override = recorded_provider == CLI_OVERRIDE_PROVIDER_ID
+                && provider_directory.entry(&recorded_provider).is_none();
+            if recorded_is_unresolvable_override {
+                eprintln!(
+                    "session {resume} ran against a one-run --base-url endpoint override, which is not part of this invocation; re-run with the same --base-url and --key-env to continue on that endpoint, or declare it as a named provider in ~/.core/config.json. Continuing on `{provider_name}`."
+                );
+            } else if !provider_runtime_override {
                 provider_name = recorded_provider.clone();
                 provider_origin = config::ConfigOrigin::UserConfig;
                 provider_was_explicit = true;
             }
-            if !model_runtime_override && provider_name == recorded_provider {
+            if !recorded_is_unresolvable_override
+                && !model_runtime_override
+                && provider_name == recorded_provider
+            {
                 requested_model = Some(recorded_model);
                 model_origin = Some(config::ConfigOrigin::UserConfig);
             }
@@ -1043,7 +1174,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     } else {
         provider_directory
             .default_selection(&provider_name)
-            .ok_or_else(|| format!("provider `{provider_name}` has no selectable discovered model"))
+            .ok_or_else(|| provider_directory.resolution_error(&provider_name))
     };
 
     let (selection, provider_arc) = match selection_result {
@@ -1145,17 +1276,44 @@ async fn run_cli() -> anyhow::Result<u8> {
         max_consecutive_tool_errors: 3,
     };
 
+    // ONE route view, built from the values this run dispatches and enforces with. The banner,
+    // the statusline, `/status`, `/config` and `/model` all read it and derive nothing of their
+    // own, so a displayed route cannot disagree with the request that goes out (I-26).
+    let route = route::RouteView::resolve(
+        &provider_directory,
+        &selection,
+        route::RouteLimits {
+            max_turns: budget.max_turns,
+            max_usd: budget.max_usd,
+            max_tokens: budget.max_tokens,
+            max_wall_secs: budget.max_wall_secs,
+        },
+    );
+
     eprintln!(
         "core · repo={} · model={} · run={}",
         repo.display(),
         model,
         run
     );
+    // The endpoint and the credential SOURCE are the two facts a failing BYOK operator needs, and
+    // neither was visible anywhere in the product. They come from the one route view, so the
+    // banner cannot name an endpoint the run is not using.
+    eprintln!(
+        "route: {}:{} · {} · {}",
+        route.provider_id, route.model_id, route.api_root, route.credential
+    );
+    if let Some(reason) = &route.blocked_reason {
+        eprintln!("route blocked: {reason}");
+    }
     eprintln!("record: {}", rollout.path().display());
     // Discover operator + hierarchical repository instructions outside the kernel. Every accepted
     // source gets its own untrusted provenance frame; imports remain confined and the complete
     // merged prefix is bounded by core-ctx before it crosses into the Agent.
-    let home_core = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".core"));
+    // One config root for the whole binary. `CORE_CONFIG_HOME` exists so a container or CI
+    // runner without HOME is usable at all (I-24); resolving instructions and hooks from a
+    // different root than the config would make that fallback a half-measure.
+    let home_core = config::config_home().map(|home| home.join(".core"));
     let SystemPromptAssembly {
         base_system,
         instruction_bytes,
@@ -1346,7 +1504,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     // Lifecycle hooks (R5) from the USER config ONLY (trust-by-origin: a project/cloned-repo config
     // must never run a command). Empty if there is no ~/.core/config.json hooks block.
-    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+    if let Some(home) = config::config_home() {
         let mut hooks = runtime::hooks::Hooks::load_user(&home);
         hooks.set_sensitive_env_names(credential_env_names);
         agent.hooks = hooks;
@@ -1371,7 +1529,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             attached,
             cli.task,
             provider_directory,
-            provider_id,
+            route,
             completion_notifications.enabled,
             startup,
         )
@@ -1634,7 +1792,7 @@ fn build_workflow_spawner(
     );
     cx.model_context_window = caps.context_window_tokens;
     cx.model_max_output_tokens = caps.max_output_tokens;
-    cx.context_home_dir = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    cx.context_home_dir = config::config_home();
     std::sync::Arc::new(runtime::KernelSpawner::new(cx))
 }
 
