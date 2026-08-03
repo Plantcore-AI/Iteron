@@ -317,16 +317,38 @@ fn assert_closed_without_frame(stream: TcpStream) {
     }
 }
 
+/// The one rollout this run wrote, waited for rather than assumed.
+///
+/// The server creates it asynchronously, so reading the directory the instant the client returns
+/// is a race the test lost only under `--workspace` load: the assertion saw zero files and read as
+/// "the run produced no record". Polling to a deadline keeps the assertion exactly as strong —
+/// still EXACTLY one, never more — while letting a machine under contention finish the write.
 fn only_rollout(runs: &Path) -> PathBuf {
-    let mut paths = fs::read_dir(runs)
-        .unwrap()
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
-        .collect::<Vec<_>>();
-    paths.sort();
-    assert_eq!(paths.len(), 1);
-    paths.pop().unwrap()
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let mut paths = fs::read_dir(runs)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+            .collect::<Vec<_>>();
+        paths.sort();
+        if paths.len() == 1 {
+            return paths.pop().unwrap();
+        }
+        assert!(
+            paths.len() <= 1,
+            "expected one rollout under {}, found {}: {paths:?}",
+            runs.display(),
+            paths.len()
+        );
+        assert!(
+            Instant::now() < deadline,
+            "no rollout appeared under {} within {TIMEOUT:?}",
+            runs.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 fn wait_for_exit(mut child: Child) -> (std::process::ExitStatus, Vec<u8>) {
