@@ -8397,8 +8397,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     // (ADR-015 §3), so the concatenation is fed to the exact pre-wrap→scroll-unit math unchanged
     // (the load-bearing R6 invariant). No outer box: a full-width flow with per-block gutters reads
     // far less like a toy than a dense boxed log. All body regions now share one exact grid; the
-    // scrollbar owns its own stage-gutter rect (or overlays the compact edge only when necessary).
-    let inner_w = surface.transcript.width;
+    // scrollbar owns its own stage-gutter rect. Reserving it before wrapping keeps the indicator
+    // from overwriting the final evidence cell when the transcript overflows.
+    let inner_w = surface.transcript_content_width();
     if app.render_cache_width != inner_w || app.render_cache_theme_epoch != app.theme_epoch {
         app.render_cache.clear();
         app.render_cache_width = inner_w;
@@ -10875,7 +10876,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        // Transcript rows as text, minus the final column the overflow scrollbar overlays.
+        // Transcript rows as text, minus the final column reserved for the overflow scrollbar.
         fn transcript_rows(
             term: &ratatui::Terminal<ratatui::backend::TestBackend>,
             top: u16,
@@ -10974,6 +10975,40 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         short.draw(|frame| draw(frame, &mut app)).unwrap();
         assert!(usize::from(app.last_total_rows) > total * 5);
         assert_eq!(app.row_map.len(), view_h);
+    }
+
+    #[test]
+    fn overflow_scrollbar_never_overwrites_the_final_transcript_cell() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let target = format!("{}Z", "x".repeat(114));
+        let mut rows = (0..40)
+            .map(|index| block::PanelRow::Note(format!("historical row {index:03}")))
+            .collect::<Vec<_>>();
+        rows.push(block::PanelRow::Note(target.clone()));
+        let mut app = App::new();
+        app.panel("", "commands", rows);
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(
+            app.last_total_rows > app.view_h,
+            "the scrollbar must be visible"
+        );
+
+        let buffer = terminal.backend().buffer();
+        let content = (app.view_top..app.view_top.saturating_add(app.view_h))
+            .flat_map(|y| {
+                (0..buffer.area.width.saturating_sub(1))
+                    .flat_map(move |x| buffer[(x, y)].symbol().chars())
+            })
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(
+            content.contains(&target),
+            "the scrollbar gutter must not erase the last content cell"
+        );
     }
 
     #[test]

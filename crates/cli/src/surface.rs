@@ -26,8 +26,8 @@ impl Density {
 }
 
 /// All persistent regions of one frame. `stage` is the complete terminal frame, not a painted
-/// desktop window. Every persistent region shares that full-width grid; the scrollbar overlays the
-/// final transcript cell only while content overflows.
+/// desktop window. Every persistent region shares that full-width grid; transcript content reserves
+/// the final column for the scrollbar so overflow can never overwrite evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Surface {
     pub stage: Rect,
@@ -42,6 +42,14 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// Width available to transcript text after reserving the scrollbar gutter. A one-cell terminal
+    /// keeps its only cell for content; wider terminals have enough room to preserve both surfaces.
+    pub fn transcript_content_width(self) -> u16 {
+        self.transcript.width.saturating_sub(u16::from(
+            self.transcript.width > 1 && self.scrollbar.width > 0,
+        ))
+    }
+
     pub fn resolve(
         frame: Rect,
         editor_rows: u16,
@@ -196,6 +204,14 @@ mod tests {
                     "right grid at {width}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn transcript_content_reserves_the_scrollbar_without_erasing_a_one_cell_view() {
+        for (width, content_width) in [(0, 0), (1, 1), (2, 1), (60, 59), (120, 119)] {
+            let surface = Surface::resolve(Rect::new(0, 0, width, 20), 1, 0, true, false);
+            assert_eq!(surface.transcript_content_width(), content_width);
         }
     }
 
