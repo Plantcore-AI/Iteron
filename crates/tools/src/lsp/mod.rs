@@ -1,0 +1,342 @@
+//! Live, lazy LSP query tools over the accepted `core-lsp` protocol/state substrate.
+//!
+//! Each call starts one known language adapter only after the kernel admits CodeExecuting,
+//! confines it with the persistent Linux bubblewrap backend, completes a bounded LSP lifecycle,
+//! rechecks the target bytes, and joins the child before returning. Long-lived reuse, automatic
+//! restart, dependency-graph freshness and non-Linux process confinement remain explicit gaps.
+
+mod input;
+mod session;
+mod wire;
+
+use crate::{Registry, ToolError, ToolExecution, effectfut};
+use core_lsp::intel::{Position, parse_hover_text, parse_locations};
+use core_protocol::{Capability, Purity, ToolResult, ToolSpec, ToolUse, Trust};
+use input::SourceDocument;
+use serde_json::{Value, json};
+use session::{Launcher, run_query};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+const DEFAULT_LOCATION_LIMIT: usize = 50;
+const MAX_TOOL_OUTPUT_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, thiserror::Error)]
+enum LspToolError {
+    #[error("workspace root is unavailable")]
+    WorkspaceUnavailable,
+    #[error("source file is unavailable")]
+    SourceUnavailable,
+    #[error("path must be a bounded control-free relative workspace path")]
+    InvalidPath,
+    #[error("path escapes the workspace or does not name a regular file")]
+    PathEscapesWorkspace,
+    #[error("source exceeds the fixed {limit}-byte limit")]
+    SourceTooLarge { limit: usize },
+    #[error("source is not valid UTF-8")]
+    SourceNotUtf8,
+    #[error("file type has no built-in language-server adapter")]
+    UnsupportedLanguage,
+    #[error("file path cannot be represented as a file URI")]
+    InvalidFileUri,
+    #[error("requested UTF-16 position is outside the document")]
+    PositionOutsideDocument,
+    #[error("tool arguments are invalid")]
+    InvalidArguments,
+    #[error("language-server identity source is unavailable")]
+    IdentityUnavailable,
+    #[error("language-server process identity space is exhausted")]
+    IdentityExhausted,
+    #[error("confined persistent processes are unavailable; refusing an unconfined server")]
+    SandboxUnavailable,
+    #[error("language-server spawn outcome is unknown")]
+    SpawnOutcomeUnknown,
+    #[error("language-server process did not expose all required pipes")]
+    MissingProcessPipe,
+    #[error("language-server transport failed")]
+    Transport,
+    #[error("language-server write timed out")]
+    WriteTimeout,
+    #[error("language-server response timed out")]
+    ResponseTimeout,
+    #[error("language-server shutdown timed out")]
+    ShutdownTimeout,
+    #[error("language-server closed before the matching response")]
+    UnexpectedEof,
+    #[error("language-server JSON-RPC envelope is malformed")]
+    MalformedEnvelope,
+    #[error("language-server returned a response for a non-live request")]
+    ForeignResponse,
+    #[error("language-server returned JSON-RPC error code {code:?}")]
+    ServerResponse { code: Option<i64> },
+    #[error("language-server interleaved output exceeds {limit} bytes")]
+    InterleavedOutputTooLarge { limit: usize },
+    #[error("language-server emitted more than {limit} interleaved messages")]
+    TooManyInterleavedMessages { limit: usize },
+    #[error("language-server stderr exceeded {limit} observed bytes")]
+    StderrLimit { limit: u64 },
+    #[error("language-server response correlation was rejected")]
+    CorrelationRejected,
+    #[error("language-server selected an unsupported position encoding")]
+    UnsupportedPositionEncoding,
+    #[error("source changed while the language server computed the answer")]
+    SourceChanged,
+    #[error("language-server emitted protocol output after exit")]
+    OutputAfterExit,
+    #[error("language-server exited unsuccessfully")]
+    ServerExitFailure,
+    #[error("language-server lifecycle did not reach a verified terminal state")]
+    LifecycleIncomplete,
+    #[error("language-server cleanup could not be confirmed")]
+    CleanupUnknown,
+    #[error("language-server response could not be serialized")]
+    Serialization,
+    #[error("bounded tool output exceeds {limit} bytes")]
+    ToolOutputTooLarge { limit: usize },
+    #[error("language-server protocol/state validation failed")]
+    Protocol(#[from] core_lsp::LspError),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum QueryKind {
+    Definition {
+        position: Position,
+        limit: usize,
+    },
+    References {
+        position: Position,
+        limit: usize,
+        include_declaration: bool,
+    },
+    Hover {
+        position: Position,
+    },
+}
+
+impl QueryKind {
+    fn position(self) -> Position {
+        match self {
+            Self::Definition { position, .. }
+            | Self::References { position, .. }
+            | Self::Hover { position } => position,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Definition { .. } => "definition",
+            Self::References { .. } => "references",
+            Self::Hover { .. } => "hover",
+        }
+    }
+}
+
+pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
+    let launcher = Arc::new(Launcher::new().map_err(|error| {
+        ToolError::Registration(format!("cannot initialize LSP launcher: {error}"))
+    })?);
+    let sensitive_env_names = registry.sensitive_env_names_handle();
+    for (name, description) in [
+        (
+            "lsp_definition",
+            "Query a definition through a lazily started, confined language server.",
+        ),
+        (
+            "lsp_references",
+            "Query bounded references through a lazily started, confined language server.",
+        ),
+        (
+            "lsp_hover",
+            "Query bounded hover context through a lazily started, confined language server.",
+        ),
+    ] {
+        let launcher = Arc::clone(&launcher);
+        let sensitive_env_names = Arc::clone(&sensitive_env_names);
+        registry.register_external_effect(
+            ToolSpec {
+                name: name.into(),
+                description: format!(
+                    "{description} The process is admitted as CodeExecuting because a third-party \
+                     server may write inside the confined workspace. Linux bubblewrap is required; \
+                     other platforms refuse before spawn. Target text and output are bounded, the \
+                     target is rechecked before return, and the child is joined."
+                ),
+                input_schema: input_schema(name),
+                purity: Purity::Effecting,
+                capability: Capability::CodeExecuting,
+            },
+            move |call, root| {
+                let launcher = Arc::clone(&launcher);
+                let sensitive_env_names = Arc::clone(&sensitive_env_names);
+                effectfut::box_it(async move {
+                    let names = sensitive_env_names
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    match execute(call.clone(), root, &launcher, names).await {
+                        Ok(content) => ToolExecution::Definite(success(call.id, content)),
+                        Err((error, unknown)) => {
+                            let result = crate::err_result(call.id, error.to_string());
+                            if unknown {
+                                ToolExecution::Unknown(result)
+                            } else {
+                                ToolExecution::Definite(result)
+                            }
+                        }
+                    }
+                })
+            },
+        )?;
+    }
+    Ok(())
+}
+
+async fn execute(
+    call: ToolUse,
+    root: PathBuf,
+    launcher: &Launcher,
+    sensitive_env_names: Vec<String>,
+) -> Result<String, (LspToolError, bool)> {
+    let path = call
+        .input
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or((LspToolError::InvalidArguments, false))?;
+    let line = bounded_u32(&call.input, "line")?;
+    let character = bounded_u32(&call.input, "character")?;
+    let document = SourceDocument::load(&root, path)
+        .await
+        .map_err(|error| (error, false))?;
+    let position = document
+        .position(line, character)
+        .map_err(|error| (error, false))?;
+    let query = match call.name.as_str() {
+        "lsp_definition" => QueryKind::Definition {
+            position,
+            limit: location_limit(&call.input)?,
+        },
+        "lsp_references" => QueryKind::References {
+            position,
+            limit: location_limit(&call.input)?,
+            include_declaration: call
+                .input
+                .get("include_declaration")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+        },
+        "lsp_hover" => QueryKind::Hover { position },
+        _ => return Err((LspToolError::InvalidArguments, false)),
+    };
+    let live = run_query(launcher, &document, query, sensitive_env_names)
+        .await
+        .map_err(|failure| (failure.error, failure.cleanup_unknown))?;
+    let normalized = normalize(query, live.value).map_err(|error| (error, false))?;
+    let output = json!({
+        "schema_version": 1,
+        "query": query.label(),
+        "server": document.adapter().server_label(),
+        "server_epoch": live.server_epoch,
+        "backend": live.backend,
+        "document_sha256": document.digest(),
+        "target_freshness_rechecked": true,
+        "dependency_freshness": "server_observed_not_attested",
+        "run_genesis_bound": false,
+        "result": normalized
+    });
+    let rendered =
+        serde_json::to_string_pretty(&output).map_err(|_| (LspToolError::Serialization, false))?;
+    if rendered.len() > MAX_TOOL_OUTPUT_BYTES {
+        return Err((
+            LspToolError::ToolOutputTooLarge {
+                limit: MAX_TOOL_OUTPUT_BYTES,
+            },
+            false,
+        ));
+    }
+    Ok(rendered)
+}
+
+fn normalize(query: QueryKind, value: Value) -> Result<Value, LspToolError> {
+    match query {
+        QueryKind::Definition { limit, .. } | QueryKind::References { limit, .. } => {
+            let parsed = parse_locations(&value, limit)?;
+            Ok(json!({
+                "locations": parsed.locations,
+                "truncated": parsed.truncated,
+                "malformed": parsed.malformed,
+                "duplicates": parsed.duplicates,
+                "uninspected": parsed.uninspected
+            }))
+        }
+        QueryKind::Hover { .. } => {
+            let parsed = parse_hover_text(&value);
+            Ok(json!({
+                "text": parsed.text,
+                "range": parsed.range,
+                "source_bytes": parsed.source_bytes,
+                "retained_source_bytes": parsed.retained_source_bytes,
+                "truncated_bytes": parsed.truncated_bytes,
+                "separator_bytes": parsed.separator_bytes,
+                "malformed": parsed.malformed,
+                "uninspected": parsed.uninspected
+            }))
+        }
+    }
+}
+
+fn bounded_u32(input: &Value, field: &str) -> Result<u32, (LspToolError, bool)> {
+    input
+        .get(field)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value <= core_lsp::MAX_LSP_POSITION)
+        .ok_or((LspToolError::InvalidArguments, false))
+}
+
+fn location_limit(input: &Value) -> Result<usize, (LspToolError, bool)> {
+    let value = input
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_LOCATION_LIMIT as u64);
+    usize::try_from(value)
+        .ok()
+        .filter(|limit| (1..=core_lsp::MAX_LOCATIONS).contains(limit))
+        .ok_or((LspToolError::InvalidArguments, false))
+}
+
+fn input_schema(name: &str) -> Value {
+    let mut properties = json!({
+        "path": {"type":"string", "description":"Relative workspace source path."},
+        "line": {"type":"integer", "description":"Zero-based line; validated against the source and LSP uinteger ceiling."},
+        "character": {"type":"integer", "description":"Zero-based UTF-16 code-unit offset; validated against the source and LSP uinteger ceiling."}
+    });
+    if name != "lsp_hover" {
+        properties["limit"] = json!({
+            "type":"integer",
+            "description":format!("Maximum normalized locations retained, in [1, {}].", core_lsp::MAX_LOCATIONS)
+        });
+    }
+    if name == "lsp_references" {
+        properties["include_declaration"] = json!({"type":"boolean"});
+    }
+    json!({
+        "type":"object",
+        "properties": properties,
+        "required":["path","line","character"]
+    })
+}
+
+fn success(id: String, content: String) -> ToolResult {
+    ToolResult {
+        tool_use_id: id,
+        content,
+        is_error: false,
+        // A language server is a third-party executable and can synthesize arbitrary hover or
+        // location content. Confinement limits effects; it does not promote its words to trust.
+        trust: Trust::Untrusted,
+        latency_ms: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests;
