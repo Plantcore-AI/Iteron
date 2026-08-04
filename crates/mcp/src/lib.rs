@@ -23,7 +23,7 @@ mod evidence;
 mod pagination;
 mod protocol_version;
 pub mod reconnect;
-pub mod token;
+pub mod supervisor;
 mod tool_catalog;
 mod tool_filter;
 
@@ -137,8 +137,39 @@ pub enum McpError {
     ToolCatalogTooLarge { limit: usize },
     #[error("MCP frame is not valid UTF-8")]
     InvalidUtf8,
+    #[error("MCP transport closed before the matching response")]
+    TransportClosed,
     #[error("deadline exceeded during {operation}")]
     Deadline { operation: String },
+    #[error("MCP operation cancelled during {operation}")]
+    Cancelled { operation: &'static str },
+    #[error("MCP reconnect attempts exhausted after {attempts} attempts")]
+    RetryExhausted { attempts: u32 },
+    #[error("invalid MCP reconnect policy field `{field}` (maximum {limit})")]
+    InvalidReconnectPolicy { field: &'static str, limit: u64 },
+    #[error("MCP reconnect base backoff {base_ms}ms exceeds cap {cap_ms}ms")]
+    InvalidReconnectBackoffOrder { base_ms: u64, cap_ms: u64 },
+    #[error("stale MCP generation: expected {expected}, received {received}")]
+    StaleGeneration { expected: u64, received: u64 },
+    #[error("MCP lifecycle generation exhausted")]
+    GenerationExhausted,
+    #[error("invalid MCP lifecycle transition `{event}` from `{state}`")]
+    InvalidLifecycleTransition {
+        state: &'static str,
+        event: &'static str,
+    },
+    #[error("invalid MCP launch configuration field `{field}` (limit {limit})")]
+    InvalidLaunchConfiguration { field: &'static str, limit: usize },
+    #[error("invalid MCP tool search field `{field}` (limit {limit})")]
+    InvalidToolSearch { field: &'static str, limit: usize },
+    #[error("MCP tool identity is stale or belongs to another server binding")]
+    StaleToolIdentity,
+    #[error("MCP catalog violates the managed lifecycle contract: {reason}")]
+    CatalogContract { reason: &'static str },
+    #[error("MCP server lifecycle is stopped")]
+    LifecycleStopped,
+    #[error("MCP server lifecycle failed terminally")]
+    LifecycleFailed,
     #[error("server error {code}: {message}")]
     Server { code: i64, message: String },
     #[error("json: {0}")]
@@ -232,7 +263,31 @@ impl McpError {
                 format!("MCP tool catalog exceeds {limit} serialized byte limit")
             }
             Self::InvalidUtf8 => "MCP frame is not valid UTF-8".into(),
+            Self::TransportClosed => "MCP transport closed before the matching response".into(),
             Self::Deadline { .. } => "MCP operation deadline exceeded".into(),
+            Self::Cancelled { .. } => "MCP operation cancelled".into(),
+            Self::RetryExhausted { attempts } => {
+                format!("MCP reconnect attempts exhausted after {attempts} attempts")
+            }
+            Self::InvalidReconnectPolicy { .. } => "invalid MCP reconnect policy".into(),
+            Self::InvalidReconnectBackoffOrder { base_ms, cap_ms } => {
+                format!("MCP reconnect base backoff {base_ms}ms exceeds cap {cap_ms}ms")
+            }
+            Self::StaleGeneration { expected, received } => {
+                format!("stale MCP generation: expected {expected}, received {received}")
+            }
+            Self::GenerationExhausted => "MCP lifecycle generation exhausted".into(),
+            Self::InvalidLifecycleTransition { .. } => "invalid MCP lifecycle transition".into(),
+            Self::InvalidLaunchConfiguration { .. } => "invalid MCP launch configuration".into(),
+            Self::InvalidToolSearch { .. } => "invalid MCP tool search".into(),
+            Self::StaleToolIdentity => {
+                "MCP tool identity is stale or belongs to another server binding".into()
+            }
+            Self::CatalogContract { .. } => {
+                "MCP catalog violates the managed lifecycle contract".into()
+            }
+            Self::LifecycleStopped => "MCP server lifecycle is stopped".into(),
+            Self::LifecycleFailed => "MCP server lifecycle failed terminally".into(),
             Self::Server { code, .. } => format!("MCP server returned error code {code}"),
             Self::Json(_) => "MCP peer returned invalid JSON".into(),
         }
@@ -366,6 +421,29 @@ mod tests {
         assert_eq!(summary, "MCP server returned error code -32001");
         assert!(!summary.contains(secret));
         assert!(!summary.contains('\u{1b}'));
+
+        let injected_static = "private\u{1b}[31m";
+        for local_error in [
+            McpError::InvalidLifecycleTransition {
+                state: injected_static,
+                event: injected_static,
+            },
+            McpError::InvalidLaunchConfiguration {
+                field: injected_static,
+                limit: 1,
+            },
+            McpError::InvalidToolSearch {
+                field: injected_static,
+                limit: 1,
+            },
+            McpError::CatalogContract {
+                reason: injected_static,
+            },
+        ] {
+            let summary = local_error.public_summary();
+            assert!(!summary.contains(injected_static));
+            assert!(!summary.contains('\u{1b}'));
+        }
     }
 
     #[test]

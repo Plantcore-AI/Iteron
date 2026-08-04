@@ -4,31 +4,29 @@ use crate::{
     MAX_FRAME_BYTES, McpError, encode_frame,
     evidence::{DispatchClock, McpToolCallEvidence},
     pagination::ToolListLimits,
-    protocol_version::{REQUESTED_PROTOCOL_VERSION, negotiate_initialize_result},
     request,
-    tool_filter::{McpToolFilter, validate_bare_tool_name, validate_server_name},
+    tool_filter::{McpToolFilter, validate_bare_tool_name},
 };
 use core_protocol::ToolSpec;
 use serde_json::{Value, json};
-use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
 mod content;
 mod discovery;
 mod lifecycle;
+mod managed_connect;
 mod transport;
 use content::render_tool_content;
-use lifecycle::terminate_and_reap;
+use lifecycle::OwnedProcess;
 #[cfg(test)]
 use transport::read_frame;
 use transport::{ResponseLimits, read_matching_response};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-const READ_BUFFER_BYTES: usize = 8 * 1024;
 
 /// Certainty of one `tools/call` exchange. A matching server response is a completed attempt even
 /// when the server reports `isError`; transport/protocol loss after dispatch is `Unknown` because
@@ -58,7 +56,7 @@ enum CallOutcome {
 
 /// A connected MCP server. Owns the child process and its stdio.
 pub struct McpClient {
-    child: Option<Child>,
+    process: Option<OwnedProcess>,
     stdin: Mutex<ChildStdin>,
     stdout: Mutex<BufReader<ChildStdout>>,
     /// Serialize the complete write/read exchange. Separate stdin/stdout locks are insufficient:
@@ -128,86 +126,57 @@ impl McpClient {
         request_timeout: Duration,
         sensitive_env_names: &[String],
     ) -> Result<Self, McpError> {
-        // Reject ambiguous namespaces before granting process authority. Server namespaces cannot
-        // contain `_`, so the first `__` in a registered name is an unambiguous separator.
-        validate_server_name(name)?;
-        let mut command = tokio::process::Command::new(command);
-        // A stdio server is trusted user configuration, but it is not entitled to every provider
-        // credential injected into Core. Give it only a toolchain/locale environment; explicit
-        // per-server secret grants require a future credential broker.
-        core_sandbox::clear_to_safe_child_env_with_exact(&mut command, sensitive_env_names);
-        core_sandbox::configure_process_group(&mut command);
-        #[cfg(unix)]
-        command.current_dir("/");
-        command
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .map_err(|e| McpError::Spawn(e.to_string()))?;
-
-        let Some(stdin) = child.stdin.take() else {
-            terminate_and_reap(&mut child).await;
-            return Err(McpError::Spawn("no stdin".into()));
-        };
-        let Some(stdout) = child.stdout.take() else {
-            terminate_and_reap(&mut child).await;
-            return Err(McpError::Spawn("no stdout".into()));
-        };
-
-        let mut client = McpClient {
-            child: Some(child),
-            stdin: Mutex::new(stdin),
-            stdout: Mutex::new(BufReader::with_capacity(READ_BUFFER_BYTES, stdout)),
-            calls: Mutex::new(()),
-            next_id: std::sync::atomic::AtomicU64::new(1),
+        managed_connect::connect(
+            command,
+            args,
+            name,
+            handshake_timeout,
             request_timeout,
-            negotiated_protocol_version: None,
-            server_name: name.to_string(),
-        };
+            sensitive_env_names,
+            None,
+        )
+        .await
+    }
 
-        // One deadline covers both handshake messages, their writes, lock acquisition, and the
-        // initialize response. On every failure path the process is explicitly killed and reaped.
-        let handshake = async {
-            let initialize_result = client
-                .call_unbounded_by_outer_deadline(
-                    "initialize",
-                    json!({
-                        "protocolVersion": REQUESTED_PROTOCOL_VERSION,
-                        "capabilities": {},
-                        "clientInfo": {"name": "core", "version": "0.0.1"}
-                    }),
-                )
-                .await?;
-            client.negotiated_protocol_version =
-                Some(negotiate_initialize_result(&initialize_result)?);
-            client
-                .notify_unbounded_by_outer_deadline("notifications/initialized", json!({}))
-                .await
-        };
+    pub(crate) async fn connect_managed(
+        command: &str,
+        args: &[String],
+        name: &str,
+        handshake_timeout: Duration,
+        request_timeout: Duration,
+        sensitive_env_names: &[String],
+        cancellation: &crate::supervisor::McpCancellation,
+    ) -> Result<Self, McpError> {
+        managed_connect::connect(
+            command,
+            args,
+            name,
+            handshake_timeout,
+            request_timeout,
+            sensitive_env_names,
+            Some(cancellation),
+        )
+        .await
+    }
 
-        let result = tokio::time::timeout(handshake_timeout, handshake).await;
-        match result {
-            Ok(Ok(())) => Ok(client),
-            Ok(Err(error)) => {
-                client.terminate().await;
-                Err(error)
-            }
-            Err(_) => {
-                client.terminate().await;
-                Err(McpError::Deadline {
-                    operation: "initialize handshake".into(),
-                })
-            }
+    pub(crate) async fn terminate(&mut self) {
+        if let Some(mut process) = self.process.take() {
+            process.terminate_and_reap().await;
         }
     }
 
-    async fn terminate(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            terminate_and_reap(&mut child).await;
+    pub(crate) fn terminate_sync(&mut self) {
+        if let Some(mut process) = self.process.take() {
+            process.force_cleanup_sync();
+        }
+    }
+
+    pub(crate) fn reconcile_liveness(&mut self) -> Result<bool, McpError> {
+        match self.process.as_mut() {
+            Some(process) => process
+                .reconcile_liveness()
+                .map_err(|error| McpError::Io(error.to_string())),
+            None => Ok(false),
         }
     }
 
@@ -485,6 +454,8 @@ impl McpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol_version::REQUESTED_PROTOCOL_VERSION;
+    use std::process::Stdio;
     use tokio::io::{AsyncWriteExt, duplex};
 
     #[tokio::test]
@@ -569,6 +540,17 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn wait_until_gone_sync(pid: u32) -> bool {
+        for _ in 0..200 {
+            if !process_exists(pid) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[cfg(unix)]
     async fn wait_until_file_exists(path: &std::path::Path) -> bool {
         // Ten seconds, not one. This waits on a real `/bin/bash` being scheduled, reading a line
         // and writing a file; one second is ample on an idle machine and marginal on a box running
@@ -595,6 +577,61 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drop_after_runtime_shutdown_reaps_direct_child_and_descendant() {
+        let pid_path = pid_file("drop-without-runtime");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = runtime.block_on(async {
+            let args = vec![
+                "-c".to_string(),
+                concat!(
+                    "IFS= read -r init; ",
+                    "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                    "IFS= read -r initialized; sleep 60 & descendant=$!; ",
+                    "printf '%s %s' $$ $descendant > \"$1\"; wait"
+                )
+                .to_string(),
+                "mcp-test".to_string(),
+                pid_path.to_string_lossy().into_owned(),
+            ];
+            let client = McpClient::connect_with_deadlines(
+                "/bin/bash",
+                &args,
+                "drop-test",
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+            assert!(wait_until_file_exists(&pid_path).await);
+            client
+        });
+        let pids: Vec<u32> = std::fs::read_to_string(&pid_path)
+            .unwrap()
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 2);
+        assert!(pids.iter().all(|pid| process_exists(*pid)));
+        drop(runtime);
+        drop(client);
+        assert!(
+            wait_until_gone_sync(pids[0]),
+            "direct MCP child {} survived no-runtime Drop",
+            pids[0]
+        );
+        assert!(
+            wait_until_gone_sync(pids[1]),
+            "MCP descendant {} survived no-runtime Drop",
+            pids[1]
+        );
+        let _ = std::fs::remove_file(pid_path);
     }
 
     #[cfg(unix)]
