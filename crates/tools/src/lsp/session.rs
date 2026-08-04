@@ -6,7 +6,10 @@ use core_lsp::intel::{Query, ensure_fresh};
 use core_lsp::lifecycle::{Event, RestartPolicy, Session, State};
 use core_lsp::pending::{PendingRequests, ReplyDisposition};
 use core_lsp::{ServerEpoch, framing};
-use core_sandbox::{ConfinedProcess, Confinement, PersistentBackend, SandboxError};
+use core_sandbox::{
+    ConfinedProcess, Confinement, PersistentBackend, SandboxError,
+    spawn_confined_process_from_workspace,
+};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -36,7 +39,7 @@ impl Launcher {
         })
     }
 
-    fn mint_epoch(&self) -> Result<u64, LspToolError> {
+    pub(super) fn mint_epoch(&self) -> Result<u64, LspToolError> {
         let sequence = self
             .next_sequence
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
@@ -57,27 +60,34 @@ pub(super) struct LiveResult {
 #[derive(Debug)]
 pub(super) struct RunFailure {
     pub(super) error: LspToolError,
-    pub(super) cleanup_unknown: bool,
+    pub(super) outcome_unknown: bool,
 }
 
-pub(super) async fn run_query(
-    launcher: &Launcher,
-    document: &SourceDocument,
+pub(super) async fn run_query_owned(
+    epoch: u64,
+    document: Arc<SourceDocument>,
     query: QueryKind,
     sensitive_env_names: Vec<String>,
+    deadline: tokio::time::Instant,
+    mut cancelled: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<LiveResult, RunFailure> {
-    let epoch = launcher
-        .mint_epoch()
-        .map_err(|error| RunFailure::new(error, false))?;
     let mut confinement = Confinement::egress_off(document.root());
     confinement.timeout_secs = 60;
     confinement.sensitive_env_names = sensitive_env_names;
-    let process = match core_sandbox::spawn_confined_process(
+    let root_capability = document
+        .root_capability()
+        .map_err(|error| RunFailure::new(error, false))?;
+    let spawn = spawn_confined_process_from_workspace(
         document.adapter().command(),
         &confinement,
-    )
-    .await
-    {
+        root_capability,
+    );
+    let process = match tokio::select! {
+        biased;
+        _ = &mut cancelled => return Err(RunFailure::new(LspToolError::OperationCancelled, false)),
+        _ = tokio::time::sleep_until(deadline) => return Err(RunFailure::new(LspToolError::OperationTimeout, false)),
+        result = spawn => result,
+    } {
         Ok(process) => process,
         Err(SandboxError::Unsupported | SandboxError::Profile(_)) => {
             return Err(RunFailure::new(LspToolError::SandboxUnavailable, false));
@@ -91,31 +101,43 @@ pub(super) async fn run_query(
         Ok(driver) => driver,
         Err(failure) => return Err(failure),
     };
-    let result = driver.execute(document, query).await;
+    let result = tokio::select! {
+        biased;
+        _ = &mut cancelled => Err(LspToolError::OperationCancelled),
+        _ = tokio::time::sleep_until(deadline) => Err(LspToolError::OperationTimeout),
+        result = driver.execute(&document, query) => result,
+    };
     match result {
-        Ok(value) => match driver.shutdown().await {
+        Ok(value) => match tokio::select! {
+            biased;
+            _ = &mut cancelled => Err(LspToolError::OperationCancelled),
+            _ = tokio::time::sleep_until(deadline) => Err(LspToolError::OperationTimeout),
+            result = driver.shutdown() => result,
+        } {
             Ok(backend) => Ok(LiveResult {
                 value,
                 server_epoch: epoch,
                 backend,
             }),
             Err(error) => {
-                let cleanup_unknown = !driver.force_cleanup().await;
-                Err(RunFailure::new(error, cleanup_unknown))
+                let _cleanup_confirmed = driver.force_cleanup().await;
+                // Once a CodeExecuting peer has spawned, a forced or abnormal terminal path cannot
+                // prove which workspace effects it performed, even when the exact child was reaped.
+                Err(RunFailure::new(error, true))
             }
         },
         Err(error) => {
-            let cleanup_unknown = !driver.force_cleanup().await;
-            Err(RunFailure::new(error, cleanup_unknown))
+            let _cleanup_confirmed = driver.force_cleanup().await;
+            Err(RunFailure::new(error, true))
         }
     }
 }
 
 impl RunFailure {
-    fn new(error: LspToolError, cleanup_unknown: bool) -> Self {
+    pub(super) fn new(error: LspToolError, outcome_unknown: bool) -> Self {
         Self {
             error,
-            cleanup_unknown,
+            outcome_unknown,
         }
     }
 }
@@ -134,6 +156,16 @@ struct Driver {
     clock: Instant,
 }
 
+impl Drop for Driver {
+    fn drop(&mut self) {
+        drop(self.stdin.take());
+        drop(self.process.take());
+        if let Some(task) = self.stderr_task.take() {
+            task.abort();
+        }
+    }
+}
+
 impl Driver {
     async fn new(mut process: ConfinedProcess, epoch: u64) -> Result<Self, RunFailure> {
         let backend = process.backend();
@@ -141,11 +173,8 @@ impl Driver {
         let stdout = process.take_stdout();
         let stderr = process.take_stderr();
         let (Some(stdin), Some(stdout), Some(stderr)) = (stdin, stdout, stderr) else {
-            let cleanup_unknown = process.terminate_and_reap().await.is_none();
-            return Err(RunFailure::new(
-                LspToolError::MissingProcessPipe,
-                cleanup_unknown,
-            ));
+            let _cleanup_confirmed = process.terminate_and_reap().await.is_some();
+            return Err(RunFailure::new(LspToolError::MissingProcessPipe, true));
         };
         let stderr_limit_hit = Arc::new(AtomicBool::new(false));
         let stderr_task = tokio::spawn(drain_stderr(stderr, Arc::clone(&stderr_limit_hit)));

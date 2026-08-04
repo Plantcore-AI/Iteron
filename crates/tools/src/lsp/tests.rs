@@ -1,21 +1,49 @@
-use super::{QueryKind, normalize, success};
+use super::{
+    LSP_TOOL_ACTIVE_TIMEOUT, LSP_TOOL_CLEANUP_RESERVE, LSP_TOOL_TOTAL_TIMEOUT, QueryKind,
+    input_schema, normalize, success,
+};
 use crate::Registry;
 use core_lsp::intel::Position;
-use core_protocol::{Capability, Purity, ToolUse, Trust};
+#[cfg(target_os = "linux")]
+use core_protocol::ToolUse;
+use core_protocol::{Capability, Purity, Trust};
 use serde_json::json;
+
+#[test]
+fn active_work_and_forced_cleanup_share_one_user_visible_budget() {
+    assert_eq!(
+        LSP_TOOL_ACTIVE_TIMEOUT + LSP_TOOL_CLEANUP_RESERVE,
+        LSP_TOOL_TOTAL_TIMEOUT
+    );
+}
+
+#[test]
+fn one_tool_schema_exposes_the_three_typed_queries() {
+    let schema = input_schema();
+    assert_eq!(
+        schema["properties"]["query"]["enum"],
+        json!(["definition", "references", "hover"])
+    );
+    assert_eq!(
+        schema["required"],
+        json!(["query", "path", "line", "character"])
+    );
+}
 
 #[test]
 fn live_lsp_tools_are_effecting_code_execution_not_pure_reads() {
     let registry = Registry::coding_agent("/tmp/lsp-registration-only").unwrap();
-    for name in ["lsp_definition", "lsp_references", "lsp_hover"] {
-        assert_eq!(registry.purity_of(name), Some(Purity::Effecting));
+    if cfg!(target_os = "linux") {
+        assert_eq!(registry.purity_of("lsp_query"), Some(Purity::Effecting));
         assert_eq!(
-            registry.capability_of(name),
+            registry.capability_of("lsp_query"),
             Some(Capability::CodeExecuting)
         );
+    } else {
+        assert!(registry.purity_of("lsp_query").is_none());
     }
     let read_only = Registry::read_only("/tmp/lsp-registration-only").unwrap();
-    assert!(read_only.purity_of("lsp_definition").is_none());
+    assert!(read_only.purity_of("lsp_query").is_none());
 }
 
 #[test]
@@ -70,6 +98,7 @@ fn hover_projection_preserves_truncation_accounting() {
     assert_eq!(output["text"], "hello <workspace>/src/lib.rs");
     assert_eq!(output["peer_source_bytes"], 22);
     assert_eq!(output["peer_truncated_bytes"], 0);
+    assert_eq!(output["absolute_path_redactions"], 0);
 }
 
 #[test]
@@ -81,13 +110,14 @@ fn language_server_content_is_untrusted_even_when_confinement_succeeds() {
 }
 
 #[tokio::test]
+#[cfg(target_os = "linux")]
 async fn unsupported_live_surface_refuses_without_promoting_peer_output() {
     let registry = Registry::coding_agent("/tmp/lsp-registration-only").unwrap();
     let result = registry
         .run(ToolUse {
             id: "call-1".into(),
-            name: "lsp_hover".into(),
-            input: json!({"path":"missing.rs","line":0,"character":0}),
+            name: "lsp_query".into(),
+            input: json!({"query":"hover","path":"missing.rs","line":0,"character":0}),
         })
         .await;
     assert!(result.is_error);
@@ -97,19 +127,7 @@ async fn unsupported_live_surface_refuses_without_promoting_peer_output() {
 
 #[cfg(not(target_os = "linux"))]
 #[tokio::test]
-async fn non_linux_refuses_a_real_source_before_unconfined_spawn() {
+async fn non_linux_does_not_advertise_a_guaranteed_to_fail_tool() {
     let registry = Registry::coding_agent(env!("CARGO_MANIFEST_DIR")).unwrap();
-    let result = registry
-        .run(ToolUse {
-            id: "call-platform".into(),
-            name: "lsp_hover".into(),
-            input: json!({"path":"src/lib.rs","line":0,"character":0}),
-        })
-        .await;
-    assert!(result.is_error);
-    assert_eq!(result.trust, Trust::Workspace);
-    assert_eq!(
-        result.content,
-        "confined persistent processes are unavailable; refusing an unconfined server"
-    );
+    assert!(registry.purity_of("lsp_query").is_none());
 }

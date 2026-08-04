@@ -1,24 +1,29 @@
 # Language-server tools
 
-Core's coding-agent registry includes three lazy language-server queries:
-`lsp_definition`, `lsp_references`, and `lsp_hover`. They are registered as
+On Linux, Core's coding-agent registry includes one lazy `lsp_query` tool with a typed `query`
+selector for `definition`, `references`, or `hover`. It is registered as
 **Effecting / CodeExecuting**, not pure reads. A third-party language-server executable can write
 inside its workspace even when the request itself is observational, so the normal code-execution
-permission gate applies.
+permission gate applies. Platforms without the required confinement backend do not advertise a
+tool that is guaranteed to refuse.
 
 The built-in adapter map is intentionally closed and does not accept a model-supplied command:
 
 | Source suffix | Server command | LSP language ID |
 | --- | --- | --- |
 | `.rs` | `rust-analyzer` | `rust` |
-| `.ts`, `.tsx`, `.js`, `.jsx` | `typescript-language-server --stdio` | `typescript` |
+| `.ts` | `typescript-language-server --stdio` | `typescript` |
+| `.tsx` | `typescript-language-server --stdio` | `typescriptreact` |
+| `.js` | `typescript-language-server --stdio` | `javascript` |
+| `.jsx` | `typescript-language-server --stdio` | `javascriptreact` |
 | `.py`, `.pyi` | `pyright-langserver --stdio` | `python` |
 
-Each call starts the adapter only after admission. The process runs under Core's egress-off Linux
-bubblewrap PID namespace, uses bounded stdio framing, completes initialize/open/query/shutdown/exit,
-and is joined before the result is returned. If that persistent confinement is unavailable, Core
-refuses before starting an unconfined server. This means the live tools currently refuse on macOS
-and Windows.
+Each call starts the adapter only after admission. The workspace is retained as a descriptor and
+mounted with bubblewrap's native `--bind-fd`; path replacement after admission cannot redirect the
+server. The process runs under Core's egress-off Linux bubblewrap PID namespace, uses bounded stdio
+framing, completes initialize/open/query/shutdown/exit, and is joined before a natural result is
+returned. If persistent confinement is unavailable, Core refuses before starting an unconfined
+server.
 
 The input must be a control-free relative workspace path to a UTF-8 source file of at most 2 MiB.
 Line and character use zero-based LSP positions; character offsets are UTF-16 code units. One frame
@@ -26,10 +31,18 @@ is limited by the `core-lsp` 16 MiB ceiling, at most 64 interleaved messages and
 JSON are inspected, locations retain at most 200 entries, hover text retains at most 64 KiB, and
 rendered tool output is capped at 1 MiB. The target file's identity and bytes are rechecked after
 the reply. Server-produced content is labelled untrusted. Locations are projected to
-workspace-relative paths; external/virtual locations are counted but not rendered, and the known
-workspace root is redacted from hover text.
+workspace-relative paths; external/virtual locations are counted but not rendered. Known workspace
+paths and peer-fabricated absolute POSIX, home, Windows, UNC, and file-URI paths are removed from
+hover text, including quoted paths containing spaces; ordinary documentation URLs are retained.
 
-This first live slice deliberately does not claim a persistent server pool, restart/reconnect,
+The operation has a 70-second user-visible async budget: 67 seconds are available to admission,
+spawn, protocol work, and projection, with three seconds reserved for forced process and stderr
+cleanup. Cancellation transfers cleanup to an owned supervisor task. A kernel-stalled filesystem
+operation cannot be interrupted portably; this remains a host/filesystem availability boundary,
+not a claimed hard deadline for an unresponsive FUSE or network mount.
+
+This first live slice deliberately does not claim a persistent server pool or batched multi-query
+session, restart/reconnect,
 workspace-wide dependency freshness, configurable server selection, target-platform process
 qualification, context chips, or run-genesis tunable binding. The output says
 `dependency_freshness: server_observed_not_attested` and `run_genesis_bound: false` so callers

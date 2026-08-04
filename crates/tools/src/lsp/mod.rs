@@ -5,9 +5,12 @@
 //! rechecks the target bytes, and joins the child before returning. Long-lived reuse, automatic
 //! restart, dependency-graph freshness and non-Linux process confinement remain explicit gaps.
 
+#[cfg(unix)]
+mod capability;
 mod input;
 mod projection;
 mod session;
+mod supervisor;
 mod wire;
 
 use crate::{Registry, ToolError, ToolExecution, effectfut};
@@ -15,12 +18,16 @@ use core_lsp::intel::Position;
 use core_protocol::{Capability, Purity, ToolResult, ToolSpec, ToolUse, Trust};
 use input::SourceDocument;
 use serde_json::{Value, json};
-use session::{Launcher, run_query};
+use session::Launcher;
 use std::path::PathBuf;
 use std::sync::Arc;
+use supervisor::run_query;
 
 const DEFAULT_LOCATION_LIMIT: usize = 50;
 const MAX_TOOL_OUTPUT_BYTES: usize = 1024 * 1024;
+const LSP_TOOL_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(70);
+const LSP_TOOL_ACTIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(67);
+const LSP_TOOL_CLEANUP_RESERVE: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Debug, thiserror::Error)]
 enum LspToolError {
@@ -60,6 +67,10 @@ enum LspToolError {
     WriteTimeout,
     #[error("language-server response timed out")]
     ResponseTimeout,
+    #[error("language-server operation exceeded its fixed wall-clock budget")]
+    OperationTimeout,
+    #[error("language-server operation was cancelled")]
+    OperationCancelled,
     #[error("language-server shutdown timed out")]
     ShutdownTimeout,
     #[error("language-server closed before the matching response")]
@@ -133,62 +144,49 @@ impl QueryKind {
 }
 
 pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
+    // A tool that is guaranteed to refuse is prompt pollution, not a capability. Linux remains
+    // the only platform with the required persistent confinement backend.
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
     let launcher = Arc::new(Launcher::new().map_err(|error| {
         ToolError::Registration(format!("cannot initialize LSP launcher: {error}"))
     })?);
     let sensitive_env_names = registry.sensitive_env_names_handle();
-    for (name, description) in [
-        (
-            "lsp_definition",
-            "Query a definition through a lazily started, confined language server.",
-        ),
-        (
-            "lsp_references",
-            "Query bounded references through a lazily started, confined language server.",
-        ),
-        (
-            "lsp_hover",
-            "Query bounded hover context through a lazily started, confined language server.",
-        ),
-    ] {
-        let launcher = Arc::clone(&launcher);
-        let sensitive_env_names = Arc::clone(&sensitive_env_names);
-        registry.register_external_effect(
-            ToolSpec {
-                name: name.into(),
-                description: format!(
-                    "{description} The process is admitted as CodeExecuting because a third-party \
-                     server may write inside the confined workspace. Linux bubblewrap is required; \
-                     other platforms refuse before spawn. Target text and output are bounded, the \
-                     target is rechecked before return, and the child is joined."
-                ),
-                input_schema: input_schema(name),
-                purity: Purity::Effecting,
-                capability: Capability::CodeExecuting,
-            },
-            move |call, root| {
-                let launcher = Arc::clone(&launcher);
-                let sensitive_env_names = Arc::clone(&sensitive_env_names);
-                effectfut::box_it(async move {
-                    let names = sensitive_env_names
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clone();
-                    match execute(call.clone(), root, &launcher, names).await {
-                        Ok(content) => ToolExecution::Definite(success(call.id, content)),
-                        Err((error, unknown)) => {
-                            let result = crate::err_result(call.id, error.to_string());
-                            if unknown {
-                                ToolExecution::Unknown(result)
-                            } else {
-                                ToolExecution::Definite(result)
-                            }
+    registry.register_external_effect(
+        ToolSpec {
+            name: "lsp_query".into(),
+            description: "Query definition, references, or hover through a lazily started, \
+                          confined language server. The third-party server is admitted as \
+                          CodeExecuting, target and output bytes are bounded, target freshness is \
+                          rechecked, and the child is joined before a natural completion."
+                .into(),
+            input_schema: input_schema(),
+            purity: Purity::Effecting,
+            capability: Capability::CodeExecuting,
+        },
+        move |call, root| {
+            let launcher = Arc::clone(&launcher);
+            let sensitive_env_names = Arc::clone(&sensitive_env_names);
+            effectfut::box_it(async move {
+                let names = sensitive_env_names
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                match execute(call.clone(), root, &launcher, names).await {
+                    Ok(content) => ToolExecution::Definite(success(call.id, content)),
+                    Err((error, unknown)) => {
+                        let result = crate::err_result(call.id, error.to_string());
+                        if unknown {
+                            ToolExecution::Unknown(result)
+                        } else {
+                            ToolExecution::Definite(result)
                         }
                     }
-                })
-            },
-        )?;
-    }
+                }
+            })
+        },
+    )?;
     Ok(())
 }
 
@@ -198,6 +196,30 @@ async fn execute(
     launcher: &Launcher,
     sensitive_env_names: Vec<String>,
 ) -> Result<String, (LspToolError, bool)> {
+    if !cfg!(target_os = "linux") {
+        return Err((LspToolError::SandboxUnavailable, false));
+    }
+    debug_assert_eq!(
+        LSP_TOOL_ACTIVE_TIMEOUT + LSP_TOOL_CLEANUP_RESERVE,
+        LSP_TOOL_TOTAL_TIMEOUT
+    );
+    let deadline = tokio::time::Instant::now() + LSP_TOOL_ACTIVE_TIMEOUT;
+    execute_inner(call, root, launcher, sensitive_env_names, deadline).await
+}
+
+async fn execute_inner(
+    call: ToolUse,
+    root: PathBuf,
+    launcher: &Launcher,
+    sensitive_env_names: Vec<String>,
+    deadline: tokio::time::Instant,
+) -> Result<String, (LspToolError, bool)> {
+    let query_name = call
+        .input
+        .get("query")
+        .and_then(Value::as_str)
+        .filter(|query| matches!(*query, "definition" | "references" | "hover"))
+        .ok_or((LspToolError::InvalidArguments, false))?;
     let path = call
         .input
         .get("path")
@@ -205,18 +227,23 @@ async fn execute(
         .ok_or((LspToolError::InvalidArguments, false))?;
     let line = bounded_u32(&call.input, "line")?;
     let character = bounded_u32(&call.input, "character")?;
-    let document = SourceDocument::load(&root, path)
+    let document = tokio::time::timeout_at(deadline, SourceDocument::load(&root, path))
         .await
+        .map_err(|_| (LspToolError::OperationTimeout, false))?
         .map_err(|error| (error, false))?;
+    let document = Arc::new(document);
     let position = document
         .position(line, character)
         .map_err(|error| (error, false))?;
-    let query = match call.name.as_str() {
-        "lsp_definition" => QueryKind::Definition {
+    if call.name != "lsp_query" {
+        return Err((LspToolError::InvalidArguments, false));
+    }
+    let query = match query_name {
+        "definition" => QueryKind::Definition {
             position,
             limit: location_limit(&call.input)?,
         },
-        "lsp_references" => QueryKind::References {
+        "references" => QueryKind::References {
             position,
             limit: location_limit(&call.input)?,
             include_declaration: call
@@ -225,12 +252,21 @@ async fn execute(
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
         },
-        "lsp_hover" => QueryKind::Hover { position },
+        "hover" => QueryKind::Hover { position },
         _ => return Err((LspToolError::InvalidArguments, false)),
     };
-    let live = run_query(launcher, &document, query, sensitive_env_names)
-        .await
-        .map_err(|failure| (failure.error, failure.cleanup_unknown))?;
+    let live = run_query(
+        launcher,
+        Arc::clone(&document),
+        query,
+        sensitive_env_names,
+        deadline,
+    )
+    .await
+    .map_err(|failure| (failure.error, failure.outcome_unknown))?;
+    if tokio::time::Instant::now() >= deadline {
+        return Err((LspToolError::OperationTimeout, false));
+    }
     let normalized =
         normalize(query, live.value, document.root()).map_err(|error| (error, false))?;
     let output = json!({
@@ -254,6 +290,9 @@ async fn execute(
             },
             false,
         ));
+    }
+    if tokio::time::Instant::now() >= deadline {
+        return Err((LspToolError::OperationTimeout, false));
     }
     Ok(rendered)
 }
@@ -291,25 +330,21 @@ fn location_limit(input: &Value) -> Result<usize, (LspToolError, bool)> {
         .ok_or((LspToolError::InvalidArguments, false))
 }
 
-fn input_schema(name: &str) -> Value {
-    let mut properties = json!({
-        "path": {"type":"string", "description":"Relative workspace source path."},
-        "line": {"type":"integer", "description":"Zero-based line; validated against the source and LSP uinteger ceiling."},
-        "character": {"type":"integer", "description":"Zero-based UTF-16 code-unit offset; validated against the source and LSP uinteger ceiling."}
-    });
-    if name != "lsp_hover" {
-        properties["limit"] = json!({
-            "type":"integer",
-            "description":format!("Maximum normalized locations retained, in [1, {}].", core_lsp::MAX_LOCATIONS)
-        });
-    }
-    if name == "lsp_references" {
-        properties["include_declaration"] = json!({"type":"boolean"});
-    }
+fn input_schema() -> Value {
     json!({
         "type":"object",
-        "properties": properties,
-        "required":["path","line","character"]
+        "properties": {
+        "query": {"type":"string", "enum":["definition","references","hover"]},
+        "path": {"type":"string", "description":"Relative workspace source path."},
+        "line": {"type":"integer", "description":"Zero-based line; validated against the source and LSP uinteger ceiling."},
+        "character": {"type":"integer", "description":"Zero-based UTF-16 code-unit offset; validated against the source and LSP uinteger ceiling."},
+        "limit": {
+            "type":"integer",
+            "description":format!("Maximum normalized locations retained, in [1, {}].", core_lsp::MAX_LOCATIONS)
+        },
+        "include_declaration": {"type":"boolean", "description":"References only; defaults true."}
+        },
+        "required":["query","path","line","character"]
     })
 }
 

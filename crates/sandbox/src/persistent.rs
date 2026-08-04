@@ -6,8 +6,9 @@
 //! process groups cannot contain a descendant that calls `setsid`, and Windows needs a Job Object.
 
 use crate::{Confinement, SandboxError};
+use std::fs::File;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 #[cfg(target_os = "linux")]
 use std::process::Stdio;
@@ -26,7 +27,9 @@ impl PersistentBackend {
     }
 }
 
-/// A confined child whose direct process is killed on drop.
+/// A confined child whose process-group capability is finitely spent on drop. The implementation
+/// makes a bounded direct-child reap attempt; callers that require a confirmed terminal state must
+/// call `wait` or `terminate_and_reap` and inspect the result before returning.
 ///
 /// The caller must additionally impose a wall-clock deadline and drain both output pipes. The
 /// tools supervisor does both and explicitly kills the process group before abnormal drop.
@@ -41,7 +44,7 @@ pub struct ConfinedProcess {
 struct ProcessGroupToken {
     #[cfg(unix)]
     pid: Option<u32>,
-    armed: AtomicBool,
+    armed: Mutex<bool>,
 }
 
 /// An opaque cleanup capability minted for one confined process group.
@@ -55,14 +58,23 @@ pub struct ConfinedProcessControl(Arc<ProcessGroupToken>);
 impl ConfinedProcessControl {
     #[cfg(unix)]
     fn signal_while_owned(&self, signal: libc::c_int) {
-        if self.0.armed.load(Ordering::Acquire) {
+        let armed = self
+            .0
+            .armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *armed {
             crate::signal_process_group(self.0.pid, signal);
         }
     }
 
     #[cfg(unix)]
     fn abandon(&self) {
-        self.0.armed.swap(false, Ordering::AcqRel);
+        *self
+            .0
+            .armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
     }
 
     /// Spend this process-specific cleanup capability exactly once.
@@ -70,11 +82,27 @@ impl ConfinedProcessControl {
     /// One-shot consumption is load-bearing: retaining an armed numeric process-group token after
     /// an uncertain reap could later signal an unrelated group if the kernel reused the pgid.
     pub fn force_kill(&self) {
-        if !self.0.armed.swap(false, Ordering::AcqRel) {
+        // The signal syscall and the armed -> spent transition are one mutex-serialized action.
+        // A process owner that lost this race cannot observe `spent` and reap the direct child
+        // until the winner has finished addressing the still-pinned pgid. An atomic swap before
+        // `kill(2)` would leave a PID-reuse window between those two operations.
+        self.spend_with(|| {
+            #[cfg(unix)]
+            crate::signal_process_group(self.0.pid, libc::SIGKILL);
+        });
+    }
+
+    fn spend_with(&self, action: impl FnOnce()) {
+        let mut armed = self
+            .0
+            .armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !*armed {
             return;
         }
-        #[cfg(unix)]
-        crate::signal_process_group(self.0.pid, libc::SIGKILL);
+        action();
+        *armed = false;
     }
 }
 
@@ -143,6 +171,27 @@ impl ConfinedProcess {
         .and_then(Result::ok)
     }
 
+    /// Cancellation/no-runtime fallback: spend the group capability before any reap, then poll the
+    /// exact owned direct child for a fixed interval. This never starts detached runtime work and
+    /// never retains a numeric process-group identity after returning.
+    pub fn terminate_and_reap_blocking(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Option<std::process::ExitStatus> {
+        self.control.force_kill();
+        let _ = self.child.start_kill();
+        let deadline = std::time::Instant::now().checked_add(timeout)?;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => return Some(status),
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Ok(None) | Err(_) => return None,
+            }
+        }
+    }
+
     #[cfg(unix)]
     async fn wait_until_exit_unreaped(&mut self) -> std::io::Result<()> {
         loop {
@@ -160,7 +209,9 @@ impl ConfinedProcess {
 
 impl Drop for ConfinedProcess {
     fn drop(&mut self) {
-        self.control.force_kill();
+        let _ = self.terminate_and_reap_blocking(std::time::Duration::from_secs(
+            crate::POST_KILL_DRAIN_SECS,
+        ));
     }
 }
 
@@ -187,6 +238,45 @@ pub async fn spawn_confined_process(
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (command, conf);
+        Err(SandboxError::Unsupported)
+    }
+}
+
+/// Spawn against an already-open workspace directory capability.
+///
+/// On Linux a CLOEXEC duplicate is made inheritable only in the exact fork child, then supplied to
+/// bubblewrap's native `--bind-fd`. Bubblewrap verifies the mounted dev/inode and closes the fd
+/// before the fixed server command is executed. This closes both pathname substitution and
+/// concurrent-spawn descriptor leakage windows.
+pub async fn spawn_confined_process_from_workspace(
+    command: &str,
+    conf: &Confinement,
+    workspace: &File,
+) -> Result<ConfinedProcess, SandboxError> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+
+        let Some(binary) = crate::bubblewrap::Bubblewrap::usable_bwrap_off_worker().await else {
+            return Err(SandboxError::Unsupported);
+        };
+        let inherited = crate::bubblewrap::duplicate_for_child(workspace, 10)
+            .map_err(|_| SandboxError::Profile("workspace descriptor admission failed".into()))?;
+        let descriptor = inherited.as_raw_fd();
+        let mut process = tokio::process::Command::new(binary);
+        process.args(crate::bubblewrap::bwrap_args_with_workspace_fd(
+            conf, command, descriptor,
+        ));
+        crate::bubblewrap::inherit_fd_in_tokio_command(&mut process, descriptor);
+        configure_pipes(&mut process, conf);
+        let spawned = spawn_checked(process, PersistentBackend::LinuxBubblewrapPipes).await;
+        drop(inherited);
+        spawned
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (command, conf, workspace);
         Err(SandboxError::Unsupported)
     }
 }
@@ -221,7 +311,7 @@ async fn spawn_checked(
     let control = ConfinedProcessControl(Arc::new(ProcessGroupToken {
         #[cfg(unix)]
         pid: child.id(),
-        armed: AtomicBool::new(true),
+        armed: Mutex::new(true),
     }));
     if child.stdin.is_none() || child.stdout.is_none() || child.stderr.is_none() {
         let mut process = ConfinedProcess {
@@ -267,8 +357,13 @@ fn child_exit_is_pending(pid: Option<u32>) -> std::io::Result<bool> {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::child_exit_is_pending;
+    use super::{
+        ConfinedProcess, ConfinedProcessControl, PersistentBackend, ProcessGroupToken,
+        child_exit_is_pending,
+    };
     use std::process::Stdio;
+    use std::sync::Arc;
+    use std::sync::Mutex;
     use std::time::Duration;
 
     #[tokio::test]
@@ -299,5 +394,81 @@ mod tests {
 
         let status = child.wait().await.unwrap();
         assert_eq!(status.code(), Some(23));
+    }
+
+    #[tokio::test]
+    async fn blocking_fallback_kills_group_and_reaps_the_direct_child() {
+        let exit_signal =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child()).unwrap();
+        let mut command = tokio::process::Command::new(crate::confined_shell());
+        command
+            .arg("-c")
+            .arg("sleep 30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        crate::configure_process_group(&mut command);
+        let child = command.spawn().unwrap();
+        let pid = child.id().unwrap();
+        let control = ConfinedProcessControl(Arc::new(ProcessGroupToken {
+            pid: Some(pid),
+            armed: Mutex::new(true),
+        }));
+        let mut process = ConfinedProcess {
+            child,
+            backend: PersistentBackend::LinuxBubblewrapPipes,
+            control,
+            exit_signal,
+        };
+        assert!(
+            process
+                .terminate_and_reap_blocking(Duration::from_secs(2))
+                .is_some()
+        );
+        // SAFETY: signal zero performs no mutation and only tests the exact formerly owned pid.
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
+
+    #[test]
+    fn losing_cleanup_cannot_pass_the_winning_signal_boundary() {
+        let control = ConfinedProcessControl(Arc::new(ProcessGroupToken {
+            pid: None,
+            armed: Mutex::new(true),
+        }));
+        let claimed = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let winner = {
+            let control = control.clone();
+            let claimed = Arc::clone(&claimed);
+            let release = Arc::clone(&release);
+            std::thread::spawn(move || {
+                control.spend_with(|| {
+                    claimed.wait();
+                    release.wait();
+                });
+            })
+        };
+        claimed.wait();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let loser = {
+            let control = control.clone();
+            std::thread::spawn(move || {
+                control.spend_with(|| {});
+                done_tx.send(()).unwrap();
+            })
+        };
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "a losing owner must not proceed to reap before the winning signal action finishes"
+        );
+        release.wait();
+        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        winner.join().unwrap();
+        loser.join().unwrap();
     }
 }
