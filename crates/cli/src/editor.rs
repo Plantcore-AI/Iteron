@@ -170,6 +170,32 @@ impl Editor {
         }
     }
 
+    /// The text between two char indices, in either order.
+    ///
+    /// Takes the pair unordered because a visual selection's anchor may sit on either side of the
+    /// cursor, and making the caller normalise it is how an off-by-one becomes a silent truncation.
+    pub fn span(&self, a: usize, b: usize) -> String {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        let hi = hi.min(self.buf.len());
+        let lo = lo.min(hi);
+        self.buf[lo..hi].iter().collect()
+    }
+
+    /// Remove the text between two char indices and leave the cursor at the start of the removed
+    /// span, which is where Vim leaves it after a visual delete.
+    pub fn delete_span(&mut self, a: usize, b: usize) {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        let hi = hi.min(self.buf.len());
+        let lo = lo.min(hi);
+        if lo == hi {
+            return;
+        }
+        self.buf.drain(lo..hi);
+        self.cursor = lo;
+        self.leave_navigation();
+        self.mark_persistence_change();
+    }
+
     /// Ctrl-W: delete the word before the cursor (skip trailing non-word chars, then a word run).
     pub fn delete_word_before(&mut self) {
         let i = self.word_boundary_left();
@@ -828,5 +854,56 @@ mod tests {
         assert_eq!(e.text(), "bbb");
         e.history_next();
         assert_eq!(e.text(), "bbbX");
+    }
+
+    /// A visual selection's anchor can sit on either side of the cursor, so both primitives take
+    /// their bounds unordered. Making the caller normalise them is how a backwards selection
+    /// silently deletes nothing, or deletes the wrong span.
+    #[test]
+    fn a_span_reads_and_deletes_the_same_text_in_either_direction() {
+        for (a, b) in [(2usize, 6usize), (6, 2)] {
+            let mut e = Editor::new();
+            e.insert_str("hello world");
+            assert_eq!(e.span(a, b), "llo ", "span({a},{b})");
+            e.delete_span(a, b);
+            assert_eq!(e.text(), "heworld");
+            assert_eq!(
+                e.cursor(),
+                2,
+                "the cursor lands at the start of the removed span"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_or_out_of_range_span_is_a_no_op_rather_than_a_panic() {
+        let mut e = Editor::new();
+        e.insert_str("abc");
+        assert_eq!(e.span(1, 1), "");
+        e.delete_span(1, 1);
+        assert_eq!(
+            e.text(),
+            "abc",
+            "an empty selection must not consume a character"
+        );
+        // A stale anchor past the end is reachable when the buffer shrank under a live selection.
+        assert_eq!(e.span(2, 99), "c");
+        e.delete_span(2, 99);
+        assert_eq!(e.text(), "ab");
+        e.delete_span(99, 99);
+        assert_eq!(e.text(), "ab");
+    }
+
+    #[test]
+    fn deleting_a_selection_is_recorded_as_a_change_for_persistence() {
+        let mut e = Editor::new();
+        e.insert_str("hello");
+        let before = e.persistence_revision();
+        e.delete_span(0, 2);
+        assert_ne!(
+            e.persistence_revision(),
+            before,
+            "a visual delete must not be invisible to draft persistence"
+        );
     }
 }

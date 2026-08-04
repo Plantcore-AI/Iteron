@@ -104,11 +104,26 @@ impl Shared {
                     ),
                 },
                 ServerEvent::RunEnded { summary, .. } => terminal_result_frame(seq, &summary),
+                // ADR-0001 step 1: the script engine's live phase→agent tree has no form in the
+                // frozen `stream-json` vocabulary this surface speaks, and inventing one here would
+                // publish a record type that `governance/schema-compatibility.json` never
+                // registered and `crates/eval`'s reader would refuse. A remote client is therefore
+                // told nothing new rather than told something made up; the record that DOES survive
+                // the turn is the launch notice plus `core workflow list`. Carrying the tree onto
+                // this surface is the schema-version bump ADR-0001 keeps as its own PR.
+                //
+                // The frame is skipped, not renumbered: `seq` is the EQ's cursor, the ring holds
+                // whatever frames exist, and a reconnect resumes from the last cursor it saw. A gap
+                // is a frame this surface never had, which is the truth.
+                ServerEvent::WorkflowRun(_) => return Ok::<_, anyhow::Error>((None, next_turn)),
             };
-            Ok::<_, anyhow::Error>((frame, next_turn))
+            Ok::<_, anyhow::Error>((Some(frame), next_turn))
         })
         .await
         .context("headless live-frame projection task join")??;
+        let Some(frame) = frame else {
+            return Ok(next_turn);
+        };
         let frame = Arc::new(
             tokio::task::spawn_blocking(move || EncodedServerFrame::from_live(frame))
                 .await

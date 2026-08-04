@@ -9,7 +9,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use core_protocol::{Effort, Message};
 use core_provider::{Provider, StreamItem, TurnRequest};
-use core_workflow::events::{ProgressEvent, ProgressSink, WorkflowState, fmt_count, fmt_duration};
+use core_workflow::events::{
+    PREVIEW_MAX, PROGRESS_SINK_PORT_VERSION, ProgressEvent, ProgressSink, TOOL_SUMMARY_MAX,
+    WorkflowState, fmt_count, fmt_duration, truncate_preview,
+};
 use core_workflow::{
     AgentCall, AgentOutcome, AgentSpawner, RunHandle, RunReport, RunSpec, WorkflowEngine,
 };
@@ -245,6 +248,271 @@ impl ProgressSink for CardProgressSink {
         if let Ok(mut card) = self.card.lock() {
             card.ingest(event);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The interactive-TUI progress seam (ADR-0001 step 1,
+// docs/project/decisions/0001-workflow-renderer-convergence.md).
+//
+// `core workflow run` (TTY) already renders the script engine's phase→agent tree through
+// `CardProgressSink` above. A workflow launched from INSIDE the interactive TUI — the `Workflow`
+// tool, `runtime.rs::launch_workflow` — had no such wire: the engine emitted `ProgressEvent`s into
+// a sink that kept only degradation reasons, so the operator watched a blank turn for minutes.
+// This carries the same events to the frontend, which folds them into the same
+// `block::WorkflowRunCard`.
+//
+// # Why the events are NOT translated into `crate::runtime::WorkflowUiEvent`
+//
+// The two vocabularies look nearly interchangeable (`Phase`/`PhaseChanged`,
+// `AgentStarted`/`AgentStarted`, `Done`|`Error`/`RunFinished`), and translating would let the
+// already-live `App::workflow_event` render script runs with no new seam at all. ADR-0001 rejects
+// that direction, and each of its reasons is checkable in this tree:
+//
+//   * `WorkflowUiEvent::PhaseChanged` carries `WorkflowPhaseUi` — a CLOSED enum of five native
+//     ultracode stages (`crates/cli/src/runtime.rs`). A script's `phase('build index')` has no
+//     member to map onto, so every script phase title would collapse to one arbitrary stage.
+//   * There is no `Log` variant anywhere in `WorkflowUiEvent`, so `log()` narrator lines would have
+//     to be dropped or smuggled into another variant's string field.
+//   * `WorkflowUiEvent::PlanReady` fixes the task list up front and `App::workflow_event` matches
+//     every later agent event against it by `agent_id`; a script's agent set is discovered as the
+//     script runs, so rows that appeared later would silently match nothing and vanish.
+//
+// Widening `WorkflowUiEvent` is not an option either: it is a frozen type
+// (`xtask/src/schema_compat_rust_semantics_functions.rs` `TYPES`), a published `stream-json`
+// surface (`cli.machine-stream.workflow-*` in `governance/schema-compatibility.json`), and a
+// published event-queue wire form (`crates/cli/src/client_event.rs`). Paying a CLI schema-version
+// bump to make the RETIRING renderer more expressive is the wrong direction, which is exactly why
+// ADR-0001 keeps that bump as its own release-contract PR.
+//
+// So the decision is: keep the engine's vocabulary whole and give it its own in-process seam.
+// Concretely, for the two shapes the brief calls out —
+//
+//   * `Log` is CARRIED, not dropped: it reaches `WorkflowRunCard.logs` and renders as the narrator
+//     line (`block.rs` `render_workflow_run`). Dropping it would delete the only output a script
+//     has between agent calls.
+//   * `Queued`/`Running`/`Skipped` are carried as themselves. `WorkflowState` is the engine's own
+//     5-state model and `WorkflowRunAgent.state` already IS that type — the card reuses it rather
+//     than duplicating it, so there is no lossy projection onto `WorkflowAgentOutcomeUi` (whose
+//     `SkippedBudget`/`NotStarted` would each be an invented cause).
+// ---------------------------------------------------------------------------------------------
+
+/// The bound applied to a one-line display string (a `phase()` title, an `agent()` label, a model
+/// id) on its way into retained transcript state. Long enough that no realistic label is cut,
+/// short enough that a script cannot push a row off the screen.
+const UI_LABEL_MAX: usize = 120;
+
+/// One lifecycle message for a QuickJS workflow run, addressed to a frontend that can render the
+/// live phase→agent tree ([`crate::block::WorkflowRunCard`]).
+///
+/// This is an in-process seam, not a published contract: it deliberately carries the engine's own
+/// unfrozen [`ProgressEvent`] rather than a mirrored wire vocabulary, for the reasons above.
+#[derive(Debug, Clone)]
+pub enum WorkflowRunUiEvent {
+    /// A run is about to start. `phases` are the script's DECLARED `meta.phases`, so the frontend
+    /// lays every phase box out on the first frame instead of growing the tree as execution
+    /// reaches them — the same seeding [`new_run_card`] does for the one-shot surface.
+    Started {
+        run_id: String,
+        name: String,
+        phases: Vec<String>,
+    },
+    /// One engine milestone, already presentation-safe.
+    Progress {
+        run_id: String,
+        event: ProgressEvent,
+    },
+    /// The engine future for this run resolved. `ingest` alone never marks a card finished, so
+    /// without this the tree would spin forever.
+    Finished { run_id: String },
+}
+
+/// Apply the frontend's display gate to one untrusted line: secret-shaped substrings redacted and
+/// terminal control characters escaped ([`crate::tui::ui_safe_text`]), then whitespace collapsed
+/// and the result re-bounded — escaping can only GROW a string (`\u{1b}` becomes six characters),
+/// so the bound has to be re-applied after it, exactly as `block::safe_result_preview` does.
+fn safe_line(text: &str, max: usize) -> String {
+    truncate_preview(&crate::tui::ui_safe_text(text), max)
+}
+
+/// The same gate for an optional field. A line that sanitizes away to nothing becomes `None`, so
+/// the card renders no row rather than an empty stub.
+fn safe_line_opt(text: Option<String>, max: usize) -> Option<String> {
+    let safe = safe_line(text?.as_str(), max);
+    (!safe.is_empty()).then_some(safe)
+}
+
+/// The display gate for a one-line label that reaches the frontend OUTSIDE a [`ProgressEvent`] —
+/// the workflow name and the declared phase titles on [`WorkflowRunUiEvent::Started`]. Both are
+/// read straight out of the script's `export const meta`, so they are as untrusted as anything
+/// `ui_safe_progress` handles and get the identical treatment.
+pub fn ui_safe_label(text: &str) -> String {
+    safe_line(text, UI_LABEL_MAX)
+}
+
+/// Project one engine [`ProgressEvent`] onto the form the interactive TUI may retain.
+///
+/// Every string here is authored by an untrusted party — the workflow script (`phase()` titles,
+/// `log()` messages, `agent()` labels) or a child model (`result_preview`, `last_tool_summary`,
+/// refusal `error`s) — and the interactive transcript is retained state, so all of them pass the
+/// display gate. The one-shot `core workflow run` surface draws into an alternate screen that is
+/// discarded, which is why it never needed this.
+///
+/// Pure, and the match is exhaustive with no wildcard arm: **a new `ProgressEvent` variant does not
+/// compile until it is given a projection here.** That is the property that stops a variant from
+/// being silently swallowed by the seam.
+pub fn ui_safe_progress(event: ProgressEvent) -> ProgressEvent {
+    match event {
+        ProgressEvent::Phase { index, title } => ProgressEvent::Phase {
+            index,
+            title: safe_line(&title, UI_LABEL_MAX),
+        },
+        ProgressEvent::Log { message } => ProgressEvent::Log {
+            message: safe_line(&message, PREVIEW_MAX),
+        },
+        ProgressEvent::AgentQueued {
+            index,
+            label,
+            phase,
+            model,
+        } => ProgressEvent::AgentQueued {
+            index,
+            label: safe_line(&label, UI_LABEL_MAX),
+            phase: safe_line_opt(phase, UI_LABEL_MAX),
+            model: safe_line_opt(model, UI_LABEL_MAX),
+        },
+        ProgressEvent::AgentStarted {
+            index,
+            label,
+            phase,
+            model,
+        } => ProgressEvent::AgentStarted {
+            index,
+            label: safe_line(&label, UI_LABEL_MAX),
+            phase: safe_line_opt(phase, UI_LABEL_MAX),
+            model: safe_line_opt(model, UI_LABEL_MAX),
+        },
+        ProgressEvent::AgentActivity {
+            index,
+            tokens,
+            tool_calls,
+            last_tool_summary,
+        } => ProgressEvent::AgentActivity {
+            index,
+            tokens,
+            tool_calls,
+            last_tool_summary: safe_line_opt(last_tool_summary, TOOL_SUMMARY_MAX),
+        },
+        ProgressEvent::AgentFinished {
+            index,
+            label,
+            state,
+            tokens,
+            tool_calls,
+            duration_ms,
+            result_preview,
+            last_tool_summary,
+            error,
+        } => ProgressEvent::AgentFinished {
+            index,
+            label: safe_line(&label, UI_LABEL_MAX),
+            state,
+            tokens,
+            tool_calls,
+            duration_ms,
+            result_preview: safe_line_opt(result_preview, PREVIEW_MAX),
+            last_tool_summary: safe_line_opt(last_tool_summary, TOOL_SUMMARY_MAX),
+            error: safe_line_opt(error, PREVIEW_MAX),
+        },
+    }
+}
+
+/// A [`ProgressSink`] that forwards every engine event to a frontend channel as a
+/// [`WorkflowRunUiEvent`] — the interactive-TUI counterpart of [`CardProgressSink`], which owns its
+/// card directly because it also owns the terminal.
+///
+/// The channel is unbounded on purpose: `emit` is called from the engine's single JS-driver thread
+/// and the contract says it must not block. Backpressure is applied downstream, by the frontend's
+/// bounded event queue, which is also where a drop policy can distinguish a cosmetic tick from an
+/// authoritative terminal row. A send to a frontend that has gone away is discarded, never an
+/// error: losing the renderer must not stop a run the operator already paid for.
+pub struct UiProgressSink {
+    run_id: String,
+    tx: tokio::sync::mpsc::UnboundedSender<WorkflowRunUiEvent>,
+}
+
+impl UiProgressSink {
+    pub fn new(
+        run_id: impl Into<String>,
+        tx: tokio::sync::mpsc::UnboundedSender<WorkflowRunUiEvent>,
+    ) -> Self {
+        UiProgressSink {
+            run_id: run_id.into(),
+            tx,
+        }
+    }
+}
+
+impl ProgressSink for UiProgressSink {
+    fn emit(&self, event: ProgressEvent) {
+        let _ = self.tx.send(WorkflowRunUiEvent::Progress {
+            run_id: self.run_id.clone(),
+            event: ui_safe_progress(event),
+        });
+    }
+}
+
+/// Deliver one engine event to several sinks. The in-turn `Workflow` tool needs two at once: the
+/// model still has to be told which agents DEGRADED ([`DegradedAgentSink`]) while the operator
+/// watches the tree ([`UiProgressSink`]), and the engine takes exactly one sink.
+///
+/// `port_version` reports the MINIMUM its members report rather than this type's own: the engine
+/// refuses a sink that cannot represent every event it is about to emit, and a fan-out is only as
+/// capable as its least capable member. Reporting the maximum would let a v1 member be starved of
+/// the queued half of a run behind a v2 sibling's version number.
+pub struct FanoutProgressSink {
+    sinks: Vec<Arc<dyn ProgressSink>>,
+}
+
+impl FanoutProgressSink {
+    pub fn new(sinks: Vec<Arc<dyn ProgressSink>>) -> Self {
+        FanoutProgressSink { sinks }
+    }
+}
+
+impl ProgressSink for FanoutProgressSink {
+    fn port_version(&self) -> u32 {
+        self.sinks
+            .iter()
+            .map(|sink| sink.port_version())
+            .min()
+            .unwrap_or(PROGRESS_SINK_PORT_VERSION)
+    }
+
+    fn emit(&self, event: ProgressEvent) {
+        for sink in &self.sinks {
+            sink.emit(event.clone());
+        }
+    }
+}
+
+/// The sink the in-turn `Workflow` tool hands the engine.
+///
+/// `degraded` is not optional: a degraded `agent()` resolves to JS `null` and the idiomatic
+/// `parallel(...).filter(Boolean)` deletes it, so without it an exhausted budget reaches the model
+/// as a plausibly-short result. The frontend sink is added only when one is attached, which keeps
+/// the `--output-format` paths on exactly the sink they had before this seam existed.
+pub fn in_turn_progress_sink(
+    degraded: Arc<DegradedAgentSink>,
+    run_id: &str,
+    frontend: Option<tokio::sync::mpsc::UnboundedSender<WorkflowRunUiEvent>>,
+) -> Arc<dyn ProgressSink> {
+    match frontend {
+        Some(tx) => Arc::new(FanoutProgressSink::new(vec![
+            degraded,
+            Arc::new(UiProgressSink::new(run_id, tx)),
+        ])),
+        None => degraded,
     }
 }
 
@@ -745,6 +1013,7 @@ mod tests {
     use core_protocol::{Block, StopReason, Usage};
     use core_provider::{ProviderError, TurnResult, UsageReport};
     use core_workflow::{RunId, RunReport};
+    use std::collections::BTreeSet;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1217,6 +1486,331 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
             1,
             "the run is asked to cancel once; the second press is the operator giving up"
         );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The interactive-TUI progress seam (ADR-0001 step 1).
+    //
+    // The mapping is a pure function, so it is tested as one: no engine, no terminal, no channel.
+    // The exhaustiveness obligation the brief names is enforced twice over — `ui_safe_progress`
+    // matches every `ProgressEvent` variant with no wildcard arm (a new variant does not compile
+    // until it is given a projection), and `variant_tag` below repeats that with no wildcard, so a
+    // new variant also cannot be forgotten out of `every_progress_variant`.
+    // -----------------------------------------------------------------------------------------
+
+    /// A name for the shape of an event, by an exhaustive match. This exists so a `ProgressEvent`
+    /// variant added tomorrow breaks THIS file too, rather than quietly making the coverage
+    /// assertion below weaker by one variant.
+    fn variant_tag(event: &ProgressEvent) -> &'static str {
+        match event {
+            ProgressEvent::Phase { .. } => "phase",
+            ProgressEvent::Log { .. } => "log",
+            ProgressEvent::AgentQueued { .. } => "agent_queued",
+            ProgressEvent::AgentStarted { .. } => "agent_started",
+            ProgressEvent::AgentActivity { .. } => "agent_activity",
+            ProgressEvent::AgentFinished { .. } => "agent_finished",
+        }
+    }
+
+    /// One of every variant, each carrying a hostile string in every string-shaped field: a screen-
+    /// clearing control sequence and a credential-shaped token.
+    ///
+    /// The credential is delimited from what precedes it because `crate::tui::ui_safe_text` defers
+    /// to `core_record::redact::scrub`, which matches credential-shaped TOKENS. What this pins is
+    /// that the seam ROUTES untrusted strings through the frontend's one gate — not a second,
+    /// private redaction implementation, which is exactly the drift that would let the two
+    /// disagree about what a secret looks like.
+    fn every_progress_variant(secret: &str) -> Vec<ProgressEvent> {
+        vec![
+            ProgressEvent::Phase {
+                index: 1,
+                title: format!("build \u{1b}[2Jindex {secret}"),
+            },
+            ProgressEvent::Log {
+                message: format!("scanning \u{1b}[2J {secret}"),
+            },
+            ProgressEvent::AgentQueued {
+                index: 0,
+                label: format!("queued \u{1b}[2J {secret}"),
+                phase: Some(format!("build \u{1b}[2Jindex {secret}")),
+                model: Some(format!("model-x \u{1b}[2J {secret}")),
+            },
+            ProgressEvent::AgentStarted {
+                index: 1,
+                label: format!("started \u{1b}[2J {secret}"),
+                phase: Some(format!("build \u{1b}[2Jindex {secret}")),
+                model: Some(format!("model-x \u{1b}[2J {secret}")),
+            },
+            ProgressEvent::AgentActivity {
+                index: 1,
+                tokens: 1_200,
+                tool_calls: 3,
+                last_tool_summary: Some(format!("read \u{1b}[2J {secret}")),
+            },
+            ProgressEvent::AgentFinished {
+                index: 1,
+                label: format!("finished \u{1b}[2J {secret}"),
+                state: WorkflowState::Error,
+                tokens: 2_400,
+                tool_calls: 4,
+                duration_ms: 3_200,
+                result_preview: Some(format!("result \u{1b}[2J {secret}")),
+                last_tool_summary: Some(format!("read \u{1b}[2J {secret}")),
+                error: Some(format!("refused \u{1b}[2J {secret}")),
+            },
+        ]
+    }
+
+    /// Every string a projected event carries, so a leak cannot hide in a field the test forgot.
+    fn strings_of(event: &ProgressEvent) -> Vec<String> {
+        match event {
+            ProgressEvent::Phase { title, .. } => vec![title.clone()],
+            ProgressEvent::Log { message } => vec![message.clone()],
+            ProgressEvent::AgentQueued {
+                label,
+                phase,
+                model,
+                ..
+            }
+            | ProgressEvent::AgentStarted {
+                label,
+                phase,
+                model,
+                ..
+            } => [Some(label.clone()), phase.clone(), model.clone()]
+                .into_iter()
+                .flatten()
+                .collect(),
+            ProgressEvent::AgentActivity {
+                last_tool_summary, ..
+            } => last_tool_summary.clone().into_iter().collect(),
+            ProgressEvent::AgentFinished {
+                label,
+                result_preview,
+                last_tool_summary,
+                error,
+                ..
+            } => [
+                Some(label.clone()),
+                result_preview.clone(),
+                last_tool_summary.clone(),
+                error.clone(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        }
+    }
+
+    #[test]
+    fn no_progress_variant_is_dropped_on_its_way_to_the_frontend() {
+        let secret = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
+        let variants = every_progress_variant(secret);
+        let tags: BTreeSet<&'static str> = variants.iter().map(variant_tag).collect();
+        assert_eq!(
+            tags.len(),
+            variants.len(),
+            "the coverage fixture must hold each variant exactly once"
+        );
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = UiProgressSink::new("wf_seam", tx);
+        for event in &variants {
+            sink.emit(event.clone());
+        }
+        drop(sink);
+
+        let mut seen: Vec<&'static str> = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                WorkflowRunUiEvent::Progress { run_id, event } => {
+                    assert_eq!(run_id, "wf_seam", "every row is correlated to its run");
+                    seen.push(variant_tag(&event));
+                }
+                other => panic!("the sink emits only progress: {other:?}"),
+            }
+        }
+        assert_eq!(
+            seen,
+            variants.iter().map(variant_tag).collect::<Vec<_>>(),
+            "every variant must arrive, once, in order — a swallowed one is a row that never \
+             appears or never settles"
+        );
+    }
+
+    #[test]
+    fn untrusted_strings_are_gated_before_they_enter_retained_transcript_state() {
+        let secret = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
+        for event in every_progress_variant(secret) {
+            let projected = ui_safe_progress(event.clone());
+            assert_eq!(
+                variant_tag(&projected),
+                variant_tag(&event),
+                "the gate must not change what KIND of thing happened"
+            );
+            let strings = strings_of(&projected);
+            assert!(
+                !strings.is_empty(),
+                "{}: a variant with string fields must still carry them",
+                variant_tag(&projected)
+            );
+            for text in strings {
+                assert!(
+                    !text.contains(secret),
+                    "credential survived the gate: {text}"
+                );
+                assert!(
+                    !text.chars().any(char::is_control),
+                    "a control sequence reached the transcript: {text:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_oversized_label_cannot_push_a_row_off_the_screen() {
+        let projected = ui_safe_progress(ProgressEvent::AgentStarted {
+            index: 0,
+            label: "x".repeat(10_000),
+            phase: None,
+            model: None,
+        });
+        let ProgressEvent::AgentStarted { label, .. } = projected else {
+            panic!("the variant is preserved");
+        };
+        assert_eq!(label.chars().count(), UI_LABEL_MAX + 1); // bound + the ellipsis
+        assert!(label.ends_with('…'));
+    }
+
+    #[test]
+    fn the_gate_preserves_every_non_string_field() {
+        let projected = ui_safe_progress(ProgressEvent::AgentFinished {
+            index: 7,
+            label: "row".into(),
+            state: WorkflowState::Skipped,
+            tokens: 2_400,
+            tool_calls: 4,
+            duration_ms: 3_200,
+            result_preview: None,
+            last_tool_summary: None,
+            error: None,
+        });
+        // `Skipped` in particular: the engine's 5-state model is reused by the card, not projected
+        // onto the native `WorkflowAgentOutcomeUi`, so no state has to be invented or collapsed.
+        assert!(matches!(
+            projected,
+            ProgressEvent::AgentFinished {
+                index: 7,
+                state: WorkflowState::Skipped,
+                tokens: 2_400,
+                tool_calls: 4,
+                duration_ms: 3_200,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_narrator_line_that_sanitizes_to_nothing_is_still_a_log_line() {
+        // `Log` has no counterpart in the native `WorkflowUiEvent` vocabulary at all, which is one
+        // of ADR-0001's reasons for keeping the engine's own. It is carried, never merged away.
+        let projected = ui_safe_progress(ProgressEvent::Log {
+            message: "   ".into(),
+        });
+        let ProgressEvent::Log { message } = projected else {
+            panic!("a log stays a log");
+        };
+        assert!(message.is_empty());
+    }
+
+    #[test]
+    fn the_fanout_feeds_every_sink_and_reports_its_least_capable_member() {
+        struct OldSink;
+        impl ProgressSink for OldSink {
+            fn port_version(&self) -> u32 {
+                1
+            }
+            fn emit(&self, _event: ProgressEvent) {}
+        }
+
+        let degraded = Arc::new(DegradedAgentSink::new());
+        let recording = Arc::new(RecordingSink::default());
+        let fanout = FanoutProgressSink::new(vec![degraded.clone(), recording.clone()]);
+        assert_eq!(
+            fanout.port_version(),
+            PROGRESS_SINK_PORT_VERSION,
+            "two current sinks are still current"
+        );
+
+        fanout.emit(ProgressEvent::AgentFinished {
+            index: 2,
+            label: "starved".into(),
+            state: WorkflowState::Error,
+            tokens: 0,
+            tool_calls: 0,
+            duration_ms: 1,
+            result_preview: None,
+            last_tool_summary: None,
+            error: Some("agent call ceiling 1 reached".into()),
+        });
+
+        // Both halves of the in-turn contract survive: the model is still told what degraded, and
+        // the operator's tree still receives the row.
+        assert_eq!(
+            degraded.reasons(),
+            vec!["#2 starved: agent call ceiling 1 reached".to_string()]
+        );
+        assert_eq!(recording.events.lock().unwrap().len(), 1);
+
+        let with_old = FanoutProgressSink::new(vec![recording, Arc::new(OldSink)]);
+        assert_eq!(
+            with_old.port_version(),
+            1,
+            "a fan-out is only as capable as its least capable member; claiming otherwise would \
+             let the engine emit events one member cannot represent"
+        );
+    }
+
+    #[test]
+    fn the_in_turn_sink_gains_the_tree_without_losing_the_models_degradation_reasons() {
+        let starved = || ProgressEvent::AgentFinished {
+            index: 2,
+            label: "starved".into(),
+            state: WorkflowState::Error,
+            tokens: 0,
+            tool_calls: 0,
+            duration_ms: 1,
+            result_preview: None,
+            last_tool_summary: None,
+            error: Some("agent call ceiling 1 reached".into()),
+        };
+
+        // No frontend attached (`core -p`, `--output-format json`, an embedder): the sink is the
+        // degraded sink itself, so this path is byte-for-byte what it was before the seam existed.
+        let headless = Arc::new(DegradedAgentSink::new());
+        in_turn_progress_sink(headless.clone(), "wf_headless", None).emit(starved());
+        assert_eq!(
+            headless.reasons(),
+            vec!["#2 starved: agent call ceiling 1 reached".to_string()]
+        );
+
+        // Frontend attached: the operator gets the row AND the model still gets the reason. Losing
+        // either one is a silent lie to somebody.
+        let attached = Arc::new(DegradedAgentSink::new());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        in_turn_progress_sink(attached.clone(), "wf_attached", Some(tx)).emit(starved());
+        assert_eq!(
+            attached.reasons(),
+            vec!["#2 starved: agent call ceiling 1 reached".to_string()],
+            "the tree must not replace what the model is told"
+        );
+        match rx.try_recv().expect("the frontend saw the row") {
+            WorkflowRunUiEvent::Progress { run_id, event } => {
+                assert_eq!(run_id, "wf_attached");
+                assert_eq!(variant_tag(&event), "agent_finished");
+            }
+            other => panic!("unexpected seam event: {other:?}"),
+        }
     }
 
     #[test]

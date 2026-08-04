@@ -120,3 +120,126 @@ fn watcher_reports_only_real_file_stamp_changes() {
     assert!(watcher.changed());
     let _ = std::fs::remove_file(path);
 }
+
+/// Visual mode, pinned as a state machine rather than through the frontend.
+///
+/// The vocabulary is closed on purpose: adding `VimState::Visual` and the five selection actions
+/// made `tui.rs` fail to compile in two places until both were handled. That is the property worth
+/// keeping — a future motion cannot be added and silently ignored by the renderer.
+#[test]
+fn visual_mode_anchors_extends_and_leaves_without_ever_replacing_the_selection() {
+    let mut vim = Vim::default();
+    // Reach normal mode the way the operator does.
+    assert_eq!(
+        vim.route(true, KeyCode::Esc, KeyModifiers::NONE),
+        Some(VimAction::EnterNormal)
+    );
+
+    assert_eq!(
+        vim.route(true, KeyCode::Char('v'), KeyModifiers::NONE),
+        Some(VimAction::EnterVisual)
+    );
+    assert_eq!(vim.state(), VimState::Visual);
+
+    for (key, motion) in [
+        ('h', VimMotion::Left),
+        ('l', VimMotion::Right),
+        ('0', VimMotion::Home),
+        ('$', VimMotion::End),
+        ('b', VimMotion::WordLeft),
+        ('w', VimMotion::WordRight),
+    ] {
+        assert_eq!(
+            vim.route(true, KeyCode::Char(key), KeyModifiers::NONE),
+            Some(VimAction::ExtendSelection(motion)),
+            "`{key}` must extend the selection, not move the cursor"
+        );
+        assert_eq!(
+            vim.state(),
+            VimState::Visual,
+            "a motion must not end the selection"
+        );
+    }
+
+    // A stray printable key is swallowed. This is the one visual-mode mistake that destroys text
+    // silently, so it is pinned rather than left to the frontend.
+    assert_eq!(
+        vim.route(true, KeyCode::Char('q'), KeyModifiers::NONE),
+        Some(VimAction::Consumed)
+    );
+    assert_eq!(vim.state(), VimState::Visual);
+
+    assert_eq!(
+        vim.route(true, KeyCode::Esc, KeyModifiers::NONE),
+        Some(VimAction::LeaveVisual)
+    );
+    assert_eq!(
+        vim.state(),
+        VimState::Normal,
+        "esc returns to normal, not to insert"
+    );
+}
+
+#[test]
+fn a_visual_selection_ends_on_delete_yank_or_a_second_v() {
+    for (key, expected) in [
+        ('d', VimAction::DeleteSelection),
+        ('x', VimAction::DeleteSelection),
+        ('y', VimAction::YankSelection),
+        ('v', VimAction::LeaveVisual),
+    ] {
+        let mut vim = Vim::default();
+        vim.route(true, KeyCode::Esc, KeyModifiers::NONE);
+        vim.route(true, KeyCode::Char('v'), KeyModifiers::NONE);
+        assert_eq!(
+            vim.route(true, KeyCode::Char(key), KeyModifiers::NONE),
+            Some(expected),
+            "`{key}` in visual mode"
+        );
+        assert_eq!(
+            vim.state(),
+            VimState::Normal,
+            "`{key}` must return to normal so the next motion moves the cursor again"
+        );
+    }
+}
+
+#[test]
+fn normal_mode_keeps_its_own_meaning_for_the_keys_visual_mode_reuses() {
+    // `d` is the start of `dd` in normal mode and a selection delete in visual mode. If the two
+    // ever shared a state, one of them would be wrong.
+    let mut vim = Vim::default();
+    vim.route(true, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(
+        vim.route(true, KeyCode::Char('d'), KeyModifiers::NONE),
+        Some(VimAction::Consumed),
+        "a lone `d` in normal mode is pending, not a delete"
+    );
+    assert_eq!(
+        vim.route(true, KeyCode::Char('d'), KeyModifiers::NONE),
+        Some(VimAction::Clear)
+    );
+    assert_eq!(
+        vim.route(true, KeyCode::Char('x'), KeyModifiers::NONE),
+        Some(VimAction::Delete),
+        "`x` in normal mode deletes one character, not a selection"
+    );
+}
+
+#[test]
+fn leaving_vim_mode_entirely_drops_a_live_selection() {
+    let mut vim = Vim::default();
+    vim.route(true, KeyCode::Esc, KeyModifiers::NONE);
+    vim.route(true, KeyCode::Char('v'), KeyModifiers::NONE);
+    assert_eq!(vim.state(), VimState::Visual);
+    // `enabled = false` is the operator turning vim mode off mid-selection.
+    assert_eq!(
+        vim.route(false, KeyCode::Char('l'), KeyModifiers::NONE),
+        None
+    );
+    assert_eq!(
+        vim.state(),
+        VimState::Insert,
+        "a disabled keymap must not leave a selection anchored behind it"
+    );
+}

@@ -899,8 +899,7 @@ struct App {
     /// workflow run id -> its one live card. Lifecycle events mutate this block in place.
     workflow_index: std::collections::HashMap<String, u64>,
     /// QuickJS `core-workflow` run id -> its one live phase→agent tree card (design §3.2 store).
-    /// The interactive-REPL seam; live once an M9 launch path drives `workflow_run_event`.
-    #[allow(dead_code)]
+    /// The interactive-REPL seam, driven by `workflow_run_ui_event` (ADR-0001 step 1).
     workflow_run_index: std::collections::HashMap<String, u64>,
     /// The active color theme (ADR-015 §4).
     theme: theme::Theme,
@@ -942,6 +941,8 @@ struct App {
     mouse_capture: mouse_capture::State,
     /// Truthful projection of the live keymap/Vim state; updated before routing each key.
     keymap_status: String,
+    /// Char index the visual selection is anchored at; `None` outside visual mode.
+    vim_anchor: Option<usize>,
     // live-accumulating current assistant paragraph (so streamed text coalesces into one line)
     cur_text: String,
     cur_text_revision: u64,
@@ -1077,6 +1078,7 @@ impl App {
             quit: false,
             mouse_capture: mouse_capture::State::default(),
             keymap_status: "keys:standard".into(),
+            vim_anchor: None,
             cur_text: String::new(),
             cur_text_revision: 0,
             cur_doc_revision: 0,
@@ -1863,9 +1865,65 @@ impl App {
         }
     }
 
-    // REPL seam (see workflow_run_index); exercised by tests. It goes live with ADR-0001 step 1,
-    // which needs a CLI stream schema-version bump to add the `UiEvent` variant that reaches it.
-    #[allow(dead_code)]
+    /// Project one script-engine lifecycle message onto the live phase→agent tree (ADR-0001 step 1,
+    /// `crate::workflow::WorkflowRunUiEvent`).
+    ///
+    /// The three shapes are the three things the card needs that the `ProgressEvent` stream cannot
+    /// say on its own: when a run BEGINS (so the card exists, named, with its declared phase boxes
+    /// already laid out), what happened next, and when the run SETTLED — `ingest` never sets
+    /// `finished`, so without the last one the tree would spin for the rest of the session. The
+    /// match is total: a new seam variant does not compile until it is rendered.
+    fn workflow_run_ui_event(&mut self, event: crate::workflow::WorkflowRunUiEvent) {
+        match event {
+            crate::workflow::WorkflowRunUiEvent::Started {
+                run_id,
+                name,
+                phases,
+            } => self.workflow_run_started(&run_id, &name, &phases),
+            // The name is only read if `Started` never arrived, which the EQ's authoritative
+            // delivery rules out; `list_runs` uses the same word for a run whose manifest is
+            // missing, so an unnamed card reads the same way there and here.
+            crate::workflow::WorkflowRunUiEvent::Progress { run_id, event } => {
+                self.workflow_run_event(&run_id, "workflow", event)
+            }
+            crate::workflow::WorkflowRunUiEvent::Finished { run_id } => {
+                self.workflow_run_finished(&run_id)
+            }
+        }
+    }
+
+    /// Open the card for a run before its first event, seeded with the script's declared
+    /// `meta.phases` so the whole shape of the run is on the first frame. Idempotent: a repeated
+    /// `Started` for a live run re-declares nothing (`declare_phases` skips titles it already has).
+    fn workflow_run_started(&mut self, run_id: &str, name: &str, phases: &[String]) {
+        if self.workflow_run_card_mut(run_id).is_none() {
+            self.flush_text();
+            let card = block::WorkflowRunCard::new(
+                ui_safe_text(run_id),
+                crate::workflow::ui_safe_label(name),
+            );
+            let block_id = self.push_block(block::BlockKind::WorkflowRun(card));
+            self.workflow_run_index.insert(run_id.to_string(), block_id);
+        }
+        let block_id = self.workflow_run_index.get(run_id).copied();
+        if let Some(card) = self.workflow_run_card_mut(run_id) {
+            card.declare_phases(
+                phases
+                    .iter()
+                    .map(|title| crate::workflow::ui_safe_label(title)),
+            );
+        }
+        if let Some(block) =
+            block_id.and_then(|id| self.transcript.iter_mut().find(|block| block.id == id))
+        {
+            Arc::make_mut(block).touch();
+        }
+        self.mark_transcript_changed();
+        self.autoscroll();
+    }
+
+    // REPL seam (see workflow_run_index). Live since ADR-0001 step 1: `app_server::ServerEvent`
+    // carries the engine's progress off the kernel thread and `workflow_run_ui_event` lands it here.
     fn workflow_run_card_mut(&mut self, run_id: &str) -> Option<&mut block::WorkflowRunCard> {
         let block_id = *self.workflow_run_index.get(run_id)?;
         self.transcript
@@ -1883,7 +1941,6 @@ impl App {
     /// for a workflow launched from the REPL; the one-shot `core workflow run` command drives an
     /// equivalent card through its own live loop (`workflow::run_live`). Wired up by ADR-0001
     /// step 1 (docs/project/decisions/0001-workflow-renderer-convergence.md).
-    #[allow(dead_code)]
     fn workflow_run_event(
         &mut self,
         run_id: &str,
@@ -1916,7 +1973,6 @@ impl App {
 
     /// Mark a QuickJS workflow run terminal (its engine future resolved). The card collapses finished
     /// agents but stays in the transcript.
-    #[allow(dead_code)]
     fn workflow_run_finished(&mut self, run_id: &str) {
         let block_id = self.workflow_run_index.get(run_id).copied();
         let changed = if let Some(card) = self.workflow_run_card_mut(run_id) {
@@ -3084,6 +3140,7 @@ fn update_keymap_status(app: &mut App, keymap: &keymap::Keymap, vim: &keymap::Vi
         (keymap::Mode::Standard, _) => "keys:standard",
         (keymap::Mode::Vim, keymap::VimState::Insert) => "vim:insert",
         (keymap::Mode::Vim, keymap::VimState::Normal) => "vim:normal",
+        (keymap::Mode::Vim, keymap::VimState::Visual) => "vim:visual",
     }
     .into();
 }
@@ -3107,6 +3164,40 @@ fn apply_vim_action(app: &mut App, action: keymap::VimAction) {
         keymap::VimAction::HistoryPrevious if !app.running => app.editor.history_prev(),
         keymap::VimAction::HistoryNext if !app.running => app.editor.history_next(),
         keymap::VimAction::HistoryPrevious | keymap::VimAction::HistoryNext => {}
+        keymap::VimAction::EnterVisual => app.vim_anchor = Some(app.editor.cursor()),
+        keymap::VimAction::LeaveVisual => app.vim_anchor = None,
+        keymap::VimAction::ExtendSelection(motion) => {
+            // The anchor stays put; only the free end moves. Entering visual mode always sets the
+            // anchor, so a missing one means the state machine and the frontend disagree -- anchor
+            // here rather than move a selection that does not exist.
+            if app.vim_anchor.is_none() {
+                app.vim_anchor = Some(app.editor.cursor());
+            }
+            match motion {
+                keymap::VimMotion::Left => app.editor.left(),
+                keymap::VimMotion::Right => app.editor.right(),
+                keymap::VimMotion::Home => app.editor.home(),
+                keymap::VimMotion::End => app.editor.end(),
+                keymap::VimMotion::WordLeft => app.editor.word_left(),
+                keymap::VimMotion::WordRight => app.editor.word_right(),
+            }
+        }
+        keymap::VimAction::DeleteSelection => {
+            if let Some(anchor) = app.vim_anchor.take() {
+                app.editor.delete_span(anchor, app.editor.cursor());
+            }
+        }
+        keymap::VimAction::YankSelection => {
+            if let Some(anchor) = app.vim_anchor.take() {
+                let text = app.editor.span(anchor, app.editor.cursor());
+                if !text.is_empty() {
+                    app.note(
+                        block::NoticeLevel::Info,
+                        format!("yanked {} characters", text.chars().count()),
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -4458,8 +4549,127 @@ async fn dispatch_slash_command(
                 _ => app.push(fg(Color::Red), "the runtime is no longer reachable"),
             }
         }
+        commands::DispatchRoute::NotHere(commands::TerminalIntercept::Side) => {
+            let request = side_request_for(&routed.invocation.args);
+            let asking = matches!(request, app_server::SideRequest::Ask(_));
+            if asking {
+                // Same reason compaction redraws here: this is about to await a provider call, and
+                // an operator who sees nothing cannot tell a slow answer from a dead terminal.
+                app.push(dim(), "asking on the side…");
+                term.draw(|frame| draw(frame, app))?;
+            }
+            match session.control(app_server::Control::Side(request)).await {
+                Some(app_server::ControlReply::SideAnswer(answer)) => {
+                    show_side_answer(app, &answer);
+                }
+                Some(app_server::ControlReply::SideStatus { status, closed }) => {
+                    show_side_status(app, status.as_deref(), closed);
+                }
+                Some(app_server::ControlReply::Refused(reason)) => app.push(
+                    fg(Color::Red),
+                    format!("side conversation refused: {reason}"),
+                ),
+                _ => app.push(fg(Color::Red), "the runtime is no longer reachable"),
+            }
+        }
     }
     Ok(())
+}
+
+/// Resolve one `/side` argument into a control request.
+///
+/// Pure so the three-way split is testable without a runtime. `status` and `close` are the only
+/// reserved words and they are reserved exactly: `/side status of the parser` is a question about
+/// the parser, not a status request, because a bare word is the only spelling an operator can have
+/// meant as a verb.
+fn side_request_for(argument: &str) -> app_server::SideRequest {
+    match argument.trim() {
+        "" | "status" => app_server::SideRequest::Status,
+        "close" | "end" => app_server::SideRequest::Close,
+        question => app_server::SideRequest::Ask(question.to_owned()),
+    }
+}
+
+/// Render one side answer.
+///
+/// Deliberately a Panel and not an Assistant block: an Assistant block IS this session's
+/// conversation, and the whole point of a side conversation is that its words are not. The books
+/// travel with the answer for the same reason — a second conversation the operator is paying for
+/// separately must show its own number, not silently move the session's.
+fn show_side_answer(app: &mut App, answer: &crate::runtime::SideAnswer) {
+    let mut rows = vec![block::PanelRow::Note(format!(
+        "side run {} · {} · {}",
+        answer.status.run_id,
+        block::plural(answer.status.turns as usize, "turn"),
+        side_cost_text(&answer.status)
+    ))];
+    let text = answer.text.trim();
+    if text.is_empty() {
+        rows.push(block::PanelRow::Note(format!(
+            "no answer ({})",
+            side_outcome_label(&answer.outcome)
+        )));
+    } else {
+        rows.extend(text.lines().map(|line| block::PanelRow::Note(line.into())));
+    }
+    app.panel("~", "side conversation", rows);
+}
+
+/// Render the side conversation's identity and books without an answer.
+fn show_side_status(app: &mut App, status: Option<&crate::runtime::SideStatus>, closed: bool) {
+    let Some(status) = status else {
+        app.note(
+            block::NoticeLevel::Info,
+            if closed {
+                "no side conversation was open"
+            } else {
+                "no side conversation yet — `/side <question>` starts one with its own context, cost and record"
+            },
+        );
+        return;
+    };
+    app.panel(
+        "~",
+        if closed {
+            "side conversation · closed"
+        } else {
+            "side conversation"
+        },
+        vec![
+            kv("run", &status.run_id),
+            kv("record", &status.record_path.display().to_string()),
+            kv("asked", &block::plural(status.asks as usize, "question")),
+            kv("turns", &status.turns.to_string()),
+            kv("cost", &side_cost_text(status)),
+            block::PanelRow::Note(status.ledger_summary.clone()),
+            block::PanelRow::Note(
+                "this conversation's own context, cost and record; nothing here entered the session transcript".into(),
+            ),
+        ],
+    );
+}
+
+/// Why a side ask produced nothing. A local label rather than `output::outcome_name`, which is a
+/// frozen machine-contract token and must not grow a second, human-facing caller.
+fn side_outcome_label(outcome: &core_protocol::Outcome) -> &'static str {
+    use core_protocol::Outcome;
+    match outcome {
+        Outcome::Done => "the model answered with nothing",
+        Outcome::Drained => "drained before answering",
+        Outcome::Interrupted => "interrupted before answering",
+        Outcome::Stuck => "stuck before answering",
+        Outcome::BudgetExhausted(_) => "the side conversation's own budget is exhausted",
+        Outcome::HarnessError => "the side conversation failed",
+    }
+}
+
+/// The side conversation's own money, never the session's. An unknown cost stays the word
+/// "unknown": a zero would read as free.
+fn side_cost_text(status: &crate::runtime::SideStatus) -> String {
+    match status.cost.usd() {
+        Some(usd) => format!("${usd:.4}"),
+        None => "cost unknown".into(),
+    }
 }
 
 fn request_drain(
@@ -4924,6 +5134,7 @@ fn apply_server_event<T: notification::NotificationTransport + ?Sized>(
 ) {
     match event {
         app_server::ServerEvent::Ui(event) => apply_live_event(app, event, notifier, writer),
+        app_server::ServerEvent::WorkflowRun(event) => app.workflow_run_ui_event(event),
         app_server::ServerEvent::Notice(text) => app.note(block::NoticeLevel::Warn, text),
         app_server::ServerEvent::Lagged { dropped } => app.note(
             block::NoticeLevel::Warn,
@@ -6979,6 +7190,10 @@ async fn handle_registered_command(
             block::NoticeLevel::Err,
             "compact requires the interactive terminal dispatcher",
         ),
+        SlashCommand::Side => app.note(
+            block::NoticeLevel::Err,
+            "side conversations require the interactive terminal dispatcher",
+        ),
     }
 }
 
@@ -8274,8 +8489,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     // (ADR-015 §3), so the concatenation is fed to the exact pre-wrap→scroll-unit math unchanged
     // (the load-bearing R6 invariant). No outer box: a full-width flow with per-block gutters reads
     // far less like a toy than a dense boxed log. All body regions now share one exact grid; the
-    // scrollbar owns its own stage-gutter rect (or overlays the compact edge only when necessary).
-    let inner_w = surface.transcript.width;
+    // scrollbar owns its own stage-gutter rect. Reserving it before wrapping keeps the indicator
+    // from overwriting the final evidence cell when the transcript overflows.
+    let inner_w = surface.transcript_content_width();
     if app.render_cache_width != inner_w || app.render_cache_theme_epoch != app.theme_epoch {
         app.render_cache.clear();
         app.render_cache_width = inner_w;
@@ -9047,6 +9263,98 @@ mod tests {
         assert!(l1.contains("not supplied (no frozen request loaded)"));
         assert!(l1.contains("SWE-bench Pro"));
         assert!(l1.contains("does not edit config"));
+    }
+
+    /// UX-3 frontend surface: `/side` splits into exactly three requests, and only a bare
+    /// reserved word is a verb.
+    #[test]
+    fn side_argument_resolves_to_status_close_or_a_question() {
+        assert!(matches!(
+            side_request_for(""),
+            app_server::SideRequest::Status
+        ));
+        assert!(matches!(
+            side_request_for("  status "),
+            app_server::SideRequest::Status
+        ));
+        assert!(matches!(
+            side_request_for("close"),
+            app_server::SideRequest::Close
+        ));
+        assert!(matches!(
+            side_request_for("end"),
+            app_server::SideRequest::Close
+        ));
+        match side_request_for("  what is the status of the parser?  ") {
+            app_server::SideRequest::Ask(question) => {
+                assert_eq!(question, "what is the status of the parser?");
+            }
+            _ => panic!("a sentence containing a reserved word is still a question"),
+        }
+    }
+
+    fn side_status_fixture(run_id: &str, asks: u32) -> crate::runtime::SideStatus {
+        crate::runtime::SideStatus {
+            run_id: run_id.into(),
+            record_path: std::path::PathBuf::from("/tmp/runs/side/side-1.jsonl"),
+            asks,
+            turns: 2,
+            cost: core_obs::CostState::Known {
+                amount_microusd: 12_300,
+                rate_card_digest: "digest".into(),
+            },
+            ledger_summary: "2 turns".into(),
+        }
+    }
+
+    /// The answer is rendered as its OWN panel carrying its OWN run id and cost, and never as an
+    /// assistant block — an assistant block IS this session's conversation.
+    #[test]
+    fn a_side_answer_renders_as_its_own_panel_with_its_own_run_and_cost() {
+        let mut app = App::new();
+        show_side_answer(
+            &mut app,
+            &crate::runtime::SideAnswer {
+                text: "read crates/cli/src/tui.rs:1 for the composer".into(),
+                outcome: core_protocol::Outcome::Done,
+                status: side_status_fixture("side-run-1", 1),
+            },
+        );
+        let screen = render_text(&mut app, 100, 24);
+        assert!(screen.contains("side conversation"), "{screen}");
+        assert!(screen.contains("side-run-1"), "{screen}");
+        assert!(screen.contains("$0.0123"), "{screen}");
+        assert!(screen.contains("crates/cli/src/tui.rs:1"), "{screen}");
+        assert!(
+            app.transcript.iter().all(|block| !matches!(
+                block.kind,
+                block::BlockKind::Assistant(_) | block::BlockKind::User(_)
+            )),
+            "a side answer must not enter the session transcript as a conversation turn"
+        );
+    }
+
+    #[test]
+    fn an_unopened_side_conversation_says_so_instead_of_showing_zero_cost() {
+        let mut app = App::new();
+        show_side_status(&mut app, None, false);
+        let screen = render_text(&mut app, 100, 16);
+        assert!(screen.contains("no side conversation yet"), "{screen}");
+        assert!(
+            !screen.contains("$0.0000"),
+            "an absent conversation must never be rendered as a free one: {screen}"
+        );
+    }
+
+    #[test]
+    fn closing_reports_the_books_of_the_conversation_it_closed() {
+        let mut app = App::new();
+        show_side_status(&mut app, Some(&side_status_fixture("side-run-9", 3)), true);
+        let screen = render_text(&mut app, 110, 24);
+        assert!(screen.contains("closed"), "{screen}");
+        assert!(screen.contains("side-run-9"), "{screen}");
+        assert!(screen.contains("3 questions"), "{screen}");
+        assert!(screen.contains("$0.0123"), "{screen}");
     }
 
     #[test]
@@ -10206,7 +10514,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_ne!(cache_widths[0], cache_widths[1]);
         assert_eq!(cache_widths[0], cache_widths[5]);
         assert_eq!(cache_widths[1], cache_widths[4]);
-        assert_eq!(cache_widths, vec![40, 80, 120, 200, 80, 40]);
+        // One column short of the terminal at every size: transcript content now yields the final
+        // column to the scrollbar (`Surface::transcript_content_width`), so the cache is keyed by
+        // the width text actually gets rather than by the width of the window. The relations above
+        // -- distinct widths produce distinct entries, repeated widths reuse them -- are what this
+        // test exists to pin, and they are unchanged.
+        assert_eq!(cache_widths, vec![39, 79, 119, 199, 79, 39]);
     }
 
     #[test]
@@ -10660,7 +10973,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        // Transcript rows as text, minus the final column the overflow scrollbar overlays.
+        // Transcript rows as text, minus the final column reserved for the overflow scrollbar.
         fn transcript_rows(
             term: &ratatui::Terminal<ratatui::backend::TestBackend>,
             top: u16,
@@ -10759,6 +11072,40 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         short.draw(|frame| draw(frame, &mut app)).unwrap();
         assert!(usize::from(app.last_total_rows) > total * 5);
         assert_eq!(app.row_map.len(), view_h);
+    }
+
+    #[test]
+    fn overflow_scrollbar_never_overwrites_the_final_transcript_cell() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let target = format!("{}Z", "x".repeat(114));
+        let mut rows = (0..40)
+            .map(|index| block::PanelRow::Note(format!("historical row {index:03}")))
+            .collect::<Vec<_>>();
+        rows.push(block::PanelRow::Note(target.clone()));
+        let mut app = App::new();
+        app.panel("", "commands", rows);
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(
+            app.last_total_rows > app.view_h,
+            "the scrollbar must be visible"
+        );
+
+        let buffer = terminal.backend().buffer();
+        let content = (app.view_top..app.view_top.saturating_add(app.view_h))
+            .flat_map(|y| {
+                (0..buffer.area.width.saturating_sub(1))
+                    .flat_map(move |x| buffer[(x, y)].symbol().chars())
+            })
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(
+            content.contains(&target),
+            "the scrollbar gutter must not erase the last content cell"
+        );
     }
 
     #[test]
@@ -11867,6 +12214,162 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             _ => unreachable!(),
         };
         assert!(finished);
+    }
+
+    /// The wire this slice built: a workflow launched from inside the interactive TUI arrives as
+    /// `app_server::ServerEvent::WorkflowRun`, and the operator watches a live tree instead of a
+    /// silent turn. Everything below crosses the real seam — `crate::workflow::UiProgressSink` is
+    /// what the kernel installs, `workflow_run_ui_event` is what the frontend dispatches to.
+    #[test]
+    fn a_workflow_launched_in_the_tui_renders_a_live_progress_tree() {
+        use core_workflow::events::{ProgressEvent, ProgressSink, WorkflowState};
+
+        let mut app = App::new();
+        app.theme = theme::Theme::dark();
+        let run_id = "wf_repl_1";
+
+        // Declared `meta.phases` lay the boxes out before the first agent runs.
+        app.workflow_run_ui_event(crate::workflow::WorkflowRunUiEvent::Started {
+            run_id: run_id.into(),
+            name: "audit".into(),
+            phases: vec!["Explore".into(), "Report".into()],
+        });
+        let block_id = *app
+            .workflow_run_index
+            .get(run_id)
+            .expect("the card exists before the engine emits anything");
+
+        // The kernel's sink is the only thing between the engine and this channel.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = crate::workflow::UiProgressSink::new(run_id, tx);
+        sink.emit(ProgressEvent::Phase {
+            index: 1,
+            title: "Explore".into(),
+        });
+        sink.emit(ProgressEvent::Log {
+            message: "scanning modules".into(),
+        });
+        sink.emit(ProgressEvent::AgentQueued {
+            index: 0,
+            label: "scan modules".into(),
+            phase: Some("Explore".into()),
+            model: Some("core-model-1".into()),
+        });
+        sink.emit(ProgressEvent::AgentStarted {
+            index: 0,
+            label: "scan modules".into(),
+            phase: Some("Explore".into()),
+            model: Some("core-model-1".into()),
+        });
+        sink.emit(ProgressEvent::AgentActivity {
+            index: 0,
+            tokens: 900,
+            tool_calls: 1,
+            last_tool_summary: Some("read src/lib.rs".into()),
+        });
+        sink.emit(ProgressEvent::AgentFinished {
+            index: 0,
+            label: "scan modules".into(),
+            state: WorkflowState::Done,
+            tokens: 1_200,
+            tool_calls: 2,
+            duration_ms: 3_200,
+            result_preview: Some("14 modules, 2 without tests".into()),
+            last_tool_summary: None,
+            error: None,
+        });
+        drop(sink);
+        while let Ok(event) = rx.try_recv() {
+            app.workflow_run_ui_event(event);
+        }
+
+        let card = match &app
+            .transcript
+            .iter()
+            .find(|block| block.id == block_id)
+            .expect("the run keeps its one block")
+            .kind
+        {
+            block::BlockKind::WorkflowRun(card) => card.clone(),
+            _ => unreachable!("the block is the phase→agent tree"),
+        };
+        assert_eq!(card.name, "audit");
+        assert_eq!(
+            card.phases.len(),
+            2,
+            "a declared phase reached at runtime binds back by title instead of opening a \
+             second box"
+        );
+        assert_eq!(card.agents.len(), 1, "one agent(), one row");
+        assert_eq!(card.agents[0].state, WorkflowState::Done);
+        assert_eq!(card.agents[0].tokens, 1_200);
+        assert_eq!(
+            card.logs,
+            vec!["scanning modules".to_string()],
+            "log() has no counterpart in the native vocabulary and is carried, not dropped"
+        );
+        assert!(!card.finished, "the run has not settled yet");
+
+        let live = render_text(&mut app, 100, 30);
+        assert!(live.contains("Explore"), "{live}");
+        assert!(live.contains("Report"), "{live}");
+        assert!(live.contains("scan modules"), "{live}");
+        assert!(live.contains("scanning modules"), "{live}");
+
+        // Settling is a separate message because `ingest` never sets it; without it the tree spins.
+        app.workflow_run_ui_event(crate::workflow::WorkflowRunUiEvent::Finished {
+            run_id: run_id.into(),
+        });
+        assert!(!app.workflow_run_index.contains_key(run_id));
+        let settled = match &app
+            .transcript
+            .iter()
+            .find(|block| block.id == block_id)
+            .unwrap()
+            .kind
+        {
+            block::BlockKind::WorkflowRun(card) => card.finished,
+            _ => unreachable!(),
+        };
+        assert!(settled);
+    }
+
+    /// A workflow script is untrusted input and the interactive transcript is retained state, so
+    /// nothing hostile in a label or a narrator line survives the trip.
+    #[test]
+    fn a_hostile_workflow_script_cannot_write_control_sequences_into_the_transcript() {
+        use core_workflow::events::{ProgressEvent, ProgressSink};
+
+        let mut app = App::new();
+        app.theme = theme::Theme::dark();
+        let run_id = "wf_repl_hostile";
+        app.workflow_run_ui_event(crate::workflow::WorkflowRunUiEvent::Started {
+            run_id: run_id.into(),
+            name: "audit\u{1b}[2J".into(),
+            phases: vec!["Explore\u{1b}[2J".into()],
+        });
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = crate::workflow::UiProgressSink::new(run_id, tx);
+        sink.emit(ProgressEvent::Log {
+            message: "narrating\u{1b}[2J\u{7}".into(),
+        });
+        sink.emit(ProgressEvent::AgentStarted {
+            index: 0,
+            label: "row\u{1b}[2J".into(),
+            phase: None,
+            model: None,
+        });
+        drop(sink);
+        while let Ok(event) = rx.try_recv() {
+            app.workflow_run_ui_event(event);
+        }
+
+        let screen = render_text(&mut app, 100, 30);
+        assert!(
+            !screen.chars().any(|c| c == '\u{1b}' || c == '\u{7}'),
+            "a raw control character reached the frame buffer: {screen:?}"
+        );
     }
 
     #[test]
