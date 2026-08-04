@@ -16,6 +16,7 @@ mod git_filters;
 mod git_harness;
 mod git_observe;
 mod grep_tool;
+mod lsp;
 mod mcp_timing;
 mod mem;
 mod memo;
@@ -174,6 +175,7 @@ impl Registry {
         write_file::register(&mut r)?;
         shell::register(&mut r)?;
         process::register(&mut r)?;
+        lsp::register(&mut r)?;
         // Web egress (web_fetch/web_search): Effecting/IrreversibleExternal, so the capability gate
         // never auto-approves them (ADR-007 §3) and they are absent from the read_only subagent set.
         web::register(&mut r)?;

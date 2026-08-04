@@ -9,6 +9,7 @@ publish.workspace = true
 core-protocol = { path = "../protocol" }
 core-sandbox = { path = "../sandbox" }
 core-ctx = { path = "../ctx" }
+core-lsp = { path = "../lsp" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -17,6 +18,7 @@ walkdir = { workspace = true }
 ignore = { workspace = true }
 regex = { workspace = true }
 thiserror = { workspace = true }
+url = "2"
 # The web tools (web_fetch/web_search) egress over HTTP. REUSE the workspace's existing model-API
 # HTTP stack (reqwest + futures-util) — no new HTTP dependency enters the lockfile (ADR-010,
 # zero-dependency-first). These are IrreversibleExternal and never run in the bash egress-off cell.
@@ -28,4 +30,4 @@ getrandom = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread", "test-util"] }

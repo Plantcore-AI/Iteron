@@ -601,6 +601,7 @@ name = "core-tools"
 version = "0.0.1"
 dependencies = [
  "core-ctx",
+ "core-lsp",
  "core-protocol",
  "core-sandbox",
  "futures-util",
@@ -614,6 +615,7 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "tokio",
+ "url",
  "walkdir",
 ]
 

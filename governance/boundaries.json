@@ -588,6 +588,7 @@
       "reviewers": [],
       "paths": [
         { "kind": "file", "path": "crates/tools/src/shell.rs" },
+        { "kind": "tree", "path": "crates/tools/src/lsp" },
         { "kind": "tree", "path": "crates/tools/src/process" },
         { "kind": "file", "path": "crates/tools/src/web.rs" },
         { "kind": "file", "path": "crates/tools/src/workflow_tool.rs" }
@@ -1264,7 +1265,7 @@
         "build": []
       },
       "core-tools": {
-        "normal": ["core-ctx", "core-protocol", "core-sandbox"],
+        "normal": ["core-ctx", "core-lsp", "core-protocol", "core-sandbox"],
         "dev": [],
         "build": []
       },

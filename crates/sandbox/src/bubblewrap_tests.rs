@@ -2,6 +2,8 @@ use super::*;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::time::Duration;
+#[cfg(target_os = "linux")]
+use tokio::io::AsyncReadExt as _;
 
 #[cfg(target_os = "linux")]
 const LIVE_TEST_TIMEOUT_SECS: u64 = 10;
@@ -72,6 +74,16 @@ fn args_unshare_net_by_default_and_make_only_workspace_writable() {
         args.iter().any(|arg| arg == "--unshare-net"),
         "network must be unshared by default"
     );
+    assert!(
+        args.iter().any(|argument| argument == "--new-session"),
+        "bounded one-shot children must not inherit the caller's controlling session"
+    );
+    assert!(
+        !args
+            .windows(3)
+            .any(|window| window == ["--ro-bind", "/dev/null", "/dev/tty"]),
+        "the tty mask is the persistent-mode substitute for a new session"
+    );
     let joined = args.join(" ");
     assert!(
         joined.contains("--bind /work/repo /work/repo"),
@@ -108,8 +120,81 @@ fn args_unshare_net_by_default_and_make_only_workspace_writable() {
     );
     assert_eq!(
         BWRAP_PROBE_POLL * u32::try_from(BWRAP_PROBE_MAX_POLLS).unwrap(),
+        BWRAP_PROBE_RUN_TIMEOUT,
+        "the active probe phase has one fixed wall-clock ceiling"
+    );
+    assert_eq!(
+        BWRAP_PROBE_POLL * u32::try_from(BWRAP_PROBE_REAP_POLLS).unwrap(),
+        BWRAP_PROBE_REAP_TIMEOUT,
+        "probe cleanup has one fixed wall-clock ceiling"
+    );
+    assert_eq!(
+        BWRAP_PROBE_RUN_TIMEOUT + BWRAP_PROBE_REAP_TIMEOUT,
         BWRAP_PROBE_TIMEOUT,
-        "the synchronous capability probe has one fixed wall-clock ceiling"
+        "probe plus cleanup has one aggregate wall-clock ceiling"
+    );
+}
+
+#[test]
+fn descriptor_workspace_source_is_distinct_from_namespace_destination() {
+    let conf = Confinement::egress_off(PathBuf::from("/work/repo"));
+    let args = bwrap_args_with_workspace_fd(&conf, "rust-analyzer", 10);
+    assert!(
+        args.windows(3)
+            .any(|window| { window == ["--bind-fd", "10", "/work/repo"] })
+    );
+    assert_eq!(
+        &args[args.len() - 3..],
+        [crate::confined_shell(), "-c", "rust-analyzer"]
+    );
+    assert!(
+        !args.iter().any(|argument| argument == "--new-session"),
+        "persistent children must remain in the outer cleanup group during setup"
+    );
+    assert_persistent_tty_mask(&args);
+}
+
+#[test]
+fn path_backed_persistent_args_inherit_cleanup_group_and_mask_tty() {
+    let conf = Confinement::egress_off(PathBuf::from("/work/repo"));
+    let args = bwrap_args_for_persistent(&conf, "rust-analyzer");
+    assert!(
+        args.windows(3)
+            .any(|window| window == ["--bind", "/work/repo", "/work/repo"])
+    );
+    assert!(
+        !args.iter().any(|argument| argument == "--new-session"),
+        "persistent children must remain reachable by the outer cleanup group during setup"
+    );
+    assert_persistent_tty_mask(&args);
+}
+
+fn assert_persistent_tty_mask(args: &[String]) {
+    let dev_position = args
+        .windows(2)
+        .position(|window| window == ["--dev", "/dev"])
+        .unwrap();
+    let mask_position = args
+        .windows(3)
+        .position(|window| window == ["--ro-bind", "/dev/null", "/dev/tty"])
+        .expect("persistent children must not be able to reopen the host controlling terminal");
+    let remount_position = args
+        .windows(2)
+        .position(|window| window == ["--remount-ro", "/"])
+        .unwrap();
+    assert!(
+        dev_position < mask_position && mask_position < remount_position,
+        "the tty mask must overlay the private device mount before the namespace root is sealed"
+    );
+}
+
+#[test]
+fn capability_probe_requires_native_descriptor_binding() {
+    let args = bwrap_probe_args(11);
+    assert!(
+        args.windows(3)
+            .any(|window| window == ["--bind-fd", "11", "/tmp/core-bwrap-fd-probe"]),
+        "an older bwrap without --bind-fd must fail the executable capability probe"
     );
 }
 
@@ -129,13 +214,15 @@ fn a_refused_probe_is_cached_for_a_bounded_ttl_then_retried() {
     // Before this, `usable_bwrap` explicitly refused to cache a failure, so a host with restricted
     // user namespaces re-ran a process probe with a 5s ceiling on EVERY bash call.
     let binary = PathBuf::from("/usr/bin/bwrap");
+    let fingerprint = test_fingerprint(1);
     let refused = ProbeOutcome {
         binary: binary.clone(),
+        fingerprint,
         usable: false,
         at: std::time::Instant::now(),
     };
     assert_eq!(
-        cached_probe(Some(&refused), &binary, refused.at),
+        cached_probe(Some(&refused), &binary, fingerprint, refused.at),
         Some(false),
         "a fresh refusal must answer from cache instead of re-probing"
     );
@@ -143,6 +230,7 @@ fn a_refused_probe_is_cached_for_a_bounded_ttl_then_retried() {
         cached_probe(
             Some(&refused),
             &binary,
+            fingerprint,
             refused.at + BWRAP_PROBE_NEGATIVE_TTL - std::time::Duration::from_millis(1),
         ),
         Some(false),
@@ -151,6 +239,7 @@ fn a_refused_probe_is_cached_for_a_bounded_ttl_then_retried() {
         cached_probe(
             Some(&refused),
             &binary,
+            fingerprint,
             refused.at + BWRAP_PROBE_NEGATIVE_TTL,
         ),
         None,
@@ -165,8 +254,10 @@ fn a_refused_probe_is_cached_for_a_bounded_ttl_then_retried() {
 #[test]
 fn a_successful_probe_is_kept_and_a_different_executable_is_not() {
     let binary = PathBuf::from("/usr/bin/bwrap");
+    let fingerprint = test_fingerprint(1);
     let usable = ProbeOutcome {
         binary: binary.clone(),
+        fingerprint,
         usable: true,
         at: std::time::Instant::now(),
     };
@@ -174,17 +265,38 @@ fn a_successful_probe_is_kept_and_a_different_executable_is_not() {
         cached_probe(
             Some(&usable),
             &binary,
-            usable.at + BWRAP_PROBE_NEGATIVE_TTL * 1000,
+            fingerprint,
+            usable.at + BWRAP_PROBE_POSITIVE_TTL - std::time::Duration::from_millis(1),
         ),
         Some(true),
-        "a proven namespace capability does not need re-proving"
+        "a recent fingerprint-matched capability proof is reusable"
     );
     assert_eq!(
-        cached_probe(Some(&usable), Path::new("/usr/local/bin/bwrap"), usable.at),
+        cached_probe(
+            Some(&usable),
+            &binary,
+            fingerprint,
+            usable.at + BWRAP_PROBE_POSITIVE_TTL,
+        ),
+        None,
+        "host namespace policy can change without replacing the executable"
+    );
+    assert_eq!(
+        cached_probe(
+            Some(&usable),
+            Path::new("/usr/local/bin/bwrap"),
+            fingerprint,
+            usable.at,
+        ),
         None,
         "a different executable is a different trust decision"
     );
-    assert_eq!(cached_probe(None, &binary, usable.at), None);
+    assert_eq!(
+        cached_probe(Some(&usable), &binary, test_fingerprint(2), usable.at),
+        None,
+        "an in-place executable replacement invalidates a successful probe"
+    );
+    assert_eq!(cached_probe(None, &binary, fingerprint, usable.at), None);
 }
 
 #[tokio::test]
@@ -402,6 +514,214 @@ async fn d4_13_d5_14_linux_live_network_is_blocked_when_bwrap_present() {
         .unwrap();
     assert!(!flood.timed_out);
     assert!(flood.stdout_truncated && flood.stderr_truncated);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_live_descriptor_mount_survives_path_replacement_and_closes_the_bind_fd() {
+    let fixture = LiveFixture::new("descriptor-rebind");
+    std::fs::write(fixture.workspace.join("marker"), "retained-capability").unwrap();
+    let workspace_fd = std::fs::File::open(&fixture.workspace).unwrap();
+    let detached = fixture.root.join("detached-workspace");
+    std::fs::rename(&fixture.workspace, &detached).unwrap();
+    std::fs::create_dir(&fixture.workspace).unwrap();
+    std::fs::write(fixture.workspace.join("marker"), "replacement-path").unwrap();
+
+    let mut confinement = Confinement::egress_off(&fixture.workspace);
+    confinement.timeout_secs = LIVE_TEST_TIMEOUT_SECS;
+    let mut process = match crate::spawn_confined_process_from_workspace(
+        "cat marker; for fd in /proc/self/fd/[1-9][0-9]*; do [ ! -e \"$fd\" ] || exit 91; done",
+        &confinement,
+        &workspace_fd,
+    )
+    .await
+    {
+        Ok(process) => process,
+        Err(error @ SandboxError::Unsupported) => {
+            record_typed_refusal(error);
+            return;
+        }
+        Err(error) => panic!("descriptor-bound spawn failed: {error}"),
+    };
+    drop(process.take_stdin());
+    let mut stdout = process.take_stdout().unwrap();
+    let mut stderr = process.take_stderr().unwrap();
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    let (outcome, stdout_result, stderr_result) =
+        tokio::time::timeout(Duration::from_secs(LIVE_TEST_TIMEOUT_SECS), async {
+            tokio::join!(
+                process.wait(),
+                stdout.read_to_end(&mut output),
+                stderr.read_to_end(&mut errors)
+            )
+        })
+        .await
+        .expect("descriptor-bound process exceeded its live-test budget");
+    assert!(
+        outcome.unwrap().success(),
+        "stderr={}",
+        String::from_utf8_lossy(&errors)
+    );
+    stdout_result.unwrap();
+    stderr_result.unwrap();
+    assert_eq!(output, b"retained-capability");
+    assert_eq!(
+        std::fs::read_to_string(fixture.workspace.join("marker")).unwrap(),
+        "replacement-path"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn read_bounded_proc_record(path: &str) -> std::io::Result<String> {
+    const MAX_PROC_RECORD_BYTES: u64 = 16 * 1024;
+    let file = std::fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(MAX_PROC_RECORD_BYTES as usize + 1);
+    let mut limited = std::io::Read::take(file, MAX_PROC_RECORD_BYTES + 1);
+    std::io::Read::read_to_end(&mut limited, &mut bytes)?;
+    if bytes.len() > MAX_PROC_RECORD_BYTES as usize {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "proc record exceeded the live-test byte ceiling",
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+#[cfg(target_os = "linux")]
+fn bounded_host_descendants(root: u32) -> Vec<u32> {
+    const MAX_DESCENDANTS: usize = 64;
+    let mut pending = vec![root];
+    let mut seen = std::collections::BTreeSet::from([root]);
+    let mut descendants = Vec::new();
+    while let Some(parent) = pending.pop() {
+        let children_path = format!("/proc/{parent}/task/{parent}/children");
+        let children = match read_bounded_proc_record(&children_path) {
+            Ok(children) => children,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => panic!("cannot inspect {children_path}: {error}"),
+        };
+        for child in children.split_whitespace() {
+            let child = child.parse::<u32>().unwrap();
+            if seen.insert(child) {
+                descendants.push(child);
+                assert!(
+                    descendants.len() <= MAX_DESCENDANTS,
+                    "persistent setup exceeded the bounded process-tree inventory"
+                );
+                pending.push(child);
+            }
+        }
+    }
+    descendants
+}
+
+#[cfg(target_os = "linux")]
+fn host_process_group(pid: u32) -> Option<u32> {
+    let path = format!("/proc/{pid}/stat");
+    let stat = match read_bounded_proc_record(&path) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => panic!("cannot inspect host process {pid}: {error}"),
+    };
+    let (_, fields) = stat.rsplit_once(") ").expect("malformed /proc stat record");
+    let mut fields = fields.split_whitespace();
+    let _state = fields.next().expect("missing process state");
+    let _parent = fields.next().expect("missing parent pid");
+    Some(
+        fields
+            .next()
+            .expect("missing process group")
+            .parse()
+            .expect("non-numeric process group"),
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_live_path_persistent_setup_stays_reachable_and_masks_the_host_tty() {
+    let fixture = LiveFixture::new("path-persistent-session");
+    let mut confinement = Confinement::egress_off(&fixture.workspace);
+    confinement.timeout_secs = LIVE_TEST_TIMEOUT_SECS;
+    let mut process = match crate::spawn_confined_process(
+        "[ /dev/tty -ef /dev/null ] || exit 91; printf ready; sleep 30",
+        &confinement,
+    )
+    .await
+    {
+        Ok(process) => process,
+        Err(error @ SandboxError::Unsupported) => {
+            record_typed_refusal(error);
+            return;
+        }
+        Err(error) => panic!("path-backed persistent spawn failed: {error}"),
+    };
+    let direct_pid = process.direct_pid().expect("spawned child lost its pid");
+    drop(process.take_stdin());
+    let mut stdout = process.take_stdout().unwrap();
+    let mut ready = [0_u8; 5];
+    tokio::time::timeout(
+        Duration::from_secs(LIVE_TEST_TIMEOUT_SECS),
+        stdout.read_exact(&mut ready),
+    )
+    .await
+    .expect("server never reached the post-admission marker")
+    .expect("server exited before proving its tty mask");
+    assert_eq!(&ready, b"ready");
+
+    assert_eq!(host_process_group(direct_pid), Some(direct_pid));
+    let descendants = bounded_host_descendants(direct_pid);
+    assert!(
+        !descendants.is_empty(),
+        "a live bubblewrap setup must expose at least one host descendant"
+    );
+    for descendant in descendants {
+        if let Some(group) = host_process_group(descendant) {
+            assert_eq!(
+                group, direct_pid,
+                "persistent setup descendant {descendant} escaped the owned cleanup group"
+            );
+        }
+    }
+    assert!(process.terminate_and_reap().await.is_some());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_live_forced_cleanup_prevents_a_setsid_descendant_late_write() {
+    let fixture = LiveFixture::new("persistent-descendant");
+    let workspace_fd = std::fs::File::open(&fixture.workspace).unwrap();
+    let mut confinement = Confinement::egress_off(&fixture.workspace);
+    confinement.timeout_secs = LIVE_TEST_TIMEOUT_SECS;
+    let mut process = match crate::spawn_confined_process_from_workspace(
+        "setsid sh -c 'sleep 2; printf survived > late-write' & printf ready; sleep 30",
+        &confinement,
+        &workspace_fd,
+    )
+    .await
+    {
+        Ok(process) => process,
+        Err(error @ SandboxError::Unsupported) => {
+            record_typed_refusal(error);
+            return;
+        }
+        Err(error) => panic!("persistent descendant spawn failed: {error}"),
+    };
+    drop(process.take_stdin());
+    let mut stdout = process.take_stdout().unwrap();
+    let mut ready = [0_u8; 5];
+    tokio::time::timeout(Duration::from_secs(2), stdout.read_exact(&mut ready))
+        .await
+        .expect("server never reached the post-descendant marker")
+        .unwrap();
+    assert_eq!(&ready, b"ready");
+    assert!(process.terminate_and_reap().await.is_some());
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        !fixture.workspace.join("late-write").exists(),
+        "a detached descendant survived the owned process cleanup"
+    );
 }
 
 #[cfg(target_os = "linux")]

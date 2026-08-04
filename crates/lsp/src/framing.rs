@@ -89,7 +89,23 @@ pub async fn read_message<R>(reader: &mut R) -> Result<Option<serde_json::Value>
 where
     R: AsyncBufRead + AsyncReadExt + Unpin,
 {
-    read_message_with_timeouts(reader, ReadTimeouts::default()).await
+    read_message_with_size(reader)
+        .await
+        .map(|message| message.map(|(value, _)| value))
+}
+
+/// Read one framed message and retain its exact wire body length for aggregate accounting.
+///
+/// Re-serializing a parsed value is not equivalent: attacker-controlled whitespace can make the
+/// original frame much larger than its canonical JSON representation. Multiplexing drivers use
+/// this variant so an interleaved-frame budget is charged from the authoritative Content-Length.
+pub async fn read_message_with_size<R>(
+    reader: &mut R,
+) -> Result<Option<(serde_json::Value, usize)>, LspError>
+where
+    R: AsyncBufRead + AsyncReadExt + Unpin,
+{
+    read_message_with_size_and_timeouts(reader, ReadTimeouts::default()).await
 }
 
 /// Read one frame under explicit header and body deadlines.
@@ -101,6 +117,20 @@ pub async fn read_message_with_timeouts<R>(
     reader: &mut R,
     timeouts: ReadTimeouts,
 ) -> Result<Option<serde_json::Value>, LspError>
+where
+    R: AsyncBufRead + AsyncReadExt + Unpin,
+{
+    read_message_with_size_and_timeouts(reader, timeouts)
+        .await
+        .map(|message| message.map(|(value, _)| value))
+}
+
+/// Sized form of [`read_message_with_timeouts`]. The reported byte count is the validated
+/// Content-Length consumed from the stream, not a re-encoding of the parsed value.
+pub async fn read_message_with_size_and_timeouts<R>(
+    reader: &mut R,
+    timeouts: ReadTimeouts,
+) -> Result<Option<(serde_json::Value, usize)>, LspError>
 where
     R: AsyncBufRead + AsyncReadExt + Unpin,
 {
@@ -147,7 +177,7 @@ where
     let text = std::str::from_utf8(&body).map_err(|_| LspError::InvalidUtf8)?;
     inspect_json_envelope(text)?;
     let value = serde_json::from_str(text).map_err(|e| LspError::Json(e.to_string()))?;
-    Ok(Some(value))
+    Ok(Some((value, length)))
 }
 
 /// Validate syntax and cap the retained JSON tree before constructing a `Value` DOM.
@@ -509,6 +539,16 @@ mod tests {
         let mut reader = cursor(&encode(body).unwrap());
         let value = read_message(&mut reader).await.unwrap().unwrap();
         assert_eq!(value["text"], "a\nb");
+    }
+
+    #[tokio::test]
+    async fn sized_read_reports_wire_bytes_not_canonical_reencoding() {
+        let body = "{          \"ok\" : true          }";
+        let mut reader = cursor(&encode(body).unwrap());
+        let (value, wire_bytes) = read_message_with_size(&mut reader).await.unwrap().unwrap();
+        assert_eq!(value, serde_json::json!({"ok": true}));
+        assert_eq!(wire_bytes, body.len());
+        assert!(wire_bytes > serde_json::to_vec(&value).unwrap().len());
     }
 
     #[tokio::test]
