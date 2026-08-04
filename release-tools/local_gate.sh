@@ -155,6 +155,90 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
+# The dirty check above proves the tree matches *some* commit. It does not prove it matches the one
+# whose name goes on the status, and nothing here ever checks $SHA out -- the lanes below build
+# whatever HEAD already is. `.git/hooks/pre-push` passes the *pushed ref's* sha as GATE_SHA, so
+# pushing a branch that is not the checked-out one published a green context for a tree that was
+# never built. Refusing is the right move rather than checking out for the caller: a gate that
+# silently moves your worktree is its own hazard, and the caller knows which commit it meant.
+HEAD_SHA="$(git rev-parse HEAD)"
+readonly HEAD_SHA
+if [[ "$SHA" != "$HEAD_SHA" ]]; then
+  printf 'refusing to gate %s while HEAD is %s: the lanes build HEAD, so the status would name a commit that never ran\n' \
+    "${SHA:0:12}" "${HEAD_SHA:0:12}" >&2
+  printf 'check out the commit you mean, then re-run\n' >&2
+  exit 1
+fi
+
+# One lane at a time per repository. Every driver script `cd`s into the same checkout and runs
+# `git checkout -f -B`, so a second concurrent run rebuilds the branch inside the first run's
+# working tree mid-build -- and both then report against whatever survived. The shared `policy_root`
+# worktree and the docs virtualenv below have the same problem. `flock` makes the second run wait
+# rather than corrupt the first; if flock is unavailable the gate says so instead of pretending it
+# serialised anything.
+# macOS ships no flock(1), and macOS is where the pre-push hook runs, so a flock-only lock would
+# have left the busiest host unprotected while reporting that it was serialised. Python is already
+# a hard dependency of this directory, and `fcntl.flock` is the same advisory lock, released by the
+# kernel when the holder dies -- which a pid file or a `mkdir` lock cannot promise after a SIGKILL.
+# The lock is held by a background helper for exactly as long as this script lives.
+if [[ -z "${GATE_NO_LOCK:-}" ]]; then
+  LOCK_PATH="$(git rev-parse --git-common-dir)/gate-${lane}.lock"
+  readonly LOCK_PATH
+  lock_wait="${GATE_LOCK_WAIT_SECS:-3600}"
+  lock_ready="$(mktemp "${TMPDIR:-/tmp}/core-gate-lock.XXXXXXXX")"
+  lock_script="$(mktemp "${TMPDIR:-/tmp}/core-gate-lock-py.XXXXXXXX")"
+  lock_pipe="$(mktemp -u "${TMPDIR:-/tmp}/core-gate-lock-fifo.XXXXXXXX")"
+  mkfifo "$lock_pipe"
+  cat >"$lock_script" <<'LOCKPY'
+import fcntl, sys, time
+path, wait, ready = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+handle = open(path, "w")
+deadline = time.monotonic() + wait
+while True:
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except OSError:
+        if time.monotonic() >= deadline:
+            open(ready, "w").write("busy")
+            sys.exit(0)
+        time.sleep(0.2)
+open(ready, "w").write("held")
+# Hold the lock until this pipe reports end-of-file, which happens when the gate process that
+# opened the write end goes away -- including when it is SIGKILLed, which is the case a pid file
+# or a lock directory cannot survive. Reading stdin from a heredoc instead would EOF the instant
+# the script text was consumed, releasing the lock immediately and protecting nothing.
+try:
+    sys.stdin.read()
+except Exception:
+    pass
+LOCKPY
+  python3 "$lock_script" "$LOCK_PATH" "$lock_wait" "$lock_ready" <"$lock_pipe" &
+  lock_pid=$!
+  # The write end lives in this shell, so it closes exactly when this shell dies, by any means.
+  # Descriptor 9 is named explicitly rather than allocated with `exec {VAR}>`: that syntax needs
+  # bash 4, and macOS ships bash 3.2, where it fails with `exec: {LOCK_FD}: not found` -- leaving
+  # the writer unopened, the helper blocked on the FIFO forever, and no lock held by anyone.
+  exec 9>"$lock_pipe"
+  # Nothing is unlinked yet. Opening the FIFO for reading blocks until this `exec` supplies the
+  # writer, so the helper has not run -- and therefore has not opened its program file -- until the
+  # line above. Deleting the program here instead of after the handshake raced it every time, with
+  # python reporting a missing file and the gate then refusing itself as though a second lane held
+  # the lock.
+  rm -f "$lock_pipe"
+  for _ in $(seq 1 "$(( lock_wait * 5 + 10 ))"); do
+    [[ -s "$lock_ready" ]] && break
+    sleep 0.2
+  done
+  rm -f "$lock_script"
+  if [[ "$(cat "$lock_ready" 2>/dev/null)" != "held" ]]; then
+    rm -f "$lock_ready"
+    printf 'another %s lane is still running in this repository; refusing to run a second one\n' "$lane" >&2
+    exit 1
+  fi
+  rm -f "$lock_ready"
+fi
+
 post_status() {
   local context="$1" state="$2" description="$3"
   if (( dry_run )) || [[ -n "$emit" ]]; then
