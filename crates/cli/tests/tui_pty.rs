@@ -1094,8 +1094,14 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
     pty.send(b"/export\r");
     #[cfg(target_os = "linux")]
     {
-        pty.wait_until("slash export completes off the input path", |_| {
-            slash_export.is_file()
+        // The file appearing is not the export finishing: the writer creates it before the app
+        // clears its pending flag, and a second `/export` inside that window is refused with
+        // "export already pending" -- so the versioned file below never appears and this test times
+        // out. On an M-series Mac the window is submillisecond; on Linux/aarch64 it is wide enough
+        // to lose the race every time. Wait for the app to *say* it finished, which is the signal
+        // that actually orders the two commands.
+        pty.wait_until("slash export completes off the input path", |pty| {
+            slash_export.is_file() && pty.screen_text().contains("exported ->")
         });
         pty.send(b"/export\r");
         pty.wait_until("default export versions instead of overwriting", |_| {
