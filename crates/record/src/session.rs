@@ -1565,15 +1565,18 @@ fn fork_internal(
     if let Some(first) = parent_lines.first() {
         ensure_tenant(tenant, &first.tenant.0, first.seq.0)?;
     }
-    let parent_snapshot = parent_lines.iter().find_map(|line| match &line.event.kind {
-        EventKind::TunablesSnapshot { snapshot, .. } => Some(snapshot.clone()),
-        _ => None,
-    });
-    let compatibility = expected
-        .map(|(expected, legacy)| {
-            tunables::check_compatibility(parent_snapshot.as_ref(), expected, legacy)
-        })
-        .transpose()?;
+    let parent_snapshot =
+        genesis_tunables_event(&parent_lines).map(|(snapshot, _)| snapshot.clone());
+    let compatibility = if let Some((expected, legacy)) = expected {
+        let recorded = checked_genesis_tunables(&parent_lines)?;
+        Some(tunables::check_compatibility(
+            recorded.as_ref(),
+            expected,
+            legacy,
+        )?)
+    } else {
+        None
+    };
     let pinned = parent_lines
         .iter()
         .find(|l| l.seq == at)
@@ -1910,6 +1913,7 @@ fn expand_scoped_from(
                 parent_first.seq.0,
             )?;
         }
+        validate_fork_tunables_inheritance(&lines, &parent, &parent_lines)?;
         let pinned_line = parent_lines
             .iter()
             .find(|l| l.seq.0 == *fa)
@@ -1965,6 +1969,61 @@ fn expand_scoped_from(
         }
     }
     Ok(events)
+}
+
+fn genesis_tunables_event(
+    lines: &[ReadLine],
+) -> Option<(
+    &core_protocol::RunGenesisTunablesSnapshot,
+    Option<&core_protocol::RunGenesisTunablesInheritance>,
+)> {
+    match lines.get(1).map(|line| &line.event.kind) {
+        Some(EventKind::TunablesSnapshot {
+            snapshot,
+            inherited_from,
+            ..
+        }) => Some((snapshot, inherited_from.as_ref())),
+        _ => None,
+    }
+}
+
+fn checked_genesis_tunables(
+    lines: &[ReadLine],
+) -> Result<Option<core_protocol::RunGenesisTunablesSnapshot>, RecordError> {
+    let mut state = tunables::GenesisTunablesState::default();
+    for line in lines {
+        state.observe(line.seq.0, &line.event.kind)?;
+    }
+    Ok(state.finish()?.cloned())
+}
+
+/// Cross-check a fork's copied snapshot against the direct parent's actual, unique seq-1
+/// snapshot. The ordinary parent hash pins only through `forked_at`; for a seq-0 fork that prefix
+/// deliberately excludes seq 1, so this independent binding must be revalidated on every logical
+/// load. Recursion applies the same check at every edge in a nested fork chain.
+fn validate_fork_tunables_inheritance(
+    child_lines: &[ReadLine],
+    parent: &RunId,
+    parent_lines: &[ReadLine],
+) -> Result<(), RecordError> {
+    match (
+        genesis_tunables_event(child_lines),
+        genesis_tunables_event(parent_lines),
+    ) {
+        (None, None) => Ok(()),
+        (Some((child_snapshot, Some(binding))), Some((parent_snapshot, _)))
+            if binding.parent_run == parent.0
+                && binding.parent_snapshot_digest_sha256
+                    == parent_snapshot.snapshot_digest_sha256
+                && child_snapshot == parent_snapshot =>
+        {
+            Ok(())
+        }
+        _ => Err(tunables::TunablesSnapshotError::GenesisOrder {
+            reason: "fork tunables inheritance does not match the actual parent seq-1 snapshot",
+        }
+        .into()),
+    }
 }
 
 #[cfg(test)]

@@ -265,6 +265,7 @@
         { "kind": "file", "path": "crates/record/src/checkpoint.rs" },
         { "kind": "file", "path": "crates/record/src/lib.rs" },
         { "kind": "file", "path": "crates/record/src/redact.rs" },
+        { "kind": "file", "path": "crates/record/src/resolved_fixture.rs" },
         { "kind": "file", "path": "crates/record/src/tunables.rs" },
         { "kind": "file", "path": "crates/record/src/tunables_tests.rs" },
         { "kind": "tree", "path": "crates/record/tests" }

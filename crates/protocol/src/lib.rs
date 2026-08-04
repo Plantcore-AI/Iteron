@@ -63,7 +63,7 @@ pub const MAX_RUN_GENESIS_TUNABLE_ID_BYTES: usize = 256;
 /// Canonical encoding committed by [`RunGenesisTunablesSnapshot::snapshot_digest_sha256`].
 pub const RUN_GENESIS_TUNABLES_CANONICALIZATION: &str = "core-run-genesis-tunables-json-v1";
 
-/// Schema version for [`EventKind::TunablesSnapshot`](crate::EventKind::TunablesSnapshot).
+/// Schema version for [`EventKind::TunablesSnapshot`].
 /// A future format must use a new top-level event tag so an older reader can skip it safely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

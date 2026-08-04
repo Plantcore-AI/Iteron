@@ -308,6 +308,291 @@ fn immutable_tunables_genesis_checks_fresh_resume_replay_and_fork() {
 }
 
 #[test]
+fn public_resolved_set_wrappers_cover_fresh_resume_replay_and_fork() {
+    let dir = test_dir("tunables-public-resolved-wrappers");
+    let parent = RunId("resolved-parent".into());
+    let tenant = TenantId::default();
+    let resolved = super::resolved_fixture::resolved();
+    {
+        let mut rollout = Rollout::open(&dir, &parent, tenant.clone()).unwrap();
+        assert_eq!(
+            rollout
+                .append_fresh_genesis_with_tunables(&genesis(), &resolved)
+                .unwrap(),
+            (Seq::ZERO, Seq(1))
+        );
+    }
+
+    assert_eq!(
+        crate::replay_with_resolved_tunables(
+            &dir.join("resolved-parent.jsonl"),
+            &resolved,
+            LegacyTunablesPolicy::RejectUnpinned,
+        )
+        .unwrap()
+        .1,
+        TunablesCompatibility::Exact
+    );
+    let (resumed, compatibility) = Rollout::open_existing_with_resolved_tunables(
+        &dir,
+        &parent,
+        tenant.clone(),
+        &resolved,
+        LegacyTunablesPolicy::RejectUnpinned,
+    )
+    .unwrap();
+    assert_eq!(compatibility, TunablesCompatibility::Exact);
+    drop(resumed);
+
+    let (child, compatibility) = crate::fork_with_resolved_tunables(
+        &dir,
+        &parent,
+        Seq(1),
+        &tenant,
+        &resolved,
+        LegacyTunablesPolicy::RejectUnpinned,
+    )
+    .unwrap();
+    assert_eq!(compatibility, TunablesCompatibility::Exact);
+    assert_eq!(
+        crate::replay_with_resolved_tunables(
+            &dir.join(format!("{child}.jsonl")),
+            &resolved,
+            LegacyTunablesPolicy::RejectUnpinned,
+        )
+        .unwrap()
+        .1,
+        TunablesCompatibility::Exact
+    );
+}
+
+fn replace_root_snapshot(path: &std::path::Path, replacement: RunGenesisTunablesSnapshot) {
+    let mut lines = std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<ChainLine>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(lines.len() >= 2);
+    let mut event = serde_json::from_value::<Event>(lines[1].payload.clone()).unwrap();
+    let EventKind::TunablesSnapshot {
+        snapshot,
+        inherited_from,
+        ..
+    } = &mut event.kind
+    else {
+        panic!("seq 1 stopped being a tunables snapshot")
+    };
+    assert!(
+        inherited_from.is_none(),
+        "fixture parent must be a root run"
+    );
+    *snapshot = replacement;
+    lines[1].payload = serde_json::to_value(event).unwrap();
+    for index in 1..lines.len() {
+        let previous = lines[index - 1].hash.clone();
+        lines[index].prev = previous.clone();
+        lines[index].hash = hash_line(&previous, lines[index].seq, &lines[index].payload);
+    }
+    let mut encoded = lines
+        .iter()
+        .map(|line| serde_json::to_string(line).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    encoded.push('\n');
+    std::fs::write(path, encoded).unwrap();
+}
+
+#[test]
+fn seq_zero_and_nested_forks_recheck_the_actual_parent_snapshot() {
+    let dir = test_dir("tunables-fork-parent-snapshot");
+    let tenant = TenantId::default();
+    let root = RunId("snapshot-root".into());
+    let original = fixture_snapshot();
+    {
+        let mut rollout = Rollout::open(&dir, &root, tenant.clone()).unwrap();
+        rollout
+            .append_genesis_snapshot(&genesis(), original.clone(), None)
+            .unwrap();
+    }
+
+    // A seq-0 fork's ordinary parent hash intentionally covers only RunStart. The separate
+    // tunables inheritance edge must therefore bind the parent's actual seq-1 snapshot.
+    let direct = crate::fork(&dir, &root, Seq::ZERO, &tenant).unwrap();
+    let nested = crate::fork(&dir, &direct, Seq::ZERO, &tenant).unwrap();
+    assert!(crate::load_forked(&dir, &direct).is_ok());
+    assert!(crate::load_forked(&dir, &nested).is_ok());
+
+    // Replace only the root's snapshot and re-anchor its later hash chain. The seq-0 parent hash
+    // remains unchanged, so only the explicit snapshot provenance check can detect this.
+    replace_root_snapshot(
+        &dir.join(format!("{root}.jsonl")),
+        fixture_snapshot_variant('b'),
+    );
+    for child in [&direct, &nested] {
+        assert!(matches!(
+            crate::load_forked(&dir, child),
+            Err(RecordError::TunablesSnapshot(
+                TunablesSnapshotError::GenesisOrder {
+                    reason: "fork tunables inheritance does not match the actual parent seq-1 snapshot"
+                }
+            ))
+        ));
+    }
+}
+
+fn assert_checked_genesis_rejected(
+    dir: &std::path::Path,
+    run: &RunId,
+    expected: &RunGenesisTunablesSnapshot,
+) {
+    let path = dir.join(format!("{run}.jsonl"));
+    for policy in [
+        LegacyTunablesPolicy::RejectUnpinned,
+        LegacyTunablesPolicy::AllowUnpinned,
+    ] {
+        assert!(matches!(
+            replay_with_tunables_snapshot(&path, expected, policy),
+            Err(RecordError::TunablesSnapshot(
+                TunablesSnapshotError::GenesisOrder {
+                    reason: "physical seq 0 is not a structurally valid run_start"
+                }
+            ))
+        ));
+        assert!(matches!(
+            Rollout::open_existing_with_tunables_snapshot(
+                dir,
+                run,
+                TenantId::default(),
+                expected,
+                policy,
+            ),
+            Err(RecordError::TunablesSnapshot(
+                TunablesSnapshotError::GenesisOrder {
+                    reason: "physical seq 0 is not a structurally valid run_start"
+                }
+            ))
+        ));
+        assert!(matches!(
+            crate::fork_with_tunables_snapshot(
+                dir,
+                run,
+                Seq::ZERO,
+                &TenantId::default(),
+                expected,
+                policy,
+            ),
+            Err(RecordError::TunablesSnapshot(
+                TunablesSnapshotError::GenesisOrder {
+                    reason: "physical seq 0 is not a structurally valid run_start"
+                }
+            ))
+        ));
+    }
+}
+
+#[test]
+fn legacy_waiver_requires_a_structurally_valid_historical_run() {
+    let dir = test_dir("tunables-legacy-structure");
+    std::fs::create_dir_all(&dir).unwrap();
+    let expected = fixture_snapshot();
+
+    let empty = RunId("empty".into());
+    std::fs::File::create(dir.join("empty.jsonl")).unwrap();
+    assert_checked_genesis_rejected(&dir, &empty, &expected);
+
+    let wrong_kind = RunId("wrong-kind".into());
+    {
+        let mut rollout = Rollout::open(&dir, &wrong_kind, TenantId::default()).unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::TurnStart,
+            })
+            .unwrap();
+    }
+    assert_checked_genesis_rejected(&dir, &wrong_kind, &expected);
+
+    let malformed_fork = RunId("malformed-fork".into());
+    {
+        let mut rollout = Rollout::open(&dir, &malformed_fork, TenantId::default()).unwrap();
+        let mut malformed = genesis();
+        let EventKind::RunStart {
+            parent_run,
+            forked_at,
+            parent_hash_at_seq,
+            ..
+        } = &mut malformed.kind
+        else {
+            unreachable!()
+        };
+        *parent_run = Some("parent".into());
+        *forked_at = None;
+        *parent_hash_at_seq = Some("b".repeat(64));
+        rollout.append(&malformed).unwrap();
+    }
+    assert_checked_genesis_rejected(&dir, &malformed_fork, &expected);
+}
+
+#[test]
+fn fresh_genesis_faults_preserve_only_a_checked_durable_prefix() {
+    let expected = fixture_snapshot();
+    for barrier in [1, 2] {
+        let dir = test_dir(&format!("tunables-genesis-sync-{barrier}"));
+        let run = RunId(format!("sync-{barrier}"));
+        let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+        crate::set_append_sync_fault_at(Some(barrier));
+        assert!(matches!(
+            rollout.append_genesis_snapshot(&genesis(), expected.clone(), None),
+            Err(RecordError::Io(_))
+        ));
+        crate::set_append_sync_fault_at(None);
+        drop(rollout);
+
+        let path = dir.join(format!("{run}.jsonl"));
+        let events = replay(&path).unwrap();
+        assert_eq!(events.len(), barrier - 1);
+        if barrier == 1 {
+            // A first-barrier crash leaves no historical run to waive.
+            for policy in [
+                LegacyTunablesPolicy::RejectUnpinned,
+                LegacyTunablesPolicy::AllowUnpinned,
+            ] {
+                assert!(matches!(
+                    replay_with_tunables_snapshot(&path, &expected, policy),
+                    Err(RecordError::TunablesSnapshot(
+                        TunablesSnapshotError::GenesisOrder { .. }
+                    ))
+                ));
+            }
+        } else {
+            // A second-barrier crash preserves the confirmed RunStart only: explicit legacy
+            // admission may continue, but exact compatibility remains impossible.
+            assert!(matches!(
+                replay_with_tunables_snapshot(
+                    &path,
+                    &expected,
+                    LegacyTunablesPolicy::RejectUnpinned,
+                ),
+                Err(RecordError::TunablesSnapshot(
+                    TunablesSnapshotError::LegacyUnpinned
+                ))
+            ));
+            assert_eq!(
+                replay_with_tunables_snapshot(
+                    &path,
+                    &expected,
+                    LegacyTunablesPolicy::AllowUnpinned,
+                )
+                .unwrap()
+                .1,
+                TunablesCompatibility::LegacyUnpinned
+            );
+        }
+    }
+}
+
+#[test]
 fn checked_legacy_policy_and_snapshot_placement_fail_closed_without_mutation() {
     let dir = test_dir("tunables-legacy-order");
     let tenant = TenantId::default();

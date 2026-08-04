@@ -36,9 +36,14 @@ append placeholder remains `seq = 0`, and checked readers compare against the ha
 
 Checked resume and replay compare the complete snapshot with the caller's current resolved set.
 Checked fork performs that comparison before creating a child, copies the exact parent snapshot,
-and binds the child event to the parent run and parent snapshot digest. Missing, malformed,
-duplicated, late, or mismatched evidence fails with a typed error. A caller may explicitly choose
-`AllowUnpinned` for a historical record, but the result is `LegacyUnpinned`, never `Exact`; no
+and binds the child event to the parent run and parent snapshot digest. Logical fork loading
+rechecks that binding against the direct parent's unique physical seq-1 snapshot on every ancestry
+edge, including a fork pinned at parent seq 0; nested forks therefore cannot hide replacement of an
+ancestor snapshot behind an otherwise valid seq-0 parent hash. Missing, malformed, duplicated,
+late, or mismatched evidence fails with a typed error. A caller may explicitly choose
+`AllowUnpinned` only when a structurally valid historical `run_start` lacks the snapshot. Empty
+journals, a different event at physical seq 0, and partial or invalid fork triples fail under both
+legacy policies. An admitted historical record returns `LegacyUnpinned`, never `Exact`; no
 automatic migration or new authority is fabricated.
 
 This is an evidence and compatibility boundary, not runtime admission by itself. The provider-free

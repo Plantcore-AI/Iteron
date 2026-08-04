@@ -277,7 +277,13 @@ impl GenesisTunablesState {
                     ..
                 } => match (parent_run, forked_at, parent_hash_at_seq) {
                     (None, None, None) => Some(None),
-                    (Some(parent_run), Some(_), Some(_)) => Some(Some(parent_run.clone())),
+                    (Some(parent_run), Some(_), Some(parent_hash))
+                        if crate::validate_run_id(&core_protocol::RunId(parent_run.clone()))
+                            .is_ok()
+                            && is_sha256(parent_hash) =>
+                    {
+                        Some(Some(parent_run.clone()))
+                    }
                     _ => None,
                 },
                 _ => None,
@@ -332,6 +338,22 @@ impl GenesisTunablesState {
         self.snapshot = Some(snapshot.clone());
         Ok(())
     }
+
+    /// Finish one physical journal's genesis projection.
+    ///
+    /// Legacy admission may waive only the absence of the seq-1 snapshot. It never turns an
+    /// empty journal, a non-`RunStart` seq 0, or a partial/invalid fork triple into a historical
+    /// run. Keeping that distinction here makes every checked caller share the same rule.
+    pub(crate) fn finish(
+        &self,
+    ) -> Result<Option<&RunGenesisTunablesSnapshot>, TunablesSnapshotError> {
+        if self.root_parent.is_none() {
+            return Err(TunablesSnapshotError::GenesisOrder {
+                reason: "physical seq 0 is not a structurally valid run_start",
+            });
+        }
+        Ok(self.snapshot())
+    }
 }
 
 pub(crate) fn snapshot_from_events(
@@ -341,7 +363,7 @@ pub(crate) fn snapshot_from_events(
     for event in events {
         state.observe(event.seq.0, &event.kind)?;
     }
-    Ok(state.snapshot().cloned())
+    Ok(state.finish()?.cloned())
 }
 
 pub(crate) fn inherited_from(
@@ -393,6 +415,10 @@ pub(crate) fn fixture_snapshot_variant(marker: char) -> RunGenesisTunablesSnapsh
     snapshot.snapshot_digest_sha256 = digest_json(&payload(&snapshot)).unwrap();
     snapshot
 }
+
+#[cfg(test)]
+#[path = "resolved_fixture.rs"]
+mod resolved_fixture;
 
 #[cfg(test)]
 #[path = "tunables_tests.rs"]

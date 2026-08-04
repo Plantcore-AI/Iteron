@@ -97,6 +97,54 @@ pub(crate) const MAX_ROLLOUT_PHYSICAL_LINES: usize = MAX_ROLLOUT_EVENTS + 1_024;
 std::thread_local! {
     static AFTER_VISIT_METADATA_PREFLIGHT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static APPEND_SYNC_FAULT_AT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static APPEND_SYNC_ORDINAL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_append_sync_fault_at(ordinal: Option<usize>) {
+    APPEND_SYNC_ORDINAL.with(|seen| seen.set(0));
+    APPEND_SYNC_FAULT_AT.with(|target| target.set(ordinal));
+}
+
+/// Deterministically model a crash that loses the line currently waiting on its durability
+/// barrier while preserving the previously confirmed prefix. This seam exists only in unit-test
+/// builds; production append I/O remains the platform write + fsync path below.
+#[cfg(test)]
+fn inject_append_sync_fault(file: &File) -> std::io::Result<()> {
+    let ordinal = APPEND_SYNC_ORDINAL.with(|seen| {
+        let ordinal = seen.get().saturating_add(1);
+        seen.set(ordinal);
+        ordinal
+    });
+    let should_fail = APPEND_SYNC_FAULT_AT.with(|target| target.get() == Some(ordinal));
+    if !should_fail {
+        return Ok(());
+    }
+    APPEND_SYNC_FAULT_AT.with(|target| target.set(None));
+
+    let current_bytes = file.metadata()?.len();
+    let scan_bytes = current_bytes.min((MAX_RECORD_LINE_BYTES + 2) as u64);
+    let scan_start = current_bytes.saturating_sub(scan_bytes);
+    let mut reader = file.try_clone()?;
+    reader.seek(SeekFrom::Start(scan_start))?;
+    let mut tail = vec![0; usize::try_from(scan_bytes).unwrap_or(MAX_RECORD_LINE_BYTES + 2)];
+    reader.read_exact(&mut tail)?;
+    if tail.last() != Some(&b'\n') {
+        return Err(std::io::Error::other(
+            "injected sync fault expected a complete current record line",
+        ));
+    }
+    let durable_prefix_bytes = tail[..tail.len().saturating_sub(1)]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map(|offset| scan_start + offset as u64 + 1)
+        .unwrap_or(0);
+    file.set_len(durable_prefix_bytes)?;
+    file.sync_all()?;
+    Err(std::io::Error::other(format!(
+        "injected append sync fault at barrier {ordinal}"
+    )))
 }
 
 /// How hard one append pushes its line toward the platter.
@@ -139,6 +187,8 @@ fn barrier_for(kind: &EventKind) -> Barrier {
 /// route through `F_FULLFSYNC` there, so the cheap tier has to call libc directly.
 #[cfg(unix)]
 fn sync_line(file: &File) -> std::io::Result<()> {
+    #[cfg(test)]
+    inject_append_sync_fault(file)?;
     // Fully qualified rather than a `use`: this file is a managed schema source whose import
     // fingerprint is pinned, and a platform fd accessor is not a schema change.
     let fd = <File as std::os::unix::io::AsRawFd>::as_raw_fd(file);
@@ -157,6 +207,8 @@ fn sync_line(file: &File) -> std::io::Result<()> {
 
 #[cfg(not(unix))]
 fn sync_line(file: &File) -> std::io::Result<()> {
+    #[cfg(test)]
+    inject_append_sync_fault(file)?;
     file.sync_data()
 }
 
