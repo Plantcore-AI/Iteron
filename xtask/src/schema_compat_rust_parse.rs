@@ -117,9 +117,10 @@ mod tests {
             tagged_enum_fields(&source, EVENT_KIND_SIGNATURE, "kind", 1, &BTreeMap::new()).unwrap();
         // 29 original tags + `effect_done` and `effect_failed`, the two purely additive terminals
         // the universal effect boundary (#16) introduced for non-registry classes, + the
-        // `artifact_produced` declaration a run makes about a product it wrote (#78). Every one is
-        // a purely additive top-level tag under abi.md §4.3(b)2, so none bumped PROTOCOL_VERSION.
-        assert_eq!(shapes.len(), 32);
+        // `artifact_produced` declaration a run makes about a product it wrote (#78), + the
+        // `tunables_snapshot` run-genesis companion (#187). Every one is a purely additive
+        // top-level tag under abi.md §4.3(b)2, so none bumped PROTOCOL_VERSION.
+        assert_eq!(shapes.len(), 33);
         assert_eq!(
             shapes["notice"],
             BTreeSet::from(["kind".to_owned(), "text".to_owned()])
@@ -137,6 +138,7 @@ mod tests {
                 "workspace".to_owned(),
             ])
         );
+        assert!(shapes.contains_key("tunables_snapshot"));
         assert!(shapes.contains_key("subagent_finished_v2"));
         assert!(!shapes.contains_key("unknown"));
     }
