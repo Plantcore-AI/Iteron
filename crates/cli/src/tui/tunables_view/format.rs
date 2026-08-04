@@ -1,7 +1,7 @@
-use super::Detail;
+use super::super::is_unsafe_display_char;
 use core_tunables::{ConstraintViolation, CrossFieldRule};
 use serde::Serialize;
-use serde_json::Value;
+use std::fmt::{self, Display, Write as _};
 use std::io;
 
 pub(super) const MAX_DETAIL_TITLE_CHARS: usize = 256;
@@ -15,29 +15,251 @@ pub(super) const MAX_DETAIL_FIELD_BYTES: usize = 3_072;
 pub(super) const MAX_DETAIL_ROW_LABEL_CHARS: usize = 64;
 pub(super) const MAX_DETAIL_ROW_LABEL_BYTES: usize = 256;
 
+#[derive(Clone, Copy)]
+struct Limits {
+    chars: usize,
+    bytes: usize,
+}
+
+const TITLE_LIMITS: Limits = Limits {
+    chars: MAX_DETAIL_TITLE_CHARS,
+    bytes: MAX_DETAIL_TITLE_BYTES,
+};
+const ID_LIMITS: Limits = Limits {
+    chars: MAX_DETAIL_ID_CHARS,
+    bytes: MAX_DETAIL_ID_BYTES,
+};
+const LABEL_LIMITS: Limits = Limits {
+    chars: MAX_DETAIL_LABEL_CHARS,
+    bytes: MAX_DETAIL_LABEL_BYTES,
+};
+const FIELD_LIMITS: Limits = Limits {
+    chars: MAX_DETAIL_FIELD_CHARS,
+    bytes: MAX_DETAIL_FIELD_BYTES,
+};
+const ROW_LABEL_LIMITS: Limits = Limits {
+    chars: MAX_DETAIL_ROW_LABEL_CHARS,
+    bytes: MAX_DETAIL_ROW_LABEL_BYTES,
+};
+
+/// A formatting sink that sanitizes as it receives fragments and returns `fmt::Error` at its
+/// first char/byte limit. A hostile `Display` implementation therefore stops being called at the
+/// cap instead of first allocating an unbounded `format!` result that is truncated afterwards.
+pub(super) struct BoundedText {
+    output: String,
+    chars: usize,
+    limits: Limits,
+    truncated: bool,
+}
+
+impl BoundedText {
+    fn new(limits: Limits) -> Self {
+        Self {
+            output: String::with_capacity(limits.bytes),
+            chars: 0,
+            limits,
+            truncated: false,
+        }
+    }
+
+    pub(super) fn field() -> Self {
+        Self::new(FIELD_LIMITS)
+    }
+
+    /// Stream one display value. `false` means the sink reached its cap and already owns the
+    /// ellipsis; callers must stop iterating additional registry input.
+    pub(super) fn push(&mut self, value: impl Display) -> bool {
+        if self.truncated {
+            return false;
+        }
+        write!(self, "{value}").is_ok()
+    }
+
+    pub(super) fn push_str(&mut self, value: &str) -> bool {
+        if self.truncated {
+            return false;
+        }
+        fmt::Write::write_str(self, value).is_ok()
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.output.is_empty()
+    }
+
+    pub(super) fn is_truncated(&self) -> bool {
+        self.truncated
+    }
+
+    pub(super) fn truncate(&mut self) {
+        if !self.truncated {
+            self.truncated = true;
+            self.mark_ellipsis();
+        }
+    }
+
+    pub(super) fn finish(self) -> String {
+        self.output
+    }
+
+    fn mark_ellipsis(&mut self) {
+        const ELLIPSIS: char = '…';
+        while (self.chars >= self.limits.chars
+            || self.output.len().saturating_add(ELLIPSIS.len_utf8()) > self.limits.bytes)
+            && self.output.pop().is_some()
+        {
+            self.chars = self.chars.saturating_sub(1);
+        }
+        if self.chars < self.limits.chars
+            && self.output.len().saturating_add(ELLIPSIS.len_utf8()) <= self.limits.bytes
+        {
+            self.output.push(ELLIPSIS);
+            self.chars += 1;
+        }
+    }
+}
+
+impl fmt::Write for BoundedText {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        if self.truncated {
+            return Err(fmt::Error);
+        }
+        for source in value.chars() {
+            let safe = if is_unsafe_display_char(source) {
+                ' '
+            } else {
+                source
+            };
+            if self.chars >= self.limits.chars
+                || self.output.len().saturating_add(safe.len_utf8()) > self.limits.bytes
+            {
+                self.truncated = true;
+                self.mark_ellipsis();
+                return Err(fmt::Error);
+            }
+            self.output.push(safe);
+            self.chars += 1;
+        }
+        Ok(())
+    }
+}
+
+fn render(value: impl Display, limits: Limits) -> String {
+    let mut output = BoundedText::new(limits);
+    let _ = output.push(value);
+    output.finish()
+}
+
+pub(super) fn bounded_title(value: impl Display) -> String {
+    render(value, TITLE_LIMITS)
+}
+
+pub(super) fn bounded_id(value: impl Display) -> String {
+    render(value, ID_LIMITS)
+}
+
+pub(super) fn bounded_label(value: impl Display) -> String {
+    render(value, LABEL_LIMITS)
+}
+
+pub(super) fn bounded_hint(value: impl Display) -> String {
+    bounded_field(value)
+}
+
+pub(super) fn bounded_field(value: impl Display) -> String {
+    render(value, FIELD_LIMITS)
+}
+
+pub(super) struct DetailNote(String);
+
+impl DetailNote {
+    pub(super) fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+pub(super) fn bounded_note(value: impl Display) -> DetailNote {
+    DetailNote(bounded_field(value))
+}
+
+pub(super) struct DetailRow(String, String);
+
+impl DetailRow {
+    pub(super) fn into_parts(self) -> (String, String) {
+        (self.0, self.1)
+    }
+}
+
+pub(super) fn row(label: impl Display, value: impl Display) -> DetailRow {
+    DetailRow(render(label, ROW_LABEL_LIMITS), render(value, FIELD_LIMITS))
+}
+
+pub(super) fn join_strs<I, S>(values: I, separator: &str) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut output = BoundedText::field();
+    for value in values {
+        if !output.is_empty() && !output.push_str(separator) {
+            break;
+        }
+        if !output.push_str(value.as_ref()) {
+            break;
+        }
+    }
+    output.finish()
+}
+
 pub(super) fn constraint_summary(rules: &[CrossFieldRule]) -> String {
     if rules.is_empty() {
-        return "none".into();
+        return bounded_field("none");
     }
-    join_bounded(
-        rules.iter().map(|rule| match rule {
-            CrossFieldRule::LessOrEqual { left, right } => format!("{left} <= {right}"),
+    let mut output = BoundedText::field();
+    for rule in rules {
+        if !output.is_empty() && !output.push_str("; ") {
+            break;
+        }
+        match rule {
+            CrossFieldRule::LessOrEqual { left, right } => {
+                let _ = output.push(format_args!("{left} <= {right}"));
+            }
             CrossFieldRule::SumLessOrEqual { terms, limit } => {
-                format!("{} <= {limit}", join_bounded(terms.iter().copied(), " + "))
+                for (index, term) in terms.iter().enumerate() {
+                    if index > 0 && !output.push_str(" + ") {
+                        break;
+                    }
+                    if !output.push_str(term) {
+                        break;
+                    }
+                }
+                if !output.is_truncated() {
+                    let _ = output.push(format_args!(" <= {limit}"));
+                }
             }
             CrossFieldRule::Requires {
                 if_field,
                 equals,
                 then_field,
-            } => format!(
-                "if {if_field}={} then require {then_field}",
-                compact_json(equals)
-            ),
+            } => {
+                let _ = output.push(format_args!("if {if_field}="));
+                if !output.is_truncated() {
+                    let json = compact_json(equals);
+                    let _ = output.push_str(&json);
+                }
+                if !output.is_truncated() {
+                    let _ = output.push(format_args!(" then require {then_field}"));
+                }
+            }
             CrossFieldRule::MutuallyExclusive { fields } => {
-                format!(
-                    "mutually exclusive: {}",
-                    join_bounded(fields.iter().copied(), ", ")
-                )
+                let _ = output.push_str("mutually exclusive: ");
+                for (index, field) in fields.iter().enumerate() {
+                    if index > 0 && !output.push_str(", ") {
+                        break;
+                    }
+                    if !output.push_str(field) {
+                        break;
+                    }
+                }
             }
             CrossFieldRule::ExternalCeiling {
                 field,
@@ -46,221 +268,90 @@ pub(super) fn constraint_summary(rules: &[CrossFieldRule]) -> String {
                 relation,
                 violation,
             } => {
-                let action = match violation {
-                    ConstraintViolation::Reject => "reject".into(),
-                    ConstraintViolation::ClampNumeric => "clamp_numeric".into(),
-                    ConstraintViolation::DegradeAttested { policy_id } => {
-                        format!("degrade_attested({policy_id})")
-                    }
-                };
-                format!(
-                    "{field}: {} / {} / {} -> {action}",
+                let _ = output.push(format_args!(
+                    "{field}: {} / {} / {} -> ",
                     code(ceiling),
                     code(projection),
                     code(relation)
-                )
+                ));
+                if !output.is_truncated() {
+                    match violation {
+                        ConstraintViolation::Reject => {
+                            let _ = output.push_str("reject");
+                        }
+                        ConstraintViolation::ClampNumeric => {
+                            let _ = output.push_str("clamp_numeric");
+                        }
+                        ConstraintViolation::DegradeAttested { policy_id } => {
+                            let _ = output.push(format_args!("degrade_attested({policy_id})"));
+                        }
+                    }
+                }
             }
-        }),
-        "; ",
-    )
-}
-
-pub(super) fn row(label: impl Into<String>, value: impl Into<String>) -> (String, String) {
-    let label = label.into();
-    let value = value.into();
-    (
-        bounded_text(
-            &label,
-            MAX_DETAIL_ROW_LABEL_CHARS,
-            MAX_DETAIL_ROW_LABEL_BYTES,
-        ),
-        bounded_field(&value),
-    )
+        }
+        if output.is_truncated() {
+            break;
+        }
+    }
+    output.finish()
 }
 
 pub(super) fn code<T: Serialize>(value: &T) -> String {
-    // Every caller passes a registry enum serialized as a snake_case string.
-    match serde_json::to_value(value) {
-        Ok(Value::String(value)) => value,
-        _ => "invalid".into(),
+    let mut writer = BoundedIo::new(MAX_DETAIL_FIELD_BYTES);
+    if serde_json::to_writer(&mut writer, value).is_err() || writer.truncated {
+        return bounded_field("invalid");
+    }
+    match serde_json::from_slice::<String>(&writer.bytes) {
+        Ok(value) => bounded_field(value),
+        Err(_) => bounded_field("invalid"),
     }
 }
 
 pub(super) fn compact_json<T: Serialize>(value: &T) -> String {
-    let mut writer = BoundedJson::default();
-    match serde_json::to_writer(&mut writer, value) {
-        Ok(()) => bounded_field(&String::from_utf8_lossy(&writer.bytes)),
-        Err(_) if writer.truncated => {
-            let mut partial = String::from_utf8_lossy(&writer.bytes).into_owned();
-            partial.push('…');
-            bounded_field(&partial)
-        }
-        Err(_) => "<unavailable>".into(),
+    let mut writer = BoundedIo::new(MAX_DETAIL_FIELD_BYTES);
+    let result = serde_json::to_writer(&mut writer, value);
+    let partial = String::from_utf8_lossy(&writer.bytes);
+    let mut output = BoundedText::field();
+    let _ = output.push_str(&partial);
+    match result {
+        Ok(()) => {}
+        Err(_) if writer.truncated => output.truncate(),
+        Err(_) => return bounded_field("<unavailable>"),
     }
+    output.finish()
 }
 
-#[derive(Default)]
-struct BoundedJson {
+struct BoundedIo {
     bytes: Vec<u8>,
+    limit: usize,
     truncated: bool,
 }
 
-impl io::Write for BoundedJson {
+impl BoundedIo {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(limit),
+            limit,
+            truncated: false,
+        }
+    }
+}
+
+impl io::Write for BoundedIo {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        let remaining = MAX_DETAIL_FIELD_BYTES.saturating_sub(self.bytes.len());
+        let remaining = self.limit.saturating_sub(self.bytes.len());
         if buffer.len() <= remaining {
             self.bytes.extend_from_slice(buffer);
             return Ok(buffer.len());
         }
         self.bytes.extend_from_slice(&buffer[..remaining]);
         self.truncated = true;
-        Err(io::Error::other("bounded JSON display limit reached"))
+        Err(io::Error::other(
+            "bounded display serialization limit reached",
+        ))
     }
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
-    }
-}
-
-pub(super) fn bounded_title(value: &str) -> String {
-    bounded_text(value, MAX_DETAIL_TITLE_CHARS, MAX_DETAIL_TITLE_BYTES)
-}
-
-pub(super) fn bounded_hint(value: &str) -> String {
-    bounded_field(value)
-}
-
-pub(super) fn bounded_field(value: &str) -> String {
-    bounded_text(value, MAX_DETAIL_FIELD_CHARS, MAX_DETAIL_FIELD_BYTES)
-}
-
-pub(super) fn bounded_detail(mut detail: Detail) -> Detail {
-    detail.family_id = bounded_text(&detail.family_id, MAX_DETAIL_ID_CHARS, MAX_DETAIL_ID_BYTES);
-    detail.label = bounded_text(
-        &detail.label,
-        MAX_DETAIL_LABEL_CHARS,
-        MAX_DETAIL_LABEL_BYTES,
-    );
-    detail.hint = bounded_hint(&detail.hint);
-    detail.rows = detail
-        .rows
-        .into_iter()
-        .map(|(label, value)| row(label, value))
-        .collect();
-    detail.notes = detail
-        .notes
-        .into_iter()
-        .map(|note| bounded_field(&note))
-        .collect();
-    detail
-}
-
-pub(super) fn join_bounded<I, S>(values: I, separator: &str) -> String
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let mut output = String::new();
-    let mut chars = 0;
-    let mut first = true;
-    for value in values {
-        if !first
-            && !push_bounded(
-                &mut output,
-                &mut chars,
-                separator,
-                MAX_DETAIL_FIELD_CHARS,
-                MAX_DETAIL_FIELD_BYTES,
-            )
-        {
-            mark_truncated(
-                &mut output,
-                &mut chars,
-                MAX_DETAIL_FIELD_CHARS,
-                MAX_DETAIL_FIELD_BYTES,
-            );
-            break;
-        }
-        first = false;
-        if !push_bounded(
-            &mut output,
-            &mut chars,
-            value.as_ref(),
-            MAX_DETAIL_FIELD_CHARS,
-            MAX_DETAIL_FIELD_BYTES,
-        ) {
-            mark_truncated(
-                &mut output,
-                &mut chars,
-                MAX_DETAIL_FIELD_CHARS,
-                MAX_DETAIL_FIELD_BYTES,
-            );
-            break;
-        }
-    }
-    output
-}
-
-fn bounded_text(value: &str, maximum_chars: usize, maximum_bytes: usize) -> String {
-    let mut output = String::with_capacity(value.len().min(maximum_bytes));
-    let mut chars = 0;
-    if !push_bounded(&mut output, &mut chars, value, maximum_chars, maximum_bytes) {
-        mark_truncated(&mut output, &mut chars, maximum_chars, maximum_bytes);
-    }
-    output
-}
-
-/// Append sanitized Unicode without examining input after the output bound has been reached.
-fn push_bounded(
-    output: &mut String,
-    chars: &mut usize,
-    value: &str,
-    maximum_chars: usize,
-    maximum_bytes: usize,
-) -> bool {
-    for source in value.chars() {
-        let safe = if is_unsafe_display_char(source) {
-            ' '
-        } else {
-            source
-        };
-        if *chars >= maximum_chars || output.len().saturating_add(safe.len_utf8()) > maximum_bytes {
-            return false;
-        }
-        output.push(safe);
-        *chars += 1;
-    }
-    true
-}
-
-pub(super) fn is_unsafe_display_char(character: char) -> bool {
-    let value = character as u32;
-    character.is_control()
-        || matches!(
-            value,
-            0x061c
-                | 0x200b..=0x200f
-                | 0x202a..=0x202e
-                | 0x2060..=0x206f
-                | 0xfeff
-        )
-}
-
-fn mark_truncated(
-    output: &mut String,
-    chars: &mut usize,
-    maximum_chars: usize,
-    maximum_bytes: usize,
-) {
-    const ELLIPSIS: char = '…';
-    while (*chars >= maximum_chars
-        || output.len().saturating_add(ELLIPSIS.len_utf8()) > maximum_bytes)
-        && output.pop().is_some()
-    {
-        *chars = chars.saturating_sub(1);
-    }
-    if *chars < maximum_chars && output.len().saturating_add(ELLIPSIS.len_utf8()) <= maximum_bytes {
-        output.push(ELLIPSIS);
-        *chars += 1;
     }
 }

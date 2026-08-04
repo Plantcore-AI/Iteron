@@ -5,16 +5,18 @@
 //! exclusively through `core_tunables::explain_entry_json`, whose contract redacts every value.
 
 mod format;
+mod model;
 
 use self::format::{
-    MAX_DETAIL_FIELD_CHARS, bounded_detail, bounded_title, code, compact_json, constraint_summary,
-    join_bounded, row,
+    BoundedText, MAX_DETAIL_FIELD_CHARS, bounded_field, bounded_note, code, compact_json,
+    constraint_summary, join_strs, row,
 };
+pub(super) use self::model::Detail;
+use self::model::{Catalog, LoadError};
 #[cfg(target_os = "linux")]
 use core_tunables::RESOLUTION_INPUT_MAX_BYTES;
 use core_tunables::{Family, ResolutionFailureReport, ResolutionReport};
 use serde_json::Value;
-use std::fmt;
 #[cfg(target_os = "linux")]
 use std::io::Read as _;
 use std::path::{Component, Path};
@@ -23,49 +25,23 @@ const MAX_REQUEST_PATH_BYTES: usize = 4_096;
 const MAX_REQUEST_COMPONENTS: usize = 128;
 const SAFE_LOAD_REFUSAL: &str = "request could not be loaded safely from this workspace";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Detail {
-    pub(crate) family_id: String,
-    pub(crate) label: String,
-    pub(crate) hint: String,
-    pub(crate) rows: Vec<(String, String)>,
-    pub(crate) notes: Vec<String>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Catalog {
-    pub(crate) title: String,
-    pub(crate) entries: Vec<Detail>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct LoadError(&'static str);
-
-impl fmt::Display for LoadError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.0)
-    }
-}
-
-impl std::error::Error for LoadError {}
-
-pub(crate) fn registry_catalog() -> Catalog {
-    Catalog {
-        title: bounded_title(&format!(
+pub(super) fn registry_catalog() -> Catalog {
+    Catalog::new(
+        format_args!(
             "tunables · catalog · {} families · simulation only",
             core_tunables::families().len()
-        )),
-        entries: core_tunables::families()
+        ),
+        core_tunables::families()
             .iter()
             .map(catalog_detail)
             .collect(),
-    }
+    )
 }
 
 /// Load one explicit request from inside the selected workspace. Linux retains directory and leaf
 /// capabilities, rejects symlinks and non-regular leaves, and rebinds the complete pathname before
 /// delivering exactly 1 MiB + 1 byte at most to R2. Other platforms fail closed.
-pub(crate) fn load_workspace_request(
+pub(super) fn load_workspace_request(
     workspace: &Path,
     requested_path: &str,
 ) -> Result<Catalog, LoadError> {
@@ -184,36 +160,35 @@ fn report_catalog(
         .iter()
         .map(|family| report_detail(report, family, atomic_status))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(Catalog {
-        title: bounded_title(&format!(
+    Ok(Catalog::new(
+        format_args!(
             "tunables · {atomic_status} · {} families · {failure_count} failures · simulation only",
             entries.len()
-        )),
+        ),
         entries,
-    })
+    ))
 }
 
 fn catalog_detail(family: &Family) -> Detail {
-    let state = format!("implementation.{}", code(&family.implementation_status));
+    let state = bounded_field(format_args!(
+        "implementation.{}",
+        code(&family.implementation_status)
+    ));
     let mut detail = metadata_detail(family, &state);
-    detail.rows.splice(
-        0..0,
-        [
-            row(
-                "surface",
-                "registry catalog · simulation=true · runtime_bound=false",
-            ),
-            row("resolution", "not loaded"),
-            row("requested", "not supplied (no frozen request loaded)"),
-            row("effective", "not resolved"),
-            row("adjustments", "none (no resolution loaded)"),
-        ],
+    detail.prepend_rows([
+        row(
+            "surface",
+            "registry catalog · simulation=true · runtime_bound=false",
+        ),
+        row("resolution", "not loaded"),
+        row("requested", "not supplied (no frozen request loaded)"),
+        row("effective", "not resolved"),
+        row("adjustments", "none (no resolution loaded)"),
+    ]);
+    detail.push_note(
+        "Read-only catalog: this does not edit config, bind a value to this run, authenticate evidence, train a policy, or prove benchmark impact.",
     );
-    detail.notes.push(
-        "Read-only catalog: this does not edit config, bind a value to this run, authenticate evidence, train a policy, or prove benchmark impact."
-            .into(),
-    );
-    bounded_detail(detail)
+    detail
 }
 
 fn report_detail(
@@ -247,90 +222,118 @@ fn report_detail(
         .ok_or(LoadError("resolver explain omitted its change marker"))?;
 
     let mut detail = metadata_detail(family, state);
-    detail.rows.splice(
-        0..0,
-        [
-            row(
-                "surface",
-                format!(
-                    "frozen-request simulation · runtime_bound=false · atomic_status={atomic_status}"
-                ),
+    detail.prepend_rows([
+        row(
+            "surface",
+            format_args!(
+                "frozen-request simulation · runtime_bound=false · atomic_status={atomic_status}"
             ),
-            row("resolution", format!("state={state} · reason={reason}")),
-            row("requested", requested),
-            row("effective", effective),
-            row("source", source),
-            row(
-                "adjustments",
-                format!("{adjustments} · changed={changed} · shadowed={shadowed}"),
-            ),
-        ],
+        ),
+        row(
+            "resolution",
+            format_args!("state={state} · reason={reason}"),
+        ),
+        row("requested", requested),
+        row("effective", effective),
+        row("source", source),
+        row(
+            "adjustments",
+            format_args!("{adjustments} · changed={changed} · shadowed={shadowed}"),
+        ),
+    ]);
+    detail.push_note(
+        "Values are R2 redacted previews only. This simulation is not the current process state and cannot authorize or persist a runtime setting.",
     );
-    detail.notes.push(
-        "Values are R2 redacted previews only. This simulation is not the current process state and cannot authorize or persist a runtime setting."
-            .into(),
-    );
-    detail.hint = self::format::bounded_hint(&format!(
+    let aliases = if family.aliases.is_empty() {
+        bounded_field("none")
+    } else {
+        join_strs(family.aliases.iter().copied(), ",")
+    };
+    detail.set_hint(format_args!(
         "{} · {state} · {reason} · key:{} · aliases:{} · default:{} · {}",
         code(&family.domain),
         family.semantic_key,
-        if family.aliases.is_empty() {
-            "none".into()
-        } else {
-            join_bounded(family.aliases.iter().copied(), ",")
-        },
+        aliases,
         code(&family.default.kind),
         family.summary
     ));
-    Ok(bounded_detail(detail))
+    Ok(detail)
 }
 
 fn metadata_detail(family: &Family, state: &str) -> Detail {
-    let sources = join_bounded(
-        family.source.bindings.iter().map(|binding| {
-            format!(
-                "{}/{} @ {}",
-                code(&binding.kind),
-                code(&binding.trust),
-                binding.locator
-            )
-        }),
-        "; ",
-    );
-    let capabilities = join_bounded(family.requirements.capabilities.iter().map(code), ", ");
+    let mut sources = BoundedText::field();
+    for binding in family.source.bindings {
+        if !sources.is_empty() && !sources.push_str("; ") {
+            break;
+        }
+        if !sources.push(format_args!(
+            "{}/{} @ {}",
+            code(&binding.kind),
+            code(&binding.trust),
+            binding.locator
+        )) {
+            break;
+        }
+    }
+    let sources = sources.finish();
+
+    let mut capabilities = BoundedText::field();
+    for capability in family.requirements.capabilities {
+        if !capabilities.is_empty() && !capabilities.push_str(", ") {
+            break;
+        }
+        if !capabilities.push(code(capability)) {
+            break;
+        }
+    }
+    let capabilities = capabilities.finish();
     let rules = constraint_summary(family.value_schema.rules);
     let default_value = family
         .default
         .value
         .map(|value| compact_json(&value))
-        .unwrap_or_else(|| "<resolver required>".into());
+        .unwrap_or_else(|| bounded_field("<resolver required>"));
     let aliases = if family.aliases.is_empty() {
-        "none".into()
+        bounded_field("none")
     } else {
-        join_bounded(family.aliases.iter().copied(), ", ")
+        join_strs(family.aliases.iter().copied(), ", ")
     };
-    let strategy_slots = join_bounded(family.strategy_slots.iter().map(code), ", ");
-    let mut notes = vec![family.summary.into()];
-    if family.benchmark_relevance.rationale != family.summary {
-        notes.push(family.benchmark_relevance.rationale.into());
+    let mut strategy_slots = BoundedText::field();
+    for slot in family.strategy_slots {
+        if !strategy_slots.is_empty() && !strategy_slots.push_str(", ") {
+            break;
+        }
+        if !strategy_slots.push(code(slot)) {
+            break;
+        }
     }
-    Detail {
-        family_id: family.id.into(),
-        label: format!("{:03}  {}  [{state}]", family.ordinal, family.id),
-        hint: self::format::bounded_hint(&format!(
+    let strategy_slots = strategy_slots.finish();
+    let mut notes = vec![bounded_note(family.summary)];
+    if family.benchmark_relevance.rationale != family.summary {
+        notes.push(bounded_note(family.benchmark_relevance.rationale));
+    }
+    let inactive_reason = family
+        .activation
+        .inactive_reason
+        .map(|reason| code(&reason))
+        .unwrap_or_else(|| bounded_field("none"));
+    Detail::new(
+        family.id,
+        format_args!("{:03}  {}  [{state}]", family.ordinal, family.id),
+        format_args!(
             "{} · {state} · key:{} · aliases:{} · default:{} · {}",
             code(&family.domain),
             family.semantic_key,
             aliases,
             code(&family.default.kind),
             family.summary
-        )),
-        rows: vec![
+        ),
+        vec![
             row("semantic key", family.semantic_key),
-            row("aliases", aliases),
+            row("aliases", aliases.as_str()),
             row(
                 "implementation",
-                format!(
+                format_args!(
                     "{} · authority={} · risk={}",
                     code(&family.implementation_status),
                     code(&family.authority_class),
@@ -339,7 +342,7 @@ fn metadata_detail(family: &Family, state: &str) -> Detail {
             ),
             row(
                 "default",
-                format!(
+                format_args!(
                     "{} / {} · resolver={} · value={default_value}",
                     code(&family.default.kind),
                     code(&family.default.requirement),
@@ -349,19 +352,15 @@ fn metadata_detail(family: &Family, state: &str) -> Detail {
             row("declared sources", sources),
             row(
                 "activation",
-                format!(
+                format_args!(
                     "{} · inactive_reason={}",
                     compact_json(&family.activation.predicate),
-                    family
-                        .activation
-                        .inactive_reason
-                        .map(|reason| code(&reason))
-                        .unwrap_or_else(|| "none".into())
+                    inactive_reason
                 ),
             ),
             row(
                 "value schema",
-                format!(
+                format_args!(
                     "{} · kind={}",
                     family.value_schema.schema_id,
                     code(&family.value_schema.kind)
@@ -370,7 +369,7 @@ fn metadata_detail(family: &Family, state: &str) -> Detail {
             row("constraints", rules),
             row(
                 "requirements",
-                format!(
+                format_args!(
                     "provider={} · capabilities={}",
                     code(&family.requirements.provider),
                     if capabilities.is_empty() {
@@ -383,7 +382,7 @@ fn metadata_detail(family: &Family, state: &str) -> Detail {
             row("strategy slots", strategy_slots),
             row(
                 "optimization",
-                format!(
+                format_args!(
                     "class={} · phase={} · pin_reason={}",
                     code(&family.optimization.class),
                     code(&family.optimization.search_phase),
@@ -392,7 +391,7 @@ fn metadata_detail(family: &Family, state: &str) -> Detail {
             ),
             row(
                 "benchmarks",
-                format!(
+                format_args!(
                     "SWE-bench Pro={} ({}) · Terminal-Bench 2.1={} ({})",
                     code(&family.benchmark_relevance.swe_bench_pro),
                     code(&family.benchmark_relevance.causal_path.swe_bench_pro),
@@ -402,7 +401,7 @@ fn metadata_detail(family: &Family, state: &str) -> Detail {
             ),
         ],
         notes,
-    }
+    )
 }
 
 fn string_field<'a>(
@@ -415,7 +414,7 @@ fn string_field<'a>(
         .filter(|value| {
             value.len() <= self::format::MAX_DETAIL_FIELD_BYTES
                 && value.chars().count() <= MAX_DETAIL_FIELD_CHARS
-                && !value.chars().any(char::is_control)
+                && !value.chars().any(super::is_unsafe_display_char)
         })
         .ok_or(LoadError(
             "resolver explain contained an invalid bounded field",
@@ -424,7 +423,7 @@ fn string_field<'a>(
 
 fn preview(value: Option<&Value>) -> Result<String, LoadError> {
     let Some(value) = value.filter(|value| !value.is_null()) else {
-        return Ok("none".into());
+        return Ok(bounded_field("none"));
     };
     let object = value.as_object().ok_or(LoadError(
         "resolver explain exposed an invalid value preview",
@@ -433,17 +432,19 @@ fn preview(value: Option<&Value>) -> Result<String, LoadError> {
         return Err(LoadError("resolver explain exposed an unredacted value"));
     }
     let kind = string_field(object, "kind")?;
-    let mut facts = Vec::new();
+    let mut output = BoundedText::field();
+    let _ = output.push(format_args!("{kind}(<redacted>"));
     for key in ["byte_count", "item_count", "canonical_bytes"] {
-        if let Some(number) = object.get(key).and_then(Value::as_u64) {
-            facts.push(format!("{key}={number}"));
+        if let Some(number) = object.get(key).and_then(Value::as_u64)
+            && !output.push(format_args!(";{key}={number}"))
+        {
+            break;
         }
     }
-    Ok(if facts.is_empty() {
-        format!("{kind}(<redacted>)")
-    } else {
-        format!("{kind}(<redacted>;{})", facts.join(";"))
-    })
+    if !output.is_truncated() {
+        let _ = output.push_str(")");
+    }
+    Ok(output.finish())
 }
 
 fn adjustment_summary(value: Option<&Value>) -> Result<String, LoadError> {
@@ -451,30 +452,36 @@ fn adjustment_summary(value: Option<&Value>) -> Result<String, LoadError> {
         .and_then(Value::as_array)
         .ok_or(LoadError("resolver explain omitted its adjustment ledger"))?;
     if adjustments.is_empty() {
-        return Ok("none".into());
+        return Ok(bounded_field("none"));
     }
     const MAX_RENDERED_ADJUSTMENTS: usize = 64;
-    let rendered = adjustments
+    let mut output = BoundedText::field();
+    for (index, adjustment) in adjustments
         .iter()
         .take(MAX_RENDERED_ADJUSTMENTS)
-        .map(|adjustment| {
-            let object = adjustment.as_object().ok_or(LoadError(
-                "resolver explain contained an invalid adjustment",
-            ))?;
-            Ok(format!(
-                "{} field={} ceiling={} {} -> {}",
-                string_field(object, "code")?,
-                string_field(object, "field")?,
-                string_field(object, "ceiling")?,
-                preview(object.get("requested"))?,
-                preview(object.get("effective"))?,
-            ))
-        });
-    let mut checked = Vec::with_capacity(adjustments.len().min(MAX_RENDERED_ADJUSTMENTS));
-    for item in rendered {
-        checked.push(item?);
+        .enumerate()
+    {
+        let object = adjustment.as_object().ok_or(LoadError(
+            "resolver explain contained an invalid adjustment",
+        ))?;
+        let code = string_field(object, "code")?;
+        let field = string_field(object, "field")?;
+        let ceiling = string_field(object, "ceiling")?;
+        let requested = preview(object.get("requested"))?;
+        let effective = preview(object.get("effective"))?;
+        if index > 0 && !output.push_str("; ") {
+            break;
+        }
+        if !output.push(format_args!(
+            "{code} field={field} ceiling={ceiling} {requested} -> {effective}"
+        )) {
+            break;
+        }
     }
-    Ok(join_bounded(checked, "; "))
+    if adjustments.len() > MAX_RENDERED_ADJUSTMENTS && !output.is_truncated() {
+        output.truncate();
+    }
+    Ok(output.finish())
 }
 
 #[cfg(test)]

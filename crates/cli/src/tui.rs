@@ -418,6 +418,22 @@ fn ui_safe_text(text: &str) -> String {
     safe
 }
 
+/// Invisible directional/formatting characters and terminal controls are unsafe in every bounded
+/// TUI display/query projection. Keep this predicate shared so filtering and rendered Detail text
+/// cannot disagree about which code points are admitted.
+fn is_unsafe_display_char(character: char) -> bool {
+    let value = character as u32;
+    character.is_control()
+        || matches!(
+            value,
+            0x061c
+                | 0x200b..=0x200f
+                | 0x202a..=0x202e
+                | 0x2060..=0x206f
+                | 0xfeff
+        )
+}
+
 fn ui_safe_json(value: &serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     match value {
@@ -559,7 +575,7 @@ impl Picker {
                     continue;
                 }
                 ' '
-            } else if is_picker_query_control(source) {
+            } else if is_unsafe_display_char(source) {
                 continue;
             } else {
                 source
@@ -741,20 +757,6 @@ impl Picker {
         labels.reverse();
         labels.join(" / ")
     }
-}
-
-fn is_picker_query_control(character: char) -> bool {
-    let value = character as u32;
-    matches!(
-        value,
-        0x00..=0x1f
-            | 0x7f
-            | 0x80..=0x9f
-            | 0x200b..=0x200f
-            | 0x202a..=0x202e
-            | 0x2060..=0x206f
-            | 0xfeff
-    )
 }
 
 /// The outcome of a keypress routed to an open picker.
@@ -1992,7 +1994,7 @@ impl App {
             pk.normalize_selection(&visible);
         } else if let KeyCode::Char(ch) = code
             && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-            && !is_picker_query_control(ch)
+            && !is_unsafe_display_char(ch)
         {
             let pk = self.picker.as_mut()?;
             let mut encoded = [0; 4];
@@ -5289,13 +5291,13 @@ async fn apply_action(
 }
 
 fn show_tunable_detail(app: &mut App, detail: tunables_view::Detail) {
-    let mut rows: Vec<block::PanelRow> = detail
-        .rows
+    let (family_id, detail_rows, notes) = detail.into_panel();
+    let mut rows: Vec<block::PanelRow> = detail_rows
         .into_iter()
         .map(|(key, value)| kv(&key, &value))
         .collect();
-    rows.extend(detail.notes.into_iter().map(block::PanelRow::Note));
-    app.panel("", &format!("tunable · {}", detail.family_id), rows);
+    rows.extend(notes.into_iter().map(block::PanelRow::Note));
+    app.panel("", &format!("tunable · {family_id}"), rows);
 }
 
 fn apply_theme_selection(app: &mut App, theme: theme::Theme) {
@@ -5718,20 +5720,20 @@ fn open_tunables_picker(app: &mut App, session: &Session, argument: &str) {
             argument.chars().take(MAX_PICKER_QUERY_CHARS).collect(),
         )
     };
-    let items = catalog
-        .entries
+    let (title, entries) = catalog.into_parts();
+    let items = entries
         .into_iter()
         .map(|detail| {
             PickItem::flat(
-                detail.label.clone(),
-                detail.hint.clone(),
+                detail.picker_label().to_owned(),
+                detail.picker_hint().to_owned(),
                 false,
                 PickAction::InspectTunable(detail),
             )
         })
         .collect();
     let mut picker = Picker {
-        title: catalog.title,
+        title,
         items,
         sel: 0,
         query: String::new(),
@@ -8871,12 +8873,35 @@ mod tests {
         assert_eq!(picker.visible_indices(), vec![1]);
         assert_eq!(picker.sel, 1);
 
+        let unsafe_codepoints: Vec<char> = (0x00..=0x1f)
+            .chain(0x7f..=0x9f)
+            .chain(std::iter::once(0x061c))
+            .chain(0x200b..=0x200f)
+            .chain(0x202a..=0x202e)
+            .chain(0x2060..=0x206f)
+            .chain(std::iter::once(0xfeff))
+            .filter_map(char::from_u32)
+            .collect();
+        for unsafe_character in unsafe_codepoints {
+            app.picker
+                .as_mut()
+                .expect("picker remains open")
+                .query
+                .clear();
+            assert!(app.picker_paste(&format!("安全{unsafe_character}😀")));
+            let query = &app.picker.as_ref().expect("picker remains open").query;
+            assert!(query.contains("安全"));
+            assert!(query.contains('😀'));
+            assert!(!query.contains(unsafe_character));
+            assert!(!query.chars().any(is_unsafe_display_char));
+        }
+
         assert!(app.picker_paste(&"无匹配😀".repeat(2_000)));
         let picker = app.picker.as_ref().expect("picker remains open");
         assert!(picker.visible_indices().is_empty());
         assert!(picker.query.chars().count() <= MAX_PICKER_QUERY_CHARS);
         assert!(picker.query.len() <= MAX_PICKER_QUERY_BYTES);
-        assert!(!picker.query.chars().any(is_picker_query_control));
+        assert!(!picker.query.chars().any(is_unsafe_display_char));
         assert!(render_text(&mut app, 80, 18).contains("No matches"));
 
         assert_eq!(app.editor.text(), original_text);

@@ -1,4 +1,5 @@
 use super::*;
+use std::fmt;
 
 fn scratch(label: &str) -> std::path::PathBuf {
     let nonce = std::time::SystemTime::now()
@@ -15,7 +16,7 @@ fn assert_text_bound(value: &str, max_chars: usize, max_bytes: usize) {
     assert!(value.chars().count() <= max_chars, "char cap: {value:?}");
     assert!(value.len() <= max_bytes, "byte cap: {value:?}");
     assert!(
-        !value.chars().any(format::is_unsafe_display_char),
+        !value.chars().any(super::super::is_unsafe_display_char),
         "control escaped: {value:?}"
     );
 }
@@ -102,13 +103,13 @@ fn catalog_exposes_all_families_and_all_truthful_detail_fields() {
 #[test]
 fn every_detail_string_is_source_bounded_in_chars_bytes_and_controls() {
     let hostile = "😀\n\u{202e}".repeat(2_000);
-    let detail = format::bounded_detail(Detail {
-        family_id: hostile.clone(),
-        label: hostile.clone(),
-        hint: hostile.clone(),
-        rows: vec![(hostile.clone(), hostile.clone())],
-        notes: vec![hostile.clone()],
-    });
+    let detail = Detail::new(
+        hostile.as_str(),
+        hostile.as_str(),
+        hostile.as_str(),
+        vec![row(hostile.as_str(), hostile.as_str())],
+        vec![bounded_note(hostile.as_str())],
+    );
     assert_detail_bound(&detail);
     assert_text_bound(
         &format::bounded_title(&hostile),
@@ -121,6 +122,36 @@ fn every_detail_string_is_source_bounded_in_chars_bytes_and_controls() {
     assert!(detail.rows[0].0.ends_with('…'));
     assert!(detail.rows[0].1.ends_with('…'));
     assert!(detail.notes[0].ends_with('…'));
+}
+
+#[test]
+fn hostile_display_is_stopped_by_the_streaming_writer_at_the_field_cap() {
+    use std::cell::Cell;
+
+    struct Hostile<'a>(&'a Cell<usize>);
+
+    impl fmt::Display for Hostile<'_> {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            loop {
+                self.0.set(self.0.get().saturating_add(1));
+                formatter.write_str("😀\u{061c}")?;
+            }
+        }
+    }
+
+    let calls = Cell::new(0);
+    let rendered = bounded_field(Hostile(&calls));
+    assert_text_bound(
+        &rendered,
+        format::MAX_DETAIL_FIELD_CHARS,
+        format::MAX_DETAIL_FIELD_BYTES,
+    );
+    assert!(rendered.ends_with('…'));
+    assert!(
+        calls.get() <= format::MAX_DETAIL_FIELD_CHARS + 1,
+        "formatter kept requesting hostile fragments after the cap: {}",
+        calls.get()
+    );
 }
 
 #[test]
