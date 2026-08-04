@@ -794,10 +794,28 @@ enum InputDestination {
     AfterTurn,
 }
 
+/// The filesystem half of the drop discriminator. `symlink_metadata` answers for a dangling
+/// symlink too, and never follows one.
+fn path_exists_on_disk(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+/// `commands::slash_command_body` bound to the real filesystem: the single place the frontend
+/// decides whether a leading `/` opens a command or is a file the operator dropped on the
+/// terminal. Every lane that can consume a draft — Enter while idle, Enter/Tab while running, and
+/// the after-turn queue drain — asks this one question, so a drop cannot be a path in one lane and
+/// a command in another.
+fn slash_command_body(text: &str) -> Option<&str> {
+    commands::slash_command_body(text, &path_exists_on_disk)
+}
+
 fn input_destination(running: bool, text: &str) -> InputDestination {
     if !running {
         InputDestination::StartTurn
-    } else if text.trim_start().starts_with(['/', '!']) {
+    } else if slash_command_body(text).is_some() || text.trim_start().starts_with('!') {
+        // `!` keeps the bare-prefix test: it is unambiguous local-shell intent, and a dropped
+        // absolute path never starts with it (a drop that did would still be shell input, which is
+        // what `!` promises).
         InputDestination::AfterTurn
     } else {
         InputDestination::SteerCurrentRun
@@ -3474,7 +3492,7 @@ pub async fn run(
                 let q = q.trim().to_string();
                 if q.is_empty() {
                     continue;
-                } else if let Some(cmd) = q.strip_prefix('/') {
+                } else if let Some(cmd) = slash_command_body(&q) {
                     settle_providers_for(&mut providers, cmd).await;
                     dispatch_slash_command(
                         &mut term,
@@ -4193,8 +4211,13 @@ pub async fn run(
                                 if trimmed.is_empty() && !has_attachments {
                                     // nothing
                                 } else if !has_attachments
-                                    && let Some(cmd) = trimmed.strip_prefix('/')
+                                    && let Some(cmd) = slash_command_body(&trimmed)
                                 {
+                                    // The words outlive a bad guess: a name the registry does not
+                                    // serve returns to the composer after the notice, so nothing
+                                    // the operator typed or dropped is consumed by a misparse.
+                                    let restore =
+                                        commands::parse(cmd).is_err().then(|| line.clone());
                                     let _ = app.editor.take_submit();
                                     settle_providers_for(&mut providers, cmd).await;
                                     dispatch_slash_command(
@@ -4206,6 +4229,9 @@ pub async fn run(
                                         cmd,
                                     )
                                     .await?;
+                                    if let Some(draft) = restore {
+                                        app.editor.insert_str(&draft);
+                                    }
                                 } else if !has_attachments
                                     && let Some(bash) = trimmed.strip_prefix('!')
                                 {
@@ -10473,6 +10499,92 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             input_destination(true, "please inspect the failure"),
             InputDestination::SteerCurrentRun
         );
+    }
+
+    /// N-2: a file dropped on the terminal DURING a run was routed to the after-turn queue by the
+    /// bare `starts_with('/')` test, and the drain then dispatched it as a slash command — so the
+    /// path was destroyed instead of reaching the model. Every row here is a drop form that failed.
+    #[test]
+    fn a_drop_during_a_run_steers_instead_of_queueing_a_command() {
+        let drops = [
+            "/Users/op/IMG_0042.heic",
+            "/Users/op/notes.pdf",
+            "/Users/op/notes.txt",
+            "/Users/op/logo.svg",
+            "/Users/op/shot.png",
+            "/Users/op/Pictures",
+            "/Users/op/a.png /Users/op/b.png",
+            r"/Users/op/My\ Trip.heic",
+            "/Users/op/shot.png\n",
+            "  /Users/op/shot.png",
+        ];
+        for drop in drops {
+            assert_eq!(
+                input_destination(true, drop),
+                InputDestination::SteerCurrentRun,
+                "{drop:?} was routed to the command queue"
+            );
+        }
+        for command in ["/model", "/compact", "/?", "/perms", "/helpp", "/"] {
+            assert_eq!(
+                input_destination(true, command),
+                InputDestination::AfterTurn,
+                "{command:?} stopped queueing as a command"
+            );
+        }
+        assert_eq!(
+            input_destination(true, "!cargo test"),
+            InputDestination::AfterTurn,
+        );
+    }
+
+    /// The frontend's binding of the discriminator really consults the filesystem: `/tmp` and
+    /// `/etc` are single-segment, so nothing but a `stat` can tell them from a mistyped command.
+    #[cfg(unix)]
+    #[test]
+    fn the_drop_probe_reads_this_filesystem() {
+        assert!(path_exists_on_disk(Path::new("/tmp")));
+        assert_eq!(slash_command_body("/tmp"), None);
+        assert_eq!(slash_command_body("/etc"), None);
+        // A dropped folder created for this test, named like nothing in the registry.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dropped = std::env::temp_dir().join(format!(
+            "core-tui-drop-{}-{nonce}/IMG_0042.heic",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(dropped.parent().unwrap()).unwrap();
+        std::fs::write(&dropped, b"not really an image").unwrap();
+        assert_eq!(slash_command_body(dropped.to_str().unwrap()), None);
+        std::fs::remove_dir_all(dropped.parent().unwrap()).unwrap();
+        // …while a name with no path evidence still reaches the unknown-command notice.
+        assert!(!path_exists_on_disk(Path::new("/helpp")));
+        assert_eq!(slash_command_body("/helpp"), Some("helpp"));
+    }
+
+    /// N-2 (draft loss): `take_submit` clears the composer BEFORE dispatch, so a name the registry
+    /// does not serve used to consume the line as well as reject it. The Enter lane now puts an
+    /// unknown command back; a recognized one is still consumed.
+    #[test]
+    fn an_unknown_command_returns_the_line_to_the_composer() {
+        for (line, survives) in [("/helpp", true), ("/help", false)] {
+            let mut app = App::new();
+            app.editor.insert_str(line);
+            let trimmed = app.editor.text().trim().to_string();
+            let cmd = slash_command_body(&trimmed).expect("a typo is still a command");
+            let restore = commands::parse(cmd).is_err().then(|| trimmed.clone());
+            let _ = app.editor.take_submit();
+            if let Some(draft) = restore {
+                app.editor.insert_str(&draft);
+            }
+            assert_eq!(
+                app.editor.text(),
+                if survives { line } else { "" },
+                "{line:?} draft handling regressed"
+            );
+        }
     }
 
     #[test]
