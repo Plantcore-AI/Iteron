@@ -405,7 +405,7 @@ fn effort_status_label(app: &App) -> String {
 /// Convert untrusted display text into the only representation allowed to enter retained TUI
 /// state. Secret-shaped substrings are redacted and terminal control characters are escaped so a
 /// tool/user string cannot inject terminal commands or rewrite earlier rows.
-fn ui_safe_text(text: &str) -> String {
+pub(crate) fn ui_safe_text(text: &str) -> String {
     let scrubbed = core_record::redact::scrub(text);
     let mut safe = String::with_capacity(scrubbed.len());
     for ch in scrubbed.chars() {
@@ -7386,7 +7386,7 @@ fn spans_width(spans: &[Span<'_>]) -> u16 {
         .fold(0u16, u16::saturating_add)
 }
 
-fn clip_text(text: &str, width: u16) -> String {
+pub(crate) fn clip_text(text: &str, width: u16) -> String {
     if text_width(text) <= width {
         return text.to_string();
     }

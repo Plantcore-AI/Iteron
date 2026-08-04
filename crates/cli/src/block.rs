@@ -232,6 +232,12 @@ pub struct WorkflowRunAgent {
     pub tool_calls: u64,
     /// The live tool line for a running child (`last_tool_summary`, ≤60 chars at the emitter).
     pub last_tool_summary: Option<String>,
+    /// A bounded excerpt of what this agent RETURNED (`result_preview`, ≤400 chars at the emitter —
+    /// `core_workflow::bindings::emit_finished` builds it from the `Record`'s text/structured
+    /// outcome). Untrusted model output, so it is sanitized on ingest, never at draw time. `None`
+    /// for a row that returned nothing (a null/unknown outcome, or a preview that sanitized away):
+    /// such a row renders exactly as it did before this field existed.
+    pub result_preview: Option<String>,
     /// When this row was ADMITTED (permit acquired). A running row has no settled `duration_ms`, so
     /// this is what makes its elapsed column tick instead of reading `0s` for the whole run.
     pub started: Option<Instant>,
@@ -246,6 +252,22 @@ impl WorkflowRunAgent {
             WorkflowState::Done | WorkflowState::Error | WorkflowState::Skipped
         )
     }
+}
+
+/// An agent's `result_preview` is model-authored text on its way into RETAINED transcript state, so
+/// it goes through the same gate every other untrusted display string does — [`crate::tui::ui_safe_text`]
+/// (secret-shaped substrings redacted, terminal control characters escaped). That gate deliberately
+/// keeps `\n`/`\t` intact for multi-line surfaces, but this one is a single tree row, so the engine's
+/// own [`events::truncate_preview`] then collapses whitespace and re-bounds to
+/// [`events::PREVIEW_MAX`] — escaping can only grow the string (`\u{1b}` → six chars), so the
+/// emitter's bound has to be re-applied after it. A preview that sanitizes down to nothing becomes
+/// `None`, which renders as no line at all rather than an empty stub.
+fn safe_result_preview(preview: Option<String>) -> Option<String> {
+    let safe = events::truncate_preview(
+        &crate::tui::ui_safe_text(preview?.as_str()),
+        events::PREVIEW_MAX,
+    );
+    (!safe.is_empty()).then_some(safe)
 }
 
 /// The live QuickJS-workflow phase→agent tree, keyed by run id and mutated in place by
@@ -345,6 +367,7 @@ impl WorkflowRunCard {
             tokens: 0,
             tool_calls: 0,
             last_tool_summary: None,
+            result_preview: None,
             started: None,
             duration_ms: 0,
             error: None,
@@ -426,7 +449,7 @@ impl WorkflowRunCard {
                 tokens,
                 tool_calls,
                 duration_ms,
-                result_preview: _,
+                result_preview,
                 last_tool_summary,
                 error,
             } => {
@@ -438,6 +461,7 @@ impl WorkflowRunCard {
                 agent.tokens = tokens;
                 agent.tool_calls = tool_calls;
                 agent.duration_ms = duration_ms;
+                agent.result_preview = safe_result_preview(result_preview);
                 agent.error = error;
                 if last_tool_summary.is_some() {
                     agent.last_tool_summary = last_tool_summary;
@@ -1322,26 +1346,71 @@ fn agent_meta_string(agent: &WorkflowRunAgent) -> Option<String> {
     }
 }
 
+/// The stem in front of a result-preview sub-line: three columns of tree continuation (`│  ` or
+/// three spaces, matching the width of the `├─ `/`└─ ` branch above it) plus `⎿ `, the transcript's
+/// own nested-content connector (see [`CONNECTOR`]). Every glyph is width-1, so this is exactly 5
+/// cells and the preview's own budget is `width - 5`.
+const PREVIEW_STEM_COLS: u16 = 5;
+/// Below this many columns of usable text a preview is nothing but an ellipsis, so the sub-line is
+/// dropped entirely rather than drawn as a stray connector with no content.
+const PREVIEW_MIN_COLS: u16 = 8;
+
+/// The dim `⎿ <excerpt>` sub-line under a finished agent row: what that agent actually RETURNED.
+/// `None` when the row has no preview or the row is too narrow to say anything useful — the caller
+/// then emits no line at all, so a result-less agent keeps the exact single-row shape it had before.
+fn result_preview_line(
+    agent: &WorkflowRunAgent,
+    width: u16,
+    last: bool,
+    theme: &Theme,
+) -> Option<Vec<Span<'static>>> {
+    if !agent.finished() {
+        return None;
+    }
+    let preview = agent.result_preview.as_deref()?;
+    let budget = width.saturating_sub(PREVIEW_STEM_COLS);
+    if budget < PREVIEW_MIN_COLS {
+        return None;
+    }
+    // Already sanitized at ingest; this only fits it to the columns actually available, so a 400-char
+    // preview in a 40-column terminal cannot push the row past the phase box's right border.
+    let text = crate::tui::clip_text(preview, budget);
+    if text.trim().is_empty() {
+        return None;
+    }
+    let stem = if last { "   " } else { "\u{2502}  " }; // │ continues the branch above
+    Some(vec![
+        Span::styled(
+            format!("{stem}\u{23bf} "), // ⎿
+            Style::default().fg(theme.faint),
+        ),
+        Span::styled(text, Style::default().fg(theme.muted)),
+    ])
+}
+
 /// Build the branch rows for one group of agents (design §3.3 collapse + row grammar). Non-verbose
 /// collapses finished (`Done`) agents into one dim `✔ n done` line; everything not-yet-done stays
 /// visible so failures/liveness never disappear. Verbose shows every row.
+///
+/// The one exception to the collapse: a `Done` row that carries a `result_preview` stays visible and
+/// renders its excerpt underneath. The collapse exists to hide rows with nothing left to say, and the
+/// settled tree is echoed into scrollback verbatim (`workflow::render_live`) — collapsing a row that
+/// DID return something is precisely the defect that made a finished run report no result at all.
+/// A `Done` row with no preview still collapses, and still counts toward `✔ n done`.
 fn agent_row_lines(
     agents: &[&WorkflowRunAgent],
     theme: &Theme,
     spin: usize,
     verbose: bool,
+    width: u16,
 ) -> Vec<Vec<Span<'static>>> {
-    let done_count = agents
-        .iter()
-        .filter(|a| a.state == WorkflowState::Done)
-        .count();
+    let collapsible =
+        |a: &WorkflowRunAgent| a.state == WorkflowState::Done && a.result_preview.is_none();
+    let done_count = agents.iter().filter(|a| collapsible(a)).count();
     let visible: Vec<&&WorkflowRunAgent> = if verbose {
         agents.iter().collect()
     } else {
-        agents
-            .iter()
-            .filter(|a| a.state != WorkflowState::Done)
-            .collect()
+        agents.iter().filter(|a| !collapsible(a)).collect()
     };
 
     let mut lines: Vec<Vec<Span<'static>>> = Vec::new();
@@ -1391,6 +1460,9 @@ fn agent_row_lines(
             ));
         }
         lines.push(row);
+        if let Some(preview) = result_preview_line(agent, width, last, theme) {
+            lines.push(preview);
+        }
     }
     lines
 }
@@ -1423,6 +1495,13 @@ fn fit_spans(spans: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
     out
 }
 
+/// Columns available INSIDE a phase box's `│ … │` frame. Shared with [`render_phase_box`] so the
+/// rows it builds are budgeted against exactly the width [`phase_box`] will later fit them to —
+/// two independent copies of `- 4` is how a preview ends up one column past the right border.
+fn box_inner_width(width: u16) -> u16 {
+    width.saturating_sub(4).max(1) // "│ " + content + " │"
+}
+
 /// Wrap a header line + body rows in a single-border box (design §3.3 phase box). Content is fit to
 /// the inner width so the `╭─╮ │ … │ ╰─╯` frame stays rectangular.
 fn phase_box(
@@ -1431,7 +1510,7 @@ fn phase_box(
     width: u16,
     border: Color,
 ) -> Vec<Line<'static>> {
-    let inner = width.saturating_sub(4).max(1); // "│ " + content + " │"
+    let inner = box_inner_width(width);
     let bs = Style::default().fg(border);
     let bar = "\u{2500}".repeat((inner + 2) as usize);
     let mut out = Vec::new();
@@ -1520,7 +1599,7 @@ fn render_phase_box(
         ));
     }
 
-    let rows = agent_row_lines(agents, theme, spin, card.verbose);
+    let rows = agent_row_lines(agents, theme, spin, card.verbose, box_inner_width(width));
     // Border is `subtle` (grey) — the `permission`/blue child-phase variant needs a phase `kind`
     // the current ProgressEvent set does not carry (design §6 fidelity note).
     phase_box(header, rows, width, theme.border)
@@ -1643,7 +1722,7 @@ pub(crate) fn render_workflow_run(
         // Flat-list fallback: no boxes, just the branch rows (design §3.3 "falls back to a flat list
         // when no agent has a phase index").
         let agents: Vec<&WorkflowRunAgent> = card.agents.iter().collect();
-        for row in agent_row_lines(&agents, theme, spin, card.verbose) {
+        for row in agent_row_lines(&agents, theme, spin, card.verbose, width) {
             out.push(Line::from(row));
         }
         if card.agents.is_empty() {
@@ -3964,6 +4043,271 @@ mod tests {
             .collect();
         assert!(drawn.contains("audit"), "header drew into the frame");
         assert!(drawn.contains('\u{276f}'), "narrator drew into the frame");
+    }
+
+    // ---- result_preview: what an individual agent actually RETURNED -------------------------
+    //
+    // `core_workflow::bindings::emit_finished` builds a ≤400-char excerpt of every agent's
+    // text/structured outcome and puts it on `AgentFinished.result_preview`. The card used to
+    // destructure it as `result_preview: _`, so a finished run reported tokens, tools and a
+    // duration but never one word of what any agent came back with.
+
+    /// One phase holding one finished agent — the shape `core workflow run` actually renders, where
+    /// `phase_box` fits every row to the box's inner width.
+    fn preview_card(preview: Option<&str>) -> WorkflowRunCard {
+        let mut c = WorkflowRunCard::new("wf_preview", "audit");
+        c.ingest(ProgressEvent::Phase {
+            index: 1,
+            title: "Explore".into(),
+        });
+        c.ingest(ProgressEvent::AgentStarted {
+            index: 0,
+            label: "scan modules".into(),
+            phase: Some("Explore".into()),
+            model: None,
+        });
+        c.ingest(ProgressEvent::AgentFinished {
+            index: 0,
+            label: "scan modules".into(),
+            state: WorkflowState::Done,
+            tokens: 1_234,
+            tool_calls: 3,
+            duration_ms: 3_200,
+            result_preview: preview.map(str::to_string),
+            last_tool_summary: None,
+            error: None,
+        });
+        c
+    }
+
+    #[test]
+    fn a_finished_agent_renders_an_excerpt_of_what_it_returned() {
+        let theme = Theme::dark();
+        let width = 78u16;
+        let c = preview_card(Some(
+            "4 modules touch the provider seam: cli, tools, workflow, mcp",
+        ));
+        assert!(
+            !c.verbose,
+            "this is the DEFAULT view — the one `core workflow run` echoes into scrollback"
+        );
+        assert_eq!(
+            c.agents[0].result_preview.as_deref(),
+            Some("4 modules touch the provider seam: cli, tools, workflow, mcp"),
+            "the card must retain the preview, not destructure it away"
+        );
+
+        let lines = render_workflow_run(&c, width, &theme, 0);
+        for line in &lines {
+            assert!(line_width(line) <= width, "row exceeded width: {line:?}");
+        }
+        let text = plain(lines);
+        println!("\n===== agent row with a result preview (width {width}) =====\n{text}\n=====");
+        assert!(
+            text.contains("\u{23bf} 4 modules touch the provider seam: cli, tools, workflow, mcp"),
+            "the returned excerpt must reach the rendered row:\n{text}"
+        );
+        assert!(
+            text.contains("scan modules"),
+            "a row that has a result to show must not be collapsed away:\n{text}"
+        );
+        assert!(
+            text.contains("   \u{23bf} 4 modules"),
+            "the LAST row's excerpt hangs under it with no dangling branch:\n{text}"
+        );
+
+        // A second row makes the first one non-last: its excerpt must keep the tree's vertical
+        // continuation, or the branch below it appears to belong to the excerpt.
+        let mut c = c;
+        c.ingest(ProgressEvent::AgentFinished {
+            index: 1,
+            label: "probe API".into(),
+            state: WorkflowState::Done,
+            tokens: 10,
+            tool_calls: 0,
+            duration_ms: 100,
+            result_preview: Some("two endpoints are unauthenticated".into()),
+            last_tool_summary: None,
+            error: None,
+        });
+        let text = plain(render_workflow_run(&c, width, &theme, 0));
+        assert!(
+            text.contains("\u{2502}  \u{23bf} 4 modules"),
+            "a non-last row's excerpt must continue the branch with `│`:\n{text}"
+        );
+        assert!(
+            text.contains("   \u{23bf} two endpoints are unauthenticated"),
+            "the new last row's excerpt must NOT continue the branch:\n{text}"
+        );
+    }
+
+    #[test]
+    fn an_agent_that_returned_nothing_renders_exactly_as_it_did_before() {
+        let theme = Theme::dark();
+        let width = 78u16;
+        // Byte-for-byte: the no-preview card is the pre-change rendering, so the feature adds
+        // nothing at all — no empty stub row, no stray `⎿` connector, no lost collapse.
+        let absent = plain(render_workflow_run(&preview_card(None), width, &theme, 0));
+        assert!(
+            !absent.contains('\u{23bf}'),
+            "a result-less agent grew a stray connector:\n{absent}"
+        );
+        assert!(
+            absent.contains("\u{2714} 1 done"),
+            "a result-less Done row must still collapse:\n{absent}"
+        );
+        assert!(!absent.contains("scan modules"), "…and stay collapsed");
+
+        // A preview that sanitizes down to nothing is indistinguishable from no preview at all.
+        let whitespace_only = plain(render_workflow_run(
+            &preview_card(Some(" \t \n ")),
+            width,
+            &theme,
+            0,
+        ));
+        assert_eq!(
+            whitespace_only, absent,
+            "an all-whitespace preview must render as absent, not as an empty row"
+        );
+    }
+
+    #[test]
+    fn a_result_preview_is_neutralised_before_it_reaches_the_terminal() {
+        let theme = Theme::dark();
+        let width = 120u16;
+        // Model-authored output trying to clear the screen, home the cursor, ring the bell, rewrite
+        // the row it is on, and smuggle a credential out through the transcript.
+        let secret = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
+        let hostile = format!("done\u{1b}[2J\u{1b}[1;1H gotcha\r bell\u{7} key={secret} tail");
+        let c = preview_card(Some(&hostile));
+
+        // Neutralised ON INGEST, so retained card state can never hold an executable escape —
+        // not merely masked at draw time, where one renderer forgetting the call re-opens it.
+        let stored = c.agents[0]
+            .result_preview
+            .as_deref()
+            .expect("a hostile preview is still shown, just neutralised");
+        assert!(
+            !stored.chars().any(char::is_control),
+            "a control character survived into retained card state: {stored:?}"
+        );
+        assert!(
+            stored.contains("\\u{1b}") && stored.contains("\\r") && stored.contains("\\u{7}"),
+            "escapes must survive as literal text, not as terminal commands: {stored:?}"
+        );
+        assert!(
+            !stored.contains(secret) && stored.contains("[REDACTED"),
+            "the shared ui_safe_text gate must redact credential shapes: {stored:?}"
+        );
+        assert!(
+            stored.contains("gotcha") && stored.contains("tail"),
+            "the benign text must survive intact: {stored:?}"
+        );
+
+        let lines = render_workflow_run(&c, width, &theme, 0);
+        for line in &lines {
+            for span in &line.spans {
+                assert!(
+                    !span.content.chars().any(char::is_control),
+                    "a control character reached a rendered span: {:?}",
+                    span.content
+                );
+            }
+            assert!(line_width(line) <= width, "row exceeded width: {line:?}");
+        }
+        let text = plain(lines);
+        assert!(!text.contains('\u{1b}') && !text.contains('\u{7}') && !text.contains('\r'));
+        assert!(!text.contains(secret));
+        assert!(
+            text.contains("gotcha"),
+            "the benign text still shows:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_long_result_preview_is_truncated_to_the_available_width() {
+        let theme = Theme::dark();
+        let long = "x".repeat(core_workflow::events::PREVIEW_MAX);
+        let c = preview_card(Some(&long));
+
+        // From "comfortably wide" down to "a phone in portrait", the phase box stays rectangular:
+        // the preview is budgeted against the width its own sub-line will actually be fit to.
+        // (The run header/totals lines are NOT width-fit — that is pre-existing and untouched here,
+        // so this pins the box interior, which is where the preview lands.)
+        let mut boxed_widths = 0;
+        for width in [120u16, 78, 60, 40, 30, 20, 14, 8] {
+            let lines = render_workflow_run(&c, width, &theme, 0);
+            for line in &lines {
+                let first = line.spans.first().and_then(|s| s.content.chars().next());
+                let in_box = matches!(first, Some('\u{2502}' | '\u{256d}' | '\u{2570}'));
+                if in_box {
+                    boxed_widths += 1;
+                }
+                // Below width 24 `render_workflow_run` drops the boxes for the flat list, whose
+                // rows were never width-fit; the preview sub-line still has to hold its own budget.
+                let is_preview = line.spans.iter().any(|s| s.content.contains('\u{23bf}'));
+                if in_box || is_preview {
+                    assert!(
+                        line_width(line) <= width,
+                        "width {width}: row exceeded it: {line:?}"
+                    );
+                }
+            }
+        }
+        assert!(boxed_widths > 0, "the boxed layout was never exercised");
+
+        // At a usable width the excerpt is present, cut, and ellipsized rather than wrapped.
+        let text = plain(render_workflow_run(&c, 40, &theme, 0));
+        let preview_row = text
+            .lines()
+            .find(|line| line.contains('\u{23bf}'))
+            .expect("a 40-column terminal still shows an excerpt");
+        assert!(
+            preview_row.contains('\u{2026}'),
+            "a 400-char preview must be cut with `…`: {preview_row:?}"
+        );
+        assert!(
+            !preview_row.contains(&"x".repeat(40)),
+            "the full preview leaked into a 40-column row: {preview_row:?}"
+        );
+
+        // Too narrow to say anything (12 columns leaves 7 for text): the sub-line disappears
+        // entirely instead of drawing a connector with a bare ellipsis hanging off it.
+        let narrow = plain(render_workflow_run(&c, 12, &theme, 0));
+        assert!(
+            !narrow.contains('\u{23bf}'),
+            "a stray connector survived at width 12:\n{narrow}"
+        );
+    }
+
+    /// The ungrouped flat-list fallback has no phase box to fit its rows, so the preview sub-line
+    /// has to hold the width budget on its own.
+    #[test]
+    fn a_preview_fits_the_width_in_the_ungrouped_flat_list_fallback() {
+        let theme = Theme::dark();
+        let mut c = WorkflowRunCard::new("wf_flat", "audit");
+        c.ingest(ProgressEvent::AgentFinished {
+            index: 0,
+            label: "scan".into(),
+            state: WorkflowState::Done,
+            tokens: 0,
+            tool_calls: 0,
+            duration_ms: 10,
+            result_preview: Some("y".repeat(core_workflow::events::PREVIEW_MAX)),
+            last_tool_summary: None,
+            error: None,
+        });
+        assert!(c.phases.is_empty(), "this is the flat-list fallback");
+        for width in [120u16, 78, 40, 30, 20, 14] {
+            let text = plain(render_workflow_run(&c, width, &theme, 0));
+            for row in text.lines().filter(|row| row.contains('\u{23bf}')) {
+                let cols: u16 = row.chars().map(crate::tui::char_width).sum();
+                assert!(
+                    cols <= width,
+                    "width {width}: preview row was {cols}: {row:?}"
+                );
+            }
+        }
     }
 
     /// Twenty agents at concurrency six: the queued fourteen are declared before their permit is
