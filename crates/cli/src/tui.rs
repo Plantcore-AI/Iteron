@@ -942,6 +942,8 @@ struct App {
     mouse_capture: mouse_capture::State,
     /// Truthful projection of the live keymap/Vim state; updated before routing each key.
     keymap_status: String,
+    /// Char index the visual selection is anchored at; `None` outside visual mode.
+    vim_anchor: Option<usize>,
     // live-accumulating current assistant paragraph (so streamed text coalesces into one line)
     cur_text: String,
     cur_text_revision: u64,
@@ -1077,6 +1079,7 @@ impl App {
             quit: false,
             mouse_capture: mouse_capture::State::default(),
             keymap_status: "keys:standard".into(),
+            vim_anchor: None,
             cur_text: String::new(),
             cur_text_revision: 0,
             cur_doc_revision: 0,
@@ -3084,6 +3087,7 @@ fn update_keymap_status(app: &mut App, keymap: &keymap::Keymap, vim: &keymap::Vi
         (keymap::Mode::Standard, _) => "keys:standard",
         (keymap::Mode::Vim, keymap::VimState::Insert) => "vim:insert",
         (keymap::Mode::Vim, keymap::VimState::Normal) => "vim:normal",
+        (keymap::Mode::Vim, keymap::VimState::Visual) => "vim:visual",
     }
     .into();
 }
@@ -3107,6 +3111,40 @@ fn apply_vim_action(app: &mut App, action: keymap::VimAction) {
         keymap::VimAction::HistoryPrevious if !app.running => app.editor.history_prev(),
         keymap::VimAction::HistoryNext if !app.running => app.editor.history_next(),
         keymap::VimAction::HistoryPrevious | keymap::VimAction::HistoryNext => {}
+        keymap::VimAction::EnterVisual => app.vim_anchor = Some(app.editor.cursor()),
+        keymap::VimAction::LeaveVisual => app.vim_anchor = None,
+        keymap::VimAction::ExtendSelection(motion) => {
+            // The anchor stays put; only the free end moves. Entering visual mode always sets the
+            // anchor, so a missing one means the state machine and the frontend disagree -- anchor
+            // here rather than move a selection that does not exist.
+            if app.vim_anchor.is_none() {
+                app.vim_anchor = Some(app.editor.cursor());
+            }
+            match motion {
+                keymap::VimMotion::Left => app.editor.left(),
+                keymap::VimMotion::Right => app.editor.right(),
+                keymap::VimMotion::Home => app.editor.home(),
+                keymap::VimMotion::End => app.editor.end(),
+                keymap::VimMotion::WordLeft => app.editor.word_left(),
+                keymap::VimMotion::WordRight => app.editor.word_right(),
+            }
+        }
+        keymap::VimAction::DeleteSelection => {
+            if let Some(anchor) = app.vim_anchor.take() {
+                app.editor.delete_span(anchor, app.editor.cursor());
+            }
+        }
+        keymap::VimAction::YankSelection => {
+            if let Some(anchor) = app.vim_anchor.take() {
+                let text = app.editor.span(anchor, app.editor.cursor());
+                if !text.is_empty() {
+                    app.note(
+                        block::NoticeLevel::Info,
+                        format!("yanked {} characters", text.chars().count()),
+                    );
+                }
+            }
+        }
     }
 }
 
