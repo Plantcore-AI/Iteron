@@ -184,6 +184,8 @@
 /crates/record/src/lib.rs @fr0m-scratch
 /crates/record/src/redact.rs @fr0m-scratch
 /crates/record/src/session.rs @fr0m-scratch
+/crates/record/src/tunables.rs @fr0m-scratch
+/crates/record/src/tunables_tests.rs @fr0m-scratch
 /crates/tools/src/edit.rs @fr0m-scratch
 /crates/tools/src/fs_tools.rs @fr0m-scratch
 /crates/tools/src/fs_tools_tests.rs @fr0m-scratch

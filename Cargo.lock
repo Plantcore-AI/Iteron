@@ -536,6 +536,7 @@ version = "0.0.1"
 dependencies = [
  "core-obs",
  "core-protocol",
+ "core-tunables",
  "hex",
  "libc",
  "serde",

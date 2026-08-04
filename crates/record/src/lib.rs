@@ -33,6 +33,51 @@ pub use session::{
     load_forked_scoped, meta, meta_with_pricing, most_recent, reindex, replay_run_timed,
 };
 
+/// Explicit policy for admitting records created before immutable tunables snapshots.
+pub type LegacyTunablesPolicy = session::tunables::LegacyTunablesPolicy;
+/// Result of comparing a record's immutable genesis identity with the current resolved set.
+pub type TunablesCompatibility = session::tunables::TunablesCompatibility;
+/// Typed fail-closed snapshot/placement/compatibility error.
+pub type TunablesSnapshotError = session::tunables::TunablesSnapshotError;
+
+/// Project an atomically accepted resolver result into its bounded durable identity.
+pub fn snapshot_from_resolved(
+    resolved: &core_tunables::ResolvedTunableSet,
+) -> Result<core_protocol::RunGenesisTunablesSnapshot, TunablesSnapshotError> {
+    session::tunables::snapshot_from_resolved(resolved)
+}
+
+/// Validate bounds, state invariants, and the recomputed canonical self-digest.
+pub fn validate_tunables_snapshot(
+    snapshot: &core_protocol::RunGenesisTunablesSnapshot,
+) -> Result<(), TunablesSnapshotError> {
+    session::tunables::validate_tunables_snapshot(snapshot)
+}
+
+/// Checked fork convenience retained at the crate root.
+pub fn fork_with_tunables_snapshot(
+    runs_dir: &Path,
+    parent: &RunId,
+    at: Seq,
+    tenant: &TenantId,
+    expected: &core_protocol::RunGenesisTunablesSnapshot,
+    legacy: LegacyTunablesPolicy,
+) -> Result<(RunId, TunablesCompatibility), RecordError> {
+    session::fork_with_tunables_snapshot(runs_dir, parent, at, tenant, expected, legacy)
+}
+
+/// Resolver-typed convenience wrapper for [`fork_with_tunables_snapshot`].
+pub fn fork_with_resolved_tunables(
+    runs_dir: &Path,
+    parent: &RunId,
+    at: Seq,
+    tenant: &TenantId,
+    resolved: &core_tunables::ResolvedTunableSet,
+    legacy: LegacyTunablesPolicy,
+) -> Result<(RunId, TunablesCompatibility), RecordError> {
+    session::fork_with_resolved_tunables(runs_dir, parent, at, tenant, resolved, legacy)
+}
+
 use core_protocol::{
     Event, EventKind, MAX_AGENT_DEFINITION_TAG_BYTES, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, RunId,
     Seq, TenantId,
@@ -194,6 +239,8 @@ pub enum RecordError {
         pinned: String,
         actual: String,
     },
+    #[error(transparent)]
+    TunablesSnapshot(#[from] TunablesSnapshotError),
 }
 
 /// One line of the rollout. `prev` chains to the previous line's `hash`; `hash` covers
@@ -367,6 +414,9 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
         return Err(RecordError::InvalidEventSchema {
             reason: "agent_definition_tag must be bounded, non-blank, control-free, and credential-free",
         });
+    }
+    if let EventKind::TunablesSnapshot { snapshot, .. } = &event.kind {
+        validate_tunables_snapshot(snapshot)?;
     }
     Ok(())
 }
@@ -717,8 +767,103 @@ impl Rollout {
     /// Open an existing rollout without creating an empty record when the requested run is absent.
     /// Resume frontends use this before replay so the writer lock covers route/message recovery as
     /// well as every later append, closing the read-before-lock race with another process.
+    /// This legacy-compatible entry point validates any recorded snapshot internally but does not
+    /// compare it with a current resolver result. A frontend that will execute resumed work must
+    /// use [`Self::open_existing_with_resolved_tunables`] (or the explicitly snapshot-checked form).
     pub fn open_existing(dir: &Path, run: &RunId, tenant: TenantId) -> Result<Self, RecordError> {
         Self::open_with_create(dir, run, tenant, false)
+    }
+
+    /// Open an existing rollout and prove that its immutable genesis snapshot is exactly the
+    /// supplied atomic resolver result. Legacy admission is never implicit: the caller must choose
+    /// a [`LegacyTunablesPolicy`] and receives the weaker result as a distinct compatibility state.
+    pub fn open_existing_with_tunables_snapshot(
+        dir: &Path,
+        run: &RunId,
+        tenant: TenantId,
+        expected: &core_protocol::RunGenesisTunablesSnapshot,
+        legacy: LegacyTunablesPolicy,
+    ) -> Result<(Self, TunablesCompatibility), RecordError> {
+        let rollout = Self::open_existing(dir, run, tenant)?;
+        // `open_existing` already performed the mandatory bounded tail scan while acquiring the
+        // writer lock. Its schema-frozen return shape cannot expose a new genesis projection, so
+        // compare through one bounded replay under that same lock rather than duplicating the
+        // durability scanner and letting the two implementations drift.
+        let events = replay(rollout.path())?;
+        let recorded = session::tunables::snapshot_from_events(&events)?;
+        let compatibility =
+            session::tunables::check_compatibility(recorded.as_ref(), expected, legacy)?;
+        Ok((rollout, compatibility))
+    }
+
+    /// Resolver-typed convenience wrapper for [`Self::open_existing_with_tunables_snapshot`].
+    pub fn open_existing_with_resolved_tunables(
+        dir: &Path,
+        run: &RunId,
+        tenant: TenantId,
+        resolved: &core_tunables::ResolvedTunableSet,
+        legacy: LegacyTunablesPolicy,
+    ) -> Result<(Self, TunablesCompatibility), RecordError> {
+        let expected = snapshot_from_resolved(resolved)?;
+        Self::open_existing_with_tunables_snapshot(dir, run, tenant, &expected, legacy)
+    }
+
+    /// Durably append a fresh root `RunStart` and its immutable resolved-set companion without an
+    /// opportunity for another event to interleave. Success means both lines passed their fsync
+    /// barriers. A crash or I/O error between them leaves an unpinned record that every checked
+    /// operation rejects under [`LegacyTunablesPolicy::RejectUnpinned`]; no migration is invented.
+    pub fn append_fresh_genesis_with_tunables(
+        &mut self,
+        run_start: &Event,
+        resolved: &core_tunables::ResolvedTunableSet,
+    ) -> Result<(Seq, Seq), RecordError> {
+        if !matches!(
+            &run_start.kind,
+            EventKind::RunStart {
+                parent_run: None,
+                forked_at: None,
+                parent_hash_at_seq: None,
+                ..
+            }
+        ) {
+            return Err(TunablesSnapshotError::GenesisOrder {
+                reason: "fresh tunables genesis requires a root run_start",
+            }
+            .into());
+        }
+        let snapshot = snapshot_from_resolved(resolved)?;
+        self.append_genesis_snapshot(run_start, snapshot, None)
+    }
+
+    pub(crate) fn append_genesis_snapshot(
+        &mut self,
+        run_start: &Event,
+        snapshot: core_protocol::RunGenesisTunablesSnapshot,
+        inherited_from: Option<core_protocol::RunGenesisTunablesInheritance>,
+    ) -> Result<(Seq, Seq), RecordError> {
+        if !self.is_empty() || !matches!(&run_start.kind, EventKind::RunStart { .. }) {
+            return Err(TunablesSnapshotError::GenesisOrder {
+                reason: "genesis append requires an empty rollout and run_start",
+            }
+            .into());
+        }
+        validate_tunables_snapshot(&snapshot)?;
+        let snapshot_event = Event {
+            // `append` owns the authoritative physical sequence and stamps this placeholder.
+            seq: Seq::ZERO,
+            turn: run_start.turn,
+            kind: EventKind::TunablesSnapshot {
+                version: core_protocol::RunGenesisTunablesVersion::V1,
+                snapshot,
+                inherited_from,
+            },
+        };
+        let mut genesis = session::tunables::GenesisTunablesState::default();
+        genesis.observe(0, &run_start.kind)?;
+        genesis.observe(1, &snapshot_event.kind)?;
+        let start_seq = self.append(run_start)?;
+        let snapshot_seq = self.append(&snapshot_event)?;
+        Ok((start_seq, snapshot_seq))
     }
 
     fn open_with_create(
@@ -1052,6 +1197,8 @@ impl Drop for Rollout {
 /// Replay: read a rollout back as its event stream, verifying the hash chain as it goes.
 /// This is promise (a)+(b): the recorded decisions and outputs replay exactly. A broken
 /// chain is an error, not a warning — the record is the audit.
+/// Snapshot self-integrity is validated, but authoritative physical placement and current resolved
+/// values are checked only by [`replay_with_resolved_tunables`].
 /// One replayed event together with the segment offset its chain line carried (#102).
 ///
 /// `ts_us` is `None` for a line written before the field existed. A consumer MUST treat that as
@@ -1172,6 +1319,33 @@ pub fn replay(path: &Path) -> Result<Vec<Event>, RecordError> {
         Ok(())
     })?;
     Ok(events)
+}
+
+/// Hash-verified replay plus an exact immutable tunables compatibility check.
+///
+/// This deliberately has a distinct name from [`replay`]; callers that need parameter identity
+/// must opt into the checked contract and cannot accidentally treat ordinary legacy replay as an
+/// exact match.
+pub fn replay_with_tunables_snapshot(
+    path: &Path,
+    expected: &core_protocol::RunGenesisTunablesSnapshot,
+    legacy: LegacyTunablesPolicy,
+) -> Result<(Vec<Event>, TunablesCompatibility), RecordError> {
+    let events = replay(path)?;
+    let recorded = session::tunables::snapshot_from_events(&events)?;
+    let compatibility =
+        session::tunables::check_compatibility(recorded.as_ref(), expected, legacy)?;
+    Ok((events, compatibility))
+}
+
+/// Resolver-typed convenience wrapper for [`replay_with_tunables_snapshot`].
+pub fn replay_with_resolved_tunables(
+    path: &Path,
+    resolved: &core_tunables::ResolvedTunableSet,
+    legacy: LegacyTunablesPolicy,
+) -> Result<(Vec<Event>, TunablesCompatibility), RecordError> {
+    let expected = snapshot_from_resolved(resolved)?;
+    replay_with_tunables_snapshot(path, &expected, legacy)
 }
 
 #[cfg(test)]

@@ -56,6 +56,75 @@ pub use tool::{Capability, Purity, ToolResult, ToolSpec, ToolUse};
 pub use trust::Trust;
 pub use wire::{EqEnvelope, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope};
 
+/// Maximum number of semantic families admitted in one v1 genesis snapshot.
+pub const MAX_RUN_GENESIS_TUNABLE_ENTRIES: usize = 160;
+/// Maximum UTF-8 bytes in a snapshot's stable registry/family/semantic identifiers.
+pub const MAX_RUN_GENESIS_TUNABLE_ID_BYTES: usize = 256;
+/// Canonical encoding committed by [`RunGenesisTunablesSnapshot::snapshot_digest_sha256`].
+pub const RUN_GENESIS_TUNABLES_CANONICALIZATION: &str = "core-run-genesis-tunables-json-v1";
+
+/// Schema version for [`EventKind::TunablesSnapshot`](crate::EventKind::TunablesSnapshot).
+/// A future format must use a new top-level event tag so an older reader can skip it safely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunGenesisTunablesVersion {
+    V1,
+}
+
+/// The only entry states an atomically successful resolver result may persist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunGenesisTunableState {
+    Effective,
+    Inactive,
+    Unavailable,
+}
+
+/// Bounded per-family identity and resolution state. Effective values and per-family value hashes
+/// remain outside the protocol: raw hashes of low-entropy booleans, paths, providers, or model ids
+/// would be dictionary-enumerable. Exact comparison uses the aggregate resolver commitments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunGenesisTunableEntry {
+    pub ordinal: u16,
+    pub family_id: String,
+    pub semantic_key: String,
+    pub state: RunGenesisTunableState,
+}
+
+/// Immutable identity of the complete, atomically resolved set admitted for a run.
+///
+/// `snapshot_digest_sha256` is recomputed at record read/write boundaries from every preceding
+/// field and all entries. The three resolver digests retain their distinct meanings: frozen input,
+/// effective values, and full resolution/provenance report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunGenesisTunablesSnapshot {
+    pub version: RunGenesisTunablesVersion,
+    pub canonicalization: String,
+    pub resolution_schema_version: u16,
+    pub registry_id: String,
+    pub registry_schema_version: u16,
+    pub family_schema_version: u16,
+    pub registry_revision: u16,
+    pub registry_digest_sha256: String,
+    pub input_digest_sha256: String,
+    pub effective_digest_sha256: String,
+    pub resolution_digest_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_digest_sha256: Option<String>,
+    pub entries: Vec<RunGenesisTunableEntry>,
+    pub snapshot_digest_sha256: String,
+}
+
+/// Child-genesis binding to the exact parent snapshot inherited across a fork or rewind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunGenesisTunablesInheritance {
+    pub parent_run: String,
+    pub parent_snapshot_digest_sha256: String,
+}
+
 /// The image media types the neutral SQ contract admits.
 ///
 /// SVG is intentionally absent: it is active document content rather than a raster image block.

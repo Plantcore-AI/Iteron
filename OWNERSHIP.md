@@ -28,7 +28,7 @@ Core Code has one human Owner/Project Lead and a non-fixed number of human maint
 | `kernel-effects` — Kernel effects | open | critical | Open | Open | `crates/kernel/src/effect_admission.rs`<br>`crates/kernel/src/effect_boundary_tests.rs`<br>`crates/kernel/src/effect_class.rs`<br>`crates/kernel/src/effect_journal.rs`<br>`crates/kernel/src/effects.rs` |
 | `telemetry-export` — Telemetry export sink | open | critical | Open | Open | `crates/cli/src/runtime/telemetry.rs` |
 | `kernel-hooks` — Runtime lifecycle hooks | open | critical | Open | Open | `crates/cli/src/runtime/hooks.rs` |
-| `record-core` — Record core | open | critical | Open | Open | `crates/record/Cargo.toml`<br>`crates/record/src/checkpoint.rs`<br>`crates/record/src/lib.rs`<br>`crates/record/src/redact.rs`<br>`crates/record/tests/**` |
+| `record-core` — Record core | open | critical | Open | Open | `crates/record/Cargo.toml`<br>`crates/record/src/checkpoint.rs`<br>`crates/record/src/lib.rs`<br>`crates/record/src/redact.rs`<br>`crates/record/src/tunables.rs`<br>`crates/record/src/tunables_tests.rs`<br>`crates/record/tests/**` |
 | `record-sessions` — Record sessions | open | elevated | Open | Open | `crates/record/src/cache_io.rs`<br>`crates/record/src/session.rs` |
 | `observability` — Observability | active | elevated | Jamal Cao (`@fr0m-scratch`) | Open | `crates/obs/**` |
 | `scheduler` — Scheduler | open | elevated | Open | Open | `crates/sched/**` |

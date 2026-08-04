@@ -18,6 +18,9 @@
 //! detects an altered parent prefix rather than trusting it. Unknown event kinds are tolerated
 //! on replay via `EventKind::Unknown` (R5-review Risk 6), so a cross-version scan does not fail.
 
+#[path = "tunables.rs"]
+pub mod tunables;
+
 use crate::{
     RecordError, Rollout, TimedEvent, ensure_tenant, validate_event_bounds, validated_run_path,
 };
@@ -396,6 +399,7 @@ fn read_chain_with_limits(
     let mut expected_seq = 0u64;
     let mut tenant: Option<TenantId> = None;
     let mut physical_bytes = 0u64;
+    let mut genesis_tunables = tunables::GenesisTunablesState::default();
     // Tolerate a torn trailing line from a crash mid-append (code review): the resume path routes
     // through here, so a strict read would make a crashed run unresumable — exactly the tolerance
     // scan_tail already gives the append path. A partial FINAL line (no trailing newline) is dropped.
@@ -431,6 +435,7 @@ fn read_chain_with_limits(
         // writer's kinds do not fail the scan.
         let event: Event = serde_json::from_value(cl.payload)?;
         validate_event_bounds(&event)?;
+        genesis_tunables.observe(cl.seq, &event.kind)?;
         prev = cl.hash.clone();
         expected_seq = expected_seq.saturating_add(1);
         out.push(ReadLine {
@@ -1498,12 +1503,60 @@ fn mint_run_id() -> RunId {
 /// genesis pins `parent_hash_at_seq` (the parent chain's hash at `at`) so the reference is
 /// tamper-evident on load (ADR-008 §4, R5-review Risk 3). The child inherits the parent's session
 /// config (cwd/model/effort/config_digest), exact route at the branch point, and the given `tenant`.
+/// If the parent has a valid tunables snapshot this legacy-compatible API preserves and binds it,
+/// but does not compare it with a current resolved set. Execution frontends must use
+/// [`fork_with_resolved_tunables`] (or the explicitly snapshot-checked form).
 pub fn fork(
     runs_dir: &Path,
     parent: &RunId,
     at: Seq,
     tenant: &TenantId,
 ) -> Result<RunId, RecordError> {
+    Ok(fork_internal(runs_dir, parent, at, tenant, None)?.0)
+}
+
+/// Checked fork/rewind. Exact current compatibility is established before a child file is
+/// created; a legacy parent requires an explicit policy and produces a legacy child without
+/// inventing a migration or a snapshot.
+pub fn fork_with_tunables_snapshot(
+    runs_dir: &Path,
+    parent: &RunId,
+    at: Seq,
+    tenant: &TenantId,
+    expected: &core_protocol::RunGenesisTunablesSnapshot,
+    legacy: tunables::LegacyTunablesPolicy,
+) -> Result<(RunId, tunables::TunablesCompatibility), RecordError> {
+    let (child, compatibility) =
+        fork_internal(runs_dir, parent, at, tenant, Some((expected, legacy)))?;
+    Ok((
+        child,
+        compatibility.expect("checked fork always computes a compatibility result"),
+    ))
+}
+
+/// Resolver-typed convenience wrapper for [`fork_with_tunables_snapshot`].
+pub fn fork_with_resolved_tunables(
+    runs_dir: &Path,
+    parent: &RunId,
+    at: Seq,
+    tenant: &TenantId,
+    resolved: &core_tunables::ResolvedTunableSet,
+    legacy: tunables::LegacyTunablesPolicy,
+) -> Result<(RunId, tunables::TunablesCompatibility), RecordError> {
+    let expected = tunables::snapshot_from_resolved(resolved)?;
+    fork_with_tunables_snapshot(runs_dir, parent, at, tenant, &expected, legacy)
+}
+
+fn fork_internal(
+    runs_dir: &Path,
+    parent: &RunId,
+    at: Seq,
+    tenant: &TenantId,
+    expected: Option<(
+        &core_protocol::RunGenesisTunablesSnapshot,
+        tunables::LegacyTunablesPolicy,
+    )>,
+) -> Result<(RunId, Option<tunables::TunablesCompatibility>), RecordError> {
     let parent_path = rollout_path(runs_dir, parent)?;
     // Read + verify the parent chain exactly once under the same cumulative budget later used for
     // its ancestors. The verified lines are passed into logical expansion rather than reopened.
@@ -1512,6 +1565,15 @@ pub fn fork(
     if let Some(first) = parent_lines.first() {
         ensure_tenant(tenant, &first.tenant.0, first.seq.0)?;
     }
+    let parent_snapshot = parent_lines.iter().find_map(|line| match &line.event.kind {
+        EventKind::TunablesSnapshot { snapshot, .. } => Some(snapshot.clone()),
+        _ => None,
+    });
+    let compatibility = expected
+        .map(|(expected, legacy)| {
+            tunables::check_compatibility(parent_snapshot.as_ref(), expected, legacy)
+        })
+        .transpose()?;
     let pinned = parent_lines
         .iter()
         .find(|l| l.seq == at)
@@ -1649,7 +1711,12 @@ pub fn fork(
             max_usd,
         },
     };
-    rollout.append(&genesis)?;
+    if let Some(snapshot) = parent_snapshot {
+        let inherited = tunables::inherited_from(&parent.0, &snapshot);
+        rollout.append_genesis_snapshot(&genesis, snapshot, Some(inherited))?;
+    } else {
+        rollout.append(&genesis)?;
+    }
     if let Some(max_microusd) = max_microusd {
         rollout.append(&Event {
             seq: Seq::ZERO,
@@ -1692,7 +1759,7 @@ pub fn fork(
             },
         })?;
     }
-    Ok(child)
+    Ok((child, compatibility))
 }
 
 const MAX_FORK_DEPTH: usize = 256;
