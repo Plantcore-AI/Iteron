@@ -147,7 +147,7 @@
     },
     {
       "id": "record.rollout",
-      "current_version": 7,
+      "current_version": 8,
       "version_field": null,
       "fixtures": [
         {
@@ -189,6 +189,11 @@
           "path": "governance/schema-compat/fixtures/record/rollout-v7.jsonl",
           "format": "jsonl",
           "schema_version": 7
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-tunables-snapshot-v8.jsonl",
+          "format": "jsonl",
+          "schema_version": 8
         }
       ],
       "fields": [
@@ -923,7 +928,7 @@
     },
     {
       "id": "record.event-envelope",
-      "current_version": 3,
+      "current_version": 4,
       "version_field": null,
       "fixtures": [
         {
@@ -940,6 +945,11 @@
           "path": "governance/schema-compat/fixtures/record/event-envelope-v3.jsonl",
           "format": "jsonl",
           "schema_version": 3
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-envelope-tunables-snapshot-v4.json",
+          "format": "json",
+          "schema_version": 4
         }
       ],
       "fields": [
@@ -1663,6 +1673,42 @@
         },
         {
           "name": "parent_run",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.tunables_snapshot",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "tunables_snapshot"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-tunables-snapshot-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "inherited_from",
+          "introduced_release": 1,
+          "optional": true
+        },
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "snapshot",
+          "introduced_release": 1
+        },
+        {
+          "name": "version",
           "introduced_release": 1
         }
       ],
@@ -2437,6 +2483,132 @@
         { "name": "kind", "introduced_release": 1 },
         { "name": "parent_run_id", "introduced_release": 1 },
         { "name": "sub_run", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.run-genesis-tunable-entry",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-run-genesis-tunable-entry-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "family_id",
+          "introduced_release": 1
+        },
+        {
+          "name": "ordinal",
+          "introduced_release": 1
+        },
+        {
+          "name": "semantic_key",
+          "introduced_release": 1
+        },
+        {
+          "name": "state",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.run-genesis-tunables-inheritance",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-run-genesis-tunables-inheritance-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "parent_run",
+          "introduced_release": 1
+        },
+        {
+          "name": "parent_snapshot_digest_sha256",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.run-genesis-tunables-snapshot",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-run-genesis-tunables-snapshot-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "canonicalization",
+          "introduced_release": 1
+        },
+        {
+          "name": "effective_digest_sha256",
+          "introduced_release": 1
+        },
+        {
+          "name": "entries",
+          "introduced_release": 1
+        },
+        {
+          "name": "family_schema_version",
+          "introduced_release": 1
+        },
+        {
+          "name": "input_digest_sha256",
+          "introduced_release": 1
+        },
+        {
+          "name": "profile_digest_sha256",
+          "introduced_release": 1,
+          "optional": true
+        },
+        {
+          "name": "registry_digest_sha256",
+          "introduced_release": 1
+        },
+        {
+          "name": "registry_id",
+          "introduced_release": 1
+        },
+        {
+          "name": "registry_revision",
+          "introduced_release": 1
+        },
+        {
+          "name": "registry_schema_version",
+          "introduced_release": 1
+        },
+        {
+          "name": "resolution_digest_sha256",
+          "introduced_release": 1
+        },
+        {
+          "name": "resolution_schema_version",
+          "introduced_release": 1
+        },
+        {
+          "name": "snapshot_digest_sha256",
+          "introduced_release": 1
+        },
+        {
+          "name": "version",
+          "introduced_release": 1
+        }
       ],
       "compatibility_shims": []
     },

@@ -265,6 +265,9 @@
         { "kind": "file", "path": "crates/record/src/checkpoint.rs" },
         { "kind": "file", "path": "crates/record/src/lib.rs" },
         { "kind": "file", "path": "crates/record/src/redact.rs" },
+        { "kind": "file", "path": "crates/record/src/resolved_fixture.rs" },
+        { "kind": "file", "path": "crates/record/src/tunables.rs" },
+        { "kind": "file", "path": "crates/record/src/tunables_tests.rs" },
         { "kind": "tree", "path": "crates/record/tests" }
       ],
       "contracts": ["append-only-record", "hash-chain", "torn-tail-recovery", "secret-redaction"],
@@ -1246,7 +1249,7 @@
         "build": []
       },
       "core-record": {
-        "normal": ["core-obs", "core-protocol"],
+        "normal": ["core-obs", "core-protocol", "core-tunables"],
         "dev": [],
         "build": []
       },

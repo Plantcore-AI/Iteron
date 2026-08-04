@@ -174,6 +174,19 @@ pub fn redact_event(event: &Event) -> Event {
             agent_definition_tag: agent_definition_tag.as_deref().map(scrub_route_identifier),
             max_usd: *max_usd,
         },
+        // Snapshot identifiers have already passed the record boundary's bounded machine-id and
+        // lowercase-digest checks. Mutating one here would invalidate its canonical self-digest
+        // and make an otherwise valid run impossible to resume, so preserve the typed identity
+        // exactly. No configured values or free-form evidence are carried by this event.
+        EventKind::TunablesSnapshot {
+            version,
+            snapshot,
+            inherited_from,
+        } => EventKind::TunablesSnapshot {
+            version: *version,
+            snapshot: snapshot.clone(),
+            inherited_from: inherited_from.clone(),
+        },
         EventKind::ModelSelected {
             provider_id,
             model_id,

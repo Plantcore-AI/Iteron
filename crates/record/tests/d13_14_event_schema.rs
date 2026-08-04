@@ -1,7 +1,8 @@
 use core_protocol::{
     Block, Budget, CostAttribution, CostProjection, CostProjectionIdentity,
     DurableEnvironmentContext, DurableInstructionContext, Event, EventKind, ImageContent, Message,
-    Op, PermissionRules, PricingRoute, ProviderState, RateCard, SignedRateCard, TokenRateCard,
+    Op, PermissionRules, PricingRoute, ProviderState, RateCard, RunGenesisTunableEntry,
+    RunGenesisTunablesInheritance, RunGenesisTunablesSnapshot, SignedRateCard, TokenRateCard,
     ToolResult, ToolUse, Usage, WorkflowCostEvidence, WorkflowEvent, WorkflowMetrics,
     WorkflowTaskEvidence,
 };
@@ -20,7 +21,7 @@ const MAX_CONTRACT_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_OBJECTS: usize = 4096;
 
-const WRITABLE_EVENT_TAGS: [&str; 32] = [
+const WRITABLE_EVENT_TAGS: [&str; 33] = [
     "approval",
     "artifact_produced",
     "checkpoint",
@@ -48,6 +49,7 @@ const WRITABLE_EVENT_TAGS: [&str; 32] = [
     "thinking",
     "tool_done",
     "tool_ready",
+    "tunables_snapshot",
     "turn_end",
     "turn_start",
     "usd_ceiling_changed",
@@ -77,7 +79,7 @@ const COST_ATTRIBUTION_TAGS: [&str; 2] = ["direct_subagent", "workflow_child"];
 
 // `ArtifactRef` and its `Provenance` became durable with `artifact_produced` (#78):
 // making a type reachable from the record makes its shape a published surface.
-const NAMED_SURFACE_IDS: [&str; 21] = [
+const NAMED_SURFACE_IDS: [&str; 24] = [
     "record.named.artifact-ref",
     "record.named.budget",
     "record.named.cost-projection",
@@ -91,6 +93,9 @@ const NAMED_SURFACE_IDS: [&str; 21] = [
     "record.named.provenance",
     "record.named.provider-state",
     "record.named.rate-card",
+    "record.named.run-genesis-tunable-entry",
+    "record.named.run-genesis-tunables-inheritance",
+    "record.named.run-genesis-tunables-snapshot",
     "record.named.signed-rate-card",
     "record.named.token-rate-card",
     "record.named.tool-result",
@@ -569,6 +574,15 @@ fn assert_named_surface_corpus(
                 typed_named_fixture_wires::<TokenRateCard>(root, surface)
             }
             "record.named.rate-card" => typed_named_fixture_wires::<RateCard>(root, surface),
+            "record.named.run-genesis-tunable-entry" => {
+                typed_named_fixture_wires::<RunGenesisTunableEntry>(root, surface)
+            }
+            "record.named.run-genesis-tunables-inheritance" => {
+                typed_named_fixture_wires::<RunGenesisTunablesInheritance>(root, surface)
+            }
+            "record.named.run-genesis-tunables-snapshot" => {
+                typed_named_fixture_wires::<RunGenesisTunablesSnapshot>(root, surface)
+            }
             "record.named.signed-rate-card" => {
                 typed_named_fixture_wires::<SignedRateCard>(root, surface)
             }
@@ -827,6 +841,7 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             agent_definition_tag: _,
             max_usd: _,
         } => "run_start",
+        EventKind::TunablesSnapshot { .. } => "tunables_snapshot",
         EventKind::ModelSelected {
             provider_id: _,
             model_id: _,
@@ -1227,6 +1242,31 @@ fn d13_14_event_schema_corpora_are_exact_exhaustive_and_replayable() {
                         "record.named.durable-environment-context",
                         environment,
                     ),
+                    EventKind::TunablesSnapshot {
+                        snapshot,
+                        inherited_from,
+                        ..
+                    } => {
+                        record_named(
+                            &mut named_wires,
+                            "record.named.run-genesis-tunables-snapshot",
+                            snapshot,
+                        );
+                        for entry in &snapshot.entries {
+                            record_named(
+                                &mut named_wires,
+                                "record.named.run-genesis-tunable-entry",
+                                entry,
+                            );
+                        }
+                        if let Some(inherited_from) = inherited_from {
+                            record_named(
+                                &mut named_wires,
+                                "record.named.run-genesis-tunables-inheritance",
+                                inherited_from,
+                            );
+                        }
+                    }
                     EventKind::RateCardBound { rate_card } => {
                         record_signed_rate_card(rate_card, &mut named_wires);
                     }
