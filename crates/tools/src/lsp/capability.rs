@@ -31,7 +31,11 @@ pub(super) struct FileStamp {
 impl FileStamp {
     pub(super) fn capture(file: &File) -> io::Result<Self> {
         let metadata = file.metadata()?;
-        if metadata.mode() & u32::from(libc::S_IFMT) != u32::from(libc::S_IFREG) {
+        // `metadata.is_file()` is exactly `mode & S_IFMT == S_IFREG`, and unlike the raw comparison
+        // it does not depend on the width of `libc::mode_t`, which is `u16` on macOS and `u32` on
+        // Linux -- the `u32::from` this replaces was required on one and a clippy error on the
+        // other.
+        if !metadata.is_file() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "source is not a regular file",

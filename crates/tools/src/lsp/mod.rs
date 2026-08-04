@@ -353,7 +353,12 @@ fn input_schema() -> Value {
     json!({
         "type":"object",
         "properties": {
-        "query": {"type":"string", "enum":["definition","references","hover"]},
+        // Not an `enum`: `schema::validate` accepts a closed keyword allowlist that does not
+        // include it, so declaring one makes `Registry::coding_agent` refuse to build at all. The
+        // three values are still the only ones accepted -- `parse_query_kind` rejects anything
+        // else as invalid arguments -- so this is where they are named, not where they are
+        // enforced.
+        "query": {"type":"string", "description":"One of: definition, references, hover."},
         "path": {"type":"string", "description":"Relative workspace source path."},
         "line": {"type":"integer", "description":"Zero-based line; validated against the source and LSP uinteger ceiling."},
         "character": {"type":"integer", "description":"Zero-based UTF-16 code-unit offset; validated against the source and LSP uinteger ceiling."},

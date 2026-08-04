@@ -45,10 +45,18 @@ fn active_work_and_forced_cleanup_share_one_user_visible_budget() {
 #[test]
 fn one_tool_schema_exposes_the_three_typed_queries() {
     let schema = input_schema();
-    assert_eq!(
-        schema["properties"]["query"]["enum"],
-        json!(["definition", "references", "hover"])
-    );
+    // The schema names the three queries in prose because the registry's keyword allowlist has no
+    // `enum`; the refusal of a fourth value is asserted against `parse_query_kind`, not here.
+    let described = schema["properties"]["query"]["description"]
+        .as_str()
+        .expect("query carries a description");
+    for query in ["definition", "references", "hover"] {
+        assert!(
+            described.contains(query),
+            "{query} is not named: {described}"
+        );
+    }
+    assert!(schema["properties"]["query"]["enum"].is_null());
     assert_eq!(
         schema["required"],
         json!(["query", "path", "line", "character"])
