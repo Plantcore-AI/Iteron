@@ -24,6 +24,7 @@ mod pagination;
 mod protocol_version;
 pub mod reconnect;
 pub mod supervisor;
+pub mod token;
 mod tool_catalog;
 mod tool_filter;
 
