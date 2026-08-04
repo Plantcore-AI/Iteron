@@ -5,6 +5,11 @@ is immutable for that runtime. User definitions live in `~/.core/agents/*.md`; r
 definitions live under `.core/agents/*.md`. Definitions below dependency/vendor directories are
 reported and stripped.
 
+The TUI's `/agents` view renders that exact runtime snapshot; it does not rescan either directory.
+Creating, editing, or removing a definition while a session is open therefore takes effect on the
+next run and cannot make the operator-facing catalog disagree with the definitions the current run
+can execute.
+
 ```markdown
 ---
 name: reviewer

@@ -28,7 +28,7 @@ rather than dispatching an incomplete operation.
 | `/resume` | List sessions and show resume guidance |
 | `/transcript [query]` | Open the fullscreen, bounded transcript search/view surface |
 | `/export [path]` | Background-export Markdown without overwriting (Linux anonymous-inode publication; fail-closed elsewhere) |
-| `/agents` | List discovered agent definitions |
+| `/agents` | List the current run's immutable agent-definition snapshot |
 | `/skills` | List discovered skills |
 | `/tools` | List registered tools and capabilities |
 | `/mcp` | List connected MCP tools |

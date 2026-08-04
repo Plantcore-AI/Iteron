@@ -198,12 +198,20 @@ impl Session {
                 compaction_trigger_tokens: 0,
                 initial_model_context_window: None,
                 registry_tools: Vec::new(),
+                agent_catalog: Arc::new(core_agents::AgentCatalog::builtin_only()),
             },
         }
     }
 
     pub(crate) fn registry_tools(&self) -> &[app_server::ToolFact] {
         &self.facts.registry_tools
+    }
+
+    /// The execution catalog captured by the App Server at attach time. This is deliberately not
+    /// reconstructed from `workspace` or an ambient operator home: those paths may drift while the
+    /// resident runtime continues resolving children against this immutable snapshot.
+    pub(crate) fn agent_catalog(&self) -> &core_agents::AgentCatalog {
+        &self.facts.agent_catalog
     }
 
     /// Adopt the runtime state carried by a terminal event.
@@ -6053,6 +6061,31 @@ fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+/// Render the catalog the resident runtime can actually execute. The session fact is captured once
+/// at App Server attach, so opening this panel performs no filesystem or ambient-home discovery.
+fn show_agent_catalog(app: &mut App, session: &Session) {
+    let catalog = session.agent_catalog();
+    let mut rows: Vec<block::PanelRow> = catalog
+        .defs()
+        .iter()
+        .map(|definition| item("⑂", &definition.name, &definition.description))
+        .collect();
+    if rows.is_empty() {
+        rows.push(block::PanelRow::Note(
+            "no agent definitions (built-in `generic` is normally available)".into(),
+        ));
+    }
+    for error in catalog.errors() {
+        rows.push(block::PanelRow::Note(format!(
+            "rejected: {} ({})",
+            error.source, error.reason
+        )));
+    }
+    // `App::panel` applies the shared 120-row ceiling plus credential/control sanitization before
+    // retaining any catalog-derived text in the transcript.
+    app.panel("⑂", "agents", rows);
+}
+
 /// In-process half of the slash-command dispatcher (runs only while idle). Matching the typed
 /// identity exhaustively makes a newly registered variant a compile error until it has a handler.
 async fn handle_registered_command(
@@ -6650,27 +6683,7 @@ async fn handle_registered_command(
             }
         }
         SlashCommand::Agents => {
-            let catalog = match core_protocol::home::operator() {
-                Some(home) => core_agents::AgentCatalog::discover(&home, session.workspace()),
-                None => core_agents::AgentCatalog::discover_without_user(session.workspace()),
-            };
-            let defs = catalog.defs();
-            let mut rows: Vec<block::PanelRow> = defs
-                .iter()
-                .map(|d| item("⑂", &d.name, &d.description))
-                .collect();
-            if rows.is_empty() {
-                rows.push(block::PanelRow::Note(
-                    "no agent definitions (built-in `investigator` is always available)".into(),
-                ));
-            }
-            for e in catalog.errors() {
-                rows.push(block::PanelRow::Note(format!(
-                    "rejected: {} ({})",
-                    e.source, e.reason
-                )));
-            }
-            app.panel("⑂", "agents", rows);
+            show_agent_catalog(app, session);
         }
         SlashCommand::Skills => {
             let cat = match core_ctx::skills::user_skills_dir() {
@@ -8558,6 +8571,75 @@ fn draw(f: &mut Frame, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agents_panel_renders_the_attached_catalog_after_the_filesystem_drifts() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let workspace = std::env::temp_dir().join(format!(
+            "core-tui-agent-snapshot-{}-{nonce}",
+            std::process::id()
+        ));
+        let definitions = workspace.join(".core/agents");
+        std::fs::create_dir_all(&definitions).unwrap();
+        let pinned_path = definitions.join("pinned.md");
+        std::fs::write(
+            &pinned_path,
+            "---\nname: pinned-reviewer\ndescription: Pinned before attach.\n---\nReview the run.\n",
+        )
+        .unwrap();
+        const SECRET: &str = "ghp_AbCdEf1234567890AbCdEf1234567890";
+        std::fs::write(
+            definitions.join(format!("{SECRET}.md")),
+            "not front matter\n",
+        )
+        .unwrap();
+
+        let pinned = core_agents::AgentCatalog::discover_without_user(&workspace);
+        let pinned_digest = pinned.execution_digest();
+        assert!(pinned.get("pinned-reviewer").is_some());
+        assert!(
+            pinned
+                .errors()
+                .iter()
+                .any(|error| error.source.contains(SECRET)),
+            "the fixture must put credential-shaped source text on the display path"
+        );
+
+        let (submissions, _submission_rx) = tokio::sync::mpsc::channel(1);
+        let mut session = Session::for_test(submissions);
+        session.facts.workspace = workspace.clone();
+        session.facts.agent_catalog = Arc::new(pinned);
+
+        std::fs::remove_file(pinned_path).unwrap();
+        std::fs::write(
+            definitions.join("late.md"),
+            "---\nname: late-reviewer\ndescription: Added after attach.\n---\nReview later.\n",
+        )
+        .unwrap();
+        let live = core_agents::AgentCatalog::discover_without_user(&workspace);
+        assert!(live.get("pinned-reviewer").is_none());
+        assert!(live.get("late-reviewer").is_some());
+
+        let mut app = App::new();
+        show_agent_catalog(&mut app, &session);
+        let retained = app.transcript.last().expect("agents panel").to_text();
+        assert!(retained.contains("pinned-reviewer"));
+        assert!(!retained.contains("late-reviewer"));
+        assert!(!retained.contains(SECRET));
+        assert!(retained.contains("[REDACTED"));
+
+        let screen = render_text(&mut app, 200, 32);
+        assert!(screen.contains("pinned-reviewer"));
+        assert!(!screen.contains("late-reviewer"));
+        assert!(!screen.contains(SECRET));
+        assert!(screen.contains("[REDACTED"), "{screen}");
+        assert_eq!(session.agent_catalog().execution_digest(), pinned_digest);
+
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
 
     #[test]
     fn continuously_refilled_1024_eq_yields_every_tick_to_control_and_draw_phases() {
