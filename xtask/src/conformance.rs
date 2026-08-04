@@ -312,8 +312,23 @@ fn validate_tcb_freeze(root: &Path) -> Result<()> {
     .with_context(|| format!("W1 freeze lacks `{wire}`"))?;
     let current_version = crate::validate::protocol_version_from_source(&current)?;
     let frozen_version = crate::validate::protocol_version_from_source(&frozen)?;
-    if current_version != frozen_version {
-        bail!("PROTOCOL_VERSION changed from W1 value {frozen_version} to {current_version}");
+    // Monotone, not equal. Equality made two of this repository's own rules unsatisfiable at the
+    // same time: `sqeq-version-lockstep` (`validate_protocol_version_bump`) *requires* a bump once
+    // a published surface moves, and `docs/spec/abi.md` §4.3(c) says the same, while pinning the
+    // constant here forbade one. Adding an event kind moves the `record.event-envelope` and
+    // `record.rollout` corpora -- `crates/record/tests/d13_14_event_schema.rs` requires a new kind
+    // to appear in both -- so under equality no event kind could ever be added again.
+    //
+    // What #14 criterion 7 asks for is a breaking-diff proof, and an advance is not a breaking
+    // diff: it is the declared mechanism for handling one, and a peer that meets an unfamiliar
+    // stamp is refused by `require_current` rather than left to mis-read the payload. A *decrease*
+    // is the break -- it would let a shape change be reverted on the wire while producers that
+    // already emitted the newer form stayed in the field -- so that stays refused, as does the
+    // rest of the frozen snapshot above, which is still compared byte for byte.
+    if current_version < frozen_version {
+        bail!(
+            "PROTOCOL_VERSION regressed from W1 value {frozen_version} to {current_version}; it may advance but never go backwards"
+        );
     }
     Ok(())
 }
