@@ -41,6 +41,26 @@ fn is_builtin_credential_env(name: &str) -> bool {
     BUILTIN_CREDENTIAL_ENVS.contains(&name)
 }
 
+/// The sole credential environment name permitted to cross into Core, named by
+/// `CORE_EVAL_CREDENTIAL_ENV`.
+///
+/// It is read from the environment rather than taken as a flag because the credential *value*
+/// already has to be in the evaluator's environment for this to do anything: keeping the name
+/// beside it puts the whole credential surface in one place instead of splitting it across argv,
+/// where a process listing would carry half of it. An empty setting is the same as unset, so an
+/// exported-but-blank variable cannot select the empty credential name and reach the check below
+/// as `Some("")`. The name is validated against the built-in list before use; values are never
+/// read or recorded by the evaluator.
+fn credential_env_from_environment() -> Option<String> {
+    normalize_credential_env(std::env::var("CORE_EVAL_CREDENTIAL_ENV").ok())
+}
+
+/// Split from the lookup so the empty-is-unset rule is testable without mutating the process
+/// environment, which every other test in this binary shares.
+fn normalize_credential_env(raw: Option<String>) -> Option<String> {
+    raw.filter(|name| !name.is_empty())
+}
+
 #[derive(Debug, Clone)]
 pub struct EvalOptions {
     pub corpus_path: PathBuf,
@@ -52,9 +72,6 @@ pub struct EvalOptions {
     pub allow_local_repositories: bool,
     pub model: String,
     pub provider: Option<String>,
-    /// The sole credential environment name permitted to cross into Core. Values are never
-    /// recorded by the evaluator.
-    pub credential_env: Option<String>,
     pub purpose: EvaluationPurpose,
     pub seeds: u64,
     pub minimum_seeds: u64,
@@ -105,7 +122,7 @@ impl From<&EvalOptions> for ParallelEvalOptions {
             allow_local_repositories: options.allow_local_repositories,
             model: options.model.clone(),
             provider: options.provider.clone(),
-            credential_env: options.credential_env.clone(),
+            credential_env: credential_env_from_environment(),
             bundle_path: None,
             purpose: options.purpose,
             seeds: options.seeds,
@@ -219,7 +236,6 @@ pub async fn run_evaluation_parallel(
         allow_local_repositories: runtime_options.allow_local_repositories,
         model: runtime_options.model.clone(),
         provider: runtime_options.provider.clone(),
-        credential_env: runtime_options.credential_env.clone(),
         purpose: runtime_options.purpose,
         seeds: runtime_options.seeds,
         minimum_seeds: runtime_options.minimum_seeds,
@@ -1101,7 +1117,7 @@ fn core_process_spec(
     }
     args.push(task.prompt.clone().into());
     let mut inherit_env = vec![OsString::from("PATH")];
-    if let Some(name) = &options.credential_env {
+    if let Some(name) = credential_env_from_environment() {
         inherit_env.push(name.into());
     }
     let mut env = vec![
@@ -1745,7 +1761,6 @@ mod tests {
             allow_local_repositories: false,
             model: "deadline-model".into(),
             provider: None,
-            credential_env: None,
             purpose: EvaluationPurpose::Score,
             seeds: 1,
             minimum_seeds: 1,
@@ -1808,6 +1823,16 @@ mod tests {
         ] {
             assert!(!is_builtin_credential_env(rejected), "{rejected}");
         }
+    }
+
+    #[test]
+    fn an_exported_but_blank_credential_name_is_unset_rather_than_the_empty_name() {
+        assert_eq!(normalize_credential_env(None), None);
+        assert_eq!(normalize_credential_env(Some(String::new())), None);
+        assert_eq!(
+            normalize_credential_env(Some("ANTHROPIC_API_KEY".into())),
+            Some("ANTHROPIC_API_KEY".into())
+        );
     }
 
     #[tokio::test]

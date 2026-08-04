@@ -244,7 +244,6 @@ async fn evaluates_real_repositories_at_exact_pinned_commits_not_synthetic_micro
         allow_local_repositories: true,
         model: "fixture/fixed-model".into(),
         provider: None,
-        credential_env: None,
         purpose: EvaluationPurpose::Score,
         seeds: 1,
         minimum_seeds: 1,
