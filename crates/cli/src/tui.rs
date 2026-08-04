@@ -10,6 +10,8 @@
 //! drains them and redraws. The kernel does the work; this is a thin, replaceable front-end
 //! on the same core (ADR-010: frontends are adapters).
 
+#[cfg(target_os = "linux")]
+mod capability_fs;
 mod clipboard;
 pub(crate) mod hyperlink;
 mod keyboard_enhancement;
@@ -19,6 +21,7 @@ mod terminal_input;
 pub(crate) mod transcript_effect;
 mod transcript_export;
 mod transcript_viewer;
+mod tunables_view;
 
 pub(crate) mod app_server;
 pub(crate) mod headless;
@@ -415,6 +418,22 @@ fn ui_safe_text(text: &str) -> String {
     safe
 }
 
+/// Invisible directional/formatting characters and terminal controls are unsafe in every bounded
+/// TUI display/query projection. Keep this predicate shared so filtering and rendered Detail text
+/// cannot disagree about which code points are admitted.
+fn is_unsafe_display_char(character: char) -> bool {
+    let value = character as u32;
+    character.is_control()
+        || matches!(
+            value,
+            0x061c
+                | 0x200b..=0x200f
+                | 0x202a..=0x202e
+                | 0x2060..=0x206f
+                | 0xfeff
+        )
+}
+
 fn ui_safe_json(value: &serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     match value {
@@ -474,6 +493,8 @@ enum PickAction {
     SetTheme(theme::Theme),
     /// Prepare an explicit restart command in the composer. This never swaps or executes an Agent.
     PrepareResume(String),
+    /// Open one bounded, read-only L1 detail panel from the tunables L0 registry picker.
+    InspectTunable(tunables_view::Detail),
     /// Informational row (agents/skills browse) — accepting does nothing.
     Info,
 }
@@ -533,8 +554,40 @@ struct Picker {
 }
 
 const MAX_PICKER_QUERY_CHARS: usize = 96;
+const MAX_PICKER_QUERY_BYTES: usize = MAX_PICKER_QUERY_CHARS * 4;
+const MAX_PICKER_PASTE_SCAN_BYTES: usize = 4 * 1024;
 
 impl Picker {
+    /// Append terminal text to the modal's filter without letting controls, invisible formatting,
+    /// or an arbitrarily large bracketed paste enter retained UI state. Whitespace becomes one
+    /// ordinary separator so a multiline paste remains a predictable multi-term query.
+    fn append_query_text(&mut self, text: &str) {
+        let mut query_chars = self.query.chars().count();
+        let mut scanned_bytes = 0usize;
+        for source in text.chars() {
+            scanned_bytes = scanned_bytes.saturating_add(source.len_utf8());
+            if scanned_bytes > MAX_PICKER_PASTE_SCAN_BYTES || query_chars >= MAX_PICKER_QUERY_CHARS
+            {
+                break;
+            }
+            let character = if source.is_whitespace() {
+                if self.query.is_empty() || self.query.ends_with(' ') {
+                    continue;
+                }
+                ' '
+            } else if is_unsafe_display_char(source) {
+                continue;
+            } else {
+                source
+            };
+            if self.query.len().saturating_add(character.len_utf8()) > MAX_PICKER_QUERY_BYTES {
+                break;
+            }
+            self.query.push(character);
+            query_chars += 1;
+        }
+    }
+
     /// Return stable item indices for rows whose complete ancestor chain is expanded. Invalid or
     /// cyclic parent links fail closed by hiding the affected row instead of hanging the UI.
     fn visible_indices(&self) -> Vec<usize> {
@@ -1941,12 +1994,11 @@ impl App {
             pk.normalize_selection(&visible);
         } else if let KeyCode::Char(ch) = code
             && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-            && !ch.is_control()
+            && !is_unsafe_display_char(ch)
         {
             let pk = self.picker.as_mut()?;
-            if pk.query.chars().count() < MAX_PICKER_QUERY_CHARS {
-                pk.query.push(ch);
-            }
+            let mut encoded = [0; 4];
+            pk.append_query_text(ch.encode_utf8(&mut encoded));
             let visible = pk.visible_indices();
             pk.normalize_selection(&visible);
         }
@@ -2036,6 +2088,19 @@ impl App {
             self.set_theme(t);
         }
         Some(PickerEvent::Consumed)
+    }
+
+    /// Bracketed paste belongs to an open picker just like keypresses do. Returning `false` means
+    /// no picker was open; returning `true` means the event was fully consumed and must never reach
+    /// the composer or image-attachment parser.
+    fn picker_paste(&mut self, pasted: &str) -> bool {
+        let Some(picker) = self.picker.as_mut() else {
+            return false;
+        };
+        picker.append_query_text(pasted);
+        let visible = picker.visible_indices();
+        picker.normalize_selection(&visible);
+        true
     }
 
     fn close_picker_restore_theme(&mut self) {
@@ -3535,6 +3600,12 @@ pub async fn run(
                         &app.transcript,
                         app.transcript_revision,
                     );
+                }
+                // A modal picker owns bracketed paste as well as physical keys. Consume a bounded,
+                // sanitized query here before the generic composer/image path can mutate draft
+                // text, cursor, or attachments.
+                CEvent::Paste(pasted) if app.picker.is_some() => {
+                    let _ = app.picker_paste(&pasted);
                 }
                 // Bracketed paste: insert the WHOLE pasted text (incl. newlines) into the editor
                 // rather than letting each pasted newline submit a partial line (review HIGH).
@@ -5180,14 +5251,10 @@ async fn apply_action(
     directory: &ProviderDirectory,
     action: PickAction,
 ) {
-    if let PickAction::PrepareResume(run_id) = &action {
-        app.prepare_resume_handoff(run_id);
-        return;
-    }
-    if matches!(&action, PickAction::Info) {
-        return;
-    }
     match action {
+        PickAction::PrepareResume(run_id) => app.prepare_resume_handoff(&run_id),
+        PickAction::InspectTunable(detail) => show_tunable_detail(app, detail),
+        PickAction::Info => {}
         PickAction::SetModel(selection) => {
             apply_model_selection(app, session, directory, selection).await
         }
@@ -5220,10 +5287,17 @@ async fn apply_action(
             }
         }
         PickAction::SetTheme(theme) => apply_theme_selection(app, theme),
-        PickAction::PrepareResume(_) | PickAction::Info => {
-            unreachable!("handled before the control round-trip")
-        }
     }
+}
+
+fn show_tunable_detail(app: &mut App, detail: tunables_view::Detail) {
+    let (family_id, detail_rows, notes) = detail.into_panel();
+    let mut rows: Vec<block::PanelRow> = detail_rows
+        .into_iter()
+        .map(|(key, value)| kv(&key, &value))
+        .collect();
+    rows.extend(notes.into_iter().map(block::PanelRow::Note));
+    app.panel("", &format!("tunable · {family_id}"), rows);
 }
 
 fn apply_theme_selection(app: &mut App, theme: theme::Theme) {
@@ -5612,6 +5686,63 @@ fn open_session_picker(app: &mut App, session: &Session) {
         query: String::new(),
         saved_theme: None,
     });
+}
+
+fn open_tunables_picker(app: &mut App, session: &Session, argument: &str) {
+    if app.running || app.pending.is_some() {
+        app.note(
+            block::NoticeLevel::Warn,
+            "finish the current turn before browsing tunables",
+        );
+        return;
+    }
+    let argument = argument.trim();
+    let (catalog, initial_query) = if argument == "load" {
+        app.note(
+            block::NoticeLevel::Err,
+            "usage: /tunables load <workspace-relative-request.json>",
+        );
+        return;
+    } else if let Some(path) = argument.strip_prefix("load ") {
+        match tunables_view::load_workspace_request(session.workspace(), path.trim()) {
+            Ok(catalog) => (catalog, String::new()),
+            Err(error) => {
+                app.note(
+                    block::NoticeLevel::Err,
+                    format!("tunables simulation refused: {error}"),
+                );
+                return;
+            }
+        }
+    } else {
+        (
+            tunables_view::registry_catalog(),
+            argument.chars().take(MAX_PICKER_QUERY_CHARS).collect(),
+        )
+    };
+    let (title, entries) = catalog.into_parts();
+    let items = entries
+        .into_iter()
+        .map(|detail| {
+            PickItem::flat(
+                detail.picker_label().to_owned(),
+                detail.picker_hint().to_owned(),
+                false,
+                PickAction::InspectTunable(detail),
+            )
+        })
+        .collect();
+    let mut picker = Picker {
+        title,
+        items,
+        sel: 0,
+        query: String::new(),
+        saved_theme: None,
+    };
+    picker.append_query_text(&initial_query);
+    let visible = picker.visible_indices();
+    picker.normalize_selection(&visible);
+    app.picker = Some(picker);
 }
 
 /// Build a picker's items, pre-selecting the current value, and open it — refusing (with a Notice)
@@ -6584,6 +6715,9 @@ async fn handle_registered_command(
                 "persist a choice with `core config set <key> <value>`".into(),
             ));
             app.panel("⚙", "config", rows);
+        }
+        SlashCommand::Tunables => {
+            open_tunables_picker(app, session, arg);
         }
         SlashCommand::Login => {
             // The credential half of the setup state machine deliberately does NOT run here. A
@@ -8707,6 +8841,104 @@ mod tests {
         assert!(app.picker.as_ref().unwrap().query.is_empty());
         app.picker_key(KeyCode::Esc);
         assert!(app.picker.is_none(), "second Esc closes the picker");
+    }
+
+    #[test]
+    fn picker_paste_is_bounded_sanitized_and_never_mutates_the_composer() {
+        const IMAGE: &[u8] = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;";
+
+        let mut app = App::new();
+        app.editor.insert_str("draft-你好");
+        app.editor.set_cursor(3);
+        app.editor
+            .attach_image_bytes("kept.gif", IMAGE)
+            .expect("attach test image");
+        let original_text = app.editor.text();
+        let original_cursor = app.editor.cursor();
+        let original_attachments = app.editor.attachments().clone();
+        app.picker = Some(Picker {
+            title: "model".into(),
+            items: vec![
+                pick("通义千问", PickAction::Info),
+                pick("智谱 GLM", PickAction::SetEffort(Effort::High)),
+            ],
+            sel: 0,
+            query: String::new(),
+            saved_theme: None,
+        });
+
+        assert!(app.picker_paste("智谱\n\u{1b}\u{202e}"));
+        let picker = app.picker.as_ref().expect("picker remains open");
+        assert_eq!(picker.query, "智谱 ");
+        assert_eq!(picker.visible_indices(), vec![1]);
+        assert_eq!(picker.sel, 1);
+
+        let unsafe_codepoints: Vec<char> = (0x00..=0x1f)
+            .chain(0x7f..=0x9f)
+            .chain(std::iter::once(0x061c))
+            .chain(0x200b..=0x200f)
+            .chain(0x202a..=0x202e)
+            .chain(0x2060..=0x206f)
+            .chain(std::iter::once(0xfeff))
+            .filter_map(char::from_u32)
+            .collect();
+        for unsafe_character in unsafe_codepoints {
+            app.picker
+                .as_mut()
+                .expect("picker remains open")
+                .query
+                .clear();
+            assert!(app.picker_paste(&format!("安全{unsafe_character}😀")));
+            let query = &app.picker.as_ref().expect("picker remains open").query;
+            assert!(query.contains("安全"));
+            assert!(query.contains('😀'));
+            assert!(!query.contains(unsafe_character));
+            assert!(!query.chars().any(is_unsafe_display_char));
+        }
+
+        assert!(app.picker_paste(&"无匹配😀".repeat(2_000)));
+        let picker = app.picker.as_ref().expect("picker remains open");
+        assert!(picker.visible_indices().is_empty());
+        assert!(picker.query.chars().count() <= MAX_PICKER_QUERY_CHARS);
+        assert!(picker.query.len() <= MAX_PICKER_QUERY_BYTES);
+        assert!(!picker.query.chars().any(is_unsafe_display_char));
+        assert!(render_text(&mut app, 80, 18).contains("No matches"));
+
+        assert_eq!(app.editor.text(), original_text);
+        assert_eq!(app.editor.cursor(), original_cursor);
+        assert_eq!(
+            app.editor.attachments().as_slice(),
+            original_attachments.as_slice()
+        );
+    }
+
+    #[test]
+    fn tunables_l0_search_and_l1_detail_are_terminal_rendered_and_truthful() {
+        let mut app = App::new();
+        let (submissions, _submitted) = tokio::sync::mpsc::channel(1);
+        let session = Session::for_test(submissions);
+
+        open_tunables_picker(&mut app, &session, "route_selection");
+        let picker = app.picker.as_ref().expect("tunables picker opens");
+        assert_eq!(picker.items.len(), core_tunables::EXPECTED_FAMILY_COUNT);
+        assert_eq!(picker.query, "route_selection");
+        assert_eq!(picker.visible_indices(), vec![0]);
+        let l0 = render_text(&mut app, 110, 26);
+        assert!(l0.contains("tunables · catalog"));
+        assert!(l0.contains("provider"));
+        assert!(l0.contains("simulation only"));
+
+        let detail = match app.picker_key(KeyCode::Enter) {
+            Some(PickerEvent::Accept(PickAction::InspectTunable(detail))) => detail,
+            _ => panic!("Enter must select the one filtered tunable"),
+        };
+        show_tunable_detail(&mut app, detail);
+        let l1 = render_text(&mut app, 120, 40);
+        assert!(l1.contains("tunable · provider"));
+        assert!(l1.contains("runtime_bound=false"));
+        assert!(l1.contains("not supplied (no frozen request loaded)"));
+        assert!(l1.contains("SWE-bench Pro"));
+        assert!(l1.contains("does not edit config"));
     }
 
     #[test]

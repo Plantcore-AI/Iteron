@@ -34,6 +34,10 @@ required. A pipeline should use [one-shot mode](one-shot.md) instead.
 - Use ++shift+tab++ to cycle `default`, `acceptEdits`, `plan`, and `yolo`.
 - Use `/model`, `/effort`, `/mode`, `/permissions`, and `/theme` for explicit
   pickers or session changes.
+- Use `/tunables [query]` to search the canonical 160-family control registry. Use
+  `/tunables load <workspace-relative-request.json>` only to inspect an explicit
+  frozen-request simulation; every value preview is redacted and the surface never
+  claims to represent or modify the live runtime.
 - Use `/diff`, `/status`, `/context`, `/cost`, and `/workflows` to inspect the
   evidence Core Code currently exposes.
 - Leave with `/quit`, ++esc++, or ++ctrl+d++.
@@ -67,5 +71,15 @@ mode, an operation that still needs a human answer fails closed.
 the active route. A status row is not proof of authoritative billing, cache, or
 context-window truth. Unknown cost remains unknown instead of being inferred from
 token counts without a trusted price source.
+
+The tunables browser follows the same rule. Catalog mode shows implementation,
+default, source, constraint, optimization, and benchmark-relevance metadata, while
+requested/effective/adjustment rows say that no resolution is loaded. A loaded R2
+report shows its atomic state and redacted provenance/adjustment explanation, but
+remains `simulation=true` and `runtime_bound=false`. Editing is intentionally absent
+until a runtime binding can prove which registry-declared families are safe to
+persist and can record the admitted value at run genesis. Frozen-request loading uses
+a retained, no-follow capability chain on Linux; platforms without equivalent
+workspace confinement refuse `load` while retaining catalog browsing.
 
 See [context, usage, and cost](../concepts/context-usage-cost.md).

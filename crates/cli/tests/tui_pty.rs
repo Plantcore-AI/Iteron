@@ -4,6 +4,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, SlavePty, native_p
 use serde_json::json;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
@@ -64,6 +65,14 @@ impl Scratch {
             .status()
             .expect("git is available for drain checkpoint fixture");
         assert!(status.success(), "initialize drain checkpoint repository");
+    }
+
+    fn create_fifo(&self, relative: &str) {
+        let path = self.repo().join(relative);
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+            .expect("PTY FIFO path contains no NUL");
+        // SAFETY: `path` remains live and names a test-only location in the scratch repository.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
     }
 
     fn configure_link_provider(&self, api_root: &str) {
@@ -948,6 +957,63 @@ fn vim_composer_routes_insert_normal_delete_and_return_to_insert() {
             .contains("describe a task, question, or change")
     });
     pty.send(b"\x03"); // Ctrl-C exits the empty TUI.
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "normal TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+}
+
+#[test]
+fn tunables_registry_search_and_detail_are_terminal_real() {
+    let scratch = Scratch::new("tunables-registry");
+    scratch.create_fifo("request.fifo");
+    let mut pty = PtyHarness::spawn(&scratch, 110, 30);
+    wait_for_ready(&mut pty);
+
+    pty.send(b"/tunables load request.fifo\r");
+    pty.wait_until(
+        "nonblocking FIFO refusal leaves the event loop responsive",
+        |pty| {
+            pty.screen_text()
+                .contains("tunables simulation refused: request could not be loaded safely")
+        },
+    );
+
+    pty.send(b"/tunables\r");
+    pty.wait_until("searchable 160-family tunables registry", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("tunables · catalog")
+            && screen.contains("provider")
+            && screen.contains("simulation only")
+    });
+    pty.send(b"\x1b[200~definitely-no-tunable\x1b[201~");
+    pty.wait_until("picker-owned paste has an explicit no-match state", |pty| {
+        pty.screen_text().contains("No matches")
+    });
+    pty.send(b"\x1b"); // clear the pasted picker query without closing the picker.
+    pty.wait_until("first picker escape clears the pasted query", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("tunables · catalog")
+            && screen.contains("type to filter")
+            && screen.contains("1/160")
+            && !screen.contains("No matches")
+    });
+    pty.send(b"\x1b[200~route_selection\x1b[201~");
+    pty.wait_until("picker-owned paste filters the tunables registry", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("route_selection") && !screen.contains("No matches")
+    });
+    pty.send(b"\r");
+    pty.wait_until("read-only tunable detail", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("core.control.provider.route_selection")
+            && screen.contains("runtime_bound=false")
+            && screen.contains("not supplied (no frozen request loaded)")
+            && screen.contains("SWE-bench Pro")
+    });
+
+    pty.send(b"\x03");
     let status = pty.wait_for_exit();
     assert!(status.success(), "normal TUI exit failed: {status}");
     assert_termios_restored(&pty);

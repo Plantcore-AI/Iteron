@@ -36,6 +36,7 @@ pub enum SlashCommand {
     Mcp,
     Hooks,
     Config,
+    Tunables,
     Login,
     Theme,
     Init,
@@ -89,6 +90,7 @@ impl SlashCommand {
             | Self::Mcp
             | Self::Hooks
             | Self::Config
+            | Self::Tunables
             | Self::Login
             | Self::Theme
             | Self::Init
@@ -269,6 +271,12 @@ pub const COMMANDS: &[Cmd] = &[
         name: "config",
         args: "",
         help: "show the resolved route + effective limits",
+    },
+    Cmd {
+        command: SlashCommand::Tunables,
+        name: "tunables",
+        args: "[query|load <file>]",
+        help: "browse all 160 families or load a frozen-request simulation",
     },
     Cmd {
         command: SlashCommand::Login,
