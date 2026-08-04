@@ -164,18 +164,21 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
 mod tests {
     use super::*;
     use core_protocol::ToolUse;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct TestDir(PathBuf);
 
+    static NEXT_TEST_DIR: AtomicUsize = AtomicUsize::new(0);
+
     impl TestDir {
+        /// The label alone does not make this unique: `no-lazy-fetch` is used by two tests, and the
+        /// nanosecond nonce it used to rely on is microsecond-granular on macOS -- consecutive
+        /// calls return the same value. Two tests sharing a directory do not merely litter; they
+        /// read each other's repositories. A process-wide counter cannot collide with itself.
         fn new(label: &str) -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
+            let sequence = NEXT_TEST_DIR.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "core-git-diff-{label}-{}-{nonce:x}",
+                "core-git-diff-{label}-{}-{sequence}",
                 std::process::id()
             ));
             std::fs::create_dir_all(&path).unwrap();

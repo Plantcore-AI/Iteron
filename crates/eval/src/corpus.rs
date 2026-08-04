@@ -560,14 +560,25 @@ mod tests {
         }
     }
 
+    static NEXT_TEMP_FILE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// A path no other test in this binary can also produce.
+    ///
+    /// The nanosecond timestamp this replaces is not a unique value: `SystemTime::now()` is
+    /// microsecond-granular on macOS, and consecutive calls on this machine return byte-identical
+    /// nanos. Four tests here share one prefix, so two running concurrently could land on the same
+    /// path -- and because each writes a *different* corpus and then reads it back, the loser reads
+    /// the winner's file. That is not a lost temp file; it is one test asserting against another
+    /// test's data, which is how `v3_and_unknown_fields_are_rejected_before_task_data_is_used`
+    /// reached `.unwrap_err()` on a manifest that had legitimately loaded.
+    ///
+    /// A process-wide counter cannot collide with itself, which is the same reason
+    /// `crates/tools/src/schema_tests.rs` and `write_file_tests.rs` already use one.
     fn temp_file() -> std::path::PathBuf {
+        let sequence = NEXT_TEMP_FILE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "core-eval-corpus-{}-{}.json",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "core-eval-corpus-{}-{sequence}.json",
+            std::process::id()
         ))
     }
 

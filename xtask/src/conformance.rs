@@ -312,22 +312,29 @@ fn validate_tcb_freeze(root: &Path) -> Result<()> {
     .with_context(|| format!("W1 freeze lacks `{wire}`"))?;
     let current_version = crate::validate::protocol_version_from_source(&current)?;
     let frozen_version = crate::validate::protocol_version_from_source(&frozen)?;
-    // Monotone, not equal. Equality made two of this repository's own rules unsatisfiable at the
-    // same time: `sqeq-version-lockstep` (`validate_protocol_version_bump`) *requires* a bump once
-    // a published surface moves, and `docs/spec/abi.md` §4.3(c) says the same, while pinning the
-    // constant here forbade one. Adding an event kind moves the `record.event-envelope` and
-    // `record.rollout` corpora -- `crates/record/tests/d13_14_event_schema.rs` requires a new kind
-    // to appear in both -- so under equality no event kind could ever be added again.
-    //
-    // What #14 criterion 7 asks for is a breaking-diff proof, and an advance is not a breaking
-    // diff: it is the declared mechanism for handling one, and a peer that meets an unfamiliar
-    // stamp is refused by `require_current` rather than left to mis-read the payload. A *decrease*
-    // is the break -- it would let a shape change be reverted on the wire while producers that
-    // already emitted the newer form stayed in the field -- so that stays refused, as does the
-    // rest of the frozen snapshot above, which is still compared byte for byte.
-    if current_version < frozen_version {
+    require_monotone_protocol_version(frozen_version, current_version)
+}
+
+/// The W1 pin on `PROTOCOL_VERSION`, as a comparison rather than as a step inside a function that
+/// can only run against real git revisions -- so the direction it enforces is testable.
+///
+/// Monotone, not equal. Equality made two of this repository's own rules unsatisfiable at the same
+/// time: `sqeq-version-lockstep` (`validate_protocol_version_bump`) *requires* a bump once a
+/// published surface moves, and `docs/spec/abi.md` §4.3(c) says the same, while pinning the constant
+/// here forbade one. Adding an event kind moves the `record.event-envelope` and `record.rollout`
+/// corpora -- `crates/record/tests/d13_14_event_schema.rs` requires a new kind to appear in both --
+/// so under equality no event kind could ever be added again.
+///
+/// What #14 criterion 7 asks for is a breaking-diff proof, and an advance is not a breaking diff: it
+/// is the declared mechanism for handling one, and a peer that meets an unfamiliar stamp is refused
+/// by `require_current` rather than left to mis-read the payload. A *decrease* is the break -- it
+/// would let a shape change be reverted on the wire while producers that already emitted the newer
+/// form stayed in the field -- so that stays refused, as does the rest of the frozen snapshot, which
+/// is still compared byte for byte.
+fn require_monotone_protocol_version(frozen: u32, current: u32) -> Result<()> {
+    if current < frozen {
         bail!(
-            "PROTOCOL_VERSION regressed from W1 value {frozen_version} to {current_version}; it may advance but never go backwards"
+            "PROTOCOL_VERSION regressed from W1 value {frozen} to {current}; it may advance but never go backwards"
         );
     }
     Ok(())
@@ -1157,6 +1164,34 @@ mod tests {
     fn a_planted_tcb_snapshot_change_turns_the_freeze_proof_red() {
         assert!(require_identical_snapshot("fixture", b"frozen", b"frozen").is_ok());
         assert!(require_identical_snapshot("fixture", b"frozen", b"changed").is_err());
+    }
+
+    /// The pin used to compare for equality, and that made the constant unable to move at all --
+    /// which, because every typed event kind must appear in two existing record corpora, meant no
+    /// event kind could ever be added again. Both halves of the replacement are pinned here: an
+    /// advance is permitted because it is what the spec prescribes for a moved shape, and a
+    /// regression is refused because reverting a shape on the wire is the actual breaking diff.
+    ///
+    /// Written against explicit values rather than the live constant so that a future bump does not
+    /// quietly re-aim it, and so restoring equality turns this red instead of passing vacuously.
+    #[test]
+    fn the_w1_protocol_pin_permits_an_advance_and_refuses_a_regression() {
+        require_monotone_protocol_version(1, 1).expect("standing still is not a diff");
+        require_monotone_protocol_version(1, 2)
+            .expect("an advance is how a moved shape is declared");
+        require_monotone_protocol_version(1, u32::MAX).expect("any advance, not just by one");
+
+        let regression = require_monotone_protocol_version(2, 1)
+            .expect_err("a regression reverts a shape on the wire and must be refused");
+        let rendered = regression.to_string();
+        assert!(
+            rendered.contains("regressed") && rendered.contains("never go backwards"),
+            "the refusal must say which direction is forbidden, or the next reader re-derives it: {rendered}"
+        );
+        assert!(
+            require_monotone_protocol_version(u32::MAX, 0).is_err(),
+            "a regression to zero is still a regression"
+        );
     }
 
     #[test]

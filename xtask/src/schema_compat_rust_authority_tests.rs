@@ -27,6 +27,79 @@ fn workspace_members_and_internal_relative_paths_are_exact() {
     );
 }
 
+/// The rule this pins is directional, and the direction is the whole point.
+///
+/// It replaced an exact-equality check that made the crate graph unable to grow at all: this
+/// validator is built from the merge base, so comparing the candidate's member set for equality
+/// rejected every crate-adding pull request no matter what it contained, and no ordering of
+/// policy-first or code-first commits could pass both this check and the candidate's own. Every
+/// member present before that fix entered in the initial commit; none had ever passed through this
+/// gate. Loosening it was therefore correct, but only in one direction, and nothing was pinning
+/// which one -- so a later reader could restore equality, or widen additions, and no test would go
+/// red. That is what this is for.
+#[test]
+fn the_trusted_crate_graph_may_grow_but_never_shrink_and_only_into_canonical_paths() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let workspace = read_toml(root, "Cargo.toml").unwrap();
+
+    let with_member = |member: &str| {
+        let mut candidate = workspace.clone();
+        candidate["workspace"]["members"]
+            .as_array_mut()
+            .unwrap()
+            .push(toml::Value::String(member.into()));
+        candidate
+    };
+
+    // Growth is allowed, which is the half that was impossible before.
+    validate_workspace(&with_member("crates/newly-added")).unwrap();
+    validate_workspace(&with_member("crates/a1")).unwrap();
+
+    // A path is not merely "starts with crates/": it is one canonical slug directly beneath it.
+    // A nested path would let an added member sit inside another crate's tree, and `..` would let
+    // it leave the repository altogether -- both were reachable when the only check was a
+    // `starts_with` plus a literal `..` scan.
+    for rejected in [
+        "vendor/evil",
+        "crates",
+        "crates/",
+        "crates/nested/deeper",
+        "crates/../../evil",
+        "crates/..",
+        "crates/Capitalised",
+        "crates/1leading-digit",
+        "crates/trailing-",
+        "crates/double--hyphen",
+        "crates/under_score",
+        "crates/.hidden",
+    ] {
+        assert!(
+            validate_workspace(&with_member(rejected)).is_err(),
+            "accepted non-canonical added member `{rejected}`"
+        );
+    }
+
+    // Shrinking stays refused in both of its forms. A dropped crate takes its boundary, its owners
+    // and its checks with it, and a rename is a drop plus an add.
+    let mut removed = workspace.clone();
+    removed["workspace"]["members"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|member| member.as_str() != Some("crates/kernel"));
+    assert!(validate_workspace(&removed).is_err());
+
+    let mut renamed = workspace.clone();
+    for member in renamed["workspace"]["members"].as_array_mut().unwrap() {
+        if member.as_str() == Some("crates/kernel") {
+            *member = toml::Value::String("crates/kernel-renamed".into());
+        }
+    }
+    assert!(
+        validate_workspace(&renamed).is_err(),
+        "a rename is a removal wearing an addition's clothes"
+    );
+}
+
 #[test]
 fn managed_module_declarations_reject_cfg_path_inline_and_decoys() {
     validate_module_source("mod output;", "main.rs", "output", false).unwrap();

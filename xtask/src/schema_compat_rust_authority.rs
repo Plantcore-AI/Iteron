@@ -100,80 +100,103 @@ fn validate_workspace(workspace: &toml::Value) -> Result<()> {
     // declare itself in the cargo policy, which is owner-reviewed, and it is validated in full by
     // the candidate's own binary in the Rust lane.
     for added in members.difference(&expected) {
-        if !added.starts_with("crates/") {
-            bail!("added workspace member '{added}' is not under crates/");
-        }
-        if added.contains("..") {
-            bail!("added workspace member '{added}' is not a plain crates/ path");
-        }
+        validate_added_member_path(added)?;
     }
     Ok(())
 }
 
-/// Workspace members present in the tree that this binary was not built to know about.
-///
-/// Empty for every pull request that does not add a crate, so the common path is unchanged.
-fn added_members(root: &Path) -> Result<Vec<String>> {
-    let workspace = read_toml(root, "Cargo.toml")?;
-    let expected = MEMBERS
-        .iter()
-        .map(|(member, _)| (*member).to_owned())
-        .collect::<BTreeSet<_>>();
-    Ok(workspace
-        .get("workspace")
-        .and_then(toml::Value::as_table)
-        .and_then(|table| table.get("members"))
-        .and_then(toml::Value::as_array)
-        .map(|members| {
-            members
-                .iter()
-                .filter_map(toml::Value::as_str)
-                .filter(|member| !expected.contains(*member))
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default())
+fn validate_added_member_path(member: &str) -> Result<()> {
+    let Some(crate_name) = member.strip_prefix("crates/") else {
+        bail!("added workspace member '{member}' is not under crates/");
+    };
+    if !is_canonical_slug(crate_name) {
+        bail!("added workspace member '{member}' is not a canonical direct crates/ path");
+    }
+    Ok(())
 }
 
-fn validate_member_identities_and_paths(root: &Path) -> Result<()> {
+fn is_canonical_slug(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|character| character.is_ascii_lowercase())
+        && !value.ends_with('-')
+        && !value.contains("--")
+        && characters.all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
+}
+
+/// Complete workspace identity table, including members this binary was not built to know about.
+///
+/// Added manifests are parsed by the trusted binary before any candidate binary is compiled. This
+/// keeps package identity and target authority enforceable on both sides of the bootstrap boundary.
+fn workspace_member_identities(root: &Path) -> Result<Vec<(String, String)>> {
+    let workspace = read_toml(root, "Cargo.toml")?;
+    validate_workspace(&workspace)?;
+    let trusted = MEMBERS
+        .iter()
+        .map(|(member, _)| *member)
+        .collect::<BTreeSet<_>>();
+    let mut identities = MEMBERS
+        .iter()
+        .map(|(member, package)| ((*member).to_owned(), (*package).to_owned()))
+        .collect::<Vec<_>>();
     let mut names = MEMBERS
         .iter()
         .map(|(member, package)| ((*package).to_owned(), (*member).to_owned()))
         .collect::<BTreeMap<_, _>>();
-    // Added members join the internal-name table, or a trusted member that depends on one of them
-    // reads as naming an unknown internal dependency -- which is how `xtask -> core-tunables` fails
-    // even though both sides are legitimate. Their own identity and paths are checked by the
-    // candidate's binary, which knows them; what this binary still enforces on them is the
-    // path-shape and aliasing rules below, applied to every trusted member that references them.
-    for member in added_members(root)? {
+    let members = workspace
+        .get("workspace")
+        .and_then(toml::Value::as_table)
+        .and_then(|table| table.get("members"))
+        .and_then(toml::Value::as_array)
+        .context("schema workspace lacks explicit members")?;
+    for member in members.iter().filter_map(toml::Value::as_str) {
+        if trusted.contains(member) {
+            continue;
+        }
+        validate_added_member_path(member)?;
         let manifest = format!("{member}/Cargo.toml");
         let value = read_toml(root, &manifest)?;
-        let package = value
+        let package_name = value
             .get("package")
             .and_then(toml::Value::as_table)
-            .with_context(|| format!("added member '{manifest}' lacks [package]"))?;
-        let package_name = package
-            .get("name")
+            .and_then(|package| package.get("name"))
             .and_then(toml::Value::as_str)
             .with_context(|| format!("added member '{manifest}' lacks a package name"))?;
-        if !package_name.starts_with("core-") {
+        let Some(suffix) = package_name.strip_prefix("core-") else {
             bail!("added workspace member '{member}' is not an internal `core-` package");
+        };
+        if !is_canonical_slug(suffix) {
+            bail!("added workspace member '{member}' has a non-canonical package name");
         }
         if names
-            .insert(package_name.to_owned(), member.clone())
+            .insert(package_name.to_owned(), member.to_owned())
             .is_some()
         {
             bail!("added workspace member '{member}' collides with a trusted package name");
         }
+        identities.push((member.to_owned(), package_name.to_owned()));
     }
-    for (member, package_name) in MEMBERS {
+    identities.sort();
+    Ok(identities)
+}
+
+fn validate_member_identities_and_paths(root: &Path) -> Result<()> {
+    let identities = workspace_member_identities(root)?;
+    let names = identities
+        .iter()
+        .map(|(member, package)| (package.to_owned(), member.to_owned()))
+        .collect::<BTreeMap<_, _>>();
+    for (member, package_name) in identities {
         let manifest = format!("{member}/Cargo.toml");
         let value = read_toml(root, &manifest)?;
         let package = value
             .get("package")
             .and_then(toml::Value::as_table)
             .with_context(|| format!("workspace member '{manifest}' lacks [package]"))?;
-        if package.get("name").and_then(toml::Value::as_str) != Some(*package_name) {
+        if package.get("name").and_then(toml::Value::as_str) != Some(package_name.as_str()) {
             bail!("workspace member '{member}' changed its canonical package identity");
         }
         for dependencies in dependency_tables(&value) {
@@ -200,7 +223,7 @@ fn validate_member_identities_and_paths(root: &Path) -> Result<()> {
                         "workspace member '{member}' internal dependency '{dependency_name}' is not a path table"
                     )
                 })?;
-                let expected_path = relative_member_path(member, target)?;
+                let expected_path = relative_member_path(&member, target)?;
                 if table.len() != 1
                     || table.get("path").and_then(toml::Value::as_str)
                         != Some(expected_path.as_str())
@@ -320,11 +343,8 @@ fn validate_dependency_authority(root: &Path, workspace: &toml::Value) -> Result
 }
 
 fn validate_targets_and_internal_paths(root: &Path) -> Result<()> {
-    for (member, package_name) in MEMBERS {
-        let manifest = format!("{member}/Cargo.toml");
-        let value = read_toml(root, &manifest)?;
-        validate_package_metadata(&value, &manifest, package_name)?;
-        reject_implicit_targets(root, member, package_name, &value)?;
+    for (member, package_name) in workspace_member_identities(root)? {
+        validate_member_target(root, &member, &package_name)?;
     }
     validate_bin_target(root, "crates/cli/Cargo.toml", "core", "src/main.rs")?;
     validate_bin_target(root, "crates/eval/Cargo.toml", "core-eval", "src/main.rs")?;
@@ -335,6 +355,13 @@ fn validate_targets_and_internal_paths(root: &Path) -> Result<()> {
         "src/main.rs",
     )?;
     Ok(())
+}
+
+fn validate_member_target(root: &Path, member: &str, package_name: &str) -> Result<()> {
+    let manifest = format!("{member}/Cargo.toml");
+    let value = read_toml(root, &manifest)?;
+    validate_package_metadata(&value, &manifest, package_name)?;
+    reject_implicit_targets(root, member, package_name, &value)
 }
 
 fn validate_package_metadata(
