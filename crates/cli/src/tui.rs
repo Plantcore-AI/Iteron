@@ -899,8 +899,7 @@ struct App {
     /// workflow run id -> its one live card. Lifecycle events mutate this block in place.
     workflow_index: std::collections::HashMap<String, u64>,
     /// QuickJS `core-workflow` run id -> its one live phase→agent tree card (design §3.2 store).
-    /// The interactive-REPL seam; live once an M9 launch path drives `workflow_run_event`.
-    #[allow(dead_code)]
+    /// The interactive-REPL seam, driven by `workflow_run_ui_event` (ADR-0001 step 1).
     workflow_run_index: std::collections::HashMap<String, u64>,
     /// The active color theme (ADR-015 §4).
     theme: theme::Theme,
@@ -1863,9 +1862,65 @@ impl App {
         }
     }
 
-    // REPL seam (see workflow_run_index); exercised by tests. It goes live with ADR-0001 step 1,
-    // which needs a CLI stream schema-version bump to add the `UiEvent` variant that reaches it.
-    #[allow(dead_code)]
+    /// Project one script-engine lifecycle message onto the live phase→agent tree (ADR-0001 step 1,
+    /// `crate::workflow::WorkflowRunUiEvent`).
+    ///
+    /// The three shapes are the three things the card needs that the `ProgressEvent` stream cannot
+    /// say on its own: when a run BEGINS (so the card exists, named, with its declared phase boxes
+    /// already laid out), what happened next, and when the run SETTLED — `ingest` never sets
+    /// `finished`, so without the last one the tree would spin for the rest of the session. The
+    /// match is total: a new seam variant does not compile until it is rendered.
+    fn workflow_run_ui_event(&mut self, event: crate::workflow::WorkflowRunUiEvent) {
+        match event {
+            crate::workflow::WorkflowRunUiEvent::Started {
+                run_id,
+                name,
+                phases,
+            } => self.workflow_run_started(&run_id, &name, &phases),
+            // The name is only read if `Started` never arrived, which the EQ's authoritative
+            // delivery rules out; `list_runs` uses the same word for a run whose manifest is
+            // missing, so an unnamed card reads the same way there and here.
+            crate::workflow::WorkflowRunUiEvent::Progress { run_id, event } => {
+                self.workflow_run_event(&run_id, "workflow", event)
+            }
+            crate::workflow::WorkflowRunUiEvent::Finished { run_id } => {
+                self.workflow_run_finished(&run_id)
+            }
+        }
+    }
+
+    /// Open the card for a run before its first event, seeded with the script's declared
+    /// `meta.phases` so the whole shape of the run is on the first frame. Idempotent: a repeated
+    /// `Started` for a live run re-declares nothing (`declare_phases` skips titles it already has).
+    fn workflow_run_started(&mut self, run_id: &str, name: &str, phases: &[String]) {
+        if self.workflow_run_card_mut(run_id).is_none() {
+            self.flush_text();
+            let card = block::WorkflowRunCard::new(
+                ui_safe_text(run_id),
+                crate::workflow::ui_safe_label(name),
+            );
+            let block_id = self.push_block(block::BlockKind::WorkflowRun(card));
+            self.workflow_run_index.insert(run_id.to_string(), block_id);
+        }
+        let block_id = self.workflow_run_index.get(run_id).copied();
+        if let Some(card) = self.workflow_run_card_mut(run_id) {
+            card.declare_phases(
+                phases
+                    .iter()
+                    .map(|title| crate::workflow::ui_safe_label(title)),
+            );
+        }
+        if let Some(block) =
+            block_id.and_then(|id| self.transcript.iter_mut().find(|block| block.id == id))
+        {
+            Arc::make_mut(block).touch();
+        }
+        self.mark_transcript_changed();
+        self.autoscroll();
+    }
+
+    // REPL seam (see workflow_run_index). Live since ADR-0001 step 1: `app_server::ServerEvent`
+    // carries the engine's progress off the kernel thread and `workflow_run_ui_event` lands it here.
     fn workflow_run_card_mut(&mut self, run_id: &str) -> Option<&mut block::WorkflowRunCard> {
         let block_id = *self.workflow_run_index.get(run_id)?;
         self.transcript
@@ -1883,7 +1938,6 @@ impl App {
     /// for a workflow launched from the REPL; the one-shot `core workflow run` command drives an
     /// equivalent card through its own live loop (`workflow::run_live`). Wired up by ADR-0001
     /// step 1 (docs/project/decisions/0001-workflow-renderer-convergence.md).
-    #[allow(dead_code)]
     fn workflow_run_event(
         &mut self,
         run_id: &str,
@@ -1916,7 +1970,6 @@ impl App {
 
     /// Mark a QuickJS workflow run terminal (its engine future resolved). The card collapses finished
     /// agents but stays in the transcript.
-    #[allow(dead_code)]
     fn workflow_run_finished(&mut self, run_id: &str) {
         let block_id = self.workflow_run_index.get(run_id).copied();
         let changed = if let Some(card) = self.workflow_run_card_mut(run_id) {
@@ -5043,6 +5096,7 @@ fn apply_server_event<T: notification::NotificationTransport + ?Sized>(
 ) {
     match event {
         app_server::ServerEvent::Ui(event) => apply_live_event(app, event, notifier, writer),
+        app_server::ServerEvent::WorkflowRun(event) => app.workflow_run_ui_event(event),
         app_server::ServerEvent::Notice(text) => app.note(block::NoticeLevel::Warn, text),
         app_server::ServerEvent::Lagged { dropped } => app.note(
             block::NoticeLevel::Warn,
@@ -12117,6 +12171,162 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             _ => unreachable!(),
         };
         assert!(finished);
+    }
+
+    /// The wire this slice built: a workflow launched from inside the interactive TUI arrives as
+    /// `app_server::ServerEvent::WorkflowRun`, and the operator watches a live tree instead of a
+    /// silent turn. Everything below crosses the real seam — `crate::workflow::UiProgressSink` is
+    /// what the kernel installs, `workflow_run_ui_event` is what the frontend dispatches to.
+    #[test]
+    fn a_workflow_launched_in_the_tui_renders_a_live_progress_tree() {
+        use core_workflow::events::{ProgressEvent, ProgressSink, WorkflowState};
+
+        let mut app = App::new();
+        app.theme = theme::Theme::dark();
+        let run_id = "wf_repl_1";
+
+        // Declared `meta.phases` lay the boxes out before the first agent runs.
+        app.workflow_run_ui_event(crate::workflow::WorkflowRunUiEvent::Started {
+            run_id: run_id.into(),
+            name: "audit".into(),
+            phases: vec!["Explore".into(), "Report".into()],
+        });
+        let block_id = *app
+            .workflow_run_index
+            .get(run_id)
+            .expect("the card exists before the engine emits anything");
+
+        // The kernel's sink is the only thing between the engine and this channel.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = crate::workflow::UiProgressSink::new(run_id, tx);
+        sink.emit(ProgressEvent::Phase {
+            index: 1,
+            title: "Explore".into(),
+        });
+        sink.emit(ProgressEvent::Log {
+            message: "scanning modules".into(),
+        });
+        sink.emit(ProgressEvent::AgentQueued {
+            index: 0,
+            label: "scan modules".into(),
+            phase: Some("Explore".into()),
+            model: Some("core-model-1".into()),
+        });
+        sink.emit(ProgressEvent::AgentStarted {
+            index: 0,
+            label: "scan modules".into(),
+            phase: Some("Explore".into()),
+            model: Some("core-model-1".into()),
+        });
+        sink.emit(ProgressEvent::AgentActivity {
+            index: 0,
+            tokens: 900,
+            tool_calls: 1,
+            last_tool_summary: Some("read src/lib.rs".into()),
+        });
+        sink.emit(ProgressEvent::AgentFinished {
+            index: 0,
+            label: "scan modules".into(),
+            state: WorkflowState::Done,
+            tokens: 1_200,
+            tool_calls: 2,
+            duration_ms: 3_200,
+            result_preview: Some("14 modules, 2 without tests".into()),
+            last_tool_summary: None,
+            error: None,
+        });
+        drop(sink);
+        while let Ok(event) = rx.try_recv() {
+            app.workflow_run_ui_event(event);
+        }
+
+        let card = match &app
+            .transcript
+            .iter()
+            .find(|block| block.id == block_id)
+            .expect("the run keeps its one block")
+            .kind
+        {
+            block::BlockKind::WorkflowRun(card) => card.clone(),
+            _ => unreachable!("the block is the phase→agent tree"),
+        };
+        assert_eq!(card.name, "audit");
+        assert_eq!(
+            card.phases.len(),
+            2,
+            "a declared phase reached at runtime binds back by title instead of opening a \
+             second box"
+        );
+        assert_eq!(card.agents.len(), 1, "one agent(), one row");
+        assert_eq!(card.agents[0].state, WorkflowState::Done);
+        assert_eq!(card.agents[0].tokens, 1_200);
+        assert_eq!(
+            card.logs,
+            vec!["scanning modules".to_string()],
+            "log() has no counterpart in the native vocabulary and is carried, not dropped"
+        );
+        assert!(!card.finished, "the run has not settled yet");
+
+        let live = render_text(&mut app, 100, 30);
+        assert!(live.contains("Explore"), "{live}");
+        assert!(live.contains("Report"), "{live}");
+        assert!(live.contains("scan modules"), "{live}");
+        assert!(live.contains("scanning modules"), "{live}");
+
+        // Settling is a separate message because `ingest` never sets it; without it the tree spins.
+        app.workflow_run_ui_event(crate::workflow::WorkflowRunUiEvent::Finished {
+            run_id: run_id.into(),
+        });
+        assert!(!app.workflow_run_index.contains_key(run_id));
+        let settled = match &app
+            .transcript
+            .iter()
+            .find(|block| block.id == block_id)
+            .unwrap()
+            .kind
+        {
+            block::BlockKind::WorkflowRun(card) => card.finished,
+            _ => unreachable!(),
+        };
+        assert!(settled);
+    }
+
+    /// A workflow script is untrusted input and the interactive transcript is retained state, so
+    /// nothing hostile in a label or a narrator line survives the trip.
+    #[test]
+    fn a_hostile_workflow_script_cannot_write_control_sequences_into_the_transcript() {
+        use core_workflow::events::{ProgressEvent, ProgressSink};
+
+        let mut app = App::new();
+        app.theme = theme::Theme::dark();
+        let run_id = "wf_repl_hostile";
+        app.workflow_run_ui_event(crate::workflow::WorkflowRunUiEvent::Started {
+            run_id: run_id.into(),
+            name: "audit\u{1b}[2J".into(),
+            phases: vec!["Explore\u{1b}[2J".into()],
+        });
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = crate::workflow::UiProgressSink::new(run_id, tx);
+        sink.emit(ProgressEvent::Log {
+            message: "narrating\u{1b}[2J\u{7}".into(),
+        });
+        sink.emit(ProgressEvent::AgentStarted {
+            index: 0,
+            label: "row\u{1b}[2J".into(),
+            phase: None,
+            model: None,
+        });
+        drop(sink);
+        while let Ok(event) = rx.try_recv() {
+            app.workflow_run_ui_event(event);
+        }
+
+        let screen = render_text(&mut app, 100, 30);
+        assert!(
+            !screen.chars().any(|c| c == '\u{1b}' || c == '\u{7}'),
+            "a raw control character reached the frame buffer: {screen:?}"
+        );
     }
 
     #[test]

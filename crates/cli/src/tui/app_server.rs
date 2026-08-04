@@ -175,6 +175,13 @@ pub(crate) enum ServerEvent {
     /// Reported rather than hidden: a transcript with a silent hole in it is worse than one that
     /// says where the hole is.
     Lagged { dropped: usize },
+    /// One live update for a QuickJS workflow-script run (ADR-0001 step 1).
+    ///
+    /// A second payload rather than a `UiEvent` variant, because `UiEvent` is the frozen, published
+    /// stream/event-queue vocabulary and `ProgressEvent` is the engine's unfrozen in-process one;
+    /// see `crate::runtime::Agent::workflow_progress_tx`. Both arrive on the same EQ, so the card
+    /// still lands in transcript order relative to the assistant text around it.
+    WorkflowRun(crate::workflow::WorkflowRunUiEvent),
 }
 
 impl ServerEvent {
@@ -183,8 +190,22 @@ impl ServerEvent {
     /// The acceptance criterion is "a saturated EQ still delivers every `Done` event, 0
     /// authoritative drops". Streamed text and thinking are the only two things a reader can miss
     /// without being lied to; everything else changes what the operator believes happened.
+    ///
+    /// A workflow row's `AgentActivity` tick joins them: it restates a running row's climbing
+    /// token/tool counters, so a reader that misses one sees a slightly stale line and nothing
+    /// else. Every other workflow update — the queued fan, a phase boundary, a narrator line, a
+    /// terminal row, the run settling — changes what the operator believes happened, so those wait
+    /// for room like any other authoritative event. Dropping an `AgentFinished` would leave a row
+    /// spinning as `Running` for the rest of the session.
     pub(crate) fn is_authoritative(&self) -> bool {
-        !matches!(self, Self::Ui(UiEvent::Text(_) | UiEvent::Thinking(_)))
+        !matches!(
+            self,
+            Self::Ui(UiEvent::Text(_) | UiEvent::Thinking(_))
+                | Self::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Progress {
+                    event: core_workflow::events::ProgressEvent::AgentActivity { .. },
+                    ..
+                })
+        )
     }
 }
 
@@ -814,6 +835,14 @@ impl AppServer {
         let (ui_tx, mut ui_rx) = mpsc::unbounded_channel::<UiEvent>();
         agent.set_ui(ui_tx);
 
+        // The workflow-script progress seam, unbounded for the same reason: `ProgressSink::emit` is
+        // called from the engine's single JS-driver thread and must not block. Installing it here
+        // is what makes a `Workflow` tool call render a live tree instead of a silent minutes-long
+        // turn; the one-shot `--output-format` paths install no such sink and are unaffected.
+        let (workflow_tx, mut workflow_rx) =
+            mpsc::unbounded_channel::<crate::workflow::WorkflowRunUiEvent>();
+        agent.set_workflow_progress(workflow_tx);
+
         // `run` versus `follow_up` was a caller-side boolean the frontend chose. With a resident
         // runtime it is session state and belongs here: the first admitted turn starts the session,
         // every later one continues it.
@@ -886,6 +915,11 @@ impl AppServer {
                                         // safe point rather than dropping the future mid-effect.
                                     }
                                 }
+                                Some(progress) = workflow_rx.recv() => {
+                                    // Same policy as the UI stream: a frontend that hung up never
+                                    // aborts a run that is already executing.
+                                    let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
+                                }
                                 Some(request) = control.recv() => {
                                     // Configuration DURING a turn is DEFERRED, not applied.
                                     //
@@ -937,6 +971,12 @@ impl AppServer {
                     // transcript ordered.
                     while let Ok(ui) = ui_rx.try_recv() {
                         let _ = events.publish(ServerEvent::Ui(ui)).await;
+                    }
+                    // The workflow seam drains with it: an in-turn run settles inside the turn, so
+                    // its terminal rows and its `Finished` are queued here exactly like the last
+                    // text deltas, and a tail that skipped them would leave the tree spinning.
+                    while let Ok(progress) = workflow_rx.try_recv() {
+                        let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
                     }
 
                     // The turn's borrow has ended, so the deferred control plane can run — in
@@ -1172,6 +1212,76 @@ mod tests {
         SqEnvelope::with_version(PROTOCOL_VERSION, op)
     }
 
+    #[test]
+    fn only_a_workflow_activity_tick_is_droppable_under_backpressure() {
+        use core_workflow::events::{ProgressEvent, WorkflowState};
+        let progress = |event| {
+            ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Progress {
+                run_id: "wf_1".into(),
+                event,
+            })
+        };
+
+        // A tick only restates a running row's climbing counters: missing one shows a stale line.
+        assert!(
+            !progress(ProgressEvent::AgentActivity {
+                index: 0,
+                tokens: 10,
+                tool_calls: 1,
+                last_tool_summary: None,
+            })
+            .is_authoritative()
+        );
+
+        // Everything else changes what the operator believes happened. A dropped `AgentFinished`
+        // in particular would leave the row spinning as `Running` for the rest of the session.
+        for authoritative in [
+            progress(ProgressEvent::AgentFinished {
+                index: 0,
+                label: "row".into(),
+                state: WorkflowState::Done,
+                tokens: 10,
+                tool_calls: 1,
+                duration_ms: 5,
+                result_preview: None,
+                last_tool_summary: None,
+                error: None,
+            }),
+            progress(ProgressEvent::Log {
+                message: "narrating".into(),
+            }),
+            progress(ProgressEvent::Phase {
+                index: 1,
+                title: "Explore".into(),
+            }),
+            progress(ProgressEvent::AgentQueued {
+                index: 1,
+                label: "queued".into(),
+                phase: None,
+                model: None,
+            }),
+            progress(ProgressEvent::AgentStarted {
+                index: 1,
+                label: "queued".into(),
+                phase: None,
+                model: None,
+            }),
+            ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Started {
+                run_id: "wf_1".into(),
+                name: "audit".into(),
+                phases: Vec::new(),
+            }),
+            ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Finished {
+                run_id: "wf_1".into(),
+            }),
+        ] {
+            assert!(
+                authoritative.is_authoritative(),
+                "{authoritative:?} must wait for room rather than vanish"
+            );
+        }
+    }
+
     fn snapshot() -> Box<SessionSnapshot> {
         Box::new(SessionSnapshot {
             mode: core_protocol::PermissionMode::default(),
@@ -1396,7 +1506,7 @@ mod tests {
                     assert!(dropped > 0);
                     saw_lag_notice = true;
                 }
-                ServerEvent::Ui(_) | ServerEvent::Notice(_) => {}
+                ServerEvent::Ui(_) | ServerEvent::Notice(_) | ServerEvent::WorkflowRun(_) => {}
             }
         }
         publish.await.expect("publisher task").expect("delivered");
@@ -1458,7 +1568,7 @@ mod tests {
             last_seq = envelope.seq;
             match envelope.event {
                 ServerEvent::Notice(text) => seen.push(text),
-                ServerEvent::Ui(_) => deltas += 1,
+                ServerEvent::Ui(_) | ServerEvent::WorkflowRun(_) => deltas += 1,
                 ServerEvent::Lagged { dropped: count } => dropped += count,
                 ServerEvent::RunEnded { .. } => {
                     saw_terminal = true;

@@ -1974,6 +1974,12 @@ async fn run_cli() -> anyhow::Result<u8> {
             tui::app_server::ServerEvent::RunEnded {
                 snapshot, summary, ..
             } => break (*summary, snapshot.ledger_summary),
+            // ADR-0001 step 1: the QuickJS workflow tree is an interactive-TUI surface. It has no
+            // record type in the frozen `stream-json` contract this loop writes, and minting one
+            // would change a published schema as a side effect of a renderer change — the thing
+            // ADR-0001 keeps as its own release-contract PR. The run is still announced by the
+            // launch notice above it, and `core workflow list` still tracks it.
+            tui::app_server::ServerEvent::WorkflowRun(_) => continue,
         };
         if output_error.is_none()
             && let Err(error) = emitter.event(event)
@@ -1998,6 +2004,8 @@ async fn run_cli() -> anyhow::Result<u8> {
                 "{dropped} streamed update(s) were dropped by the bounded App Server event queue"
             )),
             tui::app_server::ServerEvent::RunEnded { .. } => continue,
+            // Same as the drain above: no `stream-json` record type exists for it yet.
+            tui::app_server::ServerEvent::WorkflowRun(_) => continue,
         };
         if output_error.is_none()
             && let Err(error) = emitter.event(event)
