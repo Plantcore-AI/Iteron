@@ -19,6 +19,7 @@ mod terminal_input;
 pub(crate) mod transcript_effect;
 mod transcript_export;
 mod transcript_viewer;
+mod tunables_view;
 
 pub(crate) mod app_server;
 pub(crate) mod headless;
@@ -474,6 +475,8 @@ enum PickAction {
     SetTheme(theme::Theme),
     /// Prepare an explicit restart command in the composer. This never swaps or executes an Agent.
     PrepareResume(String),
+    /// Open one bounded, read-only L1 detail panel from the tunables L0 registry picker.
+    InspectTunable(tunables_view::Detail),
     /// Informational row (agents/skills browse) — accepting does nothing.
     Info,
 }
@@ -5180,14 +5183,10 @@ async fn apply_action(
     directory: &ProviderDirectory,
     action: PickAction,
 ) {
-    if let PickAction::PrepareResume(run_id) = &action {
-        app.prepare_resume_handoff(run_id);
-        return;
-    }
-    if matches!(&action, PickAction::Info) {
-        return;
-    }
     match action {
+        PickAction::PrepareResume(run_id) => app.prepare_resume_handoff(&run_id),
+        PickAction::InspectTunable(detail) => show_tunable_detail(app, detail),
+        PickAction::Info => {}
         PickAction::SetModel(selection) => {
             apply_model_selection(app, session, directory, selection).await
         }
@@ -5220,10 +5219,17 @@ async fn apply_action(
             }
         }
         PickAction::SetTheme(theme) => apply_theme_selection(app, theme),
-        PickAction::PrepareResume(_) | PickAction::Info => {
-            unreachable!("handled before the control round-trip")
-        }
     }
+}
+
+fn show_tunable_detail(app: &mut App, detail: tunables_view::Detail) {
+    let mut rows: Vec<block::PanelRow> = detail
+        .rows
+        .into_iter()
+        .map(|(key, value)| kv(&key, &value))
+        .collect();
+    rows.extend(detail.notes.into_iter().map(block::PanelRow::Note));
+    app.panel("", &format!("tunable · {}", detail.family_id), rows);
 }
 
 fn apply_theme_selection(app: &mut App, theme: theme::Theme) {
@@ -5612,6 +5618,62 @@ fn open_session_picker(app: &mut App, session: &Session) {
         query: String::new(),
         saved_theme: None,
     });
+}
+
+fn open_tunables_picker(app: &mut App, session: &Session, argument: &str) {
+    if app.running || app.pending.is_some() {
+        app.note(
+            block::NoticeLevel::Warn,
+            "finish the current turn before browsing tunables",
+        );
+        return;
+    }
+    let argument = argument.trim();
+    let (catalog, initial_query) = if argument == "load" {
+        app.note(
+            block::NoticeLevel::Err,
+            "usage: /tunables load <workspace-relative-request.json>",
+        );
+        return;
+    } else if let Some(path) = argument.strip_prefix("load ") {
+        match tunables_view::load_workspace_request(session.workspace(), path.trim()) {
+            Ok(catalog) => (catalog, String::new()),
+            Err(error) => {
+                app.note(
+                    block::NoticeLevel::Err,
+                    format!("tunables simulation refused: {error}"),
+                );
+                return;
+            }
+        }
+    } else {
+        (
+            tunables_view::registry_catalog(),
+            argument.chars().take(MAX_PICKER_QUERY_CHARS).collect(),
+        )
+    };
+    let items = catalog
+        .entries
+        .into_iter()
+        .map(|detail| {
+            PickItem::flat(
+                detail.label.clone(),
+                detail.hint.clone(),
+                false,
+                PickAction::InspectTunable(detail),
+            )
+        })
+        .collect();
+    let mut picker = Picker {
+        title: catalog.title,
+        items,
+        sel: 0,
+        query: initial_query,
+        saved_theme: None,
+    };
+    let visible = picker.visible_indices();
+    picker.normalize_selection(&visible);
+    app.picker = Some(picker);
 }
 
 /// Build a picker's items, pre-selecting the current value, and open it — refusing (with a Notice)
@@ -6584,6 +6646,9 @@ async fn handle_registered_command(
                 "persist a choice with `core config set <key> <value>`".into(),
             ));
             app.panel("⚙", "config", rows);
+        }
+        SlashCommand::Tunables => {
+            open_tunables_picker(app, session, arg);
         }
         SlashCommand::Login => {
             // The credential half of the setup state machine deliberately does NOT run here. A
@@ -8707,6 +8772,35 @@ mod tests {
         assert!(app.picker.as_ref().unwrap().query.is_empty());
         app.picker_key(KeyCode::Esc);
         assert!(app.picker.is_none(), "second Esc closes the picker");
+    }
+
+    #[test]
+    fn tunables_l0_search_and_l1_detail_are_terminal_rendered_and_truthful() {
+        let mut app = App::new();
+        let (submissions, _submitted) = tokio::sync::mpsc::channel(1);
+        let session = Session::for_test(submissions);
+
+        open_tunables_picker(&mut app, &session, "route_selection");
+        let picker = app.picker.as_ref().expect("tunables picker opens");
+        assert_eq!(picker.items.len(), core_tunables::EXPECTED_FAMILY_COUNT);
+        assert_eq!(picker.query, "route_selection");
+        assert_eq!(picker.visible_indices(), vec![0]);
+        let l0 = render_text(&mut app, 110, 26);
+        assert!(l0.contains("tunables · catalog"));
+        assert!(l0.contains("provider"));
+        assert!(l0.contains("simulation only"));
+
+        let detail = match app.picker_key(KeyCode::Enter) {
+            Some(PickerEvent::Accept(PickAction::InspectTunable(detail))) => detail,
+            _ => panic!("Enter must select the one filtered tunable"),
+        };
+        show_tunable_detail(&mut app, detail);
+        let l1 = render_text(&mut app, 120, 40);
+        assert!(l1.contains("tunable · provider"));
+        assert!(l1.contains("runtime_bound=false"));
+        assert!(l1.contains("not supplied (no frozen request loaded)"));
+        assert!(l1.contains("SWE-bench Pro"));
+        assert!(l1.contains("does not edit config"));
     }
 
     #[test]

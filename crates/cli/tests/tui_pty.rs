@@ -956,6 +956,37 @@ fn vim_composer_routes_insert_normal_delete_and_return_to_insert() {
 }
 
 #[test]
+fn tunables_registry_search_and_detail_are_terminal_real() {
+    let scratch = Scratch::new("tunables-registry");
+    let mut pty = PtyHarness::spawn(&scratch, 110, 30);
+    wait_for_ready(&mut pty);
+
+    pty.send(b"/tunables route_selection\r");
+    pty.wait_until("searchable 160-family tunables registry", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("tunables · catalog")
+            && screen.contains("provider")
+            && screen.contains("route_selection")
+            && screen.contains("simulation only")
+    });
+    pty.send(b"\r");
+    pty.wait_until("read-only tunable detail", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("core.control.provider.route_selection")
+            && screen.contains("runtime_bound=false")
+            && screen.contains("not supplied (no frozen request loaded)")
+            && screen.contains("SWE-bench Pro")
+    });
+
+    pty.send(b"\x03");
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "normal TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+}
+
+#[test]
 fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_real() {
     let scratch = Scratch::new("transcript-viewer");
     let mut pty = PtyHarness::spawn(&scratch, 100, 28);

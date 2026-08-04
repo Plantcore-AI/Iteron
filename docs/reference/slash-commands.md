@@ -34,6 +34,7 @@ rather than dispatching an incomplete operation.
 | `/mcp` | List connected MCP tools |
 | `/hooks` | Show user-configured lifecycle hooks |
 | `/config` | Show resolved session and file configuration |
+| `/tunables [query\|load <file>]` | Search all 160 canonical families, or inspect a workspace-relative frozen-request simulation |
 | `/theme` | Select a color theme with preview |
 | `/init` | Scaffold repository `.core/config.json` and `AGENTS.md` |
 | `/quit` | Leave the TUI |
@@ -41,3 +42,10 @@ rather than dispatching an incomplete operation.
 Compatibility aliases resolve to the same typed command identity but are not
 advertised by help or completion. The names above are the documented registry; use
 `/help` in your installed build for its exact list.
+
+`/tunables` is a read-only inspection surface. Its catalog mode shows registry
+metadata, with requested/effective values explicitly marked as not resolved. The
+`load` form accepts one explicit JSON request no larger than 1 MiB, resolves it with
+the provider-free resolver, and displays only the resolver's bounded redacted value
+previews. Neither mode edits configuration, binds values to the running process,
+authenticates evidence, trains a policy, or claims benchmark improvement.
