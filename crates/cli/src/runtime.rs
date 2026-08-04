@@ -2513,6 +2513,13 @@ impl Agent {
         self.agent_catalog.execution_digest()
     }
 
+    /// Clone the exact immutable catalog pinned for this runtime. Frontends receive this once at
+    /// attach time; they must never rediscover definitions from a filesystem that may have changed
+    /// after execution inputs were resolved.
+    pub(crate) fn agent_catalog_snapshot(&self) -> std::sync::Arc<core_agents::AgentCatalog> {
+        self.agent_catalog.clone()
+    }
+
     /// The quota the provider last published on its response headers, or `None` when this route
     /// publishes none. Read before the first token of the answer, so a frontend can show a
     /// shrinking budget before the rejection rather than after it (I-53).
@@ -10900,6 +10907,12 @@ mod gate_integration_tests {
         let expected = catalog.execution_digest();
         agent.pin_agent_catalog(catalog).unwrap();
         assert_eq!(agent.agent_catalog_digest(), expected);
+        let attached = agent.agent_catalog_snapshot();
+        assert_eq!(attached.execution_digest(), expected);
+        assert!(std::sync::Arc::ptr_eq(
+            &attached,
+            &agent.agent_catalog_snapshot()
+        ));
         assert!(matches!(
             agent.pin_agent_catalog(core_agents::AgentCatalog::builtin_only()),
             Err(KernelError::AgentCatalogAlreadyResolved)

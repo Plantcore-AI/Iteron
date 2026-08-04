@@ -491,6 +491,10 @@ pub(crate) struct SessionFacts {
     /// and the client tracks the current one itself.
     pub(crate) initial_model_context_window: Option<u64>,
     pub(crate) registry_tools: Vec<ToolFact>,
+    /// The exact immutable `Arc` the runtime resolves child definitions against. Keeping object
+    /// identity across the attach boundary prevents `/agents` from presenting filesystem drift as
+    /// executable state while the resident runtime continues using its pinned catalog.
+    pub(crate) agent_catalog: Arc<core_agents::AgentCatalog>,
 }
 
 /// Everything a client needs to talk to a running App Server, and nothing more.
@@ -548,6 +552,7 @@ pub(crate) fn attach(
                 capability: spec.capability,
             })
             .collect(),
+        agent_catalog: agent.agent_catalog_snapshot(),
     };
     let initial_state = snapshot_of(&mut agent);
 
