@@ -1,3 +1,4 @@
+use core_protocol::wire::PROTOCOL_VERSION;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -435,7 +436,7 @@ fn authentication_precedes_version_replay_and_submission_behavior_without_token_
     let mut missing = connect(address);
     send(
         &mut missing,
-        json!({"type":"hello","protocol_version":1,"resume_from":0}),
+        json!({"type":"hello","protocol_version":PROTOCOL_VERSION,"resume_from":0}),
     );
     assert_closed_without_frame(missing);
 
@@ -444,7 +445,7 @@ fn authentication_precedes_version_replay_and_submission_behavior_without_token_
         &mut submit_first,
         json!({
             "type":"submit",
-            "protocol_version":1,
+            "protocol_version":PROTOCOL_VERSION,
             "op":{"op":"user_input","text":"must not be admitted"}
         }),
     );
@@ -452,7 +453,7 @@ fn authentication_precedes_version_replay_and_submission_behavior_without_token_
     assert_eq!(fs::read(&rollout).unwrap(), before);
 
     let mut authorized = connect(address);
-    send(&mut authorized, hello(&token, 1, 0));
+    send(&mut authorized, hello(&token, PROTOCOL_VERSION, 0));
     let mut reader = BufReader::new(authorized);
     assert_eq!(receive(&mut reader)["type"], "hello");
     assert_eq!(fs::read(&rollout).unwrap(), before);
@@ -471,7 +472,7 @@ fn connection_limit_drops_rejects_without_tasks_and_completed_connections_are_re
     let mut blockers = Vec::new();
     for _ in 0..32 {
         let mut connection = connect(address);
-        send(&mut connection, hello(&token, 1, 0));
+        send(&mut connection, hello(&token, PROTOCOL_VERSION, 0));
         let mut reader = BufReader::new(connection.try_clone().unwrap());
         assert_eq!(receive(&mut reader)["type"], "hello");
         blockers.push(connection);
@@ -486,7 +487,7 @@ fn connection_limit_drops_rejects_without_tasks_and_completed_connections_are_re
     // entries would grow here even though active connection concurrency remains one.
     for _ in 0..96 {
         let mut connection = connect(address);
-        send(&mut connection, hello(&token, 1, 0));
+        send(&mut connection, hello(&token, PROTOCOL_VERSION, 0));
         let mut reader = BufReader::new(connection);
         assert_eq!(receive(&mut reader)["type"], "hello");
     }
@@ -506,7 +507,7 @@ fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server() {
     let mut skewed = connect(address);
     let rollout = only_rollout(&scratch.runs());
     let before = fs::read(&rollout).unwrap();
-    send(&mut skewed, hello(&token, 2, 0));
+    send(&mut skewed, hello(&token, PROTOCOL_VERSION + 1, 0));
     let mut skewed_reader = BufReader::new(skewed);
     let refusal = receive(&mut skewed_reader);
     assert_eq!(refusal["type"], "error");
@@ -515,14 +516,14 @@ fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server() {
 
     // Start through the real SQ, disconnect mid-turn, then resume from the last live cursor.
     let mut first = connect(address);
-    send(&mut first, hello(&token, 1, 0));
+    send(&mut first, hello(&token, PROTOCOL_VERSION, 0));
     let mut first_reader = BufReader::new(first.try_clone().unwrap());
     assert_eq!(receive(&mut first_reader)["type"], "hello");
     send(
         &mut first,
         json!({
             "type":"submit",
-            "protocol_version":1,
+            "protocol_version":PROTOCOL_VERSION,
             "op":{
                 "op":"user_input_v2",
                 "segments":[
@@ -547,7 +548,7 @@ fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server() {
     provider.release.send(()).unwrap();
 
     let mut resumed = connect(address);
-    send(&mut resumed, hello(&token, 1, last_seq));
+    send(&mut resumed, hello(&token, PROTOCOL_VERSION, last_seq));
     let mut resumed_reader = BufReader::new(resumed);
     let hello = receive(&mut resumed_reader);
     assert_eq!(hello["type"], "hello");
@@ -607,14 +608,14 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     let (child, token) = spawn_core(&scratch, address);
 
     let mut client = connect(address);
-    send(&mut client, hello(&token, 1, 0));
+    send(&mut client, hello(&token, PROTOCOL_VERSION, 0));
     let mut reader = BufReader::new(client.try_clone().unwrap());
     assert_eq!(receive(&mut reader)["type"], "hello");
     send(
         &mut client,
         json!({
             "type":"submit",
-            "protocol_version":1,
+            "protocol_version":PROTOCOL_VERSION,
             "op":{"op":"user_input","text":"produce a bounded replay-ring flood"}
         }),
     );
@@ -630,7 +631,7 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     let deadline = Instant::now() + TIMEOUT;
     let mut fallback_reader = loop {
         let mut candidate = connect(address);
-        send(&mut candidate, hello(&token, 1, 0));
+        send(&mut candidate, hello(&token, PROTOCOL_VERSION, 0));
         let mut candidate = BufReader::new(candidate);
         let hello = receive(&mut candidate);
         if hello["replay_source"] == "rollout" {
@@ -644,7 +645,7 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     };
     let durable = receive(&mut fallback_reader);
     assert_eq!(durable["type"], "rollout");
-    assert_eq!(durable["protocol_version"], 1);
+    assert_eq!(durable["protocol_version"], PROTOCOL_VERSION);
     assert!(durable["rollout_seq"].as_u64().is_some());
     assert!(durable["event"].is_object());
 
