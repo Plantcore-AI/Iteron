@@ -163,7 +163,23 @@ pub fn bwrap_args(conf: &Confinement, command: &str) -> Vec<String> {
         command,
         home.as_deref(),
         WorkspaceSource::Path(&conf.workspace),
-        true,
+        SessionMode::OneShot,
+    )
+}
+
+/// Build the path-backed namespace used by a long-lived, pipe-supervised child.
+///
+/// Unlike bounded one-shot commands, persistent children must remain in the outer supervisor's
+/// process group while bubblewrap establishes its PID namespace and parent-death contract. A new
+/// session here would create a setup window in which group cleanup cannot reach the child.
+pub(crate) fn bwrap_args_for_persistent(conf: &Confinement, command: &str) -> Vec<String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    bwrap_args_with_home_and_source(
+        conf,
+        command,
+        home.as_deref(),
+        WorkspaceSource::Path(&conf.workspace),
+        SessionMode::Persistent,
     )
 }
 
@@ -173,7 +189,7 @@ fn bwrap_args_with_home(conf: &Confinement, command: &str, home: Option<&Path>) 
         command,
         home,
         WorkspaceSource::Path(&conf.workspace),
-        true,
+        SessionMode::OneShot,
     )
 }
 
@@ -189,7 +205,7 @@ pub(crate) fn bwrap_args_with_workspace_fd(
         command,
         home.as_deref(),
         WorkspaceSource::Descriptor(workspace_fd),
-        false,
+        SessionMode::Persistent,
     )
 }
 
@@ -199,12 +215,18 @@ enum WorkspaceSource<'a> {
     Descriptor(libc::c_int),
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SessionMode {
+    OneShot,
+    Persistent,
+}
+
 fn bwrap_args_with_home_and_source(
     conf: &Confinement,
     command: &str,
     home: Option<&Path>,
     workspace_source: WorkspaceSource<'_>,
-    new_session: bool,
+    session_mode: SessionMode,
 ) -> Vec<String> {
     let ws = conf.workspace.display().to_string();
     let mut a: Vec<String> = Vec::new();
@@ -245,6 +267,15 @@ fn bwrap_args_with_home_and_source(
     // Minimal /dev and /proc.
     a.push("--dev".into());
     a.push("/dev".into());
+    // `--new-session` protects one-shot children from the caller's controlling terminal. The
+    // persistent supervisor deliberately cannot use it because the child must remain reachable
+    // through the outer cleanup group during namespace setup. Mask the controlling-terminal
+    // device in that mode so piped code cannot reopen the host TTY through `/dev/tty`.
+    if session_mode == SessionMode::Persistent {
+        a.push("--ro-bind".into());
+        a.push("/dev/null".into());
+        a.push("/dev/tty".into());
+    }
     a.push("--proc".into());
     a.push("/proc".into());
     // Make the namespace root read-only.
@@ -267,7 +298,7 @@ fn bwrap_args_with_home_and_source(
     // Persistent pipe processes stay in the outer supervisor's process group until bwrap has
     // armed its PID-namespace parent-death contract. This removes the setup window introduced by
     // `setsid`; bounded one-shot runs retain their independent session.
-    if new_session {
+    if session_mode == SessionMode::OneShot {
         a.push("--new-session".into());
     }
     a.push("--unshare-pid".into());

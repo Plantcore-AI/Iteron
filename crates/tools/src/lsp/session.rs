@@ -373,12 +373,15 @@ impl Driver {
 
     async fn force_cleanup(&mut self) -> bool {
         drop(self.stdin.take());
-        let confirmed = if let Some(mut process) = self.process.take() {
-            process.terminate_and_reap().await.is_some()
-        } else {
-            true
+        let process = self.process.take();
+        let process_cleanup = async move {
+            if let Some(mut process) = process {
+                process.terminate_and_reap().await.is_some()
+            } else {
+                true
+            }
         };
-        self.finish_stderr().await;
+        let (confirmed, ()) = join_cleanup(process_cleanup, self.finish_stderr()).await;
         confirmed
     }
 
@@ -398,6 +401,17 @@ impl Driver {
     fn now_ms(&self) -> u64 {
         u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
+}
+
+pub(super) async fn join_cleanup<Process, Stderr>(
+    process: Process,
+    stderr: Stderr,
+) -> (Process::Output, Stderr::Output)
+where
+    Process: std::future::Future,
+    Stderr: std::future::Future,
+{
+    tokio::join!(process, stderr)
 }
 
 async fn drain_stderr(mut stderr: tokio::process::ChildStderr, limit_hit: Arc<AtomicBool>) {

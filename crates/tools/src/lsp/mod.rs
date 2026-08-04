@@ -2,8 +2,10 @@
 //!
 //! Each call starts one known language adapter only after the kernel admits CodeExecuting,
 //! confines it with the persistent Linux bubblewrap backend, completes a bounded LSP lifecycle,
-//! rechecks the target bytes, and joins the child before returning. Long-lived reuse, automatic
-//! restart, dependency-graph freshness and non-Linux process confinement remain explicit gaps.
+//! and rechecks the target bytes. Natural results join the child before returning; at the absolute
+//! user-visible deadline the result is Unknown while runtime-owned cleanup continues. Long-lived
+//! reuse, automatic restart, dependency-graph freshness and non-Linux process confinement remain
+//! explicit gaps.
 
 #[cfg(unix)]
 mod capability;
@@ -28,6 +30,26 @@ const MAX_TOOL_OUTPUT_BYTES: usize = 1024 * 1024;
 const LSP_TOOL_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(70);
 const LSP_TOOL_ACTIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(67);
 const LSP_TOOL_CLEANUP_RESERVE: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[derive(Clone, Copy, Debug)]
+struct LspDeadlines {
+    active: tokio::time::Instant,
+    total: tokio::time::Instant,
+}
+
+impl LspDeadlines {
+    fn from_start(started: tokio::time::Instant) -> Self {
+        debug_assert_eq!(
+            LSP_TOOL_ACTIVE_TIMEOUT + LSP_TOOL_CLEANUP_RESERVE,
+            LSP_TOOL_TOTAL_TIMEOUT
+        );
+        let total = started + LSP_TOOL_TOTAL_TIMEOUT;
+        Self {
+            active: total - LSP_TOOL_CLEANUP_RESERVE,
+            total,
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 enum LspToolError {
@@ -199,12 +221,8 @@ async fn execute(
     if !cfg!(target_os = "linux") {
         return Err((LspToolError::SandboxUnavailable, false));
     }
-    debug_assert_eq!(
-        LSP_TOOL_ACTIVE_TIMEOUT + LSP_TOOL_CLEANUP_RESERVE,
-        LSP_TOOL_TOTAL_TIMEOUT
-    );
-    let deadline = tokio::time::Instant::now() + LSP_TOOL_ACTIVE_TIMEOUT;
-    execute_inner(call, root, launcher, sensitive_env_names, deadline).await
+    let deadlines = LspDeadlines::from_start(tokio::time::Instant::now());
+    execute_inner(call, root, launcher, sensitive_env_names, deadlines).await
 }
 
 async fn execute_inner(
@@ -212,7 +230,7 @@ async fn execute_inner(
     root: PathBuf,
     launcher: &Launcher,
     sensitive_env_names: Vec<String>,
-    deadline: tokio::time::Instant,
+    deadlines: LspDeadlines,
 ) -> Result<String, (LspToolError, bool)> {
     let query_name = call
         .input
@@ -227,7 +245,7 @@ async fn execute_inner(
         .ok_or((LspToolError::InvalidArguments, false))?;
     let line = bounded_u32(&call.input, "line")?;
     let character = bounded_u32(&call.input, "character")?;
-    let document = tokio::time::timeout_at(deadline, SourceDocument::load(&root, path))
+    let document = tokio::time::timeout_at(deadlines.active, SourceDocument::load(&root, path))
         .await
         .map_err(|_| (LspToolError::OperationTimeout, false))?
         .map_err(|error| (error, false))?;
@@ -260,11 +278,12 @@ async fn execute_inner(
         Arc::clone(&document),
         query,
         sensitive_env_names,
-        deadline,
+        deadlines.active,
+        deadlines.total,
     )
     .await
     .map_err(|failure| (failure.error, failure.outcome_unknown))?;
-    if tokio::time::Instant::now() >= deadline {
+    if tokio::time::Instant::now() >= deadlines.active {
         return Err((LspToolError::OperationTimeout, false));
     }
     let normalized =
@@ -291,7 +310,7 @@ async fn execute_inner(
             false,
         ));
     }
-    if tokio::time::Instant::now() >= deadline {
+    if tokio::time::Instant::now() >= deadlines.active {
         return Err((LspToolError::OperationTimeout, false));
     }
     Ok(rendered)

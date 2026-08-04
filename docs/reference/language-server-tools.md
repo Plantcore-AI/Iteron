@@ -37,9 +37,15 @@ hover text, including quoted paths containing spaces; ordinary documentation URL
 
 The operation has a 70-second user-visible async budget: 67 seconds are available to admission,
 spawn, protocol work, and projection, with three seconds reserved for forced process and stderr
-cleanup. Cancellation transfers cleanup to an owned supervisor task. A kernel-stalled filesystem
-operation cannot be interrupted portably; this remains a host/filesystem availability boundary,
-not a claimed hard deadline for an unresponsive FUSE or network mount.
+cleanup, which run concurrently. The supervisor awaits that owned lifecycle task through the
+absolute 70-second deadline. If terminal cleanup has not been confirmed then, Core returns an
+Unknown outcome and detaches rather than aborting the runtime-owned cleanup task; that task
+continues to own the process lifecycle, spends the process-group capability before any
+direct-child reap, and completes the bounded reap and stderr-retirement attempts. Caller
+cancellation uses the same ownership transfer. A kernel-stalled filesystem operation cannot be
+interrupted portably; this
+remains a host/filesystem availability boundary, not a claimed hard deadline for an unresponsive
+FUSE or network mount.
 
 This first live slice deliberately does not claim a persistent server pool or batched multi-query
 session, restart/reconnect,

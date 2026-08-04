@@ -1,6 +1,6 @@
 use super::{
-    LSP_TOOL_ACTIVE_TIMEOUT, LSP_TOOL_CLEANUP_RESERVE, LSP_TOOL_TOTAL_TIMEOUT, QueryKind,
-    input_schema, normalize, success,
+    LSP_TOOL_ACTIVE_TIMEOUT, LSP_TOOL_CLEANUP_RESERVE, LSP_TOOL_TOTAL_TIMEOUT, LspDeadlines,
+    QueryKind, input_schema, normalize, success,
 };
 use crate::Registry;
 use core_lsp::intel::Position;
@@ -9,8 +9,33 @@ use core_protocol::ToolUse;
 use core_protocol::{Capability, Purity, Trust};
 use serde_json::json;
 
+#[tokio::test(start_paused = true)]
+async fn forced_process_and_stderr_cleanup_share_the_reserve() {
+    let started = tokio::time::Instant::now();
+    let cleanup = tokio::spawn(super::session::join_cleanup(
+        async {
+            tokio::time::sleep(std::time::Duration::from_millis(2_250)).await;
+            true
+        },
+        async { tokio::time::sleep(std::time::Duration::from_secs(1)).await },
+    ));
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_millis(2_249)).await;
+    assert!(!cleanup.is_finished());
+    tokio::time::advance(std::time::Duration::from_millis(1)).await;
+    assert_eq!(cleanup.await.unwrap(), (true, ()));
+    let elapsed = tokio::time::Instant::now().duration_since(started);
+    assert_eq!(elapsed, std::time::Duration::from_millis(2_250));
+    assert!(elapsed < LSP_TOOL_CLEANUP_RESERVE);
+}
+
 #[test]
 fn active_work_and_forced_cleanup_share_one_user_visible_budget() {
+    let started = tokio::time::Instant::now();
+    let deadlines = LspDeadlines::from_start(started);
+    assert_eq!(deadlines.active, started + LSP_TOOL_ACTIVE_TIMEOUT);
+    assert_eq!(deadlines.total, started + LSP_TOOL_TOTAL_TIMEOUT);
+    assert_eq!(deadlines.total - deadlines.active, LSP_TOOL_CLEANUP_RESERVE);
     assert_eq!(
         LSP_TOOL_ACTIVE_TIMEOUT + LSP_TOOL_CLEANUP_RESERVE,
         LSP_TOOL_TOTAL_TIMEOUT

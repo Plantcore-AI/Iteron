@@ -115,6 +115,11 @@ impl ConfinedProcess {
         self.control.clone()
     }
 
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn direct_pid(&self) -> Option<u32> {
+        self.child.id()
+    }
+
     pub fn take_stdin(&mut self) -> Option<tokio::process::ChildStdin> {
         self.child.stdin.take()
     }
@@ -230,7 +235,7 @@ pub async fn spawn_confined_process(
             return Err(SandboxError::Unsupported);
         };
         let mut process = tokio::process::Command::new(binary);
-        process.args(crate::bubblewrap::bwrap_args(conf, command));
+        process.args(crate::bubblewrap::bwrap_args_for_persistent(conf, command));
         configure_pipes(&mut process, conf);
         spawn_checked(process, PersistentBackend::LinuxBubblewrapPipes).await
     }

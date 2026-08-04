@@ -30,4 +30,4 @@ getrandom = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread", "test-util"] }

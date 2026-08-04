@@ -74,6 +74,16 @@ fn args_unshare_net_by_default_and_make_only_workspace_writable() {
         args.iter().any(|arg| arg == "--unshare-net"),
         "network must be unshared by default"
     );
+    assert!(
+        args.iter().any(|argument| argument == "--new-session"),
+        "bounded one-shot children must not inherit the caller's controlling session"
+    );
+    assert!(
+        !args
+            .windows(3)
+            .any(|window| window == ["--ro-bind", "/dev/null", "/dev/tty"]),
+        "the tty mask is the persistent-mode substitute for a new session"
+    );
     let joined = args.join(" ");
     assert!(
         joined.contains("--bind /work/repo /work/repo"),
@@ -140,6 +150,41 @@ fn descriptor_workspace_source_is_distinct_from_namespace_destination() {
     assert!(
         !args.iter().any(|argument| argument == "--new-session"),
         "persistent children must remain in the outer cleanup group during setup"
+    );
+    assert_persistent_tty_mask(&args);
+}
+
+#[test]
+fn path_backed_persistent_args_inherit_cleanup_group_and_mask_tty() {
+    let conf = Confinement::egress_off(PathBuf::from("/work/repo"));
+    let args = bwrap_args_for_persistent(&conf, "rust-analyzer");
+    assert!(
+        args.windows(3)
+            .any(|window| window == ["--bind", "/work/repo", "/work/repo"])
+    );
+    assert!(
+        !args.iter().any(|argument| argument == "--new-session"),
+        "persistent children must remain reachable by the outer cleanup group during setup"
+    );
+    assert_persistent_tty_mask(&args);
+}
+
+fn assert_persistent_tty_mask(args: &[String]) {
+    let dev_position = args
+        .windows(2)
+        .position(|window| window == ["--dev", "/dev"])
+        .unwrap();
+    let mask_position = args
+        .windows(3)
+        .position(|window| window == ["--ro-bind", "/dev/null", "/dev/tty"])
+        .expect("persistent children must not be able to reopen the host controlling terminal");
+    let remount_position = args
+        .windows(2)
+        .position(|window| window == ["--remount-ro", "/"])
+        .unwrap();
+    assert!(
+        dev_position < mask_position && mask_position < remount_position,
+        "the tty mask must overlay the private device mount before the namespace root is sealed"
     );
 }
 
@@ -525,6 +570,121 @@ async fn linux_live_descriptor_mount_survives_path_replacement_and_closes_the_bi
         std::fs::read_to_string(fixture.workspace.join("marker")).unwrap(),
         "replacement-path"
     );
+}
+
+#[cfg(target_os = "linux")]
+fn read_bounded_proc_record(path: &str) -> std::io::Result<String> {
+    const MAX_PROC_RECORD_BYTES: u64 = 16 * 1024;
+    let file = std::fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(MAX_PROC_RECORD_BYTES as usize + 1);
+    let mut limited = std::io::Read::take(file, MAX_PROC_RECORD_BYTES + 1);
+    std::io::Read::read_to_end(&mut limited, &mut bytes)?;
+    if bytes.len() > MAX_PROC_RECORD_BYTES as usize {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "proc record exceeded the live-test byte ceiling",
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+#[cfg(target_os = "linux")]
+fn bounded_host_descendants(root: u32) -> Vec<u32> {
+    const MAX_DESCENDANTS: usize = 64;
+    let mut pending = vec![root];
+    let mut seen = std::collections::BTreeSet::from([root]);
+    let mut descendants = Vec::new();
+    while let Some(parent) = pending.pop() {
+        let children_path = format!("/proc/{parent}/task/{parent}/children");
+        let children = match read_bounded_proc_record(&children_path) {
+            Ok(children) => children,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => panic!("cannot inspect {children_path}: {error}"),
+        };
+        for child in children.split_whitespace() {
+            let child = child.parse::<u32>().unwrap();
+            if seen.insert(child) {
+                descendants.push(child);
+                assert!(
+                    descendants.len() <= MAX_DESCENDANTS,
+                    "persistent setup exceeded the bounded process-tree inventory"
+                );
+                pending.push(child);
+            }
+        }
+    }
+    descendants
+}
+
+#[cfg(target_os = "linux")]
+fn host_process_group(pid: u32) -> Option<u32> {
+    let path = format!("/proc/{pid}/stat");
+    let stat = match read_bounded_proc_record(&path) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => panic!("cannot inspect host process {pid}: {error}"),
+    };
+    let (_, fields) = stat.rsplit_once(") ").expect("malformed /proc stat record");
+    let mut fields = fields.split_whitespace();
+    let _state = fields.next().expect("missing process state");
+    let _parent = fields.next().expect("missing parent pid");
+    Some(
+        fields
+            .next()
+            .expect("missing process group")
+            .parse()
+            .expect("non-numeric process group"),
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_live_path_persistent_setup_stays_reachable_and_masks_the_host_tty() {
+    let fixture = LiveFixture::new("path-persistent-session");
+    let mut confinement = Confinement::egress_off(&fixture.workspace);
+    confinement.timeout_secs = LIVE_TEST_TIMEOUT_SECS;
+    let mut process = match crate::spawn_confined_process(
+        "[ /dev/tty -ef /dev/null ] || exit 91; printf ready; sleep 30",
+        &confinement,
+    )
+    .await
+    {
+        Ok(process) => process,
+        Err(error @ SandboxError::Unsupported) => {
+            record_typed_refusal(error);
+            return;
+        }
+        Err(error) => panic!("path-backed persistent spawn failed: {error}"),
+    };
+    let direct_pid = process.direct_pid().expect("spawned child lost its pid");
+    drop(process.take_stdin());
+    let mut stdout = process.take_stdout().unwrap();
+    let mut ready = [0_u8; 5];
+    tokio::time::timeout(
+        Duration::from_secs(LIVE_TEST_TIMEOUT_SECS),
+        stdout.read_exact(&mut ready),
+    )
+    .await
+    .expect("server never reached the post-admission marker")
+    .expect("server exited before proving its tty mask");
+    assert_eq!(&ready, b"ready");
+
+    assert_eq!(host_process_group(direct_pid), Some(direct_pid));
+    let descendants = bounded_host_descendants(direct_pid);
+    assert!(
+        !descendants.is_empty(),
+        "a live bubblewrap setup must expose at least one host descendant"
+    );
+    for descendant in descendants {
+        if let Some(group) = host_process_group(descendant) {
+            assert_eq!(
+                group, direct_pid,
+                "persistent setup descendant {descendant} escaped the owned cleanup group"
+            );
+        }
+    }
+    assert!(process.terminate_and_reap().await.is_some());
 }
 
 #[cfg(target_os = "linux")]
