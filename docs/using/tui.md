@@ -78,6 +78,8 @@ requested/effective/adjustment rows say that no resolution is loaded. A loaded R
 report shows its atomic state and redacted provenance/adjustment explanation, but
 remains `simulation=true` and `runtime_bound=false`. Editing is intentionally absent
 until a runtime binding can prove which registry-declared families are safe to
-persist and can record the admitted value at run genesis.
+persist and can record the admitted value at run genesis. Frozen-request loading uses
+a retained, no-follow capability chain on Linux; platforms without equivalent
+workspace confinement refuse `load` while retaining catalog browsing.
 
 See [context, usage, and cost](../concepts/context-usage-cost.md).

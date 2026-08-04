@@ -45,7 +45,9 @@ advertised by help or completion. The names above are the documented registry; u
 
 `/tunables` is a read-only inspection surface. Its catalog mode shows registry
 metadata, with requested/effective values explicitly marked as not resolved. The
-`load` form accepts one explicit JSON request no larger than 1 MiB, resolves it with
-the provider-free resolver, and displays only the resolver's bounded redacted value
-previews. Neither mode edits configuration, binds values to the running process,
-authenticates evidence, trains a policy, or claims benchmark improvement.
+Linux `load` accepts one explicit JSON request no larger than 1 MiB through retained,
+no-follow workspace capabilities, resolves it with the provider-free resolver, and
+displays only the resolver's bounded redacted value previews. Platforms without an
+equivalent confined reader fail closed. Neither mode edits configuration, binds values
+to the running process, authenticates evidence, trains a policy, or claims benchmark
+improvement.

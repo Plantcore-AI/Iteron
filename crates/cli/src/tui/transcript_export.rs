@@ -13,6 +13,8 @@ use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(target_os = "linux")]
+use super::capability_fs;
 use crate::block;
 
 pub(crate) const MAX_TRANSCRIPT_EXPORT_BYTES: usize = 8 * 1024 * 1024;
@@ -155,12 +157,11 @@ fn versioned_leaf(leaf: &str, attempt: usize) -> String {
 
 #[cfg(target_os = "linux")]
 mod unix {
-    use std::ffi::{CStr, CString, OsStr, OsString};
+    use std::ffi::{CStr, CString, OsStr};
     use std::fs::File;
     use std::io::{self, Write as _};
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
     use std::os::unix::ffi::OsStrExt as _;
-    use std::os::unix::fs::MetadataExt as _;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(super) enum WriteError {
@@ -172,143 +173,6 @@ mod unix {
     fn c_string(value: &OsStr) -> io::Result<CString> {
         CString::new(value.as_bytes())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))
-    }
-
-    fn open_path(path: &std::path::Path) -> io::Result<File> {
-        let path = c_string(path.as_os_str())?;
-        // SAFETY: `path` is a live NUL-terminated string; returned ownership is checked below.
-        let fd = unsafe {
-            libc::open(
-                path.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: a successful `open` returns one owned descriptor.
-        Ok(unsafe { File::from_raw_fd(fd) })
-    }
-
-    fn open_dir(parent: &File, name: &OsStr) -> io::Result<File> {
-        let name = c_string(name)?;
-        // SAFETY: both descriptor and NUL-terminated component remain live for the call.
-        let fd = unsafe {
-            libc::openat(
-                parent.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: a successful `openat` returns one owned descriptor.
-        Ok(unsafe { File::from_raw_fd(fd) })
-    }
-
-    pub(super) fn traverse(root: &File, parents: &[String]) -> io::Result<File> {
-        let mut current = root.try_clone()?;
-        for component in parents {
-            current = open_dir(&current, OsStr::new(component))?;
-        }
-        Ok(current)
-    }
-
-    /// Stable binding for every component of the operator-visible workspace pathname.
-    ///
-    /// Holding the workspace and its immediate parent is insufficient: an ancestor can be renamed,
-    /// unlinked, or replaced while both descriptors remain valid. Start at the process's immutable
-    /// filesystem root, retain every directory capability in the chain, and reopen that entire
-    /// chain on both sides of publication.
-    pub(super) struct RootBinding {
-        anchor: File,
-        components: Vec<OsString>,
-        chain: Vec<File>,
-    }
-
-    impl RootBinding {
-        pub(super) fn open(path: &std::path::Path) -> io::Result<Self> {
-            let absolute = if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                std::env::current_dir()?.join(path)
-            };
-            if absolute.as_os_str().as_bytes().len() > super::MAX_EXPORT_PATH_BYTES {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "workspace path is too long",
-                ));
-            }
-            let mut saw_root = false;
-            let mut components = Vec::new();
-            for component in absolute.components() {
-                match component {
-                    std::path::Component::RootDir => saw_root = true,
-                    std::path::Component::CurDir => {}
-                    std::path::Component::Normal(component) if saw_root => {
-                        components.push(component.to_os_string());
-                        if components.len() > super::MAX_EXPORT_COMPONENTS {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidInput,
-                                "workspace path has too many components",
-                            ));
-                        }
-                    }
-                    _ => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "workspace path is not an absolute ordinary-component path",
-                        ));
-                    }
-                }
-            }
-            if !saw_root {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "workspace path has no filesystem root",
-                ));
-            }
-
-            let anchor = open_path(std::path::Path::new("/"))?;
-            let mut chain = Vec::with_capacity(components.len());
-            let mut current = anchor.try_clone()?;
-            for component in &components {
-                current = open_dir(&current, component)?;
-                chain.push(current.try_clone()?);
-            }
-            Ok(Self {
-                anchor,
-                components,
-                chain,
-            })
-        }
-
-        pub(super) fn root(&self) -> &File {
-            self.chain.last().unwrap_or(&self.anchor)
-        }
-
-        pub(super) fn still_bound(&self) -> bool {
-            let Ok(mut current) = self.anchor.try_clone() else {
-                return false;
-            };
-            for (component, expected) in self.components.iter().zip(&self.chain) {
-                let Ok(reopened) = open_dir(&current, component) else {
-                    return false;
-                };
-                if !same_directory(expected, &reopened).unwrap_or(false) {
-                    return false;
-                }
-                current = reopened;
-            }
-            true
-        }
-    }
-
-    pub(super) fn same_directory(left: &File, right: &File) -> io::Result<bool> {
-        let left = left.metadata()?;
-        let right = right.metadata()?;
-        Ok(left.dev() == right.dev() && left.ino() == right.ino())
     }
 
     fn create_anonymous(parent: &File) -> io::Result<File> {
@@ -422,16 +286,16 @@ where
     P: FnMut(),
 {
     let (parents, leaf) = parse_relative(requested).map_err(ExportError::known)?;
-    let root_binding = unix::RootBinding::open(workspace)
+    let root_binding = capability_fs::RootBinding::open(workspace)
         .map_err(|_| ExportError::known("workspace is unavailable or is a symlink"))?;
     let root = root_binding.root();
-    let parent = unix::traverse(root, &parents).map_err(|_| {
+    let parent = capability_fs::traverse(root, &parents).map_err(|_| {
         ExportError::known("export parent is unavailable, non-directory, or symlinked")
     })?;
     acquired();
     let rebound = root_binding.still_bound()
-        && unix::traverse(root, &parents)
-            .and_then(|current| unix::same_directory(&parent, &current))
+        && capability_fs::traverse(root, &parents)
+            .and_then(|current| capability_fs::same_file(&parent, &current))
             .unwrap_or(false);
     if !rebound {
         return Err(ExportError::known(
@@ -448,8 +312,8 @@ where
         match unix::write_exclusive(&parent, &candidate, bytes, &mut before_publish) {
             Ok(()) => {
                 let still_bound = root_binding.still_bound()
-                    && unix::traverse(root, &parents)
-                        .and_then(|current| unix::same_directory(&parent, &current))
+                    && capability_fs::traverse(root, &parents)
+                        .and_then(|current| capability_fs::same_file(&parent, &current))
                         .unwrap_or(false);
                 if !still_bound {
                     return Err(ExportError::unknown(

@@ -6,18 +6,22 @@
 
 mod format;
 
-use self::format::{clipped, code, compact_json, constraint_summary, row};
-use core_tunables::{
-    Family, RESOLUTION_INPUT_MAX_BYTES, ResolutionFailureReport, ResolutionReport,
+use self::format::{
+    MAX_DETAIL_FIELD_CHARS, bounded_detail, bounded_title, code, compact_json, constraint_summary,
+    join_bounded, row,
 };
+#[cfg(target_os = "linux")]
+use core_tunables::RESOLUTION_INPUT_MAX_BYTES;
+use core_tunables::{Family, ResolutionFailureReport, ResolutionReport};
 use serde_json::Value;
 use std::fmt;
-use std::fs::File;
+#[cfg(target_os = "linux")]
 use std::io::Read as _;
 use std::path::{Component, Path};
 
-const MAX_FIELD_CHARS: usize = 768;
 const MAX_REQUEST_PATH_BYTES: usize = 4_096;
+const MAX_REQUEST_COMPONENTS: usize = 128;
+const SAFE_LOAD_REFUSAL: &str = "request could not be loaded safely from this workspace";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Detail {
@@ -47,10 +51,10 @@ impl std::error::Error for LoadError {}
 
 pub(crate) fn registry_catalog() -> Catalog {
     Catalog {
-        title: format!(
+        title: bounded_title(&format!(
             "tunables · catalog · {} families · simulation only",
             core_tunables::families().len()
-        ),
+        )),
         entries: core_tunables::families()
             .iter()
             .map(catalog_detail)
@@ -58,12 +62,18 @@ pub(crate) fn registry_catalog() -> Catalog {
     }
 }
 
-/// Load one explicit request from inside the selected workspace. Canonicalization rejects parent
-/// traversal and symlinks escaping the workspace; streaming reads enforce R2's exact 1 MiB cap.
+/// Load one explicit request from inside the selected workspace. Linux retains directory and leaf
+/// capabilities, rejects symlinks and non-regular leaves, and rebinds the complete pathname before
+/// delivering exactly 1 MiB + 1 byte at most to R2. Other platforms fail closed.
 pub(crate) fn load_workspace_request(
     workspace: &Path,
     requested_path: &str,
 ) -> Result<Catalog, LoadError> {
+    let bytes = read_workspace_request(workspace, requested_path)?;
+    catalog_from_bytes(&bytes)
+}
+
+fn parse_request_path(requested_path: &str) -> Result<(Vec<String>, String), LoadError> {
     if requested_path.is_empty()
         || requested_path.len() > MAX_REQUEST_PATH_BYTES
         || requested_path.chars().any(char::is_control)
@@ -73,42 +83,80 @@ pub(crate) fn load_workspace_request(
         ));
     }
     let relative = Path::new(requested_path);
-    if !relative.is_relative()
-        || relative.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
-    {
-        return Err(LoadError("request path must stay inside the workspace"));
+    let mut components = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err(LoadError("request path must stay inside the workspace"));
+        };
+        let component = component
+            .to_str()
+            .ok_or(LoadError("request path must be valid UTF-8"))?;
+        components.push(component.to_owned());
+        if components.len() > MAX_REQUEST_COMPONENTS {
+            return Err(LoadError("request path contains too many components"));
+        }
     }
-    let workspace = workspace
-        .canonicalize()
-        .map_err(|_| LoadError("workspace is not available for request loading"))?;
-    let request = workspace
-        .join(relative)
-        .canonicalize()
-        .map_err(|_| LoadError("request file does not exist"))?;
-    if !request.starts_with(&workspace) {
-        return Err(LoadError("request path must stay inside the workspace"));
-    }
-    let file = File::open(&request).map_err(|_| LoadError("request file is not readable"))?;
-    if !file
-        .metadata()
-        .map_err(|_| LoadError("request file metadata is unavailable"))?
-        .is_file()
-    {
-        return Err(LoadError("request path must name a regular file"));
-    }
+    let leaf = components
+        .pop()
+        .ok_or(LoadError("request path must name a file"))?;
+    Ok((components, leaf))
+}
+
+#[cfg(target_os = "linux")]
+fn read_workspace_request(workspace: &Path, requested_path: &str) -> Result<Vec<u8>, LoadError> {
+    read_workspace_request_with_hook(workspace, requested_path, || {})
+}
+
+#[cfg(target_os = "linux")]
+fn read_workspace_request_with_hook(
+    workspace: &Path,
+    requested_path: &str,
+    acquired: impl FnOnce(),
+) -> Result<Vec<u8>, LoadError> {
+    use super::capability_fs;
+
+    let (parents, leaf) = parse_request_path(requested_path)?;
+    let binding =
+        capability_fs::RootBinding::open(workspace).map_err(|_| LoadError(SAFE_LOAD_REFUSAL))?;
+    let parent = capability_fs::traverse(binding.root(), &parents)
+        .map_err(|_| LoadError(SAFE_LOAD_REFUSAL))?;
+    let mut file = capability_fs::open_regular_nonblocking(&parent, &leaf)
+        .map_err(|_| LoadError(SAFE_LOAD_REFUSAL))?;
+    acquired();
+
     let mut bytes = Vec::with_capacity(RESOLUTION_INPUT_MAX_BYTES.min(64 * 1024));
-    file.take((RESOLUTION_INPUT_MAX_BYTES + 1) as u64)
+    (&mut file)
+        .take((RESOLUTION_INPUT_MAX_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(|_| LoadError("request file could not be read completely"))?;
+        .map_err(|_| LoadError(SAFE_LOAD_REFUSAL))?;
     if bytes.len() > RESOLUTION_INPUT_MAX_BYTES {
         return Err(LoadError("request exceeds the resolver's 1 MiB input cap"));
     }
-    catalog_from_bytes(&bytes)
+
+    // Reopen the complete root/parent/leaf path after the read. Both the retained parent and the
+    // retained leaf must still name the same inodes at the operator-visible workspace path before
+    // these bytes can cross the resolver boundary.
+    let rebound = binding.still_bound()
+        && capability_fs::traverse(binding.root(), &parents)
+            .and_then(|current_parent| {
+                if !capability_fs::same_file(&parent, &current_parent)? {
+                    return Ok(false);
+                }
+                let current_leaf = capability_fs::open_regular_nonblocking(&current_parent, &leaf)?;
+                capability_fs::same_file(&file, &current_leaf)
+            })
+            .unwrap_or(false)
+        && binding.still_bound();
+    if !rebound {
+        return Err(LoadError(SAFE_LOAD_REFUSAL));
+    }
+    Ok(bytes)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_workspace_request(_workspace: &Path, requested_path: &str) -> Result<Vec<u8>, LoadError> {
+    let _ = parse_request_path(requested_path)?;
+    Err(LoadError(SAFE_LOAD_REFUSAL))
 }
 
 fn catalog_from_bytes(bytes: &[u8]) -> Result<Catalog, LoadError> {
@@ -137,10 +185,10 @@ fn report_catalog(
         .map(|family| report_detail(report, family, atomic_status))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Catalog {
-        title: format!(
+        title: bounded_title(&format!(
             "tunables · {atomic_status} · {} families · {failure_count} failures · simulation only",
             entries.len()
-        ),
+        )),
         entries,
     })
 }
@@ -165,7 +213,7 @@ fn catalog_detail(family: &Family) -> Detail {
         "Read-only catalog: this does not edit config, bind a value to this run, authenticate evidence, train a policy, or prove benchmark impact."
             .into(),
     );
-    detail
+    bounded_detail(detail)
 }
 
 fn report_detail(
@@ -222,46 +270,34 @@ fn report_detail(
         "Values are R2 redacted previews only. This simulation is not the current process state and cannot authorize or persist a runtime setting."
             .into(),
     );
-    detail.hint = clipped(
-        &format!(
-            "{} · {state} · {reason} · key:{} · aliases:{} · default:{} · {}",
-            code(&family.domain),
-            family.semantic_key,
-            if family.aliases.is_empty() {
-                "none".into()
-            } else {
-                family.aliases.join(",")
-            },
-            code(&family.default.kind),
-            family.summary
-        ),
-        MAX_FIELD_CHARS,
-    );
-    Ok(detail)
+    detail.hint = self::format::bounded_hint(&format!(
+        "{} · {state} · {reason} · key:{} · aliases:{} · default:{} · {}",
+        code(&family.domain),
+        family.semantic_key,
+        if family.aliases.is_empty() {
+            "none".into()
+        } else {
+            join_bounded(family.aliases.iter().copied(), ",")
+        },
+        code(&family.default.kind),
+        family.summary
+    ));
+    Ok(bounded_detail(detail))
 }
 
 fn metadata_detail(family: &Family, state: &str) -> Detail {
-    let sources = family
-        .source
-        .bindings
-        .iter()
-        .map(|binding| {
+    let sources = join_bounded(
+        family.source.bindings.iter().map(|binding| {
             format!(
                 "{}/{} @ {}",
                 code(&binding.kind),
                 code(&binding.trust),
                 binding.locator
             )
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
-    let capabilities = family
-        .requirements
-        .capabilities
-        .iter()
-        .map(code)
-        .collect::<Vec<_>>()
-        .join(", ");
+        }),
+        "; ",
+    );
+    let capabilities = join_bounded(family.requirements.capabilities.iter().map(code), ", ");
     let rules = constraint_summary(family.value_schema.rules);
     let default_value = family
         .default
@@ -271,14 +307,9 @@ fn metadata_detail(family: &Family, state: &str) -> Detail {
     let aliases = if family.aliases.is_empty() {
         "none".into()
     } else {
-        family.aliases.join(", ")
+        join_bounded(family.aliases.iter().copied(), ", ")
     };
-    let strategy_slots = family
-        .strategy_slots
-        .iter()
-        .map(code)
-        .collect::<Vec<_>>()
-        .join(", ");
+    let strategy_slots = join_bounded(family.strategy_slots.iter().map(code), ", ");
     let mut notes = vec![family.summary.into()];
     if family.benchmark_relevance.rationale != family.summary {
         notes.push(family.benchmark_relevance.rationale.into());
@@ -286,17 +317,14 @@ fn metadata_detail(family: &Family, state: &str) -> Detail {
     Detail {
         family_id: family.id.into(),
         label: format!("{:03}  {}  [{state}]", family.ordinal, family.id),
-        hint: clipped(
-            &format!(
-                "{} · {state} · key:{} · aliases:{} · default:{} · {}",
-                code(&family.domain),
-                family.semantic_key,
-                aliases,
-                code(&family.default.kind),
-                family.summary
-            ),
-            MAX_FIELD_CHARS,
-        ),
+        hint: self::format::bounded_hint(&format!(
+            "{} · {state} · key:{} · aliases:{} · default:{} · {}",
+            code(&family.domain),
+            family.semantic_key,
+            aliases,
+            code(&family.default.kind),
+            family.summary
+        )),
         rows: vec![
             row("semantic key", family.semantic_key),
             row("aliases", aliases),
@@ -384,7 +412,11 @@ fn string_field<'a>(
     object
         .get(key)
         .and_then(Value::as_str)
-        .filter(|value| value.len() <= MAX_FIELD_CHARS && !value.chars().any(char::is_control))
+        .filter(|value| {
+            value.len() <= self::format::MAX_DETAIL_FIELD_BYTES
+                && value.chars().count() <= MAX_DETAIL_FIELD_CHARS
+                && !value.chars().any(char::is_control)
+        })
         .ok_or(LoadError(
             "resolver explain contained an invalid bounded field",
         ))
@@ -421,21 +453,28 @@ fn adjustment_summary(value: Option<&Value>) -> Result<String, LoadError> {
     if adjustments.is_empty() {
         return Ok("none".into());
     }
-    let mut rendered = Vec::with_capacity(adjustments.len());
-    for adjustment in adjustments {
-        let object = adjustment.as_object().ok_or(LoadError(
-            "resolver explain contained an invalid adjustment",
-        ))?;
-        rendered.push(format!(
-            "{} field={} ceiling={} {} -> {}",
-            string_field(object, "code")?,
-            string_field(object, "field")?,
-            string_field(object, "ceiling")?,
-            preview(object.get("requested"))?,
-            preview(object.get("effective"))?,
-        ));
+    const MAX_RENDERED_ADJUSTMENTS: usize = 64;
+    let rendered = adjustments
+        .iter()
+        .take(MAX_RENDERED_ADJUSTMENTS)
+        .map(|adjustment| {
+            let object = adjustment.as_object().ok_or(LoadError(
+                "resolver explain contained an invalid adjustment",
+            ))?;
+            Ok(format!(
+                "{} field={} ceiling={} {} -> {}",
+                string_field(object, "code")?,
+                string_field(object, "field")?,
+                string_field(object, "ceiling")?,
+                preview(object.get("requested"))?,
+                preview(object.get("effective"))?,
+            ))
+        });
+    let mut checked = Vec::with_capacity(adjustments.len().min(MAX_RENDERED_ADJUSTMENTS));
+    for item in rendered {
+        checked.push(item?);
     }
-    Ok(clipped(&rendered.join("; "), MAX_FIELD_CHARS))
+    Ok(join_bounded(checked, "; "))
 }
 
 #[cfg(test)]
