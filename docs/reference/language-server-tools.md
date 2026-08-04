@@ -25,7 +25,9 @@ Line and character use zero-based LSP positions; character offsets are UTF-16 co
 is limited by the `core-lsp` 16 MiB ceiling, at most 64 interleaved messages and 32 MiB aggregate
 JSON are inspected, locations retain at most 200 entries, hover text retains at most 64 KiB, and
 rendered tool output is capped at 1 MiB. The target file's identity and bytes are rechecked after
-the reply. Server-produced content is labelled untrusted.
+the reply. Server-produced content is labelled untrusted. Locations are projected to
+workspace-relative paths; external/virtual locations are counted but not rendered, and the known
+workspace root is redacted from hover text.
 
 This first live slice deliberately does not claim a persistent server pool, restart/reconnect,
 workspace-wide dependency freshness, configurable server selection, target-platform process

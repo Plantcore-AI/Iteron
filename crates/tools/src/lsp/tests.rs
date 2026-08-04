@@ -27,11 +27,35 @@ fn location_projection_is_deterministic_bounded_and_loss_visible() {
         {"uri":"file:///repo/a.rs","range":{"start":{"line":1,"character":0},"end":{"line":1,"character":1}}},
         {"bad":true}
     ]);
-    let output = normalize(QueryKind::Definition { position, limit: 1 }, input).unwrap();
-    assert_eq!(output["locations"].as_array().unwrap().len(), 1);
+    let output = normalize(
+        QueryKind::Definition { position, limit: 1 },
+        input,
+        std::path::Path::new("/repo"),
+    )
+    .unwrap();
+    // The fixture paths do not exist, so no absolute host URI is retained.
+    assert_eq!(output["locations"].as_array().unwrap().len(), 0);
+    assert_eq!(output["outside_workspace"], 1);
     assert_eq!(output["truncated"], 1);
     assert_eq!(output["duplicates"], 1);
     assert_eq!(output["malformed"], 1);
+}
+
+#[test]
+fn location_projection_exposes_only_workspace_relative_paths() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let uri = url::Url::from_file_path(root.join("src/lib.rs"))
+        .unwrap()
+        .to_string();
+    let position = Position::new(0, 0).unwrap();
+    let output = normalize(
+        QueryKind::Definition { position, limit: 1 },
+        json!({"uri":uri,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}),
+        root,
+    )
+    .unwrap();
+    assert_eq!(output["locations"][0]["path"], "src/lib.rs");
+    assert!(!output.to_string().contains(env!("CARGO_MANIFEST_DIR")));
 }
 
 #[test]
@@ -39,12 +63,13 @@ fn hover_projection_preserves_truncation_accounting() {
     let position = Position::new(1, 2).unwrap();
     let output = normalize(
         QueryKind::Hover { position },
-        json!({"contents":{"kind":"markdown","value":"hello"}}),
+        json!({"contents":{"kind":"markdown","value":"hello /repo/src/lib.rs"}}),
+        std::path::Path::new("/repo"),
     )
     .unwrap();
-    assert_eq!(output["text"], "hello");
-    assert_eq!(output["source_bytes"], 5);
-    assert_eq!(output["truncated_bytes"], 0);
+    assert_eq!(output["text"], "hello <workspace>/src/lib.rs");
+    assert_eq!(output["peer_source_bytes"], 22);
+    assert_eq!(output["peer_truncated_bytes"], 0);
 }
 
 #[test]

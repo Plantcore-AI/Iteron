@@ -6,11 +6,12 @@
 //! restart, dependency-graph freshness and non-Linux process confinement remain explicit gaps.
 
 mod input;
+mod projection;
 mod session;
 mod wire;
 
 use crate::{Registry, ToolError, ToolExecution, effectfut};
-use core_lsp::intel::{Position, parse_hover_text, parse_locations};
+use core_lsp::intel::Position;
 use core_protocol::{Capability, Purity, ToolResult, ToolSpec, ToolUse, Trust};
 use input::SourceDocument;
 use serde_json::{Value, json};
@@ -230,7 +231,8 @@ async fn execute(
     let live = run_query(launcher, &document, query, sensitive_env_names)
         .await
         .map_err(|failure| (failure.error, failure.cleanup_unknown))?;
-    let normalized = normalize(query, live.value).map_err(|error| (error, false))?;
+    let normalized =
+        normalize(query, live.value, document.root()).map_err(|error| (error, false))?;
     let output = json!({
         "schema_version": 1,
         "query": query.label(),
@@ -256,31 +258,16 @@ async fn execute(
     Ok(rendered)
 }
 
-fn normalize(query: QueryKind, value: Value) -> Result<Value, LspToolError> {
+fn normalize(
+    query: QueryKind,
+    value: Value,
+    canonical_root: &std::path::Path,
+) -> Result<Value, LspToolError> {
     match query {
         QueryKind::Definition { limit, .. } | QueryKind::References { limit, .. } => {
-            let parsed = parse_locations(&value, limit)?;
-            Ok(json!({
-                "locations": parsed.locations,
-                "truncated": parsed.truncated,
-                "malformed": parsed.malformed,
-                "duplicates": parsed.duplicates,
-                "uninspected": parsed.uninspected
-            }))
+            projection::locations(&value, limit, canonical_root)
         }
-        QueryKind::Hover { .. } => {
-            let parsed = parse_hover_text(&value);
-            Ok(json!({
-                "text": parsed.text,
-                "range": parsed.range,
-                "source_bytes": parsed.source_bytes,
-                "retained_source_bytes": parsed.retained_source_bytes,
-                "truncated_bytes": parsed.truncated_bytes,
-                "separator_bytes": parsed.separator_bytes,
-                "malformed": parsed.malformed,
-                "uninspected": parsed.uninspected
-            }))
-        }
+        QueryKind::Hover { .. } => Ok(projection::hover(&value, canonical_root)),
     }
 }
 
