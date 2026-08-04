@@ -8,10 +8,15 @@ use url::Url;
 const MAX_PATH_INPUT_BYTES: usize = 4 * 1024;
 
 pub fn parse_explicit_image_path(input: &str) -> Result<Option<ParsedImagePath>, ImageInputError> {
+    // Surrounding whitespace is dropped before the line-break test, not after: a terminal ends a
+    // dropped path with a newline, and rejecting the whole drop for that trailing byte sent the
+    // path on to the composer as bare text. An INTERIOR line break still disqualifies it — that is
+    // two references, not one.
+    let input = input.trim();
     if input.len() > MAX_PATH_INPUT_BYTES || input.contains(['\r', '\n', '\0']) {
         return Ok(None);
     }
-    let Some(candidate) = decode_single_path_token(input.trim()) else {
+    let Some(candidate) = decode_single_path_token(input) else {
         return Ok(None);
     };
     parse_path_candidate(&candidate)
