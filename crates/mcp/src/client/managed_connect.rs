@@ -1,6 +1,6 @@
 //! Cancellable stdio startup kept separate from the already-large client implementation.
 
-use super::{McpClient, lifecycle::terminate_and_reap};
+use super::{McpClient, lifecycle::OwnedProcess};
 use crate::{
     McpError,
     protocol_version::{REQUESTED_PROTOCOL_VERSION, negotiate_initialize_result},
@@ -38,21 +38,22 @@ pub(super) async fn connect(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    let mut child = command
+    let child = command
         .spawn()
         .map_err(|error| McpError::Spawn(error.to_string()))?;
+    let mut process = OwnedProcess::new(child);
 
-    let Some(stdin) = child.stdin.take() else {
-        terminate_and_reap(&mut child).await;
+    let Some(stdin) = process.take_stdin() else {
+        process.terminate_and_reap().await;
         return Err(McpError::Spawn("no stdin".into()));
     };
-    let Some(stdout) = child.stdout.take() else {
-        terminate_and_reap(&mut child).await;
+    let Some(stdout) = process.take_stdout() else {
+        process.terminate_and_reap().await;
         return Err(McpError::Spawn("no stdout".into()));
     };
 
     let mut client = McpClient {
-        child: Some(child),
+        process: Some(process),
         stdin: Mutex::new(stdin),
         stdout: Mutex::new(BufReader::with_capacity(READ_BUFFER_BYTES, stdout)),
         calls: Mutex::new(()),

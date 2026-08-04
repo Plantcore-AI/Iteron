@@ -6,18 +6,21 @@
 //! unknown terminal. Every process owned on a failure or cancellation path is terminated and
 //! reaped before the method returns.
 
+mod budget;
 mod catalog;
 mod config;
 mod identity;
+mod ready;
 
 pub use catalog::{
     MAX_MCP_SEARCH_DESCRIPTION_BYTES, MAX_MCP_SEARCH_OUTPUT_BYTES, MAX_MCP_SEARCH_QUERY_BYTES,
     MAX_MCP_SEARCH_RESULTS, McpToolIdentity, McpToolMatch, McpToolSearchResult,
 };
 pub use config::{
-    MAX_MCP_COMMAND_BYTES, MAX_MCP_DEADLINE_MS, MAX_MCP_ENV_NAME_BYTES, MAX_MCP_LAUNCH_ARG_BYTES,
-    MAX_MCP_LAUNCH_ARGS, MAX_MCP_LAUNCH_BYTES, MAX_MCP_SENSITIVE_ENV_NAMES, McpCancellation,
-    McpLaunchConfig, McpTimeouts,
+    DEFAULT_MCP_OPERATION_DEADLINE_MS, MAX_MCP_COMMAND_BYTES, MAX_MCP_DEADLINE_MS,
+    MAX_MCP_ENV_NAME_BYTES, MAX_MCP_LAUNCH_ARG_BYTES, MAX_MCP_LAUNCH_ARGS, MAX_MCP_LAUNCH_BYTES,
+    MAX_MCP_OPERATION_DEADLINE_MS, MAX_MCP_SENSITIVE_ENV_NAMES, McpCancellation, McpLaunchConfig,
+    McpTimeouts,
 };
 pub use identity::McpServerIdentity;
 
@@ -29,6 +32,7 @@ use crate::{
     },
     tool_filter::McpToolFilter,
 };
+use budget::{OperationBudget, operation_deadline};
 use catalog::ManagedCatalog;
 use serde_json::Value;
 use std::{num::NonZeroU64, time::Duration};
@@ -85,7 +89,12 @@ impl McpSupervisor {
         &self.identity
     }
 
-    pub fn status(&self) -> LifecycleStatus {
+    /// Reconcile direct-child liveness before reporting operator-visible status. This method may
+    /// synchronously reap a server already known to have exited, but never waits for a live child.
+    pub fn status(&mut self) -> LifecycleStatus {
+        if self.reconcile_ready_liveness().is_err() {
+            self.lifecycle.stop();
+        }
         let mut status = self.lifecycle.status();
         if status.phase == LifecyclePhase::Backoff
             && let Some(not_before) = self.retry_not_before
@@ -110,8 +119,11 @@ impl McpSupervisor {
                 operation: "tool search",
             });
         }
-        let generation = self.ensure_ready(cancellation).await?;
-        self.catalog.search(generation, query, limit)
+        let budget = OperationBudget::start(self.timeouts.operation())?;
+        let generation = self.ensure_ready(cancellation, budget).await?;
+        let result = self.catalog.search(generation, query, limit)?;
+        budget.remaining()?;
+        Ok(result)
     }
 
     /// Dispatch only an exact tool-contract identity returned by search. Within this supervisor
@@ -137,7 +149,16 @@ impl McpSupervisor {
                 evidence: None,
             };
         }
-        let generation = match self.ensure_ready(cancellation).await {
+        let budget = match OperationBudget::start(self.timeouts.operation()) {
+            Ok(budget) => budget,
+            Err(error) => {
+                return McpToolOutcome::FailedDefinite {
+                    error,
+                    evidence: None,
+                };
+            }
+        };
+        let generation = match self.ensure_ready(cancellation, budget).await {
             Ok(generation) => generation,
             Err(error) => {
                 return McpToolOutcome::FailedDefinite {
@@ -170,6 +191,7 @@ impl McpSupervisor {
         enum CallResult {
             Completed(McpToolOutcome),
             Cancelled,
+            OperationTimedOut,
         }
         let result = {
             let call = client.call_tool_outcome_observed(&bare_name, arguments, move || {
@@ -182,6 +204,7 @@ impl McpSupervisor {
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => CallResult::Cancelled,
+                _ = tokio::time::sleep_until(budget.deadline()) => CallResult::OperationTimedOut,
                 outcome = &mut call => CallResult::Completed(outcome),
             }
         };
@@ -218,6 +241,37 @@ impl McpSupervisor {
                     }
                 }
             }
+            CallResult::OperationTimedOut => {
+                let dispatched_at = *dispatch_started
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(dispatched_at) = dispatched_at {
+                    client.terminate().await;
+                    if self
+                        .record_failure(generation, LifecycleFailure::Deadline)
+                        .is_err()
+                    {
+                        self.lifecycle.stop();
+                    }
+                    McpToolOutcome::Unknown {
+                        error: operation_deadline(),
+                        evidence: crate::McpToolCallEvidence::new(
+                            self.server_name(),
+                            &bare_name,
+                            NonZeroU64::new(duration_ms_ceil(dispatched_at.elapsed()).max(1))
+                                .expect("a value clamped to one is non-zero"),
+                        ),
+                    }
+                } else {
+                    // The dispatch observer runs before the first fallible write. Dropping the
+                    // undispatched call future therefore leaves this connection reusable.
+                    self.client = Some(client);
+                    McpToolOutcome::FailedDefinite {
+                        error: operation_deadline(),
+                        evidence: None,
+                    }
+                }
+            }
             CallResult::Completed(outcome @ McpToolOutcome::Unknown { .. }) => {
                 let failure = match &outcome {
                     McpToolOutcome::Unknown { error, .. } => classify_failure(error),
@@ -248,179 +302,6 @@ impl McpSupervisor {
         self.retry_not_before = None;
         self.ready_since = None;
         self.healthy_calls = 0;
-    }
-
-    async fn ensure_ready(
-        &mut self,
-        cancellation: &McpCancellation,
-    ) -> Result<ServerGeneration, McpError> {
-        loop {
-            let status = self.lifecycle.status();
-            match status.phase {
-                LifecyclePhase::Ready => {
-                    return status
-                        .generation
-                        .ok_or(McpError::InvalidLifecycleTransition {
-                            state: "ready",
-                            event: "missing_generation",
-                        });
-                }
-                LifecyclePhase::Backoff => self.wait_for_retry(cancellation).await?,
-                LifecyclePhase::Exhausted => {
-                    return Err(McpError::RetryExhausted {
-                        attempts: status.reconnect_attempts,
-                    });
-                }
-                LifecyclePhase::Failed => return Err(McpError::LifecycleFailed),
-                LifecyclePhase::Stopped => return Err(McpError::LifecycleStopped),
-                LifecyclePhase::Deferred | LifecyclePhase::Cancelled => {}
-                phase => {
-                    return Err(McpError::InvalidLifecycleTransition {
-                        state: phase.label(),
-                        event: "ensure_ready",
-                    });
-                }
-            }
-            if cancellation.is_cancelled() {
-                return Err(McpError::Cancelled {
-                    operation: "lazy MCP startup",
-                });
-            }
-            let generation = self.lifecycle.begin_connection()?;
-            let connected = McpClient::connect_managed(
-                self.launch.command(),
-                self.launch.args(),
-                self.launch.server_name(),
-                self.timeouts.handshake(),
-                self.timeouts.request(),
-                self.launch.sensitive_env_names(),
-                cancellation,
-            )
-            .await;
-            let mut client = match connected {
-                Ok(client) => client,
-                Err(error @ McpError::Cancelled { .. }) => {
-                    if self.lifecycle.cancel(generation).is_err() {
-                        self.lifecycle.stop();
-                    }
-                    return Err(error);
-                }
-                Err(error) => {
-                    let failure = classify_failure(&error);
-                    self.record_failure(generation, failure)?;
-                    if self.lifecycle.status().phase != LifecyclePhase::Backoff {
-                        return Err(error);
-                    }
-                    continue;
-                }
-            };
-            if let Err(error) = self.lifecycle.connected(generation) {
-                client.terminate().await;
-                self.lifecycle.stop();
-                return Err(error);
-            }
-
-            enum DiscoveryResult {
-                Completed(Result<Vec<core_protocol::ToolSpec>, McpError>),
-                TimedOut,
-                Cancelled,
-            }
-            let discovery = {
-                let list = client.list_tools_filtered(&self.filter);
-                tokio::pin!(list);
-                tokio::select! {
-                    biased;
-                    _ = cancellation.cancelled() => DiscoveryResult::Cancelled,
-                    result = tokio::time::timeout(self.timeouts.discovery(), &mut list) => {
-                        match result {
-                            Ok(result) => DiscoveryResult::Completed(result),
-                            Err(_) => DiscoveryResult::TimedOut,
-                        }
-                    }
-                }
-            };
-            let specs = match discovery {
-                DiscoveryResult::Completed(Ok(specs)) => specs,
-                DiscoveryResult::Completed(Err(error)) => {
-                    client.terminate().await;
-                    let failure = classify_failure(&error);
-                    self.record_failure(generation, failure)?;
-                    if self.lifecycle.status().phase != LifecyclePhase::Backoff {
-                        return Err(error);
-                    }
-                    continue;
-                }
-                DiscoveryResult::TimedOut => {
-                    client.terminate().await;
-                    let error = McpError::Deadline {
-                        operation: "tool discovery".into(),
-                    };
-                    self.record_failure(generation, LifecycleFailure::Deadline)?;
-                    if self.lifecycle.status().phase != LifecyclePhase::Backoff {
-                        return Err(error);
-                    }
-                    continue;
-                }
-                DiscoveryResult::Cancelled => {
-                    client.terminate().await;
-                    if self.lifecycle.cancel(generation).is_err() {
-                        self.lifecycle.stop();
-                    }
-                    return Err(McpError::Cancelled {
-                        operation: "tool discovery",
-                    });
-                }
-            };
-            let protocol_version = client.negotiated_protocol_version().to_owned();
-            let catalog = match ManagedCatalog::admit(
-                self.server_name(),
-                self.identity.binding().clone(),
-                &protocol_version,
-                specs,
-            ) {
-                Ok(catalog) => catalog,
-                Err(error) => {
-                    client.terminate().await;
-                    self.record_failure(generation, LifecycleFailure::Catalog)?;
-                    return Err(error);
-                }
-            };
-            if let Err(error) = self.lifecycle.discovered(generation, catalog.len()) {
-                client.terminate().await;
-                self.lifecycle.stop();
-                return Err(error);
-            }
-            self.client = Some(client);
-            self.catalog = catalog;
-            self.retry_not_before = None;
-            self.ready_since = Some(Instant::now());
-            self.healthy_calls = 0;
-            return Ok(generation);
-        }
-    }
-
-    async fn wait_for_retry(&mut self, cancellation: &McpCancellation) -> Result<(), McpError> {
-        let deadline = self.retry_not_before.unwrap_or_else(Instant::now);
-        tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => Err(McpError::Cancelled { operation: "reconnect backoff" }),
-            _ = tokio::time::sleep_until(deadline) => {
-                self.retry_not_before = None;
-                Ok(())
-            }
-        }
-    }
-
-    fn record_failure(
-        &mut self,
-        generation: ServerGeneration,
-        failure: LifecycleFailure,
-    ) -> Result<(), McpError> {
-        let delay = self.lifecycle.failed(generation, failure)?;
-        self.retry_not_before = delay.map(|delay| Instant::now() + Duration::from_millis(delay));
-        self.ready_since = None;
-        self.healthy_calls = 0;
-        Ok(())
     }
 
     fn note_healthy_call(&mut self, generation: ServerGeneration) {

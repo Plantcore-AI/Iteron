@@ -15,6 +15,8 @@ pub const MAX_MCP_LAUNCH_BYTES: usize = 64 * 1024;
 pub const MAX_MCP_SENSITIVE_ENV_NAMES: usize = 256;
 pub const MAX_MCP_ENV_NAME_BYTES: usize = 256;
 pub const MAX_MCP_DEADLINE_MS: u64 = 3_600_000;
+pub const DEFAULT_MCP_OPERATION_DEADLINE_MS: u64 = 120_000;
+pub const MAX_MCP_OPERATION_DEADLINE_MS: u64 = 600_000;
 
 /// Immutable, bounded process binding. It intentionally has no `Debug` implementation because
 /// command arguments are operator configuration and may contain private paths or opaque values.
@@ -154,6 +156,7 @@ pub struct McpTimeouts {
     handshake: Duration,
     discovery: Duration,
     request: Duration,
+    operation: Duration,
 }
 
 impl Default for McpTimeouts {
@@ -162,6 +165,7 @@ impl Default for McpTimeouts {
             handshake: Duration::from_secs(15),
             discovery: Duration::from_secs(60),
             request: Duration::from_secs(60),
+            operation: Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS),
         }
     }
 }
@@ -172,14 +176,27 @@ impl McpTimeouts {
         discovery: Duration,
         request: Duration,
     ) -> Result<Self, McpError> {
-        validate_deadline("handshake_deadline", handshake)?;
-        validate_deadline("discovery_deadline", discovery)?;
-        validate_deadline("request_deadline", request)?;
+        validate_deadline("handshake_deadline", handshake, MAX_MCP_DEADLINE_MS)?;
+        validate_deadline("discovery_deadline", discovery, MAX_MCP_DEADLINE_MS)?;
+        validate_deadline("request_deadline", request, MAX_MCP_DEADLINE_MS)?;
         Ok(Self {
             handshake,
             discovery,
             request,
+            operation: Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS),
         })
+    }
+
+    /// Bound one complete public operation, including every reconnect backoff, handshake, and
+    /// discovery attempt. This budget is intentionally much smaller than the sum of phase maxima.
+    pub fn with_operation_deadline(mut self, operation: Duration) -> Result<Self, McpError> {
+        validate_deadline(
+            "operation_deadline",
+            operation,
+            MAX_MCP_OPERATION_DEADLINE_MS,
+        )?;
+        self.operation = operation;
+        Ok(self)
     }
 
     pub fn handshake(self) -> Duration {
@@ -193,14 +210,21 @@ impl McpTimeouts {
     pub fn request(self) -> Duration {
         self.request
     }
+
+    pub fn operation(self) -> Duration {
+        self.operation
+    }
 }
 
-fn validate_deadline(field: &'static str, deadline: Duration) -> Result<(), McpError> {
-    let milliseconds = deadline.as_millis();
-    if milliseconds == 0 || milliseconds > u128::from(MAX_MCP_DEADLINE_MS) {
+fn validate_deadline(
+    field: &'static str,
+    deadline: Duration,
+    maximum_ms: u64,
+) -> Result<(), McpError> {
+    if deadline < Duration::from_millis(1) || deadline > Duration::from_millis(maximum_ms) {
         return Err(McpError::InvalidLaunchConfiguration {
             field,
-            limit: MAX_MCP_DEADLINE_MS as usize,
+            limit: maximum_ms as usize,
         });
     }
     Ok(())
@@ -289,6 +313,24 @@ mod tests {
                 "files".into()
             )
             .is_err()
+        );
+        let defaults = McpTimeouts::default();
+        assert_eq!(
+            defaults.operation(),
+            Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS)
+        );
+        assert!(defaults.with_operation_deadline(Duration::ZERO).is_err());
+        assert!(
+            defaults
+                .with_operation_deadline(Duration::from_millis(MAX_MCP_OPERATION_DEADLINE_MS + 1))
+                .is_err()
+        );
+        assert!(
+            defaults
+                .with_operation_deadline(
+                    Duration::from_millis(MAX_MCP_OPERATION_DEADLINE_MS) + Duration::from_nanos(1)
+                )
+                .is_err()
         );
         assert!(
             McpTimeouts::new(

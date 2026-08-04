@@ -11,7 +11,7 @@ use core_protocol::ToolSpec;
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
 mod content;
@@ -20,7 +20,7 @@ mod lifecycle;
 mod managed_connect;
 mod transport;
 use content::render_tool_content;
-use lifecycle::terminate_and_reap;
+use lifecycle::OwnedProcess;
 #[cfg(test)]
 use transport::read_frame;
 use transport::{ResponseLimits, read_matching_response};
@@ -56,7 +56,7 @@ enum CallOutcome {
 
 /// A connected MCP server. Owns the child process and its stdio.
 pub struct McpClient {
-    child: Option<Child>,
+    process: Option<OwnedProcess>,
     stdin: Mutex<ChildStdin>,
     stdout: Mutex<BufReader<ChildStdout>>,
     /// Serialize the complete write/read exchange. Separate stdin/stdout locks are insufficient:
@@ -160,8 +160,23 @@ impl McpClient {
     }
 
     pub(crate) async fn terminate(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            terminate_and_reap(&mut child).await;
+        if let Some(mut process) = self.process.take() {
+            process.terminate_and_reap().await;
+        }
+    }
+
+    pub(crate) fn terminate_sync(&mut self) {
+        if let Some(mut process) = self.process.take() {
+            process.force_cleanup_sync();
+        }
+    }
+
+    pub(crate) fn reconcile_liveness(&mut self) -> Result<bool, McpError> {
+        match self.process.as_mut() {
+            Some(process) => process
+                .reconcile_liveness()
+                .map_err(|error| McpError::Io(error.to_string())),
+            None => Ok(false),
         }
     }
 
@@ -525,6 +540,17 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn wait_until_gone_sync(pid: u32) -> bool {
+        for _ in 0..200 {
+            if !process_exists(pid) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[cfg(unix)]
     async fn wait_until_file_exists(path: &std::path::Path) -> bool {
         for _ in 0..50 {
             if path.is_file() {
@@ -545,6 +571,61 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drop_after_runtime_shutdown_reaps_direct_child_and_descendant() {
+        let pid_path = pid_file("drop-without-runtime");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = runtime.block_on(async {
+            let args = vec![
+                "-c".to_string(),
+                concat!(
+                    "IFS= read -r init; ",
+                    "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                    "IFS= read -r initialized; sleep 60 & descendant=$!; ",
+                    "printf '%s %s' $$ $descendant > \"$1\"; wait"
+                )
+                .to_string(),
+                "mcp-test".to_string(),
+                pid_path.to_string_lossy().into_owned(),
+            ];
+            let client = McpClient::connect_with_deadlines(
+                "/bin/bash",
+                &args,
+                "drop-test",
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+            assert!(wait_until_file_exists(&pid_path).await);
+            client
+        });
+        let pids: Vec<u32> = std::fs::read_to_string(&pid_path)
+            .unwrap()
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 2);
+        assert!(pids.iter().all(|pid| process_exists(*pid)));
+        drop(runtime);
+        drop(client);
+        assert!(
+            wait_until_gone_sync(pids[0]),
+            "direct MCP child {} survived no-runtime Drop",
+            pids[0]
+        );
+        assert!(
+            wait_until_gone_sync(pids[1]),
+            "MCP descendant {} survived no-runtime Drop",
+            pids[1]
+        );
+        let _ = std::fs::remove_file(pid_path);
     }
 
     #[cfg(unix)]

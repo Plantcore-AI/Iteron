@@ -3,7 +3,10 @@
 #[cfg(unix)]
 mod unix {
     use super::super::*;
-    use crate::{McpError, McpToolOutcome, reconnect::LifecyclePhase};
+    use crate::{
+        McpError, McpToolOutcome,
+        reconnect::{LifecyclePhase, MAX_RECONNECT_ATTEMPTS},
+    };
     use serde_json::json;
     use std::{path::Path, process::Stdio, time::Duration};
 
@@ -129,6 +132,163 @@ mod unix {
         server.stop().await;
         assert!(wait_until_gone(pid).await);
         let _ = std::fs::remove_file(pid_path);
+    }
+
+    #[tokio::test]
+    async fn exit_immediately_after_discovery_reconnects_before_search_returns_ready() {
+        let count_path = temp_path("post-list-exit-count");
+        let pid_path = temp_path("post-list-exit-pids");
+        let script = concat!(
+            "count=0; test ! -f \"$1\" || count=$(cat \"$1\"); count=$((count + 1)); ",
+            "printf '%s' \"$count\" > \"$1\"; echo $$ >> \"$2\"; ",
+            "IFS= read -r init; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "IFS= read -r initialized; IFS= read -r list; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"read\"}]}}'; ",
+            "if test \"$count\" = 1; then exit 0; fi; exec sleep 60"
+        );
+        let mut server = supervisor(
+            script,
+            [
+                count_path.to_string_lossy().into_owned(),
+                pid_path.to_string_lossy().into_owned(),
+            ],
+            ReconnectPolicy::new(2, 0, 0).unwrap(),
+            normal_timeouts(),
+        );
+        let result = server
+            .search_tools("read", 1, &McpCancellation::new())
+            .await
+            .unwrap();
+        assert_eq!(result.generation.get(), 2);
+        let status = server.status();
+        assert_eq!(status.phase, LifecyclePhase::Ready);
+        assert_eq!(status.generation.unwrap().get(), 2);
+        assert!(status.catalog_current);
+        assert_eq!(std::fs::read_to_string(&count_path).unwrap(), "2");
+        let pids: Vec<u32> = std::fs::read_to_string(&pid_path)
+            .unwrap()
+            .lines()
+            .map(|line| line.parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 2);
+        assert!(!process_exists(pids[0]), "first generation was not reaped");
+        server.stop().await;
+        assert!(wait_until_gone(pids[1]).await);
+        let _ = std::fs::remove_file(count_path);
+        let _ = std::fs::remove_file(pid_path);
+    }
+
+    #[tokio::test]
+    async fn known_dead_ready_generation_is_noncurrent_and_effect_reconnects_before_dispatch() {
+        let count_path = temp_path("known-dead-count");
+        let pid_path = temp_path("known-dead-pids");
+        let trigger_path = temp_path("known-dead-trigger");
+        let script = concat!(
+            "count=0; test ! -f \"$1\" || count=$(cat \"$1\"); count=$((count + 1)); ",
+            "printf '%s' \"$count\" > \"$1\"; echo $$ >> \"$2\"; ",
+            "IFS= read -r init; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "IFS= read -r initialized; IFS= read -r list; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"mutate\"}]}}'; ",
+            "if test \"$count\" = 1; then while test ! -f \"$3\"; do sleep 0.01; done; exit 0; fi; ",
+            "IFS= read -r call; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"generation-two\"}]}}'; exec sleep 60"
+        );
+        let mut server = supervisor(
+            script,
+            [
+                count_path.to_string_lossy().into_owned(),
+                pid_path.to_string_lossy().into_owned(),
+                trigger_path.to_string_lossy().into_owned(),
+            ],
+            ReconnectPolicy::new(2, 0, 0).unwrap(),
+            normal_timeouts(),
+        );
+        let identity = server
+            .search_tools("mutate", 1, &McpCancellation::new())
+            .await
+            .unwrap()
+            .matches
+            .remove(0)
+            .identity;
+        std::fs::write(&trigger_path, b"exit").unwrap();
+        let mut observed = None;
+        for _ in 0..200 {
+            let status = server.status();
+            if status.phase != LifecyclePhase::Ready {
+                observed = Some(status);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let dead = observed.expect("exited generation remained falsely ready");
+        assert_eq!(dead.phase, LifecyclePhase::Backoff);
+        assert!(!dead.catalog_current);
+        assert_eq!(dead.retained_tools, 1);
+        let first_pid: u32 = std::fs::read_to_string(&pid_path)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            !process_exists(first_pid),
+            "known-dead child was not reaped"
+        );
+
+        let outcome = server
+            .call_tool(&identity, json!({}), &McpCancellation::new())
+            .await;
+        assert!(matches!(
+            outcome,
+            McpToolOutcome::Completed { ref content, .. } if content == "generation-two\n"
+        ));
+        let status = server.status();
+        assert_eq!(status.generation.unwrap().get(), 2);
+        assert!(status.catalog_current);
+        assert_eq!(std::fs::read_to_string(&count_path).unwrap(), "2");
+        server.stop().await;
+        let _ = std::fs::remove_file(count_path);
+        let _ = std::fs::remove_file(pid_path);
+        let _ = std::fs::remove_file(trigger_path);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn aggregate_budget_bounds_the_max_retry_policy() {
+        let launch = McpLaunchConfig::new(
+            "/definitely/not/a/real/mcp-server".into(),
+            vec![],
+            "files".into(),
+        )
+        .unwrap();
+        let timeouts = McpTimeouts::new(
+            Duration::from_secs(3_600),
+            Duration::from_secs(3_600),
+            Duration::from_secs(3_600),
+        )
+        .unwrap()
+        .with_operation_deadline(Duration::from_secs(2))
+        .unwrap();
+        let mut server = McpSupervisor::deferred(
+            launch,
+            McpToolFilter::default(),
+            ReconnectPolicy::new(MAX_RECONNECT_ATTEMPTS, 60_000, 3_600_000).unwrap(),
+            timeouts,
+        )
+        .unwrap();
+        let started = tokio::time::Instant::now();
+        let error = server
+            .search_tools("", 1, &McpCancellation::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, McpError::Deadline { .. }));
+        assert_eq!(started.elapsed(), Duration::from_secs(2));
+        let status = server.status();
+        assert_eq!(status.generation.unwrap().get(), 1);
+        assert_eq!(status.reconnect_attempts, 0);
+        assert_eq!(status.phase, LifecyclePhase::Backoff);
     }
 
     #[tokio::test]
