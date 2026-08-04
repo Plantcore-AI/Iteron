@@ -221,6 +221,22 @@ pub(crate) enum Control {
     Compact { focus: Option<String> },
     /// `/budget` — read the turn ceiling, or (with `set`) move it for this session.
     TurnBudget { set: Option<u32> },
+    /// `/side` — the operator's side conversation.
+    Side(SideRequest),
+}
+
+/// What the operator wants of the side conversation.
+///
+/// The conversation itself is server state, exactly like the `Agent`, and for the same reason: it
+/// holds a live runtime with an open journal, so a frontend that owned it could be restarted, lose
+/// it, and leave a half-written record with nobody to close it.
+pub(crate) enum SideRequest {
+    /// Ask a question, opening the conversation if this is the first one.
+    Ask(String),
+    /// Report identity and books without asking anything (and without opening one).
+    Status,
+    /// End it. The next `Ask` starts a new conversation with a new record.
+    Close,
 }
 
 /// The `/model` transaction's inputs, kept together because the kernel applies them as one.
@@ -251,6 +267,15 @@ pub(crate) enum ControlReply {
     },
     /// `/budget` — the ceiling actually in force and the attempts charged against it.
     TurnBudget(crate::runtime::TurnBudgetState),
+    /// `/side <question>` — the side conversation's answer plus its own books.
+    SideAnswer(Box<crate::runtime::SideAnswer>),
+    /// `/side status` and `/side close` — the side conversation's own books, or `None` when there
+    /// is no open one. `closed` distinguishes "here is what it cost" from "here is what it cost,
+    /// and it is now over".
+    SideStatus {
+        status: Option<Box<crate::runtime::SideStatus>>,
+        closed: bool,
+    },
 }
 
 /// One control request and the channel its answer comes back on.
@@ -794,11 +819,15 @@ impl AppServer {
         // every later one continues it.
         let mut started = false;
 
+        // The operator's side conversation, if they have opened one. It is server state for the
+        // same reason the `Agent` is: it owns a live runtime with an open journal.
+        let mut side: Option<crate::runtime::SideConversation> = None;
+
         loop {
             let queued = tokio::select! {
                 request = control.recv() => {
                     match request {
-                        Some(request) => { apply_control(&mut agent, &mut events, request).await; continue }
+                        Some(request) => { apply_control(&mut agent, &mut side, &mut events, request).await; continue }
                         None => break,
                     }
                 }
@@ -914,7 +943,7 @@ impl AppServer {
                     // arrival order, before the snapshot, so the state the frontend receives
                     // already reflects everything it asked for during the turn.
                     for request in deferred {
-                        apply_control(&mut agent, &mut events, request).await;
+                        apply_control(&mut agent, &mut side, &mut events, request).await;
                     }
 
                     let snapshot = snapshot_of(&mut agent);
@@ -964,7 +993,12 @@ impl AppServer {
 ///
 /// Every arm answers. A control request that got no reply would hang the frontend's render loop,
 /// which is the one failure a control plane must not have.
-async fn apply_control(agent: &mut Agent, events: &mut EventPublisher, request: ControlRequest) {
+async fn apply_control(
+    agent: &mut Agent,
+    side: &mut Option<crate::runtime::SideConversation>,
+    events: &mut EventPublisher,
+    request: ControlRequest,
+) {
     let reply = match request.control {
         Control::SetEffort(next) => {
             match agent.transition_effort(next, core_protocol::RuntimePolicySource::Operator) {
@@ -1059,9 +1093,57 @@ async fn apply_control(agent: &mut Agent, events: &mut EventPublisher, request: 
                 Err(error) => ControlReply::Refused(error.public_summary()),
             },
         },
+        Control::Side(request) => apply_side(agent, side, request).await,
     };
     // A frontend that dropped the receiver has moved on; that is not the server's problem.
     let _ = request.reply.send(reply);
+}
+
+/// Apply one side-conversation request.
+///
+/// The side conversation is opened lazily by the first `Ask`, so an operator who never uses `/side`
+/// never pays for a second read-only registry scan or a journal file that would record nothing.
+async fn apply_side(
+    agent: &mut Agent,
+    side: &mut Option<crate::runtime::SideConversation>,
+    request: SideRequest,
+) -> ControlReply {
+    match request {
+        SideRequest::Status => ControlReply::SideStatus {
+            status: side
+                .as_ref()
+                .map(|conversation| Box::new(conversation.status())),
+            closed: false,
+        },
+        SideRequest::Close => {
+            // The status is read BEFORE the drop, so the operator is told what the conversation
+            // cost by the conversation itself rather than by a number the frontend remembered.
+            let status = side.take().map(|conversation| {
+                let status = conversation.status();
+                drop(conversation);
+                Box::new(status)
+            });
+            ControlReply::SideStatus {
+                status,
+                closed: true,
+            }
+        }
+        SideRequest::Ask(text) => {
+            if side.is_none() {
+                match agent.open_side_conversation() {
+                    Ok(conversation) => *side = Some(conversation),
+                    Err(error) => return ControlReply::Refused(error),
+                }
+            }
+            let Some(conversation) = side.as_mut() else {
+                return ControlReply::Refused("the side conversation could not be opened".into());
+            };
+            match conversation.ask(&text).await {
+                Ok(answer) => ControlReply::SideAnswer(Box::new(answer)),
+                Err(error) => ControlReply::Refused(error),
+            }
+        }
+    }
 }
 
 /// Read the runtime state the frontend mirrors.
@@ -1521,5 +1603,153 @@ mod tests {
         // express `/model`, `/effort`, `/mode` or `/compact` and this lane may not widen it.
         assert!(!handle.control.is_closed());
         let _ = envelope(Op::Interrupt);
+    }
+
+    /// A minimal provider so the control-plane test can own a real `Agent` without a network.
+    #[derive(Default)]
+    struct StubProvider;
+
+    #[async_trait::async_trait]
+    impl core_provider::Provider for StubProvider {
+        async fn turn(
+            &self,
+            _request: &core_provider::TurnRequest,
+            _on_item: &mut (dyn FnMut(core_provider::StreamItem) + Send),
+        ) -> Result<core_provider::TurnResult, core_provider::ProviderError> {
+            Ok(core_provider::TurnResult {
+                blocks: vec![core_protocol::Block::Text {
+                    text: "side reply".into(),
+                }],
+                stop_reason: core_protocol::StopReason::EndTurn,
+                usage: core_provider::UsageReport::complete(core_protocol::Usage::default()),
+            })
+        }
+    }
+
+    fn agent_in(workspace: &std::path::Path) -> Agent {
+        let rollout = core_record::Rollout::open(
+            &workspace.join(".core/runs"),
+            &core_protocol::RunId("control-plane".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            Arc::new(StubProvider),
+            core_tools::Registry::coding_agent(workspace).unwrap(),
+            rollout,
+            "m".into(),
+            "system".into(),
+            core_protocol::Budget {
+                max_turns: 4,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        agent.workspace = workspace.to_path_buf();
+        agent
+    }
+
+    fn temp_workspace(tag: &str) -> std::path::PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "core-side-control-{tag}-{}-{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    /// UX-3 control plane: the side conversation is SERVER state. Every request answers, an
+    /// unopened conversation says so instead of inventing zeroes, and the conversation survives
+    /// between control requests so a second ask continues the first.
+    #[tokio::test]
+    async fn the_side_conversation_is_server_state_that_survives_between_control_requests() {
+        let workspace = temp_workspace("survives");
+        let mut agent = agent_in(&workspace);
+        let mut side: Option<crate::runtime::SideConversation> = None;
+
+        // Nothing is open, and nothing is invented.
+        match apply_side(&mut agent, &mut side, SideRequest::Status).await {
+            ControlReply::SideStatus { status, closed } => {
+                assert!(
+                    status.is_none(),
+                    "an unopened side conversation has no books"
+                );
+                assert!(!closed);
+            }
+            other => panic!("unexpected reply: {other:?}"),
+        }
+        assert!(side.is_none(), "asking for status must not open one");
+
+        let first = match apply_side(
+            &mut agent,
+            &mut side,
+            SideRequest::Ask("first question".into()),
+        )
+        .await
+        {
+            ControlReply::SideAnswer(answer) => *answer,
+            other => panic!("unexpected reply: {other:?}"),
+        };
+        assert_eq!(first.status.asks, 1);
+        assert!(side.is_some(), "the first ask opens the conversation");
+
+        let second = match apply_side(
+            &mut agent,
+            &mut side,
+            SideRequest::Ask("second question".into()),
+        )
+        .await
+        {
+            ControlReply::SideAnswer(answer) => *answer,
+            other => panic!("unexpected reply: {other:?}"),
+        };
+        assert_eq!(
+            second.status.run_id, first.status.run_id,
+            "a second ask continues the SAME side conversation, not a new one"
+        );
+        assert_eq!(second.status.asks, 2);
+
+        // Closing reports the books it is closing, then really is closed.
+        match apply_side(&mut agent, &mut side, SideRequest::Close).await {
+            ControlReply::SideStatus { status, closed } => {
+                assert!(closed);
+                let status = status.expect("closing an open conversation reports its books");
+                assert_eq!(status.run_id, first.status.run_id);
+                assert_eq!(status.asks, 2);
+            }
+            other => panic!("unexpected reply: {other:?}"),
+        }
+        assert!(side.is_none());
+
+        // The session itself never ran a turn because of any of this.
+        assert_eq!(
+            agent.ledger.turns, 0,
+            "side conversation traffic is not the session's traffic"
+        );
+
+        drop(agent);
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[tokio::test]
+    async fn closing_a_side_conversation_that_was_never_opened_is_answered_not_ignored() {
+        let workspace = temp_workspace("close-none");
+        let mut agent = agent_in(&workspace);
+        let mut side: Option<crate::runtime::SideConversation> = None;
+        match apply_side(&mut agent, &mut side, SideRequest::Close).await {
+            ControlReply::SideStatus { status, closed } => {
+                assert!(status.is_none());
+                assert!(closed, "the operator asked to close; the answer says so");
+            }
+            other => panic!("unexpected reply: {other:?}"),
+        }
+        drop(agent);
+        let _ = std::fs::remove_dir_all(&workspace);
     }
 }

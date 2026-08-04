@@ -2351,6 +2351,10 @@ pub struct Agent {
     /// Explicit recursion admission state. Registry capability removal remains a second,
     /// independently tested barrier; neither relies on model instructions.
     delegation_depth: u8,
+    /// How many side conversations this session has opened. Only ever used to mint the next side
+    /// run id, so a reopened side conversation gets a fresh journal instead of appending to the
+    /// closed one's.
+    side_conversations_opened: u32,
     /// Signatures of effecting tool calls that already FAILED this run (name+input -> prior error).
     /// A model re-issuing the identical failed edit/command is a notorious spiral (ADR-003 dedup,
     /// SWE-agent's "DO NOT re-run the same failed edit"): we short-circuit an exact repeat with the
@@ -2464,6 +2468,7 @@ impl Agent {
             approval_seq: 0,
             orchestrating: false,
             delegation_depth: 0,
+            side_conversations_opened: 0,
             failed_actions: std::collections::HashMap::new(),
             hooks: Hooks::default(),
             telemetry: None,
@@ -9098,6 +9103,210 @@ impl TurnBudgetState {
     /// Attempts still admissible before the next submission stops immediately.
     pub fn remaining(&self) -> u32 {
         self.max_turns.saturating_sub(self.used)
+    }
+}
+
+/// Ceiling for one side conversation. Deliberately a policy of its own rather than a share of the
+/// parent's remaining budget: a side conversation that silently ate the main session's turn
+/// allowance would be the opposite of "independent".
+const SIDE_CONVERSATION_MAX_TURNS: u32 = 24;
+/// Wall-clock ceiling for ONE side ask. `run_leaf` owns and clears the deadline per ask, so this
+/// bounds a single question rather than the conversation's lifetime.
+const SIDE_CONVERSATION_MAX_WALL_SECS: u64 = 300;
+const SIDE_CONVERSATION_MAX_CONSECUTIVE_TOOL_ERRORS: u32 = 3;
+
+/// The system prompt of a side conversation.
+///
+/// It is NOT `AgentDef::generic()`: that prompt instructs a subagent to return a compressed report
+/// to a *writer* that will act on it. A side conversation answers the operator directly and has no
+/// consumer downstream of it, so promising a machine-readable summary would be a lie about who is
+/// reading.
+const SIDE_CONVERSATION_SYSTEM: &str = "You are answering a question on the side of a coding \
+session. You have read-only tools: you can read files, glob, search, and inspect the repository, \
+but you cannot edit files, run commands, or delegate. Answer the operator directly and cite \
+file:line when you looked something up. This conversation is separate from the operator's main \
+session — nothing you say enters that transcript — so do not assume you can see what happened \
+there, and ask for the context you need instead of guessing.";
+
+/// An operator-opened side conversation: a second conversation that runs beside the main session
+/// with its **own context, its own cost and its own record**.
+///
+/// # What "independent" means here, precisely
+///
+/// - **Context**: a separate [`Agent`] with a separate message list. Nothing said here is appended
+///   to the main session's transcript, and nothing from the main session is replayed into this
+///   one. The main session's context estimate and compaction threshold are untouched.
+/// - **Record**: its own [`Rollout`] under `<runs>/side/`, hash-chained exactly like any other
+///   journal. It is deliberately NOT written into the sessions directory: a side conversation must
+///   not be able to win `core_record::most_recent`, which is what `--continue` resolves.
+/// - **Cost**: its own [`Ledger`]. `projection_attribution` stays `None` — this run is not a child
+///   whose spend a parent terminal aggregates, it is its own monetary subject — so its cost is
+///   reported as its own number rather than folded into the session line.
+///
+/// # What it deliberately shares
+///
+/// The provider handle, the durable route (so its cost is priced by the same signed rate card),
+/// the workspace, the interrupt flag and, when the session has one, the shared USD ceiling. Money
+/// is money: a side conversation that could spend past an operator's `--max-usd` because it keeps
+/// its own books would be an accounting trick, not independence.
+pub struct SideConversation {
+    agent: Agent,
+    run_id: core_protocol::RunId,
+    record_path: std::path::PathBuf,
+    asks: u32,
+}
+
+/// What one side ask produced, and what it cost.
+#[derive(Debug, Clone)]
+pub struct SideAnswer {
+    pub text: String,
+    pub outcome: Outcome,
+    pub status: SideStatus,
+}
+
+/// The side conversation's own identity and books, readable without asking it anything.
+#[derive(Debug, Clone)]
+pub struct SideStatus {
+    pub run_id: String,
+    pub record_path: std::path::PathBuf,
+    /// Operator questions asked in this side conversation.
+    pub asks: u32,
+    /// Completed provider turns charged to THIS conversation.
+    pub turns: u32,
+    /// This conversation's own monetary state — never the session's.
+    pub cost: CostState,
+    /// One line in the same shape `/cost` prints for the main session.
+    pub ledger_summary: String,
+}
+
+impl SideConversation {
+    /// This conversation's identity and books.
+    pub fn status(&self) -> SideStatus {
+        SideStatus {
+            run_id: self.run_id.0.clone(),
+            record_path: self.record_path.clone(),
+            asks: self.asks,
+            turns: self.agent.ledger.turns,
+            cost: self.agent.ledger.cost_state(),
+            ledger_summary: self.agent.ledger.summary(),
+        }
+    }
+
+    /// Ask one question. The first ask starts the conversation; every later one continues it from
+    /// the transcript this process already built, exactly as a main-session follow-up does.
+    ///
+    /// `run_leaf` rather than `run`: a side conversation must never orchestrate a fan, both because
+    /// it is a cheap context device and because keeping `run`/`run_fan` out of this call graph is
+    /// what keeps the recursive-`Send` obligation cycle closed (see `run_child_with_control`).
+    pub async fn ask(&mut self, text: &str) -> Result<SideAnswer, String> {
+        if text.trim().is_empty() {
+            return Err("a side conversation needs a question".into());
+        }
+        if self.asks > 0 {
+            self.agent
+                .stage_follow_up_transcript()
+                .map_err(|error| error.public_summary())?;
+            self.agent.verify_attempts = 0;
+        }
+        let outcome = self
+            .agent
+            .run_leaf(text)
+            .await
+            .map_err(|error| error.public_summary())?;
+        self.asks = self.asks.saturating_add(1);
+        Ok(SideAnswer {
+            text: self.agent.last_assistant_text().to_owned(),
+            outcome,
+            status: self.status(),
+        })
+    }
+}
+
+impl Agent {
+    /// Where side-conversation journals live: a sibling of `subagents/` under this session's runs
+    /// directory, and deliberately not the runs directory itself (see [`SideConversation`]).
+    pub fn side_conversation_directory(&self) -> std::path::PathBuf {
+        self.rollout
+            .path()
+            .parent()
+            .map(|parent| parent.join("side"))
+            .unwrap_or_else(|| std::env::temp_dir().join("core-side-refused"))
+    }
+
+    /// Open a side conversation beside this session.
+    ///
+    /// Refused when this agent is itself a child: a side conversation is an operator affordance on
+    /// a top-level session, and admitting one at depth would make the delegation ceiling a
+    /// suggestion.
+    pub fn open_side_conversation(&mut self) -> Result<SideConversation, String> {
+        if self.delegation_depth >= MAX_DELEGATION_DEPTH {
+            return Err(KernelError::DelegationDepthExceeded.public_summary());
+        }
+        let registry = Registry::read_only(&self.workspace)
+            .map_err(|error| format!("side conversation setup failed: {error}"))?;
+        let directory = self.side_conversation_directory();
+        let run_id = self.subagent_run_id("side", 0, self.side_conversations_opened as usize);
+        let rollout = Rollout::open(&directory, &run_id, self.rollout.tenant().clone())
+            .map_err(|error| format!("side conversation record failed: {error}"))?;
+        let record_path = rollout.path().to_path_buf();
+        let mut side = Agent::new(
+            self.provider.clone(),
+            registry,
+            rollout,
+            self.model.clone(),
+            SIDE_CONVERSATION_SYSTEM.into(),
+            Budget {
+                max_turns: SIDE_CONVERSATION_MAX_TURNS,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: SIDE_CONVERSATION_MAX_WALL_SECS,
+                max_consecutive_tool_errors: SIDE_CONVERSATION_MAX_CONSECUTIVE_TOOL_ERRORS,
+            },
+        );
+        // No `projection_attribution`: this conversation is its own monetary subject, not a child
+        // whose spend some parent terminal will aggregate.
+        side.runtime_state_dir = self.runtime_state_dir.clone();
+        side.workspace = self.workspace.clone();
+        side.context_strategy = self.context_strategy.clone();
+        side.tool_policy = self.tool_policy.clone();
+        side.context_port = self.context_port.clone();
+        side.context_home_dir = self.context_home_dir.clone();
+        side.model_context_window = self.model_context_window;
+        side.model_max_output_tokens = self.model_max_output_tokens;
+        side.sensitive_env_names = self.sensitive_env_names.clone();
+        // Hooks are resolved once from trusted operator configuration at the composition root; a
+        // side conversation inherits that exact value and never re-reads ambient config.
+        side.hooks = self.hooks.clone();
+        // One below this agent, so the side conversation cannot open a side conversation or
+        // dispatch a subagent of its own.
+        side.delegation_depth = self.delegation_depth.saturating_add(1);
+        // Ultracode orchestrates; a side conversation never does.
+        side.effort = if self.effort == core_protocol::Effort::Ultracode {
+            core_protocol::Effort::Max
+        } else {
+            self.effort
+        };
+        // The SAME interrupt flag, so a stop already raised for this session stops the side
+        // conversation too and a side ask can never outlive it. It is deliberately not claimed
+        // that a fresh Ctrl-C lands DURING an ask: in raw mode Ctrl-C is a key event, not SIGINT
+        // (see `workflow::live_key_action`), and the frontend is awaiting this control reply
+        // exactly as it awaits `/compact`'s, so no key is read until the ask returns.
+        // `SIDE_CONVERSATION_MAX_WALL_SECS` is what actually bounds that wait.
+        // Ctrl-D does not own it: the main session still owns the drain checkpoint.
+        if let Some(interrupt) = &self.interrupt {
+            side.set_interrupt(interrupt.clone());
+        }
+        side.drain = self.drain.clone();
+        side.owns_drain = false;
+        self.inherit_route_and_pricing(&mut side)
+            .map_err(|error| error.public_summary())?;
+        self.side_conversations_opened = self.side_conversations_opened.saturating_add(1);
+        Ok(SideConversation {
+            agent: side,
+            run_id,
+            record_path,
+            asks: 0,
+        })
     }
 }
 
@@ -20306,5 +20515,341 @@ ant-api03-SuperSecretModelToken12345"
             "acceptEdits must auto-apply the reversible edit"
         );
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// UX-3 — a side conversation is a second conversation with its OWN context, cost and record.
+    ///
+    /// Every assertion here is about that independence being real rather than cosmetic: a separate
+    /// journal file, a journal the main session never learns about, a ledger that charges the side
+    /// conversation and not the session, and a transcript the session's model never sees.
+    mod side_conversation_tests {
+        use super::*;
+        use core_protocol::{StopReason, Usage};
+        use core_provider::{
+            Provider, ProviderError, StreamItem, TurnRequest, TurnResult, UsageReport,
+        };
+
+        /// Answers with a fixed line and keeps every request it was asked, so a test can prove what
+        /// the side conversation's context did and did not contain.
+        #[derive(Default)]
+        struct RecordingAnswerer {
+            requests: std::sync::Mutex<Vec<TurnRequest>>,
+        }
+
+        #[async_trait::async_trait]
+        impl Provider for RecordingAnswerer {
+            async fn turn(
+                &self,
+                request: &TurnRequest,
+                _on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<TurnResult, ProviderError> {
+                self.requests.lock().unwrap().push(request.clone());
+                // Echo the last operator line so a test can tell WHICH conversation an answer belongs
+                // to. A fixed reply would make "the session's record does not contain the side
+                // answer" pass for the wrong reason.
+                let asked = request
+                    .messages
+                    .iter()
+                    .rev()
+                    .flat_map(|message| message.content.iter())
+                    .find_map(|block| match block {
+                        Block::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                Ok(TurnResult {
+                    blocks: vec![Block::Text {
+                        text: format!("answered: {asked}"),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage {
+                        input: 11,
+                        output: 7,
+                        ..Usage::default()
+                    }),
+                })
+            }
+        }
+
+        fn workspace(tag: &str) -> std::path::PathBuf {
+            let directory = std::env::temp_dir().join(format!(
+                "core-side-{tag}-{}-{:x}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&directory).unwrap();
+            directory
+        }
+
+        fn parent_agent(
+            workspace: &std::path::Path,
+            provider: std::sync::Arc<RecordingAnswerer>,
+        ) -> Agent {
+            let runs = workspace.join(".core/runs");
+            let rollout = Rollout::open(
+                &runs,
+                &core_protocol::RunId("main-session".into()),
+                core_protocol::TenantId::default(),
+            )
+            .unwrap();
+            let mut agent = Agent::new(
+                provider,
+                Registry::coding_agent(workspace).unwrap(),
+                rollout,
+                "m".into(),
+                "main system prompt".into(),
+                Budget {
+                    max_turns: 6,
+                    max_usd: None,
+                    max_tokens: None,
+                    max_wall_secs: 30,
+                    max_consecutive_tool_errors: 3,
+                },
+            );
+            agent.workspace = workspace.to_path_buf();
+            agent
+        }
+
+        #[tokio::test]
+        async fn a_side_ask_writes_its_own_record_and_leaves_the_session_journal_untouched() {
+            let ws = workspace("own-record");
+            let provider = std::sync::Arc::new(RecordingAnswerer::default());
+            let mut parent = parent_agent(&ws, provider.clone());
+            let parent_path = parent.rollout.path().to_path_buf();
+            let parent_events_before = core_record::replay(&parent_path).unwrap().len();
+
+            let mut side = parent.open_side_conversation().unwrap();
+            let answer = side.ask("what does this module do?").await.unwrap();
+
+            assert_eq!(answer.text, "answered: what does this module do?");
+            assert_eq!(answer.outcome, Outcome::Done);
+
+            // Its own record, in its own directory, with its own hash chain.
+            assert_eq!(
+                answer
+                    .status
+                    .record_path
+                    .parent()
+                    .and_then(std::path::Path::file_name),
+                Some(std::ffi::OsStr::new("side")),
+                "a side conversation records under runs/side, not the sessions directory: {}",
+                answer.status.record_path.display()
+            );
+            let side_events = core_record::replay(&answer.status.record_path).unwrap();
+            assert!(
+                !side_events.is_empty(),
+                "the side conversation must have a durable journal of its own"
+            );
+
+            // The session's own journal learned nothing. This is the whole claim: a side conversation
+            // is not a subagent whose spawn and terminal the parent records.
+            assert_eq!(
+                core_record::replay(&parent_path).unwrap().len(),
+                parent_events_before,
+                "a side conversation must not append to the session's record"
+            );
+
+            // And it is invisible to the session list, so it can never win `--continue`.
+            let listed =
+                core_record::list(&ws.join(".core/runs"), &core_protocol::TenantId::default());
+            assert!(
+                listed
+                    .iter()
+                    .all(|session| session.run_id.0 != answer.status.run_id),
+                "a side conversation must not appear as a resumable session"
+            );
+
+            drop(side);
+            drop(parent);
+            let _ = std::fs::remove_dir_all(&ws);
+        }
+
+        #[tokio::test]
+        async fn the_side_conversation_is_charged_and_the_session_is_not() {
+            let ws = workspace("own-cost");
+            let provider = std::sync::Arc::new(RecordingAnswerer::default());
+            let mut parent = parent_agent(&ws, provider.clone());
+
+            let mut side = parent.open_side_conversation().unwrap();
+            let answer = side.ask("explain this error").await.unwrap();
+
+            assert_eq!(answer.status.turns, 1, "the side conversation's own turns");
+            assert_eq!(answer.status.asks, 1);
+            assert_eq!(
+                parent.ledger.turns, 0,
+                "the session's ledger must not move because a side conversation ran"
+            );
+            assert_eq!(
+                parent.ledger.usage.output, 0,
+                "side tokens are the side conversation's, not the session's"
+            );
+            assert_eq!(
+                side.agent.ledger.usage.output, 7,
+                "the side conversation carries its own usage"
+            );
+
+            drop(side);
+            drop(parent);
+            let _ = std::fs::remove_dir_all(&ws);
+        }
+
+        #[tokio::test]
+        async fn the_side_context_continues_itself_and_never_contains_the_session_transcript() {
+            let ws = workspace("own-context");
+            let provider = std::sync::Arc::new(RecordingAnswerer::default());
+            let mut parent = parent_agent(&ws, provider.clone());
+            // The session says something of its own first, so "the side conversation cannot see it" is
+            // a claim about real content rather than about an empty transcript.
+            parent.run("main session work").await.unwrap();
+
+            let mut side = parent.open_side_conversation().unwrap();
+            side.ask("first side question").await.unwrap();
+            let second = side.ask("second side question").await.unwrap();
+            assert_eq!(second.status.asks, 2);
+
+            let requests = provider.requests.lock().unwrap().clone();
+            let side_requests = &requests[1..];
+            assert_eq!(side_requests.len(), 2, "one provider turn per side ask");
+
+            let rendered = |request: &TurnRequest| {
+                request
+                    .messages
+                    .iter()
+                    .flat_map(|message| message.content.iter())
+                    .filter_map(|block| match block {
+                        Block::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+
+            let first_side = rendered(&side_requests[0]);
+            assert!(first_side.contains("first side question"));
+            assert!(
+                !first_side.contains("main session work"),
+                "the side conversation must not inherit the session transcript"
+            );
+
+            let second_side = rendered(&side_requests[1]);
+            assert!(
+                second_side.contains("first side question")
+                    && second_side.contains("answered: first side question"),
+                "a side conversation is a conversation: the second ask continues the first"
+            );
+            assert!(
+                !second_side.contains("main session work"),
+                "continuing a side conversation must not pull in the session transcript"
+            );
+
+            // The reverse direction too: the session never hears the side answer.
+            let session_journal = std::fs::read_to_string(parent.rollout.path()).unwrap();
+            assert!(
+                !session_journal.contains("side question"),
+                "the session's record must not contain the side conversation's words"
+            );
+
+            drop(side);
+            drop(parent);
+            let _ = std::fs::remove_dir_all(&ws);
+        }
+
+        #[tokio::test]
+        async fn a_side_conversation_is_read_only_and_cannot_delegate_or_nest() {
+            let ws = workspace("read-only");
+            let provider = std::sync::Arc::new(RecordingAnswerer::default());
+            let mut parent = parent_agent(&ws, provider.clone());
+            let mut side = parent.open_side_conversation().unwrap();
+
+            let names: Vec<String> = side
+                .agent
+                .registry
+                .specs()
+                .into_iter()
+                .map(|spec| spec.name)
+                .collect();
+            assert!(
+                names.iter().all(|name| name != core_tools::DISPATCH_AGENT),
+                "a side conversation must not be able to delegate"
+            );
+            assert!(
+                side.agent
+                    .registry
+                    .specs()
+                    .iter()
+                    .all(|spec| spec.capability == Capability::ReadOnly),
+                "a side conversation gets read-only tools only: {names:?}"
+            );
+            assert_eq!(
+                side.agent.delegation_depth,
+                parent.delegation_depth.saturating_add(1),
+                "a side conversation sits one level below the session that opened it"
+            );
+            assert!(
+                side.agent.projection_attribution.is_none(),
+                "a side conversation is its own monetary subject, not a child a parent aggregates"
+            );
+
+            // And it cannot open one of its own.
+            side.agent.delegation_depth = MAX_DELEGATION_DEPTH;
+            let refused = match side.agent.open_side_conversation() {
+                Ok(_) => panic!("a side conversation must not be able to open one of its own"),
+                Err(refused) => refused,
+            };
+            assert!(
+                refused.contains("delegation depth limit reached"),
+                "{refused}"
+            );
+
+            drop(side);
+            drop(parent);
+            let _ = std::fs::remove_dir_all(&ws);
+        }
+
+        #[tokio::test]
+        async fn reopening_after_a_close_starts_a_new_record_rather_than_reusing_the_old_one() {
+            let ws = workspace("reopen");
+            let provider = std::sync::Arc::new(RecordingAnswerer::default());
+            let mut parent = parent_agent(&ws, provider.clone());
+
+            let first = parent.open_side_conversation().unwrap();
+            let first_status = first.status();
+            drop(first);
+
+            let second = parent.open_side_conversation().unwrap();
+            let second_status = second.status();
+            assert!(
+                first_status.run_id != second_status.run_id,
+                "a closed side conversation is over; the next one gets its own identity"
+            );
+            assert!(first_status.record_path != second_status.record_path);
+
+            drop(second);
+            drop(parent);
+            let _ = std::fs::remove_dir_all(&ws);
+        }
+
+        #[tokio::test]
+        async fn an_empty_question_is_refused_before_any_provider_call() {
+            let ws = workspace("empty");
+            let provider = std::sync::Arc::new(RecordingAnswerer::default());
+            let mut parent = parent_agent(&ws, provider.clone());
+            let mut side = parent.open_side_conversation().unwrap();
+
+            let refused = side.ask("   ").await.unwrap_err();
+            assert!(refused.contains("needs a question"), "{refused}");
+            assert!(
+                provider.requests.lock().unwrap().is_empty(),
+                "an empty side question must not reach the provider"
+            );
+            assert_eq!(side.status().asks, 0);
+
+            drop(side);
+            drop(parent);
+            let _ = std::fs::remove_dir_all(&ws);
+        }
     }
 }

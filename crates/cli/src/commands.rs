@@ -28,6 +28,7 @@ pub enum SlashCommand {
     Diff,
     Memory,
     Sessions,
+    Side,
     Workflows,
     Fork,
     Rewind,
@@ -52,6 +53,9 @@ pub enum SlashCommand {
 pub enum TerminalIntercept {
     /// Compaction redraws before awaiting the kernel and therefore needs the live terminal handle.
     Compact,
+    /// A side conversation makes a provider call from a slash command, so it redraws a pending
+    /// frame before awaiting the answer for exactly the same reason compaction does.
+    Side,
 }
 
 /// The defined dispatch effect for a registered command in a headless/in-process harness.
@@ -68,6 +72,7 @@ impl SlashCommand {
     pub const fn dispatch_route(self) -> DispatchRoute {
         match self {
             Self::Compact => DispatchRoute::NotHere(TerminalIntercept::Compact),
+            Self::Side => DispatchRoute::NotHere(TerminalIntercept::Side),
             Self::Help
             | Self::Clear
             | Self::Context
@@ -203,6 +208,12 @@ pub const COMMANDS: &[Cmd] = &[
         name: "sessions",
         args: "",
         help: "list recorded sessions in this repo",
+    },
+    Cmd {
+        command: SlashCommand::Side,
+        name: "side",
+        args: "[question|status|close]",
+        help: "ask on the side: its own context, cost and record; nothing enters this transcript",
     },
     Cmd {
         command: SlashCommand::Workflows,
@@ -791,6 +802,9 @@ mod tests {
                 DispatchRoute::NotHere(TerminalIntercept::Compact) => {
                     assert_eq!(registered.command, SlashCommand::Compact);
                 }
+                DispatchRoute::NotHere(TerminalIntercept::Side) => {
+                    assert_eq!(registered.command, SlashCommand::Side);
+                }
             }
         }
     }
@@ -807,7 +821,8 @@ mod tests {
             });
             assert!(matches!(
                 outcome.route,
-                DispatchRoute::InProcess(_) | DispatchRoute::NotHere(TerminalIntercept::Compact)
+                DispatchRoute::InProcess(_)
+                    | DispatchRoute::NotHere(TerminalIntercept::Compact | TerminalIntercept::Side)
             ));
         }
 

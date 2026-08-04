@@ -4458,8 +4458,127 @@ async fn dispatch_slash_command(
                 _ => app.push(fg(Color::Red), "the runtime is no longer reachable"),
             }
         }
+        commands::DispatchRoute::NotHere(commands::TerminalIntercept::Side) => {
+            let request = side_request_for(&routed.invocation.args);
+            let asking = matches!(request, app_server::SideRequest::Ask(_));
+            if asking {
+                // Same reason compaction redraws here: this is about to await a provider call, and
+                // an operator who sees nothing cannot tell a slow answer from a dead terminal.
+                app.push(dim(), "asking on the side…");
+                term.draw(|frame| draw(frame, app))?;
+            }
+            match session.control(app_server::Control::Side(request)).await {
+                Some(app_server::ControlReply::SideAnswer(answer)) => {
+                    show_side_answer(app, &answer);
+                }
+                Some(app_server::ControlReply::SideStatus { status, closed }) => {
+                    show_side_status(app, status.as_deref(), closed);
+                }
+                Some(app_server::ControlReply::Refused(reason)) => app.push(
+                    fg(Color::Red),
+                    format!("side conversation refused: {reason}"),
+                ),
+                _ => app.push(fg(Color::Red), "the runtime is no longer reachable"),
+            }
+        }
     }
     Ok(())
+}
+
+/// Resolve one `/side` argument into a control request.
+///
+/// Pure so the three-way split is testable without a runtime. `status` and `close` are the only
+/// reserved words and they are reserved exactly: `/side status of the parser` is a question about
+/// the parser, not a status request, because a bare word is the only spelling an operator can have
+/// meant as a verb.
+fn side_request_for(argument: &str) -> app_server::SideRequest {
+    match argument.trim() {
+        "" | "status" => app_server::SideRequest::Status,
+        "close" | "end" => app_server::SideRequest::Close,
+        question => app_server::SideRequest::Ask(question.to_owned()),
+    }
+}
+
+/// Render one side answer.
+///
+/// Deliberately a Panel and not an Assistant block: an Assistant block IS this session's
+/// conversation, and the whole point of a side conversation is that its words are not. The books
+/// travel with the answer for the same reason — a second conversation the operator is paying for
+/// separately must show its own number, not silently move the session's.
+fn show_side_answer(app: &mut App, answer: &crate::runtime::SideAnswer) {
+    let mut rows = vec![block::PanelRow::Note(format!(
+        "side run {} · {} · {}",
+        answer.status.run_id,
+        block::plural(answer.status.turns as usize, "turn"),
+        side_cost_text(&answer.status)
+    ))];
+    let text = answer.text.trim();
+    if text.is_empty() {
+        rows.push(block::PanelRow::Note(format!(
+            "no answer ({})",
+            side_outcome_label(&answer.outcome)
+        )));
+    } else {
+        rows.extend(text.lines().map(|line| block::PanelRow::Note(line.into())));
+    }
+    app.panel("~", "side conversation", rows);
+}
+
+/// Render the side conversation's identity and books without an answer.
+fn show_side_status(app: &mut App, status: Option<&crate::runtime::SideStatus>, closed: bool) {
+    let Some(status) = status else {
+        app.note(
+            block::NoticeLevel::Info,
+            if closed {
+                "no side conversation was open"
+            } else {
+                "no side conversation yet — `/side <question>` starts one with its own context, cost and record"
+            },
+        );
+        return;
+    };
+    app.panel(
+        "~",
+        if closed {
+            "side conversation · closed"
+        } else {
+            "side conversation"
+        },
+        vec![
+            kv("run", &status.run_id),
+            kv("record", &status.record_path.display().to_string()),
+            kv("asked", &block::plural(status.asks as usize, "question")),
+            kv("turns", &status.turns.to_string()),
+            kv("cost", &side_cost_text(status)),
+            block::PanelRow::Note(status.ledger_summary.clone()),
+            block::PanelRow::Note(
+                "this conversation's own context, cost and record; nothing here entered the session transcript".into(),
+            ),
+        ],
+    );
+}
+
+/// Why a side ask produced nothing. A local label rather than `output::outcome_name`, which is a
+/// frozen machine-contract token and must not grow a second, human-facing caller.
+fn side_outcome_label(outcome: &core_protocol::Outcome) -> &'static str {
+    use core_protocol::Outcome;
+    match outcome {
+        Outcome::Done => "the model answered with nothing",
+        Outcome::Drained => "drained before answering",
+        Outcome::Interrupted => "interrupted before answering",
+        Outcome::Stuck => "stuck before answering",
+        Outcome::BudgetExhausted(_) => "the side conversation's own budget is exhausted",
+        Outcome::HarnessError => "the side conversation failed",
+    }
+}
+
+/// The side conversation's own money, never the session's. An unknown cost stays the word
+/// "unknown": a zero would read as free.
+fn side_cost_text(status: &crate::runtime::SideStatus) -> String {
+    match status.cost.usd() {
+        Some(usd) => format!("${usd:.4}"),
+        None => "cost unknown".into(),
+    }
 }
 
 fn request_drain(
@@ -6979,6 +7098,10 @@ async fn handle_registered_command(
             block::NoticeLevel::Err,
             "compact requires the interactive terminal dispatcher",
         ),
+        SlashCommand::Side => app.note(
+            block::NoticeLevel::Err,
+            "side conversations require the interactive terminal dispatcher",
+        ),
     }
 }
 
@@ -9047,6 +9170,98 @@ mod tests {
         assert!(l1.contains("not supplied (no frozen request loaded)"));
         assert!(l1.contains("SWE-bench Pro"));
         assert!(l1.contains("does not edit config"));
+    }
+
+    /// UX-3 frontend surface: `/side` splits into exactly three requests, and only a bare
+    /// reserved word is a verb.
+    #[test]
+    fn side_argument_resolves_to_status_close_or_a_question() {
+        assert!(matches!(
+            side_request_for(""),
+            app_server::SideRequest::Status
+        ));
+        assert!(matches!(
+            side_request_for("  status "),
+            app_server::SideRequest::Status
+        ));
+        assert!(matches!(
+            side_request_for("close"),
+            app_server::SideRequest::Close
+        ));
+        assert!(matches!(
+            side_request_for("end"),
+            app_server::SideRequest::Close
+        ));
+        match side_request_for("  what is the status of the parser?  ") {
+            app_server::SideRequest::Ask(question) => {
+                assert_eq!(question, "what is the status of the parser?");
+            }
+            _ => panic!("a sentence containing a reserved word is still a question"),
+        }
+    }
+
+    fn side_status_fixture(run_id: &str, asks: u32) -> crate::runtime::SideStatus {
+        crate::runtime::SideStatus {
+            run_id: run_id.into(),
+            record_path: std::path::PathBuf::from("/tmp/runs/side/side-1.jsonl"),
+            asks,
+            turns: 2,
+            cost: core_obs::CostState::Known {
+                amount_microusd: 12_300,
+                rate_card_digest: "digest".into(),
+            },
+            ledger_summary: "2 turns".into(),
+        }
+    }
+
+    /// The answer is rendered as its OWN panel carrying its OWN run id and cost, and never as an
+    /// assistant block — an assistant block IS this session's conversation.
+    #[test]
+    fn a_side_answer_renders_as_its_own_panel_with_its_own_run_and_cost() {
+        let mut app = App::new();
+        show_side_answer(
+            &mut app,
+            &crate::runtime::SideAnswer {
+                text: "read crates/cli/src/tui.rs:1 for the composer".into(),
+                outcome: core_protocol::Outcome::Done,
+                status: side_status_fixture("side-run-1", 1),
+            },
+        );
+        let screen = render_text(&mut app, 100, 24);
+        assert!(screen.contains("side conversation"), "{screen}");
+        assert!(screen.contains("side-run-1"), "{screen}");
+        assert!(screen.contains("$0.0123"), "{screen}");
+        assert!(screen.contains("crates/cli/src/tui.rs:1"), "{screen}");
+        assert!(
+            app.transcript.iter().all(|block| !matches!(
+                block.kind,
+                block::BlockKind::Assistant(_) | block::BlockKind::User(_)
+            )),
+            "a side answer must not enter the session transcript as a conversation turn"
+        );
+    }
+
+    #[test]
+    fn an_unopened_side_conversation_says_so_instead_of_showing_zero_cost() {
+        let mut app = App::new();
+        show_side_status(&mut app, None, false);
+        let screen = render_text(&mut app, 100, 16);
+        assert!(screen.contains("no side conversation yet"), "{screen}");
+        assert!(
+            !screen.contains("$0.0000"),
+            "an absent conversation must never be rendered as a free one: {screen}"
+        );
+    }
+
+    #[test]
+    fn closing_reports_the_books_of_the_conversation_it_closed() {
+        let mut app = App::new();
+        show_side_status(&mut app, Some(&side_status_fixture("side-run-9", 3)), true);
+        let screen = render_text(&mut app, 110, 24);
+        assert!(screen.contains("closed"), "{screen}");
+        assert!(screen.contains("side-run-9"), "{screen}");
+        assert!(screen.contains("3 questions"), "{screen}");
+        assert!(screen.contains("$0.0123"), "{screen}");
     }
 
     #[test]
