@@ -238,6 +238,28 @@ pub(crate) enum VimState {
     #[default]
     Insert,
     Normal,
+    /// A selection is being extended. Motions move the free end; the anchor stays put.
+    ///
+    /// Kept as a distinct state rather than a flag on `Normal` because the two answer the same key
+    /// differently -- `d` deletes a pending-`dd` line in normal mode and the selection in visual
+    /// mode -- and a boolean would make that difference depend on the order the caller checks it.
+    Visual,
+}
+
+/// The motions a visual-mode selection can be extended by.
+///
+/// A separate closed vocabulary rather than reusing `VimAction`'s movement variants: those tell the
+/// frontend to MOVE THE CURSOR, and in visual mode the same key must move the free end of a
+/// selection while the anchor stays put. Sharing one variant would leave the difference to the
+/// caller, which is how a selection silently becomes a cursor jump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VimMotion {
+    Left,
+    Right,
+    Home,
+    End,
+    WordLeft,
+    WordRight,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +279,16 @@ pub(crate) enum VimAction {
     Clear,
     HistoryPrevious,
     HistoryNext,
+    /// Start a selection anchored at the cursor.
+    EnterVisual,
+    /// Leave visual mode; the selection is dropped, the cursor stays where it is.
+    LeaveVisual,
+    /// Extend the selection by one motion. The frontend moves the free end and keeps the anchor.
+    ExtendSelection(VimMotion),
+    /// Remove the selected span and return to normal mode.
+    DeleteSelection,
+    /// Copy the selected span and return to normal mode. The frontend owns the clipboard.
+    YankSelection,
     Consumed,
 }
 
@@ -306,6 +338,38 @@ impl Vim {
             }
             return None;
         }
+        if self.state == VimState::Visual {
+            // A modifier that is not the SHIFT carried by an uppercase character means this key
+            // belongs to the surrounding application, not to the selection.
+            if !modifiers.is_empty() && modifiers != KeyModifiers::SHIFT {
+                return None;
+            }
+            let action = match code {
+                KeyCode::Esc => VimAction::LeaveVisual,
+                KeyCode::Char('v') => VimAction::LeaveVisual,
+                KeyCode::Char('h') => VimAction::ExtendSelection(VimMotion::Left),
+                KeyCode::Char('l') => VimAction::ExtendSelection(VimMotion::Right),
+                KeyCode::Char('0') => VimAction::ExtendSelection(VimMotion::Home),
+                KeyCode::Char('$') => VimAction::ExtendSelection(VimMotion::End),
+                KeyCode::Char('b') => VimAction::ExtendSelection(VimMotion::WordLeft),
+                KeyCode::Char('w') => VimAction::ExtendSelection(VimMotion::WordRight),
+                // `d` and `x` are the same command on a selection; Vim treats them alike here.
+                KeyCode::Char('d' | 'x') => VimAction::DeleteSelection,
+                KeyCode::Char('y') => VimAction::YankSelection,
+                // Anything else printable is swallowed rather than inserted: a stray key must not
+                // replace the selection with a character, which is the one visual-mode mistake that
+                // silently destroys text.
+                KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete => VimAction::Consumed,
+                _ => return None,
+            };
+            if matches!(
+                action,
+                VimAction::LeaveVisual | VimAction::DeleteSelection | VimAction::YankSelection
+            ) {
+                self.state = VimState::Normal;
+            }
+            return Some(action);
+        }
         // Crossterm reports `A`/`I` either as an uppercase character alone or as that character
         // plus SHIFT depending on the terminal protocol. Both are the same Vim command; no other
         // modified normal-mode key is allowed to leak into the state machine.
@@ -328,6 +392,7 @@ impl Vim {
             KeyCode::Char('b') => VimAction::WordLeft,
             KeyCode::Char('w') => VimAction::WordRight,
             KeyCode::Char('x') => VimAction::Delete,
+            KeyCode::Char('v') => VimAction::EnterVisual,
             KeyCode::Char('k') => VimAction::HistoryPrevious,
             KeyCode::Char('j') => VimAction::HistoryNext,
             KeyCode::Char('d') if self.pending_delete => VimAction::Clear,
@@ -350,6 +415,8 @@ impl Vim {
                 | VimAction::InsertStart
         ) {
             self.state = VimState::Insert;
+        } else if action == VimAction::EnterVisual {
+            self.state = VimState::Visual;
         }
         Some(action)
     }
