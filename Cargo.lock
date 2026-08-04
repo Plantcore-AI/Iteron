@@ -387,6 +387,7 @@ dependencies = [
  "core-sandbox",
  "core-sched",
  "core-tools",
+ "core-tunables",
  "core-verify",
  "core-workflow",
  "crossterm 0.29.0",

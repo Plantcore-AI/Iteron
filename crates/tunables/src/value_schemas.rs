@@ -118,7 +118,134 @@ macro_rules! external_rule {
         crate::CrossFieldRule::ExternalCeiling {
             field: $field,
             ceiling: crate::ExternalCeiling::$ceiling,
+            projection: crate::ConstraintProjection::WholeValue,
+            relation: external_relation!($ceiling),
+            violation: external_violation!($ceiling),
         }
+    };
+}
+
+/// A non-numeric target constrained by a budget authority uses an attested admissible domain.
+/// The registry owns the reject action; request evidence cannot choose clamp/degrade behavior.
+macro_rules! external_domain_rule {
+    ($field:literal, $ceiling:ident) => {
+        crate::CrossFieldRule::ExternalCeiling {
+            field: $field,
+            ceiling: crate::ExternalCeiling::$ceiling,
+            projection: crate::ConstraintProjection::WholeValue,
+            relation: crate::ConstraintRelation::AttestedDomain,
+            violation: crate::ConstraintViolation::Reject,
+        }
+    };
+}
+
+/// A catalog-entry policy is executable in the pure resolver only as an attestation over the
+/// complete inline catalog or its content-addressed reference. Entry materialization belongs to
+/// the runtime binding layer; the resolver never silently skips the rule.
+macro_rules! external_catalog_rule {
+    ($field:literal, $ceiling:ident) => {
+        crate::CrossFieldRule::ExternalCeiling {
+            field: $field,
+            ceiling: crate::ExternalCeiling::$ceiling,
+            projection: crate::ConstraintProjection::WholeCatalog,
+            relation: external_catalog_relation!($ceiling),
+            violation: crate::ConstraintViolation::Reject,
+        }
+    };
+}
+
+macro_rules! external_catalog_relation {
+    (BenchmarkProtocol) => {
+        crate::ConstraintRelation::Exact
+    };
+    ($ceiling:ident) => {
+        crate::ConstraintRelation::AttestedDomain
+    };
+}
+
+macro_rules! external_relation {
+    (ParentTurns) => {
+        crate::ConstraintRelation::UpperBound
+    };
+    (ParentTokens) => {
+        crate::ConstraintRelation::UpperBound
+    };
+    (ParentWall) => {
+        crate::ConstraintRelation::UpperBound
+    };
+    (ParentCost) => {
+        crate::ConstraintRelation::UpperBound
+    };
+    (ContextWindow) => {
+        crate::ConstraintRelation::UpperBound
+    };
+    (ToolBudget) => {
+        crate::ConstraintRelation::UpperBound
+    };
+    (ProcessBudget) => {
+        crate::ConstraintRelation::UpperBound
+    };
+    (RunBudget) => {
+        crate::ConstraintRelation::UpperBound
+    };
+    (BenchmarkProtocol) => {
+        crate::ConstraintRelation::Exact
+    };
+    (OperatorAuthority) => {
+        crate::ConstraintRelation::AttestedDomain
+    };
+    (ProviderCapability) => {
+        crate::ConstraintRelation::AttestedDomain
+    };
+    (VerificationFloor) => {
+        crate::ConstraintRelation::AttestedDomain
+    };
+    (TenantScope) => {
+        crate::ConstraintRelation::AttestedDomain
+    };
+}
+
+macro_rules! external_violation {
+    (ParentTurns) => {
+        crate::ConstraintViolation::ClampNumeric
+    };
+    (ParentTokens) => {
+        crate::ConstraintViolation::ClampNumeric
+    };
+    (ParentWall) => {
+        crate::ConstraintViolation::ClampNumeric
+    };
+    (ParentCost) => {
+        crate::ConstraintViolation::ClampNumeric
+    };
+    (ContextWindow) => {
+        crate::ConstraintViolation::ClampNumeric
+    };
+    (ToolBudget) => {
+        crate::ConstraintViolation::ClampNumeric
+    };
+    (ProcessBudget) => {
+        crate::ConstraintViolation::ClampNumeric
+    };
+    (RunBudget) => {
+        crate::ConstraintViolation::ClampNumeric
+    };
+    (ProviderCapability) => {
+        crate::ConstraintViolation::DegradeAttested {
+            policy_id: "core://tunables/degrade/provider-attested-preferred-v1",
+        }
+    };
+    (OperatorAuthority) => {
+        crate::ConstraintViolation::Reject
+    };
+    (VerificationFloor) => {
+        crate::ConstraintViolation::Reject
+    };
+    (TenantScope) => {
+        crate::ConstraintViolation::Reject
+    };
+    (BenchmarkProtocol) => {
+        crate::ConstraintViolation::Reject
     };
 }
 

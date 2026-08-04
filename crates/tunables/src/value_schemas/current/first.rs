@@ -165,7 +165,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
         },
         [
             external_rule!("$", ProviderCapability),
-            external_rule!("$", ParentTokens)
+            external_domain_rule!("$", ParentTokens)
         ]
     ),
     map_schema!(
@@ -247,7 +247,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
         "compaction_failure",
         Enum,
         finite_enum_domain!("fail_closed", "retain_original", "truncate_bounded"),
-        [external_rule!("$", ContextWindow)]
+        [external_domain_rule!("$", ContextWindow)]
     ),
     object_schema!(
         "instruction_discovery_render",

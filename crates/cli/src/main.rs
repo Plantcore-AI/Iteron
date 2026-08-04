@@ -38,6 +38,7 @@ mod startup;
 mod surface;
 mod theme;
 mod tui;
+mod tunables;
 mod workflow;
 
 use clap::{Parser, Subcommand};
@@ -141,6 +142,11 @@ enum LocalCommand {
     Pricing {
         #[command(subcommand)]
         action: PricingAction,
+    },
+    /// Resolve or explain one explicit tunables request without binding it to a live run.
+    Tunables {
+        #[command(subcommand)]
+        action: tunables::Action,
     },
 }
 
@@ -780,6 +786,7 @@ async fn run_cli() -> anyhow::Result<u8> {
                 ConfigAction::Set { key, value } => setup::run_config_set(key, value),
             };
         }
+        Some(LocalCommand::Tunables { action }) => return tunables::run(action),
         _ => {}
     }
 

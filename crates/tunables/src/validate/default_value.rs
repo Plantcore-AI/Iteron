@@ -90,7 +90,7 @@ fn validate_scalar_value(value: TunableValue, domain: ScalarDomain) -> Result<()
             Ok(())
         }
         (
-            TunableValue::Text { value } | TunableValue::Enum { value },
+            TunableValue::Text { value },
             ScalarDomain::Text {
                 min_bytes,
                 max_bytes,
@@ -101,10 +101,7 @@ fn validate_scalar_value(value: TunableValue, domain: ScalarDomain) -> Result<()
         {
             Ok(())
         }
-        (
-            TunableValue::Text { value } | TunableValue::Enum { value },
-            ScalarDomain::Enum { values, catalog_id },
-        ) => {
+        (TunableValue::Enum { value }, ScalarDomain::Enum { values, catalog_id }) => {
             if values.contains(&value) {
                 return Ok(());
             }
@@ -162,7 +159,11 @@ fn validate_map(
         if !names.insert(entry.name) {
             return Err("typed default map has duplicate keys");
         }
-        validate_scalar_value(TunableValue::Text { value: entry.name }, key)?;
+        let key_value = match key {
+            ScalarDomain::Enum { .. } => TunableValue::Enum { value: entry.name },
+            _ => TunableValue::Text { value: entry.name },
+        };
+        validate_scalar_value(key_value, key)?;
         validate_value(entry.value)?;
     }
     Ok(())
@@ -321,7 +322,8 @@ fn rule_value_eq(value: TunableValue, expected: RuleValue) -> bool {
 
 fn valid_string_format(value: &str, format: StringFormat) -> bool {
     match format {
-        StringFormat::Utf8 | StringFormat::Command => !value.is_empty(),
+        StringFormat::Utf8 => true,
+        StringFormat::Command => !value.is_empty(),
         StringFormat::Identifier => value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/' | b'+')
         }),

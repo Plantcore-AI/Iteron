@@ -22,7 +22,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             ),
             scalar_field!("version", true, text_domain!(1, 64, Semver))
         ],
-        [external_rule!("version", BenchmarkProtocol)]
+        [external_catalog_rule!("version", BenchmarkProtocol)]
     ),
     map_schema!(
         "route_quality_cost_latency_objective_weights",
@@ -71,7 +71,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         catalog_enum_domain!("provider-service-tiers"),
         [
             external_rule!("$", ProviderCapability),
-            external_rule!("$", ParentCost)
+            external_domain_rule!("$", ParentCost)
         ]
     ),
     scalar_schema!(
@@ -80,7 +80,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         finite_enum_domain!("concise", "balanced", "detailed"),
         [
             external_rule!("$", ProviderCapability),
-            external_rule!("$", ParentTokens)
+            external_domain_rule!("$", ParentTokens)
         ]
     ),
     map_schema!(
@@ -93,7 +93,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         },
         [
             external_rule!("$", ProviderCapability),
-            external_rule!("$", ParentCost)
+            external_domain_rule!("$", ParentCost)
         ]
     ),
     scalar_schema!(
@@ -171,7 +171,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         "auto_compaction_enable",
         Bool,
         bool_domain!(),
-        [external_rule!("$", ContextWindow)]
+        [external_domain_rule!("$", ContextWindow)]
     ),
     object_schema!(
         "compaction_cooldown_hysteresis",
@@ -189,7 +189,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         "multi_stage_summary_topology",
         Enum,
         finite_enum_domain!("single_stage", "hierarchical", "map_reduce"),
-        [external_rule!("$", ContextWindow)]
+        [external_domain_rule!("$", ContextWindow)]
     ),
     scalar_schema!(
         "summary_consistency_coverage_check",
@@ -224,7 +224,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         Enum,
         finite_enum_domain!("disabled", "one_shot", "persistent"),
         [
-            external_rule!("$", ProcessBudget),
+            external_domain_rule!("$", ProcessBudget),
             external_rule!("$", OperatorAuthority)
         ]
     ),

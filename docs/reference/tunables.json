@@ -1,13 +1,13 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "5dc9790a4ea2f20f00173965bc5937aecaac89d677b8fcc02b2cb87974986502"
+    "value": "0a30e0c1d7789d5c8230122178fab78e74c3193994c359925065dfe59b4b8718"
   },
   "payload": {
-    "schema_version": 2,
+    "schema_version": 3,
     "registry_id": "core-tunables",
-    "registry_revision": 2,
-    "canonicalization": "core-tunables-json-v2",
+    "registry_revision": 3,
+    "canonicalization": "core-tunables-json-v3",
     "family_count": 160,
     "scalar_catalogs": [
       {
@@ -96,9 +96,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "6421b8d64131d2885ac26b370c78901f460e219de1e14ab938ad2667aa3415d8"
+          "value": "22e0c6df888ff330ca78179c42b088b1da17500b15b8919c4bb333fdda3b5444"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 1,
         "id": "provider",
         "semantic_key": "core.control.provider.route_selection",
@@ -172,7 +172,13 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             }
           ]
         },
@@ -197,9 +203,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e7f9aae8fb54ffa6fbc7dbf125373a1167f4d279244a5628f0f03daeb927fe3d"
+          "value": "7206aa769e1f9f8052f1c19abd7a91f1ce67c5f72ea3009383f6d01472c4dea7"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 2,
         "id": "model",
         "semantic_key": "core.control.provider.model_selection",
@@ -279,7 +285,13 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             }
           ]
         },
@@ -304,9 +316,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e709000665013901e0daf1c370d86edf62f150d23f440dd9639819bb5b49fd12"
+          "value": "6090fb8449cec1ab345529add2b4d140739228d3fb2a1076c3456f24bc258f59"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 3,
         "id": "base_url",
         "semantic_key": "core.control.provider.api_endpoint",
@@ -372,7 +384,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -397,9 +414,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4ec82aee88c39232278f3e141c804d4c4d7d2d3feaed0bd33d3ac0d1ed9d0ee0"
+          "value": "f138bcfba1067764f7504f60e60e8f20362f4d3dd91ae1701cf1db049e47633b"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 4,
         "id": "effort",
         "semantic_key": "core.control.reasoning.effort_tier",
@@ -481,7 +498,13 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             }
           ]
         },
@@ -506,9 +529,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0ca6f645a8ae1b26b43c76553f2c1e54abff9dc2f0911dc056af3d84a9bfcee1"
+          "value": "94521b741d66b73090402fc8ac36e3600ee30a1b9931027b0ea7c2da691f8326"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 5,
         "id": "max_turns",
         "semantic_key": "core.control.budget.turn_ceiling",
@@ -581,7 +604,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_turns"
+              "ceiling": "parent_turns",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -606,9 +634,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c015a56e68166bda8504d0e8e8a320b156acfddfcae5f382be7877953a914337"
+          "value": "4bdd6d349e6a0d3e5f1a49ebca3d6326d5d6315e6eae8e559d5f5e02d7386aef"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 6,
         "id": "max_usd",
         "semantic_key": "core.control.budget.cost_ceiling_usd",
@@ -674,7 +702,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_cost"
+              "ceiling": "parent_cost",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -699,9 +732,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9c7b2c54040495945e2476fb32ef30084946d02c153615ea11c4c23e0e94b335"
+          "value": "36072853f2f3bd5d83bb718cf82eb89bd0eb6cdcef7086f2cc693a3947c9b15e"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 7,
         "id": "max_tokens",
         "semantic_key": "core.control.budget.token_ceiling",
@@ -760,7 +793,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_tokens"
+              "ceiling": "parent_tokens",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -785,9 +823,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3623cdc0b61f7f1187e3c0ade5744ea5e9a5ac36f548a44ddbe443a1ee5995b8"
+          "value": "20982037d76cb5a4b5ed92a053b4affac44670d9a7b69d9e0dca07820c9b764a"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 8,
         "id": "max_wall_secs",
         "semantic_key": "core.control.budget.wall_time_ceiling",
@@ -847,7 +885,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -872,9 +915,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f1dd06b08e9287bcd9cde2b2c943f10b3cccea4805dcae096a3c385fdb69ed06"
+          "value": "2d9e0ab4e31e2cfc6852848d3b9ee26418006ebbf796d1043ed352c603864494"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 9,
         "id": "allow_code",
         "semantic_key": "core.control.governance.code_execution_admission",
@@ -929,7 +972,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -954,9 +1002,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4c3b3ee6bdbd7a6fe2e15e8ee2441e9d12aeb37058883fa56c34173e95f892c1"
+          "value": "799f08681ec6da87d2656a1bea912c2a1d70f7dab12ede9bf2e7f56d7ad8bf93"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 10,
         "id": "permission_mode",
         "semantic_key": "core.control.governance.permission_posture",
@@ -1018,7 +1066,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -1043,9 +1096,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4a5ff418b2eaf43860dbf40ca1ebf6ee7b37391fb3ce76d2732f399fe6b3ddaa"
+          "value": "03d72f08b0943dcf9e4126b546473976abd3c2129be59fcc5b7227b3b8cd9bae"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 11,
         "id": "permission_rules",
         "semantic_key": "core.control.governance.capability_rules",
@@ -1115,7 +1168,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -1140,9 +1198,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "bbc7c4e32f7b0569e21199747afd8e950f73af4619b2b75e18ae8eb58e74669e"
+          "value": "fe3476327f67575731db42ac3fcd8cb700eca19979f896d9cd611e88313ef533"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 12,
         "id": "bypass_permissions",
         "semantic_key": "core.control.governance.permission_prompt_bypass",
@@ -1197,7 +1255,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -1222,9 +1285,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "83a36c8f53f83069e1962efc123f5df086f80514512ab81599164178c96f66ca"
+          "value": "29eee3ec6308065755db6efa6e3db4e58be6d1737b5ef14597e650a39515e0d3"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 13,
         "id": "compaction_trigger",
         "semantic_key": "core.control.context.compaction_activation",
@@ -1324,12 +1387,23 @@
             {
               "type": "external_ceiling",
               "field": "fallback_trigger_tokens",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "output_reserve_tokens",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             }
           ]
         },
@@ -1354,9 +1428,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e4632f4e1626028cbe58fdeed51d57f60c29a20a89ffa92e74252f78a1497f9a"
+          "value": "768bc7cc472cbd3a78a1bebd44f46444c0baa0ce70826fd955bdeb96a5c2ca6e"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 14,
         "id": "verify_command",
         "semantic_key": "core.control.verification.command_selection",
@@ -1417,12 +1491,22 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "verification_floor"
+              "ceiling": "verification_floor",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -1447,9 +1531,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a8d26d81a91527de2a4b4b776a9967e878b30a94d281c60f421af54c38d0d5e7"
+          "value": "9300aaba5f44c29d8c24a58ebcd919b0799a245c3fea8a802f90d2be9091ae8a"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 15,
         "id": "retry_backoff_base",
         "semantic_key": "core.control.runtime.provider_retry_initial_delay",
@@ -1519,7 +1603,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -1544,9 +1633,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1a037e3eafc160716d338eb5c3b4f5d72faa7e28eecdb7c03174280fedc1b012"
+          "value": "9f39b51368dc88e21167d306171d87c548382e75cc92bfa15f755e67d408fa76"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 16,
         "id": "retry_backoff_cap",
         "semantic_key": "core.control.runtime.provider_retry_maximum_delay",
@@ -1616,7 +1705,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -1641,9 +1735,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e6fc78c443fbda65903bc713049c44eee47002ad5d2bfbdb6451baaf8b082a6a"
+          "value": "e4cb86a402a985719cf8c701637556e661c1759edb5594b7878f7b042e2f460b"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 17,
         "id": "retry_max_attempts",
         "semantic_key": "core.control.runtime.provider_retry_attempt_ceiling",
@@ -1713,7 +1807,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -1738,9 +1837,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ac7946d3c60257757dd5ba301eceb0cd1bd83fe7a44ed87d9040df94252af37e"
+          "value": "0ee0f8485a4ffa6b89e29316a5fc0b6d0649f19119109809b07f15a613c94612"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 18,
         "id": "egress_allow",
         "semantic_key": "core.control.governance.egress_allowlist",
@@ -1801,7 +1900,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -1826,9 +1930,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "907c55492cd2151425ffaa675ecbe2e1202d6e64140620c6d6a6ab600ec75a21"
+          "value": "be4a9aedcaaf9de2b79dd95895d1e84c7f5e064607336b20cdfe786a7ccc0c5c"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 19,
         "id": "request_output_cap",
         "semantic_key": "core.control.provider.response_token_ceiling",
@@ -1903,12 +2007,23 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_tokens"
+              "ceiling": "parent_tokens",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -1933,9 +2048,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9d05a6e3cfc7faedee8d74276dcced1f0bbd61532340725571cdef39e40ba33e"
+          "value": "d04e6d97c33c824291d73fec49a4be3ccbdc8db86a52ad23b84e37166d827daf"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 20,
         "id": "effort_reasoning_map",
         "semantic_key": "core.control.reasoning.effort_to_reasoning",
@@ -2008,7 +2123,13 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             }
           ]
         },
@@ -2033,9 +2154,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9e9f087f2050ed2dfc2372c712d443a33e251349d3212e3857ad2f6c277d6448"
+          "value": "6805fc78a951a5165eb18429eaacca866e3d1395fc7bc530fdf0610e2e4c0ef7"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 21,
         "id": "thinking_map",
         "semantic_key": "core.control.reasoning.effort_to_thinking_budget",
@@ -2109,12 +2230,23 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_tokens"
+              "ceiling": "parent_tokens",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -2139,9 +2271,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1737b712a55d40fc65ddb963f37727c254f0c5651ffb97a83eda4e8b72685a40"
+          "value": "fcd63123effa80f94517a26ff25691204d5621af3903feee6260b538f2645de9"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 22,
         "id": "orchestration_map",
         "semantic_key": "core.control.orchestration.effort_to_topology",
@@ -2217,7 +2349,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -2242,9 +2379,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "973c15c69dc55f3668de8bf79675780606ba8ab134d1c071ee79c659fdf6b18e"
+          "value": "e8bfdcd4dbd6aa3759b00cf77846089592521c503b0d429c4453dae9faaf61bd"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 23,
         "id": "prompt_cache",
         "semantic_key": "core.control.provider.prompt_cache_emission",
@@ -2305,7 +2442,13 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             }
           ]
         },
@@ -2330,9 +2473,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8946c125fd57f6b4f570425be7bd0156aa18935a0eba8ec7f6054521942487ac"
+          "value": "dfaa509cc4894de93114972689f8ab6ba3de4e343fc2738e9eb20f5651eea740"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 24,
         "id": "compaction_adaptive",
         "semantic_key": "core.control.context.compaction_adaptation",
@@ -2431,7 +2574,12 @@
             {
               "type": "external_ceiling",
               "field": "output_reserve_tokens",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -2456,9 +2604,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "356c89c32f4677fe336e24cb7511ebcb431141bae055d029bb582587df8ddfb7"
+          "value": "fd5f89f2c5bac72bdf1a486efbf443583c445c03fdbe5eb3baca537c973d50ba"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 25,
         "id": "compaction_keep_recent",
         "semantic_key": "core.control.context.recent_turn_retention",
@@ -2514,7 +2662,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -2539,9 +2692,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3ffd3b58a31c2cab82d9da0a8d40a1f4d41b63cfa0cd608ed66b046a4c229c69"
+          "value": "2b30f5936d5089065eb0af43b7f05a24222b5f378cd26d456d0c790a2a68779b"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 26,
         "id": "token_estimator",
         "semantic_key": "core.control.context.token_estimation",
@@ -2646,9 +2799,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2295de475d28c7a4419306cf3fab8a325f8793e5b257f8801a4be4eeec0f1a28"
+          "value": "cc9684e8706ec5e848c7cc4508f4ca49f5f20b23d54bd215420188129649c8ff"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 27,
         "id": "summary_profile",
         "semantic_key": "core.control.context.summary_shape",
@@ -2746,12 +2899,23 @@
             {
               "type": "external_ceiling",
               "field": "max_output_tokens",
-              "ceiling": "parent_tokens"
+              "ceiling": "parent_tokens",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "effort",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             }
           ]
         },
@@ -2776,9 +2940,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fbbd31f5a0f9ab7f1d2d5bea69344e97c719331c8ace73ca2b3828de1d72d8df"
+          "value": "28cfbfb66c694a669ba5e970f515c502533feea262082370436bfc67b3b9b0b7"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 28,
         "id": "compaction_failure",
         "semantic_key": "core.control.context.compaction_failure_handling",
@@ -2837,7 +3001,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -2862,9 +3031,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5fe70c176efaf8325aa8f571e8f9edea09a203bc92984b756231cc2f463e497d"
+          "value": "9914c87d1bbd4c2b1a3abbc7f84a861d1ed5eaa785cee1eca8d56b9e9a02110a"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 29,
         "id": "instruction_discovery_render",
         "semantic_key": "core.control.context.instruction_discovery_rendering",
@@ -2975,7 +3144,12 @@
             {
               "type": "external_ceiling",
               "field": "total_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -3000,9 +3174,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5ad04a1e3ac5c4fe00e4c29b7db45402fe7f3d2fe6e0b6d3f04c8a617bd1b8a4"
+          "value": "7f70d0d35b5472779c884617997923d6499eeed8ec712d2bb3ea42f96271b633"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 30,
         "id": "memory_enable",
         "semantic_key": "core.control.memory.durable_memory_admission",
@@ -3058,7 +3232,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "tenant_scope"
+              "ceiling": "tenant_scope",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -3083,9 +3262,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "456c30cc4abca31b7d0b9da24e63e9eb87dad56468e4418f58cb363c0a7a00c8"
+          "value": "fd68c3fce369ba9a15f4b39237ec2cf6daeadc42ee2ae76fcaa8c9fb2218b1fb"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 31,
         "id": "memory_budgets",
         "semantic_key": "core.control.memory.retrieval_render_write_budgets",
@@ -3201,7 +3380,12 @@
             {
               "type": "external_ceiling",
               "field": "total_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -3226,9 +3410,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "52a2838106e2da8cabacb272e714624e586e041cdd36981469b129c454165324"
+          "value": "14951c94372d5e0a2c5b5209be6e379bce3770b1afbc523713d7f1ee3f2057f9"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 32,
         "id": "bm25",
         "semantic_key": "core.control.context.lexical_retrieval_scoring",
@@ -3324,9 +3508,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b52a8fa1e47244be3b1abd1fccf71e92db4c484b30da6a0c22ef59a4e8017b94"
+          "value": "66daa0d779632cc8f4402c1bdd35dd6b8ad1316f80279e5ca4eae23082197f05"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 33,
         "id": "skill_listing_budget",
         "semantic_key": "core.control.context.skill_catalog_render_budget",
@@ -3383,7 +3567,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -3408,9 +3597,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "230184a5f01fc1356c07c96f06df102a14b9c64c6dc25877817244b54a80900d"
+          "value": "2e8d5fec16f7b7b189f2a522dfca653772e633772efe4f0ac5ca09fdc6a1495a"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 34,
         "id": "max_consecutive_tool_errors",
         "semantic_key": "core.control.budget.consecutive_tool_error_ceiling",
@@ -3467,7 +3656,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -3492,9 +3686,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "cfdc9d528417d8ca593e853375bbdeddf880901a750ef71a0b7381a42466c215"
+          "value": "fae7212063a1b334b419c6901694cb6277b670960ef614900dbf9a899f117554"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 35,
         "id": "pure_overlap",
         "semantic_key": "core.control.orchestration.pure_tool_overlap",
@@ -3548,7 +3742,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "tool_budget"
+              "ceiling": "tool_budget",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -3573,9 +3772,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0d599335db34fbe2f300cb8d5f73bfff21fa1d22cea0d27a8b1c4e7bcb6d81fb"
+          "value": "793c5d3bab6dce802961cd608e29f40b3bcc677814121761e860d07f7e6834b0"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 36,
         "id": "pure_concurrency",
         "semantic_key": "core.control.orchestration.pure_tool_concurrency",
@@ -3632,7 +3831,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "process_budget"
+              "ceiling": "process_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -3657,9 +3861,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1af4f3cc82bf09dfe1e95248bba709402f723582d3e95a89123a9c3737294d73"
+          "value": "49dffc7d1de14a49e098dec58593edb5c8a1477ef64c19ffe7242735ed6bd0ec"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 37,
         "id": "failed_action_dedup",
         "semantic_key": "core.control.tooling.failed_action_suppression",
@@ -3750,7 +3954,12 @@
             {
               "type": "external_ceiling",
               "field": "max_identities",
-              "ceiling": "tool_budget"
+              "ceiling": "tool_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -3775,9 +3984,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f4816d5781794125aa4db6a92c76672e3e89eb3ab14d559e08214781aab79c24"
+          "value": "6a53729833a18933b3cdac47f163f9fc26f1fd117f2e86b0451b6c96332b17e9"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 38,
         "id": "pure_memo_cache",
         "semantic_key": "core.control.tooling.deterministic_result_memo",
@@ -3866,7 +4075,12 @@
             {
               "type": "external_ceiling",
               "field": "max_entries",
-              "ceiling": "tool_budget"
+              "ceiling": "tool_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -3891,9 +4105,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4ef552083ae11083c2ec8153024bc02196f5af7dbb8ddb00bc748619c2ea47c2"
+          "value": "a374e2a204f42500d7e99c961384b27e680c51a38fde464a62a8efcbb516e8cb"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 39,
         "id": "shell_timeout_output",
         "semantic_key": "core.control.tooling.shell_execution_envelope",
@@ -4012,17 +4226,32 @@
             {
               "type": "external_ceiling",
               "field": "timeout_seconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "stdout_max_bytes",
-              "ceiling": "tool_budget"
+              "ceiling": "tool_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "stderr_max_bytes",
-              "ceiling": "tool_budget"
+              "ceiling": "tool_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -4047,9 +4276,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "16c25ee4143a90bed1d6f8bbb533910698e63dc36214f3fae8675259f94b6b5a"
+          "value": "6307e1abfabad595277d2bf41ad4fe0ec09cc54302cba7c3aa01d2d0a338e4b4"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 40,
         "id": "read_file_limits",
         "semantic_key": "core.control.tooling.file_read_envelope",
@@ -4148,7 +4377,12 @@
             {
               "type": "external_ceiling",
               "field": "output_max_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -4173,9 +4407,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0b169f3db19d29c4595a6ba8b058831ea6b8a17a6edf7afadd85e14028e39a58"
+          "value": "c15627d10f5b40bc0e44ef3fc856adf5dab1939aaca17c86f947e198bfbc9dbb"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 41,
         "id": "list_dir_limits",
         "semantic_key": "core.control.tooling.directory_listing_envelope",
@@ -4269,7 +4503,12 @@
             {
               "type": "external_ceiling",
               "field": "output_max_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -4294,9 +4533,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f2d1d280f7f413f8f4f77956f4e9328b480554739004fccb167ab7c07576dedf"
+          "value": "cd57a99cc2df3588a8acc554ff43a628009db204a1d88bfb609fa82e2b6c538a"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 42,
         "id": "glob_limits",
         "semantic_key": "core.control.tooling.glob_traversal_envelope",
@@ -4390,7 +4629,12 @@
             {
               "type": "external_ceiling",
               "field": "output_max_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -4415,9 +4659,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "831d44ad1bd96ec53aef5eabbd01e2b167962bd40d2fce389eb46c910bd0f58a"
+          "value": "ea4da3a7adcd8cc021baf542948f9e3fbd21f872d8ae6f7c1ecd908416555205"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 43,
         "id": "grep_limits",
         "semantic_key": "core.control.tooling.text_search_envelope",
@@ -4516,7 +4760,12 @@
             {
               "type": "external_ceiling",
               "field": "output_max_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -4541,9 +4790,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b04492cb3332f9ec063a1ee3d34b55fde21b66c7d21bf7d3b227c6acfe15e5f6"
+          "value": "2250a182c03d18a3e35cf7020b11274bb70bcb87689537c9bb97c3b07d6f2a4e"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 44,
         "id": "repo_map",
         "semantic_key": "core.control.context.repository_map_envelope",
@@ -4637,7 +4886,12 @@
             {
               "type": "external_ceiling",
               "field": "max_tokens",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -4662,9 +4916,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fcce1040b07848e31108211b6729d715b34addd0458640e50e180534aceafdc7"
+          "value": "851b47f95d4256dc4b8371450fdf9cca5511c12697e0196990f9a12cdc24aba3"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 45,
         "id": "git_limits",
         "semantic_key": "core.control.tooling.git_observation_envelope",
@@ -4771,12 +5025,22 @@
             {
               "type": "external_ceiling",
               "field": "timeout_seconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "output_max_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -4801,9 +5065,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4ca31341e0632dcebb3fe261b16ca6fe41566b90dab3289cd4ddd96bd5650df4"
+          "value": "3467f36cf528dce5f4c3e3ec932d9fa02f03d37094be576c14599ae15cd54f73"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 46,
         "id": "web_fetch_limits",
         "semantic_key": "core.control.tooling.web_fetch_envelope",
@@ -4910,12 +5174,22 @@
             {
               "type": "external_ceiling",
               "field": "body_max_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "timeout_seconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -4940,9 +5214,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "34e45c7e4369734872b6e4157482d01a1c1d352c4065641697a11376ce0d6970"
+          "value": "9e88cd3fd0530e03596d80de019087f93cdb13bd6eb02c5dc5ee975bb1e3146a"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 47,
         "id": "web_search_cap",
         "semantic_key": "core.control.tooling.web_search_result_ceiling",
@@ -4999,7 +5273,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -5024,9 +5303,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "16c9554317611e9644274220748de6715a87edfe6cbca33db3276224749dbe2e"
+          "value": "2d843f306f56c346c1cdca185ae68ea8aaa75424a4c74b5c8e386a5837cf2a4c"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 48,
         "id": "verifier_attempts",
         "semantic_key": "core.control.verification.repair_attempt_ceiling",
@@ -5083,7 +5362,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -5108,9 +5392,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "328de8b2fab8d44106b7c9373e0a86b97529ae76245ffee8dde19e4b1cd9130a"
+          "value": "06c30c0252d938364f85aec70a7429fab28baf8d1655a0d27ddf0983b3a0a6c7"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 49,
         "id": "verifier_feedback_tails",
         "semantic_key": "core.control.verification.failure_feedback_tail",
@@ -5212,7 +5496,12 @@
             {
               "type": "external_ceiling",
               "field": "total_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -5237,9 +5526,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b7f02444260f90f5b1d677b4638dc5425335f18a36b4993ca93030b9c2efa208"
+          "value": "d408b53a69ff49339b707d8e03949b6525eb4299c23689a4fa9f79541993ae26"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 50,
         "id": "verifier_timeout",
         "semantic_key": "core.control.verification.command_deadline",
@@ -5296,7 +5585,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -5321,9 +5615,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "111c951b574a134b988242e6962df4043ee33b3de79a978b08df5bba7e8d7dac"
+          "value": "007b303d7dd0b30862495995a80c7d0d2c4ae7836a75bac7ca510c04f0d1f776"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 51,
         "id": "route_topology",
         "semantic_key": "core.control.orchestration.execution_topology",
@@ -5382,7 +5676,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -5407,9 +5706,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "dc06386e90a6a2f3855d18d8f7fa7732597ae2edcfef8b605c0c0912006c5da0"
+          "value": "f76e415218a839baf5436f388e5e027da8a31edf268b058e8e5b4ea1d26fb1d6"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 52,
         "id": "decomposition_profile",
         "semantic_key": "core.control.orchestration.task_decomposition",
@@ -5509,12 +5808,23 @@
             {
               "type": "external_ceiling",
               "field": "max_output_tokens",
-              "ceiling": "parent_tokens"
+              "ceiling": "parent_tokens",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "thinking_tokens",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             }
           ]
         },
@@ -5539,9 +5849,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "799334c394fac2c971dce202e1f27fe344a20cb07817f8e79c922d0151b3e7fc"
+          "value": "a89174a56f7571702d82371c61d5de0495f249c266810b8bd3b654f38fe166f2"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 53,
         "id": "fan_breadth",
         "semantic_key": "core.control.orchestration.investigator_fanout",
@@ -5598,7 +5908,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -5623,9 +5938,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "46fb6be2d0a4f4545b78b9627f96e53264e603a990ccab4a1b5765b591883e85"
+          "value": "5d70f114f3cdd0f35fe10c8088828a04934ca47dea13d19ddc4c204a155c5ac8"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 54,
         "id": "admission",
         "semantic_key": "core.control.orchestration.child_admission",
@@ -5715,12 +6030,22 @@
             {
               "type": "external_ceiling",
               "field": "minimum_remaining_turns",
-              "ceiling": "parent_turns"
+              "ceiling": "parent_turns",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "minimum_remaining_wall_seconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -5745,9 +6070,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c31b0715539a3ca560ea96414a52b213a6e1abcef0979e944d131a2c8ba928a1"
+          "value": "b6c198098edc29bb72034a8072e7f5753036c7bc0af35087da0a5c50cbbdfe78"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 55,
         "id": "writer_fan_turn_split",
         "semantic_key": "core.control.orchestration.writer_investigator_turn_allocation",
@@ -5811,7 +6136,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_turns"
+              "ceiling": "parent_turns",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -5836,9 +6166,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ba25f558d57f7db0b0f23141e86b27df19e1147346c8e29b37307fbda91c30c8"
+          "value": "d819de8ac83ab33268482815e82b865cedbae0b10ea9d48f58a79591afc4208e"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 56,
         "id": "worker_min_turns",
         "semantic_key": "core.control.orchestration.child_minimum_turns",
@@ -5895,7 +6225,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_turns"
+              "ceiling": "parent_turns",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -5920,9 +6255,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ccbd1c41873a30751b6bd32c6798d8053ebd8c87892cce0fa0134155711718d5"
+          "value": "c85ad81001ea300a17735bd81e48573c0bf9d6903c3a957c7cd83a3788689127"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 57,
         "id": "wall_split",
         "semantic_key": "core.control.orchestration.child_wall_time_allocation",
@@ -5986,7 +6321,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -6011,9 +6351,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "90198b91f6f7699740ce8c000ca5f2edaabc271d7b623676594422621a8900b0"
+          "value": "859ede10d01b1dbaeaa06a9189a0e7a6bc18a971df4dd357eab829e468e512d2"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 58,
         "id": "token_split",
         "semantic_key": "core.control.orchestration.child_token_allocation",
@@ -6077,7 +6417,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_tokens"
+              "ceiling": "parent_tokens",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -6102,9 +6447,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0070069770fce088ba79e1dc1d19beb2c966688e69a5df0a4947bc5b18a3e4b9"
+          "value": "af6907c9aed25b401afa9b054cbe80151d03ab645038e85b0f61a5a6982b90ca"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 59,
         "id": "fan_concurrency",
         "semantic_key": "core.control.orchestration.investigator_concurrency",
@@ -6161,7 +6506,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "process_budget"
+              "ceiling": "process_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -6186,9 +6536,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d7938f3a9d63c7e83745dc7d6db84e3edd1f7b908938b54c8ec5b48df8a99d73"
+          "value": "ef2e4afcba276a0127423fbd2115a9d7abbc1080cf29e54f68df7be7e064a814"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 60,
         "id": "child_ceiling",
         "semantic_key": "core.control.orchestration.child_resource_ceiling",
@@ -6297,17 +6647,32 @@
             {
               "type": "external_ceiling",
               "field": "max_turns",
-              "ceiling": "parent_turns"
+              "ceiling": "parent_turns",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "max_wall_seconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "capabilities",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -6332,9 +6697,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "787faffaf9b6fa3c55e3a5715d697744d88bb254a574e6842af4a863525f8335"
+          "value": "17e9552cd2067c03e2a8ac83416d8d06a9c35913c10927dde35a479d6dacd213"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 61,
         "id": "direct_child_allocation",
         "semantic_key": "core.control.orchestration.direct_child_budget",
@@ -6428,17 +6793,32 @@
             {
               "type": "external_ceiling",
               "field": "turns",
-              "ceiling": "parent_turns"
+              "ceiling": "parent_turns",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "tokens",
-              "ceiling": "parent_tokens"
+              "ceiling": "parent_tokens",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "wall_seconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -6463,9 +6843,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ef49eedc77629a5277232923b6076d603b0cb446ff980b1772662b14b333d124"
+          "value": "c92eb0297896fa8aaafac5d58bab1b84a913a0b60aa81d1d89a65ff08525402b"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 62,
         "id": "subagent_effort_inheritance",
         "semantic_key": "core.control.orchestration.child_reasoning_effort",
@@ -6530,7 +6910,13 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             }
           ]
         },
@@ -6555,9 +6941,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b699e10136853a5f07d7a9872ff93d2b87f8d99686323228955967718e4ca3c8"
+          "value": "84ae696bcebb69254e5b36ff184b4acaf2ee690a13ade1307b14cec2208a7a6d"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 63,
         "id": "report_budget",
         "semantic_key": "core.control.orchestration.child_report_size",
@@ -6614,7 +7000,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -6639,9 +7030,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1c0a263555e75a0a9e9c211464b7bfc95e45dbeb930b1ec149f6ba4c85edbf0f"
+          "value": "ae8ad1474b6e1659984a6e3f5d0d88f3bcea32eeae12960528bb232d2f267553"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 64,
         "id": "join_reduce",
         "semantic_key": "core.control.orchestration.result_reduction",
@@ -6734,7 +7125,12 @@
             {
               "type": "external_ceiling",
               "field": "include_failed_evidence",
-              "ceiling": "verification_floor"
+              "ceiling": "verification_floor",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -6759,9 +7155,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3a980b03e3b42b2cf53b160dda73ce6890b1e17be4a5bb64f52aa9ff240047fb"
+          "value": "554c8c83581ff222c5356c59927086752a66f9708c2b735c660f94c2ebcdffba"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 65,
         "id": "workflow_aggregate",
         "semantic_key": "core.control.orchestration.workflow_aggregate_budget",
@@ -6868,17 +7264,32 @@
             {
               "type": "external_ceiling",
               "field": "max_calls",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "max_tokens",
-              "ceiling": "parent_tokens"
+              "ceiling": "parent_tokens",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "max_wall_seconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -6903,9 +7314,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "50469eb2e2236b400c7b9d97e4aea501a7c5c2a4a488c655873c13ef90222999"
+          "value": "cd2bb9e11cc7f44d6e0e3754358141894afbd774820cafeb248851b31750a508"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 66,
         "id": "schema_retry_jitter",
         "semantic_key": "core.control.runtime.schema_repair_schedule",
@@ -7004,7 +7415,12 @@
             {
               "type": "external_ceiling",
               "field": "cap_milliseconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -7029,9 +7445,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3f5dd2f6840f01d4141ffbc6add75ec9dfe64dcd19d390d83ca09f491ffc658f"
+          "value": "bab441e72d32c173a75295c7dcacb7c966e339e2176661fae94b6549714f1682"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 67,
         "id": "provider_connect_tls_timeout",
         "semantic_key": "core.control.provider.connection_deadline",
@@ -7092,7 +7508,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -7117,9 +7538,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "275646240fb222b58783c14f6bbe393e92f4a832fbb9ad029ccb0c3a03440d33"
+          "value": "a83ba92b48f4a791d6cf9cd7d9e90c44866d4b1bc67b5a2ddf83853ea138af6e"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 68,
         "id": "multimodal_input_admission_decode_envelope",
         "semantic_key": "core.control.runtime.multimodal_decode_envelope",
@@ -7282,12 +7703,23 @@
             {
               "type": "external_ceiling",
               "field": "aggregate_raw_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "max_images",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             }
           ]
         },
@@ -7312,9 +7744,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c1d799c23545f0d3d8ce0c621e8d36897aff0aaa4fd2c1a958efcf9d8f0e155c"
+          "value": "f9807cf8410a2e40f6df493b9a94a876d16a33137eeb16c532d3fb09e33b2e93"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 69,
         "id": "app_server_sq_eq_backpressure",
         "semantic_key": "core.control.runtime.app_server_queue_backpressure",
@@ -7476,12 +7908,22 @@
             {
               "type": "external_ceiling",
               "field": "submission_entries",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "event_entries",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -7506,9 +7948,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5a259b18a44ef343060c7e36a1ed65ae26d3cba2ce7e91d829b64a6926c9d8fb"
+          "value": "1c8e83bb0e25ccb6e68d4a83234bced7d1d81834e60091713668fc08c82dc37d"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 70,
         "id": "provider_discovery_account_probe_cache_policy",
         "semantic_key": "core.control.provider.discovery_probe_cache",
@@ -7650,7 +8092,12 @@
             {
               "type": "external_ceiling",
               "field": "eager_budget_milliseconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -7675,9 +8122,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8e84b9a90b2bd3773dad011dc1d52bfe490ac6d8f75ea52db61b195ac859b3c0"
+          "value": "c02d690b2112e036dc87c10fbc28f82ce4bbb3802fd364fe3551a5ad2d791fd2"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 71,
         "id": "operator_prompt_stream",
         "semantic_key": "core.control.context.operator_input_stream",
@@ -7737,12 +8184,22 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -7767,9 +8224,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8fbaf22057a0dfd381f514ba754f4b1bd920e6a34fd0ae27ace7c7bab98d2763"
+          "value": "c2cbbd71f16d70bd071cd86c847bdb8d4a98149f3906e366aa736d64acf105d9"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 72,
         "id": "builtin_prompt_corpus",
         "semantic_key": "core.control.reasoning.system_prompt_catalog",
@@ -7877,7 +8334,12 @@
             {
               "type": "external_ceiling",
               "field": "max_render_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_catalog",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -7902,9 +8364,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f4c3554eb3dc1100746652201a435ce5be12de93925935782ad8ef30067fbc33"
+          "value": "46813d85a8eb882ff980ae9b81e8a6ad878a4db9eaa4759aa60c8a842ac66dda"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 73,
         "id": "instruction_bundle",
         "semantic_key": "core.control.context.repository_instruction_set",
@@ -8013,7 +8475,12 @@
             {
               "type": "external_ceiling",
               "field": "max_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_catalog",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -8038,9 +8505,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "854b3477f0530b1b8302975dfb1fac2b97946831021f7b7d372c2dd69f0bc1b3"
+          "value": "8d5d50202f94725c2cde7b0d21a75324e7d74098f7d9c0c7b1755fc817a4b43e"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 74,
         "id": "memory_corpus",
         "semantic_key": "core.control.memory.admitted_record_corpus",
@@ -8150,12 +8617,22 @@
             {
               "type": "external_ceiling",
               "field": "scope",
-              "ceiling": "tenant_scope"
+              "ceiling": "tenant_scope",
+              "projection": "whole_catalog",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "max_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_catalog",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -8180,9 +8657,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "374b70edd2cf2b0dfa35a002fefd8521caf640f3d54af851876791fb82fe7504"
+          "value": "4cb54b71ca368380290816e62c0dc45ac94bb1eae408360386533fd3f2c6eddf"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 75,
         "id": "skill_catalog",
         "semantic_key": "core.control.extensibility.skill_definition_catalog",
@@ -8293,7 +8770,12 @@
             {
               "type": "external_ceiling",
               "field": "tools",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_catalog",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -8318,9 +8800,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "34051501e99621364e521856ee974f77cd387c91aaffa3937c5ce8fcedb44e8f"
+          "value": "3c9a45d41e289932d6dcca1a5c8ffd283b5ec09ce79aab15abf8f141484f5b42"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 76,
         "id": "agent_catalog",
         "semantic_key": "core.control.extensibility.agent_definition_catalog",
@@ -8435,7 +8917,12 @@
             {
               "type": "external_ceiling",
               "field": "requested_tools",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_catalog",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -8460,9 +8947,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "aea732600089ef3e089a2284d6e4a8f7daab1dd8737f70b30656fecb9db2a9d7"
+          "value": "7f12bbdf816656640d402482f2ceb05830c391d451a23c2c668e6092a9afea11"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 77,
         "id": "provider_model_capability_catalog",
         "semantic_key": "core.control.provider.model_capability_evidence",
@@ -8622,9 +9109,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3b90c0c105b256791310dac60f2cabdec74e1f4586bc27623c41ca2fd23e50ea"
+          "value": "a949f172ee2c5b188446296ac9055cf6d3fbd6678f803f95f3136e7e20ac5198"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 78,
         "id": "mcp_topology_tool_catalog",
         "semantic_key": "core.control.extensibility.mcp_server_tool_topology",
@@ -8735,7 +9222,12 @@
             {
               "type": "external_ceiling",
               "field": "transport",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_catalog",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -8760,9 +9252,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ebdea30352f6348c1a34b91373c00c61f20b9dec81056a03190d8133447eaa29"
+          "value": "8f22833a35c115c33ae89a9591ff5da5d60054fbd4b1afe01acfafa16f42d730"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 79,
         "id": "hooks_map",
         "semantic_key": "core.control.extensibility.lifecycle_hook_bindings",
@@ -8873,7 +9365,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -8898,9 +9395,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "34de6c73ffd9562c6b05ec31932b58655d34d21d497c8c48894e5ea675b85e69"
+          "value": "9912be7919f3bc96b3bbd9a8eb0862a865b0819927a390e859120dccad3bdd81"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 80,
         "id": "workflow_graph",
         "semantic_key": "core.control.orchestration.workflow_task_graph",
@@ -9007,7 +9504,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -9032,9 +9534,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "92d07dedca17923a8dea370fd7b8018570c197219f15a37216d52835dae4a530"
+          "value": "69164c706fe3f338645712459bc8e75060a8aefd6319fd61dde7ef3e91337710"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 81,
         "id": "tool_action_space",
         "semantic_key": "core.control.tooling.registered_action_space",
@@ -9145,7 +9647,12 @@
             {
               "type": "external_ceiling",
               "field": "capability",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_catalog",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -9170,9 +9677,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "bfb286bb46a0c77b61f724bc657153dc5a2cfd60ebb4319297f32e6dacae273b"
+          "value": "441b3f8124f5ba025d69a2dfc7127da029e9ef8047f0dc00e032b7542af919cd"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 82,
         "id": "rate_card_catalog",
         "semantic_key": "core.control.observability.provider_rate_card",
@@ -9285,7 +9792,12 @@
             {
               "type": "external_ceiling",
               "field": "signature_sha256",
-              "ceiling": "benchmark_protocol"
+              "ceiling": "benchmark_protocol",
+              "projection": "whole_catalog",
+              "relation": "exact",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -9310,9 +9822,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4f6fd20f5a8c60b775ec204e7d788984f932a47d06ce158bfb76b189414430d2"
+          "value": "36b7ffc37638b6ffc127b1b83c5c2b51c97d932120f4711041cd493ea3e63a51"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 83,
         "id": "router_lexicons",
         "semantic_key": "core.control.reasoning.routing_signal_lexicon",
@@ -9427,7 +9939,12 @@
             {
               "type": "external_ceiling",
               "field": "version",
-              "ceiling": "benchmark_protocol"
+              "ceiling": "benchmark_protocol",
+              "projection": "whole_catalog",
+              "relation": "exact",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -9452,9 +9969,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "faa20bea475107bce5b230eed61c9da179bc3d265a22e9bdb0aca8dd7ee69d21"
+          "value": "d68dba4de4dda67ff321a67fd718caced73f38888ede14c3c715d525e748c26f"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 84,
         "id": "environment_snapshot",
         "semantic_key": "core.control.context.run_environment_snapshot",
@@ -9521,7 +10038,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "tenant_scope"
+              "ceiling": "tenant_scope",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -9546,9 +10068,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "75db998b997aed05090576a1753b0a1ef2e44c54c5e6512da3ca835dc11488da"
+          "value": "f1d480467d7f7481a2d1659ec906c320d95fc882fba84733aede6be2cd4e21e6"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 85,
         "id": "web_search_backend_catalog",
         "semantic_key": "core.control.extensibility.web_search_backend_catalog",
@@ -9659,12 +10181,22 @@
             {
               "type": "external_ceiling",
               "field": "endpoint",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_catalog",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "timeout_seconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_catalog",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -9689,9 +10221,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ea2b72883420ec7d8c649bc2857caf825ba542d4dd85680f19f6c098af831ba3"
+          "value": "30d0bbe25e54081df4fad402367b688c8faf8450165f6c15d93b9705474776ca"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 86,
         "id": "model_fallback_chain",
         "semantic_key": "core.control.provider.route_fallback_order",
@@ -9751,7 +10283,13 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             }
           ]
         },
@@ -9776,9 +10314,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1a559102ef836cd0cf712331011bf14060298caeb331b5e67a34b530b87587ed"
+          "value": "dab526c6e064ed14b1491190b0278696081f58f4d326ea28e478e027fd7977a4"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 87,
         "id": "failover_eligible_error_taxonomy",
         "semantic_key": "core.control.provider.failover_error_classes",
@@ -9922,7 +10460,12 @@
             {
               "type": "external_ceiling",
               "field": "version",
-              "ceiling": "benchmark_protocol"
+              "ceiling": "benchmark_protocol",
+              "projection": "whole_catalog",
+              "relation": "exact",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -9947,9 +10490,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b4b2826470c2ce485cce048ef8f58cc149a3f40faa42094f44a595acba39583d"
+          "value": "8c8f16ace400c8aedda2d13e467d35692816cdeb03ca75da8969c95167ee04c9"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 88,
         "id": "route_quality_cost_latency_objective_weights",
         "semantic_key": "core.control.reasoning.routing_objective_weights",
@@ -10047,9 +10590,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "df7d0a1bb2f72a1ac15ebc1c578682963b7eced8e54b913699eecab91387df5f"
+          "value": "4d761a7a114528e639dcf81980c3d3b9b694fca50946deb9d29a2ed28100120d"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 89,
         "id": "provider_health_circuit_breaker_state_policy",
         "semantic_key": "core.control.provider.health_circuit_breaker",
@@ -10156,12 +10699,22 @@
             {
               "type": "external_ceiling",
               "field": "open_seconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "half_open_probes",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -10186,9 +10739,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2909fdc99c87339b1e1cfd149034ee1ad7b7482fb2af906f916442aeea51b0c7"
+          "value": "b1e4ddf1d19481dca5be8b17f09fcd12e625f4a8320c4d5f8872ac201136555e"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 90,
         "id": "hedged_request_policy",
         "semantic_key": "core.control.provider.hedged_request_schedule",
@@ -10327,12 +10880,22 @@
             {
               "type": "external_ceiling",
               "field": "delay_milliseconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "max_duplicates",
-              "ceiling": "parent_cost"
+              "ceiling": "parent_cost",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -10357,9 +10920,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "dc268c0449120d2432f59436db071819aaae005cd810f274032ec56f138048e7"
+          "value": "c500a1e67d69a9f1f515afc3c40194a078c1cee637e1be6cc72957948e2d86c6"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 91,
         "id": "provider_service_tier",
         "semantic_key": "core.control.provider.service_tier",
@@ -10414,12 +10977,23 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_cost"
+              "ceiling": "parent_cost",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -10444,9 +11018,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "32be440af8505f3c160a956f7cc090ce5d62b20c324269da8092a82f10382680"
+          "value": "fbe64401edb06afafc618fba5526cce257a1d01b7bcb8f7592f7613b2b58b294"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 92,
         "id": "response_verbosity",
         "semantic_key": "core.control.reasoning.response_detail",
@@ -10507,12 +11081,23 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_tokens"
+              "ceiling": "parent_tokens",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -10537,9 +11122,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5849bb13b796c1cfb2e8844f813a592a1348f807722f11c4499cd0c83901274b"
+          "value": "f1dc24fa3bc6143b80a239a3ff20c8c8e292edcb2429b9e713f6811c28a04d44"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 93,
         "id": "role_specific_model_map",
         "semantic_key": "core.control.orchestration.role_model_assignment",
@@ -10607,12 +11192,23 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_cost"
+              "ceiling": "parent_cost",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -10637,9 +11233,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "86266f1b4b556b5e97b5685cb528e6d8130a3893090659725f312b1bc4f9ca8f"
+          "value": "5dac593363a3a460517236958910b50b4265965894cb561a07f93359cbf6cef5"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 94,
         "id": "provider_request_total_deadline",
         "semantic_key": "core.control.provider.request_deadline",
@@ -10700,7 +11296,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -10725,9 +11326,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9b089c5576e8d9f83af3b2a444c8b942959a91f4b80881c0a44c8ade5b196cfa"
+          "value": "8d1b9b83ca49b7d1785ace641c51d49ec1780c75ef1a24832588fa5513ebd96a"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 95,
         "id": "stream_idle_watchdog",
         "semantic_key": "core.control.provider.stream_idle_deadline",
@@ -10787,7 +11388,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -10812,9 +11418,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ccb13141ad2c38b8c4e4b010929cc22dc167309e4e3b288d611eaaa588b8e7d4"
+          "value": "2e4a2ed62417bb39592085aaf491c5499f9f9b50f4c1fa2bf81e8cd2b85c2647"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 96,
         "id": "context_window_override_reserve",
         "semantic_key": "core.control.context.model_window_reserve",
@@ -10944,7 +11550,13 @@
             {
               "type": "external_ceiling",
               "field": "model_window_tokens",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             }
           ]
         },
@@ -10969,9 +11581,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fba017d62589a2cefff5693b79b24ed31280910670cf5d36041030ad94362cd6"
+          "value": "795dbfea4af44491477edba713bddc17e6127543efa99ab320e438be2282f3b5"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 97,
         "id": "system_prefix_budget",
         "semantic_key": "core.control.context.system_prefix_allocation",
@@ -11028,7 +11640,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -11053,9 +11670,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "618cd63eae3d925767cee7ed06da8de9506586859c23cf9880cdc749ba83452f"
+          "value": "96f5a8926009204707008d73ec6f85f2005bb8dedc659eaf7bc70122e4140bcd"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 98,
         "id": "conversation_history_budget",
         "semantic_key": "core.control.context.conversation_history_allocation",
@@ -11112,7 +11729,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -11137,9 +11759,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4b7360c4d108446ad995f0eced279099acc1947803deac6f35d400c475012322"
+          "value": "1ad8f52341acf8318c8d7215fd9148b8927385ff917df1af14e39c071e177b58"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 99,
         "id": "tool_result_history_budget",
         "semantic_key": "core.control.context.tool_result_history_allocation",
@@ -11196,7 +11818,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -11221,9 +11848,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2413337d233d4cd634a6a385ccbe0560da015150afef71b854e67f8faa73cb8c"
+          "value": "9cf51438333ca9b6e472eafae2aef44c5d9a281d4a67748b64e9d6619918883b"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 100,
         "id": "multimodal_token_budget",
         "semantic_key": "core.control.context.multimodal_allocation",
@@ -11281,12 +11908,23 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             }
           ]
         },
@@ -11311,9 +11949,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "902f63996d0c8d5a7011ca29baeb504ec59bbf410b52fd9a07833a0e9f79ac72"
+          "value": "a9d56d7b1b1887b20aa309122c718649235be1f99ec5f5eff361c48865e94686"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 101,
         "id": "auto_compaction_enable",
         "semantic_key": "core.control.context.automatic_compaction_admission",
@@ -11368,7 +12006,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -11393,9 +12036,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a7ae55147de8715a42ed9ffd8e16dd3bc604e87e93d92664d2d9bcd67d38ff45"
+          "value": "649324725d07f9af2f05ae3bc20c4be73212bdc96f04faa40121ccfc9c2ed61f"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 102,
         "id": "compaction_cooldown_hysteresis",
         "semantic_key": "core.control.context.compaction_hysteresis",
@@ -11507,7 +12150,12 @@
             {
               "type": "external_ceiling",
               "field": "cooldown_turns",
-              "ceiling": "parent_turns"
+              "ceiling": "parent_turns",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -11532,9 +12180,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0a83847c391f2f4b657aef84599e5336566ab422497af87d88a8447c59113764"
+          "value": "c09a96043483ad2295da044c8309f3841ea911db53d8bc9a03c8f06772f6e1a5"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 103,
         "id": "multi_stage_summary_topology",
         "semantic_key": "core.control.context.summary_stage_topology",
@@ -11596,7 +12244,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -11621,9 +12274,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "da110d31cbbe14cfaedd27c59767b40f9338608e4ba739ffd5060518b2f29f43"
+          "value": "b30047863b71a542f8b73b1b65b6700ffc9ad17a528d975dec4b39293890762e"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 104,
         "id": "summary_consistency_coverage_check",
         "semantic_key": "core.control.verification.summary_coverage",
@@ -11680,7 +12333,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "verification_floor"
+              "ceiling": "verification_floor",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -11705,9 +12363,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3afd663a19182ec7973bfab0cd7ec2f16eb1e73dd04884333fe16e01b401e4ac"
+          "value": "936a0dfbb328c41f555f19bdcee35e9a3c642bc7eaaa0c836ac618d5048b0063"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 105,
         "id": "hybrid_retrieval_fusion_weights",
         "semantic_key": "core.control.memory.hybrid_retrieval_fusion",
@@ -11820,9 +12478,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "efd55ea83234dae545eb5a1ad5ed285c0eda9c867219cf885260ffbd1f84b32f"
+          "value": "5802ecf83cbeb58b28da8e37fe75e521586466f2581eafdc8f81cf561a1a7f86"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 106,
         "id": "retrieval_recency_decay",
         "semantic_key": "core.control.memory.recency_weight_decay",
@@ -11890,7 +12548,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "tenant_scope"
+              "ceiling": "tenant_scope",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -11915,9 +12578,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1302ed56ff55168e3cc5616868033617167d6aa0b7cc5baf1f12cf242f04ced5"
+          "value": "d9d09a1392a95176256902581f4388ce508381834aa60955a4a1fc9826cac3d4"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 107,
         "id": "context_novelty_dedup_threshold",
         "semantic_key": "core.control.context.novelty_deduplication",
@@ -11983,7 +12646,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -12008,9 +12676,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fb37d04d95adcb14849c55684b34e505b9ee1e475bfc35ade82d3e9bdf7671c3"
+          "value": "460d30dbbcfcfeeaa05bb3a764e7e43b65ba9f2803641023de6c543525458006"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 108,
         "id": "persistent_pty_backend",
         "semantic_key": "core.control.tooling.terminal_backend",
@@ -12071,12 +12739,22 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "process_budget"
+              "ceiling": "process_budget",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -12101,9 +12779,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7065f5669b83632b95a4094e94ada8e8c8355c4db377205c7eda8b5e53097d24"
+          "value": "67d3e07c88ce394026c20b5a248c664424b1a8c8a8049147ab017a79ef696690"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 109,
         "id": "concurrent_background_job_cap",
         "semantic_key": "core.control.tooling.background_job_concurrency",
@@ -12162,7 +12840,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "process_budget"
+              "ceiling": "process_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -12187,9 +12870,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f3f1262de0a600c762be48a600eb282a2b442d46482c455f0c871dcdb4b3e470"
+          "value": "487fa553effe39ccc18b92a3c2a0c2f46066f21491f912412d0e74a2ae98d1c1"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 110,
         "id": "job_idle_stall_timeout",
         "semantic_key": "core.control.tooling.background_job_idle_deadline",
@@ -12245,7 +12928,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -12270,9 +12958,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ad5506c2ce6f996f8758dad14dc9a886eb0ceca4fcbbe93a93aedc2c85b46a73"
+          "value": "bf303e9b3436d469927aaf827931eee06c1e53a7dfb0e5e013bfbe49880c1c07"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 111,
         "id": "interactive_stdin_wait_policy",
         "semantic_key": "core.control.tooling.interactive_stdin_wait",
@@ -12366,7 +13054,12 @@
             {
               "type": "external_ceiling",
               "field": "idle_timeout_milliseconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -12391,9 +13084,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "03e044e7e3a46380063794fe2643cba82cee04b3570816d306455bd883023601"
+          "value": "a75b3cd1ed771f665d7bfef2ee3dd3be5e02de2d9931cb2c83df4aadddac5f7f"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 112,
         "id": "process_signal_kill_escalation",
         "semantic_key": "core.control.tooling.process_termination_escalation",
@@ -12452,7 +13145,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "benchmark_protocol"
+              "ceiling": "benchmark_protocol",
+              "projection": "whole_value",
+              "relation": "exact",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -12477,9 +13175,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "6b31559f3cf9fdfc18189973bbb9f739a91796b10be5ec363489b7c7b4580043"
+          "value": "6c7601a1c8ec4ad1927166ea2960cc17ac0bc098ef3b780774c7ed8a9f903471"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 113,
         "id": "process_cwd_continuity",
         "semantic_key": "core.control.tooling.process_working_directory",
@@ -12596,7 +13294,12 @@
             {
               "type": "external_ceiling",
               "field": "initial_cwd",
-              "ceiling": "tenant_scope"
+              "ceiling": "tenant_scope",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -12621,9 +13324,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9329228ba9fa9d18378de3006fb553e14d1504991f614e08c56a5c9d646494da"
+          "value": "bb55bd11f6eac5dd370537e34d03888e45e11722e4dc66a961caa4ceb4f903d3"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 114,
         "id": "child_process_environment_reuse",
         "semantic_key": "core.control.tooling.child_environment_inheritance",
@@ -12760,12 +13463,22 @@
             {
               "type": "external_ceiling",
               "field": "max_entries",
-              "ceiling": "process_budget"
+              "ceiling": "process_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "blocked_names",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -12790,9 +13503,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4f74079760ffc1b92ad9ed47a9edb3f1d3a170973458962acf23e5f1cbdaa523"
+          "value": "18b4e86ea5ea26dcd3c1987328d02be67d1abaf1423b20d66693b67ca16c85d8"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 115,
         "id": "effecting_tool_concurrency",
         "semantic_key": "core.control.orchestration.effecting_tool_concurrency",
@@ -12853,12 +13566,22 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "process_budget"
+              "ceiling": "process_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -12883,9 +13606,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "75e49b80a21c38ae3b68812baaa9da079dfb17a15b7d925fd4189a5e1897366f"
+          "value": "34f1351c3d68cc574f93e58709507bded45604ee0cc0f5984869bc19ce0b4b39"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 116,
         "id": "write_set_conflict_admission",
         "semantic_key": "core.control.tooling.write_set_conflict_gate",
@@ -13002,7 +13725,12 @@
             {
               "type": "external_ceiling",
               "field": "declared_set_required",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -13027,9 +13755,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "353153d1dc7b1e47dfb75f0316f3597416a2888fdf48b49e41bae3e689ae46af"
+          "value": "86df4208e4348a732d99e3cccc7170a61da39c4db65a0aaa32cb1c58e43607cd"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 117,
         "id": "tool_output_spill_to_disk_policy",
         "semantic_key": "core.control.tooling.tool_output_spill",
@@ -13140,7 +13868,12 @@
             {
               "type": "external_ceiling",
               "field": "spill_max_bytes",
-              "ceiling": "tool_budget"
+              "ceiling": "tool_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -13165,9 +13898,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2b0f669f0e64edc62988184aa63c745704d5d49bedd925b043f48a97b64f9990"
+          "value": "fdcdf9cbc18c18957d283f4159f5a150eae316912bf14ac2ec3efe20a0f30cdc"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 118,
         "id": "binary_media_inspection_routing",
         "semantic_key": "core.control.tooling.binary_media_router",
@@ -13276,12 +14009,22 @@
             {
               "type": "external_ceiling",
               "field": "mime_routes",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "max_input_bytes",
-              "ceiling": "tool_budget"
+              "ceiling": "tool_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -13306,9 +14049,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5edd9d3628c44a4e2545048a033eb0c483f18ab450bfb9700cf70820bfa2b9cc"
+          "value": "66d1ec77c35596b3a9aa63399fb86e1540d934a3e5bec951a8576050f2cf5660"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 119,
         "id": "lsp_server_language_selection",
         "semantic_key": "core.control.tooling.language_server_selection",
@@ -13418,7 +14161,12 @@
             {
               "type": "external_ceiling",
               "field": "executable",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_catalog",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -13443,9 +14191,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "bf32ad624cb31e1cc6a78d51c4605f21f501011a3e2e5e21ab6b536ca01f6ded"
+          "value": "6f5bc5eead13474b0291b2ea737b7e06de94560365dde8b645bb418097b37e5c"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 120,
         "id": "lsp_timeout_restart_policy",
         "semantic_key": "core.control.tooling.language_server_recovery",
@@ -13555,7 +14303,12 @@
             {
               "type": "external_ceiling",
               "field": "request_timeout_milliseconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -13580,9 +14333,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e607c315653428d44d841910ca89a88ab3daa4243990ac84e3c5c7d99f91fa3f"
+          "value": "039f7e16770fe09a13ab50eb1e7ea166a59b32e83c0b1201d9eec77b95bdb5f7"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 121,
         "id": "lsp_result_context_budget",
         "semantic_key": "core.control.context.language_server_result_budget",
@@ -13640,7 +14393,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -13665,9 +14423,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4a30d3656a8783aad1df793a83ff500ec3084c5997baa1c6fda51f4fc0198879"
+          "value": "798aee34c0e94f30c550103871acc28073761cc8a8db53fdfd7373902df2e354"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 122,
         "id": "tool_result_cache_ttl",
         "semantic_key": "core.control.tooling.result_cache_lifetime",
@@ -13724,7 +14482,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -13749,9 +14512,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fc1a676d593297ea1f5a3a876bcca50866bbf4cd5878aab91d77e17d529cf971"
+          "value": "d2cc56b5cc4e55de52b3e8e9b83e44d1b7b22cfa6694496994f693f2a107b0ea"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 123,
         "id": "test_selection_strategy",
         "semantic_key": "core.control.verification.test_selection",
@@ -13850,12 +14613,22 @@
             {
               "type": "external_ceiling",
               "field": "scope",
-              "ceiling": "verification_floor"
+              "ceiling": "verification_floor",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "required_commands",
-              "ceiling": "verification_floor"
+              "ceiling": "verification_floor",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -13880,9 +14653,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8fdf7ac295e75ca358e05d4865d09a2b711250bc7dc5a2d4a55dfbdf6ae5cb6d"
+          "value": "d01bf0291c16d5ef9a1b476c12a94809dd9ffc4bf133c3563237026308409d6b"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 124,
         "id": "incremental_versus_full_verification",
         "semantic_key": "core.control.verification.incremental_full_mode",
@@ -13942,7 +14715,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "verification_floor"
+              "ceiling": "verification_floor",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -13967,9 +14745,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "644bf48f1f57e216026c4b409663136d285b438b70de27373e76c8b2abe4f1e8"
+          "value": "06b6272ec655b09c3cfbee271396f8e1724e2afb10d73c8850cdd22643934e13"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 125,
         "id": "flaky_test_detection_quarantine",
         "semantic_key": "core.control.verification.flaky_test_quarantine",
@@ -14108,7 +14886,12 @@
             {
               "type": "external_ceiling",
               "field": "repeat_count",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -14133,9 +14916,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "373d9bd29e971aa4291cae375246c5c0e69cdbe272538223e7f89268ef5588d8"
+          "value": "0bac50aa3505dfd5d647bee93fa39e2ae64ab3bb53e15918b680a348ed38b6db"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 126,
         "id": "failure_classification_taxonomy",
         "semantic_key": "core.control.verification.failure_taxonomy",
@@ -14244,7 +15027,12 @@
             {
               "type": "external_ceiling",
               "field": "version",
-              "ceiling": "benchmark_protocol"
+              "ceiling": "benchmark_protocol",
+              "projection": "whole_catalog",
+              "relation": "exact",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -14269,9 +15057,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f09803e6a80a64f41c056cc94137b5dd01751b6a7997594e6a1a6484ce71c80a"
+          "value": "a6449439390b8c214a5c16edcd73412cf0a78fce5f5faf9b3776d6d14abc7a46"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 127,
         "id": "retry_eligibility_policy",
         "semantic_key": "core.control.verification.retry_admission",
@@ -14369,12 +15157,22 @@
             {
               "type": "external_ceiling",
               "field": "eligible_classes",
-              "ceiling": "verification_floor"
+              "ceiling": "verification_floor",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "max_attempts",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -14399,9 +15197,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0feda3ba7b8417bf1ece0943cbb22c764131892f814c8372d1cc18903c1ac96d"
+          "value": "b3027c36c6a21f599b874d9f688762f009f2854c5a40d44f1ea8b00eca4dec15"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 128,
         "id": "rollback_on_verification_failure",
         "semantic_key": "core.control.verification.failure_rollback",
@@ -14462,7 +15260,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -14487,9 +15290,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "078bd1af5df90f785c4cabf1fff00997a570a4c68f1ef4ac0fea73a9c81a9f36"
+          "value": "b69bb4e2a01a4f5d22917e03d236769c9966c483453cc621e000f6def0e361ea"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 129,
         "id": "workspace_checkpoint_cadence",
         "semantic_key": "core.control.verification.checkpoint_schedule",
@@ -14619,7 +15422,12 @@
             {
               "type": "external_ceiling",
               "field": "minimum_turn_interval",
-              "ceiling": "parent_turns"
+              "ceiling": "parent_turns",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -14644,9 +15452,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a245a149dedb1ecc84b57e1ef0c402da15f468b035851374c578598aa2bc0a87"
+          "value": "14ed8b5cad27e10897982ae0ca68eaeddfc1712963dfa2b5b226713343773b94"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 130,
         "id": "selective_restore_scope",
         "semantic_key": "core.control.verification.restore_selection",
@@ -14759,7 +15567,12 @@
             {
               "type": "external_ceiling",
               "field": "paths",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -14784,9 +15597,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "daf918597a98ddc2664a59743f02b2357596a430b79c487ea5412395ca893f2b"
+          "value": "58f9ffa48a50ca37ed362516c5afe27fe83189f82ddda4c753a96a7c70b8ab27"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 131,
         "id": "verification_quorum_consensus",
         "semantic_key": "core.control.verification.quorum_consensus",
@@ -14907,7 +15720,12 @@
             {
               "type": "external_ceiling",
               "field": "verifiers",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -14932,9 +15750,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "30250f5b9eb0e1553b59b557eb8d3ca7b1da890a53fa75be7802c8e7228188a1"
+          "value": "5b7ff4e25098cf300ea7cff645d521f33a1c424db771b0480a19c742d03e883d"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 132,
         "id": "recovery_escalation_policy",
         "semantic_key": "core.control.verification.recovery_escalation",
@@ -14996,7 +15814,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "verification_floor"
+              "ceiling": "verification_floor",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -15021,9 +15844,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "36575c270a5b63b88a349cdd4da9099ae842e1df3ea06fae109d8f958fadf22f"
+          "value": "aa98ed7ba235e19586f79162382e34bc30173312c54fa7063244560196167c16"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 133,
         "id": "per_agent_model",
         "semantic_key": "core.control.orchestration.agent_model_assignment",
@@ -15080,12 +15903,23 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_cost"
+              "ceiling": "parent_cost",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -15110,9 +15944,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d3585dc8c0abcdd3143203c946f6c2b92ca359c6f846d8e8c8a29977ae7fe5a0"
+          "value": "86c496a71a0fcebfa0663f0e2eadcf43140397bc6d65147807cd8c8f013280d2"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 134,
         "id": "per_agent_effort_thinking",
         "semantic_key": "core.control.orchestration.agent_reasoning_assignment",
@@ -15176,12 +16010,23 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_tokens"
+              "ceiling": "parent_tokens",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -15206,9 +16051,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1d2ac8a1415d14ad9c847ed281241c7865f37c50b0b2c59e110cfdd40ce44ec8"
+          "value": "d2755268ab022157eb84a65d2942e19570fed312f1a98487788f795cf64239e3"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 135,
         "id": "per_agent_tool_profile",
         "semantic_key": "core.control.orchestration.agent_tool_capabilities",
@@ -15280,7 +16125,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -15305,9 +16155,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "694d63e36516743abffa123a4fad43ab170924afdde5e494f9bdef485c3c380c"
+          "value": "855791b1c15004c747fbb2d927df8d1d1388019b61399703e6e8931f7b48caec"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 136,
         "id": "per_agent_memory_scope",
         "semantic_key": "core.control.memory.agent_scope_isolation",
@@ -15419,7 +16269,12 @@
             {
               "type": "external_ceiling",
               "field": "scope_id",
-              "ceiling": "tenant_scope"
+              "ceiling": "tenant_scope",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -15444,9 +16299,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "cf5edff969e43cd162c811f40538f952bcf43cb99f5ab27f2f479659f2cf08b0"
+          "value": "d74709ba5a659d574b665c4646fb9ba9c38c84af0d542069b076a650a97b7ca5"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 137,
         "id": "spawn_depth_control",
         "semantic_key": "core.control.orchestration.spawn_depth_ceiling",
@@ -15507,7 +16362,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -15532,9 +16392,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d7384b34cc90d745b92dae4ceec9193ba2bb593f70616c629cb730cbcd963bae"
+          "value": "f788006cbd52be87232c320ff1733896f30724d256f1bea84b2d77b4fd2ca46d"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 138,
         "id": "per_session_spawn_cap",
         "semantic_key": "core.control.orchestration.session_spawn_budget",
@@ -15591,7 +16451,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -15616,9 +16481,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "48af5266ba7ef68dbd195f88f65d4a5dfce9ecfb2b0376a7a151cb621b997e2e"
+          "value": "df2ecaf82c524fe79b8af875474c14e46e8fee3f1715b7b8861b8634295ad5a2"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 139,
         "id": "task_priority_scheduling",
         "semantic_key": "core.control.orchestration.ready_task_priority",
@@ -15734,7 +16599,12 @@
             {
               "type": "external_ceiling",
               "field": "priority_levels",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -15759,9 +16629,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "bd3c5f20f964f1a939a8d34afda7fe9fdb2bb3272a4ea18b538a7e6b92f2774f"
+          "value": "83d3a0b8b3f3d645fbeceeec5636b590f837d4e24c4b9de4355d663487c69821"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 140,
         "id": "speculative_sibling_count",
         "semantic_key": "core.control.orchestration.speculative_sibling_ceiling",
@@ -15819,12 +16689,22 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_cost"
+              "ceiling": "parent_cost",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -15849,9 +16729,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f1613b63d3ab02e4bbc841bd3e560856ff3114f42e32aca33d7d6fd8391c7ed9"
+          "value": "e22fe7e194708ff35344ea0a4bc3dfe64fb6feab50e3482c539d0ea52f50fb79"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 141,
         "id": "speculative_sibling_cancellation",
         "semantic_key": "core.control.orchestration.speculative_sibling_cancellation",
@@ -15953,12 +16833,22 @@
             {
               "type": "external_ceiling",
               "field": "cleanup_timeout_seconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "winner_evidence",
-              "ceiling": "verification_floor"
+              "ceiling": "verification_floor",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -15983,9 +16873,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5c1a0283c8d714b1f272a159a59624054f69893253bedf4d1c6d390559f58b28"
+          "value": "0652372117ee28993cddb1fc2a29f8747fc866723a27fedc15f1032bb16c1433"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 142,
         "id": "early_stop_quorum_policy",
         "semantic_key": "core.control.orchestration.evidence_quorum_stop",
@@ -16100,7 +16990,12 @@
             {
               "type": "external_ceiling",
               "field": "minimum_evidence",
-              "ceiling": "verification_floor"
+              "ceiling": "verification_floor",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -16125,9 +17020,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e1588766b43d0634a4f7e20aebdd636a29bb94ceffa7f46e33a6f0c308626025"
+          "value": "ca1fc4ffef11288b0e39fa899fd2591c9de56a4e57c125688010811bf0b387bb"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 143,
         "id": "writer_worktree_isolation_mode",
         "semantic_key": "core.control.governance.writer_worktree_isolation",
@@ -16183,7 +17078,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -16208,9 +17108,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1b127fd29dcf99df1e259bd755aac03cc62369e2ebf75776a6de0e7707cb771e"
+          "value": "5e573663d831269e6ed03a2b4910ca0103ddb4275ccbb7900d4d5a6cfc2bcd21"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 144,
         "id": "merge_conflict_arbitration",
         "semantic_key": "core.control.verification.child_merge_arbitration",
@@ -16305,12 +17205,22 @@
             {
               "type": "external_ceiling",
               "field": "on_conflict",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "require_verification",
-              "ceiling": "verification_floor"
+              "ceiling": "verification_floor",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -16335,9 +17245,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ca4247a7290cea824ed441cdfb759932737e68dc1287ab31ab117cbe7ef80b4b"
+          "value": "42f3d0491183b29043da2f01c4ba1fd501d3b39380255875ee9600aefab3abb4"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 145,
         "id": "inter_agent_messaging_topology",
         "semantic_key": "core.control.orchestration.agent_message_routing",
@@ -16398,12 +17308,22 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -16428,9 +17348,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8765d2823dcb405816d5211e15c165af06f0e5c3feb9b625837ac0d053185882"
+          "value": "2d322b9d051aa754280d7e59356184eddfd5f17943104e15db99dca545eb427f"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 146,
         "id": "task_retry_reassignment_policy",
         "semantic_key": "core.control.orchestration.failed_task_reassignment",
@@ -16523,12 +17443,22 @@
             {
               "type": "external_ceiling",
               "field": "max_attempts",
-              "ceiling": "run_budget"
+              "ceiling": "run_budget",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "on_failure",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -16553,9 +17483,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a6f3173db1dec3f52cc5e8de761b5b6d7c9516430a9a42234018e8e35b48ed2b"
+          "value": "d68c9b341292ca8feb82ce52a646bfbcc2145ffb127465de7a0faec9d16bdaed"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 147,
         "id": "mcp_transport_selection",
         "semantic_key": "core.control.extensibility.mcp_transport",
@@ -16615,7 +17545,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -16640,9 +17575,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7c5dbe4e7ba130f231a80ef4c1c4f0bf9c9ccdd4db3e00aa114ba55082c55514"
+          "value": "e7fb24de9d7b52924242d289079b279f12db4594d45e08469575761161d7b708"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 148,
         "id": "deferred_discovery_threshold",
         "semantic_key": "core.control.extensibility.mcp_discovery_deferral",
@@ -16703,7 +17638,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -16728,9 +17668,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c10d43c759086d5c9107f6c2029610ab61882c8a492f64f24d1d55cd6411d64c"
+          "value": "0f2c0e1d3b7ada378d5f796fbce364f0b66698ea9869b3f115112146e8c4162f"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 149,
         "id": "mcp_reconnect_backoff",
         "semantic_key": "core.control.extensibility.mcp_reconnect_schedule",
@@ -16827,7 +17767,12 @@
             {
               "type": "external_ceiling",
               "field": "cap_milliseconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -16852,9 +17797,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2a14f1ac61a37a619da65d4372c94a375459e74c3dab1d792020e2927cdccad5"
+          "value": "f144ab17f0012227ec11693bc27d9b827ff85ff75da37579eb6e8e4e3281c955"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 150,
         "id": "per_server_startup_deadline",
         "semantic_key": "core.control.extensibility.mcp_server_startup_deadline",
@@ -16912,7 +17857,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -16937,9 +17887,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "0163fbd33cde6e868c929047cd84ca48c47a7e9e8d1ee23dd6878345334d8b4f"
+          "value": "0430f5f56db6a4e55ec19e873ae55ab80bb7264e628823abf02aea927e45635a"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 151,
         "id": "per_tool_mcp_deadline",
         "semantic_key": "core.control.extensibility.mcp_tool_deadline",
@@ -16997,7 +17947,12 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -17022,9 +17977,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "9b4669c0df48950b86ea1533e56831bb8c16d553705aec3a543615cf66667045"
+          "value": "beefbcf6d844403abc51c25966f238d1a5374a50c50c2c452eabcc8fd173a0da"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 152,
         "id": "mcp_result_cap_spill_policy",
         "semantic_key": "core.control.extensibility.mcp_result_spill",
@@ -17168,7 +18123,12 @@
             {
               "type": "external_ceiling",
               "field": "visible_max_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -17193,9 +18153,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "97ff8138dd9f8cfee75811c2244899894311fa8c61f40f973138953efeb3b40b"
+          "value": "5ec33841b51c43de7ce1139fb386b499944f4e04ff4d7a6b2981a2e88ebbd10b"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 153,
         "id": "oauth_auth_lifecycle_policy",
         "semantic_key": "core.control.extensibility.mcp_oauth_lifecycle",
@@ -17297,7 +18257,12 @@
             {
               "type": "external_ceiling",
               "field": "flow",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -17322,9 +18287,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "314aa8a54c7795cf857ac8616b93f1a58b9bde0688446d91ba4ea352aadaae8b"
+          "value": "a8d3d027897174ff4ee7ceb7a8f65a1b319a417c56cc00ef3d2316f755fb1729"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 154,
         "id": "resource_prompt_plugin_capability_exposure",
         "semantic_key": "core.control.extensibility.mcp_resource_prompt_exposure",
@@ -17472,17 +18437,32 @@
             {
               "type": "external_ceiling",
               "field": "resource_schemes",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "plugin_ids",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "max_visible_bytes",
-              "ceiling": "context_window"
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -17507,9 +18487,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b5a18ed3928b09a1fea26b773b3f81b4a2871f35af2cd9aba637fbffc77c738f"
+          "value": "11e4a6fe208294badfa745aed494546c0d786fa405886a28fd138ae04aaf743b"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 155,
         "id": "request_compression_policy",
         "semantic_key": "core.control.provider.request_compression",
@@ -17568,7 +18548,13 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             }
           ]
         },
@@ -17593,9 +18579,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a0aa6211846a0395f6442ebf4af16ad76361e302503c468542b5485fd5e2ffa3"
+          "value": "e53681125c45f87613b615ee4c6c25aca50e8eed7ba300897705fd98c9307697"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 156,
         "id": "http_pool_keepalive_idle_policy",
         "semantic_key": "core.control.provider.connection_pool_lifetime",
@@ -17708,7 +18694,12 @@
             {
               "type": "external_ceiling",
               "field": "pool_idle_seconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -17733,9 +18724,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fc1cb473b0c498c094268f133fa03ab186363ffbf74b9361444803a2e80a294c"
+          "value": "bca29f8d193906a33efe3ed32d08421aa1aab3361b50d552284ecd620e52805a"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 157,
         "id": "rate_limit_aware_admission",
         "semantic_key": "core.control.provider.rate_limit_admission",
@@ -17876,12 +18867,23 @@
             {
               "type": "external_ceiling",
               "field": "minimum_remaining_requests",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "reset_wait_max_seconds",
-              "ceiling": "parent_wall"
+              "ceiling": "parent_wall",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
+              }
             }
           ]
         },
@@ -17906,9 +18908,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "383a2ec6cba6be6e7d45e92635c7337975a9fa36e82d0cab500d39c558f4541c"
+          "value": "e5017e7c900846e332c38352517488e11933fe502f64ae687ee145b23615216d"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 158,
         "id": "prompt_cache_ttl_breakpoint_strategy",
         "semantic_key": "core.control.provider.prompt_cache_policy",
@@ -18018,12 +19020,23 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "provider_capability"
+              "ceiling": "provider_capability",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "degrade_attested",
+                "policy_id": "core://tunables/degrade/provider-attested-preferred-v1"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "scope",
-              "ceiling": "tenant_scope"
+              "ceiling": "tenant_scope",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -18048,9 +19061,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7cb7dfe05e03c895b3265e867120e7bd18089ac8a02d2d3dcd96ecc7c7b77391"
+          "value": "a2ef33cad0b4537428b4d68e624cef3658ec466ffc665d799a4605074d524e62"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 159,
         "id": "session_isolation_profile",
         "semantic_key": "core.control.governance.session_isolation",
@@ -18113,12 +19126,22 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "operator_authority"
+              "ceiling": "operator_authority",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             },
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "tenant_scope"
+              "ceiling": "tenant_scope",
+              "projection": "whole_value",
+              "relation": "attested_domain",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },
@@ -18143,9 +19166,9 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c32153c801499903152ae6524b609eb75f51a432478e4b01732f3f0163b135e5"
+          "value": "c06fac2988bdf8a81afcbc2824d4a376b5b35b987133ce8f118de5d76769d9cf"
         },
-        "schema_version": 1,
+        "schema_version": 2,
         "ordinal": 160,
         "id": "replay_divergence_detection_policy",
         "semantic_key": "core.control.verification.replay_divergence_rejection",
@@ -18275,7 +19298,12 @@
             {
               "type": "external_ceiling",
               "field": "on_divergence",
-              "ceiling": "benchmark_protocol"
+              "ceiling": "benchmark_protocol",
+              "projection": "whole_value",
+              "relation": "exact",
+              "violation": {
+                "type": "reject"
+              }
             }
           ]
         },

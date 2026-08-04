@@ -84,6 +84,9 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `core pricing <SUBCOMMAND>` | Produce the operator pricing material a USD ceiling and a cost display require. |
 | `core pricing print-digests` | Print the exact route a rate card must pin for the selected provider and model. |
 | `core pricing sign <CARD> [--key-env <KEY_ENV>] [--signer-id <SIGNER_ID>]` | Sign an operator-authored rate card and print the `rate_cards[]` entry that installs it. |
+| `core tunables <SUBCOMMAND>` | Resolve or explain one explicit tunables request without binding it to a live run. |
+| `core tunables resolve <REQUEST>` | Resolve a frozen request and print one machine-readable simulation report. |
+| `core tunables explain <REQUEST> [--family <FAMILY>] [--format <FORMAT>]` | Explain a frozen request. Text covers all 160 families; JSON selects one family. |
 
 Local validation runs before a new rollout is opened, so malformed mode, effort,
 verification, or TUI/one-shot combinations should fail without creating a

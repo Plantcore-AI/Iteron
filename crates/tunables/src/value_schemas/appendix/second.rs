@@ -150,7 +150,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
                 text_domain!(1, 256, Path)
             )
         ],
-        [external_rule!("executable", OperatorAuthority)]
+        [external_catalog_rule!("executable", OperatorAuthority)]
     ),
     object_schema!(
         "lsp_timeout_restart_policy",
@@ -254,7 +254,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             scalar_field!("terminal", true, bool_domain!()),
             scalar_field!("version", true, text_domain!(1, 64, Semver))
         ],
-        [external_rule!("version", BenchmarkProtocol)]
+        [external_catalog_rule!("version", BenchmarkProtocol)]
     ),
     object_schema!(
         "retry_eligibility_policy",
@@ -339,7 +339,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         catalog_enum_domain!("model-routes"),
         [
             external_rule!("$", ProviderCapability),
-            external_rule!("$", ParentCost)
+            external_domain_rule!("$", ParentCost)
         ]
     ),
     scalar_schema!(
@@ -348,7 +348,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         finite_enum_domain!("low", "medium", "high", "xhigh", "max", "ultracode"),
         [
             external_rule!("$", ProviderCapability),
-            external_rule!("$", ParentTokens)
+            external_domain_rule!("$", ParentTokens)
         ]
     ),
     map_schema!(

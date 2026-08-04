@@ -595,8 +595,8 @@
     },
     {
       "id": "tunability-registry",
-      "title": "Tunable-family registry",
-      "summary": "Versioned, non-authoritative metadata for stable tuning families, canonical digest, benchmark relevance, and bounded trainability classification.",
+      "title": "Tunable registry and pure resolver",
+      "summary": "Versioned registry plus a deterministic provider-free evaluator for explicit frozen inputs, typed attested constraints, atomic failure reports, and bounded redacted explanations. Resolution remains a non-authoritative simulation until the runtime separately admits and binds it.",
       "status": "open",
       "risk": "elevated",
       "primary": null,
@@ -608,7 +608,13 @@
         "stable-semantic-family-identity",
         "typed-value-domain",
         "canonical-registry-digest",
+        "exact-registry-input-identity",
+        "deterministic-pure-resolution",
+        "fail-closed-attested-constraints",
+        "atomic-resolution-failure",
+        "bounded-redacted-explain",
         "non-authoritative-metadata",
+        "runtime-remains-sole-authority",
         "fixed-invariant-nontrainability"
       ],
       "checks": [
@@ -619,7 +625,7 @@
     {
       "id": "cli-host",
       "title": "CLI host",
-      "summary": "Composition root, trusted configuration, provider routing, commands, MCP wiring, and run lifecycle.",
+      "summary": "Composition root, trusted configuration, provider routing, commands, MCP wiring, run lifecycle, and provider-free local simulation adapters.",
       "status": "open",
       "risk": "critical",
       "primary": null,
@@ -643,9 +649,16 @@
         { "kind": "file", "path": "crates/cli/src/runtime/workflow_spawner.rs" },
         { "kind": "file", "path": "crates/cli/src/setup.rs" },
         { "kind": "file", "path": "crates/cli/src/startup.rs" },
+        { "kind": "file", "path": "crates/cli/src/tunables.rs" },
         { "kind": "file", "path": "crates/cli/src/workflow.rs" }
       ],
-      "contracts": ["trusted-config-precedence", "runtime-composition", "provider-selection"],
+      "contracts": [
+        "trusted-config-precedence",
+        "runtime-composition",
+        "provider-selection",
+        "provider-free-tunables-simulation",
+        "stable-bounded-simulation-output"
+      ],
       "checks": ["cargo test -p core-cli --locked"]
     },
     {
@@ -1100,6 +1113,7 @@
           "core-sandbox",
           "core-sched",
           "core-tools",
+          "core-tunables",
           "core-verify",
           "core-workflow"
         ],
