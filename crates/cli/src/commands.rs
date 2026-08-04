@@ -1,6 +1,10 @@
 //! The typed slash-command registry, parser, and completion contract. One source of truth drives
 //! `/help` and autocomplete; every registered command resolves to either the exhaustive in-process
-//! dispatcher or an explicit terminal intercept. Pure + testable: no TTY, no I/O.
+//! dispatcher or an explicit terminal intercept. Pure + testable: no TTY, no I/O (the one question
+//! that needs the filesystem — "is this leading `/` a dropped path?" — takes the probe as an
+//! injected predicate).
+
+use std::path::Path;
 
 /// The canonical identity of every command advertised by the TUI.
 ///
@@ -352,6 +356,106 @@ pub struct UnknownCommand<'a> {
     pub name: &'a str,
 }
 
+/// Is `name` — the word immediately after a leading `/` — a spelling this registry actually
+/// serves? Canonical names and compatibility aliases both count; nothing else does.
+pub fn is_registered(name: &str) -> bool {
+    COMMANDS.iter().any(|candidate| candidate.name == name)
+        || ALIASES.iter().any(|candidate| candidate.name == name)
+}
+
+/// The longest leading token worth treating as a dropped path. A terminal can paste an arbitrarily
+/// long line; past this bound we stop reasoning about it as a filename (and never `stat` it).
+const MAX_DROPPED_PATH_BYTES: usize = 4 * 1024;
+
+/// Resolve a draft that begins with `/` into either a slash-command body or "not a command".
+///
+/// A file or folder dropped onto a Unix terminal arrives as bare text that begins with `/`, which
+/// is exactly the shape of a slash command. Testing only for that leading byte handed every drop
+/// to the command lane, so a dropped `.heic`, `.pdf`, folder, multi-file drop, or escaped path was
+/// echoed as an unknown command — and the draft was thrown away with it.
+///
+/// The decision here is made on POSITIVE evidence of a path, never on a list of file types:
+///
+/// 1. a registered command or alias name always wins, so `/model` stays a command even on a
+///    machine that happens to have a `/model` entry on disk;
+/// 2. otherwise the leading token is a path when it has more than one segment (`/a/b` — no
+///    registered name can contain a separator), when the terminal shell-escaped it
+///    (`/Photos/My\ Trip.heic`), or when it names an entry that exists on this filesystem
+///    (`/tmp`, a dropped folder).
+///
+/// Anything else stays a command. That is deliberate: a typo like `/helpp` has no path evidence,
+/// so it still reaches the dispatcher and still earns "unknown command" instead of being silently
+/// forwarded to the model.
+///
+/// `exists` is injected so this stays pure and table-testable; the TUI binds it to
+/// `std::fs::symlink_metadata`.
+pub fn slash_command_body<'a>(text: &'a str, exists: &dyn Fn(&Path) -> bool) -> Option<&'a str> {
+    let text = text.trim_start();
+    let body = text.strip_prefix('/')?;
+    let name = body.split_whitespace().next().unwrap_or("");
+    // A bare "/" names no path at all; keep its historical unknown-command answer.
+    if name.is_empty() || is_registered(name) {
+        return Some(body);
+    }
+    (!leading_token_is_path(text, exists)).then_some(body)
+}
+
+/// Positive path evidence for the first token of `text` (which starts with `/`).
+fn leading_token_is_path(text: &str, exists: &dyn Fn(&Path) -> bool) -> bool {
+    let raw = leading_shell_token(text);
+    if raw.len() > MAX_DROPPED_PATH_BYTES {
+        return false;
+    }
+    let decoded = unescape_shell_token(raw);
+    // More than one segment: a registered name can never contain a separator.
+    if decoded.trim_start_matches('/').contains('/') {
+        return true;
+    }
+    // The terminal escaped a space or quote for us — that is drop syntax, not a command name.
+    if decoded.len() != raw.len() {
+        return true;
+    }
+    // Last, and the only branch that touches the filesystem: it names something real.
+    !decoded.is_empty() && exists(Path::new(&decoded))
+}
+
+/// The first whitespace-delimited token, honouring the backslash escaping a terminal applies when
+/// it drops a path containing spaces.
+fn leading_shell_token(text: &str) -> &str {
+    let mut escaped = false;
+    for (offset, character) in text.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character.is_whitespace() {
+            return &text[..offset];
+        }
+    }
+    text
+}
+
+/// Undo terminal drop escaping. A trailing lone backslash is kept so the decoded length only
+/// differs from the raw length when an escape was really consumed.
+fn unescape_shell_token(token: &str) -> String {
+    let mut decoded = String::with_capacity(token.len());
+    let mut escaped = false;
+    for character in token.chars() {
+        if escaped {
+            decoded.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else {
+            decoded.push(character);
+        }
+    }
+    if escaped {
+        decoded.push('\\');
+    }
+    decoded
+}
+
 /// Parse the command text after the leading slash into a typed invocation.
 pub fn parse(input: &str) -> Result<Invocation, UnknownCommand<'_>> {
     let mut words = input.split_whitespace();
@@ -440,6 +544,158 @@ mod tests {
     #[test]
     fn registry_is_nonempty_and_help_is_first() {
         assert_eq!(COMMANDS.first().map(|command| command.name), Some("help"));
+    }
+
+    /// A fake filesystem holding exactly what an operator might drag onto the terminal. Keeping the
+    /// probe injected means the table below is hermetic: it asserts the RULE, not this machine.
+    fn fake_filesystem() -> impl Fn(&Path) -> bool {
+        let present: HashSet<&'static str> = HashSet::from([
+            "/",
+            "/tmp",
+            "/Users/op/Pictures",
+            "/Users/op/IMG_0042.heic",
+            "/Users/op/notes.pdf",
+            "/Users/op/My Trip.heic",
+            "/model", // a real entry whose name collides with a registered command
+        ]);
+        move |path: &Path| path.to_str().is_some_and(|text| present.contains(text))
+    }
+
+    /// N-2: a dropped file, folder, or multi-file drop begins with `/` on Unix and was therefore
+    /// dispatched as a slash command — the draft destroyed, the drop replaced by "unknown
+    /// command". Each row below is a form that actually failed, or a control that must not change.
+    #[test]
+    fn dropped_paths_leave_the_command_lane_and_typos_stay_in_it() {
+        let exists = fake_filesystem();
+        let cases: &[(&str, bool, &str)] = &[
+            // ---- the drops (a path, never a command) ----
+            (
+                "/Users/op/IMG_0042.heic",
+                false,
+                "the default macOS/iPhone photo format",
+            ),
+            ("/Users/op/IMG_0042.HEIC", false, "extension case"),
+            ("/Users/op/notes.pdf", false, "pdf"),
+            ("/Users/op/notes.txt", false, "txt"),
+            ("/Users/op/logo.svg", false, "svg"),
+            (
+                "/Users/op/shot.png",
+                false,
+                "a supported image is still not a command",
+            ),
+            (
+                "/Users/op/Pictures",
+                false,
+                "a dropped folder (multi-segment)",
+            ),
+            (
+                "/tmp",
+                false,
+                "a single-segment folder, decided by the probe",
+            ),
+            (
+                "/Users/op/a.png /Users/op/b.png",
+                false,
+                "two files dropped at once",
+            ),
+            (
+                "/Users/op/a.png /Users/op/b.heic /Users/op/c.pdf",
+                false,
+                "three files dropped at once",
+            ),
+            (
+                r"/Users/op/My\ Trip.heic",
+                false,
+                "the terminal escapes spaces when it drops",
+            ),
+            (
+                r"/Users/op/My\ Trip.heic /Users/op/b.png",
+                false,
+                "escaped path plus a second file",
+            ),
+            ("/Users/op/shot.png\n", false, "a trailing newline"),
+            ("   /Users/op/shot.png  ", false, "surrounding whitespace"),
+            (
+                "/Volumes/Backup/2026/report.pdf",
+                false,
+                "a path that need not exist to be a path",
+            ),
+            (
+                "/Users/op/Pictures/",
+                false,
+                "a folder drop with a trailing separator",
+            ),
+            // ---- the controls (still a command) ----
+            ("/help", true, "a canonical command"),
+            ("/model gpt-5-codex", true, "a command with arguments"),
+            ("/compact focus on the parser", true, "a terminal intercept"),
+            ("/?", true, "the help alias"),
+            ("/perms", true, "an alias"),
+            ("/mem", true, "an alias"),
+            ("/tasks", true, "an alias"),
+            ("/allow_code", true, "an alias with an underscore"),
+            ("/exit", true, "an alias"),
+            ("  /status  ", true, "a command with surrounding whitespace"),
+            (
+                "/helpp",
+                true,
+                "a typo must still reach the unknown-command notice",
+            ),
+            ("/modle", true, "another typo"),
+            ("/", true, "a bare slash names no path"),
+            (
+                "/help /Users/op/shot.png",
+                true,
+                "a path in the ARGUMENTS does not unmake the command",
+            ),
+            (
+                "/model",
+                true,
+                "the registry outranks a filesystem entry of the same name",
+            ),
+        ];
+        for (input, is_command, reason) in cases {
+            assert_eq!(
+                slash_command_body(input, &exists).is_some(),
+                *is_command,
+                "{reason}: {input:?} routed the wrong way"
+            );
+        }
+    }
+
+    /// The body handed to the dispatcher is unchanged for anything that IS a command.
+    #[test]
+    fn a_command_body_is_the_text_after_the_slash() {
+        let exists = fake_filesystem();
+        assert_eq!(
+            slash_command_body("/model gpt-5-codex", &exists),
+            Some("model gpt-5-codex")
+        );
+        assert_eq!(slash_command_body("  /help", &exists), Some("help"));
+        assert_eq!(slash_command_body("/helpp", &exists), Some("helpp"));
+        assert_eq!(slash_command_body("not a command", &exists), None);
+        assert_eq!(slash_command_body("!cargo test", &exists), None);
+    }
+
+    /// Whatever the filesystem says, every advertised spelling stays dispatchable.
+    #[test]
+    fn no_registered_spelling_can_be_mistaken_for_a_drop() {
+        let everything_exists = |_: &Path| true;
+        for name in COMMANDS
+            .iter()
+            .map(|command| command.name)
+            .chain(ALIASES.iter().map(|alias| alias.name))
+        {
+            let input = format!("/{name}");
+            assert!(
+                slash_command_body(&input, &everything_exists).is_some(),
+                "/{name} stopped being a command"
+            );
+            assert!(
+                parse(name).is_ok(),
+                "/{name} is advertised but does not parse"
+            );
+        }
     }
 
     #[test]

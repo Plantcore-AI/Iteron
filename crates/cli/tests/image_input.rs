@@ -485,6 +485,37 @@ fn explicit_path_parser_accepts_only_a_whole_local_image_reference() {
     );
 }
 
+/// N-2: a terminal ends a dropped path with a newline. Rejecting the whole drop for that trailing
+/// byte pushed the path into the composer as bare text, where the leading `/` was then read as a
+/// slash command. Trailing whitespace is now trimmed before the line-break test; an INTERIOR break
+/// still disqualifies the input, because that is two references rather than one.
+#[test]
+fn a_dropped_path_with_surrounding_whitespace_is_still_one_image_reference() {
+    #[cfg(unix)]
+    let dropped = "/tmp/photo.png";
+    #[cfg(windows)]
+    let dropped = r"C:\tmp\photo.png";
+
+    for input in [
+        format!("{dropped}\n"),
+        format!("{dropped}\r\n"),
+        format!("  {dropped}  "),
+        format!("\n{dropped}\n"),
+    ] {
+        assert_eq!(
+            parse_explicit_image_path(&input).unwrap().unwrap().path(),
+            Path::new(dropped),
+            "{input:?} was not read as a single dropped path"
+        );
+    }
+    assert!(
+        parse_explicit_image_path(&format!("{dropped}\n{dropped}"))
+            .unwrap()
+            .is_none(),
+        "two dropped paths must not collapse into one reference"
+    );
+}
+
 #[test]
 fn image_mentions_are_explicit_bounded_and_do_not_match_email_or_prose() {
     #[cfg(unix)]
