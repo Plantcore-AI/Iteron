@@ -2296,6 +2296,17 @@ pub struct Agent {
     pub max_tool_concurrency: usize,
     /// Optional frontend event sink. The kernel never renders model content directly.
     ui_tx: Option<tokio::sync::mpsc::UnboundedSender<UiEvent>>,
+    /// Optional frontend sink for QuickJS workflow-script progress (ADR-0001 step 1).
+    ///
+    /// Deliberately NOT a `UiEvent` variant. `UiEvent` is the published CLI stream/event-queue
+    /// vocabulary — frozen by `xtask/src/schema_compat_rust_semantics_functions.rs`, versioned by
+    /// `output.rs::SCHEMA_VERSION`, mirrored by `client_event.rs` — and the script engine's
+    /// `ProgressEvent` is an unfrozen in-process vocabulary that ADR-0001 keeps unfrozen so the
+    /// surviving renderer can grow. Merging them would make every renderer change a release-contract
+    /// change; the ADR keeps that schema bump as its own PR. A frontend that installs no sink here
+    /// (the one-shot `--output-format` paths) sees exactly what it saw before: nothing.
+    workflow_progress_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<crate::workflow::WorkflowRunUiEvent>>,
     /// Effort level: maps to the model's thinking budget (and, at Ultracode, orchestration).
     effort: core_protocol::Effort,
     /// If set, remembered facts under this workspace are recalled ONCE at run start and injected
@@ -2442,6 +2453,7 @@ impl Agent {
             interrupt_requested: false,
             max_tool_concurrency: 16,
             ui_tx: None,
+            workflow_progress_tx: None,
             effort: core_protocol::Effort::default(),
             memory_workspace: None,
             context_strategy: std::sync::Arc::new(core_ctx::ContextStrategy::default()),
@@ -4795,6 +4807,22 @@ impl Agent {
     fn ui(&self, e: UiEvent) {
         if let Some(tx) = &self.ui_tx {
             let _ = tx.send(e);
+        }
+    }
+
+    /// Route QuickJS workflow-script progress to a frontend that renders the live phase→agent tree
+    /// (ADR-0001 step 1). Separate from [`Self::set_ui`] because the two carry different contracts;
+    /// see [`Self::workflow_progress_tx`]. A frontend that wants neither installs neither.
+    pub fn set_workflow_progress(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::workflow::WorkflowRunUiEvent>,
+    ) {
+        self.workflow_progress_tx = Some(tx);
+    }
+
+    fn workflow_progress(&self, event: crate::workflow::WorkflowRunUiEvent) {
+        if let Some(tx) = &self.workflow_progress_tx {
+            let _ = tx.send(event);
         }
     }
 
@@ -7264,7 +7292,14 @@ impl Agent {
         else {
             return Err("Workflow: no model route is selected yet".into());
         };
-        let workflow_name = core_workflow::extract_meta(&script)
+        // One parse: `extract_meta` spins up a QuickJS runtime, and the live tree wants the
+        // DECLARED phases as well as the name so every phase box exists on the first frame.
+        let meta = core_workflow::extract_meta(&script);
+        let declared_phases = meta
+            .as_ref()
+            .and_then(|meta| meta.phases.clone())
+            .unwrap_or_default();
+        let workflow_name = meta
             .and_then(|meta| meta.name)
             .unwrap_or_else(|| "workflow".into());
         // Mint a fresh, time-ordered run id the way the standalone `core workflow run` path does.
@@ -7329,7 +7364,15 @@ impl Agent {
         // a discarded sink turned an exhausted budget into a plausibly-short result. Keep the
         // reasons and hand them to the model with the value.
         let degraded = std::sync::Arc::new(crate::workflow::DegradedAgentSink::new());
-        let sink: std::sync::Arc<dyn core_workflow::ProgressSink> = degraded.clone();
+        // ADR-0001 step 1: the same events also drive the operator's live phase→agent tree when a
+        // frontend installed the progress seam. Both sinks are needed at once and the engine takes
+        // exactly one, so they are fanned out; with no frontend attached this is the degraded sink
+        // alone, byte-for-byte the previous behavior.
+        let sink = crate::workflow::in_turn_progress_sink(
+            degraded.clone(),
+            &run_id,
+            self.workflow_progress_tx.clone(),
+        );
 
         // Persist the re-launchable inputs BEFORE the run starts, exactly like the standalone path:
         // the kernel writes its journal into the very directory `core workflow list` enumerates, so
@@ -7353,9 +7396,10 @@ impl Agent {
             return Err(format!("Workflow: cannot persist run inputs: {error}"));
         }
 
-        // The launch banner. It names the surface that can actually show this run: `/workflows`
-        // summarizes the cards already in THIS transcript, and an in-turn script run has no card
-        // until ADR-0001 step 1 lands, so pointing at it would be a promise the TUI cannot keep.
+        // The launch banner. It names `core workflow list` — the surface that can show this run
+        // AFTER the turn, and from another process. A frontend with the progress seam installed
+        // also gets the live tree below; one that does not still gets this line, so the run is never
+        // invisible.
         self.emit(
             turn_id,
             EventKind::Notice {
@@ -7364,6 +7408,15 @@ impl Agent {
                 ),
             },
         );
+
+        // Open the card BEFORE the engine starts, seeded with the script's declared `meta.phases`,
+        // so the first frame already shows the shape of the run instead of growing it phase by
+        // phase. The run id is the correlation key for every later event.
+        self.workflow_progress(crate::workflow::WorkflowRunUiEvent::Started {
+            run_id: run_id.clone(),
+            name: workflow_name.clone(),
+            phases: declared_phases,
+        });
 
         let handle = core_workflow::WorkflowEngine::launch(spec, spawner, sink);
         // Bridge the parent's stop surfaces onto the run's cancellation token. Without this a
@@ -7391,6 +7444,14 @@ impl Agent {
                 }
             }
         };
+
+        // Settle the card the moment the engine future resolves, on BOTH exits. `ingest` alone
+        // never marks a run finished, so a `Finished` only on the success path would leave a failed
+        // or cancelled run's tree spinning in the transcript forever — the same "stub that never
+        // reaches a terminal state" failure the sidecar below exists to prevent, one layer up.
+        self.workflow_progress(crate::workflow::WorkflowRunUiEvent::Finished {
+            run_id: run_id.clone(),
+        });
 
         // A run that never produced a report is still a directory `core workflow list` enumerates:
         // `persist_inputs` above already created it. Settling it is the same obligation I-35 names,
