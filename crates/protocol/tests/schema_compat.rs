@@ -157,58 +157,24 @@ fn assert_typed_matches_current_projection(
 #[test]
 fn d13_14_sq_envelope_corpus_round_trips() {
     for fixture in fixtures("protocol.sq-envelope") {
-        let label = fixture.path.display().to_string();
         let original: Value =
             serde_json::from_slice(&std::fs::read(&fixture.path).unwrap()).unwrap();
         let first: SqEnvelope = serde_json::from_value(original.clone()).unwrap();
         let canonical = serde_json::to_value(&first).unwrap();
         let second: SqEnvelope = serde_json::from_value(canonical.clone()).unwrap();
-        assert_eq!(serde_json::to_value(second).unwrap(), canonical, "{label}");
-        if fixture.schema_version == fixture.current_version {
-            assert_typed_matches_current_projection(&original, &canonical, &fixture, &label);
-        } else {
-            assert_superseded_envelope_is_preserved_and_refused(
-                &original,
-                &canonical,
-                &fixture,
-                &label,
-                SqEnvelope::into_current(first).err(),
-            );
-        }
+        assert_eq!(
+            serde_json::to_value(second).unwrap(),
+            canonical,
+            "{}",
+            fixture.path.display()
+        );
+        assert_typed_matches_current_projection(
+            &original,
+            &canonical,
+            &fixture,
+            &fixture.path.display().to_string(),
+        );
     }
-}
-
-/// The envelope surfaces do not migrate an older fixture forward, and must not: `into_current`
-/// exists so a foreign stamp is refused rather than reinterpreted, so re-encoding a superseded
-/// fixture has to reproduce it verbatim -- stamp included -- instead of projecting onto the current
-/// version the way a migrating surface does. What is checked here is that the refusal actually
-/// happens and that nothing about the old bytes drifted while it did.
-fn assert_superseded_envelope_is_preserved_and_refused(
-    original: &Value,
-    canonical: &Value,
-    fixture: &Fixture,
-    label: &str,
-    refusal: Option<impl std::fmt::Debug>,
-) {
-    assert_eq!(
-        canonical, original,
-        "{label} superseded fixture did not re-encode verbatim"
-    );
-    let version_field = fixture
-        .version_field
-        .as_deref()
-        .expect("an envelope surface declares its version field");
-    assert_eq!(
-        canonical[version_field].as_u64(),
-        Some(fixture.schema_version),
-        "{label} superseded fixture lost its own stamp"
-    );
-    assert!(
-        refusal.is_some(),
-        "{label} is stamped {} while this build speaks {}, so it must be refused, not accepted",
-        fixture.schema_version,
-        fixture.current_version
-    );
 }
 
 #[test]
@@ -219,19 +185,18 @@ fn d13_14_eq_envelope_corpus_round_trips() {
         let first: EqEnvelope = serde_json::from_value(original.clone()).unwrap();
         let canonical = serde_json::to_value(&first).unwrap();
         let second: EqEnvelope = serde_json::from_value(canonical.clone()).unwrap();
-        let label = fixture.path.display().to_string();
-        assert_eq!(serde_json::to_value(second).unwrap(), canonical, "{label}");
-        if fixture.schema_version == fixture.current_version {
-            assert_typed_matches_current_projection(&original, &canonical, &fixture, &label);
-        } else {
-            assert_superseded_envelope_is_preserved_and_refused(
-                &original,
-                &canonical,
-                &fixture,
-                &label,
-                EqEnvelope::into_current(first).err(),
-            );
-        }
+        assert_eq!(
+            serde_json::to_value(second).unwrap(),
+            canonical,
+            "{}",
+            fixture.path.display()
+        );
+        assert_typed_matches_current_projection(
+            &original,
+            &canonical,
+            &fixture,
+            &fixture.path.display().to_string(),
+        );
     }
 }
 
