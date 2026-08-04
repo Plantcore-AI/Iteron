@@ -135,7 +135,11 @@ fn request_body(
     let mut body = serde_json::json!({
         "model": request.model,
         "instructions": request.system,
-        "input": transcript_to_input(&request.messages, route_scope)?,
+        "input": transcript_to_input(
+            &request.messages,
+            route_scope,
+            &request.input_images,
+        )?,
         // With `store: false` there is no server-side response state to refer back to. OpenAI's
         // stateless continuation contract therefore requires the encrypted reasoning item to be
         // requested, retained, and supplied as a later input item.
@@ -202,10 +206,37 @@ fn is_openai_reasoning_family(model_id: &str) -> bool {
 fn transcript_to_input(
     messages: &[Message],
     route_scope: &str,
+    input_images: &[core_protocol::ImageContent],
 ) -> Result<Vec<serde_json::Value>, ProviderError> {
     validate_route_scope(route_scope)?;
+    let image_target = if input_images.is_empty() {
+        None
+    } else {
+        Some(
+            messages
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(message_index, message)| {
+                    (message.role == Role::User)
+                        .then(|| {
+                            message
+                                .content
+                                .iter()
+                                .rposition(|block| matches!(block, Block::Text { .. }))
+                        })
+                        .flatten()
+                        .map(|block_index| (message_index, block_index))
+                })
+                .ok_or_else(|| {
+                    ProviderError::Decode(
+                        "Responses image input lacked a user text submission".into(),
+                    )
+                })?,
+        )
+    };
     let mut input = Vec::new();
-    for message in messages {
+    for (message_index, message) in messages.iter().enumerate() {
         if message.role == Role::Assistant
             && let Some(native_output) = matching_native_output(message, route_scope)?
         {
@@ -213,7 +244,7 @@ fn transcript_to_input(
             continue;
         }
         let mut text_parts: Vec<serde_json::Value> = Vec::new();
-        for block in &message.content {
+        for (block_index, block) in message.content.iter().enumerate() {
             match block {
                 Block::Text { text } => text_parts.push(match message.role {
                     Role::User => serde_json::json!({"type": "input_text", "text": text}),
@@ -240,6 +271,16 @@ fn transcript_to_input(
                         "output": result.content,
                     }));
                 }
+            }
+            if image_target == Some((message_index, block_index)) {
+                text_parts.extend(input_images.iter().map(|image| {
+                    let image_url = format!(
+                        "data:{};base64,{}",
+                        image.media_type.as_str(),
+                        image.data.as_str()
+                    );
+                    serde_json::json!({"type": "input_image", "image_url": image_url})
+                }));
             }
         }
         flush_message_text(message.role, &mut text_parts, &mut input);
@@ -1319,6 +1360,10 @@ fn incomplete_failure(
 
 #[async_trait::async_trait]
 impl Provider for OpenAiResponses {
+    fn supports_image_input(&self) -> bool {
+        self.error_profile == ErrorProfile::OpenAi && self.root.as_str() == DEFAULT_ROOT
+    }
+
     fn effort_application(&self, request: &TurnRequest) -> EffortApplication {
         responses_effort_application(self.error_profile, &request.model, request.reasoning_effort)
     }
@@ -1451,7 +1496,9 @@ fn remaining_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
+    use core_protocol::{
+        Capability, ImageContent, ImageMediaType, Purity, ToolResult, ToolSpec, Trust,
+    };
 
     const TEST_SCOPE: &str = "provider-openai-test";
 
@@ -1560,6 +1607,62 @@ mod tests {
         assert_eq!(input[2]["arguments"], r#"{"path":"src/lib.rs"}"#);
         assert_eq!(input[3]["type"], "function_call_output");
         assert_eq!(input[3]["call_id"], "call_1");
+    }
+
+    #[test]
+    fn official_responses_route_alone_advertises_image_input() {
+        let official = OpenAiResponses::new("test-credential".into(), None).unwrap();
+        assert!(official.supports_image_input());
+
+        let gateway = OpenAiResponses::new(
+            "test-credential".into(),
+            Some("https://gateway.test/v1".into()),
+        )
+        .unwrap()
+        .with_error_profile(ErrorProfile::OpenAi);
+        assert!(
+            !gateway.supports_image_input(),
+            "an operator-selected error profile is not proof that a gateway accepts images"
+        );
+    }
+
+    #[test]
+    fn image_parts_are_data_urls_on_the_latest_user_text_even_after_a_tool_turn() {
+        let mut request = request();
+        request.input_images = vec![
+            ImageContent::new(ImageMediaType::Png, "iVBORw0KGgo=").unwrap(),
+            ImageContent::new(ImageMediaType::Jpeg, "/9j/").unwrap(),
+            ImageContent::new(ImageMediaType::Gif, "R0lGODlh").unwrap(),
+            ImageContent::new(ImageMediaType::Webp, "UklGRg==").unwrap(),
+        ];
+
+        let body = request_body(&request, ErrorProfile::OpenAi, TEST_SCOPE).unwrap();
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 4, "images must not invent transcript items");
+        assert_eq!(
+            input[0]["content"],
+            serde_json::json!([
+                {"type":"input_text","text":"inspect the tree"},
+                {"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgo="},
+                {"type":"input_image","image_url":"data:image/jpeg;base64,/9j/"},
+                {"type":"input_image","image_url":"data:image/gif;base64,R0lGODlh"},
+                {"type":"input_image","image_url":"data:image/webp;base64,UklGRg=="}
+            ])
+        );
+        assert_eq!(input[2]["type"], "function_call");
+        assert_eq!(input[3]["type"], "function_call_output");
+    }
+
+    #[test]
+    fn image_input_is_not_silently_dropped_without_a_user_text_submission() {
+        let mut request = request();
+        request.messages.clear();
+        request.input_images =
+            vec![ImageContent::new(ImageMediaType::Png, "iVBORw0KGgo=").unwrap()];
+
+        let error = request_body(&request, ErrorProfile::OpenAi, TEST_SCOPE).unwrap_err();
+        assert!(matches!(error, ProviderError::Decode(message) if message ==
+            "Responses image input lacked a user text submission"));
     }
 
     #[test]
@@ -1856,10 +1959,15 @@ mod tests {
             role: Role::Assistant,
             content: blocks.clone(),
         };
-        let replay =
-            transcript_to_input(std::slice::from_ref(&assistant), "test-openai-responses").unwrap();
+        let replay = transcript_to_input(
+            std::slice::from_ref(&assistant),
+            "test-openai-responses",
+            &[],
+        )
+        .unwrap();
         assert_eq!(serde_json::Value::Array(replay), expected_native);
-        let portable = transcript_to_input(&[assistant], "different-provider-instance").unwrap();
+        let portable =
+            transcript_to_input(&[assistant], "different-provider-instance", &[]).unwrap();
         assert_eq!(
             portable,
             vec![serde_json::json!({
@@ -2166,10 +2274,10 @@ mod tests {
         assert_eq!(decoded, Block::ProviderState(state.clone()));
         assert!(!format!("{state:?}").contains("opaque-ciphertext"));
 
-        let exact = transcript_to_input(std::slice::from_ref(&message), TEST_SCOPE).unwrap();
+        let exact = transcript_to_input(std::slice::from_ref(&message), TEST_SCOPE, &[]).unwrap();
         assert_eq!(serde_json::Value::Array(exact), native);
 
-        let portable = transcript_to_input(&[message], "another-provider-instance").unwrap();
+        let portable = transcript_to_input(&[message], "another-provider-instance", &[]).unwrap();
         assert_eq!(portable.len(), 2);
         assert_eq!(portable[0]["type"], "message");
         assert_eq!(portable[0]["content"][0]["text"], "checking");
@@ -2195,9 +2303,9 @@ mod tests {
                 },
             ],
         };
-        assert!(transcript_to_input(std::slice::from_ref(&message), TEST_SCOPE).is_err());
+        assert!(transcript_to_input(std::slice::from_ref(&message), TEST_SCOPE, &[]).is_err());
         assert_eq!(
-            transcript_to_input(&[message], "another-provider-instance").unwrap(),
+            transcript_to_input(&[message], "another-provider-instance", &[]).unwrap(),
             vec![serde_json::json!({
                 "type":"message","role":"assistant",
                 "content":[{"type":"output_text","text":"portable"}]
