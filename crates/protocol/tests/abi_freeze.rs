@@ -1,4 +1,4 @@
-//! The golden serde-shape snapshot: the five typed contracts, frozen at `PROTOCOL_VERSION` 1.
+//! The golden serde-shape snapshot: the five typed contracts, frozen at `PROTOCOL_VERSION` 2.
 //!
 //! Issue #14 acceptance criterion 7 asks for a CI check that asserts no breaking diff to the
 //! frozen types. This is that check. It serialises a fully populated value of every shape the
@@ -1327,7 +1327,15 @@ fn the_declared_ceilings_are_part_of_the_frozen_contract() {
     // one lets a newer producer emit a value an older reader refuses. Both are wire changes, so
     // the snapshot pins them exactly rather than one-sidedly.
     let pinned: [(&str, usize, usize); 21] = [
-        ("PROTOCOL_VERSION", PROTOCOL_VERSION as usize, 1),
+        // Moved 1 -> 2 with the `tunables_snapshot` event, which reshapes `record.rollout` (7 -> 8)
+        // and `record.event-envelope` (3 -> 4) on EQ. Peers re-checked in the same commit: the
+        // headless server's `hello`/`submit` handshake and its tests, which now stamp
+        // `PROTOCOL_VERSION` rather than a literal; the kernel's `into_current()` refusal arm,
+        // which is version-relative already; and all eight `protocol.*` surfaces in
+        // `governance/schema-compatibility.json`, each of which gained a v2 fixture beside its
+        // frozen v1 one. No external peer is pinned to 1 -- the refusal is typed, so one that were
+        // would be told, not mis-read.
+        ("PROTOCOL_VERSION", PROTOCOL_VERSION as usize, 2),
         ("MAX_TASK_TEXT_BYTES", MAX_TASK_TEXT_BYTES, 1_048_576),
         ("MAX_INPUT_SEGMENTS", MAX_INPUT_SEGMENTS, 9),
         ("MAX_INPUT_IMAGES", MAX_INPUT_IMAGES, 8),

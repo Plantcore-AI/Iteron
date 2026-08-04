@@ -12,12 +12,14 @@ use std::path::{Path, PathBuf};
 
 use core_ctx::source::{SourceEntryKind, SourceScope, list_directory_bounded, read_bounded_utf8};
 use core_protocol::Trust;
+use sha2::{Digest, Sha256};
 
 use crate::def::{AgentDef, parse_def};
 use crate::{estimate_tokens, one_line};
 
-/// A rejected or stripped definition, surfaced (not silently dropped). The kernel maps these to
-/// `obs` Notices so a missing agent type is explained, never mysterious.
+/// A rejected or stripped definition, surfaced (not silently dropped). The composition root emits
+/// each retained error through its bounded, redacted diagnostic boundary so a missing agent type
+/// is explained rather than mysterious.
 #[derive(Debug, Clone)]
 pub struct LoadError {
     /// The definition's source path (or logical name).
@@ -27,6 +29,7 @@ pub struct LoadError {
 }
 
 /// The discovered + built-in agent definitions, plus the load errors encountered.
+#[derive(Debug, Clone)]
 pub struct AgentCatalog {
     defs: Vec<AgentDef>,
     errors: Vec<LoadError>,
@@ -131,6 +134,22 @@ impl AgentCatalog {
     /// Definitions that were rejected or stripped, each with a reason.
     pub fn errors(&self) -> &[LoadError] {
         &self.errors
+    }
+
+    /// Digest the exact immutable definition set used for execution.
+    ///
+    /// Load errors and filesystem paths are deliberately excluded: they explain discovery but do
+    /// not change the semantics of a successfully selected definition. Definitions remain in the
+    /// stable, collision-resolved discovery order.
+    pub fn execution_digest(&self) -> String {
+        let mut digest = Sha256::new();
+        digest.update(b"core-agent-catalog-v1");
+        for def in &self.defs {
+            let part = def.execution_digest();
+            digest.update((part.len() as u64).to_be_bytes());
+            digest.update(part.as_bytes());
+        }
+        format!("sha256:{:x}", digest.finalize())
     }
 
     fn record_error(&mut self, error: LoadError) {

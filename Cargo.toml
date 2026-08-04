@@ -5,6 +5,10 @@
 resolver = "3"
 members = [
     "xtask",
+    "crates/changeset",
+    "crates/marketplace",
+    "crates/statusline",
+    "crates/support",
     "crates/protocol",
     "crates/record",
     "crates/obs",
@@ -13,6 +17,7 @@ members = [
     "crates/sandbox",
     "crates/ctx",
     "crates/verify",
+    "crates/lsp",
     "crates/mcp",
     "crates/sched",
     "crates/workflow",
@@ -21,6 +26,7 @@ members = [
     "crates/cli",
     "crates/eval",
     "crates/evolve",
+    "crates/tunables",
 ]
 
 [workspace.package]

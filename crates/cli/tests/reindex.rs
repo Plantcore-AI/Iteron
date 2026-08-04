@@ -198,7 +198,10 @@ fn schema_v4_session_argv_is_typed_provider_free_and_tag_preserving() {
     assert!(status.success(), "stdout={contract}\nstderr={stderr}");
     let contract: serde_json::Value = serde_json::from_str(contract.trim()).unwrap();
     assert_eq!(contract["cli_stream_versions"], serde_json::json!([4, 5]));
-    assert_eq!(contract["resident_protocol_version"], 1);
+    assert_eq!(
+        contract["resident_protocol_version"],
+        core_protocol::wire::PROTOCOL_VERSION
+    );
 
     let repo_arg = scratch.repo().display().to_string();
     let runs_arg = scratch.runs().display().to_string();

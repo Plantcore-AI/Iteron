@@ -27,6 +27,8 @@ the requested output and nothing else.";
 /// only through `CORE_WORKFLOW_SPAWNER=provider`, where it is useful precisely because it has no
 /// tools and no child `Agent` loop: it isolates provider behavior from harness behavior. The trait
 /// boundary is the same for both, so nothing above this line depends on which one is installed.
+/// This fallback supports only the built-in `generic` agent and the exact model resolved by the
+/// composition root; it cannot reinterpret an agent definition or resolve another route.
 pub struct ProviderSpawner {
     provider: Arc<dyn Provider>,
     model: String,
@@ -44,15 +46,38 @@ impl ProviderSpawner {
             default_effort: Effort::Low,
         }
     }
+
+    fn null(reason: &str) -> AgentOutcome {
+        AgentOutcome::null(crate::runtime::safe_agent_refusal(reason))
+    }
 }
 
 #[async_trait]
 impl AgentSpawner for ProviderSpawner {
     async fn spawn(&self, call: AgentCall) -> AgentOutcome {
+        if let Err(error) = call.validate_request_metadata() {
+            return Self::null(error.public_reason());
+        }
+        if call
+            .agent_type
+            .as_deref()
+            .is_some_and(|agent_type| agent_type != "generic")
+        {
+            return Self::null(
+                "single-completion fallback supports only the built-in generic agent",
+            );
+        }
+        if call
+            .model
+            .as_deref()
+            .is_some_and(|model| model != self.model)
+        {
+            return Self::null("requested agent model has no separately resolved route evidence");
+        }
+
         let effort = call.effort.unwrap_or(self.default_effort);
-        let model = call.model.clone().unwrap_or_else(|| self.model.clone());
         let request = TurnRequest {
-            model,
+            model: self.model.clone(),
             system: SUBAGENT_SYSTEM.to_string(),
             messages: vec![Message::user_text(call.prompt.clone())],
             input_images: Vec::new(),
@@ -73,12 +98,12 @@ impl AgentSpawner for ProviderSpawner {
                     .map(|usage| usage.input + usage.output)
                     .unwrap_or(0);
                 if text.trim().is_empty() {
-                    AgentOutcome::null("empty completion")
+                    Self::null("provider completed without a report")
                 } else {
                     AgentOutcome::text(text, tokens)
                 }
             }
-            Err(error) => AgentOutcome::null(format!("provider error: {error}")),
+            Err(error) => Self::null(&format!("provider: {}", error.public_summary())),
         }
     }
 }
@@ -538,7 +563,64 @@ pub fn list_runs(workflows_dir: &Path) -> Vec<RunListing> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core_protocol::{Block, StopReason, Usage};
+    use core_provider::{ProviderError, TurnResult, UsageReport};
     use core_workflow::{RunId, RunReport};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct RecordingProvider {
+        turns: AtomicUsize,
+        failure: Option<String>,
+    }
+
+    impl RecordingProvider {
+        fn successful() -> Self {
+            Self {
+                turns: AtomicUsize::new(0),
+                failure: None,
+            }
+        }
+
+        fn failing(message: String) -> Self {
+            Self {
+                turns: AtomicUsize::new(0),
+                failure: Some(message),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for RecordingProvider {
+        async fn turn(
+            &self,
+            _request: &TurnRequest,
+            _on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            self.turns.fetch_add(1, Ordering::SeqCst);
+            if let Some(message) = &self.failure {
+                return Err(ProviderError::Http(message.clone()));
+            }
+            Ok(TurnResult {
+                blocks: vec![Block::Text {
+                    text: "provider result".into(),
+                }],
+                stop_reason: StopReason::EndTurn,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingSink {
+        events: Mutex<Vec<ProgressEvent>>,
+    }
+
+    impl ProgressSink for RecordingSink {
+        fn emit(&self, event: ProgressEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
 
     fn scratch_dir(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -549,6 +631,115 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    fn assert_safe_refusal_surfaces(
+        workflows_dir: &Path,
+        run_id: &str,
+        sink: &RecordingSink,
+        expected: usize,
+        secret: &str,
+    ) {
+        let events = sink.events.lock().unwrap();
+        let rendered = format!("{events:?}");
+        assert!(!rendered.contains(secret), "{rendered}");
+        let errors: Vec<&String> = events
+            .iter()
+            .filter_map(|event| match event {
+                ProgressEvent::AgentFinished {
+                    state: WorkflowState::Error,
+                    error: Some(error),
+                    ..
+                } => Some(error),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), expected);
+        assert!(errors.iter().all(|error| {
+            error.len() <= 512 && !error.chars().any(char::is_control) && !error.contains(secret)
+        }));
+        drop(events);
+
+        let journal =
+            std::fs::read_to_string(run_dir(workflows_dir, run_id).join("journal.jsonl")).unwrap();
+        assert!(!journal.contains(secret), "{journal}");
+        let reasons: Vec<String> = journal
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|line| {
+                line.get("record")?
+                    .get("outcome")?
+                    .get("reason")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(reasons.len(), expected);
+        assert!(reasons.iter().all(|reason| {
+            reason.len() <= 512 && !reason.chars().any(char::is_control) && !reason.contains(secret)
+        }));
+    }
+
+    #[tokio::test]
+    async fn provider_fallback_refuses_unknown_agent_and_unresolved_models_before_any_turn() {
+        let workflows_dir = scratch_dir("provider-fallback-refusals");
+        let provider = Arc::new(RecordingProvider::successful());
+        let spawner = Arc::new(ProviderSpawner::new(
+            provider.clone(),
+            "parent-model".into(),
+        ));
+        let sink = Arc::new(RecordingSink::default());
+        let secret = "ghp_AbCdEf1234567890AbCdEf1234567890";
+        let script = r#"export const meta = { name: 'fallback-refusals', description: '', phases: [] };
+return await parallel([
+  () => agent('unknown type', {agentType: 'reviewer'}),
+  () => agent('secret type', {agentType: args.secret}),
+  () => agent('alternate model', {model: 'alternate-model'}),
+  () => agent('secret model', {model: args.secret}),
+]);
+"#;
+        let spec = RunSpec::new(script)
+            .with_args(serde_json::json!({"secret": secret}))
+            .with_run_id(RunId::new("fallback-refusals"))
+            .with_workflows_dir(workflows_dir.clone());
+        let report = WorkflowEngine::execute(spec, spawner, sink.clone())
+            .await
+            .expect("authorization refusals settle as null");
+        assert_eq!(
+            report.value,
+            serde_json::Value::Array(vec![serde_json::Value::Null; 4])
+        );
+        assert_eq!(provider.turns.load(Ordering::SeqCst), 0);
+        assert_safe_refusal_surfaces(&workflows_dir, "fallback-refusals", &sink, 4, secret);
+        let _ = std::fs::remove_dir_all(workflows_dir);
+    }
+
+    #[tokio::test]
+    async fn provider_fallback_never_reflects_raw_provider_error_into_null_journal_or_progress() {
+        let workflows_dir = scratch_dir("provider-fallback-error");
+        let secret = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
+        let provider = Arc::new(RecordingProvider::failing(format!(
+            "request to https://gateway.invalid/{secret} failed\n\u{1b}[2J{}",
+            "x".repeat(4_096)
+        )));
+        let spawner = Arc::new(ProviderSpawner::new(
+            provider.clone(),
+            "parent-model".into(),
+        ));
+        let sink = Arc::new(RecordingSink::default());
+        let script = r#"export const meta = { name: 'fallback-error', description: '', phases: [] };
+return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
+"#;
+        let spec = RunSpec::new(script)
+            .with_run_id(RunId::new("fallback-error"))
+            .with_workflows_dir(workflows_dir.clone());
+        let report = WorkflowEngine::execute(spec, spawner, sink.clone())
+            .await
+            .expect("provider failure settles as null");
+        assert_eq!(report.value, serde_json::Value::Null);
+        assert_eq!(provider.turns.load(Ordering::SeqCst), 1);
+        assert_safe_refusal_surfaces(&workflows_dir, "fallback-error", &sink, 1, secret);
+        let _ = std::fs::remove_dir_all(workflows_dir);
     }
 
     #[test]

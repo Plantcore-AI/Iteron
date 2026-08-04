@@ -1,0 +1,609 @@
+#[cfg(target_os = "linux")]
+use super::MAX_STDIN_BYTES;
+use super::output::OutputRing;
+#[cfg(target_os = "linux")]
+use super::supervisor::Supervisor;
+#[cfg(target_os = "linux")]
+use super::types::ActionError;
+use super::types::{JobState, ProcessSnapshot};
+use super::{MAX_COMMAND_BYTES, POLL_OUTPUT_BYTES_PER_STREAM, RETAINED_OUTPUT_BYTES_PER_STREAM};
+use crate::{Registry, ToolExecution};
+#[cfg(target_os = "linux")]
+use core_protocol::ToolResult;
+use core_protocol::{Capability, Purity, ToolUse};
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "linux")]
+use std::time::{Duration, Instant};
+
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+fn temp_root(label: &str) -> PathBuf {
+    let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "core-process-{label}-{}-{serial}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
+fn tool_use(name: &str, input: Value) -> ToolUse {
+    ToolUse {
+        id: format!("call-{name}"),
+        name: name.into(),
+        input,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn result(execution: ToolExecution) -> ToolResult {
+    match execution {
+        ToolExecution::Definite(result) | ToolExecution::Unknown(result) => result,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn success_json(execution: ToolExecution) -> Value {
+    let result = result(execution);
+    assert!(!result.is_error, "{}", result.content);
+    serde_json::from_str(&result.content).unwrap()
+}
+
+fn assert_definite_error(execution: ToolExecution, needle: &str) {
+    let ToolExecution::Definite(result) = execution else {
+        panic!("pre-dispatch validation must be a definite refusal");
+    };
+    assert!(result.is_error);
+    assert!(result.content.contains(needle), "{}", result.content);
+}
+
+#[cfg(target_os = "linux")]
+async fn start(registry: &Registry, command: &str) -> Option<Value> {
+    let execution = registry
+        .run_effect(tool_use("process_start", json!({"command":command})))
+        .await;
+    let result = result(execution);
+    if result.is_error && result.content.contains("unsupported") {
+        // Linux is intentionally capability-gated when trusted bwrap/user namespaces are absent.
+        return None;
+    }
+    assert!(!result.is_error, "{}", result.content);
+    Some(serde_json::from_str(&result.content).unwrap())
+}
+
+#[cfg(target_os = "linux")]
+async fn poll(registry: &Registry, job_id: &str, wait_ms: u64) -> Value {
+    poll_from(registry, job_id, 0, 0, wait_ms).await
+}
+
+#[cfg(target_os = "linux")]
+async fn poll_from(
+    registry: &Registry,
+    job_id: &str,
+    stdout_cursor: u64,
+    stderr_cursor: u64,
+    wait_ms: u64,
+) -> Value {
+    success_json(
+        registry
+            .run_effect(tool_use(
+                "process_poll",
+                json!({
+                    "job_id":job_id,
+                    "stdout_cursor":stdout_cursor,
+                    "stderr_cursor":stderr_cursor,
+                    "wait_ms":wait_ms
+                }),
+            ))
+            .await,
+    )
+}
+
+#[cfg(target_os = "linux")]
+async fn wait_terminal(registry: &Registry, job_id: &str) -> Value {
+    let mut stdout_cursor = 0;
+    let mut stderr_cursor = 0;
+    for _ in 0..20 {
+        let value = poll_from(registry, job_id, stdout_cursor, stderr_cursor, 250).await;
+        let kind = value["state"]["kind"].as_str().unwrap();
+        if !matches!(kind, "running" | "stopping") {
+            return poll(registry, job_id, 0).await;
+        }
+        stdout_cursor = value["stdout"]["next_cursor"].as_u64().unwrap();
+        stderr_cursor = value["stderr"]["next_cursor"].as_u64().unwrap();
+    }
+    panic!("job `{job_id}` did not reach a terminal state within the fixed test budget");
+}
+
+fn cleanup(root: &Path) {
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn output_ring_pages_by_byte_cursor_and_discloses_retention_gaps() {
+    let mut ring = OutputRing::default();
+    let oversized = vec![b'x'; RETAINED_OUTPUT_BYTES_PER_STREAM + 17];
+    assert!(!ring.push(&oversized));
+
+    let first = ring.frame(0).unwrap();
+    assert!(first.gap);
+    assert_eq!(first.oldest_cursor, 17);
+    assert_eq!(first.text.len(), super::POLL_OUTPUT_BYTES_PER_STREAM);
+    assert!(first.has_more);
+
+    let second = ring.frame(first.next_cursor).unwrap();
+    assert!(!second.gap);
+    assert_eq!(second.oldest_cursor, first.oldest_cursor);
+    assert!(second.next_cursor > first.next_cursor);
+    assert!(ring.frame(first.observed_cursor + 1).is_err());
+
+    ring.close();
+    let tail = ring.frame(first.observed_cursor).unwrap();
+    assert!(tail.closed);
+    assert!(tail.text.is_empty());
+}
+
+#[test]
+fn output_observation_limit_notifies_once_and_serialized_pages_stay_fixed_bounded() {
+    let mut small = OutputRing::with_limits(4, 8);
+    assert!(small.push(b"0123456789"));
+    assert!(!small.push(b"more"));
+    let small_frame = small.frame(0).unwrap();
+    assert!(small_frame.gap);
+    assert_eq!(small_frame.text, "more");
+
+    let mut hostile = OutputRing::default();
+    assert!(!hostile.push(&vec![0_u8; POLL_OUTPUT_BYTES_PER_STREAM]));
+    let stdout = hostile.frame(0).unwrap();
+    let mut hostile_stderr = OutputRing::default();
+    assert!(!hostile_stderr.push(&vec![0_u8; POLL_OUTPUT_BYTES_PER_STREAM]));
+    let stderr = hostile_stderr.frame(0).unwrap();
+    let snapshot = ProcessSnapshot {
+        schema_version: 1,
+        job_id: "job-0123456789abcdef-00000001".into(),
+        backend: "linux-bubblewrap-pipes",
+        state: JobState::Running,
+        stdout,
+        stderr,
+    };
+    let encoded = serde_json::to_vec(&snapshot).unwrap();
+    assert!(
+        encoded.len() <= POLL_OUTPUT_BYTES_PER_STREAM * 12 + 2_048,
+        "JSON escaping must add only a fixed worst-case overhead: {} bytes",
+        encoded.len()
+    );
+    assert!(
+        !encoded.contains(&0),
+        "control bytes must stay JSON escaped"
+    );
+}
+
+#[test]
+fn cleanup_unknown_is_terminal_for_the_caller_but_quarantines_a_capacity_slot() {
+    let state = JobState::CleanupUnknown {
+        trigger: "injected",
+    };
+    assert!(state.is_terminal());
+    assert!(!state.is_reconciled_terminal());
+}
+
+#[test]
+fn coding_registry_has_four_typed_process_tools_and_read_only_registry_has_none() {
+    let root = temp_root("registry");
+    let coding = Registry::coding_agent(&root).unwrap();
+    let read_only = Registry::read_only(&root).unwrap();
+    let coding_names: Vec<_> = coding.specs().into_iter().map(|spec| spec.name).collect();
+    let read_only_names: Vec<_> = read_only
+        .specs()
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect();
+
+    for name in [
+        "process_start",
+        "process_poll",
+        "process_write",
+        "process_stop",
+    ] {
+        assert!(coding_names.iter().any(|candidate| candidate == name));
+        assert!(!read_only_names.iter().any(|candidate| candidate == name));
+        assert_eq!(coding.purity_of(name), Some(Purity::Effecting));
+    }
+    assert_eq!(
+        coding.capability_of("process_poll"),
+        Some(Capability::ReadOnly)
+    );
+    for name in ["process_start", "process_write", "process_stop"] {
+        assert_eq!(coding.capability_of(name), Some(Capability::CodeExecuting));
+    }
+    cleanup(&root);
+}
+
+#[tokio::test]
+async fn malformed_and_oversized_inputs_refuse_before_process_dispatch() {
+    let root = temp_root("input-bounds");
+    let registry = Registry::coding_agent(&root).unwrap();
+
+    assert_definite_error(
+        registry
+            .run_effect(tool_use("process_start", json!({"command":""})))
+            .await,
+        "non-empty",
+    );
+    assert_definite_error(
+        registry
+            .run_effect(tool_use(
+                "process_start",
+                json!({"command":"x".repeat(MAX_COMMAND_BYTES + 1)}),
+            ))
+            .await,
+        "byte limit",
+    );
+    assert_definite_error(
+        registry
+            .run_effect(tool_use(
+                "process_poll",
+                json!({"job_id":"job-not-valid","wait_ms":0}),
+            ))
+            .await,
+        "must match",
+    );
+    assert_definite_error(
+        registry
+            .run_effect(tool_use(
+                "process_poll",
+                json!({"job_id":"job-0000000000000001-00000001","wait_ms":5001}),
+            ))
+            .await,
+        "5000ms",
+    );
+    cleanup(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn pipe_job_round_trip_long_poll_and_eof_have_one_typed_lifecycle() {
+    let root = temp_root("round-trip");
+    let registry = Registry::coding_agent(&root).unwrap();
+    let Some(started) = start(
+        &registry,
+        "while IFS= read -r line; do printf 'out:%s\\n' \"$line\"; done",
+    )
+    .await
+    else {
+        cleanup(&root);
+        return;
+    };
+    let job_id = started["job_id"].as_str().unwrap();
+    assert_eq!(started["schema_version"], 1);
+    assert!(started["backend"].as_str().unwrap().ends_with("-pipes"));
+
+    let written = success_json(
+        registry
+            .run_effect(tool_use(
+                "process_write",
+                json!({"job_id":job_id,"input":"héllo\n","eof":true}),
+            ))
+            .await,
+    );
+    assert_eq!(written["schema_version"], 1);
+    assert_eq!(written["accepted_bytes"], "héllo\n".len());
+    assert_eq!(written["stdin_closed"], true);
+
+    let terminal = wait_terminal(&registry, job_id).await;
+    assert_eq!(terminal["state"]["kind"], "exited");
+    assert_eq!(terminal["state"]["exit_code"], 0);
+    assert!(
+        terminal["stdout"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("out:héllo")
+    );
+    assert_eq!(terminal["stdout"]["closed"], true);
+
+    let next = terminal["stdout"]["next_cursor"].as_u64().unwrap();
+    let no_duplicate = success_json(
+        registry
+            .run_effect(tool_use(
+                "process_poll",
+                json!({"job_id":job_id,"stdout_cursor":next,"wait_ms":0}),
+            ))
+            .await,
+    );
+    assert_eq!(no_duplicate["stdout"]["text"], "");
+    cleanup(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn long_poll_wakes_on_output_without_a_model_side_busy_loop() {
+    let root = temp_root("long-poll");
+    let registry = Registry::coding_agent(&root).unwrap();
+    let Some(started) = start(&registry, "sleep 0.2; printf ready; sleep 30").await else {
+        cleanup(&root);
+        return;
+    };
+    let job_id = started["job_id"].as_str().unwrap();
+    let began = Instant::now();
+    let value = poll(&registry, job_id, 2_000).await;
+    assert!(value["stdout"]["text"].as_str().unwrap().contains("ready"));
+    assert!(began.elapsed() < Duration::from_secs(3));
+    let _ = registry
+        .run_effect(tool_use("process_stop", json!({"job_id":job_id})))
+        .await;
+    cleanup(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn oversized_stdin_refuses_and_stop_is_authoritative_idempotent() {
+    let root = temp_root("stop");
+    let registry = Registry::coding_agent(&root).unwrap();
+    let Some(started) = start(&registry, "sleep 30").await else {
+        cleanup(&root);
+        return;
+    };
+    let job_id = started["job_id"].as_str().unwrap();
+
+    assert_definite_error(
+        registry
+            .run_effect(tool_use(
+                "process_write",
+                json!({"job_id":job_id,"input":"x".repeat(MAX_STDIN_BYTES + 1)}),
+            ))
+            .await,
+        "byte limit",
+    );
+    let stopped = success_json(
+        registry
+            .run_effect(tool_use("process_stop", json!({"job_id":job_id})))
+            .await,
+    );
+    assert_eq!(stopped["state"]["kind"], "stopped");
+    let stopped_again = success_json(
+        registry
+            .run_effect(tool_use("process_stop", json!({"job_id":job_id})))
+            .await,
+    );
+    assert_eq!(stopped_again["state"]["kind"], "stopped");
+    cleanup(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn concurrent_stop_and_write_never_drop_an_accepted_control_reply() {
+    let root = temp_root("control-race");
+    let supervisor = Supervisor::new().unwrap();
+    let started = match supervisor.start(&root, "sleep 30", Vec::new()).await {
+        Ok(started) => started,
+        Err(ActionError::Definite(error)) if error.contains("unsupported") => {
+            cleanup(&root);
+            return;
+        }
+        Err(error) => panic!("start failed: {error:?}"),
+    };
+
+    let (first_stop, second_stop, write) = tokio::join!(
+        supervisor.stop(&started.job_id),
+        supervisor.stop(&started.job_id),
+        supervisor.write(&started.job_id, b"late".to_vec(), false),
+    );
+    assert!(first_stop.is_ok(), "first stop: {first_stop:?}");
+    assert!(second_stop.is_ok(), "second stop: {second_stop:?}");
+    assert!(
+        !matches!(write, Err(ActionError::Unknown(_))),
+        "accepted control reply was dropped: {write:?}"
+    );
+    cleanup(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn natural_leader_exit_kills_residual_process_group_descendants() {
+    let root = temp_root("natural-orphan");
+    let marker = root.join("escaped.txt");
+    let registry = Registry::coding_agent(&root).unwrap();
+    let Some(started) = start(
+        &registry,
+        "(sleep 1; printf escaped > escaped.txt) & printf 'leader-done\\n'",
+    )
+    .await
+    else {
+        cleanup(&root);
+        return;
+    };
+    let job_id = started["job_id"].as_str().unwrap();
+    let terminal = wait_terminal(&registry, job_id).await;
+    assert_eq!(terminal["state"]["kind"], "exited");
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    assert!(
+        !marker.exists(),
+        "a background descendant escaped the job group"
+    );
+    cleanup(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn detached_session_cannot_outlive_the_reported_job_terminal() {
+    let root = temp_root("detached-session");
+    let session_attempted = root.join("setsid-attempted.txt");
+    let group_attempted = root.join("setpgid-attempted.txt");
+    let session_marker = root.join("setsid-escaped.txt");
+    let group_marker = root.join("setpgid-escaped.txt");
+    let registry = Registry::coding_agent(&root).unwrap();
+    let Some(started) = start(
+        &registry,
+        "/usr/bin/python3 -c 'import os,time; open(\"setsid-attempted.txt\",\"w\").write(\"yes\"); os.setsid(); [os.close(fd) for fd in (0,1,2)]; time.sleep(1); open(\"setsid-escaped.txt\",\"w\").write(\"escaped\")' & /usr/bin/python3 -c 'import os,time; open(\"setpgid-attempted.txt\",\"w\").write(\"yes\"); os.setpgid(0,0); [os.close(fd) for fd in (0,1,2)]; time.sleep(1); open(\"setpgid-escaped.txt\",\"w\").write(\"escaped\")' & i=0; while [ \"$i\" -lt 100 ] && { [ ! -f setsid-attempted.txt ] || [ ! -f setpgid-attempted.txt ]; }; do sleep 0.01; i=$((i+1)); done; test -f setsid-attempted.txt && test -f setpgid-attempted.txt && printf 'leader-done\\n'",
+    )
+    .await
+    else {
+        cleanup(&root);
+        return;
+    };
+    let job_id = started["job_id"].as_str().unwrap();
+    let terminal = wait_terminal(&registry, job_id).await;
+    assert_eq!(terminal["state"]["kind"], "exited");
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    assert!(session_attempted.exists(), "setsid oracle never executed");
+    assert!(group_attempted.exists(), "setpgid oracle never executed");
+    assert!(
+        !session_marker.exists(),
+        "a descendant escaped cleanup by creating a new session"
+    );
+    assert!(
+        !group_marker.exists(),
+        "a descendant escaped cleanup by creating a new process group"
+    );
+    cleanup(&root);
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn unsupported_platform_refuses_detached_session_oracle_before_spawn() {
+    let root = temp_root("unsupported-detached-session");
+    let marker = root.join("spawned.txt");
+    let registry = Registry::coding_agent(&root).unwrap();
+    let execution = registry
+        .run_effect(tool_use(
+            "process_start",
+            json!({
+                "command":"printf spawned > spawned.txt; /usr/bin/python3 -c 'import os; os.setsid()'"
+            }),
+        ))
+        .await;
+    assert_definite_error(execution, "unsupported");
+    assert!(!marker.exists(), "unsupported backend spawned a child");
+    cleanup(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn registry_drop_kills_the_owned_group_before_a_delayed_descendant_can_escape() {
+    let root = temp_root("drop-cleanup");
+    let marker = root.join("escaped.txt");
+    let registry = Registry::coding_agent(&root).unwrap();
+    let Some(started) = start(
+        &registry,
+        "(sleep 1; printf escaped > escaped.txt) & printf armed; wait",
+    )
+    .await
+    else {
+        cleanup(&root);
+        return;
+    };
+    let job_id = started["job_id"].as_str().unwrap();
+    let armed = poll(&registry, job_id, 2_000).await;
+    assert!(armed["stdout"]["text"].as_str().unwrap().contains("armed"));
+    drop(registry);
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    assert!(
+        !marker.exists(),
+        "Registry drop left an orphaned descendant"
+    );
+    cleanup(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn aborted_controller_reports_cleanup_unknown_and_kills_its_group() {
+    let root = temp_root("actor-abort");
+    let marker = root.join("escaped.txt");
+    let supervisor = Supervisor::new().unwrap();
+    let started = match supervisor
+        .start(
+            &root,
+            "(sleep 1; printf escaped > escaped.txt) & printf armed; wait",
+            Vec::new(),
+        )
+        .await
+    {
+        Ok(started) => started,
+        Err(ActionError::Definite(error)) if error.contains("unsupported") => {
+            cleanup(&root);
+            return;
+        }
+        Err(error) => panic!("start failed: {error:?}"),
+    };
+    let armed = supervisor.poll(&started.job_id, 0, 0, 2_000).await.unwrap();
+    assert!(armed.stdout.text.contains("armed"));
+    supervisor.abort_actor(&started.job_id).unwrap();
+    let after_abort = supervisor
+        .poll(
+            &started.job_id,
+            armed.stdout.next_cursor,
+            armed.stderr.next_cursor,
+            2_000,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        after_abort.state,
+        JobState::CleanupUnknown {
+            trigger: "controller_dropped"
+        }
+    ));
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    assert!(
+        !marker.exists(),
+        "an aborted controller leaked its process group"
+    );
+    cleanup(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn persistent_process_keeps_writes_inside_the_workspace_boundary() {
+    let parent = temp_root("confinement-parent");
+    let root = parent.join("workspace");
+    std::fs::create_dir(&root).unwrap();
+    let outside = parent.join("outside.txt");
+    let registry = Registry::coding_agent(&root).unwrap();
+    let Some(started) = start(
+        &registry,
+        "printf inside > inside.txt; printf outside > ../outside.txt",
+    )
+    .await
+    else {
+        cleanup(&parent);
+        return;
+    };
+    let terminal = wait_terminal(&registry, started["job_id"].as_str().unwrap()).await;
+    assert_eq!(terminal["state"]["kind"], "exited");
+    assert_eq!(
+        std::fs::read_to_string(root.join("inside.txt")).unwrap(),
+        "inside"
+    );
+    assert!(
+        !outside.exists(),
+        "persistent backend wrote outside workspace"
+    );
+    cleanup(&parent);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn job_ids_are_nonce_scoped_monotonic_and_foreign_runtime_ids_fail_loud() {
+    let root = temp_root("job-id");
+    let first = Supervisor::new().unwrap();
+    let second = Supervisor::new().unwrap();
+    let one = match first.start(&root, "exit 0", Vec::new()).await {
+        Ok(value) => value,
+        Err(ActionError::Definite(error)) if error.contains("unsupported") => {
+            cleanup(&root);
+            return;
+        }
+        Err(error) => panic!("start failed: {error:?}"),
+    };
+    let two = first.start(&root, "exit 0", Vec::new()).await.unwrap();
+    assert_ne!(one.job_id, two.job_id);
+    assert_eq!(&one.job_id[..20], &two.job_id[..20]);
+    let error = second.poll(&one.job_id, 0, 0, 0).await.unwrap_err();
+    let ActionError::Definite(error) = error else {
+        panic!("foreign runtime lookup must be a definite lost result");
+    };
+    assert!(error.contains("previous or different runtime"));
+    cleanup(&root);
+}

@@ -1,0 +1,299 @@
+//! Bounded persistent-process tools.
+//!
+//! These tools expose an explicitly non-PTY pipe backend. They preserve the shell tool's
+//! Linux bubblewrap workspace confinement and egress-off posture while adding stable job identity
+//! and lifecycle control. macOS and Windows refuse before spawn. Terminal emulation, resize, and a
+//! job-control TUI remain separate capabilities.
+
+mod actor;
+mod output;
+mod supervisor;
+mod types;
+
+#[cfg(test)]
+mod tests;
+
+use crate::{Registry, ToolError, ToolExecution, effectfut};
+use core_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
+use serde::Serialize;
+use std::sync::Arc;
+use supervisor::Supervisor;
+use types::ActionError;
+
+pub(super) const MAX_ACTIVE_JOBS: usize = 8;
+pub(super) const MAX_JOB_RECORDS: usize = 16;
+pub(super) const MAX_COMMAND_BYTES: usize = 32 * 1024;
+pub(super) const MAX_STDIN_BYTES: usize = 64 * 1024;
+pub(super) const RETAINED_OUTPUT_BYTES_PER_STREAM: usize = 256 * 1024;
+pub(super) const MAX_OBSERVED_OUTPUT_BYTES_PER_STREAM: u64 = 64 * 1024 * 1024;
+pub(super) const POLL_OUTPUT_BYTES_PER_STREAM: usize = 32 * 1024;
+pub(super) const DEFAULT_POLL_WAIT_MS: u64 = 1_000;
+pub(super) const MAX_POLL_WAIT_MS: u64 = 5_000;
+pub(super) const MAX_JOB_RUNTIME_SECS: u64 = 10 * 60;
+// One queued write plus the actor's one in-flight write keeps the worst-case response below the
+// fixed controller deadline (2 * STDIN_WRITE_SECS < CONTROL_RESPONSE_SECS).
+pub(super) const CONTROL_QUEUE_CAPACITY: usize = 1;
+pub(super) const STOP_QUEUE_CAPACITY: usize = 1;
+pub(super) const CONTROL_RESPONSE_SECS: u64 = 3;
+pub(super) const STDIN_WRITE_SECS: u64 = 1;
+pub(super) const OUTPUT_DRAIN_SECS: u64 = 1;
+
+const _: () = assert!(
+    CONTROL_QUEUE_CAPACITY == 1 && 2 * STDIN_WRITE_SECS < CONTROL_RESPONSE_SECS,
+    "queued and in-flight stdin writes must settle before the caller response deadline"
+);
+
+pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
+    let supervisor = Arc::new(Supervisor::new().map_err(ToolError::Registration)?);
+    register_start(registry, Arc::clone(&supervisor))?;
+    register_poll(registry, Arc::clone(&supervisor))?;
+    register_write(registry, Arc::clone(&supervisor))?;
+    register_stop(registry, supervisor)
+}
+
+fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result<(), ToolError> {
+    let sensitive_env_names = registry.sensitive_env_names_handle();
+    registry.register_external_effect(
+        ToolSpec {
+            name: "process_start".into(),
+            description: format!(
+                "Start one Linux bubblewrap PID-namespace background process and return a stable \
+                 job ID. macOS, Windows, and unavailable Linux confinement refuse before spawn. \
+                 The backend uses bounded pipes, not a PTY: terminal emulation and resize are \
+                 unavailable. At most {MAX_ACTIVE_JOBS} jobs run at once; every job is stopped \
+                 after {MAX_JOB_RUNTIME_SECS}s and retained output is bounded."
+            ),
+            input_schema: serde_json::json!({
+                "type":"object",
+                "properties":{
+                    "command":{
+                        "type":"string",
+                        "description":"Shell command to run from the workspace root."
+                    }
+                },
+                "required":["command"]
+            }),
+            purity: Purity::Effecting,
+            capability: Capability::CodeExecuting,
+        },
+        move |call, root| {
+            let supervisor = Arc::clone(&supervisor);
+            let sensitive_env_names = Arc::clone(&sensitive_env_names);
+            effectfut::box_it(async move {
+                let Some(command) = required_string(&call.input, "command") else {
+                    return definite_error(call.id, "command must be a non-empty string");
+                };
+                if command.is_empty() {
+                    return definite_error(call.id, "command must be a non-empty string");
+                }
+                if command.len() > MAX_COMMAND_BYTES {
+                    return definite_error(
+                        call.id,
+                        format!("command exceeds the fixed {MAX_COMMAND_BYTES}-byte limit"),
+                    );
+                }
+                let names = sensitive_env_names
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                action_result(call.id, supervisor.start(&root, command, names).await)
+            })
+        },
+    )
+}
+
+fn register_poll(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result<(), ToolError> {
+    registry.register_external_effect(
+        ToolSpec {
+            name: "process_poll".into(),
+            description: format!(
+                "Read one bounded output page and the authoritative lifecycle state for a job. \
+                 Pass the returned byte cursors to continue; each stream returns at most \
+                 {POLL_OUTPUT_BYTES_PER_STREAM} bytes and explicitly reports retention gaps. \
+                 Poll waits up to {DEFAULT_POLL_WAIT_MS}ms by default and never beyond \
+                 {MAX_POLL_WAIT_MS}ms."
+            ),
+            input_schema: job_cursor_schema(),
+            purity: Purity::Effecting,
+            capability: Capability::ReadOnly,
+        },
+        move |call, _root| {
+            let supervisor = Arc::clone(&supervisor);
+            effectfut::box_it(async move {
+                let parsed = parse_poll_input(&call.input);
+                let result = match parsed {
+                    Ok((job_id, stdout_cursor, stderr_cursor, wait_ms)) => {
+                        supervisor
+                            .poll(job_id, stdout_cursor, stderr_cursor, wait_ms)
+                            .await
+                    }
+                    Err(error) => Err(ActionError::Definite(error)),
+                };
+                action_result(call.id, result)
+            })
+        },
+    )
+}
+
+fn register_write(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result<(), ToolError> {
+    registry.register_external_effect(
+        ToolSpec {
+            name: "process_write".into(),
+            description: format!(
+                "Write at most {MAX_STDIN_BYTES} UTF-8 bytes to a running job's stdin and \
+                 optionally close stdin. Delivery failures after dispatch are reported as an \
+                 unknown effect and terminate the job rather than risking an orphan."
+            ),
+            input_schema: serde_json::json!({
+                "type":"object",
+                "properties":{
+                    "job_id":{"type":"string"},
+                    "input":{"type":"string"},
+                    "eof":{"type":"boolean"}
+                },
+                "required":["job_id"]
+            }),
+            purity: Purity::Effecting,
+            capability: Capability::CodeExecuting,
+        },
+        move |call, _root| {
+            let supervisor = Arc::clone(&supervisor);
+            effectfut::box_it(async move {
+                let Some(job_id) = required_string(&call.input, "job_id") else {
+                    return definite_error(call.id, "job_id must be a string");
+                };
+                let input = call
+                    .input
+                    .get("input")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let eof = call
+                    .input
+                    .get("eof")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                if input.is_empty() && !eof {
+                    return definite_error(call.id, "input must be non-empty unless eof is true");
+                }
+                if input.len() > MAX_STDIN_BYTES {
+                    return definite_error(
+                        call.id,
+                        format!("input exceeds the fixed {MAX_STDIN_BYTES}-byte limit"),
+                    );
+                }
+                action_result(
+                    call.id,
+                    supervisor
+                        .write(job_id, input.as_bytes().to_vec(), eof)
+                        .await,
+                )
+            })
+        },
+    )
+}
+
+fn register_stop(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result<(), ToolError> {
+    registry.register_external_effect(
+        ToolSpec {
+            name: "process_stop".into(),
+            description:
+                "Stop a job's entire process group, reap its direct child, and return the \
+                          final lifecycle state. Calling stop on an already-terminal job is \
+                          idempotent."
+                    .into(),
+            input_schema: serde_json::json!({
+                "type":"object",
+                "properties":{"job_id":{"type":"string"}},
+                "required":["job_id"]
+            }),
+            purity: Purity::Effecting,
+            capability: Capability::CodeExecuting,
+        },
+        move |call, _root| {
+            let supervisor = Arc::clone(&supervisor);
+            effectfut::box_it(async move {
+                let Some(job_id) = required_string(&call.input, "job_id") else {
+                    return definite_error(call.id, "job_id must be a string");
+                };
+                action_result(call.id, supervisor.stop(job_id).await)
+            })
+        },
+    )
+}
+
+fn job_cursor_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type":"object",
+        "properties":{
+            "job_id":{"type":"string"},
+            "stdout_cursor":{"type":"integer","minimum":0},
+            "stderr_cursor":{"type":"integer","minimum":0},
+            "wait_ms":{
+                "type":"integer",
+                "minimum":0,
+                "description":"Long-poll ceiling in milliseconds; runtime-enforced maximum is 5000."
+            }
+        },
+        "required":["job_id"]
+    })
+}
+
+fn parse_poll_input(input: &serde_json::Value) -> Result<(&str, u64, u64, u64), String> {
+    let job_id =
+        required_string(input, "job_id").ok_or_else(|| "job_id must be a string".to_owned())?;
+    let stdout_cursor = optional_u64(input, "stdout_cursor")?;
+    let stderr_cursor = optional_u64(input, "stderr_cursor")?;
+    let wait_ms = match input.get("wait_ms") {
+        None => DEFAULT_POLL_WAIT_MS,
+        Some(_) => optional_u64(input, "wait_ms")?,
+    };
+    if wait_ms > MAX_POLL_WAIT_MS {
+        return Err(format!(
+            "wait_ms exceeds the fixed {MAX_POLL_WAIT_MS}ms maximum"
+        ));
+    }
+    Ok((job_id, stdout_cursor, stderr_cursor, wait_ms))
+}
+
+fn required_string<'a>(input: &'a serde_json::Value, name: &str) -> Option<&'a str> {
+    input.get(name).and_then(serde_json::Value::as_str)
+}
+
+fn optional_u64(input: &serde_json::Value, name: &str) -> Result<u64, String> {
+    match input.get(name) {
+        None => Ok(0),
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| format!("{name} must be a non-negative integer")),
+    }
+}
+
+fn action_result<T: Serialize>(
+    tool_use_id: String,
+    result: Result<T, ActionError>,
+) -> ToolExecution {
+    match result {
+        Ok(value) => match serde_json::to_string(&value) {
+            Ok(content) => ToolExecution::Definite(tool_result(tool_use_id, content, false)),
+            Err(error) => definite_error(tool_use_id, format!("serialize process result: {error}")),
+        },
+        Err(ActionError::Definite(error)) => definite_error(tool_use_id, error),
+        Err(ActionError::Unknown(error)) => {
+            ToolExecution::Unknown(tool_result(tool_use_id, error, true))
+        }
+    }
+}
+
+fn definite_error(tool_use_id: String, error: impl Into<String>) -> ToolExecution {
+    ToolExecution::Definite(tool_result(tool_use_id, error.into(), true))
+}
+
+fn tool_result(tool_use_id: String, content: String, is_error: bool) -> ToolResult {
+    ToolResult {
+        tool_use_id,
+        content,
+        is_error,
+        trust: Trust::Workspace,
+        latency_ms: 0,
+    }
+}

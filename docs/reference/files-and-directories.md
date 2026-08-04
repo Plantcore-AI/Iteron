@@ -8,9 +8,10 @@ historical product directories.
 | Path | Purpose |
 | --- | --- |
 | `~/.core/config.json` | Trusted user defaults, provider instances, signed rate cards, MCP servers, and hooks |
+| `~/.core/history/*.json` | Scrubbed, bounded prompt history and the last text-only draft (`prompt_history`; never attachments) |
 | `~/.core/provider-metadata.json` | Optional, strictly versioned replacement for dated built-in provider metadata |
 | `~/.core/skills/<name>/SKILL.md` | Trusted operator skills |
-| `~/.core/agents/*.md` | Trusted operator agent definitions |
+| `~/.core/agents/*.md` | Trusted operator agent definitions (see [Executable agent definitions](agent-definitions.md)) |
 | `~/.core/memory/` | Trusted operator memory |
 
 These paths can grant process execution or routing authority where documented.

@@ -4,6 +4,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, SlavePty, native_p
 use serde_json::json;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
@@ -66,6 +67,14 @@ impl Scratch {
         assert!(status.success(), "initialize drain checkpoint repository");
     }
 
+    fn create_fifo(&self, relative: &str) {
+        let path = self.repo().join(relative);
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+            .expect("PTY FIFO path contains no NUL");
+        // SAFETY: `path` remains live and names a test-only location in the scratch repository.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    }
+
     fn configure_link_provider(&self, api_root: &str) {
         self.configure_link_provider_with_notifications(api_root, None);
     }
@@ -117,6 +126,57 @@ impl Scratch {
             serde_json::to_vec(&config).expect("encode isolated project config"),
         )
         .expect("write isolated project config");
+    }
+
+    fn configure_external_editor(&self) {
+        let config_dir = self.home().join(".core");
+        std::fs::create_dir_all(&config_dir).expect("create isolated Core config directory");
+        let config = json!({
+            "schema_version": 2,
+            "tui_keymap": {
+                "mode": "standard",
+                "bindings": { "external_editor": "alt+e" }
+            },
+            "external_editor": [
+                "/bin/sh",
+                "-c",
+                "printf 'edited safely in native terminal' > \"$1\"",
+                "core-editor-fixture"
+            ]
+        });
+        std::fs::write(
+            config_dir.join("config.json"),
+            serde_json::to_vec(&config).expect("encode external-editor config"),
+        )
+        .expect("write external-editor config");
+    }
+
+    fn configure_vim_keymap(&self) {
+        let config_dir = self.home().join(".core");
+        std::fs::create_dir_all(&config_dir).expect("create isolated Core config directory");
+        let config = json!({
+            "schema_version": 2,
+            "tui_keymap": { "mode": "vim" }
+        });
+        std::fs::write(
+            config_dir.join("config.json"),
+            serde_json::to_vec(&config).expect("encode Vim keymap config"),
+        )
+        .expect("write Vim keymap config");
+    }
+
+    fn configure_invalid_keymap(&self) {
+        let config = json!({
+            "schema_version": 2,
+            "tui_keymap": {
+                "bindings": { "external_editor": "ctrl+c" }
+            }
+        });
+        std::fs::write(
+            self.home().join(".core/config.json"),
+            serde_json::to_vec(&config).expect("encode invalid hot-reload fixture"),
+        )
+        .expect("write invalid hot-reload fixture");
     }
 }
 
@@ -641,13 +701,11 @@ impl PtyHarness {
             })
             .expect("resize PTY and deliver SIGWINCH");
         self.wait_until(&format!("redraw at {cols}x{rows}"), |pty| {
-            let (cursor_row, cursor_col) = pty.parser.screen().cursor_position();
             pty.capture.len() > before
                 && pty.parser.screen().size() == (rows, cols)
-                && pty.screen_text().contains("请检查")
+                && (pty.screen_text().contains("请检查")
+                    || pty.screen_text().contains("Transcript"))
                 && !pty.screen_text().contains('�')
-                && cursor_row < rows
-                && cursor_col < cols
         });
         let (cursor_row, cursor_col) = self.parser.screen().cursor_position();
         assert!(cursor_row < rows, "cursor row escaped {cols}x{rows}");
@@ -820,6 +878,252 @@ fn assert_termios_restored(pty: &PtyHarness) {
         pty.baseline_termios,
         "Core did not restore the raw-mode terminal settings it changed"
     );
+}
+
+#[test]
+fn custom_external_editor_round_trip_restores_tui_and_preserves_terminal_cleanup() {
+    let scratch = Scratch::new("external-editor");
+    scratch.configure_external_editor();
+    let mut pty = PtyHarness::spawn(&scratch, 80, 24);
+    wait_for_ready(&mut pty);
+
+    pty.send(b"original draft");
+    pty.wait_until("the original composer draft", |pty| {
+        pty.screen_text().contains("original draft")
+    });
+    pty.send(b"\x1be"); // configured Alt-E, proving the default Ctrl-G was actually remapped.
+    pty.wait_until("the external-editor draft after terminal resume", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("edited safely in native terminal")
+            && screen.contains("external editor applied")
+            && pty.parser.screen().alternate_screen()
+            && pty.parser.screen().bracketed_paste()
+    });
+    let tmp = scratch.home().join(".core/tmp");
+    assert_eq!(
+        std::fs::read_dir(tmp)
+            .expect("private temp directory exists")
+            .count(),
+        0,
+        "external-editor draft must be removed after the round trip"
+    );
+
+    scratch.configure_invalid_keymap();
+    pty.send(b"\x07"); // first key after the rewrite must route through the safe built-in map.
+    pty.wait_until("invalid hot reload and built-in keymap fallback", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("keymap reload failed; using built-in bindings")
+            && screen.contains("no external editor configured")
+    });
+
+    pty.send(b"\x15\x1b"); // clear the draft, then exit.
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "normal TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+}
+
+#[test]
+fn vim_composer_routes_insert_normal_delete_and_return_to_insert() {
+    let scratch = Scratch::new("vim-composer");
+    scratch.configure_vim_keymap();
+    let mut pty = PtyHarness::spawn(&scratch, 100, 24);
+    wait_for_ready(&mut pty);
+    pty.wait_until("visible Vim insert mode", |pty| {
+        pty.screen_text().contains("vim:insert")
+    });
+
+    pty.send(b"unique-draft");
+    pty.wait_until("insert-mode draft", |pty| {
+        pty.screen_text().contains("unique-draft")
+    });
+    pty.send(b"\x1b0x");
+    pty.wait_until("normal-mode cursor and delete", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("vim:normal")
+            && screen.contains("nique-draft")
+            && !screen.contains("unique-draft")
+    });
+    pty.send(b"I+");
+    pty.wait_until("return to insert at line start", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("vim:insert") && screen.contains("+nique-draft")
+    });
+
+    pty.send(b"\x05\x15"); // move to end, then readline-clear the whole insert-mode draft.
+    pty.wait_until("the empty insert-mode composer", |pty| {
+        pty.screen_text()
+            .contains("describe a task, question, or change")
+    });
+    pty.send(b"\x03"); // Ctrl-C exits the empty TUI.
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "normal TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+}
+
+#[test]
+fn tunables_registry_search_and_detail_are_terminal_real() {
+    let scratch = Scratch::new("tunables-registry");
+    scratch.create_fifo("request.fifo");
+    let mut pty = PtyHarness::spawn(&scratch, 110, 30);
+    wait_for_ready(&mut pty);
+
+    pty.send(b"/tunables load request.fifo\r");
+    pty.wait_until(
+        "nonblocking FIFO refusal leaves the event loop responsive",
+        |pty| {
+            pty.screen_text()
+                .contains("tunables simulation refused: request could not be loaded safely")
+        },
+    );
+
+    pty.send(b"/tunables\r");
+    pty.wait_until("searchable 160-family tunables registry", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("tunables · catalog")
+            && screen.contains("provider")
+            && screen.contains("simulation only")
+    });
+    pty.send(b"\x1b[200~definitely-no-tunable\x1b[201~");
+    pty.wait_until("picker-owned paste has an explicit no-match state", |pty| {
+        pty.screen_text().contains("No matches")
+    });
+    pty.send(b"\x1b"); // clear the pasted picker query without closing the picker.
+    pty.wait_until("first picker escape clears the pasted query", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("tunables · catalog")
+            && screen.contains("type to filter")
+            && screen.contains("1/160")
+            && !screen.contains("No matches")
+    });
+    pty.send(b"\x1b[200~route_selection\x1b[201~");
+    pty.wait_until("picker-owned paste filters the tunables registry", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("route_selection") && !screen.contains("No matches")
+    });
+    pty.send(b"\r");
+    pty.wait_until("read-only tunable detail", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("core.control.provider.route_selection")
+            && screen.contains("runtime_bound=false")
+            && screen.contains("not supplied (no frozen request loaded)")
+            && screen.contains("SWE-bench Pro")
+    });
+
+    pty.send(b"\x03");
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "normal TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+}
+
+#[test]
+fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_real() {
+    let scratch = Scratch::new("transcript-viewer");
+    let mut pty = PtyHarness::spawn(&scratch, 100, 28);
+    wait_for_ready(&mut pty);
+
+    let command = "!printf 'needle 你好 😀\\n\\033]52;bad\\a\\n'\r";
+    pty.send(command.as_bytes());
+    pty.wait_until("safe multilingual transcript source", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("needle 你好 😀") && !screen.contains('�')
+    });
+    assert!(
+        !pty.capture
+            .windows(b"\x1b]52;bad".len())
+            .any(|window| window == b"\x1b]52;bad"),
+        "transcript output injected an OSC 52 clipboard command"
+    );
+
+    pty.send(b"\x06"); // default typed transcript_viewer action: Ctrl-F
+    pty.wait_until("fullscreen viewer through typed keymap action", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("Transcript · block") && screen.contains("y copy block")
+    });
+    pty.send("/你好\r".as_bytes());
+    pty.wait_until("deterministic CJK match", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("match 1/") && screen.contains("filter: 你好")
+    });
+    pty.send(b"r");
+    pty.wait_until("raw semantic projection", |pty| {
+        pty.screen_text().contains(" · raw · match")
+    });
+    pty.resize(56, 18);
+    assert!(pty.screen_text().contains("Transcript"));
+    assert!(!pty.screen_text().contains('�'));
+
+    pty.send(b"e");
+    #[cfg(target_os = "linux")]
+    {
+        pty.wait_until("filtered atomic transcript export", |pty| {
+            pty.screen_text().contains("exported ->")
+        });
+        let filtered = std::fs::read_to_string(scratch.repo().join("core-transcript-filtered.md"))
+            .expect("filtered viewer export is durable in the workspace");
+        assert!(filtered.starts_with("# Core Code transcript\n\n"));
+        assert!(filtered.contains("needle 你好 😀"));
+    }
+    #[cfg(not(target_os = "linux"))]
+    pty.wait_until("truthful fail-closed export diagnostic", |pty| {
+        pty.screen_text()
+            .contains("export failed before dispatch: secure transcript")
+            && !scratch.repo().join("core-transcript-filtered.md").exists()
+    });
+
+    pty.send(b"\x1b");
+    pty.wait_until("return from fullscreen viewer", |pty| {
+        pty.screen_text().contains("Prompt") && !pty.screen_text().contains("y copy block")
+    });
+    pty.send(b"/transcript needle\r");
+    pty.wait_until("fullscreen viewer through slash command", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("Transcript · block") && screen.contains("search> needle")
+    });
+    pty.send(b"\r\x1b"); // accept the initial slash query, then close the viewer.
+    pty.wait_until("viewer closed after slash entry", |pty| {
+        pty.screen_text().contains("Prompt") && !pty.screen_text().contains("y copy block")
+    });
+    let slash_export = scratch.repo().join("core-transcript.md");
+    let slash_export_2 = scratch.repo().join("core-transcript-2.md");
+    pty.send(b"/export\r");
+    #[cfg(target_os = "linux")]
+    {
+        // The file appearing is not the export finishing: the writer creates it before the app
+        // clears its pending flag, and a second `/export` inside that window is refused with
+        // "export already pending" -- so the versioned file below never appears and this test times
+        // out. On an M-series Mac the window is submillisecond; on Linux/aarch64 it is wide enough
+        // to lose the race every time. Wait for the app to *say* it finished, which is the signal
+        // that actually orders the two commands.
+        pty.wait_until("slash export completes off the input path", |pty| {
+            slash_export.is_file() && pty.screen_text().contains("exported ->")
+        });
+        pty.send(b"/export\r");
+        pty.wait_until("default export versions instead of overwriting", |_| {
+            slash_export_2.is_file()
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    pty.wait_until(
+        "slash export fails closed without filesystem mutation",
+        |pty| {
+            pty.screen_text()
+                .contains("export failed before dispatch: secure transcript")
+                && !slash_export.exists()
+                && !slash_export_2.exists()
+        },
+    );
+    pty.send(b"\x03");
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "normal TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
 }
 
 #[test]
@@ -1181,6 +1485,10 @@ fn active_ctrl_d_drains_to_a_checkpoint_and_idle_ctrl_d_still_exits() {
         .started
         .recv_timeout(PROVIDER_TIMEOUT)
         .expect("provider turn is admitted before Ctrl-D");
+    pty.send(b"\x06");
+    pty.wait_until("viewer remains reachable during a running turn", |pty| {
+        pty.screen_text().contains("Transcript · block")
+    });
     pty.send(b"\x04");
     pty.wait_until("active Ctrl-D drain status", |pty| {
         let screen = pty.screen_text();

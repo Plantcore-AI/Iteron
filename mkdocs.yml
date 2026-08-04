@@ -114,7 +114,10 @@ nav:
       - Environment variables: reference/environment.md
       - Provider matrix: reference/providers.md
       - Static provider metadata: reference/provider-metadata.md
+      - Tunable-family registry: reference/tunables.md
+      - Language-server tools: reference/language-server-tools.md
       - Output formats: reference/output-formats.md
+      - Agent definitions: reference/agent-definitions.md
       - Files and directories: reference/files-and-directories.md
       - Supported platforms: reference/platforms.md
       - Troubleshooting: reference/troubleshooting.md

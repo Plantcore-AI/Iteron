@@ -66,9 +66,12 @@ pub use stage::{
 /// prompt-injection vector, and the classic trick is invisible / bidirectional Unicode that renders
 /// differently than it parses (ADR-007). Returns the first offending code point, or `None`.
 pub(crate) fn suspicious_unicode(s: &str) -> Option<u32> {
-    s.chars().map(|c| c as u32).find(
-        |&c| matches!(c, 0x200B..=0x200F | 0x202A..=0x202E | 0x2066..=0x2069 | 0x00AD | 0xFEFF),
-    )
+    s.chars().find_map(|character| {
+        let codepoint = character as u32;
+        (matches!(codepoint, 0x200B..=0x200F | 0x202A..=0x202E | 0x2066..=0x2069 | 0x00AD | 0xFEFF)
+            || (character.is_control() && !matches!(character, '\n' | '\r' | '\t')))
+        .then_some(codepoint)
+    })
 }
 
 /// A coarse token estimate (≈4 chars/token, ceiling), matching `ctx::estimate_tokens` closely
@@ -97,6 +100,9 @@ mod util_tests {
         assert!(suspicious_unicode("normal text").is_none());
         assert_eq!(suspicious_unicode("a\u{202E}b"), Some(0x202E));
         assert_eq!(suspicious_unicode("zero\u{200B}width"), Some(0x200B));
+        assert_eq!(suspicious_unicode("terminal\u{1b}[31m"), Some(0x1B));
+        assert_eq!(suspicious_unicode("nul\0byte"), Some(0));
+        assert!(suspicious_unicode("multiline\nbody\tindent").is_none());
     }
 
     #[test]

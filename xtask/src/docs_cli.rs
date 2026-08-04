@@ -18,6 +18,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 const CLI_SOURCE: &str = "crates/cli/src/main.rs";
+const EXTERNAL_SUBCOMMAND_SOURCES: &[(&str, &str)] = &[("tunables", "crates/cli/src/tunables.rs")];
 const GENERATED_DOC: &str = "docs/reference/cli.md";
 const ROOT_STRUCT: &str = "Cli";
 const MAX_CLI_SOURCE_BYTES: u64 = 1024 * 1024;
@@ -174,23 +175,57 @@ fn render(root: &Path) -> Result<String> {
     }
     let source = std::fs::read_to_string(&path)
         .with_context(|| format!("cannot read {}", path.display()))?;
-    render_source(&source)
+    let mut modules = Vec::new();
+    for &(module, relative) in EXTERNAL_SUBCOMMAND_SOURCES {
+        let path = root.join(relative);
+        let metadata =
+            std::fs::metadata(&path).with_context(|| format!("cannot read {}", path.display()))?;
+        if metadata.len() > MAX_CLI_SOURCE_BYTES {
+            bail!("{relative} exceeds the 1 MiB parse limit");
+        }
+        modules.push((
+            module,
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("cannot read {}", path.display()))?,
+        ));
+    }
+    render_sources(
+        &source,
+        &modules
+            .iter()
+            .map(|(module, source)| (*module, source.as_str()))
+            .collect::<Vec<_>>(),
+    )
 }
 
+#[cfg(test)]
 fn render_source(source: &str) -> Result<String> {
+    render_sources(source, &[])
+}
+
+fn render_sources(source: &str, modules: &[(&str, &str)]) -> Result<String> {
     let file = syn::parse_file(source).context("cannot parse the CLI argument parser")?;
 
-    let mut structs: BTreeMap<String, &syn::ItemStruct> = BTreeMap::new();
-    let mut enums: BTreeMap<String, &syn::ItemEnum> = BTreeMap::new();
+    let mut structs: BTreeMap<String, syn::ItemStruct> = BTreeMap::new();
+    let mut enums: BTreeMap<String, syn::ItemEnum> = BTreeMap::new();
     for item in &file.items {
         match item {
             syn::Item::Struct(item) => {
-                structs.insert(item.ident.to_string(), item);
+                structs.insert(item.ident.to_string(), item.clone());
             }
             syn::Item::Enum(item) => {
-                enums.insert(item.ident.to_string(), item);
+                enums.insert(item.ident.to_string(), item.clone());
             }
             _ => {}
+        }
+    }
+    for &(module, source) in modules {
+        let file = syn::parse_file(source)
+            .with_context(|| format!("cannot parse external CLI module `{module}`"))?;
+        for item in file.items {
+            if let syn::Item::Enum(item) = item {
+                enums.insert(format!("{module}::{}", item.ident), item);
+            }
         }
     }
 
@@ -324,7 +359,7 @@ fn subcommand_enum(field: &syn::Field) -> Option<Option<String>> {
         .then_some(None)
 }
 
-/// The innermost type name, unwrapping `Option<T>` / `Vec<T>`.
+/// The qualified type name, unwrapping `Option<T>` / `Vec<T>` while preserving module ownership.
 fn type_name(ty: &syn::Type) -> String {
     let syn::Type::Path(path) = ty else {
         return ty.to_token_stream().to_string();
@@ -337,7 +372,12 @@ fn type_name(ty: &syn::Type) -> String {
     {
         return type_name(inner);
     }
-    segment.ident.to_string()
+    path.path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::")
 }
 
 fn arity(ty: &syn::Type) -> Arity {
@@ -412,7 +452,7 @@ fn parse_arg(field_name: &str, field: &syn::Field) -> Result<Arg> {
 }
 
 fn collect_subcommands(
-    enums: &BTreeMap<String, &syn::ItemEnum>,
+    enums: &BTreeMap<String, syn::ItemEnum>,
     enum_name: &str,
     prefix: &[String],
 ) -> Result<Vec<Subcommand>> {

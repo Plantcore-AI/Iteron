@@ -32,6 +32,8 @@ fn every_shipped_flag_and_subcommand_appears() {
         "core workflow list",
         "core workflow resume",
         "core workflow watch",
+        "core tunables resolve",
+        "core tunables explain",
         "--allow-code",
         "--image",
         "--timeline",
@@ -49,7 +51,9 @@ fn every_shipped_flag_and_subcommand_appears() {
 fn a_new_flag_without_a_doc_entry_is_a_rendering_difference() {
     let root = repository_root();
     let source = std::fs::read_to_string(root.join(CLI_SOURCE)).unwrap();
-    let published = render_source(&source).unwrap();
+    let tunables = std::fs::read_to_string(root.join("crates/cli/src/tunables.rs")).unwrap();
+    let modules = [("tunables", tunables.as_str())];
+    let published = render_sources(&source, &modules).unwrap();
     let with_new_flag = source.replacen(
         "    /// The repository to work in (defaults to the current directory).",
         "    /// Undocumented escalation nobody wrote a doc entry for.\n    #[arg(long)]\n    \
@@ -57,7 +61,7 @@ fn a_new_flag_without_a_doc_entry_is_a_rendering_difference() {
         1,
     );
     assert_ne!(with_new_flag, source, "the anchor must still exist");
-    let regenerated = render_source(&with_new_flag).unwrap();
+    let regenerated = render_sources(&with_new_flag, &modules).unwrap();
     assert_ne!(
         regenerated, published,
         "a new flag must change the generated reference, so `docs check` fails until it is regenerated"

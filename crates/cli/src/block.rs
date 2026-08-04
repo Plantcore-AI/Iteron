@@ -86,6 +86,7 @@ pub enum ToolStatus {
 
 /// A single tool invocation, rendered as one coherent card (glyph · verb · args · status · elapsed),
 /// mutated in place when its `ToolEnd` arrives.
+#[derive(Clone)]
 pub struct ToolCard {
     pub name: String,
     pub args: serde_json::Value,
@@ -154,6 +155,7 @@ pub enum WorkflowTaskStatus {
     Unknown,
 }
 
+#[derive(Clone)]
 pub struct WorkflowTaskCard {
     pub id: usize,
     pub label: String,
@@ -172,6 +174,7 @@ pub struct WorkflowTaskCard {
 
 /// One workflow occupies one transcript block and mutates in place for its whole lifetime. That
 /// prevents a multi-agent run from becoming a noisy line log and gives mouse/Ctrl-O one fold target.
+#[derive(Clone)]
 pub struct WorkflowCard {
     pub run_id: String,
     pub name: String,
@@ -247,6 +250,7 @@ impl WorkflowRunAgent {
 
 /// The live QuickJS-workflow phase→agent tree, keyed by run id and mutated in place by
 /// [`Self::ingest`] (the upsert-by-index the design §3.2 store performs). One card per run.
+#[derive(Clone)]
 pub struct WorkflowRunCard {
     pub run_id: String,
     pub name: String,
@@ -445,6 +449,7 @@ impl WorkflowRunCard {
 
 /// A typed row inside a `Panel` (structured command output). NO free-styled-text row — that would be
 /// `Log` in disguise (C7). Command output uses these three shapes only.
+#[derive(Clone)]
 pub enum PanelRow {
     /// An aligned `key   value` pair (/status, /context, /cost).
     KeyValue { key: String, value: String },
@@ -455,6 +460,7 @@ pub enum PanelRow {
     Note(String),
 }
 
+#[derive(Clone)]
 pub enum BlockKind {
     User(String),
     Assistant(MarkdownDoc),
@@ -499,6 +505,7 @@ pub enum BlockKind {
 }
 
 /// A transcript block with a stable monotonic id (R2).
+#[derive(Clone)]
 pub struct Block {
     pub id: u64,
     /// Monotonic presentation revision. Stable blocks can be cached; folds bump this value.

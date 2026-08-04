@@ -26,13 +26,15 @@ rather than dispatching an incomplete operation.
 | `/fork` | Branch the current session |
 | `/rewind` | Branch the conversation from the current point |
 | `/resume` | List sessions and show resume guidance |
-| `/export [path]` | Write the transcript as Markdown |
+| `/transcript [query]` | Open the fullscreen, bounded transcript search/view surface |
+| `/export [path]` | Background-export Markdown without overwriting (Linux anonymous-inode publication; fail-closed elsewhere) |
 | `/agents` | List discovered agent definitions |
 | `/skills` | List discovered skills |
 | `/tools` | List registered tools and capabilities |
 | `/mcp` | List connected MCP tools |
 | `/hooks` | Show user-configured lifecycle hooks |
 | `/config` | Show resolved session and file configuration |
+| `/tunables [query\|load <file>]` | Search all 160 canonical families, or inspect a workspace-relative frozen-request simulation |
 | `/theme` | Select a color theme with preview |
 | `/init` | Scaffold repository `.core/config.json` and `AGENTS.md` |
 | `/quit` | Leave the TUI |
@@ -40,3 +42,12 @@ rather than dispatching an incomplete operation.
 Compatibility aliases resolve to the same typed command identity but are not
 advertised by help or completion. The names above are the documented registry; use
 `/help` in your installed build for its exact list.
+
+`/tunables` is a read-only inspection surface. Its catalog mode shows registry
+metadata, with requested/effective values explicitly marked as not resolved. The
+Linux `load` accepts one explicit JSON request no larger than 1 MiB through retained,
+no-follow workspace capabilities, resolves it with the provider-free resolver, and
+displays only the resolver's bounded redacted value previews. Platforms without an
+equivalent confined reader fail closed. Neither mode edits configuration, binds values
+to the running process, authenticates evidence, trains a policy, or claims benchmark
+improvement.

@@ -28,6 +28,7 @@ pub enum SlashCommand {
     Fork,
     Rewind,
     Resume,
+    Transcript,
     Export,
     Agents,
     Skills,
@@ -35,6 +36,7 @@ pub enum SlashCommand {
     Mcp,
     Hooks,
     Config,
+    Tunables,
     Login,
     Theme,
     Init,
@@ -80,6 +82,7 @@ impl SlashCommand {
             | Self::Fork
             | Self::Rewind
             | Self::Resume
+            | Self::Transcript
             | Self::Export
             | Self::Agents
             | Self::Skills
@@ -87,6 +90,7 @@ impl SlashCommand {
             | Self::Mcp
             | Self::Hooks
             | Self::Config
+            | Self::Tunables
             | Self::Login
             | Self::Theme
             | Self::Init
@@ -221,6 +225,12 @@ pub const COMMANDS: &[Cmd] = &[
         help: "how to resume a prior session (lists them)",
     },
     Cmd {
+        command: SlashCommand::Transcript,
+        name: "transcript",
+        args: "[query]",
+        help: "open the fullscreen searchable transcript viewer",
+    },
+    Cmd {
         command: SlashCommand::Export,
         name: "export",
         args: "[path]",
@@ -261,6 +271,12 @@ pub const COMMANDS: &[Cmd] = &[
         name: "config",
         args: "",
         help: "show the resolved route + effective limits",
+    },
+    Cmd {
+        command: SlashCommand::Tunables,
+        name: "tunables",
+        args: "[query|load <file>]",
+        help: "browse all 160 families or load a frozen-request simulation",
     },
     Cmd {
         command: SlashCommand::Login,

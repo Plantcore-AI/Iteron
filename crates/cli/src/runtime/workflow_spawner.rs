@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use core_agents::AgentDef;
+use core_agents::AgentCatalog;
 use core_obs::PricingPort;
 use core_protocol::capability_set::CapabilitySet;
 use core_protocol::slot::StrategySlot;
@@ -37,6 +37,50 @@ use sha2::{Digest, Sha256};
 use super::hooks::Hooks;
 use super::pricing::SharedUsdBudget;
 use super::{Agent, usage_tokens};
+
+const MAX_AGENT_REFUSAL_BYTES: usize = 512;
+const AGENT_REFUSAL_TRUNCATED: &str = " [truncated]";
+
+/// One terminal/journal-safe refusal line. This is the final choke point for child setup and
+/// runtime failures: redact credential shapes, render terminal controls visibly, and retain at
+/// most 512 UTF-8 bytes. Request metadata is never deliberately interpolated by this module, but
+/// this defense also covers OS/library diagnostics returned by later setup stages.
+pub(crate) fn safe_agent_refusal(reason: &str) -> String {
+    let scrubbed = core_record::redact::scrub(reason);
+    let content_limit = MAX_AGENT_REFUSAL_BYTES.saturating_sub(AGENT_REFUSAL_TRUNCATED.len());
+    let mut safe = String::with_capacity(scrubbed.len().min(MAX_AGENT_REFUSAL_BYTES));
+    let mut truncated = false;
+    for character in scrubbed.chars() {
+        let codepoint = character as u32;
+        let terminal_unsafe = character.is_control()
+            || matches!(
+                codepoint,
+                0x00AD
+                    | 0x200B..=0x200F
+                    | 0x2028..=0x202E
+                    | 0x2066..=0x2069
+                    | 0xFEFF
+            );
+        let rendered = if terminal_unsafe {
+            character.escape_default().to_string()
+        } else {
+            character.to_string()
+        };
+        if safe.len().saturating_add(rendered.len()) > content_limit {
+            truncated = true;
+            break;
+        }
+        safe.push_str(&rendered);
+    }
+    if truncated {
+        safe.push_str(AGENT_REFUSAL_TRUNCATED);
+    }
+    if safe.trim().is_empty() {
+        "agent request was refused".into()
+    } else {
+        safe
+    }
+}
 
 /// Everything a [`KernelSpawner`] needs to build children WITHOUT a live parent `Agent`. The CLI
 /// fills this once from the resolved provider/route/config, then hands it to [`KernelSpawner::new`].
@@ -82,29 +126,22 @@ pub struct KernelSpawnerContext {
     pub tool_policy: Arc<dyn StrategySlot>,
     pub context_port: Arc<dyn core_ctx::ContextPort>,
     pub context_home_dir: Option<PathBuf>,
-    /// Trusted lifecycle hooks (resolved once at the composition root). Children inherit this exact
-    /// value; they never re-read ambient/repository config.
-    pub hooks: Hooks,
-    /// The child system prompt. Defaults to `AgentDef::generic().system` (the read-only investigator
-    /// prompt); the read-only registry, not the prompt, is what enforces the single-writer
-    /// invariant. A writer child (see `agent_type`) should be given a writer-appropriate prompt.
-    pub system: String,
-    /// Permission posture for a WRITER child (a read-only child has no effecting tools to gate).
+    /// Exact accepted definitions resolved once by the composition root. Every spawned worker
+    /// inherits this same immutable set; it never performs filesystem discovery itself.
+    pub agent_catalog: Arc<AgentCatalog>,
+    /// Permission posture for the read-only child. Registry and capability ceilings independently
+    /// prevent this from widening authority.
     pub permission_mode: PermissionMode,
     pub permission_rules: PermissionRules,
-    /// Dangerous internal-edition bypass. A WRITER child in a non-interactive workflow otherwise
-    /// fails closed on its first `Ask` (there is no approvals channel). Ignored by read-only
-    /// children (they have nothing above `ReadOnly` to gate).
-    pub bypass_permissions: bool,
     pub authority_ceiling: CapabilitySet,
     pub policy_capabilities: CapabilitySet,
 }
 
 impl KernelSpawnerContext {
     /// The minimal context: the identity/route/paths that have no sensible default, with everything
-    /// else defaulted (generic read-only system prompt, `subagent_budget_ceiling()` budget,
-    /// `Default` effort/mode, empty hooks/env, no pricing, no shared stop flags). Set the remaining
-    /// `pub` fields directly for anything the run needs (pricing, USD ceiling, writer permissions).
+    /// else defaulted (built-in immutable catalog, `subagent_budget_ceiling()` budget, `Default`
+    /// effort/mode, empty env, no pricing, no shared stop flags). Set the remaining `pub` fields
+    /// directly for anything the run needs.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: Arc<dyn Provider>,
@@ -147,11 +184,9 @@ impl KernelSpawnerContext {
             tool_policy: Arc::new(core_tools::ToolPolicy::default()),
             context_port: Arc::new(core_ctx::DefaultContextPort),
             context_home_dir: None,
-            hooks: Hooks::default(),
-            system: AgentDef::generic().system,
+            agent_catalog: Arc::new(AgentCatalog::builtin_only()),
             permission_mode: PermissionMode::default(),
             permission_rules: PermissionRules::new(),
-            bypass_permissions: false,
             authority_ceiling: all_capabilities,
             policy_capabilities: all_capabilities,
         }
@@ -201,44 +236,77 @@ impl KernelSpawner {
 
     /// Build the fully-wired, owned child. This is the standalone analogue of the parent-internal
     /// `prepare_investigator`/`spawn_subagent` child setup:
-    ///   * a read-only `Registry` by default (writer only if `agent_type == "writer"`),
+    ///   * a read-only `Registry` narrowed by the selected immutable `AgentDef`,
     ///   * a child `Rollout` under `runtime_state_dir/subagents/`,
     ///   * inherited route + pricing (public `record_model_selection` / `bind_selected_rate_card`),
-    ///   * the same non-durable inherited context (workspace, model window, hooks, sensitive env,
+    ///   * the same non-durable inherited context (workspace, model window, sensitive env,
     ///     cost attribution, bounded delegation depth),
     ///     minus the parent's durable `SubagentSpawned` + UI emission (no parent transcript exists).
     fn build_child(&self, call: &AgentCall, ordinal: u64) -> Result<Agent, String> {
         let cx = &self.cx;
 
-        // Read-only by default (single-writer invariant, ADR-001). A writer is opt-in via an
-        // explicit `agent_type: "writer"`; it gets the full coding tool set. Delegation depth (set
-        // below) bounds any further recursion its dispatch/workflow tools might attempt.
-        let wants_writer = call
-            .agent_type
+        call.validate_request_metadata()
+            .map_err(|error| safe_agent_refusal(error.public_reason()))?;
+
+        // Case-sensitive catalog resolution is an authority decision. Unknown names fail before a
+        // rollout or provider effect exists; in particular, the historical magic name `writer`
+        // can no longer turn model-controlled data into a coding registry.
+        let requested_type = call.agent_type.as_deref().unwrap_or("generic");
+        let agent_def = cx
+            .agent_catalog
+            .get(requested_type)
+            .cloned()
+            .ok_or_else(|| "requested agent type is absent from the pinned catalog".to_string())?;
+        agent_def.validate().map_err(|reason| {
+            safe_agent_refusal(&format!("pinned agent definition is invalid: {reason}"))
+        })?;
+
+        // A definition/call may request a model, but this spawner only owns evidence for the
+        // parent's exact route. Refuse a different model instead of reusing the parent's catalog,
+        // capability, or price digests under a false identity.
+        if let (Some(call_model), Some(definition_model)) =
+            (call.model.as_deref(), agent_def.model.as_deref())
+            && call_model != definition_model
+        {
+            return Err(
+                "agent definition model conflicts with the requested model override".into(),
+            );
+        }
+        let requested_model = agent_def
+            .model
             .as_deref()
-            .is_some_and(|kind| kind.eq_ignore_ascii_case("writer"));
-        let mut registry = if wants_writer {
-            Registry::coding_agent(cx.workspace.clone())
-                .map_err(|error| format!("child registry setup failed: {error}"))?
-        } else {
-            Registry::read_only(cx.workspace.clone())
-                .map_err(|error| format!("child registry setup failed: {error}"))?
-        };
+            .or(call.model.as_deref())
+            .unwrap_or(&cx.model);
+        if requested_model != cx.model {
+            return Err("requested agent model has no separately resolved route evidence".into());
+        }
+
+        let mut registry = Registry::read_only(cx.workspace.clone())
+            .map_err(|_| "child read-only registry setup failed".to_string())?;
+        let allowed_tools = agent_def.tools.narrow();
+        let _effective_tools = registry.narrow_to(&allowed_tools);
         registry.set_sensitive_env_names(cx.sensitive_env_names.clone());
+
+        let budget = intersect_budget(&cx.budget, &agent_def.budget)?;
+        if budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) && cx.pricing_port.is_none() {
+            return Err(
+                "child has a positive USD ceiling but this exact route has no verified pricing port"
+                    .into(),
+            );
+        }
 
         let sub_run = self.mint_run_id(ordinal);
         let subagents_dir = cx.runtime_state_dir.join("subagents");
         let rollout = Rollout::open(&subagents_dir, &sub_run, cx.tenant.clone())
-            .map_err(|error| format!("child rollout could not be opened: {error}"))?;
+            .map_err(|_| "child session record could not be opened".to_string())?;
 
-        let model = call.model.clone().unwrap_or_else(|| cx.model.clone());
         let mut sub = Agent::new(
             cx.provider.clone(),
             registry,
             rollout,
-            model,
-            cx.system.clone(),
-            cx.budget.clone(),
+            cx.model.clone(),
+            agent_def.system.clone(),
+            budget.clone(),
         );
 
         // --- Non-durable inherited context. These private fields are set exactly as the in-crate
@@ -251,24 +319,31 @@ impl KernelSpawner {
             sub_run: sub_run.0.clone(),
         });
         sub.runtime_state_dir = cx.runtime_state_dir.clone();
-        sub.usd_budget = cx.usd_budget.clone();
-        sub.authority_ceiling = cx.authority_ceiling;
-        sub.policy_capabilities = cx.policy_capabilities;
+        if cx.usd_budget.is_some() {
+            sub.usd_budget = cx.usd_budget.clone();
+        }
+        let read_only =
+            CapabilitySet::from_iter_capabilities([core_protocol::Capability::ReadOnly]);
+        sub.authority_ceiling = cx.authority_ceiling.intersect(read_only);
+        sub.policy_capabilities = cx.policy_capabilities.intersect(read_only);
         sub.context_strategy = cx.context_strategy.clone();
         sub.tool_policy = cx.tool_policy.clone();
         sub.context_port = cx.context_port.clone();
         sub.context_home_dir = cx.context_home_dir.clone();
-        // A workflow child is exactly one level below the operator. `MAX_DELEGATION_DEPTH` then
-        // refuses any deeper dispatch/workflow a writer child might attempt (defense in depth
-        // beside the read-only registry's absence of those tools).
+        // A workflow child is exactly one level below the operator. The read-only registry has no
+        // dispatch/workflow tool; depth remains a second defense if that registry evolves.
         sub.delegation_depth = 1;
 
         // --- Public-surface inherited context ---
         sub.workspace = cx.workspace.clone();
         sub.model_context_window = cx.model_context_window;
         sub.model_max_output_tokens = cx.model_max_output_tokens;
-        sub.hooks = cx.hooks.clone();
-        sub.bypass_permissions = cx.bypass_permissions;
+        // Hooks are executable processes, so a read-only child cannot inherit them. Credential
+        // names still propagate as deny metadata, never values.
+        sub.hooks = Hooks::default();
+        sub.bypass_permissions = false;
+        sub.agent_catalog = cx.agent_catalog.clone();
+        sub.agent_catalog_pinned = true;
         // Installs the deny-list on the agent, its hooks, and (already, above) its registry.
         sub.set_sensitive_env_names(cx.sensitive_env_names.clone());
 
@@ -284,7 +359,26 @@ impl KernelSpawner {
             cx.permission_mode,
             cx.permission_rules.clone(),
         )
-        .map_err(|error| format!("child runtime policy rejected: {}", error.public_summary()))?;
+        .map_err(|error| {
+            safe_agent_refusal(&format!(
+                "child runtime policy rejected: {}",
+                error.public_summary()
+            ))
+        })?;
+
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        sub.record_genesis(
+            cx.workspace.display().to_string(),
+            created_at,
+            cx.agent_catalog.execution_digest(),
+            Some(agent_def.execution_tag()),
+        )
+        .map_err(|error| {
+            safe_agent_refusal(&format!("child genesis failed: {}", error.public_summary()))
+        })?;
 
         // --- Route + pricing. Public API; `record_model_selection` appends the first durable event
         //     (RouteSelected) to the child rollout. Pricing is optional and only load-bearing when a
@@ -298,18 +392,59 @@ impl KernelSpawner {
             cx.catalog_digest.clone(),
             cx.capability_digest.clone(),
         )
-        .map_err(|error| format!("child route selection failed: {}", error.public_summary()))?;
+        .map_err(|error| {
+            safe_agent_refusal(&format!(
+                "child route selection failed: {}",
+                error.public_summary()
+            ))
+        })?;
         if cx.pricing_port.is_some() {
             let bound = sub.bind_selected_rate_card().map_err(|error| {
-                format!("child pricing bind failed: {}", error.public_summary())
+                safe_agent_refusal(&format!(
+                    "child pricing bind failed: {}",
+                    error.public_summary()
+                ))
             })?;
-            if cx.budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) && !bound {
+            if budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) && !bound {
                 return Err("child could not bind a verified rate card for its USD ceiling".into());
             }
         }
 
         Ok(sub)
     }
+}
+
+pub(super) fn intersect_budget(parent: &Budget, definition: &Budget) -> Result<Budget, String> {
+    parent
+        .validate()
+        .map_err(|reason| format!("invalid parent child-budget ceiling: {reason}"))?;
+    definition
+        .validate()
+        .map_err(|reason| format!("invalid agent-definition budget: {reason}"))?;
+
+    let max_usd = match (parent.max_usd, definition.max_usd) {
+        (Some(parent), Some(definition)) if definition < parent => {
+            return Err(
+                "agent definition requests a nested USD ceiling smaller than the shared parent ceiling; dual-ledger enforcement is required"
+                    .into(),
+            );
+        }
+        (Some(parent), _) => Some(parent),
+        (None, definition) => definition,
+    };
+    Ok(Budget {
+        max_turns: parent.max_turns.min(definition.max_turns),
+        max_usd,
+        max_tokens: match (parent.max_tokens, definition.max_tokens) {
+            (Some(parent), Some(definition)) => Some(parent.min(definition)),
+            (Some(parent), None) => Some(parent),
+            (None, definition) => definition,
+        },
+        max_wall_secs: parent.max_wall_secs.min(definition.max_wall_secs),
+        max_consecutive_tool_errors: parent
+            .max_consecutive_tool_errors
+            .min(definition.max_consecutive_tool_errors),
+    })
 }
 
 #[async_trait]
@@ -320,7 +455,7 @@ impl AgentSpawner for KernelSpawner {
             Ok(child) => child,
             Err(reason) => {
                 return AgentOutcome::Null {
-                    reason: Some(reason),
+                    reason: Some(safe_agent_refusal(&reason)),
                 };
             }
         };
@@ -328,7 +463,7 @@ impl AgentSpawner for KernelSpawner {
         // Cooperate with the run's cancellation token (trait §B3): bridge it onto the child's
         // cooperative interrupt flag, which `run_leaf` polls at every turn-atomic safe point. A
         // cancelled run then stops the child cleanly (durable safe point) rather than relying solely
-        // on the engine's hard task-abort backstop — this matters for a writer child mid-effect.
+        // on the engine's hard task-abort backstop.
         let interrupt = Arc::new(AtomicBool::new(false));
         child.set_interrupt(interrupt.clone());
         let cancel = call.cancel.clone();
@@ -364,8 +499,348 @@ impl AgentSpawner for KernelSpawner {
             // A harness/provider/budget error resolves to JS `null` (never a thrown rejection) so a
             // surrounding `parallel`/`pipeline` keeps its other items flowing.
             Err(error) => AgentOutcome::Null {
-                reason: Some(error.public_summary()),
+                reason: Some(safe_agent_refusal(&error.public_summary())),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_protocol::{Capability, EventKind};
+    use core_provider::{ProviderError, StreamItem, TurnRequest, TurnResult};
+    use core_workflow::{
+        ProgressEvent, ProgressSink, RunId, RunSpec, WorkflowEngine, WorkflowState,
+    };
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct NoTurnProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for NoTurnProvider {
+        fn provider_instance_id(&self) -> Option<&str> {
+            Some("test-provider")
+        }
+
+        async fn turn(
+            &self,
+            _request: &TurnRequest,
+            _on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            panic!("build-child tests must not dispatch a provider turn")
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingSink {
+        events: Mutex<Vec<ProgressEvent>>,
+    }
+
+    impl ProgressSink for RecordingSink {
+        fn emit(&self, event: ProgressEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    fn scratch(label: &str) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "core-agent-catalog-{label}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    fn discovered_catalog(root: &std::path::Path) -> AgentCatalog {
+        let home = root.join("home");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(home.join(".core/agents")).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(
+            home.join(".core/agents/reviewer.md"),
+            "---\nname: reviewer\ndescription: Narrow reviewer\ntools: [read_file]\n\
+             maxTurns: 2\nmaxTokens: 41\nmaxWallSecs: 7\nmaxConsecutiveToolErrors: 1\n---\n\
+             Review exactly one file and report evidence.\n",
+        )
+        .unwrap();
+        AgentCatalog::discover(&home, &repo)
+    }
+
+    fn context(root: &std::path::Path, catalog: AgentCatalog) -> KernelSpawnerContext {
+        let mut context = KernelSpawnerContext::new(
+            Arc::new(NoTurnProvider),
+            "test-model".into(),
+            "test-provider".into(),
+            String::new(),
+            String::new(),
+            root.join("repo"),
+            root.join("runs"),
+            TenantId("tenant".into()),
+            "parent".into(),
+            "workflow".into(),
+        );
+        context.agent_catalog = Arc::new(catalog);
+        context.budget.max_turns = 12;
+        context.budget.max_tokens = Some(100);
+        context.budget.max_wall_secs = 60;
+        context.budget.max_consecutive_tool_errors = 3;
+        context
+    }
+
+    fn call(agent_type: Option<&str>, model: Option<&str>) -> AgentCall {
+        AgentCall {
+            prompt: "inspect".into(),
+            label: None,
+            phase: None,
+            model: model.map(str::to_owned),
+            effort: None,
+            agent_type: agent_type.map(str::to_owned),
+            schema: None,
+            cancel: Default::default(),
+        }
+    }
+
+    #[test]
+    fn selected_definition_controls_system_tools_budget_authority_and_genesis_tag() {
+        let root = scratch("selected");
+        let catalog = discovered_catalog(&root);
+        let expected = catalog.get("reviewer").unwrap().clone();
+        let spawner = KernelSpawner::new(context(&root, catalog));
+
+        let child = spawner
+            .build_child(&call(Some("reviewer"), None), 0)
+            .unwrap();
+        assert_eq!(child.system, "Review exactly one file and report evidence.");
+        assert_eq!(child.budget.max_turns, 2);
+        assert_eq!(child.budget.max_tokens, Some(41));
+        assert_eq!(child.budget.max_wall_secs, 7);
+        assert_eq!(child.budget.max_consecutive_tool_errors, 1);
+        assert_eq!(
+            child
+                .registry
+                .specs()
+                .into_iter()
+                .map(|spec| spec.name)
+                .collect::<Vec<_>>(),
+            vec!["read_file"]
+        );
+        assert!(child.authority_ceiling.contains(Capability::ReadOnly));
+        assert!(!child.authority_ceiling.contains(Capability::CodeExecuting));
+        assert!(
+            !child
+                .policy_capabilities
+                .contains(Capability::ReversibleLocal)
+        );
+        assert!(child.hooks.is_empty());
+        assert!(!child.bypass_permissions);
+
+        let events = core_record::replay(child.rollout.path()).unwrap();
+        let tag = events.iter().find_map(|event| match &event.kind {
+            EventKind::RunStart {
+                agent_definition_tag,
+                ..
+            } => agent_definition_tag.as_deref(),
+            _ => None,
+        });
+        let expected_tag = expected.execution_tag();
+        assert_eq!(tag, Some(expected_tag.as_str()));
+        drop(child);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn adversarial_request_metadata_fails_before_rollout_or_provider_and_is_safe() {
+        let root = scratch("refusals");
+        let catalog = discovered_catalog(&root);
+        let spawner = KernelSpawner::new(context(&root, catalog));
+        let secret = "ghp_AbCdEf1234567890AbCdEf1234567890";
+        let oversized_name = "n".repeat(core_workflow::spawner::MAX_AGENT_TYPE_BYTES + 1);
+        let oversized_model = "m".repeat(core_workflow::spawner::MAX_AGENT_MODEL_BYTES + 1);
+        let controlled_name = format!("reviewer\n{secret}\u{1b}[2J");
+        let controlled_model = format!("model\r{secret}\u{202e}");
+
+        for call in [
+            call(Some("writer"), None),
+            call(Some("Reviewer"), None),
+            call(Some("reviewer"), Some("other-model")),
+            call(Some("reviewer/child"), None),
+            call(Some(&oversized_name), None),
+            call(Some(&controlled_name), None),
+            call(Some(secret), None),
+            call(Some("reviewer"), Some(&oversized_model)),
+            call(Some("reviewer"), Some(&controlled_model)),
+            call(Some("reviewer"), Some(secret)),
+        ] {
+            let reason = match spawner.spawn(call).await {
+                AgentOutcome::Null {
+                    reason: Some(reason),
+                } => reason,
+                _ => panic!("authority-widening, malformed, or unresolved call was admitted"),
+            };
+            assert!(reason.len() <= MAX_AGENT_REFUSAL_BYTES, "{reason}");
+            assert!(!reason.chars().any(char::is_control), "{reason:?}");
+            assert!(!reason.contains(secret), "{reason}");
+            assert!(!reason.contains("other-model"), "{reason}");
+            assert!(!reason.contains(&oversized_name), "{reason}");
+            assert!(!reason.contains(&oversized_model), "{reason}");
+        }
+        assert!(!root.join("runs/subagents").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn request_refusals_are_safe_across_null_journal_and_progress_surfaces() {
+        let root = scratch("refusal-surfaces");
+        let catalog = discovered_catalog(&root);
+        let spawner = Arc::new(KernelSpawner::new(context(&root, catalog)));
+        let sink = Arc::new(RecordingSink::default());
+        let secret = "ghp_AbCdEf1234567890AbCdEf1234567890";
+        let oversized_name = "n".repeat(core_workflow::spawner::MAX_AGENT_TYPE_BYTES + 1);
+        let oversized_model = "m".repeat(core_workflow::spawner::MAX_AGENT_MODEL_BYTES + 1);
+        let requests = serde_json::json!([
+            {"agentType": "reviewer/child"},
+            {"agentType": oversized_name.clone()},
+            {"agentType": format!("reviewer\n{secret}\u{1b}[2J")},
+            {"agentType": secret},
+            {"agentType": "reviewer", "model": oversized_model.clone()},
+            {"agentType": "reviewer", "model": format!("model\r{secret}\u{202e}")},
+            {"agentType": "reviewer", "model": secret},
+        ]);
+        let request_count = requests.as_array().unwrap().len();
+        let script = r#"export const meta = { name: 'refusals', description: '', phases: [] };
+const results = [];
+for (const request of args.requests) {
+  results.push(await agent('inspect', request));
+}
+return results;
+"#;
+        let spec = RunSpec::new(script)
+            .with_args(serde_json::json!({"requests": requests}))
+            .with_run_id(RunId::new("refusal-surfaces"))
+            .with_workflows_dir(root.join("workflows"));
+        let report = WorkflowEngine::execute(spec, spawner, sink.clone())
+            .await
+            .expect("every refusal settles as null");
+        assert_eq!(
+            report.value,
+            serde_json::Value::Array(vec![serde_json::Value::Null; request_count])
+        );
+        assert!(!root.join("runs/subagents").exists());
+
+        let events = sink.events.lock().unwrap();
+        let rendered_events = format!("{events:?}");
+        assert!(!rendered_events.contains(secret), "{rendered_events}");
+        assert!(!rendered_events.contains(&oversized_name));
+        assert!(!rendered_events.contains(&oversized_model));
+        let errors: Vec<&String> = events
+            .iter()
+            .filter_map(|event| match event {
+                ProgressEvent::AgentFinished {
+                    state: WorkflowState::Error,
+                    error: Some(error),
+                    ..
+                } => Some(error),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), request_count);
+        assert!(errors.iter().all(|error| {
+            error.len() <= MAX_AGENT_REFUSAL_BYTES
+                && !error.chars().any(char::is_control)
+                && !error.contains(secret)
+        }));
+        drop(events);
+
+        let journal =
+            std::fs::read_to_string(root.join("workflows/refusal-surfaces/journal.jsonl")).unwrap();
+        assert!(!journal.contains(secret));
+        assert!(!journal.contains(&oversized_name));
+        assert!(!journal.contains(&oversized_model));
+        let reasons: Vec<String> = journal
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|line| {
+                line.get("record")?
+                    .get("outcome")?
+                    .get("reason")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(reasons.len(), request_count);
+        assert!(reasons.iter().all(|reason| {
+            reason.len() <= MAX_AGENT_REFUSAL_BYTES
+                && !reason.chars().any(char::is_control)
+                && !reason.contains(secret)
+        }));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refusal_chokepoint_redacts_escapes_and_bounds_arbitrary_diagnostics() {
+        let secret = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
+        let safe = safe_agent_refusal(&format!(
+            "setup\n{secret}\r\u{1b}[2J\u{202e}{}",
+            "界".repeat(2_048)
+        ));
+        assert!(safe.len() <= MAX_AGENT_REFUSAL_BYTES, "{}", safe.len());
+        assert!(safe.ends_with(AGENT_REFUSAL_TRUNCATED), "{safe}");
+        assert!(!safe.chars().any(char::is_control), "{safe:?}");
+        assert!(!safe.contains(secret), "{safe}");
+        assert!(safe.contains("\\n"), "{safe}");
+        assert!(safe.contains("\\u{1b}"), "{safe}");
+        assert!(safe.contains("\\u{202e}"), "{safe}");
+    }
+
+    #[test]
+    fn definition_budget_only_narrows_and_never_claims_an_unenforced_nested_usd_ledger() {
+        let parent = Budget {
+            max_turns: 10,
+            max_usd: None,
+            max_tokens: Some(100),
+            max_wall_secs: 60,
+            max_consecutive_tool_errors: 4,
+        };
+        let definition = Budget {
+            max_turns: 3,
+            max_usd: Some(2.0),
+            max_tokens: Some(40),
+            max_wall_secs: 7,
+            max_consecutive_tool_errors: 1,
+        };
+        let local = intersect_budget(&parent, &definition).unwrap();
+        assert_eq!(local.max_turns, 3);
+        assert_eq!(local.max_usd, Some(2.0));
+        assert_eq!(local.max_tokens, Some(40));
+        assert_eq!(local.max_wall_secs, 7);
+        assert_eq!(local.max_consecutive_tool_errors, 1);
+
+        let mut shared_parent = parent.clone();
+        shared_parent.max_usd = Some(1.0);
+        let mut no_local_usd = definition.clone();
+        no_local_usd.max_usd = None;
+        assert_eq!(
+            intersect_budget(&shared_parent, &no_local_usd)
+                .unwrap()
+                .max_usd,
+            Some(1.0)
+        );
+
+        let mut looser_shared_parent = shared_parent.clone();
+        looser_shared_parent.max_usd = Some(3.0);
+        let error = intersect_budget(&looser_shared_parent, &definition).unwrap_err();
+        assert!(error.contains("dual-ledger enforcement"), "{error}");
+
+        let mut looser_definition = definition;
+        looser_definition.max_usd = Some(4.0);
+        assert_eq!(
+            intersect_budget(&shared_parent, &looser_definition)
+                .unwrap()
+                .max_usd,
+            Some(1.0)
+        );
     }
 }

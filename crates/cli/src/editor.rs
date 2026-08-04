@@ -48,6 +48,18 @@ pub struct Editor {
     /// Bounded, already-sniffed image chips attached to the current draft. They are deliberately
     /// not copied into text history or the recoverable-text slot.
     attachments: ImageAttachments,
+    /// State for repeated Ctrl-R searches. The query is the text that was present before the first
+    /// search; `before` makes every subsequent press continue toward older entries.
+    reverse_search: Option<ReverseSearch>,
+    /// Monotonic dirty marker consumed by the persistence adapter. It deliberately counts text
+    /// mutations rather than wall time so tests and replay remain deterministic.
+    persistence_revision: u64,
+}
+
+#[derive(Debug)]
+struct ReverseSearch {
+    query: String,
+    before: usize,
 }
 
 impl Editor {
@@ -117,7 +129,8 @@ impl Editor {
     pub fn insert(&mut self, c: char) {
         self.buf.insert(self.cursor, c);
         self.cursor += 1;
-        self.hist_pos = None; // editing leaves history-browsing mode
+        self.leave_navigation();
+        self.mark_persistence_change();
     }
 
     pub fn insert_str(&mut self, s: &str) {
@@ -143,7 +156,8 @@ impl Editor {
         if self.cursor > 0 {
             self.cursor -= 1;
             self.buf.remove(self.cursor);
-            self.hist_pos = None;
+            self.leave_navigation();
+            self.mark_persistence_change();
         }
     }
 
@@ -151,46 +165,60 @@ impl Editor {
     pub fn delete(&mut self) {
         if self.cursor < self.buf.len() {
             self.buf.remove(self.cursor);
-            self.hist_pos = None;
+            self.leave_navigation();
+            self.mark_persistence_change();
         }
     }
 
     /// Ctrl-W: delete the word before the cursor (skip trailing non-word chars, then a word run).
     pub fn delete_word_before(&mut self) {
         let i = self.word_boundary_left();
-        self.buf.drain(i..self.cursor);
-        self.cursor = i;
-        self.hist_pos = None;
+        if i != self.cursor {
+            self.buf.drain(i..self.cursor);
+            self.cursor = i;
+            self.leave_navigation();
+            self.mark_persistence_change();
+        }
     }
 
     /// Ctrl-U: delete from the start of the line to the cursor.
     pub fn kill_to_start(&mut self) {
-        self.buf.drain(0..self.cursor);
-        self.cursor = 0;
-        self.hist_pos = None;
+        if self.cursor != 0 {
+            self.buf.drain(0..self.cursor);
+            self.cursor = 0;
+            self.leave_navigation();
+            self.mark_persistence_change();
+        }
     }
 
     /// Ctrl-K: delete from the cursor to the end of the line.
     pub fn kill_to_end(&mut self) {
-        self.buf.drain(self.cursor..);
-        self.hist_pos = None;
+        if self.cursor != self.buf.len() {
+            self.buf.drain(self.cursor..);
+            self.leave_navigation();
+            self.mark_persistence_change();
+        }
     }
 
     // ---- cursor movement -------------------------------------------------------------------
 
     pub fn left(&mut self) {
         self.cursor = self.cursor.saturating_sub(1);
+        self.reverse_search = None;
     }
     pub fn right(&mut self) {
         if self.cursor < self.buf.len() {
             self.cursor += 1;
         }
+        self.reverse_search = None;
     }
     pub fn home(&mut self) {
         self.cursor = 0;
+        self.reverse_search = None;
     }
     pub fn end(&mut self) {
         self.cursor = self.buf.len();
+        self.reverse_search = None;
     }
 
     /// Place the cursor at an explicit character boundary.
@@ -201,7 +229,7 @@ impl Editor {
     /// slice boundary.
     pub fn set_cursor(&mut self, char_index: usize) {
         self.cursor = char_index.min(self.buf.len());
-        self.hist_pos = None;
+        self.leave_navigation();
     }
 
     /// A "word" char for word-motion: alphanumeric or `_`. Punctuation is a boundary (standard
@@ -224,6 +252,7 @@ impl Editor {
     /// Word-left (Alt-←/Alt-B): skip non-word chars then a word run.
     pub fn word_left(&mut self) {
         self.cursor = self.word_boundary_left();
+        self.reverse_search = None;
     }
 
     /// Word-right (Alt-→/Alt-F): skip non-word chars then a word run.
@@ -237,6 +266,7 @@ impl Editor {
             i += 1;
         }
         self.cursor = i;
+        self.reverse_search = None;
     }
 
     // ---- history ---------------------------------------------------------------------------
@@ -255,20 +285,53 @@ impl Editor {
             Some(i) => i - 1,
         };
         self.set_from_history(next);
+        self.reverse_search = None;
+        self.mark_persistence_change();
     }
 
     /// ↓: move forward in history; past the newest entry restores the stashed live line.
     pub fn history_next(&mut self) {
         match self.hist_pos {
             None => {}
-            Some(i) if i + 1 < self.history.len() => self.set_from_history(i + 1),
+            Some(i) if i + 1 < self.history.len() => {
+                self.set_from_history(i + 1);
+                self.mark_persistence_change();
+            }
             Some(_) => {
                 // past the newest -> restore the stash and leave history mode
                 let s = self.stash.take().unwrap_or_default();
                 self.set_text(&s);
                 self.hist_pos = None;
+                self.mark_persistence_change();
             }
         }
+        self.reverse_search = None;
+    }
+
+    /// Ctrl-R: search toward older entries using the text present at the first press as a literal
+    /// substring query. An empty query walks every entry newest-first. A miss leaves the current
+    /// buffer untouched and returns `false` so the frontend can give unobtrusive feedback.
+    pub fn reverse_search_previous(&mut self) -> bool {
+        let (query, before) = self
+            .reverse_search
+            .as_ref()
+            .map(|search| (search.query.clone(), search.before))
+            .unwrap_or_else(|| (self.text(), self.history.len()));
+        let Some(index) = self.history[..before]
+            .iter()
+            .rposition(|entry| entry.contains(&query))
+        else {
+            return false;
+        };
+        let entry = self.history[index].clone();
+        self.set_text(&entry);
+        self.hist_pos = Some(index);
+        self.reverse_search = Some(ReverseSearch {
+            query,
+            before: index,
+        });
+        self.mark_persistence_change();
+        true
     }
 
     fn set_from_history(&mut self, i: usize) {
@@ -283,11 +346,16 @@ impl Editor {
     }
 
     fn clear_current(&mut self) {
+        let text_changed = !self.buf.is_empty();
         self.buf.clear();
         self.cursor = 0;
         self.hist_pos = None;
         self.stash = None;
         self.attachments.clear();
+        self.reverse_search = None;
+        if text_changed {
+            self.mark_persistence_change();
+        }
     }
 
     /// Clear the input (e.g. /clear or Ctrl-C on an empty-ish line) without touching history.
@@ -327,6 +395,8 @@ impl Editor {
         self.set_text(&draft);
         self.hist_pos = None;
         self.stash = None;
+        self.reverse_search = None;
+        self.mark_persistence_change();
         true
     }
 
@@ -354,6 +424,63 @@ impl Editor {
         }
         self.clear();
         out
+    }
+
+    /// Adopt already-scrubbed, bounded state from the persistence adapter. A restored draft never
+    /// carries attachments, recovery state, or navigation state across process boundaries.
+    pub fn restore_persisted(&mut self, history: Vec<String>, draft: Option<String>) {
+        self.history = history;
+        self.buf = draft.unwrap_or_default().chars().collect();
+        self.cursor = self.buf.len();
+        self.hist_pos = None;
+        self.stash = None;
+        self.recently_cleared = None;
+        self.attachments.clear();
+        self.reverse_search = None;
+        self.persistence_revision = 0;
+    }
+
+    /// Replace only composer text after a trusted external-editor round trip. Existing image
+    /// attachments remain ordered on the draft and never cross the editor file boundary.
+    pub fn replace_text(&mut self, text: &str) {
+        let attachments = std::mem::take(&mut self.attachments);
+        self.buf.clear();
+        self.cursor = 0;
+        self.leave_navigation();
+        for character in text.chars() {
+            if character == '\n' || character == '\t' || !is_stripped_control(character) {
+                self.buf.push(character);
+            }
+        }
+        self.cursor = self.buf.len();
+        self.attachments = attachments;
+        self.mark_persistence_change();
+    }
+
+    /// Text-only snapshot. Image bytes and paths never enter prompt history.
+    pub fn persistence_state(&self) -> crate::prompt_history::State {
+        crate::prompt_history::State::new(
+            self.history.clone(),
+            (!self.buf.is_empty()).then(|| self.text()),
+        )
+    }
+
+    pub fn persistence_revision(&self) -> u64 {
+        self.persistence_revision
+    }
+
+    pub fn history_len(&self) -> usize {
+        self.history.len()
+    }
+
+    fn leave_navigation(&mut self) {
+        self.hist_pos = None;
+        self.stash = None;
+        self.reverse_search = None;
+    }
+
+    fn mark_persistence_change(&mut self) {
+        self.persistence_revision = self.persistence_revision.wrapping_add(1);
     }
 }
 
@@ -534,6 +661,47 @@ mod tests {
         assert_eq!(e.text(), "cmd");
         e.history_prev();
         assert_eq!(e.text(), "cmd"); // no second/empty entry
+    }
+
+    #[test]
+    fn reverse_search_is_literal_multiline_cjk_and_repeats_toward_older_entries() {
+        let mut e = Editor::new();
+        e.insert_str("first 写\nline");
+        assert_eq!(e.take_submit(), "first 写\nline");
+        e.insert_str("second");
+        assert_eq!(e.take_submit(), "second");
+        e.insert_str("newest 写 result");
+        assert_eq!(e.take_submit(), "newest 写 result");
+
+        e.insert_str("写");
+        assert!(e.reverse_search_previous());
+        assert_eq!(e.text(), "newest 写 result");
+        assert!(e.reverse_search_previous());
+        assert_eq!(e.text(), "first 写\nline");
+        assert!(!e.reverse_search_previous());
+        assert_eq!(e.text(), "first 写\nline", "a miss keeps the visible match");
+    }
+
+    #[test]
+    fn restored_history_and_text_draft_are_searchable_without_attachments() {
+        let mut e = Editor::new();
+        e.restore_persisted(
+            vec!["older".into(), "跨重启 prompt".into()],
+            Some("多行 draft\n第二行".into()),
+        );
+        assert_eq!(e.text(), "多行 draft\n第二行");
+        assert!(e.attachments().is_empty());
+        assert_eq!(e.persistence_revision(), 0);
+
+        e.clear();
+        e.insert_str("跨重启");
+        assert!(e.reverse_search_previous());
+        assert_eq!(e.text(), "跨重启 prompt");
+        assert!(e.persistence_revision() > 0);
+
+        let state = e.persistence_state();
+        assert_eq!(state.history, vec!["older", "跨重启 prompt"]);
+        assert_eq!(state.draft.as_deref(), Some("跨重启 prompt"));
     }
 
     #[test]

@@ -539,6 +539,17 @@ pub enum EventKind {
         #[serde(default)]
         max_usd: Option<f64>,
     },
+    /// Immutable companion to a fresh [`EventKind::RunStart`]. The record boundary admits this
+    /// top-level tag only at physical seq 1, before any provider or tool effect. A distinct tag is
+    /// additive under abi.md §4.3(b)2: older readers degrade it to `Unknown` without changing the
+    /// established `run_start` shape.
+    TunablesSnapshot {
+        version: crate::RunGenesisTunablesVersion,
+        snapshot: crate::RunGenesisTunablesSnapshot,
+        /// Present only on a fork/rewind child and bound to its `RunStart.parent_run`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inherited_from: Option<crate::RunGenesisTunablesInheritance>,
+    },
     /// The exact provider/model routing pair selected for subsequent turns. Provider identity is
     /// separate from model identity because the same model id can exist behind several accounts or
     /// gateways. Digests pin the catalog/capability evidence used at selection time; empty means
@@ -678,6 +689,15 @@ impl EventKind {
             Self::SubagentFinishedV2 { .. } => {
                 Err("subagent_finished_v2 tag must carry version v2")
             }
+            Self::TunablesSnapshot {
+                version: crate::RunGenesisTunablesVersion::V1,
+                snapshot:
+                    crate::RunGenesisTunablesSnapshot {
+                        version: crate::RunGenesisTunablesVersion::V1,
+                        ..
+                    },
+                ..
+            } => Ok(()),
             _ => Ok(()),
         }
     }
@@ -1242,6 +1262,52 @@ mod tests {
             LegacyEventKind::Workflow {
                 version: LegacyWorkflowVersion::V1
             }
+        ));
+    }
+
+    #[test]
+    fn tunables_snapshot_is_an_additive_top_level_tag_for_legacy_readers() {
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum LegacyEventKind {
+            RunStart,
+            #[serde(other)]
+            Unknown,
+        }
+
+        let digest = "a".repeat(64);
+        let current = EventKind::TunablesSnapshot {
+            version: crate::RunGenesisTunablesVersion::V1,
+            snapshot: crate::RunGenesisTunablesSnapshot {
+                version: crate::RunGenesisTunablesVersion::V1,
+                canonicalization: crate::RUN_GENESIS_TUNABLES_CANONICALIZATION.into(),
+                resolution_schema_version: 1,
+                registry_id: "core-tunables".into(),
+                registry_schema_version: 3,
+                family_schema_version: 2,
+                registry_revision: 3,
+                registry_digest_sha256: digest.clone(),
+                input_digest_sha256: digest.clone(),
+                effective_digest_sha256: digest.clone(),
+                resolution_digest_sha256: digest.clone(),
+                profile_digest_sha256: None,
+                entries: Vec::new(),
+                snapshot_digest_sha256: digest,
+            },
+            inherited_from: None,
+        };
+        current.validate_compatibility_tag().unwrap();
+        let encoded = serde_json::to_value(current).unwrap();
+        assert!(matches!(
+            serde_json::from_value::<LegacyEventKind>(encoded).unwrap(),
+            LegacyEventKind::Unknown
+        ));
+        assert!(matches!(
+            serde_json::from_value::<LegacyEventKind>(serde_json::json!({
+                "kind": "run_start"
+            }))
+            .unwrap(),
+            LegacyEventKind::RunStart
         ));
     }
 

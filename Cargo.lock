@@ -364,6 +364,14 @@ dependencies = [
  "core-protocol",
  "serde",
  "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "core-changeset"
+version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -386,6 +394,7 @@ dependencies = [
  "core-sandbox",
  "core-sched",
  "core-tools",
+ "core-tunables",
  "core-verify",
  "core-workflow",
  "crossterm 0.29.0",
@@ -402,6 +411,9 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "tokio",
+ "unicode-normalization",
+ "unicode-segmentation",
+ "unicode-width 0.2.0",
  "url",
  "vt100",
  "windows-sys 0.61.2",
@@ -464,6 +476,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-lsp"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "core-marketplace"
+version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "core-mcp"
 version = "0.0.1"
 dependencies = [
@@ -520,6 +550,7 @@ version = "0.0.1"
 dependencies = [
  "core-obs",
  "core-protocol",
+ "core-tunables",
  "hex",
  "libc",
  "serde",
@@ -551,13 +582,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-statusline"
+version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "core-support"
+version = "0.0.1"
+dependencies = [
+ "core-record",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "core-tools"
 version = "0.0.1"
 dependencies = [
  "core-ctx",
+ "core-lsp",
  "core-protocol",
  "core-sandbox",
  "futures-util",
+ "getrandom 0.4.3",
  "ignore",
  "libc",
  "regex",
@@ -567,7 +615,19 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "tokio",
+ "url",
  "walkdir",
+]
+
+[[package]]
+name = "core-tunables"
+version = "0.0.1"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -594,6 +654,7 @@ dependencies = [
  "core-sched",
  "hex",
  "jsonschema",
+ "libc",
  "rquickjs",
  "serde",
  "serde_json",
@@ -612,6 +673,7 @@ dependencies = [
  "core-ctx",
  "core-protocol",
  "core-tools",
+ "core-tunables",
  "quote",
  "serde",
  "serde_json",
@@ -2699,6 +2761,15 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-segmentation"

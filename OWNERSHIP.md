@@ -28,13 +28,18 @@ Core Code has one human Owner/Project Lead and a non-fixed number of human maint
 | `kernel-effects` — Kernel effects | open | critical | Open | Open | `crates/kernel/src/effect_admission.rs`<br>`crates/kernel/src/effect_boundary_tests.rs`<br>`crates/kernel/src/effect_class.rs`<br>`crates/kernel/src/effect_journal.rs`<br>`crates/kernel/src/effects.rs` |
 | `telemetry-export` — Telemetry export sink | open | critical | Open | Open | `crates/cli/src/runtime/telemetry.rs` |
 | `kernel-hooks` — Runtime lifecycle hooks | open | critical | Open | Open | `crates/cli/src/runtime/hooks.rs` |
-| `record-core` — Record core | open | critical | Open | Open | `crates/record/Cargo.toml`<br>`crates/record/src/checkpoint.rs`<br>`crates/record/src/lib.rs`<br>`crates/record/src/redact.rs`<br>`crates/record/tests/**` |
+| `record-core` — Record core | open | critical | Open | Open | `crates/record/Cargo.toml`<br>`crates/record/src/checkpoint.rs`<br>`crates/record/src/lib.rs`<br>`crates/record/src/redact.rs`<br>`crates/record/src/resolved_fixture.rs`<br>`crates/record/src/tunables.rs`<br>`crates/record/src/tunables_tests.rs`<br>`crates/record/tests/**` |
 | `record-sessions` — Record sessions | open | elevated | Open | Open | `crates/record/src/cache_io.rs`<br>`crates/record/src/session.rs` |
 | `observability` — Observability | active | elevated | Jamal Cao (`@fr0m-scratch`) | Open | `crates/obs/**` |
 | `scheduler` — Scheduler | open | elevated | Open | Open | `crates/sched/**` |
 | `provider-core` — Provider core | open | elevated | Open | Open | `crates/provider/Cargo.toml`<br>`crates/provider/static-provider-metadata-v1.json`<br>`crates/provider/src/catalog.rs`<br>`crates/provider/src/lib.rs`<br>`crates/provider/src/sse.rs`<br>`crates/provider/src/static_metadata.rs`<br>`crates/provider/src/static_metadata/support.rs`<br>`crates/provider/src/usage.rs` |
 | `provider-adapters` — Provider adapters | open | elevated | Open | Open | `crates/provider/src/anthropic.rs`<br>`crates/provider/src/openai.rs`<br>`crates/provider/src/responses.rs` |
 | `mcp-interop` — MCP interoperability | open | critical | Open | Open | `crates/mcp/**` |
+| `language-server-lifecycle` — Language server lifecycle | open | elevated | Open | Open | `crates/lsp/**` |
+| `workspace-change-set` — Workspace change set | open | elevated | Open | Open | `crates/changeset/**` |
+| `status-surface` — Status surface | open | elevated | Open | Open | `crates/statusline/**` |
+| `support-bundle` — Support bundle | open | critical | Open | Open | `crates/support/**` |
+| `plugin-marketplace` — Plugin marketplace | open | critical | Open | Open | `crates/marketplace/**` |
 | `context-core` — Context core | open | elevated | Open | Open | `crates/ctx/Cargo.toml`<br>`crates/ctx/src/compact.rs`<br>`crates/ctx/src/context_assembly.rs`<br>`crates/ctx/src/context_port.rs`<br>`crates/ctx/src/context_strategy.rs`<br>`crates/ctx/src/instructions.rs`<br>`crates/ctx/src/lib.rs`<br>`crates/ctx/src/outline.rs`<br>`crates/ctx/src/source.rs` |
 | `context-knowledge` — Context knowledge | open | elevated | Open | Open | `crates/ctx/src/memory.rs`<br>`crates/ctx/src/skills.rs`<br>`crates/ctx/src/skills_metadata.rs`<br>`crates/ctx/tests/skill_frontmatter.rs` |
 | `agent-catalog` — Agent catalog | open | elevated | Open | Open | `crates/agents/Cargo.toml`<br>`crates/agents/src/catalog.rs`<br>`crates/agents/src/def.rs`<br>`crates/agents/src/lib.rs` |
@@ -42,13 +47,14 @@ Core Code has one human Owner/Project Lead and a non-fixed number of human maint
 | `evolution-control` — Evolution control | open | critical | Open | Open | `crates/evolve/**` |
 | `sandbox` — Sandbox | open | critical | Open | Open | `crates/sandbox/**` |
 | `tools-core` — Tools core | open | critical | Open | Open | `crates/tools/Cargo.toml`<br>`crates/tools/src/edit.rs`<br>`crates/tools/src/fs_tools.rs`<br>`crates/tools/src/fs_tools_tests.rs`<br>`crates/tools/src/git.rs`<br>`crates/tools/src/git_filters.rs`<br>`crates/tools/src/git_harness.rs`<br>`crates/tools/src/git_observe.rs`<br>`crates/tools/src/git_observe_tests.rs`<br>`crates/tools/src/grep_tool.rs`<br>`crates/tools/src/grep_tool_tests.rs`<br>`crates/tools/src/lib.rs`<br>`crates/tools/src/mcp_timing.rs`<br>`crates/tools/src/memo.rs`<br>`crates/tools/src/memo_tests.rs`<br>`crates/tools/src/multi_file_patch.rs`<br>`crates/tools/src/multi_file_patch_error.rs`<br>`crates/tools/src/multi_file_patch_input.rs`<br>`crates/tools/src/multi_file_patch_tests.rs`<br>`crates/tools/src/schema.rs`<br>`crates/tools/src/schema_error.rs`<br>`crates/tools/src/schema_tests.rs`<br>`crates/tools/src/tool_policy.rs`<br>`crates/tools/src/write_file.rs`<br>`crates/tools/src/write_file_tests.rs` |
-| `tools-execution` — Tools execution | open | critical | Open | Open | `crates/tools/src/shell.rs`<br>`crates/tools/src/web.rs`<br>`crates/tools/src/workflow_tool.rs` |
+| `tools-execution` — Tools execution | open | critical | Open | Open | `crates/tools/src/shell.rs`<br>`crates/tools/src/lsp/**`<br>`crates/tools/src/process/**`<br>`crates/tools/src/web.rs`<br>`crates/tools/src/workflow_tool.rs` |
 | `tools-context` — Tools context | open | elevated | Open | Open | `crates/tools/src/mem.rs`<br>`crates/tools/src/skill.rs` |
 | `verification` — Verification | open | elevated | Open | Open | `crates/verify/**` |
 | `workflow-engine` — Workflow engine | active | elevated | Jamal Cao (`@fr0m-scratch`) | Open | `crates/workflow/**` |
 | `evaluation` — Evaluation | open | elevated | Open | Open | `crates/eval/**` |
-| `cli-host` — CLI host | open | critical | Open | Open | `crates/cli/Cargo.toml`<br>`crates/cli/src/commands.rs`<br>`crates/cli/src/config/**`<br>`crates/cli/src/config.rs`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/image_input.rs`<br>`crates/cli/src/image_input/**`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/pricing.rs`<br>`crates/cli/src/providers.rs`<br>`crates/cli/src/route.rs`<br>`crates/cli/src/runtime.rs`<br>`crates/cli/src/runtime/pricing.rs`<br>`crates/cli/src/runtime/strategy_runtime.rs`<br>`crates/cli/src/runtime/workflow_spawner.rs`<br>`crates/cli/src/setup.rs`<br>`crates/cli/src/startup.rs`<br>`crates/cli/src/workflow.rs` |
-| `cli-tui` — CLI TUI | open | elevated | Open | Open | `crates/cli/src/editor.rs`<br>`crates/cli/src/surface.rs`<br>`crates/cli/src/tui.rs`<br>`crates/cli/src/tui/**`<br>`crates/cli/tests/**` |
+| `tunability-registry` — Tunable registry and pure resolver | open | elevated | Open | Open | `crates/tunables/**` |
+| `cli-host` — CLI host | open | critical | Open | Open | `crates/cli/Cargo.toml`<br>`crates/cli/src/commands.rs`<br>`crates/cli/src/config/**`<br>`crates/cli/src/config.rs`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/image_input.rs`<br>`crates/cli/src/image_input/**`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/pricing.rs`<br>`crates/cli/src/providers.rs`<br>`crates/cli/src/route.rs`<br>`crates/cli/src/runtime.rs`<br>`crates/cli/src/runtime/pricing.rs`<br>`crates/cli/src/runtime/strategy_runtime.rs`<br>`crates/cli/src/runtime/workflow_spawner.rs`<br>`crates/cli/src/setup.rs`<br>`crates/cli/src/startup.rs`<br>`crates/cli/src/tunables.rs`<br>`crates/cli/src/workflow.rs` |
+| `cli-tui` — CLI TUI | open | elevated | Open | Open | `crates/cli/src/editor.rs`<br>`crates/cli/src/external_editor.rs`<br>`crates/cli/src/keymap.rs`<br>`crates/cli/src/keymap_tests.rs`<br>`crates/cli/src/prompt_history.rs`<br>`crates/cli/src/surface.rs`<br>`crates/cli/src/tui.rs`<br>`crates/cli/src/tui/**`<br>`crates/cli/tests/**` |
 | `cli-render` — CLI rendering | open | standard | Open | Open | `crates/cli/src/block.rs`<br>`crates/cli/src/block/**`<br>`crates/cli/src/highlight.rs`<br>`crates/cli/src/markdown.rs`<br>`crates/cli/src/render.rs`<br>`crates/cli/src/theme.rs`<br>`crates/cli/src/theme/**` |
 | `cli-output` — CLI machine output | open | elevated | Open | Open | `crates/cli/src/output.rs`<br>`crates/cli/src/bundle_adapter.rs`<br>`crates/cli/src/bundle_adapter_tests.rs`<br>`crates/cli/src/client_event.rs`<br>`crates/cli/src/client_event_tests.rs`<br>`crates/cli/src/session_view.rs`<br>`crates/cli/src/session_view_tests.rs` |
 
@@ -187,6 +193,41 @@ MCP process lifecycle, framing, tools, deadlines, and definite or unknown outcom
 - Contracts: `mcp-framing`, `bounded-mcp-lifecycle`, `unknown-external-effect`
 - Required checks: `cargo test -p core-mcp --locked`
 
+### `language-server-lifecycle` — Language server lifecycle
+
+LSP framing, handshake state, restart budget, document versions, and bounded in-flight requests.
+
+- Contracts: `bounded-lsp-framing`, `versioned-diagnostics`
+- Required checks: `cargo test -p core-lsp --locked`
+
+### `workspace-change-set` — Workspace change set
+
+Complete staged/unstaged/untracked classification, unified-diff hunks, destructive-op guard and restore preview.
+
+- Contracts: `complete-change-truth`
+- Required checks: `cargo test -p core-changeset --locked`
+
+### `status-surface` — Status surface
+
+Status-line field allowlist, honest unknowns, cell-accurate width and injection-safe terminal title.
+
+- Contracts: `no-control-sequence-injection`, `unknown-is-not-zero`
+- Required checks: `cargo test -p core-statusline --locked`
+
+### `support-bundle` — Support bundle
+
+Deterministic, allowlisted, redacted diagnostic bundle with an unforgeable grammar and no transmit path.
+
+- Contracts: `allowlisted-environment-capture`, `deterministic-redacted-bundle`
+- Required checks: `cargo test -p core-support --locked`
+
+### `plugin-marketplace` — Plugin marketplace
+
+Fail-closed signature gating, monotonic versions, retained-artifact rollback and honest offline staleness.
+
+- Contracts: `fail-closed-signature-gate`, `no-silent-downgrade`
+- Required checks: `cargo test -p core-marketplace --locked`
+
 ### `context-core` — Context core
 
 Compaction, instruction trust, source access, outline, and stable context estimation.
@@ -271,18 +312,25 @@ Benchmark tasks, fixed-model component toggles, scoring, and reliability evidenc
 - Contracts: `fixed-model-comparison`, `ground-truth-check`, `honest-quality-claim`
 - Required checks: `cargo check -p core-eval --all-targets --locked`
 
+### `tunability-registry` — Tunable registry and pure resolver
+
+Versioned registry plus a deterministic provider-free evaluator for explicit frozen inputs, typed attested constraints, atomic failure reports, and bounded redacted explanations. Resolution remains a non-authoritative simulation until the runtime separately admits and binds it.
+
+- Contracts: `stable-semantic-family-identity`, `typed-value-domain`, `canonical-registry-digest`, `exact-registry-input-identity`, `deterministic-pure-resolution`, `fail-closed-attested-constraints`, `atomic-resolution-failure`, `bounded-redacted-explain`, `non-authoritative-metadata`, `runtime-remains-sole-authority`, `fixed-invariant-nontrainability`
+- Required checks: `cargo test -p core-tunables --locked`, `cargo run --locked -p core-xtask -- tunables check`
+
 ### `cli-host` — CLI host
 
-Composition root, trusted configuration, provider routing, commands, MCP wiring, and run lifecycle.
+Composition root, trusted configuration, provider routing, commands, MCP wiring, run lifecycle, and provider-free local simulation adapters.
 
-- Contracts: `trusted-config-precedence`, `runtime-composition`, `provider-selection`
+- Contracts: `trusted-config-precedence`, `runtime-composition`, `provider-selection`, `provider-free-tunables-simulation`, `stable-bounded-simulation-output`
 - Required checks: `cargo test -p core-cli --locked`
 
 ### `cli-tui` — CLI TUI
 
-Interactive state, input routing, composer, permission UX, sessions, terminal lifecycle, and PTY behavior.
+Interactive state, input routing, composer, permission UX, sessions, bounded transcript inspection/export, safe clipboard effects, terminal lifecycle, and PTY behavior.
 
-- Contracts: `single-enter-input`, `terminal-restoration`, `permission-decision-surface`
+- Contracts: `single-enter-input`, `terminal-restoration`, `permission-decision-surface`, `semantic-transcript`, `streaming-redaction`
 - Required checks: `cargo test -p core-cli tui --locked`, `cargo test -p core-cli --test tui_pty --locked`
 
 ### `cli-render` — CLI rendering
@@ -306,17 +354,17 @@ An overlay adds review responsibility without becoming a second primary path own
 | Overlay | Status | Independent review | Reviewers | Trigger paths |
 | --- | --- | --- | --- | --- |
 | `governance-enforcement` — Governance enforcement | open | required | Open | `governance/**`<br>`xtask/**`<br>`.github/actionlint.yaml`<br>`.github/CODEOWNERS`<br>`.github/PULL_REQUEST_TEMPLATE.md`<br>`.github/ISSUE_TEMPLATE/ownership_claim.yml`<br>`.github/workflows/**`<br>`docs/development/review-process.md`<br>`docs/maintainer-onboarding.md`<br>`docs/project/governance.md`<br>`docs/repository-enforcement.md`<br>`AGENTS.md`<br>`GOVERNANCE.md`<br>`LICENSE`<br>`OWNERSHIP.md` |
-| `public-compatibility` — Public compatibility | open | required | Open | `crates/cli/src/commands.rs`<br>`crates/cli/src/config.rs`<br>`crates/cli/src/output.rs`<br>`crates/agents/**`<br>`crates/cli/src/config/**`<br>`crates/ctx/**`<br>`crates/evolve/**`<br>`crates/kernel/**`<br>`crates/cli/src/runtime/**`<br>`crates/cli/src/runtime.rs`<br>`crates/mcp/**`<br>`crates/obs/**`<br>`crates/protocol/**`<br>`crates/provider/**`<br>`crates/record/**`<br>`crates/sandbox/**`<br>`crates/sched/**`<br>`crates/tools/**`<br>`crates/verify/**`<br>`crates/workflow/**` |
-| `tcb-authority` — Trusted computing base and authority | open | required | Open | `crates/protocol/src/permission.rs`<br>`crates/protocol/src/tool.rs`<br>`crates/protocol/src/trust.rs`<br>`crates/kernel/**`<br>`crates/record/**`<br>`crates/sandbox/**`<br>`crates/tools/**`<br>`crates/mcp/**`<br>`crates/cli/src/config.rs`<br>`crates/cli/src/config/**`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/pricing.rs`<br>`crates/cli/src/runtime/**`<br>`crates/cli/src/runtime.rs`<br>`crates/cli/src/tui.rs` |
-| `durability-replay` — Durability and replay | open | required | Open | `crates/protocol/src/event.rs`<br>`crates/protocol/src/ids.rs`<br>`crates/kernel/src/effect_admission.rs`<br>`crates/kernel/src/effect_boundary_tests.rs`<br>`crates/kernel/src/effect_class.rs`<br>`crates/kernel/src/effect_journal.rs`<br>`crates/kernel/src/effects.rs`<br>`crates/kernel/src/lib.rs`<br>`crates/record/**`<br>`crates/obs/**`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/output.rs`<br>`crates/cli/src/runtime.rs` |
-| `secrets-redaction` — Secrets and redaction | open | required | Open | `crates/protocol/**`<br>`crates/provider/**`<br>`crates/tools/**`<br>`crates/ctx/**`<br>`crates/agents/**`<br>`crates/cli/src/config.rs`<br>`crates/cli/src/config/**`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/output.rs`<br>`crates/cli/src/pricing.rs`<br>`crates/cli/src/providers.rs`<br>`crates/cli/src/tui.rs`<br>`crates/record/src/lib.rs`<br>`crates/record/src/redact.rs`<br>`crates/record/src/session.rs`<br>`crates/sandbox/**`<br>`crates/mcp/**`<br>`crates/cli/src/runtime/hooks.rs` |
-| `boundedness` — Bounded execution | open | required | Open | `crates/kernel/**`<br>`crates/sched/**`<br>`crates/provider/**`<br>`crates/tools/**`<br>`crates/mcp/**`<br>`crates/sandbox/**`<br>`crates/record/**`<br>`crates/ctx/**`<br>`crates/agents/**`<br>`crates/evolve/**`<br>`crates/cli/src/block.rs`<br>`crates/cli/src/block/**`<br>`crates/cli/src/commands.rs`<br>`crates/cli/src/editor.rs`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/highlight.rs`<br>`crates/cli/src/image_input.rs`<br>`crates/cli/src/image_input/**`<br>`crates/cli/src/markdown.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/output.rs`<br>`crates/cli/src/render.rs`<br>`crates/cli/src/runtime.rs`<br>`crates/cli/src/runtime/**`<br>`crates/cli/src/surface.rs`<br>`crates/cli/src/theme.rs`<br>`crates/cli/src/tui.rs` |
+| `public-compatibility` — Public compatibility | open | required | Open | `crates/cli/src/commands.rs`<br>`crates/cli/src/config.rs`<br>`crates/cli/src/output.rs`<br>`crates/agents/**`<br>`crates/cli/src/config/**`<br>`crates/ctx/**`<br>`crates/evolve/**`<br>`crates/kernel/**`<br>`crates/cli/src/runtime/**`<br>`crates/cli/src/runtime.rs`<br>`crates/mcp/**`<br>`crates/obs/**`<br>`crates/protocol/**`<br>`crates/provider/**`<br>`crates/record/**`<br>`crates/sandbox/**`<br>`crates/sched/**`<br>`crates/tools/**`<br>`crates/tunables/**`<br>`crates/verify/**`<br>`crates/workflow/**` |
+| `tcb-authority` — Trusted computing base and authority | open | required | Open | `crates/protocol/src/permission.rs`<br>`crates/protocol/src/tool.rs`<br>`crates/protocol/src/trust.rs`<br>`crates/kernel/**`<br>`crates/record/**`<br>`crates/sandbox/**`<br>`crates/tools/**`<br>`crates/mcp/**`<br>`crates/cli/src/config.rs`<br>`crates/cli/src/config/**`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/external_editor.rs`<br>`crates/cli/src/keymap.rs`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/pricing.rs`<br>`crates/cli/src/prompt_history.rs`<br>`crates/cli/src/runtime/**`<br>`crates/cli/src/runtime.rs`<br>`crates/cli/src/tui.rs` |
+| `durability-replay` — Durability and replay | open | required | Open | `crates/protocol/src/event.rs`<br>`crates/protocol/src/ids.rs`<br>`crates/kernel/src/effect_admission.rs`<br>`crates/kernel/src/effect_boundary_tests.rs`<br>`crates/kernel/src/effect_class.rs`<br>`crates/kernel/src/effect_journal.rs`<br>`crates/kernel/src/effects.rs`<br>`crates/kernel/src/lib.rs`<br>`crates/record/**`<br>`crates/obs/**`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/output.rs`<br>`crates/cli/src/prompt_history.rs`<br>`crates/cli/src/runtime.rs` |
+| `secrets-redaction` — Secrets and redaction | open | required | Open | `crates/protocol/**`<br>`crates/provider/**`<br>`crates/tools/**`<br>`crates/ctx/**`<br>`crates/agents/**`<br>`crates/cli/src/config.rs`<br>`crates/cli/src/config/**`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/external_editor.rs`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/output.rs`<br>`crates/cli/src/pricing.rs`<br>`crates/cli/src/prompt_history.rs`<br>`crates/cli/src/providers.rs`<br>`crates/cli/src/tui.rs`<br>`crates/record/src/lib.rs`<br>`crates/record/src/redact.rs`<br>`crates/record/src/session.rs`<br>`crates/sandbox/**`<br>`crates/mcp/**`<br>`crates/cli/src/runtime/hooks.rs` |
+| `boundedness` — Bounded execution | open | required | Open | `crates/kernel/**`<br>`crates/sched/**`<br>`crates/provider/**`<br>`crates/tools/**`<br>`crates/mcp/**`<br>`crates/sandbox/**`<br>`crates/record/**`<br>`crates/ctx/**`<br>`crates/agents/**`<br>`crates/evolve/**`<br>`crates/cli/src/block.rs`<br>`crates/cli/src/block/**`<br>`crates/cli/src/commands.rs`<br>`crates/cli/src/editor.rs`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/external_editor.rs`<br>`crates/cli/src/highlight.rs`<br>`crates/cli/src/image_input.rs`<br>`crates/cli/src/image_input/**`<br>`crates/cli/src/keymap.rs`<br>`crates/cli/src/markdown.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/output.rs`<br>`crates/cli/src/prompt_history.rs`<br>`crates/cli/src/render.rs`<br>`crates/cli/src/runtime.rs`<br>`crates/cli/src/runtime/**`<br>`crates/cli/src/surface.rs`<br>`crates/cli/src/theme.rs`<br>`crates/cli/src/tui.rs` |
 | `provider-routing` — Provider routing and economics | open | required | Open | `crates/protocol/**`<br>`crates/provider/**`<br>`crates/sched/**`<br>`crates/obs/**`<br>`crates/ctx/**`<br>`crates/record/**`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/pricing.rs`<br>`crates/cli/src/providers.rs`<br>`crates/cli/src/output.rs`<br>`crates/cli/src/tui.rs`<br>`crates/cli/src/runtime.rs`<br>`crates/cli/src/runtime/pricing.rs`<br>`crates/kernel/src/lib.rs` |
-| `frontend-contract` — Frontend runtime contract | open | required | Open | `crates/protocol/**`<br>`crates/kernel/src/lib.rs`<br>`crates/cli/src/runtime.rs`<br>`crates/provider/**`<br>`crates/obs/**`<br>`crates/ctx/src/compact.rs`<br>`crates/ctx/src/lib.rs`<br>`crates/cli/src/block.rs`<br>`crates/cli/src/block/**`<br>`crates/cli/src/commands.rs`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/editor.rs`<br>`crates/cli/src/highlight.rs`<br>`crates/cli/src/image_input.rs`<br>`crates/cli/src/image_input/**`<br>`crates/cli/src/markdown.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/providers.rs`<br>`crates/cli/src/output.rs`<br>`crates/cli/src/render.rs`<br>`crates/cli/src/surface.rs`<br>`crates/cli/src/theme.rs`<br>`crates/cli/src/tui.rs` |
+| `frontend-contract` — Frontend runtime contract | open | required | Open | `crates/protocol/**`<br>`crates/kernel/src/lib.rs`<br>`crates/cli/src/runtime.rs`<br>`crates/provider/**`<br>`crates/obs/**`<br>`crates/ctx/src/compact.rs`<br>`crates/ctx/src/lib.rs`<br>`crates/cli/src/block.rs`<br>`crates/cli/src/block/**`<br>`crates/cli/src/commands.rs`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/external_editor.rs`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/editor.rs`<br>`crates/cli/src/highlight.rs`<br>`crates/cli/src/image_input.rs`<br>`crates/cli/src/image_input/**`<br>`crates/cli/src/keymap.rs`<br>`crates/cli/src/markdown.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/providers.rs`<br>`crates/cli/src/output.rs`<br>`crates/cli/src/prompt_history.rs`<br>`crates/cli/src/render.rs`<br>`crates/cli/src/surface.rs`<br>`crates/cli/src/theme.rs`<br>`crates/cli/src/tui.rs` |
 | `cost-accounting` — Cost and budget accounting | open | required | Open | `crates/protocol/**`<br>`crates/provider/**`<br>`crates/sched/**`<br>`crates/kernel/src/lib.rs`<br>`crates/cli/src/runtime.rs`<br>`crates/cli/src/runtime/pricing.rs`<br>`crates/obs/**`<br>`crates/record/**`<br>`crates/ctx/src/compact.rs`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/output.rs`<br>`crates/cli/src/pricing.rs`<br>`crates/cli/src/tui.rs` |
-| `eval-ground-truth` — Evaluation ground truth | open | required | Open | `crates/eval/**`<br>`crates/verify/**`<br>`crates/obs/**`<br>`.github/workflows/ci.yml` |
-| `evolution-promotion` — Evolution promotion | open | required | Open | `crates/evolve/**`<br>`crates/eval/**`<br>`crates/verify/**`<br>`crates/protocol/src/event.rs`<br>`crates/kernel/src/lib.rs`<br>`crates/cli/src/runtime.rs` |
-| `release-supply` — Release and supply chain | open | required | Open | `Cargo.toml`<br>`Cargo.lock`<br>`CHANGELOG.md`<br>`LICENSE`<br>`.github/actionlint.yaml`<br>`.github/dependabot.yml`<br>`.github/workflows/**`<br>`.gitignore`<br>`README.md`<br>`crates/agents/Cargo.toml`<br>`crates/cli/Cargo.toml`<br>`crates/ctx/Cargo.toml`<br>`crates/eval/Cargo.toml`<br>`crates/evolve/Cargo.toml`<br>`crates/kernel/Cargo.toml`<br>`crates/mcp/Cargo.toml`<br>`crates/obs/Cargo.toml`<br>`crates/protocol/Cargo.toml`<br>`crates/provider/Cargo.toml`<br>`crates/record/Cargo.toml`<br>`crates/sandbox/Cargo.toml`<br>`crates/sched/Cargo.toml`<br>`crates/tools/Cargo.toml`<br>`crates/verify/Cargo.toml`<br>`docs/_mkdocs_hooks.py`<br>`docs/development/releasing.md`<br>`docs/getting-started/installation.md`<br>`docs/project/releases.md`<br>`docs/reference/platforms.md`<br>`install.sh`<br>`mkdocs.yml`<br>`release-tools/**`<br>`requirements-docs.in`<br>`requirements-docs.lock`<br>`xtask/Cargo.toml` |
+| `eval-ground-truth` — Evaluation ground truth | open | required | Open | `crates/eval/**`<br>`crates/tunables/**`<br>`crates/verify/**`<br>`crates/obs/**`<br>`.github/workflows/ci.yml` |
+| `evolution-promotion` — Evolution promotion | open | required | Open | `crates/evolve/**`<br>`crates/eval/**`<br>`crates/tunables/**`<br>`crates/verify/**`<br>`crates/protocol/src/event.rs`<br>`crates/kernel/src/lib.rs`<br>`crates/cli/src/runtime.rs` |
+| `release-supply` — Release and supply chain | open | required | Open | `Cargo.toml`<br>`Cargo.lock`<br>`CHANGELOG.md`<br>`LICENSE`<br>`.github/actionlint.yaml`<br>`.github/dependabot.yml`<br>`.github/workflows/**`<br>`.gitignore`<br>`README.md`<br>`crates/agents/Cargo.toml`<br>`crates/cli/Cargo.toml`<br>`crates/ctx/Cargo.toml`<br>`crates/eval/Cargo.toml`<br>`crates/evolve/Cargo.toml`<br>`crates/kernel/Cargo.toml`<br>`crates/mcp/Cargo.toml`<br>`crates/obs/Cargo.toml`<br>`crates/protocol/Cargo.toml`<br>`crates/provider/Cargo.toml`<br>`crates/record/Cargo.toml`<br>`crates/sandbox/Cargo.toml`<br>`crates/sched/Cargo.toml`<br>`crates/tools/Cargo.toml`<br>`crates/tunables/Cargo.toml`<br>`crates/verify/Cargo.toml`<br>`docs/_mkdocs_hooks.py`<br>`docs/development/releasing.md`<br>`docs/getting-started/installation.md`<br>`docs/project/releases.md`<br>`docs/reference/platforms.md`<br>`install.sh`<br>`mkdocs.yml`<br>`release-tools/**`<br>`requirements-docs.in`<br>`requirements-docs.lock`<br>`xtask/Cargo.toml` |
 | `public-truth` — Public product truth | open | required | Open | `CHANGELOG.md`<br>`CODE_OF_CONDUCT.md`<br>`CONTRIBUTING.md`<br>`README.md`<br>`GOVERNANCE.md`<br>`LICENSE`<br>`mkdocs.yml`<br>`SECURITY.md`<br>`SUPPORT.md`<br>`docs/**` |
 
 ## Claiming or changing ownership

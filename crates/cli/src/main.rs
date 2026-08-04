@@ -9,12 +9,15 @@ mod commands;
 mod config;
 mod editor;
 mod environment;
+mod external_editor;
 mod highlight;
 mod image_input;
+mod keymap;
 mod markdown;
 mod mcp;
 mod output;
 mod pricing;
+mod prompt_history;
 mod providers;
 mod render;
 // The published client-event vocabulary. Nothing in this binary consumes it yet: it is the
@@ -35,6 +38,7 @@ mod startup;
 mod surface;
 mod theme;
 mod tui;
+mod tunables;
 mod workflow;
 
 use clap::{Parser, Subcommand};
@@ -138,6 +142,11 @@ enum LocalCommand {
     Pricing {
         #[command(subcommand)]
         action: PricingAction,
+    },
+    /// Resolve or explain one explicit tunables request without binding it to a live run.
+    Tunables {
+        #[command(subcommand)]
+        action: tunables::Action,
     },
 }
 
@@ -648,6 +657,12 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn run_cli() -> anyhow::Result<u8> {
+    // Export effects run in a separately killable copy of this executable. Enter its private,
+    // bounded pipe protocol before CLI/config parsing so the helper cannot load operator state,
+    // providers, hooks, or credentials it neither needs nor has in its cleared environment.
+    if tui::transcript_effect::worker_requested() {
+        return Ok(tui::transcript_effect::worker_main());
+    }
     // One clock for the whole pre-first-frame path, started before anything else so it brackets
     // every phase including the staleness check below. Off by default, and off means no clock at all.
     let mut startup = startup::StartupTiming::from_env();
@@ -771,6 +786,7 @@ async fn run_cli() -> anyhow::Result<u8> {
                 ConfigAction::Set { key, value } => setup::run_config_set(key, value),
             };
         }
+        Some(LocalCommand::Tunables { action }) => return tunables::run(action),
         _ => {}
     }
 
@@ -1052,6 +1068,16 @@ async fn run_cli() -> anyhow::Result<u8> {
     if completion_notifications.project_ignored {
         eprintln!(
             "warning: ignoring `completion_notifications` in the project config (untrusted origin); configure terminal notifications in ~/.core/config.json"
+        );
+    }
+    if file.prompt_history.is_some() {
+        eprintln!(
+            "warning: ignoring `prompt_history` in the project config (untrusted origin); configure prompt retention in ~/.core/config.json"
+        );
+    }
+    if file.tui_keymap.is_some() || file.external_editor.is_some() {
+        eprintln!(
+            "warning: ignoring `tui_keymap`/`external_editor` in the project config (untrusted origin); configure terminal input in ~/.core/config.json"
         );
     }
     // Retry tuning is resolved at the composition root with project input structurally ignored.
@@ -1644,7 +1670,9 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     eprintln!("{}", "-".repeat(72));
 
+    let agent_catalog = discover_agent_catalog(&repo);
     let mut agent = Agent::new(provider_arc, registry, rollout, model, base_system, budget);
+    agent.pin_agent_catalog(agent_catalog)?;
     let built_in_policy_capabilities =
         core_protocol::capability_set::CapabilitySet::from_iter_capabilities([
             core_protocol::Capability::ReadOnly,
@@ -1785,6 +1813,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             agent.verify_command.clone().unwrap_or_default(),
             format!("{output_format:?}"),
             agent.system.clone(),
+            agent.agent_catalog_digest(),
         ],
     );
     // Record the session genesis header on a FRESH run (SESS-4): cwd/model/effort/created_at, so
@@ -1818,7 +1847,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         // USER config only, exactly like the hooks above: an endpoint is an exfiltration target and
         // a cloned repo must never be able to name one.
         let telemetry = runtime::telemetry::TelemetrySink::load_user(&home);
-        hooks.set_sensitive_env_names(credential_env_names);
+        hooks.set_sensitive_env_names(credential_env_names.clone());
         agent.hooks = hooks;
         agent.telemetry = telemetry;
         if !agent.hooks.is_empty() {
@@ -1850,7 +1879,13 @@ async fn run_cli() -> anyhow::Result<u8> {
             cli.task,
             provider_directory,
             route,
-            completion_notifications.enabled,
+            tui::RunConfig {
+                completion_notifications: completion_notifications.enabled,
+                history_mode: user_file.prompt_history.unwrap_or_default(),
+                keymap: user_file.tui_keymap.clone(),
+                external_editor: user_file.external_editor.clone(),
+                sensitive_env_names: credential_env_names,
+            },
             startup,
         )
         .await?;
@@ -2066,9 +2101,48 @@ fn parse_workflow_args(args: &Option<String>) -> anyhow::Result<serde_json::Valu
     }
 }
 
+/// Resolve the executable agent catalog once at the composition root. Rejections remain visible,
+/// while the accepted set is moved into an immutable `Arc` by the runtime and never re-read by a
+/// child. `CORE_CONFIG_HOME` uses the same trusted root as the rest of the CLI.
+fn discover_agent_catalog(repo: &std::path::Path) -> core_agents::AgentCatalog {
+    let catalog = match config::config_home() {
+        Some(home) => core_agents::AgentCatalog::discover(&home, repo),
+        None => core_agents::AgentCatalog::discover_without_user(repo),
+    };
+    for error in catalog.errors() {
+        let source = safe_agent_diagnostic(&error.source);
+        let reason = safe_agent_diagnostic(&error.reason);
+        eprintln!("agent definition rejected: {} ({})", source, reason);
+    }
+    catalog
+}
+
+fn safe_agent_diagnostic(value: &str) -> String {
+    const MAX_BYTES: usize = 2 * 1024;
+    const TRUNCATED: &str = "[truncated]";
+    const CONTENT_BYTES: usize = MAX_BYTES - TRUNCATED.len();
+    let scrubbed = core_record::redact::scrub(value);
+    let mut safe = String::with_capacity(scrubbed.len().min(MAX_BYTES));
+    for character in scrubbed.chars() {
+        let rendered = if character.is_control() {
+            character.escape_default().to_string()
+        } else {
+            character.to_string()
+        };
+        if safe.len().saturating_add(rendered.len()) > CONTENT_BYTES {
+            safe.push_str(TRUNCATED);
+            break;
+        }
+        safe.push_str(&rendered);
+    }
+    safe
+}
+
 /// Build the DEFAULT workflow spawner: the real [`runtime::KernelSpawner`], so every `agent()`
 /// call runs a genuine child `Agent` (own context + read-only tool loop) via `run_leaf`. Set
-/// `CORE_WORKFLOW_SPAWNER=provider` to swap in the single-completion `ProviderSpawner` instead.
+/// `CORE_WORKFLOW_SPAWNER=provider` to swap in the generic-only, exact-parent-route
+/// single-completion `ProviderSpawner` instead. The fallback cannot resolve catalog definitions or
+/// alternate models and refuses those requests before a provider turn.
 ///
 /// The context is filled from the SAME resolved values the main agent path records
 /// (`record_model_selection` inputs): provider handle + model + `provider_id` + the catalog/capability
@@ -2113,6 +2187,7 @@ fn build_workflow_spawner(
     cx.model_context_window = caps.context_window_tokens;
     cx.model_max_output_tokens = caps.max_output_tokens;
     cx.context_home_dir = config::config_home();
+    cx.agent_catalog = std::sync::Arc::new(discover_agent_catalog(repo));
     std::sync::Arc::new(runtime::KernelSpawner::new(cx))
 }
 
@@ -2530,6 +2605,20 @@ fn print_timeline(run: &core_protocol::RunId, report: &core_obs::timeline::Timel
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejected_agent_diagnostics_are_redacted_single_line_and_strictly_bounded() {
+        let rendered = safe_agent_diagnostic(&format!(
+            "prefix\ntoken: ghp_AbCdEf1234567890AbCdEf1234567890\r{}",
+            "界".repeat(2_048)
+        ));
+        assert!(rendered.len() <= 2 * 1024, "{} bytes", rendered.len());
+        assert!(rendered.ends_with("[truncated]"), "{rendered}");
+        assert!(!rendered.contains('\n'));
+        assert!(!rendered.contains('\r'));
+        assert!(rendered.contains("\\n"));
+        assert!(!rendered.contains("ghp_AbCdEf1234567890"), "{rendered}");
+    }
 
     /// The wall-clock ceiling was the one budget with no flag: the 1800s default was reachable
     /// only by hand-editing `~/.core/config.json`, even though a single long refactor turn can

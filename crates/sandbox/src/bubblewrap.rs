@@ -8,52 +8,30 @@
 //!   - `--unshare-net` when egress is off: the process gets an empty network namespace with no
 //!     interfaces, so it physically cannot reach the network (the kernel-level denial, not a
 //!     prompt). When egress is escalated, the net namespace is shared.
-//!   - `--die-with-parent`, `--new-session`, dropped ambient caps.
+//!   - `--die-with-parent`, dropped ambient caps, and a new session for bounded one-shot runs.
 //!
 //! Honest limits: bwrap must be present (it is on most modern distros / CI images; if absent we
 //! refuse rather than run unconfined). This is a namespace boundary, not a VM; a kernel bug can
 //! still escape. It is the same primitive Codex uses on Linux, and a real blast-radius reduction.
 
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use crate::{Confinement, RunOutput, Sandbox, SandboxError};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
-const BWRAP_CANDIDATES: &[&str] = &["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap"];
-const BWRAP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-const BWRAP_PROBE_POLL: Duration = Duration::from_millis(10);
-const BWRAP_PROBE_MAX_POLLS: usize = 500;
-const BWRAP_PROBE_REAP_POLLS: usize = 100;
-/// How long a FAILED probe stays authoritative. An operator may install an AppArmor profile or
-/// enable user namespaces while a long-lived harness is running, so a refusal must expire — but
-/// re-running a 5s process probe on every single `bash` call turned one restricted host into a
-/// five-second tax per tool call. One probe per TTL is the bounded compromise.
-const BWRAP_PROBE_NEGATIVE_TTL: Duration = Duration::from_secs(60);
-static PROBE_CACHE: Mutex<Option<ProbeOutcome>> = Mutex::new(None);
-
-/// The last completed probe: which executable it tested, what it decided, and when.
-#[derive(Debug, Clone)]
-struct ProbeOutcome {
-    binary: PathBuf,
-    usable: bool,
-    at: Instant,
-}
-
-/// Is the cached outcome still authoritative for `binary` at `now`? A success never expires (the
-/// capability cannot be revoked under us without the executable's identity changing, which
-/// `trusted_bwrap` re-checks anyway); a failure expires after `BWRAP_PROBE_NEGATIVE_TTL`.
-fn cached_probe(entry: Option<&ProbeOutcome>, binary: &Path, now: Instant) -> Option<bool> {
-    let entry = entry?;
-    if entry.binary != binary {
-        return None;
-    }
-    if entry.usable {
-        return Some(true);
-    }
-    (now.duration_since(entry.at) < BWRAP_PROBE_NEGATIVE_TTL).then_some(false)
-}
+mod capability;
+use capability::usable_bwrap;
+#[cfg(test)]
+use capability::{
+    BWRAP_CANDIDATES, BWRAP_PROBE_ARGS, BWRAP_PROBE_MAX_POLLS, BWRAP_PROBE_NEGATIVE_TTL,
+    BWRAP_PROBE_POLL, BWRAP_PROBE_POSITIVE_TTL, BWRAP_PROBE_REAP_POLLS, BWRAP_PROBE_REAP_TIMEOUT,
+    BWRAP_PROBE_RUN_TIMEOUT, BWRAP_PROBE_TIMEOUT, ProbeOutcome, bwrap_probe_args, cached_probe,
+    test_fingerprint,
+};
+#[cfg(target_os = "linux")]
+pub(crate) use capability::{duplicate_for_child, inherit_fd_in_tokio_command};
 
 /// Credential-free, user-scoped toolchain roots that may be exposed read-only inside the Linux
 /// namespace. Keep these narrower than their parent configuration directories: for example,
@@ -79,112 +57,6 @@ const TOOLCHAIN_HOME_READ_SUBPATHS: &[&str] = &[
 
 const MAX_HOME_COMPONENTS: usize = 64;
 
-// `bwrap --version` only proves that the executable can start. In particular, Ubuntu 24.04 can
-// install a perfectly valid bwrap while AppArmor still refuses the unprivileged user namespace
-// needed to create a sandbox. Probe the namespace and mount operations that carry our security
-// contract before advertising this backend as usable. The fixed `/bin/true` cannot observe or
-// mutate caller-controlled state; the host root is mounted read-only solely so its loader exists.
-const BWRAP_PROBE_ARGS: &[&str] = &[
-    "--ro-bind",
-    "/",
-    "/",
-    "--dev",
-    "/dev",
-    "--proc",
-    "/proc",
-    "--tmpfs",
-    "/tmp",
-    "--die-with-parent",
-    "--new-session",
-    "--unshare-pid",
-    "--unshare-ipc",
-    "--unshare-uts",
-    "--unshare-net",
-    "/bin/true",
-];
-
-fn trusted_bwrap() -> Option<PathBuf> {
-    BWRAP_CANDIDATES.iter().find_map(|candidate| {
-        let path = Path::new(candidate);
-        let metadata = std::fs::symlink_metadata(path).ok()?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return None;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            // A namespace boundary cannot start by executing a binary writable by an untrusted
-            // user/group. Root-owned, non-group/world-writable is the trusted system contract.
-            if metadata.uid() != 0 || metadata.permissions().mode() & 0o022 != 0 {
-                return None;
-            }
-        }
-        Some(path.to_path_buf())
-    })
-}
-
-/// Resolve the backend's executable, probing the namespace capability at most once per TTL.
-///
-/// SYNCHRONOUS by construction: it spawns a process and sleep-polls it. Never call it from an
-/// async context — `run_inner` routes it through the blocking pool.
-fn usable_bwrap() -> Option<PathBuf> {
-    let binary = trusted_bwrap()?;
-    // Keep revalidating ownership and mode through `trusted_bwrap`; cache only the expensive
-    // namespace process, never the executable's trust decision.
-    if let Ok(cache) = PROBE_CACHE.lock()
-        && let Some(decision) = cached_probe(cache.as_ref(), &binary, Instant::now())
-    {
-        return decision.then_some(binary);
-    }
-    let child = std::process::Command::new(&binary)
-        .args(BWRAP_PROBE_ARGS)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-    let Ok(mut child) = child else {
-        return record_probe(binary, false);
-    };
-    let deadline = Instant::now() + BWRAP_PROBE_TIMEOUT;
-    let mut success = false;
-    let mut completed = false;
-    for _ in 0..BWRAP_PROBE_MAX_POLLS {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                success = status.success();
-                completed = true;
-                break;
-            }
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(BWRAP_PROBE_POLL),
-            Ok(None) | Err(_) => break,
-        }
-    }
-    if !completed {
-        let _ = child.kill();
-        for _ in 0..BWRAP_PROBE_REAP_POLLS {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) => std::thread::sleep(BWRAP_PROBE_POLL),
-                Err(_) => break,
-            }
-        }
-    }
-    record_probe(binary, success)
-}
-
-/// Store this probe's verdict and answer with it. A refusal is cached too, but only for
-/// `BWRAP_PROBE_NEGATIVE_TTL`, so an operator who fixes the host is still picked up automatically.
-fn record_probe(binary: PathBuf, usable: bool) -> Option<PathBuf> {
-    if let Ok(mut cache) = PROBE_CACHE.lock() {
-        *cache = Some(ProbeOutcome {
-            binary: binary.clone(),
-            usable,
-            at: Instant::now(),
-        });
-    }
-    usable.then_some(binary)
-}
-
 pub struct Bubblewrap;
 
 impl Bubblewrap {
@@ -201,7 +73,7 @@ impl Bubblewrap {
     /// Resolve the executable WITHOUT sleep-polling a child process on an async worker. The probe
     /// blocks for up to `BWRAP_PROBE_TIMEOUT`, which on a multi-threaded runtime parks a worker
     /// thread that is supposed to be driving other tasks; the blocking pool is where that belongs.
-    async fn usable_bwrap_off_worker() -> Option<PathBuf> {
+    pub(crate) async fn usable_bwrap_off_worker() -> Option<PathBuf> {
         tokio::task::spawn_blocking(usable_bwrap).await.ok()?
     }
 
@@ -286,10 +158,76 @@ impl Default for Bubblewrap {
 /// HOME path, whose existing allowlisted toolchain roots are resolved into read-only mounts.
 pub fn bwrap_args(conf: &Confinement, command: &str) -> Vec<String> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    bwrap_args_with_home(conf, command, home.as_deref())
+    bwrap_args_with_home_and_source(
+        conf,
+        command,
+        home.as_deref(),
+        WorkspaceSource::Path(&conf.workspace),
+        SessionMode::OneShot,
+    )
+}
+
+/// Build the path-backed namespace used by a long-lived, pipe-supervised child.
+///
+/// Unlike bounded one-shot commands, persistent children must remain in the outer supervisor's
+/// process group while bubblewrap establishes its PID namespace and parent-death contract. A new
+/// session here would create a setup window in which group cleanup cannot reach the child.
+pub(crate) fn bwrap_args_for_persistent(conf: &Confinement, command: &str) -> Vec<String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    bwrap_args_with_home_and_source(
+        conf,
+        command,
+        home.as_deref(),
+        WorkspaceSource::Path(&conf.workspace),
+        SessionMode::Persistent,
+    )
 }
 
 fn bwrap_args_with_home(conf: &Confinement, command: &str, home: Option<&Path>) -> Vec<String> {
+    bwrap_args_with_home_and_source(
+        conf,
+        command,
+        home,
+        WorkspaceSource::Path(&conf.workspace),
+        SessionMode::OneShot,
+    )
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn bwrap_args_with_workspace_fd(
+    conf: &Confinement,
+    command: &str,
+    workspace_fd: libc::c_int,
+) -> Vec<String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    bwrap_args_with_home_and_source(
+        conf,
+        command,
+        home.as_deref(),
+        WorkspaceSource::Descriptor(workspace_fd),
+        SessionMode::Persistent,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum WorkspaceSource<'a> {
+    Path(&'a Path),
+    Descriptor(libc::c_int),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SessionMode {
+    OneShot,
+    Persistent,
+}
+
+fn bwrap_args_with_home_and_source(
+    conf: &Confinement,
+    command: &str,
+    home: Option<&Path>,
+    workspace_source: WorkspaceSource<'_>,
+    session_mode: SessionMode,
+) -> Vec<String> {
     let ws = conf.workspace.display().to_string();
     let mut a: Vec<String> = Vec::new();
     let (home_dirs, home_mounts) = toolchain_home_mount_plan(home);
@@ -309,9 +247,18 @@ fn bwrap_args_with_home(conf: &Confinement, command: &str, home: Option<&Path>) 
         a.push("--dir".into());
         a.push(directory.display().to_string());
     }
-    a.push("--bind".into());
-    a.push(ws.clone());
-    a.push(ws.clone());
+    match workspace_source {
+        WorkspaceSource::Path(source) => {
+            a.push("--bind".into());
+            a.push(source.display().to_string());
+            a.push(ws.clone());
+        }
+        WorkspaceSource::Descriptor(descriptor) => {
+            a.push("--bind-fd".into());
+            a.push(descriptor.to_string());
+            a.push(ws.clone());
+        }
+    }
     for (source, destination) in home_mounts {
         a.push("--ro-bind".into());
         a.push(source.display().to_string());
@@ -320,6 +267,15 @@ fn bwrap_args_with_home(conf: &Confinement, command: &str, home: Option<&Path>) 
     // Minimal /dev and /proc.
     a.push("--dev".into());
     a.push("/dev".into());
+    // `--new-session` protects one-shot children from the caller's controlling terminal. The
+    // persistent supervisor deliberately cannot use it because the child must remain reachable
+    // through the outer cleanup group during namespace setup. Mask the controlling-terminal
+    // device in that mode so piped code cannot reopen the host TTY through `/dev/tty`.
+    if session_mode == SessionMode::Persistent {
+        a.push("--ro-bind".into());
+        a.push("/dev/null".into());
+        a.push("/dev/tty".into());
+    }
     a.push("--proc".into());
     a.push("/proc".into());
     // Make the namespace root read-only.
@@ -339,7 +295,12 @@ fn bwrap_args_with_home(conf: &Confinement, command: &str, home: Option<&Path>) 
     a.push("/".into());
     // Hardening.
     a.push("--die-with-parent".into());
-    a.push("--new-session".into());
+    // Persistent pipe processes stay in the outer supervisor's process group until bwrap has
+    // armed its PID-namespace parent-death contract. This removes the setup window introduced by
+    // `setsid`; bounded one-shot runs retain their independent session.
+    if session_mode == SessionMode::OneShot {
+        a.push("--new-session".into());
+    }
     a.push("--unshare-pid".into());
     a.push("--unshare-ipc".into());
     a.push("--unshare-uts".into());

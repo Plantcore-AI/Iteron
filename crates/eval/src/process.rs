@@ -11,6 +11,10 @@ pub struct ProcessSpec {
     pub program: PathBuf,
     pub args: Vec<OsString>,
     pub cwd: Option<PathBuf>,
+    /// Clear the ambient evaluator environment before applying the two explicit lists below.
+    pub clear_env: bool,
+    /// Names whose current values may cross an otherwise-cleared process boundary.
+    pub inherit_env: Vec<OsString>,
     pub env: Vec<(OsString, OsString)>,
     pub timeout: Duration,
     pub max_output_bytes: usize,
@@ -96,6 +100,14 @@ pub async fn run_process(spec: &ProcessSpec) -> Result<ProcessOutput, ProcessErr
         .kill_on_drop(true);
     if let Some(cwd) = &spec.cwd {
         command.current_dir(cwd);
+    }
+    if spec.clear_env {
+        command.env_clear();
+    }
+    for name in &spec.inherit_env {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
     }
     command.envs(spec.env.iter().cloned());
     core_sandbox::configure_process_group(&mut command);
@@ -239,6 +251,8 @@ mod tests {
             program: PathBuf::from("sh"),
             args: vec!["-c".into(), "printf started; sleep 10".into()],
             cwd: None,
+            clear_env: false,
+            inherit_env: Vec::new(),
             env: Vec::new(),
             timeout: Duration::from_millis(100),
             max_output_bytes: 64,
@@ -252,6 +266,8 @@ mod tests {
             program: PathBuf::from("sh"),
             args: vec!["-c".into(), "yes x | head -c 10000".into()],
             cwd: None,
+            clear_env: false,
+            inherit_env: Vec::new(),
             env: Vec::new(),
             timeout: Duration::from_secs(2),
             max_output_bytes: 32,
@@ -261,6 +277,45 @@ mod tests {
         assert!(noisy.success());
         assert_eq!(noisy.stdout.len(), 32);
         assert!(noisy.stdout_truncated);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cleared_environment_crosses_only_named_and_explicit_values() {
+        let output = run_process(&ProcessSpec {
+            program: PathBuf::from("/bin/sh"),
+            args: vec![
+                "-c".into(),
+                "printf '%s|%s' \"${HOME-unset}\" \"${PATH-unset}\"".into(),
+            ],
+            cwd: None,
+            clear_env: true,
+            inherit_env: vec!["PATH".into()],
+            env: Vec::new(),
+            timeout: Duration::from_secs(2),
+            max_output_bytes: 8 * 1024,
+        })
+        .await
+        .unwrap();
+        assert!(output.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.starts_with("unset|"));
+        assert_ne!(text, "unset|unset");
+
+        let explicit = run_process(&ProcessSpec {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "printf '%s' \"$HOME\"".into()],
+            cwd: None,
+            clear_env: true,
+            inherit_env: Vec::new(),
+            env: vec![("HOME".into(), "/isolated-eval-home".into())],
+            timeout: Duration::from_secs(2),
+            max_output_bytes: 8 * 1024,
+        })
+        .await
+        .unwrap();
+        assert!(explicit.success());
+        assert_eq!(explicit.stdout, b"/isolated-eval-home");
     }
 
     #[test]

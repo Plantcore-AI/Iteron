@@ -24,7 +24,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub mod bubblewrap;
+mod persistent;
 pub mod seatbelt;
+
+pub use persistent::{
+    ConfinedProcess, ConfinedProcessControl, PersistentBackend, spawn_confined_process,
+    spawn_confined_process_from_workspace,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxError {
