@@ -40,7 +40,7 @@ where
             return if frame.is_empty() {
                 Ok(None)
             } else {
-                Err(McpError::Protocol("server closed mid-frame".into()))
+                Err(McpError::TransportClosed)
             };
         }
 
@@ -77,7 +77,7 @@ where
     for _ in 0..limits.frames {
         let frame = read_frame(reader, limits.frame_bytes)
             .await?
-            .ok_or_else(|| McpError::Protocol("server closed the stream".into()))?;
+            .ok_or(McpError::TransportClosed)?;
         aggregate_bytes =
             aggregate_bytes
                 .checked_add(frame.len())

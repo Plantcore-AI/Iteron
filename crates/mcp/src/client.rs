@@ -4,13 +4,11 @@ use crate::{
     MAX_FRAME_BYTES, McpError, encode_frame,
     evidence::{DispatchClock, McpToolCallEvidence},
     pagination::ToolListLimits,
-    protocol_version::{REQUESTED_PROTOCOL_VERSION, negotiate_initialize_result},
     request,
-    tool_filter::{McpToolFilter, validate_bare_tool_name, validate_server_name},
+    tool_filter::{McpToolFilter, validate_bare_tool_name},
 };
 use core_protocol::ToolSpec;
 use serde_json::{Value, json};
-use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
@@ -19,6 +17,7 @@ use tokio::sync::Mutex;
 mod content;
 mod discovery;
 mod lifecycle;
+mod managed_connect;
 mod transport;
 use content::render_tool_content;
 use lifecycle::terminate_and_reap;
@@ -28,7 +27,6 @@ use transport::{ResponseLimits, read_matching_response};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-const READ_BUFFER_BYTES: usize = 8 * 1024;
 
 /// Certainty of one `tools/call` exchange. A matching server response is a completed attempt even
 /// when the server reports `isError`; transport/protocol loss after dispatch is `Unknown` because
@@ -128,84 +126,40 @@ impl McpClient {
         request_timeout: Duration,
         sensitive_env_names: &[String],
     ) -> Result<Self, McpError> {
-        // Reject ambiguous namespaces before granting process authority. Server namespaces cannot
-        // contain `_`, so the first `__` in a registered name is an unambiguous separator.
-        validate_server_name(name)?;
-        let mut command = tokio::process::Command::new(command);
-        // A stdio server is trusted user configuration, but it is not entitled to every provider
-        // credential injected into Core. Give it only a toolchain/locale environment; explicit
-        // per-server secret grants require a future credential broker.
-        core_sandbox::clear_to_safe_child_env_with_exact(&mut command, sensitive_env_names);
-        core_sandbox::configure_process_group(&mut command);
-        #[cfg(unix)]
-        command.current_dir("/");
-        command
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .map_err(|e| McpError::Spawn(e.to_string()))?;
-
-        let Some(stdin) = child.stdin.take() else {
-            terminate_and_reap(&mut child).await;
-            return Err(McpError::Spawn("no stdin".into()));
-        };
-        let Some(stdout) = child.stdout.take() else {
-            terminate_and_reap(&mut child).await;
-            return Err(McpError::Spawn("no stdout".into()));
-        };
-
-        let mut client = McpClient {
-            child: Some(child),
-            stdin: Mutex::new(stdin),
-            stdout: Mutex::new(BufReader::with_capacity(READ_BUFFER_BYTES, stdout)),
-            calls: Mutex::new(()),
-            next_id: std::sync::atomic::AtomicU64::new(1),
+        managed_connect::connect(
+            command,
+            args,
+            name,
+            handshake_timeout,
             request_timeout,
-            negotiated_protocol_version: None,
-            server_name: name.to_string(),
-        };
-
-        // One deadline covers both handshake messages, their writes, lock acquisition, and the
-        // initialize response. On every failure path the process is explicitly killed and reaped.
-        let handshake = async {
-            let initialize_result = client
-                .call_unbounded_by_outer_deadline(
-                    "initialize",
-                    json!({
-                        "protocolVersion": REQUESTED_PROTOCOL_VERSION,
-                        "capabilities": {},
-                        "clientInfo": {"name": "core", "version": "0.0.1"}
-                    }),
-                )
-                .await?;
-            client.negotiated_protocol_version =
-                Some(negotiate_initialize_result(&initialize_result)?);
-            client
-                .notify_unbounded_by_outer_deadline("notifications/initialized", json!({}))
-                .await
-        };
-
-        let result = tokio::time::timeout(handshake_timeout, handshake).await;
-        match result {
-            Ok(Ok(())) => Ok(client),
-            Ok(Err(error)) => {
-                client.terminate().await;
-                Err(error)
-            }
-            Err(_) => {
-                client.terminate().await;
-                Err(McpError::Deadline {
-                    operation: "initialize handshake".into(),
-                })
-            }
-        }
+            sensitive_env_names,
+            None,
+        )
+        .await
     }
 
-    async fn terminate(&mut self) {
+    pub(crate) async fn connect_managed(
+        command: &str,
+        args: &[String],
+        name: &str,
+        handshake_timeout: Duration,
+        request_timeout: Duration,
+        sensitive_env_names: &[String],
+        cancellation: &crate::supervisor::McpCancellation,
+    ) -> Result<Self, McpError> {
+        managed_connect::connect(
+            command,
+            args,
+            name,
+            handshake_timeout,
+            request_timeout,
+            sensitive_env_names,
+            Some(cancellation),
+        )
+        .await
+    }
+
+    pub(crate) async fn terminate(&mut self) {
         if let Some(mut child) = self.child.take() {
             terminate_and_reap(&mut child).await;
         }
@@ -485,6 +439,8 @@ impl McpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol_version::REQUESTED_PROTOCOL_VERSION;
+    use std::process::Stdio;
     use tokio::io::{AsyncWriteExt, duplex};
 
     #[tokio::test]

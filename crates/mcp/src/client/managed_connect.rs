@@ -1,0 +1,123 @@
+//! Cancellable stdio startup kept separate from the already-large client implementation.
+
+use super::{McpClient, lifecycle::terminate_and_reap};
+use crate::{
+    McpError,
+    protocol_version::{REQUESTED_PROTOCOL_VERSION, negotiate_initialize_result},
+    tool_filter::validate_server_name,
+};
+use serde_json::json;
+use std::{process::Stdio, time::Duration};
+use tokio::{io::BufReader, sync::Mutex};
+
+const READ_BUFFER_BYTES: usize = 8 * 1024;
+
+pub(super) async fn connect(
+    command: &str,
+    args: &[String],
+    name: &str,
+    handshake_timeout: Duration,
+    request_timeout: Duration,
+    sensitive_env_names: &[String],
+    cancellation: Option<&crate::supervisor::McpCancellation>,
+) -> Result<McpClient, McpError> {
+    // Reject ambiguous namespaces before granting process authority. Server namespaces cannot
+    // contain `_`, so the first `__` in a registered name is an unambiguous separator.
+    validate_server_name(name)?;
+    let mut command = tokio::process::Command::new(command);
+    // A stdio server is trusted user configuration, but it is not entitled to every provider
+    // credential injected into Core. Give it only a toolchain/locale environment; explicit
+    // per-server secret grants require a future credential broker.
+    core_sandbox::clear_to_safe_child_env_with_exact(&mut command, sensitive_env_names);
+    core_sandbox::configure_process_group(&mut command);
+    #[cfg(unix)]
+    command.current_dir("/");
+    command
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|error| McpError::Spawn(error.to_string()))?;
+
+    let Some(stdin) = child.stdin.take() else {
+        terminate_and_reap(&mut child).await;
+        return Err(McpError::Spawn("no stdin".into()));
+    };
+    let Some(stdout) = child.stdout.take() else {
+        terminate_and_reap(&mut child).await;
+        return Err(McpError::Spawn("no stdout".into()));
+    };
+
+    let mut client = McpClient {
+        child: Some(child),
+        stdin: Mutex::new(stdin),
+        stdout: Mutex::new(BufReader::with_capacity(READ_BUFFER_BYTES, stdout)),
+        calls: Mutex::new(()),
+        next_id: std::sync::atomic::AtomicU64::new(1),
+        request_timeout,
+        negotiated_protocol_version: None,
+        server_name: name.to_string(),
+    };
+
+    // One deadline covers both handshake messages, their writes, lock acquisition, and the
+    // initialize response. On every failure path the process is explicitly killed and reaped.
+    let handshake = async {
+        let initialize_result = client
+            .call_unbounded_by_outer_deadline(
+                "initialize",
+                json!({
+                    "protocolVersion": REQUESTED_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "core", "version": "0.0.1"}
+                }),
+            )
+            .await?;
+        client.negotiated_protocol_version = Some(negotiate_initialize_result(&initialize_result)?);
+        client
+            .notify_unbounded_by_outer_deadline("notifications/initialized", json!({}))
+            .await
+    };
+
+    enum HandshakeResult {
+        Completed(Result<(), McpError>),
+        TimedOut,
+        Cancelled,
+    }
+    let result = if let Some(cancellation) = cancellation {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => HandshakeResult::Cancelled,
+            result = tokio::time::timeout(handshake_timeout, handshake) => match result {
+                Ok(result) => HandshakeResult::Completed(result),
+                Err(_) => HandshakeResult::TimedOut,
+            },
+        }
+    } else {
+        match tokio::time::timeout(handshake_timeout, handshake).await {
+            Ok(result) => HandshakeResult::Completed(result),
+            Err(_) => HandshakeResult::TimedOut,
+        }
+    };
+    match result {
+        HandshakeResult::Completed(Ok(())) => Ok(client),
+        HandshakeResult::Completed(Err(error)) => {
+            client.terminate().await;
+            Err(error)
+        }
+        HandshakeResult::TimedOut => {
+            client.terminate().await;
+            Err(McpError::Deadline {
+                operation: "initialize handshake".into(),
+            })
+        }
+        HandshakeResult::Cancelled => {
+            client.terminate().await;
+            Err(McpError::Cancelled {
+                operation: "initialize handshake",
+            })
+        }
+    }
+}
