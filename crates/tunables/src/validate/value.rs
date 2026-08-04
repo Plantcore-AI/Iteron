@@ -1,6 +1,7 @@
 use crate::{
-    CrossFieldRule, DecimalValue, DefaultResolver, ExternalCeiling, FieldDomain, RegistryError,
-    ScalarDomain, SchemaField, StructuredValueDomain, ValueKind, ValueSchema,
+    ConstraintProjection, ConstraintRelation, ConstraintViolation, CrossFieldRule, DecimalValue,
+    DefaultResolver, ExternalCeiling, FieldDomain, RegistryError, ScalarDomain, SchemaField,
+    StructuredValueDomain, ValueKind, ValueSchema,
 };
 use std::collections::BTreeSet;
 
@@ -82,7 +83,7 @@ fn validate_schema(schema: ValueSchema) -> Result<(), &'static str> {
             if schema.kind != ValueKind::Map || min_entries > max_entries || max_entries == 0 {
                 return Err("invalid bounded map root");
             }
-            validate_scalar_domain(key)?;
+            validate_map_key_domain(key)?;
             validate_field_domain(value, 0)?;
         }
         StructuredValueDomain::Object {
@@ -218,7 +219,7 @@ fn validate_field_domain(domain: FieldDomain, depth: u8) -> Result<(), &'static 
             if min_entries > max_entries || max_entries == 0 {
                 return Err("invalid field map bounds");
             }
-            validate_scalar_domain(key)?;
+            validate_map_key_domain(key)?;
             validate_scalar_domain(value)
         }
         FieldDomain::Object {
@@ -230,6 +231,17 @@ fn validate_field_domain(domain: FieldDomain, depth: u8) -> Result<(), &'static 
             }
             validate_fields(fields, depth)
         }
+    }
+}
+
+fn validate_map_key_domain(domain: ScalarDomain) -> Result<(), &'static str> {
+    if matches!(
+        domain,
+        ScalarDomain::Text { .. } | ScalarDomain::Enum { .. }
+    ) {
+        validate_scalar_domain(domain)
+    } else {
+        Err("map keys must use a text or enum scalar domain")
     }
 }
 
@@ -269,9 +281,75 @@ fn validate_rule(root: StructuredValueDomain, rule: CrossFieldRule) -> Result<()
                 return Err("invalid mutually-exclusive rule");
             }
         }
-        CrossFieldRule::ExternalCeiling { field, .. } => {
+        CrossFieldRule::ExternalCeiling {
+            field,
+            ceiling,
+            projection,
+            relation,
+            violation,
+        } => {
             if !valid_path(field) {
                 return Err("external ceiling names an unknown field");
+            }
+            let numeric_target = path_is_numeric(root, field);
+            let budget_authority = matches!(
+                ceiling,
+                ExternalCeiling::ParentTurns
+                    | ExternalCeiling::ParentTokens
+                    | ExternalCeiling::ParentWall
+                    | ExternalCeiling::ParentCost
+                    | ExternalCeiling::ContextWindow
+                    | ExternalCeiling::ToolBudget
+                    | ExternalCeiling::ProcessBudget
+                    | ExternalCeiling::RunBudget
+            );
+            let whole_value_policy = projection == ConstraintProjection::WholeValue
+                && match (relation, violation) {
+                    (ConstraintRelation::UpperBound, ConstraintViolation::ClampNumeric) => {
+                        budget_authority && numeric_target
+                    }
+                    (ConstraintRelation::Exact, ConstraintViolation::Reject) => {
+                        ceiling == ExternalCeiling::BenchmarkProtocol
+                    }
+                    (
+                        ConstraintRelation::AttestedDomain,
+                        ConstraintViolation::DegradeAttested {
+                            policy_id: "core://tunables/degrade/provider-attested-preferred-v1",
+                        },
+                    ) => ceiling == ExternalCeiling::ProviderCapability,
+                    (ConstraintRelation::AttestedDomain, ConstraintViolation::Reject) => {
+                        matches!(
+                            ceiling,
+                            ExternalCeiling::OperatorAuthority
+                                | ExternalCeiling::VerificationFloor
+                                | ExternalCeiling::TenantScope
+                        ) || (budget_authority && !numeric_target)
+                    }
+                    _ => false,
+                };
+            let whole_catalog_policy = projection == ConstraintProjection::WholeCatalog
+                && field != "$"
+                && matches!(root, StructuredValueDomain::Catalog { .. })
+                && match (relation, violation) {
+                    (ConstraintRelation::Exact, ConstraintViolation::Reject) => {
+                        ceiling == ExternalCeiling::BenchmarkProtocol
+                    }
+                    (ConstraintRelation::AttestedDomain, ConstraintViolation::Reject) => {
+                        matches!(
+                            ceiling,
+                            ExternalCeiling::OperatorAuthority
+                                | ExternalCeiling::TenantScope
+                                | ExternalCeiling::ContextWindow
+                                | ExternalCeiling::ParentWall
+                        )
+                    }
+                    _ => false,
+                };
+            let valid_policy = whole_value_policy || whole_catalog_policy;
+            if !valid_policy {
+                return Err(
+                    "external ceiling policy is inconsistent with its target shape or authority",
+                );
             }
         }
     }
@@ -288,6 +366,42 @@ fn path_exists(root: StructuredValueDomain, path: &str) -> bool {
         _ => return false,
     };
     field_path_exists(fields, path)
+}
+
+fn path_is_numeric(root: StructuredValueDomain, path: &str) -> bool {
+    if path == "$" {
+        return matches!(
+            root,
+            StructuredValueDomain::Scalar {
+                domain: ScalarDomain::Integer { .. } | ScalarDomain::Decimal { .. }
+            }
+        );
+    }
+    let fields = match root {
+        StructuredValueDomain::Object { fields, .. } => fields,
+        StructuredValueDomain::Catalog { entry_fields, .. } => entry_fields,
+        _ => return false,
+    };
+    field_path_is_numeric(fields, path)
+}
+
+fn field_path_is_numeric(fields: &[SchemaField], path: &str) -> bool {
+    let (head, tail) = path.split_once('.').unwrap_or((path, ""));
+    let Some(field) = fields.iter().find(|field| field.name == head) else {
+        return false;
+    };
+    if tail.is_empty() {
+        return matches!(
+            field.domain,
+            FieldDomain::Scalar {
+                domain: ScalarDomain::Integer { .. } | ScalarDomain::Decimal { .. }
+            }
+        );
+    }
+    match field.domain {
+        FieldDomain::Object { fields, .. } => field_path_is_numeric(fields, tail),
+        _ => false,
+    }
 }
 
 fn field_path_exists(fields: &[SchemaField], path: &str) -> bool {

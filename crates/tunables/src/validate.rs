@@ -1,7 +1,7 @@
 use crate::{
-    ActivationPredicate, AuthorityClass, DefaultKind, DefaultResolver, DefaultValueRequirement,
-    FAMILY_SCHEMA_VERSION, ImplementationStatus, OptimizationClass, ProviderRequirement,
-    SearchPhase, SourceKind, SourceTrust, families,
+    ActivationPredicate, AuthorityClass, CrossFieldRule, DefaultKind, DefaultResolver,
+    DefaultValueRequirement, ExternalCeiling, FAMILY_SCHEMA_VERSION, ImplementationStatus,
+    OptimizationClass, ProviderRequirement, SearchPhase, SourceKind, SourceTrust, families,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,6 +12,7 @@ mod value;
 
 /// Stable identities retired because they duplicate another semantic family.
 const SEMANTIC_DUPLICATE_DENYLIST: &[&str] = &["delegation_depth", "workflow_spawn_cap"];
+const EXPECTED_EXTERNAL_CONSTRAINT_POLICIES: usize = 201;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
@@ -55,6 +56,14 @@ pub enum RegistryError {
     InvalidStrategySlots(&'static str),
     #[error("family `{0}` has an invalid value schema: {1}")]
     InvalidValueDomain(&'static str, &'static str),
+    #[error("registry has {actual} external constraint policies; expected exactly {expected}")]
+    WrongExternalConstraintPolicyCount { expected: usize, actual: usize },
+    #[error("family `{family}` repeats external constraint policy `{field}` / {ceiling:?}")]
+    DuplicateExternalConstraintPolicy {
+        family: &'static str,
+        field: &'static str,
+        ceiling: ExternalCeiling,
+    },
     #[error("scalar catalog `{0}` is invalid or duplicated")]
     InvalidScalarCatalog(&'static str),
     #[error("family `{0}` has an inconsistent optimization class/search phase")]
@@ -155,6 +164,40 @@ fn validate_families(registry: &[crate::Family]) -> Result<(), RegistryError> {
         validate_requirements_and_slots(family)?;
         value::validate_family_value(family)?;
         validate_optimization(family)?;
+    }
+    validate_external_constraint_policies(registry)?;
+    Ok(())
+}
+
+fn validate_external_constraint_policies(registry: &[crate::Family]) -> Result<(), RegistryError> {
+    let mut policies = BTreeSet::new();
+    let mut count = 0usize;
+    for family in registry {
+        for rule in family.value_schema.rules {
+            let CrossFieldRule::ExternalCeiling { field, ceiling, .. } = *rule else {
+                continue;
+            };
+            count =
+                count
+                    .checked_add(1)
+                    .ok_or(RegistryError::WrongExternalConstraintPolicyCount {
+                        expected: EXPECTED_EXTERNAL_CONSTRAINT_POLICIES,
+                        actual: usize::MAX,
+                    })?;
+            if !policies.insert((family.id, field, ceiling)) {
+                return Err(RegistryError::DuplicateExternalConstraintPolicy {
+                    family: family.id,
+                    field,
+                    ceiling,
+                });
+            }
+        }
+    }
+    if count != EXPECTED_EXTERNAL_CONSTRAINT_POLICIES {
+        return Err(RegistryError::WrongExternalConstraintPolicyCount {
+            expected: EXPECTED_EXTERNAL_CONSTRAINT_POLICIES,
+            actual: count,
+        });
     }
     Ok(())
 }

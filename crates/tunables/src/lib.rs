@@ -1,10 +1,11 @@
 //! Versioned, non-authoritative metadata for Core's tunable semantic families.
 //!
-//! Boundary: this crate describes knobs; it does not read configuration, choose values, mutate the
-//! runtime, load a policy bundle, or grant authority. Security, permission, durability, replay,
-//! budget, and effect-ledger guarantees remain outside the learnable policy surface. Consumers may
-//! use the registry for analysis and offline candidate generation, but the runtime remains the sole
-//! authority for admitting any resulting value.
+//! Boundary: the registry describes knobs, and the pure resolver deterministically evaluates an
+//! explicit frozen request. This crate does not read configuration or ambient state, mutate the
+//! runtime, load a policy bundle, authenticate evidence, or grant authority. A resolved set remains
+//! an offline simulation until a production binding admits it and records run-genesis evidence.
+//! Security, permission, durability, replay, budget, and effect-ledger guarantees remain outside
+//! the learnable policy surface; the runtime remains the sole authority for admitting a value.
 //!
 //! Invariants:
 //! - the public registry contains exactly [`EXPECTED_FAMILY_COUNT`] stable family identities;
@@ -18,7 +19,14 @@ mod canonical;
 mod families;
 mod metadata;
 mod requirements;
+mod resolution;
+mod resolution_constraints;
+mod resolution_digest;
+mod resolution_explain;
 mod resolution_metadata;
+mod resolution_prepare;
+mod resolution_types;
+mod resolution_value;
 mod schema_catalog;
 mod semantic_keys;
 mod strategy_slots;
@@ -31,10 +39,22 @@ pub use canonical::{
     canonical_artifact_json, canonical_payload_json, family_semantic_digest, registry_digest,
 };
 pub use families::families;
+pub use resolution::{resolve, resolve_json};
+pub use resolution_explain::{ExplainError, explain_entry_json, explain_text};
+pub use resolution_types::{
+    ActivationEvidence, Adjustment, AdjustmentKind, CatalogSnapshot, ConstraintEvidence,
+    ConstraintValue, DeclaredValue, DefaultEvidence, EntryOutcome, EntryState, EvidenceState,
+    EvidenceSubject, FailureCode, FamilyFailure, InactiveCause, ProfileValue,
+    RESOLUTION_INPUT_MAX_BYTES, RESOLUTION_SCHEMA_VERSION, RejectionReason,
+    ResolutionFailureReport, ResolutionInput, ResolutionProfile, ResolutionProvenance,
+    ResolutionReport, ResolutionSource, ResolutionValue, ResolvedEntry, ResolvedTunableSet,
+    RouteCapabilities, RouteIdentity, RuntimeContext, ShadowedValue, UnresolvedReason,
+};
 pub use schema_catalog::{SCALAR_CATALOGS, ScalarCatalogDefinition};
 pub use types::{
     ActivationPredicate, ActivationSpec, AuthorityClass, BenchmarkCausalPath, BenchmarkRelevance,
-    CapabilityRequirement, CausalPath, CoreStrategySlot, CrossFieldRule, DecimalValue, DefaultKind,
+    CapabilityRequirement, CausalPath, ConstraintProjection, ConstraintRelation,
+    ConstraintViolation, CoreStrategySlot, CrossFieldRule, DecimalValue, DefaultKind,
     DefaultResolver, DefaultSpec, DefaultValueRequirement, Domain, ExternalCeiling, Family,
     FieldDomain, ImplementationStatus, InactiveReason, OptimizationClass, OptimizationSpec,
     ProviderRequirement, RelevanceLevel, RequirementSpec, RiskClass, RuleValue, ScalarDomain,
@@ -44,21 +64,21 @@ pub use types::{
 pub use validate::{RegistryError, validate_registry};
 
 /// Registry DTO schema. A breaking field or semantic change requires a new version.
-pub const REGISTRY_SCHEMA_VERSION: u16 = 2;
+pub const REGISTRY_SCHEMA_VERSION: u16 = 3;
 /// Schema version carried by every semantic family entry.
-pub const FAMILY_SCHEMA_VERSION: u16 = 1;
+pub const FAMILY_SCHEMA_VERSION: u16 = 2;
 /// Stable logical registry identity.
 pub const REGISTRY_ID: &str = "core-tunables";
-/// Revision of the family set under schema v2.
-pub const REGISTRY_REVISION: u16 = 2;
+/// Revision of the family set under schema v3.
+pub const REGISTRY_REVISION: u16 = 3;
 /// Exact family cardinality required by the R0/R1 contract.
 pub const EXPECTED_FAMILY_COUNT: usize = 160;
 /// Canonical byte encoding used as the digest input.
-pub const CANONICALIZATION: &str = "core-tunables-json-v2";
+pub const CANONICALIZATION: &str = "core-tunables-json-v3";
 /// Canonical byte encoding used for each entry's semantic digest.
-pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v1";
+pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v2";
 /// Digest algorithm for canonical artifacts.
 pub const DIGEST_ALGORITHM: &str = "sha256";
-/// Golden digest for revision 2; metadata changes require an explicit revision and digest update.
+/// Golden digest for revision 3; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "5dc9790a4ea2f20f00173965bc5937aecaac89d677b8fcc02b2cb87974986502";
+    "0a30e0c1d7789d5c8230122178fab78e74c3193994c359925065dfe59b4b8718";

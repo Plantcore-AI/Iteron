@@ -24,6 +24,7 @@ core-evolve = { path = "../evolve" }
 core-mcp = { path = "../mcp" }
 core-verify = { path = "../verify" }
 core-sandbox = { path = "../sandbox" }
+core-tunables = { path = "../tunables" }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

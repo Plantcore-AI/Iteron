@@ -1,13 +1,14 @@
 use core_tunables::{
-    ActivationPredicate, CausalPath, CoreStrategySlot, CrossFieldRule, DefaultKind,
-    DefaultResolver, DefaultValueRequirement, EXPECTED_FAMILY_COUNT, ExternalCeiling,
-    ImplementationStatus, InactiveReason, ProviderRequirement, REGISTRY_DIGEST_SHA256,
-    RelevanceLevel, SCALAR_CATALOGS, ScalarDomain, SourceKind, SourceTrust, StructuredValueDomain,
-    TunableValue, TunableValueField, ValueKind, canonical_artifact, canonical_artifact_json,
-    canonical_payload_json, families, family_semantic_digest, registry_digest, validate_registry,
+    ActivationPredicate, CausalPath, ConstraintProjection, ConstraintRelation, ConstraintViolation,
+    CoreStrategySlot, CrossFieldRule, DefaultKind, DefaultResolver, DefaultValueRequirement,
+    EXPECTED_FAMILY_COUNT, ExternalCeiling, ImplementationStatus, InactiveReason,
+    ProviderRequirement, REGISTRY_DIGEST_SHA256, RelevanceLevel, SCALAR_CATALOGS, ScalarDomain,
+    SourceKind, SourceTrust, StructuredValueDomain, TunableValue, TunableValueField, ValueKind,
+    canonical_artifact, canonical_artifact_json, canonical_payload_json, families,
+    family_semantic_digest, registry_digest, validate_registry,
 };
 use sha2::{Digest as _, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 macro_rules! relevance {
     ($swe:ident, $terminal:ident) => {
@@ -938,6 +939,7 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
         CrossFieldRule::ExternalCeiling {
             field: "$",
             ceiling: ExternalCeiling::ProviderCapability,
+            ..
         }
     )));
     let prompt_cache_schema = serde_json::to_string(&prompt_cache.value_schema).unwrap();
@@ -983,6 +985,7 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
                 CrossFieldRule::ExternalCeiling {
                     field: "$",
                     ceiling: ExternalCeiling::ProviderCapability,
+                    ..
                 }
             ))
     );
@@ -1176,6 +1179,270 @@ fn corrections_remove_alias_and_cover_multi_slot_effects() {
     assert_eq!(
         family("provider_connect_tls_timeout").requirements.provider,
         ProviderRequirement::AnyAdmittedRoute
+    );
+}
+
+#[test]
+fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
+    let mut keys = BTreeSet::new();
+    let mut counts = BTreeMap::new();
+    let mut whole_value_count = 0usize;
+    let mut whole_catalog = BTreeSet::new();
+    let mut relation_counts = [0usize; 3];
+    let mut action_counts = [0usize; 3];
+    let nonnumeric_budget_domains = BTreeSet::from([
+        ("thinking_map", "$", ExternalCeiling::ParentTokens),
+        ("compaction_failure", "$", ExternalCeiling::ContextWindow),
+        ("pure_overlap", "$", ExternalCeiling::ToolBudget),
+        (
+            "operator_prompt_stream",
+            "$",
+            ExternalCeiling::ContextWindow,
+        ),
+        ("workflow_graph", "$", ExternalCeiling::RunBudget),
+        ("provider_service_tier", "$", ExternalCeiling::ParentCost),
+        ("response_verbosity", "$", ExternalCeiling::ParentTokens),
+        ("role_specific_model_map", "$", ExternalCeiling::ParentCost),
+        (
+            "auto_compaction_enable",
+            "$",
+            ExternalCeiling::ContextWindow,
+        ),
+        (
+            "multi_stage_summary_topology",
+            "$",
+            ExternalCeiling::ContextWindow,
+        ),
+        (
+            "persistent_pty_backend",
+            "$",
+            ExternalCeiling::ProcessBudget,
+        ),
+        ("per_agent_model", "$", ExternalCeiling::ParentCost),
+        (
+            "per_agent_effort_thinking",
+            "$",
+            ExternalCeiling::ParentTokens,
+        ),
+        (
+            "inter_agent_messaging_topology",
+            "$",
+            ExternalCeiling::RunBudget,
+        ),
+    ]);
+    let mut observed_nonnumeric_budget_domains = BTreeSet::new();
+    for family in families() {
+        for rule in family.value_schema.rules {
+            let CrossFieldRule::ExternalCeiling {
+                field,
+                ceiling,
+                projection,
+                relation,
+                violation,
+            } = *rule
+            else {
+                continue;
+            };
+            assert!(keys.insert((family.id, field, ceiling)));
+            *counts.entry(ceiling).or_insert(0usize) += 1;
+            match projection {
+                ConstraintProjection::WholeValue => whole_value_count += 1,
+                ConstraintProjection::WholeCatalog => {
+                    assert!(whole_catalog.insert((family.ordinal, family.id, field, ceiling)));
+                }
+            }
+            relation_counts[match relation {
+                ConstraintRelation::UpperBound => 0,
+                ConstraintRelation::AttestedDomain => 1,
+                ConstraintRelation::Exact => 2,
+            }] += 1;
+            action_counts[match violation {
+                ConstraintViolation::ClampNumeric => 0,
+                ConstraintViolation::DegradeAttested { .. } => 1,
+                ConstraintViolation::Reject => 2,
+            }] += 1;
+            let key = (family.id, field, ceiling);
+            let expected_relation = if projection == ConstraintProjection::WholeCatalog {
+                if ceiling == ExternalCeiling::BenchmarkProtocol {
+                    ConstraintRelation::Exact
+                } else {
+                    ConstraintRelation::AttestedDomain
+                }
+            } else {
+                match ceiling {
+                    ExternalCeiling::ParentTurns
+                    | ExternalCeiling::ParentTokens
+                    | ExternalCeiling::ParentWall
+                    | ExternalCeiling::ParentCost
+                    | ExternalCeiling::ContextWindow
+                    | ExternalCeiling::ToolBudget
+                    | ExternalCeiling::ProcessBudget
+                    | ExternalCeiling::RunBudget => {
+                        if nonnumeric_budget_domains.contains(&key) {
+                            observed_nonnumeric_budget_domains.insert(key);
+                            ConstraintRelation::AttestedDomain
+                        } else {
+                            ConstraintRelation::UpperBound
+                        }
+                    }
+                    ExternalCeiling::BenchmarkProtocol => ConstraintRelation::Exact,
+                    ExternalCeiling::OperatorAuthority
+                    | ExternalCeiling::ProviderCapability
+                    | ExternalCeiling::VerificationFloor
+                    | ExternalCeiling::TenantScope => ConstraintRelation::AttestedDomain,
+                }
+            };
+            assert_eq!(relation, expected_relation, "{}:{field}", family.id);
+            if projection == ConstraintProjection::WholeCatalog {
+                assert_eq!(violation, ConstraintViolation::Reject);
+            } else {
+                match ceiling {
+                    ExternalCeiling::ParentTurns
+                    | ExternalCeiling::ParentTokens
+                    | ExternalCeiling::ParentWall
+                    | ExternalCeiling::ParentCost
+                    | ExternalCeiling::ContextWindow
+                    | ExternalCeiling::ToolBudget
+                    | ExternalCeiling::ProcessBudget
+                    | ExternalCeiling::RunBudget => {
+                        if nonnumeric_budget_domains.contains(&key) {
+                            assert_eq!(violation, ConstraintViolation::Reject)
+                        } else {
+                            assert_eq!(violation, ConstraintViolation::ClampNumeric)
+                        }
+                    }
+                    ExternalCeiling::ProviderCapability => assert_eq!(
+                        violation,
+                        ConstraintViolation::DegradeAttested {
+                            policy_id: "core://tunables/degrade/provider-attested-preferred-v1"
+                        }
+                    ),
+                    ExternalCeiling::OperatorAuthority
+                    | ExternalCeiling::VerificationFloor
+                    | ExternalCeiling::TenantScope
+                    | ExternalCeiling::BenchmarkProtocol => {
+                        assert_eq!(violation, ConstraintViolation::Reject)
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(
+        observed_nonnumeric_budget_domains,
+        nonnumeric_budget_domains
+    );
+    assert_eq!(keys.len(), 201);
+    assert_eq!(whole_value_count, 186);
+    assert_eq!(whole_catalog.len(), 15);
+    assert_eq!(relation_counts, [100, 95, 6]);
+    assert_eq!(action_counts, [100, 23, 78]);
+    assert_eq!(
+        whole_catalog,
+        BTreeSet::from([
+            (
+                72,
+                "builtin_prompt_corpus",
+                "max_render_bytes",
+                ExternalCeiling::ContextWindow
+            ),
+            (
+                73,
+                "instruction_bundle",
+                "max_bytes",
+                ExternalCeiling::ContextWindow
+            ),
+            (74, "memory_corpus", "scope", ExternalCeiling::TenantScope),
+            (
+                74,
+                "memory_corpus",
+                "max_bytes",
+                ExternalCeiling::ContextWindow
+            ),
+            (
+                75,
+                "skill_catalog",
+                "tools",
+                ExternalCeiling::OperatorAuthority
+            ),
+            (
+                76,
+                "agent_catalog",
+                "requested_tools",
+                ExternalCeiling::OperatorAuthority
+            ),
+            (
+                78,
+                "mcp_topology_tool_catalog",
+                "transport",
+                ExternalCeiling::OperatorAuthority
+            ),
+            (
+                81,
+                "tool_action_space",
+                "capability",
+                ExternalCeiling::OperatorAuthority
+            ),
+            (
+                82,
+                "rate_card_catalog",
+                "signature_sha256",
+                ExternalCeiling::BenchmarkProtocol
+            ),
+            (
+                83,
+                "router_lexicons",
+                "version",
+                ExternalCeiling::BenchmarkProtocol
+            ),
+            (
+                85,
+                "web_search_backend_catalog",
+                "endpoint",
+                ExternalCeiling::OperatorAuthority
+            ),
+            (
+                85,
+                "web_search_backend_catalog",
+                "timeout_seconds",
+                ExternalCeiling::ParentWall
+            ),
+            (
+                87,
+                "failover_eligible_error_taxonomy",
+                "version",
+                ExternalCeiling::BenchmarkProtocol
+            ),
+            (
+                119,
+                "lsp_server_language_selection",
+                "executable",
+                ExternalCeiling::OperatorAuthority
+            ),
+            (
+                126,
+                "failure_classification_taxonomy",
+                "version",
+                ExternalCeiling::BenchmarkProtocol
+            ),
+        ])
+    );
+    assert_eq!(
+        counts,
+        BTreeMap::from([
+            (ExternalCeiling::BenchmarkProtocol, 6),
+            (ExternalCeiling::ContextWindow, 33),
+            (ExternalCeiling::OperatorAuthority, 35),
+            (ExternalCeiling::ParentCost, 6),
+            (ExternalCeiling::ParentTokens, 10),
+            (ExternalCeiling::ParentTurns, 8),
+            (ExternalCeiling::ParentWall, 29),
+            (ExternalCeiling::ProcessBudget, 6),
+            (ExternalCeiling::ProviderCapability, 23),
+            (ExternalCeiling::RunBudget, 19),
+            (ExternalCeiling::TenantScope, 8),
+            (ExternalCeiling::ToolBudget, 7),
+            (ExternalCeiling::VerificationFloor, 11),
+        ])
     );
 }
 

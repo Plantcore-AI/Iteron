@@ -1,4 +1,7 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+mod schema;
+pub use schema::*;
 
 /// One coarse subsystem owning a semantic tuning decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -54,7 +57,8 @@ pub enum DefaultValueRequirement {
 
 /// Exact decimal representation used by schemas and defaults; no binary floating-point values
 /// enter canonical artifacts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DecimalValue {
     pub coefficient: i64,
     pub scale: u8,
@@ -120,7 +124,7 @@ pub enum SourceTrust {
 }
 
 /// Primary provenance of the effective value. `locator` points to the current authority or seam.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
     Cli,
@@ -150,192 +154,6 @@ pub struct SourceBinding {
 pub struct SourceSpec {
     /// Ordered effective-value precedence, highest authority/precedence first.
     pub bindings: &'static [SourceBinding],
-}
-
-/// Machine-discriminated shape of a family value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ValueKind {
-    Bool,
-    Enum,
-    Count,
-    Duration,
-    Bytes,
-    Ratio,
-    Decimal,
-    String,
-    List,
-    Map,
-    Policy,
-    Catalog,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StringFormat {
-    Utf8,
-    Identifier,
-    NamespacedId,
-    Uri,
-    Command,
-    Path,
-    Regex,
-    Sha256,
-    Semver,
-}
-
-/// Scalar leaf accepted by a resolver-executable schema AST.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ScalarDomain {
-    Boolean,
-    Integer {
-        min: i64,
-        max: i64,
-        unit: &'static str,
-    },
-    Decimal {
-        min: DecimalValue,
-        max: DecimalValue,
-        max_scale: u8,
-        unit: &'static str,
-    },
-    Text {
-        min_bytes: u64,
-        max_bytes: u64,
-        format: StringFormat,
-    },
-    Enum {
-        values: &'static [&'static str],
-        /// Open/admitted enums name their exact catalog; finite enums set this to `None`.
-        catalog_id: Option<&'static str>,
-    },
-}
-
-/// Field-level AST. Collections are bounded and their leaves are typed; nested object structure is
-/// represented by dotted field names so every accepted leaf remains explicit and auditable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum FieldDomain {
-    Scalar {
-        domain: ScalarDomain,
-    },
-    List {
-        min_items: u64,
-        max_items: u64,
-        unique_items: bool,
-        item: ScalarDomain,
-    },
-    Map {
-        min_entries: u64,
-        max_entries: u64,
-        key: ScalarDomain,
-        value: ScalarDomain,
-    },
-    Object {
-        fields: &'static [SchemaField],
-        additional_fields: bool,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct SchemaField {
-    pub name: &'static str,
-    pub required: bool,
-    pub domain: FieldDomain,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExternalCeiling {
-    OperatorAuthority,
-    ParentTurns,
-    ParentTokens,
-    ParentWall,
-    ParentCost,
-    ProviderCapability,
-    ContextWindow,
-    ToolBudget,
-    ProcessBudget,
-    VerificationFloor,
-    TenantScope,
-    RunBudget,
-    BenchmarkProtocol,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum RuleValue {
-    Boolean { value: bool },
-    Integer { value: i64 },
-    Enum { value: &'static str },
-}
-
-/// Typed cross-field/admission rules. Field names are validated against the schema AST; there is
-/// no prose escape hatch in the canonical contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum CrossFieldRule {
-    LessOrEqual {
-        left: &'static str,
-        right: &'static str,
-    },
-    SumLessOrEqual {
-        terms: &'static [&'static str],
-        limit: &'static str,
-    },
-    Requires {
-        if_field: &'static str,
-        equals: RuleValue,
-        then_field: &'static str,
-    },
-    MutuallyExclusive {
-        fields: &'static [&'static str],
-    },
-    ExternalCeiling {
-        field: &'static str,
-        ceiling: ExternalCeiling,
-    },
-}
-
-/// Tagged, resolver-consumable value schema root.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum StructuredValueDomain {
-    Scalar {
-        domain: ScalarDomain,
-    },
-    List {
-        min_items: u64,
-        max_items: u64,
-        item: ScalarDomain,
-        unique_items: bool,
-    },
-    Map {
-        min_entries: u64,
-        max_entries: u64,
-        key: ScalarDomain,
-        value: FieldDomain,
-    },
-    Object {
-        fields: &'static [SchemaField],
-        additional_fields: bool,
-    },
-    Catalog {
-        catalog_id: &'static str,
-        min_entries: u64,
-        max_entries: u64,
-        entry_fields: &'static [SchemaField],
-    },
-}
-
-/// Typed value-domain contract consumed by resolution and clamping layers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct ValueSchema {
-    pub schema_id: &'static str,
-    pub kind: ValueKind,
-    pub domain: StructuredValueDomain,
-    pub rules: &'static [CrossFieldRule],
 }
 
 /// Formal benchmark relevance. There is intentionally no `None` or causal-path vocabulary here.
@@ -418,7 +236,7 @@ pub enum ProviderRequirement {
     SelectedRoute,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityRequirement {
     Inference,

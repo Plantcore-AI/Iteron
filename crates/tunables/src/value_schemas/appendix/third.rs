@@ -106,7 +106,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         finite_enum_domain!("parent_mediated", "peer", "broadcast"),
         [
             external_rule!("$", OperatorAuthority),
-            external_rule!("$", RunBudget)
+            external_domain_rule!("$", RunBudget)
         ]
     ),
     object_schema!(

@@ -169,7 +169,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         String,
         text_domain!(1, 1_048_576, Utf8),
         [
-            external_rule!("$", ContextWindow),
+            external_domain_rule!("$", ContextWindow),
             external_rule!("$", OperatorAuthority)
         ]
     ),
@@ -182,7 +182,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             scalar_field!("sha256", true, text_domain!(64, 64, Sha256)),
             scalar_field!("max_render_bytes", true, int_domain!(1, 1_048_576, "bytes"))
         ],
-        [external_rule!("max_render_bytes", ContextWindow)]
+        [external_catalog_rule!("max_render_bytes", ContextWindow)]
     ),
     catalog_schema!(
         "instruction_bundle",
@@ -193,7 +193,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             scalar_field!("sha256", true, text_domain!(64, 64, Sha256)),
             scalar_field!("max_bytes", true, int_domain!(1, 1_048_576, "bytes"))
         ],
-        [external_rule!("max_bytes", ContextWindow)]
+        [external_catalog_rule!("max_bytes", ContextWindow)]
     ),
     catalog_schema!(
         "memory_corpus",
@@ -209,8 +209,8 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             scalar_field!("max_bytes", true, int_domain!(1, 1_048_576, "bytes"))
         ],
         [
-            external_rule!("scope", TenantScope),
-            external_rule!("max_bytes", ContextWindow)
+            external_catalog_rule!("scope", TenantScope),
+            external_catalog_rule!("max_bytes", ContextWindow)
         ]
     ),
     catalog_schema!(
@@ -229,7 +229,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
                 text_domain!(1, 96, NamespacedId)
             )
         ],
-        [external_rule!("tools", OperatorAuthority)]
+        [external_catalog_rule!("tools", OperatorAuthority)]
     ),
     catalog_schema!(
         "agent_catalog",
@@ -247,7 +247,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
                 text_domain!(1, 96, NamespacedId)
             )
         ],
-        [external_rule!("requested_tools", OperatorAuthority)]
+        [external_catalog_rule!("requested_tools", OperatorAuthority)]
     ),
     catalog_schema!(
         "provider_model_capability_catalog",
@@ -274,7 +274,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             scalar_field!("tool_name", true, text_domain!(1, 96, NamespacedId)),
             scalar_field!("schema_sha256", true, text_domain!(64, 64, Sha256))
         ],
-        [external_rule!("transport", OperatorAuthority)]
+        [external_catalog_rule!("transport", OperatorAuthority)]
     ),
     map_schema!(
         "hooks_map",
@@ -317,7 +317,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             ],
             additional_fields: false
         },
-        [external_rule!("$", RunBudget)]
+        [external_domain_rule!("$", RunBudget)]
     ),
     catalog_schema!(
         "tool_action_space",
@@ -342,7 +342,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             ),
             scalar_field!("schema_sha256", true, text_domain!(64, 64, Sha256))
         ],
-        [external_rule!("capability", OperatorAuthority)]
+        [external_catalog_rule!("capability", OperatorAuthority)]
     ),
     catalog_schema!(
         "rate_card_catalog",
@@ -361,7 +361,10 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             ),
             scalar_field!("signature_sha256", true, text_domain!(64, 64, Sha256))
         ],
-        [external_rule!("signature_sha256", BenchmarkProtocol)]
+        [external_catalog_rule!(
+            "signature_sha256",
+            BenchmarkProtocol
+        )]
     ),
     catalog_schema!(
         "router_lexicons",
@@ -372,7 +375,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             scalar_field!("weight", true, decimal_domain!(-1, 0, 1, 0, 6, "weight")),
             scalar_field!("version", true, text_domain!(1, 64, Semver))
         ],
-        [external_rule!("version", BenchmarkProtocol)]
+        [external_catalog_rule!("version", BenchmarkProtocol)]
     ),
     map_schema!(
         "environment_snapshot",
@@ -394,8 +397,8 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             scalar_field!("max_results", true, int_domain!(1, 1000, "results"))
         ],
         [
-            external_rule!("endpoint", OperatorAuthority),
-            external_rule!("timeout_seconds", ParentWall)
+            external_catalog_rule!("endpoint", OperatorAuthority),
+            external_catalog_rule!("timeout_seconds", ParentWall)
         ]
     ),
 ];

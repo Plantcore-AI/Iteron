@@ -52,8 +52,8 @@ Core Code has one human Owner/Project Lead and a non-fixed number of human maint
 | `verification` — Verification | open | elevated | Open | Open | `crates/verify/**` |
 | `workflow-engine` — Workflow engine | active | elevated | Jamal Cao (`@fr0m-scratch`) | Open | `crates/workflow/**` |
 | `evaluation` — Evaluation | open | elevated | Open | Open | `crates/eval/**` |
-| `tunability-registry` — Tunable-family registry | open | elevated | Open | Open | `crates/tunables/**` |
-| `cli-host` — CLI host | open | critical | Open | Open | `crates/cli/Cargo.toml`<br>`crates/cli/src/commands.rs`<br>`crates/cli/src/config/**`<br>`crates/cli/src/config.rs`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/image_input.rs`<br>`crates/cli/src/image_input/**`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/pricing.rs`<br>`crates/cli/src/providers.rs`<br>`crates/cli/src/route.rs`<br>`crates/cli/src/runtime.rs`<br>`crates/cli/src/runtime/pricing.rs`<br>`crates/cli/src/runtime/strategy_runtime.rs`<br>`crates/cli/src/runtime/workflow_spawner.rs`<br>`crates/cli/src/setup.rs`<br>`crates/cli/src/startup.rs`<br>`crates/cli/src/workflow.rs` |
+| `tunability-registry` — Tunable registry and pure resolver | open | elevated | Open | Open | `crates/tunables/**` |
+| `cli-host` — CLI host | open | critical | Open | Open | `crates/cli/Cargo.toml`<br>`crates/cli/src/commands.rs`<br>`crates/cli/src/config/**`<br>`crates/cli/src/config.rs`<br>`crates/cli/src/environment.rs`<br>`crates/cli/src/image_input.rs`<br>`crates/cli/src/image_input/**`<br>`crates/cli/src/main.rs`<br>`crates/cli/src/mcp.rs`<br>`crates/cli/src/pricing.rs`<br>`crates/cli/src/providers.rs`<br>`crates/cli/src/route.rs`<br>`crates/cli/src/runtime.rs`<br>`crates/cli/src/runtime/pricing.rs`<br>`crates/cli/src/runtime/strategy_runtime.rs`<br>`crates/cli/src/runtime/workflow_spawner.rs`<br>`crates/cli/src/setup.rs`<br>`crates/cli/src/startup.rs`<br>`crates/cli/src/tunables.rs`<br>`crates/cli/src/workflow.rs` |
 | `cli-tui` — CLI TUI | open | elevated | Open | Open | `crates/cli/src/editor.rs`<br>`crates/cli/src/external_editor.rs`<br>`crates/cli/src/keymap.rs`<br>`crates/cli/src/keymap_tests.rs`<br>`crates/cli/src/prompt_history.rs`<br>`crates/cli/src/surface.rs`<br>`crates/cli/src/tui.rs`<br>`crates/cli/src/tui/**`<br>`crates/cli/tests/**` |
 | `cli-render` — CLI rendering | open | standard | Open | Open | `crates/cli/src/block.rs`<br>`crates/cli/src/block/**`<br>`crates/cli/src/highlight.rs`<br>`crates/cli/src/markdown.rs`<br>`crates/cli/src/render.rs`<br>`crates/cli/src/theme.rs`<br>`crates/cli/src/theme/**` |
 | `cli-output` — CLI machine output | open | elevated | Open | Open | `crates/cli/src/output.rs`<br>`crates/cli/src/bundle_adapter.rs`<br>`crates/cli/src/bundle_adapter_tests.rs`<br>`crates/cli/src/client_event.rs`<br>`crates/cli/src/client_event_tests.rs`<br>`crates/cli/src/session_view.rs`<br>`crates/cli/src/session_view_tests.rs` |
@@ -312,18 +312,18 @@ Benchmark tasks, fixed-model component toggles, scoring, and reliability evidenc
 - Contracts: `fixed-model-comparison`, `ground-truth-check`, `honest-quality-claim`
 - Required checks: `cargo check -p core-eval --all-targets --locked`
 
-### `tunability-registry` — Tunable-family registry
+### `tunability-registry` — Tunable registry and pure resolver
 
-Versioned, non-authoritative metadata for stable tuning families, canonical digest, benchmark relevance, and bounded trainability classification.
+Versioned registry plus a deterministic provider-free evaluator for explicit frozen inputs, typed attested constraints, atomic failure reports, and bounded redacted explanations. Resolution remains a non-authoritative simulation until the runtime separately admits and binds it.
 
-- Contracts: `stable-semantic-family-identity`, `typed-value-domain`, `canonical-registry-digest`, `non-authoritative-metadata`, `fixed-invariant-nontrainability`
+- Contracts: `stable-semantic-family-identity`, `typed-value-domain`, `canonical-registry-digest`, `exact-registry-input-identity`, `deterministic-pure-resolution`, `fail-closed-attested-constraints`, `atomic-resolution-failure`, `bounded-redacted-explain`, `non-authoritative-metadata`, `runtime-remains-sole-authority`, `fixed-invariant-nontrainability`
 - Required checks: `cargo test -p core-tunables --locked`, `cargo run --locked -p core-xtask -- tunables check`
 
 ### `cli-host` — CLI host
 
-Composition root, trusted configuration, provider routing, commands, MCP wiring, and run lifecycle.
+Composition root, trusted configuration, provider routing, commands, MCP wiring, run lifecycle, and provider-free local simulation adapters.
 
-- Contracts: `trusted-config-precedence`, `runtime-composition`, `provider-selection`
+- Contracts: `trusted-config-precedence`, `runtime-composition`, `provider-selection`, `provider-free-tunables-simulation`, `stable-bounded-simulation-output`
 - Required checks: `cargo test -p core-cli --locked`
 
 ### `cli-tui` — CLI TUI

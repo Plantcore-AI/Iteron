@@ -139,6 +139,7 @@
 /crates/cli/src/surface.rs @fr0m-scratch
 /crates/cli/src/theme.rs @fr0m-scratch
 /crates/cli/src/tui.rs @fr0m-scratch
+/crates/cli/src/tunables.rs @fr0m-scratch
 /crates/cli/src/workflow.rs @fr0m-scratch
 /crates/ctx/src/compact.rs @fr0m-scratch
 /crates/ctx/src/context_assembly.rs @fr0m-scratch

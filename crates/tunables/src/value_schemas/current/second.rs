@@ -40,7 +40,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
         "pure_overlap",
         Bool,
         bool_domain!(),
-        [external_rule!("$", ToolBudget)]
+        [external_domain_rule!("$", ToolBudget)]
     ),
     scalar_schema!(
         "pure_concurrency",
