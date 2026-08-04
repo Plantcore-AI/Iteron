@@ -2502,6 +2502,11 @@ async fn run_workflow_command(
     );
 
     println!("{}", serde_json::to_string_pretty(&report.value)?);
+    // A run the operator interrupted did not produce the requested work, so it must not report
+    // success: `stopped` is set for exactly the cancellation token the live loop's Ctrl-C trips.
+    if report.stopped {
+        return Ok(output::EXIT_INTERRUPTED);
+    }
     Ok(output::EXIT_SUCCESS)
 }
 
