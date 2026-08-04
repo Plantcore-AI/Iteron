@@ -55,11 +55,6 @@ struct Cli {
     #[arg(long)]
     provider: Option<String>,
 
-    /// Exact built-in provider credential environment variable copied into each
-    /// otherwise-cleared Core process. The value is never written by core-eval.
-    #[arg(long)]
-    credential_env: Option<String>,
-
     /// `tune` can consume train tasks; `score` can consume held-out tasks only.
     #[arg(long, value_enum, default_value = "score")]
     purpose: PurposeArg,
@@ -100,7 +95,6 @@ async fn main() -> std::process::ExitCode {
         allow_local_repositories: cli.allow_local_repositories,
         model: cli.model,
         provider: cli.provider,
-        credential_env: cli.credential_env,
         purpose: cli.purpose.into(),
         seeds: cli.seeds,
         minimum_seeds: cli.minimum_seeds,

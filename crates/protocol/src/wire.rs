@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 
 /// Current SQ/EQ wire version. Changes to the `protocol-compat` boundary must bump this value;
 /// `core-xtask boundaries check-pr` compares it with the trusted base revision.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProtocolVersionError {
