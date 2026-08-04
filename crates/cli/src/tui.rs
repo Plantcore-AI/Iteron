@@ -10514,7 +10514,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_ne!(cache_widths[0], cache_widths[1]);
         assert_eq!(cache_widths[0], cache_widths[5]);
         assert_eq!(cache_widths[1], cache_widths[4]);
-        assert_eq!(cache_widths, vec![40, 80, 120, 200, 80, 40]);
+        // One column short of the terminal at every size: transcript content now yields the final
+        // column to the scrollbar (`Surface::transcript_content_width`), so the cache is keyed by
+        // the width text actually gets rather than by the width of the window. The relations above
+        // -- distinct widths produce distinct entries, repeated widths reuse them -- are what this
+        // test exists to pin, and they are unchanged.
+        assert_eq!(cache_widths, vec![39, 79, 119, 199, 79, 39]);
     }
 
     #[test]
