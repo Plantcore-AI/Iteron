@@ -144,6 +144,71 @@ class LocalGateIdentityTest(unittest.TestCase):
         self.assertNotEqual(finished.returncode, 0, "the second lane must not run concurrently")
         self.assertIn("still running in this repository", finished.stderr)
 
+    def test_a_running_lane_actually_holds_the_lock_and_releases_it_when_killed(self) -> None:
+        """The direction the first version of this test missed, and the one the lock exists for.
+
+        Asserting only that the gate refuses when SOMEONE ELSE holds the lock passes even when the
+        gate never takes the lock at all -- which is exactly what shipped: the helper's stdin was
+        the heredoc carrying its own program, so it reached end-of-file the moment that text was
+        consumed, exited, and released the lock before the first lane started. Two more defects hid
+        behind the same one-sided test: `exec {VAR}>` needs bash 4 and macOS ships 3.2, and the
+        helper's program file was unlinked before the FIFO handshake let the helper open it.
+        """
+        import fcntl
+        import time
+
+        lock_path = Path(git(self.root, "rev-parse", "--git-common-dir"))
+        if not lock_path.is_absolute():
+            lock_path = self.root / lock_path
+        lock_path = lock_path / "gate-macos.lock"
+
+        running = subprocess.Popen(
+            ["bash", str(self.gate), "macos", "--dry-run"],
+            cwd=self.root,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, "GATE_SHA": self.head},
+        )
+        try:
+            deadline = time.monotonic() + 30
+            held = False
+            while time.monotonic() < deadline:
+                if lock_path.exists():
+                    with open(lock_path, "w", encoding="utf-8") as probe:
+                        try:
+                            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            fcntl.flock(probe, fcntl.LOCK_UN)
+                        except OSError:
+                            held = True
+                            break
+                if running.poll() is not None:
+                    break
+                time.sleep(0.2)
+            self.assertTrue(
+                held,
+                "a running lane must hold the lock; if it does not, the second lane is not "
+                "excluded by anything and the guard is decorative",
+            )
+        finally:
+            running.kill()
+            running.wait(timeout=10)
+
+        # An advisory lock is the kernel's to release, which is why a SIGKILLed run cannot wedge
+        # every future gate the way a pid file or a lock directory would. The release is not
+        # instantaneous and asserting it as though it were is its own flake: the holder is a
+        # separate process, and it only learns the gate is gone when the write end of its FIFO
+        # closes and its read returns end-of-file. Poll for that rather than racing it.
+        release_deadline = time.monotonic() + 15
+        while True:
+            with open(lock_path, "w", encoding="utf-8") as after:
+                try:
+                    fcntl.flock(after, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= release_deadline:
+                        self.fail("the lock outlived the process that held it")
+                    time.sleep(0.2)
+
 
 if __name__ == "__main__":
     unittest.main()
