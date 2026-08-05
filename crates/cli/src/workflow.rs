@@ -1619,7 +1619,8 @@ pub fn load_script(workflows_dir: &Path, run_id: &str) -> Option<String> {
     std::fs::read_to_string(run_dir(workflows_dir, run_id).join("script.js")).ok()
 }
 
-/// One row of `core workflow list`.
+/// One row of `core workflow list` (also the durable summary the TUI can rehydrate).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunListing {
     pub run_id: String,
     pub name: String,
@@ -1633,12 +1634,86 @@ pub struct RunListing {
 fn journal_agent_count(workflows_dir: &Path, run_id: &str) -> usize {
     let path = run_dir(workflows_dir, run_id).join("journal.jsonl");
     match std::fs::read_to_string(path) {
-        Ok(text) => text
-            .lines()
-            .filter(|l| l.contains("\"type\":\"result\""))
-            .count(),
+        Ok(text) => count_agent_results(&text),
         Err(_) => 0,
     }
+}
+
+fn count_agent_results(journal: &str) -> usize {
+    journal
+        .lines()
+        .filter(|line| line.contains("\"type\":\"result\""))
+        .count()
+}
+
+fn derive_status(result: Option<&RunResult>, has_journal: bool) -> &'static str {
+    match result {
+        Some(r) if r.stopped => "stopped",
+        Some(r) if r.errors > 0 => "failed",
+        Some(_) => "done",
+        None if has_journal => "running",
+        None => "pending",
+    }
+}
+
+/// Largest journal opened by the first-frame rehydration path. The run remains durable and
+/// available to `core workflow list|resume`; it is merely omitted from the startup inventory.
+const MAX_RECENT_JOURNAL_BYTES: u64 = 256 * 1024;
+
+/// Strict summary used by restart rehydration. Unlike the human-invoked full listing, the first
+/// frame must never publish a partial count from a killed writer or spend unbounded time on one
+/// historical journal.
+fn recent_journal_summary(workflows_dir: &Path, run_id: &str) -> Option<(bool, usize)> {
+    let path = run_dir(workflows_dir, run_id).join("journal.jsonl");
+    let len = match std::fs::metadata(&path) {
+        Ok(meta) => meta.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some((false, 0)),
+        Err(_) => return None,
+    };
+    if len > MAX_RECENT_JOURNAL_BYTES {
+        return None;
+    }
+    use std::io::Read as _;
+    let mut bytes = Vec::with_capacity(len as usize);
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_RECENT_JOURNAL_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_RECENT_JOURNAL_BYTES {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    if !text.is_empty() && !text.ends_with('\n') {
+        return None;
+    }
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        serde_json::from_str::<serde_json::Value>(line).ok()?;
+    }
+    Some((true, count_agent_results(&text)))
+}
+
+/// Load one restart-safe listing through the same manifest/script/result readers used by
+/// `core workflow list|resume|watch`. A torn optional sidecar refuses this row, not its neighbours.
+pub(crate) fn load_run_listing(workflows_dir: &Path, run_id: String) -> Option<RunListing> {
+    let manifest = load_manifest(workflows_dir, &run_id)?;
+    // A restored row advertises the run id accepted by resume/watch, so the persisted script must
+    // be readable too. This calls their existing reader rather than inventing a TUI-side parser.
+    load_script(workflows_dir, &run_id)?;
+    let result_path = run_dir(workflows_dir, &run_id).join("result.json");
+    let result = load_result(workflows_dir, &run_id);
+    if result_path.exists() && result.is_none() {
+        return None;
+    }
+    let (has_journal, agents) = recent_journal_summary(workflows_dir, &run_id)?;
+    Some(RunListing {
+        run_id,
+        name: manifest.name,
+        model: manifest.model,
+        status: derive_status(result.as_ref(), has_journal),
+        agents,
+        created_at: manifest.created_at,
+    })
 }
 
 /// Enumerate every persisted run under `<workflows_dir>`, newest first. A run's status is derived
@@ -1659,13 +1734,7 @@ pub fn list_runs(workflows_dir: &Path) -> Vec<RunListing> {
         let has_journal = run_dir(workflows_dir, &run_id)
             .join("journal.jsonl")
             .exists();
-        let status = match &result {
-            Some(r) if r.stopped => "stopped",
-            Some(r) if r.errors > 0 => "failed",
-            Some(_) => "done",
-            None if has_journal => "running",
-            None => "pending",
-        };
+        let status = derive_status(result.as_ref(), has_journal);
         let created_at = manifest.as_ref().map(|m| m.created_at).unwrap_or(0);
         out.push(RunListing {
             run_id: run_id.clone(),
