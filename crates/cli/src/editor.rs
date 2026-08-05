@@ -58,8 +58,9 @@ pub struct Editor {
     /// The most recent explicitly recoverable clear. Independent from history's live-line stash;
     /// bounded so repeated clears cannot accumulate an unbounded side buffer.
     recently_cleared: Option<String>,
-    /// Bounded, already-sniffed image chips attached to the current draft. They are deliberately
-    /// not copied into text history or the recoverable-text slot.
+    /// Bounded, already-sniffed image chips attached to the current draft. The payloads are
+    /// deliberately not copied into text history or the recoverable-text slot; only the in-line
+    /// `[Image #N]` anchor that says where each one belongs is draft text.
     attachments: ImageAttachments,
     /// Bounded, already-contained file chips on the same draft, under the same rule: file text
     /// never enters text history or the recoverable-text slot.
@@ -162,11 +163,57 @@ impl Editor {
     }
 
     pub fn attach_image_path(&mut self, path: &Path) -> Result<&ImageAttachment, ImageInputError> {
-        let attached = self.attachments.attach_path(path);
-        if attached.is_ok() {
-            self.chip_order.push(ChipKind::Image);
+        let id = self.attachments.attach_path(path)?.id();
+        self.admit_image(id);
+        Ok(self
+            .attachments
+            .get(id)
+            .expect("an image was just attached under this id"))
+    }
+
+    /// Book-keeping shared by every way an image arrives: it joins the chip order, and it gets an
+    /// in-line anchor at the cursor.
+    ///
+    /// The anchor is inserted automatically rather than on a second gesture, for the same reason a
+    /// captured paste leaves its tag behind automatically: the common case is drag-then-keep-typing,
+    /// and a position the operator has to ask for is a position nobody ever asks for. It is also the
+    /// cheap direction to be wrong in — one backspace takes the anchor away and leaves the image
+    /// attached exactly as it was before anchors existed, whereas an anchor that must be requested
+    /// cannot be discovered at all.
+    fn admit_image(&mut self, id: u32) {
+        self.chip_order.push(ChipKind::Image);
+        // Generated text, so it needs no sanitising — but it goes through `insert` for the cursor,
+        // history-navigation and persistence bookkeeping every other insertion gets.
+        for character in crate::paste_input::image_anchor(id).chars() {
+            self.insert(character);
         }
-        attached
+    }
+
+    /// Cut every anchor naming `id` out of the draft, keeping the cursor where the operator left it.
+    ///
+    /// Runs back to front so each byte range still describes the buffer it was measured against —
+    /// the same discipline `paste_input::expand` follows, and for the same reason.
+    fn remove_image_anchors(&mut self, id: u32) {
+        let text = self.text();
+        let doomed: Vec<std::ops::Range<usize>> = crate::paste_input::find_tags(&text)
+            .into_iter()
+            .filter(|found| found.kind == crate::paste_input::TagKind::Image && found.id == id)
+            .map(|found| found.byte_range)
+            .collect();
+        for range in doomed.iter().rev() {
+            let start = text[..range.start].chars().count();
+            let end = text[..range.end].chars().count();
+            self.buf.drain(start..end);
+            self.cursor = if self.cursor >= end {
+                self.cursor - (end - start)
+            } else {
+                self.cursor.min(start)
+            };
+        }
+        if !doomed.is_empty() {
+            self.leave_navigation();
+            self.mark_persistence_change();
+        }
     }
 
     /// Attach one workspace file. Containment, bounds and sanitisation all live in
@@ -188,22 +235,35 @@ impl Editor {
         display_label: &str,
         bytes: &[u8],
     ) -> Result<&ImageAttachment, ImageInputError> {
-        let attached = self.attachments.attach_bytes(display_label, bytes);
-        if attached.is_ok() {
-            self.chip_order.push(ChipKind::Image);
-        }
-        attached
+        let id = self.attachments.attach_bytes(display_label, bytes)?.id();
+        self.admit_image(id);
+        Ok(self
+            .attachments
+            .get(id)
+            .expect("an image was just attached under this id"))
     }
 
     /// Remove the most recently added chip of either kind.
+    ///
+    /// Removing an image chip is the operator saying "this image is not part of my prompt", so its
+    /// anchors go with it: an anchor for an image nobody is sending points at nothing, and leaving
+    /// it would put "attachment no longer available" into a prompt the operator deliberately tidied.
+    /// This is the opposite direction from deleting the anchor alone, which keeps the image — the
+    /// chip is the authority on *whether*, the anchor only on *where*.
     pub fn remove_last_attachment(&mut self) -> bool {
         match self.chip_order.pop() {
-            Some(ChipKind::Image) => self
-                .attachments
-                .len()
-                .checked_sub(1)
-                .and_then(|index| self.attachments.remove(index))
-                .is_some(),
+            Some(ChipKind::Image) => {
+                let Some(removed) = self
+                    .attachments
+                    .len()
+                    .checked_sub(1)
+                    .and_then(|index| self.attachments.remove(index))
+                else {
+                    return false;
+                };
+                self.remove_image_anchors(removed.id());
+                true
+            }
             Some(ChipKind::File) => self
                 .files
                 .len()
@@ -256,22 +316,39 @@ impl Editor {
     // ---- deletion --------------------------------------------------------------------------
 
     pub fn backspace(&mut self) {
-        // A paste tag is one thing on the screen, so it is one thing to erase. Without this, the
-        // first backspace eats the closing bracket and turns a live reference into prose that no
+        // A tag or an anchor is one thing on the screen, so it is one thing to erase. Without this,
+        // the first backspace eats the closing bracket and turns a live reference into prose that no
         // longer resolves — the same reason the leading agent anchors its delete pattern to the
-        // end of the tag rather than to a character.
-        if let Some((range, id)) =
-            crate::paste_input::tag_ending_at(&self.buf, self.cursor, &self.pastes)
-        {
+        // end of the placeholder rather than to a character.
+        if let Some((range, id, kind)) = crate::paste_input::tag_ending_at(
+            &self.buf,
+            self.cursor,
+            &self.pastes,
+            &self.attachments,
+        ) {
             self.buf.drain(range.clone());
             self.cursor = range.start;
-            // The block is only forgotten when nothing still stands for it: an operator who
-            // duplicated the tag keeps a working second reference instead of a dead one.
-            if !crate::paste_input::find_tags(&self.text())
-                .iter()
-                .any(|found| found.id == id)
-            {
-                self.pastes.remove(id);
+            match kind {
+                // The block is only forgotten when nothing still stands for it: an operator who
+                // duplicated the tag keeps a working second reference instead of a dead one. A
+                // paste with no tag left is unreachable — nothing else on the screen names it.
+                crate::paste_input::TagKind::PastedText => {
+                    if !crate::paste_input::find_tags(&self.text())
+                        .iter()
+                        .any(|found| {
+                            found.kind == crate::paste_input::TagKind::PastedText && found.id == id
+                        })
+                    {
+                        self.pastes.remove(id);
+                    }
+                }
+                // An image is NOT forgotten with its anchor. Its chip is still on the screen with
+                // the file name and size on it, and that chip is the operator's statement that the
+                // image is part of this prompt; silently detaching an attachment they can still see
+                // would make the display lie. What the deletion costs is the position: the image
+                // reverts to being sent after the anchored ones, which is what it did before
+                // anchors existed. Alt+backspace is how an image is taken back.
+                crate::paste_input::TagKind::Image => {}
             }
             self.leave_navigation();
             self.mark_persistence_change();
@@ -567,7 +644,14 @@ impl Editor {
     }
 
     /// Take the current line for submission: returns it (backslash-continuations joined, paste tags
-    /// expanded), pushes a non-empty, non-duplicate entry to history, and clears the buffer.
+    /// expanded, image anchors resolved), pushes a non-empty, non-duplicate entry to history, and
+    /// clears the buffer.
+    ///
+    /// A live image anchor survives into the returned text on purpose — it is the marker the image
+    /// segments' order answers, and it is therefore part of what was sent, so it is also part of
+    /// what history recalls. Recalling such a line and sending it again degrades the anchor to the
+    /// visible "attachment no longer available" form, which is the truth: that draft's images went
+    /// with that draft.
     pub fn take_submit(&mut self) -> String {
         // Join backslash-newline continuations into spaces-free logical lines: a trailing `\` before
         // a newline (or at end) is removed.
@@ -577,7 +661,11 @@ impl Editor {
         // submitted as the bytes it is rather than as a continuation marker. What leaves here is
         // the real text: the tag is a composer affordance and must not outlive the composer, in
         // the submission or in the history the operator recalls with ↑.
-        let out = crate::paste_input::expand(joined.trim_end_matches('\\'), &self.pastes);
+        let out = crate::paste_input::expand(
+            joined.trim_end_matches('\\'),
+            &self.pastes,
+            &self.attachments,
+        );
         let trimmed = out.trim();
         if !trimmed.is_empty() && self.history.last().map(|h| h.as_str()) != Some(out.as_str()) {
             self.history.push(out.clone());
@@ -603,6 +691,17 @@ impl Editor {
         self.pastes.clear();
         self.reverse_search = None;
         self.persistence_revision = 0;
+        // Both stores promise that an id names a moment, and both keep that promise with a counter
+        // that a restart destroys. The restored text is the only surviving evidence of the previous
+        // process's ids, so step the counters past every id it names: without this, the first paste
+        // or screenshot of a fresh process would answer a stale placeholder with unrelated content.
+        let restored = self.text();
+        for found in crate::paste_input::find_tags(&restored) {
+            match found.kind {
+                crate::paste_input::TagKind::PastedText => self.pastes.reserve_id(found.id),
+                crate::paste_input::TagKind::Image => self.attachments.reserve_id(found.id),
+            }
+        }
     }
 
     /// Replace only composer text after a trusted external-editor round trip. Existing image
@@ -656,6 +755,10 @@ mod tests {
         e.insert_str(s);
         e
     }
+
+    /// The smallest byte string that sniffs as a real image, so these tests exercise the attachment
+    /// path rather than a stub.
+    const GIF: &[u8] = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;";
 
     #[test]
     fn insert_and_cursor() {
@@ -761,31 +864,31 @@ mod tests {
     #[test]
     fn attachment_chips_are_bounded_draft_state_not_text_history() {
         let mut editor = ed("describe");
-        editor
-            .attach_image_bytes(
-                "clipboard",
-                b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;",
-            )
-            .unwrap();
+        editor.attach_image_bytes("clipboard", GIF).unwrap();
         assert!(editor.has_submission());
         assert_eq!(editor.attachments().len(), 1);
-        assert_eq!(editor.text(), "describe");
+        assert_eq!(
+            editor.text(),
+            "describe[Image #1]",
+            "the draft carries the anchor; the payload and the file name stay on the chip"
+        );
+        assert!(!editor.text().contains("GIF89a"));
 
         assert!(editor.remove_last_attachment());
         assert!(editor.attachments().is_empty());
-        editor
-            .attach_image_bytes(
-                "clipboard",
-                b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;",
-            )
-            .unwrap();
-        assert_eq!(editor.take_submit(), "describe");
+        assert_eq!(
+            editor.text(),
+            "describe",
+            "removing the chip takes its anchor with it"
+        );
+        editor.attach_image_bytes("clipboard", GIF).unwrap();
+        assert_eq!(editor.take_submit(), "describe[Image #2]");
         assert!(
             editor.attachments().is_empty(),
             "a submitted attachment cannot leak into the next draft"
         );
         editor.history_prev();
-        assert_eq!(editor.text(), "describe");
+        assert_eq!(editor.text(), "describe[Image #2]");
         assert!(editor.attachments().is_empty());
     }
 
@@ -802,16 +905,17 @@ mod tests {
             .attach_file_path(&root, Path::new("a.txt"))
             .expect("a plain workspace file");
         editor
-            .attach_image_bytes(
-                "clipboard",
-                b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;",
-            )
+            .attach_image_bytes("clipboard", GIF)
             .expect("a canonical GIF");
         editor
             .attach_file_path(&root, Path::new("b.txt"))
             .expect("a second workspace file");
         assert_eq!(editor.chip_count(), 3);
-        assert_eq!(editor.text(), "review", "chip text never enters the buffer");
+        assert_eq!(
+            editor.text(),
+            "review[Image #1]",
+            "a file chip has no in-line anchor, and no chip's contents ever enter the buffer"
+        );
 
         // Newest first, across both kinds: the operator removes what they last saw appear.
         assert!(editor.remove_last_attachment());
@@ -1238,6 +1342,182 @@ mod tests {
         assert!(
             !submitted.contains('\u{1b}') && !submitted.contains('\u{200b}'),
             "a control byte must not survive into the terminal or the turn"
+        );
+    }
+
+    // ---- image anchors, on the same rails ---------------------------------------------------
+
+    #[test]
+    fn an_attached_image_anchors_where_the_cursor_is() {
+        let mut e = ed("compare this with that");
+        e.set_cursor(12); // "compare this| with that"
+        e.attach_image_bytes("shot.png", GIF)
+            .expect("a canonical GIF");
+        assert_eq!(
+            e.text(),
+            "compare this[Image #1] with that",
+            "an image appended silently to the end cannot say where in the argument it belongs"
+        );
+        assert_eq!(
+            e.cursor(),
+            22,
+            "the operator keeps typing after the anchor, not before it"
+        );
+        assert_eq!(e.attachments().len(), 1);
+        assert_eq!(e.attachments().as_slice()[0].display_name(), "shot.png");
+    }
+
+    #[test]
+    fn an_anchor_deletes_as_one_unit_and_leaves_the_image_attached() {
+        let mut e = ed("look at ");
+        e.attach_image_bytes("shot.png", GIF)
+            .expect("a canonical GIF");
+        assert_eq!(e.text(), "look at [Image #1]");
+
+        e.backspace();
+        assert_eq!(
+            e.text(),
+            "look at ",
+            "one backspace erases the anchor whole, not its closing bracket"
+        );
+        assert_eq!(
+            e.attachments().len(),
+            1,
+            "the chip is the authority on whether the image is sent; the anchor only on where"
+        );
+        assert!(e.has_submission());
+        // Which is exactly the pre-anchor shape: text, plus an image carried beside it.
+        assert_eq!(e.take_submit(), "look at ");
+
+        // And ordinary text still deletes one character at a time.
+        let mut e = ed("keep");
+        e.backspace();
+        assert_eq!(e.text(), "kee");
+    }
+
+    #[test]
+    fn deleting_the_chip_takes_its_anchor_and_leaves_every_other_anchor_alone() {
+        let mut e = ed("first ");
+        e.attach_image_bytes("a.png", GIF).expect("a canonical GIF");
+        e.insert_str(" then ");
+        e.attach_image_bytes("b.png", GIF).expect("a canonical GIF");
+        assert_eq!(e.text(), "first [Image #1] then [Image #2]");
+        e.home();
+
+        // Alt+backspace removes the newest chip wherever the cursor happens to be.
+        assert!(e.remove_last_attachment());
+        assert_eq!(
+            e.text(),
+            "first [Image #1] then ",
+            "an anchor for an image nobody is sending points at nothing"
+        );
+        assert_eq!(e.attachments().len(), 1);
+        assert_eq!(
+            e.cursor(),
+            0,
+            "a removal far from the cursor does not move it"
+        );
+        assert_eq!(e.take_submit(), "first [Image #1] then ");
+    }
+
+    #[test]
+    fn two_images_keep_distinct_identities_and_the_sentence_orders_them() {
+        let mut e = Editor::new();
+        e.attach_image_bytes("left.png", GIF)
+            .expect("a canonical GIF");
+        e.insert_str(" vs ");
+        e.attach_image_bytes("right.png", GIF)
+            .expect("a canonical GIF");
+        assert_eq!(e.text(), "[Image #1] vs [Image #2]");
+        let names: Vec<&str> = e
+            .attachments()
+            .as_slice()
+            .iter()
+            .map(|attachment| attachment.display_name())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["left.png", "right.png"],
+            "the file name is how an operator tells two screenshots apart"
+        );
+
+        // Moving one anchor is the whole point: the submission order follows the sentence.
+        assert_eq!(
+            crate::paste_input::anchored_image_ids(&e.text(), e.attachments()),
+            vec![1, 2]
+        );
+        e.home();
+        e.insert_str("[Image #2] beats ");
+        assert_eq!(
+            crate::paste_input::anchored_image_ids(&e.text(), e.attachments()),
+            vec![2, 1],
+            "an anchor the draft can answer is honoured wherever the operator typed it"
+        );
+    }
+
+    #[test]
+    fn a_hand_typed_anchor_conjures_no_attachment() {
+        let mut e = Editor::new();
+        e.insert_str("describe [Image #7]");
+        assert!(e.attachments().is_empty());
+        // Not a deletable unit either: no store answers #7, so it is prose and erases as prose.
+        e.backspace();
+        assert_eq!(e.text(), "describe [Image #7");
+        e.insert(']');
+
+        assert_eq!(
+            e.take_submit(),
+            "describe [Image #7 — attachment no longer available]",
+            "a reference the draft cannot answer degrades visibly rather than reading as live"
+        );
+
+        // And an id that a LATER image happens to reuse cannot be answered by it either.
+        let mut e = Editor::new();
+        e.attach_image_bytes("real.png", GIF)
+            .expect("a canonical GIF");
+        assert!(e.remove_last_attachment());
+        e.insert_str("[Image #1]");
+        assert!(
+            e.take_submit().contains("no longer available"),
+            "ids name a moment; a detached image does not answer for its old number"
+        );
+    }
+
+    #[test]
+    fn a_restored_draft_cannot_have_its_anchors_answered_by_this_process() {
+        let mut e = Editor::new();
+        e.restore_persisted(Vec::new(), Some("look at [Image #1]".into()));
+        assert!(e.attachments().is_empty());
+        e.attach_image_bytes("unrelated.png", GIF)
+            .expect("a canonical GIF");
+        let submitted = e.take_submit();
+        assert!(
+            submitted.starts_with("look at [Image #1 — attachment no longer available]"),
+            "{submitted}"
+        );
+        assert!(
+            submitted.ends_with("[Image #2]"),
+            "the image attached in this process gets its own id: {submitted}"
+        );
+    }
+
+    #[test]
+    fn a_paste_tag_and_an_image_anchor_coexist_in_one_sentence() {
+        let mut e = Editor::new();
+        e.insert_str("compare this screenshot ");
+        e.attach_image_bytes("shot.png", GIF)
+            .expect("a canonical GIF");
+        e.insert_str(" with this log ");
+        let log = big_paste();
+        e.capture_paste(&log).expect("a bounded paste");
+        assert_eq!(
+            e.text(),
+            "compare this screenshot [Image #1] with this log [Pasted text #1 +39 lines]"
+        );
+        assert_eq!(
+            e.take_submit(),
+            format!("compare this screenshot [Image #1] with this log {log}"),
+            "the anchor stays as a position marker; the paste becomes its bytes"
         );
     }
 

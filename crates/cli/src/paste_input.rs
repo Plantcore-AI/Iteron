@@ -5,12 +5,35 @@
 //! the same three rules: bounds are refusals, nothing unsanitised reaches the terminal, and the
 //! composer shows a *reference* while the submission carries the payload.
 //!
-//! It differs from those two in exactly one way, and the difference is deliberate. An image or a
-//! file chip is carried out-of-band, in its own protocol field, so the draft text never mentions
-//! it. A pasted block is *text going where text goes*, so it must keep its position in the
-//! sentence the operator is writing — "here is the log <block>, why does it fail?" is not the same
-//! prompt as that log appended at the end. So a paste is represented in-band by a tag inside the
-//! draft, and the tag is expanded back to the original bytes at submission.
+//! It differs from those two in exactly one way, and the difference is deliberate. A file chip is
+//! carried out-of-band, in its own protocol field, so the draft text never mentions it. A pasted
+//! block is *text going where text goes*, so it must keep its position in the sentence the
+//! operator is writing — "here is the log <block>, why does it fail?" is not the same prompt as
+//! that log appended at the end. So a paste is represented in-band by a tag inside the draft, and
+//! the tag is expanded back to the original bytes at submission.
+//!
+//! # Image anchors ride the same rails
+//!
+//! An image has the same positional problem and half the same answer, so it gets the same grammar
+//! rather than a second one. `[Image #N]` is scanned by this module's scanner, deleted by this
+//! module's end-anchored delete rule, and resolved against the draft's image store exactly as
+//! `[Pasted text #N]` is resolved against [`PastedTexts`].
+//!
+//! It is *half* the same answer because an image is two things on the screen, not one:
+//!
+//! - the **chip** (`▧ #1 shot.png · 75 B`) is the image's identity and the authority on whether it
+//!   is sent. It carries the file name and byte count, which is the only way an operator tells two
+//!   screenshots apart, and nothing here may take that away.
+//! - the **anchor** (`[Image #1]`) is the authority on *where* in the argument the image belongs,
+//!   and nothing else. It is not expanded into bytes — image payloads travel in their own protocol
+//!   segments, and [`core_protocol::input::ContentSegments`] is frozen at exactly one text segment
+//!   — so the anchor survives into the submitted text as the marker the segment order answers.
+//!
+//! That split is what decides the two questions an operator will ask. Deleting the *anchor* leaves
+//! the image attached and still sent, appended after the anchored ones, which is precisely the
+//! behaviour images had before anchors existed; the chip still says so on the screen. Deleting the
+//! *chip* (alt+backspace) detaches the image and takes its anchors out of the draft with it,
+//! because an anchor for an image that is not being sent is a reference to nothing.
 //!
 //! Four properties are load-bearing.
 //!
@@ -18,7 +41,9 @@
 //!    A tag whose id the store does not hold expands to a visible
 //!    `[Pasted text #N — content no longer available]`, never to some other paste's content and
 //!    never to silence. That is what makes a hand-typed lookalike harmless: it can name an id,
-//!    but it cannot conjure an entry.
+//!    but it cannot conjure an entry. An image anchor is held to the same standard by the same
+//!    rule: a hand-typed `[Image #7]` degrades to `[Image #7 — attachment no longer available]`
+//!    and attaches nothing.
 //! 2. **Bounds are refusals.** A paste over the per-paste or aggregate bound is refused whole,
 //!    with the operator told how big it was. Nothing is silently shortened: half a stack trace
 //!    reads as a whole one, and answering confidently from half a log is worse than not
@@ -56,8 +81,60 @@ const MAX_INLINE_PASTE_BYTES: usize = 800;
 /// paste of 10-character lines buries the composer just as effectively as one long line.
 const MAX_INLINE_PASTE_LINES: usize = 3;
 
-/// The fixed opening of every tag. Parsing anchors on this, so it is written once.
+/// The fixed opening of every pasted-text tag. Parsing anchors on this, so it is written once.
 const TAG_PREFIX: &str = "[Pasted text #";
+
+/// The fixed opening of every image anchor. The same bracketed `#id` shape as the paste tag, read
+/// by the same scanner and deleted by the same rule: a second grammar would be a second set of
+/// off-by-one bugs, and the operator would have to learn two delete keys for one idea.
+const IMAGE_PREFIX: &str = "[Image #";
+
+/// Which of the two placeholders a match is. They share a scanner but not a resolution rule: a
+/// paste tag is replaced by the bytes it stands for, an image anchor stays where it is and is
+/// answered by the order of the image segments beside the text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TagKind {
+    PastedText,
+    Image,
+}
+
+impl TagKind {
+    const fn prefix(self) -> &'static str {
+        match self {
+            Self::PastedText => TAG_PREFIX,
+            Self::Image => IMAGE_PREFIX,
+        }
+    }
+}
+
+/// The only thing the placeholder rules need to know about a draft's image store: whether it still
+/// holds an id. Keeping the requirement this narrow is what lets this module own the anchor grammar
+/// without depending on [`crate::image_input`] — the dependency points one way, as it does for the
+/// composer.
+pub trait ImageAnchors {
+    fn holds_image(&self, id: u32) -> bool;
+}
+
+/// A draft with no images at all. Callers that provably have none (and tests about paste tags) say
+/// so with `&()` rather than constructing an empty store.
+impl ImageAnchors for () {
+    fn holds_image(&self, _id: u32) -> bool {
+        false
+    }
+}
+
+/// The draft's image store is the authority behind every `[Image #N]` anchor, exactly as
+/// [`PastedTexts`] is the authority behind every `[Pasted text #N]` tag. A hand-typed anchor can
+/// name an id; only this answers one.
+///
+/// The impl lives here rather than beside the type because `crates/cli/src/image_input.rs` is also
+/// compiled standalone, as a module of `crates/cli/tests/image_input.rs`, and so cannot name
+/// anything else in this crate.
+impl ImageAnchors for crate::image_input::ImageAttachments {
+    fn holds_image(&self, id: u32) -> bool {
+        self.get(id).is_some()
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PasteInputErrorKind {
@@ -250,6 +327,15 @@ impl PastedTexts {
         self.items.clear();
         self.total_bytes = 0;
     }
+
+    /// Guarantee that no id this store mints from now on is `id` or below.
+    ///
+    /// "An id names a moment" is a claim about a monotonic counter, and a counter cannot survive a
+    /// restart. A restored draft carries tags from a *previous* process whose counter is gone, so
+    /// the property is re-established from the only evidence left — the ids the text names.
+    pub fn reserve_id(&mut self, id: u32) {
+        self.next_id = self.next_id.max(id);
+    }
 }
 
 /// FNV-1a. A fingerprint for "is this the same block I already hold", not a security primitive —
@@ -329,29 +415,55 @@ pub fn missing_tag(id: u32) -> String {
     format!("{TAG_PREFIX}{id} — content no longer available]")
 }
 
-/// One tag found in draft text.
+/// The in-line anchor that says *where* image `id` belongs in the sentence.
+pub fn image_anchor(id: u32) -> String {
+    format!("{IMAGE_PREFIX}{id}]")
+}
+
+/// What an anchor becomes when the draft no longer holds that image — the image half of
+/// [`missing_tag`], and for the same reason: a prompt that points at an attachment nobody sent
+/// must say so rather than read as though the attachment were there.
+pub fn missing_image_anchor(id: u32) -> String {
+    format!("{IMAGE_PREFIX}{id} — attachment no longer available]")
+}
+
+/// One placeholder found in draft text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TagMatch {
     pub byte_range: Range<usize>,
     pub id: u32,
+    pub kind: TagKind,
 }
 
-/// Every well-formed tag in `text`, in order.
+/// Every well-formed placeholder in `text`, in order, of either kind.
 ///
-/// Only the exact shapes this module emits are recognised — `[Pasted text #N]` and
-/// `[Pasted text #N +M lines]`. Anything else inside brackets is prose and is left alone.
+/// Only the exact shapes this module emits are recognised — `[Pasted text #N]`,
+/// `[Pasted text #N +M lines]` and `[Image #N]`. Anything else inside brackets is prose and is left
+/// alone. Neither prefix is a substring of the other, so one left-to-right scan that takes whichever
+/// prefix comes first cannot mis-attribute a match.
 pub fn find_tags(text: &str) -> Vec<TagMatch> {
     let mut found = Vec::new();
     let mut from = 0;
-    while let Some(offset) = text[from..].find(TAG_PREFIX) {
-        let start = from + offset;
-        let after_prefix = start + TAG_PREFIX.len();
-        match parse_tag_body(&text[after_prefix..]) {
+    while from < text.len() {
+        let next = [TagKind::PastedText, TagKind::Image]
+            .into_iter()
+            .filter_map(|kind| {
+                text[from..]
+                    .find(kind.prefix())
+                    .map(|offset| (from + offset, kind))
+            })
+            .min_by_key(|(start, _)| *start);
+        let Some((start, kind)) = next else {
+            break;
+        };
+        let after_prefix = start + kind.prefix().len();
+        match parse_tag_body(&text[after_prefix..], kind) {
             Some((id, body_len)) => {
                 let end = after_prefix + body_len;
                 found.push(TagMatch {
                     byte_range: start..end,
                     id,
+                    kind,
                 });
                 from = end;
             }
@@ -362,9 +474,32 @@ pub fn find_tags(text: &str) -> Vec<TagMatch> {
     found
 }
 
-/// Parse `<digits>]` or `<digits> +<digits> lines]` at the start of `rest`, returning the id and
-/// how many bytes were consumed up to and including the `]`.
-fn parse_tag_body(rest: &str) -> Option<(u32, usize)> {
+/// The live image ids named by `text`, in the order their anchors appear and without repeats.
+///
+/// This is what makes an anchor mean something to the reader on the other end: the submission leads
+/// with exactly these images, in exactly this order, so for as far as the list goes "the Nth image
+/// beside this text is the Nth one the text points at" is true, and anything the text never named
+/// follows behind them. An anchor the store cannot answer names nothing and is skipped here; it has
+/// already been rewritten to the visible missing form by [`expand`].
+pub fn anchored_image_ids(text: &str, images: &impl ImageAnchors) -> Vec<u32> {
+    let mut ordered: Vec<u32> = Vec::new();
+    for found in find_tags(text) {
+        if found.kind == TagKind::Image
+            && images.holds_image(found.id)
+            && !ordered.contains(&found.id)
+        {
+            ordered.push(found.id);
+        }
+    }
+    ordered
+}
+
+/// Parse the body after a placeholder's prefix, returning the id and how many bytes were consumed
+/// up to and including the `]`.
+///
+/// `<digits>]` is legal for both kinds. The ` +<digits> lines]` suffix announces a paste's size and
+/// is legal only there — an image's size lives on its chip, where the file name is.
+fn parse_tag_body(rest: &str, kind: TagKind) -> Option<(u32, usize)> {
     let bytes = rest.as_bytes();
     let mut index = 0;
     let mut id: u32 = 0;
@@ -379,6 +514,9 @@ fn parse_tag_body(rest: &str) -> Option<(u32, usize)> {
     }
     if bytes.get(index) == Some(&b']') {
         return Some((id, index + 1));
+    }
+    if kind == TagKind::Image {
+        return None;
     }
     // The ` +<digits> lines]` suffix.
     if bytes.get(index) != Some(&b' ') || bytes.get(index + 1) != Some(&b'+') {
@@ -400,39 +538,53 @@ fn parse_tag_body(rest: &str) -> Option<(u32, usize)> {
     Some((id, index + suffix.len()))
 }
 
-/// Replace every tag in `text` with what the store holds for it.
+/// Resolve every placeholder in `text` against the stores that are authoritative for it.
+///
+/// A paste tag becomes the bytes it stands for. An image anchor that the draft still holds is left
+/// exactly as it is — it is a position marker, and the image itself rides beside the text in its own
+/// protocol segment — while an anchor for an image the draft no longer holds degrades visibly, the
+/// same way an unknown paste id does.
 ///
 /// Rewriting runs from the LAST match backwards so that every range still describes the string it
 /// was measured against: a forward pass would have to re-measure after the first substitution, and
 /// the version of that loop which forgets to is the one that silently splices a prompt together
 /// out of the wrong bytes.
-pub fn expand(text: &str, store: &PastedTexts) -> String {
+pub fn expand(text: &str, store: &PastedTexts, images: &impl ImageAnchors) -> String {
     let matches = find_tags(text);
     if matches.is_empty() {
         return text.to_owned();
     }
     let mut out = text.to_owned();
     for found in matches.iter().rev() {
-        let replacement = match store.get(found.id) {
-            Some(block) => block.content().to_owned(),
-            None => missing_tag(found.id),
+        let replacement = match found.kind {
+            TagKind::PastedText => match store.get(found.id) {
+                Some(block) => block.content().to_owned(),
+                None => missing_tag(found.id),
+            },
+            TagKind::Image => {
+                if images.holds_image(found.id) {
+                    continue;
+                }
+                missing_image_anchor(found.id)
+            }
         };
         out.replace_range(found.byte_range.clone(), &replacement);
     }
     out
 }
 
-/// The tag that ends exactly at char index `end` of `chars`, if any: what lets one backspace
-/// remove a whole tag instead of eating its closing bracket.
+/// The placeholder that ends exactly at char index `end` of `chars`, if any: what lets one
+/// backspace remove a whole tag or anchor instead of eating its closing bracket.
 ///
-/// Char-indexed because that is the editor buffer's own coordinate system. Only a tag the store
-/// can answer is treated as one unit — chip-ness is a property of the store, not of the string, so
-/// prose that merely looks like a tag keeps behaving like the prose it is.
+/// Char-indexed because that is the editor buffer's own coordinate system. Only a placeholder one
+/// of the stores can answer is treated as one unit — placeholder-ness is a property of the stores,
+/// not of the string, so prose that merely looks like one keeps behaving like the prose it is.
 pub fn tag_ending_at(
     chars: &[char],
     end: usize,
     store: &PastedTexts,
-) -> Option<(Range<usize>, u32)> {
+    images: &impl ImageAnchors,
+) -> Option<(Range<usize>, u32, TagKind)> {
     if end == 0 || end > chars.len() || chars[end - 1] != ']' {
         return None;
     }
@@ -443,8 +595,11 @@ pub fn tag_ending_at(
     if first.byte_range.start != 0 || first.byte_range.end != candidate.len() {
         return None;
     }
-    store.get(first.id)?;
-    Some((start..end, first.id))
+    let live = match first.kind {
+        TagKind::PastedText => store.get(first.id).is_some(),
+        TagKind::Image => images.holds_image(first.id),
+    };
+    live.then_some((start..end, first.id, first.kind))
 }
 
 /// What one admitted paste tells the operator: which block it became and how big it was. Copyable
@@ -466,6 +621,16 @@ mod tests {
             store.store((*block).to_owned()).expect("a small block");
         }
         store
+    }
+
+    /// The ids a draft's image store would answer, without a decoder or a file in sight: these
+    /// tests are about the grammar, and the grammar only ever asks "do you hold this id".
+    struct Held(&'static [u32]);
+
+    impl ImageAnchors for Held {
+        fn holds_image(&self, id: u32) -> bool {
+            self.0.contains(&id)
+        }
     }
 
     #[test]
@@ -500,10 +665,66 @@ mod tests {
             "[Pasted text #1 + lines]",
             "[Pasted text #1 +2 line]",
             "[pasted text #1]",
-            "[Image #1]",
+            "[Image #]",
+            "[Image #1",
+            "[image #1]",
+            "[Images #1]",
+            // The line-count suffix announces a paste's size. An image's size is on its chip.
+            "[Image #1 +2 lines]",
         ] {
             assert!(find_tags(text).is_empty(), "{text} must not parse as a tag");
         }
+    }
+
+    #[test]
+    fn both_placeholders_share_one_scanner_and_stay_distinguishable() {
+        assert_eq!(image_anchor(3), "[Image #3]");
+        let text = format!("compare {} with {} please", image_anchor(3), tag(4, 200));
+        let found = find_tags(&text);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].kind, TagKind::Image);
+        assert_eq!(found[0].id, 3);
+        assert_eq!(found[1].kind, TagKind::PastedText);
+        assert_eq!(found[1].id, 4);
+        // Ranges are still measured against the string they will be applied to.
+        assert_eq!(&text[found[0].byte_range.clone()], "[Image #3]");
+        assert_eq!(
+            &text[found[1].byte_range.clone()],
+            "[Pasted text #4 +200 lines]"
+        );
+    }
+
+    #[test]
+    fn a_live_anchor_survives_expansion_and_a_dead_one_degrades_visibly() {
+        let store = store_of(&["LOG-BODY"]);
+        let drafted = format!(
+            "{} and {} and {}",
+            image_anchor(1),
+            image_anchor(7),
+            tag(1, 0)
+        );
+        assert_eq!(
+            expand(&drafted, &store, &Held(&[1])),
+            "[Image #1] and [Image #7 — attachment no longer available] and LOG-BODY",
+            "an anchor is a position marker, not a payload; an unheld one names nothing"
+        );
+    }
+
+    #[test]
+    fn anchor_order_is_what_the_submitted_image_order_answers() {
+        let text = format!(
+            "{} then {} then {} again then {}",
+            image_anchor(2),
+            image_anchor(1),
+            image_anchor(2),
+            image_anchor(9)
+        );
+        assert_eq!(
+            anchored_image_ids(&text, &Held(&[1, 2])),
+            vec![2, 1],
+            "first appearance wins, repeats add nothing, an unheld id names nothing"
+        );
+        assert!(anchored_image_ids("no anchors here", &Held(&[1])).is_empty());
     }
 
     #[test]
@@ -565,7 +786,7 @@ mod tests {
         let store = store_of(&["FIRST-BODY", "SECOND-BODY-THAT-IS-MUCH-LONGER"]);
         let drafted = format!("before {} middle {} after", tag(1, 0), tag(2, 0));
         assert_eq!(
-            expand(&drafted, &store),
+            expand(&drafted, &store, &()),
             "before FIRST-BODY middle SECOND-BODY-THAT-IS-MUCH-LONGER after",
             "each range must still describe the string it was measured against"
         );
@@ -574,7 +795,7 @@ mod tests {
     #[test]
     fn an_unknown_id_degrades_visibly_instead_of_borrowing_content() {
         let store = store_of(&["MINE"]);
-        let expanded = expand("typed [Pasted text #9] by hand", &store);
+        let expanded = expand("typed [Pasted text #9] by hand", &store, &());
         assert_eq!(
             expanded,
             "typed [Pasted text #9 — content no longer available] by hand"
@@ -587,23 +808,38 @@ mod tests {
         let store = store_of(&["body"]);
         let live: Vec<char> = format!("look {}", tag(1, 0)).chars().collect();
         assert_eq!(
-            tag_ending_at(&live, live.len(), &store),
-            Some((5..live.len(), 1))
+            tag_ending_at(&live, live.len(), &store, &()),
+            Some((5..live.len(), 1, TagKind::PastedText))
         );
         assert_eq!(
-            tag_ending_at(&live, live.len() - 1, &store),
+            tag_ending_at(&live, live.len() - 1, &store, &()),
             None,
             "the cursor must be past the closing bracket"
         );
 
         let typed: Vec<char> = "look [Pasted text #7]".chars().collect();
         assert_eq!(
-            tag_ending_at(&typed, typed.len(), &store),
+            tag_ending_at(&typed, typed.len(), &store, &()),
             None,
             "an id the store cannot answer is prose"
         );
         let prose: Vec<char> = "look [see notes]".chars().collect();
-        assert_eq!(tag_ending_at(&prose, prose.len(), &store), None);
+        assert_eq!(tag_ending_at(&prose, prose.len(), &store, &()), None);
+    }
+
+    #[test]
+    fn an_anchor_is_one_deletable_unit_on_the_same_terms() {
+        let store = PastedTexts::default();
+        let live: Vec<char> = format!("look at {}", image_anchor(1)).chars().collect();
+        assert_eq!(
+            tag_ending_at(&live, live.len(), &store, &Held(&[1])),
+            Some((8..live.len(), 1, TagKind::Image))
+        );
+        assert_eq!(
+            tag_ending_at(&live, live.len(), &store, &Held(&[])),
+            None,
+            "an anchor for an image the draft does not hold is prose, and deletes as prose"
+        );
     }
 
     #[test]

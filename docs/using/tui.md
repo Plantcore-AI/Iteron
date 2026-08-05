@@ -23,9 +23,21 @@ required. A pipeline should use [one-shot mode](one-shot.md) instead.
 - Paste or terminal-drag a whole local image path to create an attachment chip.
   Press ++ctrl+v++ for bitmap clipboard capture when `pngpaste` (macOS),
   `wl-paste`/`xclip` (Linux), or PowerShell clipboard support (Windows) is
-  available. Text paste remains ordinary composer text.
+  available.
+- An attached image also gets an in-line anchor `[Image #N]` at the cursor, so a
+  prompt can say *where* the picture belongs: "compare this screenshot
+  `[Image #1]` with this log `[Pasted text #1 +200 lines]`". The images are sent
+  in the order the sentence anchors them.
+- A large text paste is held aside as one `[Pasted text #N +M lines]` tag instead
+  of flooding the composer; the original bytes are put back in the tag's place at
+  submission. Small pastes stay inline as ordinary text.
+- ++backspace++ at the end of a tag or an anchor removes the whole thing in one
+  press. Removing an image's anchor keeps the image attached — it is then sent
+  after the anchored ones, as it was before anchors existed.
 - Review the bounded attachment chips above the draft; ++alt+backspace++ removes
-  the most recent chip. Image bytes and paths are never rendered in the preview.
+  the most recent chip, and an image's anchors go with it. The chip carries the
+  `#N`, the file name and the byte count; image bytes, file text and pasted
+  blocks are never rendered in the preview.
 - Scroll the transcript with the wheel or trackpad. A captured left click folds a
   card or places the composer cursor at the selected terminal cell, including
   wide CJK cells.
