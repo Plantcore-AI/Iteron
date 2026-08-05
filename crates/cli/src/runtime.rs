@@ -2340,6 +2340,19 @@ pub struct Agent {
     /// (the one-shot `--output-format` paths) sees exactly what it saw before: nothing.
     workflow_progress_tx:
         Option<tokio::sync::mpsc::UnboundedSender<crate::workflow::WorkflowRunUiEvent>>,
+    /// Optional owner for the runs the `Workflow` tool starts.
+    ///
+    /// `launch_workflow` splits into [`Self::prepare_workflow`] (admit the run, write its
+    /// re-launchable sidecar) and starting it; this is the seam between the two. `None` means the
+    /// kernel starts the run itself through `crate::workflow::InTurnWorkflowLauncher`, which is
+    /// exactly `WorkflowEngine::launch` — so an embedder that installs nothing gets the behavior it
+    /// had before the seam existed, down to the joined `RunHandle`.
+    ///
+    /// The turn still joins whatever handle comes back, so installing a launcher today changes who
+    /// starts a run and not how long it lives. Making a run outlive its turn additionally requires
+    /// a tool result that can describe a run with no value yet, and a session-exit rule for a live
+    /// run; neither is decided here.
+    workflow_launcher: Option<std::sync::Arc<dyn crate::workflow::WorkflowLauncher>>,
     /// Effort level: maps to the model's thinking budget (and, at Ultracode, orchestration).
     effort: core_protocol::Effort,
     /// If set, remembered facts under this workspace are recalled ONCE at run start and injected
@@ -2492,6 +2505,7 @@ impl Agent {
             max_tool_concurrency: 16,
             ui_tx: None,
             workflow_progress_tx: None,
+            workflow_launcher: None,
             effort: core_protocol::Effort::default(),
             memory_workspace: None,
             context_strategy: std::sync::Arc::new(core_ctx::ContextStrategy::default()),
@@ -4974,6 +4988,22 @@ impl Agent {
         }
     }
 
+    /// Install the owner that starts the runs the `Workflow` tool prepares.
+    ///
+    /// An embedder that installs nothing keeps the kernel's own in-turn start, which is exactly
+    /// `WorkflowEngine::launch`; see [`Self::workflow_launcher`] for what a launcher can and cannot
+    /// decide today.
+    ///
+    /// No composition root installs one yet — the session-scoped owner that will is a later step —
+    /// so the seam is exercised by the tests below, like [`Self::set_context_port`].
+    #[allow(dead_code)]
+    pub fn set_workflow_launcher(
+        &mut self,
+        launcher: std::sync::Arc<dyn crate::workflow::WorkflowLauncher>,
+    ) {
+        self.workflow_launcher = Some(launcher);
+    }
+
     /// The final assistant text from the most recently completed model turn. Frontends use this
     /// read-only view to build an authoritative terminal result without parsing streamed deltas.
     pub fn last_assistant_text(&self) -> &str {
@@ -7426,19 +7456,25 @@ impl Agent {
         }
     }
 
-    /// In-turn `Workflow` tool handler (kernel interception, the workflow analogue of
-    /// `spawn_subagent`). Builds a [`KernelSpawner`] from THIS agent's live route + paths, then
-    /// drives the run through [`core_workflow::WorkflowEngine::launch`] (background `RunHandle`, review
-    /// B3) and `join`s it within the turn so the model receives the aggregated result. The launch
-    /// banner (run id) is emitted as a `Notice`, and the re-launchable sidecars are persisted so
-    /// `core workflow list|resume|watch` can see the run. Deferred: truly detached background
-    /// (returning before completion), which needs a session lifecycle owner outside a single turn,
-    /// and live in-turn progress (ADR-0001 step 1).
-    async fn launch_workflow(
-        &mut self,
-        turn_id: TurnId,
-        input: serde_json::Value,
-    ) -> Result<String, String> {
+    /// Resolve, admit and record a `Workflow` tool call — everything up to, but not including,
+    /// starting the run.
+    ///
+    /// This is the half of the old `launch_workflow` that only needs THIS agent: the script
+    /// (inline or read under the workspace sandbox), the durable route children re-record
+    /// byte-for-byte, the single `extract_meta` parse, a freshly minted run id, the
+    /// [`KernelSpawner`] built from this agent's live route + paths, the aggregate budget, the
+    /// degraded sink fanned out with any attached frontend sink, and the re-launchable manifest
+    /// `core workflow list|resume|watch` reads. Every failure that must abort the tool call before
+    /// anything starts happens here, so a returned [`crate::workflow::PreparedWorkflow`] is an
+    /// admitted run with its sidecar already on disk.
+    ///
+    /// What is deliberately NOT here is everything that is only meaningful once a run exists: the
+    /// launch banner, the live card, the interrupt bridge and the join. That is what lets the run be
+    /// started by something other than this turn — see [`crate::workflow::WorkflowLauncher`].
+    fn prepare_workflow(
+        &self,
+        input: &serde_json::Value,
+    ) -> Result<crate::workflow::PreparedWorkflow, String> {
         if self.delegation_depth >= MAX_DELEGATION_DEPTH {
             return Err(KernelError::DelegationDepthExceeded.public_summary());
         }
@@ -7582,6 +7618,46 @@ impl Agent {
             return Err(format!("Workflow: cannot persist run inputs: {error}"));
         }
 
+        Ok(crate::workflow::PreparedWorkflow {
+            run_id,
+            name: workflow_name,
+            declared_phases,
+            workflows_dir,
+            spec,
+            spawner,
+            sink,
+            degraded,
+        })
+    }
+
+    /// In-turn `Workflow` tool handler (kernel interception, the workflow analogue of
+    /// `spawn_subagent`). [`Self::prepare_workflow`] builds the run from THIS agent's live route +
+    /// paths and persists its re-launchable sidecars, the installed
+    /// [`crate::workflow::WorkflowLauncher`] (by default the kernel's own, which is exactly
+    /// [`core_workflow::WorkflowEngine::launch`] — background `RunHandle`, review B3) starts it, and
+    /// this method `join`s it within the turn so the model receives the aggregated result. The
+    /// launch banner (run id) is emitted as a `Notice`.
+    ///
+    /// Deferred, still: truly detached background — returning before completion. The seam for it now
+    /// exists, but the turn joins whatever handle the launcher returns, so a run still cannot
+    /// outlive its turn. Detaching additionally needs a tool result that can honestly describe a run
+    /// with no value yet, and a session-exit rule for a run that is still live; both belong to the
+    /// session lifecycle owner, not here. Live in-turn progress is ADR-0001 step 1.
+    async fn launch_workflow(
+        &mut self,
+        turn_id: TurnId,
+        input: serde_json::Value,
+    ) -> Result<String, String> {
+        let prepared = self.prepare_workflow(&input)?;
+        // Kept across the launch: the run's identity for the banner, the card and the terminal
+        // sidecar, and the degraded sink whose reasons are only readable once the run settles.
+        // `prepared` itself is consumed by the launcher, which may keep it.
+        let run_id = prepared.run_id.clone();
+        let workflow_name = prepared.name.clone();
+        let workflows_dir = prepared.workflows_dir.clone();
+        let declared_phases = prepared.declared_phases.clone();
+        let degraded = prepared.degraded.clone();
+
         // The launch banner. It names `core workflow list` — the surface that can show this run
         // AFTER the turn, and from another process. A frontend with the progress seam installed
         // also gets the live tree below; one that does not still gets this line, so the run is never
@@ -7604,7 +7680,10 @@ impl Agent {
             phases: declared_phases,
         });
 
-        let handle = core_workflow::WorkflowEngine::launch(spec, spawner, sink);
+        // Start the run. With no launcher installed this is byte-for-byte the previous line,
+        // `WorkflowEngine::launch(spec, spawner, sink)`; the handle is shared rather than owned so a
+        // launcher that keeps the run can hold the same `RunHandle` this turn is polling.
+        let handle = crate::workflow::launch_prepared(self.workflow_launcher.as_ref(), prepared);
         // Bridge the parent's stop surfaces onto the run's cancellation token. Without this a
         // multi-minute run ignored Ctrl-C entirely: the operator interrupt reached the parent but
         // never the engine, and `join()` simply blocked the turn until the script finished.
@@ -11368,6 +11447,162 @@ mod gate_integration_tests {
             agent.pin_agent_catalog(core_agents::AgentCatalog::builtin_only()),
             Err(KernelError::AgentCatalogAlreadyResolved)
         ));
+        drop(agent);
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
+    /// A script with no `agent()` call: the whole run is QuickJS, so these tests exercise
+    /// preparation and the launcher seam without a provider turn.
+    const SEAM_SCRIPT: &str =
+        "export const meta = { name: 'seam', description: '', phases: ['one'] };\nreturn 41 + 1;\n";
+
+    fn workflow_seam_agent(ws: &std::path::Path) -> Agent {
+        let mut agent = agent_for(ws);
+        agent
+            .record_model_selection(
+                "provider-a".into(),
+                "model-a".into(),
+                test_pricing_digests().0,
+                test_pricing_digests().1,
+            )
+            .unwrap();
+        agent
+    }
+
+    #[tokio::test]
+    async fn preparing_a_workflow_admits_and_records_it_before_anything_starts_it() {
+        let ws = temp_ws("workflow-prepare");
+        let agent = workflow_seam_agent(&ws);
+
+        let prepared = agent
+            .prepare_workflow(&serde_json::json!({ "script": SEAM_SCRIPT }))
+            .expect("an inline script under a bound route prepares");
+
+        assert_eq!(prepared.name, "seam");
+        assert_eq!(prepared.declared_phases, vec!["one".to_string()]);
+        // Preparation is where the run becomes visible to `core workflow list|resume|watch`: the
+        // manifest exists before a launcher — any launcher — has seen the run.
+        let manifest = crate::workflow::load_manifest(&prepared.workflows_dir, &prepared.run_id)
+            .expect("preparation persists the re-launchable manifest");
+        assert_eq!(manifest.name, "seam");
+        assert_eq!(manifest.model, "model-a");
+        assert_eq!(manifest.provider_id, "provider-a");
+        // And nothing has run: no journal, no terminal sidecar.
+        assert!(crate::workflow::load_result(&prepared.workflows_dir, &prepared.run_id).is_none());
+        assert!(
+            !crate::workflow::run_dir(&prepared.workflows_dir, &prepared.run_id)
+                .join("journal.jsonl")
+                .exists()
+        );
+
+        drop(agent);
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
+    #[tokio::test]
+    async fn with_no_launcher_installed_a_prepared_run_is_the_engine_run_it_always_was() {
+        let ws = temp_ws("workflow-default-launcher");
+        let agent = workflow_seam_agent(&ws);
+        assert!(
+            agent.workflow_launcher.is_none(),
+            "a kernel starts with no workflow owner installed"
+        );
+
+        let prepared = agent
+            .prepare_workflow(&serde_json::json!({ "script": SEAM_SCRIPT }))
+            .expect("prepared run");
+        let run_id = prepared.run_id.clone();
+        // The exact dispatch `launch_workflow` performs.
+        let handle = crate::workflow::launch_prepared(agent.workflow_launcher.as_ref(), prepared);
+        let report = handle.join().await.expect("the engine ran the script");
+
+        assert_eq!(report.run_id.as_str(), run_id);
+        assert_eq!(report.value, serde_json::json!(42));
+        assert!(!report.stopped);
+
+        drop(agent);
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_installed_launcher_starts_the_run_instead_of_the_kernel() {
+        struct RecordingLauncher {
+            started: std::sync::Mutex<Vec<String>>,
+        }
+
+        impl crate::workflow::WorkflowLauncher for RecordingLauncher {
+            fn launch(
+                &self,
+                prepared: crate::workflow::PreparedWorkflow,
+            ) -> std::sync::Arc<core_workflow::RunHandle> {
+                self.started.lock().unwrap().push(prepared.run_id.clone());
+                // Delegate to the default so this stays a test of WHO starts the run.
+                crate::workflow::launch_prepared(None, prepared)
+            }
+        }
+
+        let ws = temp_ws("workflow-installed-launcher");
+        let mut agent = workflow_seam_agent(&ws);
+        let launcher = std::sync::Arc::new(RecordingLauncher {
+            started: std::sync::Mutex::new(Vec::new()),
+        });
+        agent.set_workflow_launcher(launcher.clone());
+
+        let prepared = agent
+            .prepare_workflow(&serde_json::json!({ "script": SEAM_SCRIPT }))
+            .expect("prepared run");
+        let run_id = prepared.run_id.clone();
+        let handle = crate::workflow::launch_prepared(agent.workflow_launcher.as_ref(), prepared);
+        let report = handle.join().await.expect("the installed launcher ran it");
+
+        assert_eq!(
+            launcher.started.lock().unwrap().as_slice(),
+            std::slice::from_ref(&run_id),
+            "the installed owner, not the kernel, started the run"
+        );
+        // The seam changes who starts the run and nothing else: same value, still joinable in-turn.
+        assert_eq!(report.value, serde_json::json!(42));
+
+        drop(agent);
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
+    #[test]
+    fn preparing_a_workflow_refuses_before_it_records_anything() {
+        let unbound_ws = temp_ws("workflow-prepare-unbound");
+        let unbound = agent_for(&unbound_ws);
+        // No route selected yet: children re-record the parent's exact durable route, so there is
+        // nothing to bind.
+        assert!(
+            unbound
+                .prepare_workflow(&serde_json::json!({ "script": SEAM_SCRIPT }))
+                .is_err()
+        );
+        drop(unbound);
+        std::fs::remove_dir_all(unbound_ws).unwrap();
+
+        let ws = temp_ws("workflow-prepare-refusals");
+        let agent = workflow_seam_agent(&ws);
+        assert!(
+            agent.prepare_workflow(&serde_json::json!({})).is_err(),
+            "neither `script` nor `scriptPath` is not a run"
+        );
+        assert!(
+            agent
+                .prepare_workflow(&serde_json::json!({ "scriptPath": "nope/missing.mjs" }))
+                .is_err(),
+            "an unreadable scriptPath fails the tool call, not the run"
+        );
+        // Every refusal above happened before anything was recorded, so the only run
+        // `core workflow list` can see is the one that was actually admitted.
+        let prepared = agent
+            .prepare_workflow(&serde_json::json!({ "script": SEAM_SCRIPT }))
+            .expect("prepared run");
+        let listed = crate::workflow::list_runs(&prepared.workflows_dir);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].run_id, prepared.run_id);
+        assert_eq!(listed[0].status, "pending");
+
         drop(agent);
         std::fs::remove_dir_all(ws).unwrap();
     }

@@ -516,6 +516,95 @@ pub fn in_turn_progress_sink(
     }
 }
 
+/// Everything a workflow run needs in order to start, resolved inside the turn that asked for it.
+///
+/// Produced by `runtime.rs`'s `Agent::prepare_workflow` and consumed by a [`WorkflowLauncher`].
+/// Preparation is where every check that must fail the `Workflow` tool call happens — an unreadable
+/// `scriptPath`, an unbound route, an exhausted parent turn budget, an unwritable manifest — so a
+/// value of this type is a run that has already been admitted and whose re-launchable sidecar is
+/// already on disk under [`Self::workflows_dir`]. Nothing here has been started.
+///
+/// The three fields the engine consumes ([`Self::spec`], [`Self::spawner`], [`Self::sink`]) travel
+/// with the four the caller still needs once the run exists — the run id and name for the launch
+/// banner and the terminal sidecar, the declared phases that seed the live card's first frame, and
+/// the [`DegradedAgentSink`] whose reasons are read after the run settles. A launcher that outlives
+/// the turn will need exactly that second group too, which is why they are one value rather than a
+/// tuple the launcher would have to re-derive.
+pub struct PreparedWorkflow {
+    /// The run's identity: its journal namespace, its sidecar directory name, and the correlation
+    /// key of every [`WorkflowRunUiEvent`] the live card renders.
+    pub run_id: String,
+    /// The script's declared `meta.name`, or `workflow` when it declared none.
+    pub name: String,
+    /// The script's declared `meta.phases`, so the card shows the shape of the run on frame one
+    /// instead of growing it phase by phase.
+    pub declared_phases: Vec<String>,
+    /// The directory `core workflow list` enumerates. The manifest is already written into it.
+    pub workflows_dir: PathBuf,
+    /// The engine's run request: script, args, run id, workflows dir and aggregate limits.
+    pub spec: RunSpec,
+    /// The parent-derived spawner every `agent()` call is admitted through.
+    pub spawner: Arc<dyn AgentSpawner>,
+    /// The progress sink, already fanned out to the frontend when one is attached.
+    pub sink: Arc<dyn ProgressSink>,
+    /// The reasons agents resolved to JS `null`. Only meaningful after the run settles.
+    pub degraded: Arc<DegradedAgentSink>,
+}
+
+/// Who starts a [`PreparedWorkflow`].
+///
+/// The `Workflow` tool prepares a run and then joins it inside the turn, which is the whole reason a
+/// run cannot outlive the turn that asked for it: the [`RunHandle`] is a local binding. This trait
+/// is the single point where "who starts the run" is decided, so a session-scoped owner can later be
+/// installed through `Agent::set_workflow_launcher` without the tool handler learning what a session
+/// is.
+///
+/// It deliberately does **not** decide whether the turn joins. The kernel joins the returned handle
+/// either way, so installing [`InTurnWorkflowLauncher`] — or installing nothing at all — is
+/// byte-for-byte the behavior that existed before this seam. A launcher that means to *detach* has
+/// to answer two questions this signature cannot express yet: what the model is told the tool
+/// returned when the run's value does not exist yet, and what happens to a live run when the session
+/// exits. Both are left open on purpose.
+///
+/// The handle is shared rather than owned because a detaching launcher must keep it: both
+/// [`RunHandle::cancel`] and [`RunHandle::join`] take `&self`, so the turn's 25 ms interrupt poll and
+/// an owner's later bookkeeping can hold the same run at once.
+pub trait WorkflowLauncher: Send + Sync {
+    fn launch(&self, prepared: PreparedWorkflow) -> Arc<RunHandle>;
+}
+
+/// The default launcher: exactly [`WorkflowEngine::launch`], owned by nobody but its caller.
+///
+/// This is what the kernel uses when no launcher is installed, and it is what makes "no launcher"
+/// and "the in-turn launcher" the same run.
+pub struct InTurnWorkflowLauncher;
+
+impl WorkflowLauncher for InTurnWorkflowLauncher {
+    fn launch(&self, prepared: PreparedWorkflow) -> Arc<RunHandle> {
+        Arc::new(WorkflowEngine::launch(
+            prepared.spec,
+            prepared.spawner,
+            prepared.sink,
+        ))
+    }
+}
+
+/// Start `prepared` through `launcher`, or through [`InTurnWorkflowLauncher`] when none is
+/// installed.
+///
+/// The equivalence of those two arms is the property this slice rests on, so it lives here next to
+/// the trait rather than being spelled out at the one call site: "no launcher installed" and "the
+/// in-turn launcher installed" must remain the same run.
+pub fn launch_prepared(
+    launcher: Option<&Arc<dyn WorkflowLauncher>>,
+    prepared: PreparedWorkflow,
+) -> Arc<RunHandle> {
+    match launcher {
+        Some(launcher) => launcher.launch(prepared),
+        None => InTurnWorkflowLauncher.launch(prepared),
+    }
+}
+
 /// Restores the terminal (leaves raw mode + the alternate screen, shows the cursor) on drop, so an
 /// early `?` or a Ctrl-C never leaves the terminal wedged — the #1 TUI failure mode.
 struct LiveTermGuard;
