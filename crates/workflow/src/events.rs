@@ -90,9 +90,18 @@ pub const PREVIEW_MAX: usize = 400;
 /// Claude Code's `last_tool_summary` bound.
 pub const TOOL_SUMMARY_MAX: usize = 60;
 
-/// Trim + collapse whitespace + truncate to `max` chars, appending `…` when cut. Char-boundary safe.
+/// Neutralize non-whitespace control characters, trim + collapse whitespace, and truncate to `max`
+/// chars, appending `…` when cut. Char-boundary safe and suitable for one-line display fields.
 pub fn truncate_preview(s: &str, max: usize) -> String {
-    let collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut neutralized = String::with_capacity(s.len());
+    for character in s.chars() {
+        if character.is_control() && !character.is_whitespace() {
+            neutralized.extend(character.escape_default());
+        } else {
+            neutralized.push(character);
+        }
+    }
+    let collapsed = neutralized.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= max {
         return collapsed;
     }
@@ -164,5 +173,12 @@ mod tests {
         let cut = truncate_preview(&long, PREVIEW_MAX);
         assert_eq!(cut.chars().count(), PREVIEW_MAX + 1); // 400 + the ellipsis
         assert!(cut.ends_with('…'));
+    }
+
+    #[test]
+    fn preview_is_one_line_and_neutralizes_terminal_controls() {
+        let out = truncate_preview("dead\nagent \u{1b}[31mred\u{7}", 100);
+        assert_eq!(out, "dead agent \\u{1b}[31mred\\u{7}");
+        assert!(!out.chars().any(char::is_control));
     }
 }

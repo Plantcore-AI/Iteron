@@ -2500,23 +2500,12 @@ async fn run_workflow_command(
 
     // Record the terminal outcome (enables `list` status + shows the value to a later reader).
     workflow::persist_result(&workflows_dir, &run_id, &report)?;
-    eprintln!(
-        "run {run_id} \u{b7} {} \u{b7} {} tok \u{b7} {} tool call(s) \u{b7} {} \u{b7} cache {} hit / {} miss",
-        if report.stopped { "stopped" } else { "done" },
-        core_workflow::fmt_count(report.tokens),
-        report.tool_calls,
-        core_workflow::fmt_duration(report.elapsed_ms),
-        report.cache_hits,
-        report.cache_misses
-    );
+    eprintln!("{}", workflow::final_status_line(&run_id, &report));
 
     println!("{}", serde_json::to_string_pretty(&report.value)?);
-    // A run the operator interrupted did not produce the requested work, so it must not report
-    // success: `stopped` is set for exactly the cancellation token the live loop's Ctrl-C trips.
-    if report.stopped {
-        return Ok(output::EXIT_INTERRUPTED);
-    }
-    Ok(output::EXIT_SUCCESS)
+    // The exit status is a machine contract: clean, partially/all failed, and cancelled workflows
+    // must remain distinguishable without parsing the human transcript.
+    Ok(workflow::run_exit_code(&report))
 }
 
 /// Human rendering of the offline timeline (#104).

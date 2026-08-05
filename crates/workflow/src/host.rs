@@ -157,13 +157,14 @@ pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> 
         value
     };
 
-    let (tokens, tool_calls) = report_state.totals();
+    let (errors, tokens, tool_calls) = report_state.totals();
     Ok(RunReport {
         run_id,
         value,
         stopped,
         cache_hits: journal.hits(),
         cache_misses: journal.misses(),
+        errors,
         tokens,
         tool_calls,
         elapsed_ms: run_started.elapsed().as_millis() as u64,

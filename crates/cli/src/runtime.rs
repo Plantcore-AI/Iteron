@@ -7733,6 +7733,7 @@ impl Agent {
                     stopped: true,
                     cache_hits: 0,
                     cache_misses: 0,
+                    errors: 0,
                     // A run that never produced a report has no authoritative totals to state.
                     // Zero here means "none were settled", which is true: the engine failed before
                     // it could aggregate any. It is not a claim that the run was free.

@@ -2,6 +2,7 @@
 //! 2-agent `parallel()` runs through the QuickJS engine, streams progress, and returns a
 //! declaration-ordered array. This is the CI-safe twin of the CLI's real-model run.
 
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,6 +13,21 @@ use core_workflow::{AgentCall, AgentOutcome, AgentSpawner, RunLimits, RunSpec, W
 
 struct MockSpawner {
     delay_ms: u64,
+}
+
+struct SelectiveFailureSpawner {
+    failed_prompts: BTreeSet<String>,
+}
+
+#[async_trait]
+impl AgentSpawner for SelectiveFailureSpawner {
+    async fn spawn(&self, call: AgentCall) -> AgentOutcome {
+        if self.failed_prompts.contains(&call.prompt) {
+            AgentOutcome::null("agent died")
+        } else {
+            AgentOutcome::text(format!("result:{}", call.prompt), 7)
+        }
+    }
 }
 
 #[async_trait]
@@ -70,6 +86,40 @@ async fn two_agent_parallel_runs_and_preserves_declaration_order() {
     assert_eq!(started, 2, "both agents started");
     assert_eq!(finished, 2, "both agents finished");
     assert_eq!(logs, 2, "two log() lines");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn report_counts_one_all_and_no_agent_failures() {
+    let cases = [
+        (Vec::<&str>::new(), 0usize),
+        (vec!["B"], 1usize),
+        (vec!["A", "B", "C"], 3usize),
+    ];
+    let script = r#"return await parallel([
+  () => agent('A'), () => agent('B'), () => agent('C'),
+]);"#;
+
+    for (failed, expected_errors) in cases {
+        let spawner = Arc::new(SelectiveFailureSpawner {
+            failed_prompts: failed.into_iter().map(str::to_owned).collect(),
+        });
+        let report = WorkflowEngine::execute(RunSpec::new(script), spawner, Arc::new(NullSink))
+            .await
+            .expect("agent failures settle the fan-out");
+
+        assert_eq!(report.errors, expected_errors);
+        assert!(!report.stopped);
+        assert_eq!(
+            report
+                .value
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|value| value.is_null())
+                .count(),
+            expected_errors
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

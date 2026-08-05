@@ -200,6 +200,8 @@ pub struct RunReport {
     pub cache_hits: usize,
     /// Agents that ran live (cache misses).
     pub cache_misses: usize,
+    /// Agents that settled with a null or otherwise unknown outcome.
+    pub errors: usize,
     /// Tokens summed across every agent this run settled. Every finish event already carried this;
     /// nothing aggregated it, so a completed run reported no cost evidence at all.
     pub tokens: u64,
