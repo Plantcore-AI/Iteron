@@ -22,6 +22,7 @@ pub(crate) mod transcript_effect;
 mod transcript_export;
 mod transcript_viewer;
 mod tunables_view;
+mod workflow_region;
 
 pub(crate) mod app_server;
 pub(crate) mod headless;
@@ -917,9 +918,12 @@ struct App {
     pending_tools: VecDeque<PendingToolProjection>,
     /// workflow run id -> its one live card. Lifecycle events mutate this block in place.
     workflow_index: std::collections::HashMap<String, u64>,
-    /// QuickJS `core-workflow` run id -> its one live phase→agent tree card (design §3.2 store).
-    /// The interactive-REPL seam, driven by `workflow_run_ui_event` (ADR-0001 step 1).
-    workflow_run_index: std::collections::HashMap<String, u64>,
+    /// The workflow region's store: the QuickJS `core-workflow` runs this TUI is watching, each
+    /// bound to the one live phase→agent tree card that renders it (design §3.2 store), plus the
+    /// region's focus and collapse state. The interactive-REPL seam, driven by
+    /// `workflow_run_ui_event` (ADR-0001 step 1). The transcript card remains the authority the
+    /// renderer reads; see `workflow_region` for what this store deliberately does not copy.
+    workflow_monitor: workflow_region::WorkflowMonitor,
     /// The active color theme (ADR-015 §4).
     theme: theme::Theme,
     /// Captured once at startup; runtime `/theme` previews are projected to the same terminal depth.
@@ -1075,7 +1079,7 @@ impl App {
             tool_index: std::collections::HashMap::new(),
             pending_tools: VecDeque::new(),
             workflow_index: std::collections::HashMap::new(),
-            workflow_run_index: std::collections::HashMap::new(),
+            workflow_monitor: workflow_region::WorkflowMonitor::default(),
             theme,
             color_depth,
             theme_epoch: 0,
@@ -1922,9 +1926,12 @@ impl App {
                 crate::workflow::ui_safe_label(name),
             );
             let block_id = self.push_block(block::BlockKind::WorkflowRun(card));
-            self.workflow_run_index.insert(run_id.to_string(), block_id);
+            self.workflow_monitor.ingest(
+                run_id,
+                workflow_region::WorkflowRunSignal::Live { block_id },
+            );
         }
-        let block_id = self.workflow_run_index.get(run_id).copied();
+        let block_id = self.workflow_monitor.block_id(run_id);
         if let Some(card) = self.workflow_run_card_mut(run_id) {
             card.declare_phases(
                 phases
@@ -1941,10 +1948,10 @@ impl App {
         self.autoscroll();
     }
 
-    // REPL seam (see workflow_run_index). Live since ADR-0001 step 1: `app_server::ServerEvent`
+    // REPL seam (see `workflow_monitor`). Live since ADR-0001 step 1: `app_server::ServerEvent`
     // carries the engine's progress off the kernel thread and `workflow_run_ui_event` lands it here.
     fn workflow_run_card_mut(&mut self, run_id: &str) -> Option<&mut block::WorkflowRunCard> {
-        let block_id = *self.workflow_run_index.get(run_id)?;
+        let block_id = self.workflow_monitor.block_id(run_id)?;
         self.transcript
             .iter_mut()
             .find(|block| block.id == block_id)
@@ -1970,7 +1977,10 @@ impl App {
             self.flush_text();
             let card = block::WorkflowRunCard::new(ui_safe_text(run_id), ui_safe_text(name));
             let block_id = self.push_block(block::BlockKind::WorkflowRun(card));
-            self.workflow_run_index.insert(run_id.to_string(), block_id);
+            self.workflow_monitor.ingest(
+                run_id,
+                workflow_region::WorkflowRunSignal::Live { block_id },
+            );
         }
         let changed = if let Some(card) = self.workflow_run_card_mut(run_id) {
             card.ingest(event);
@@ -1979,7 +1989,7 @@ impl App {
             false
         };
         if changed {
-            let block_id = self.workflow_run_index.get(run_id).copied();
+            let block_id = self.workflow_monitor.block_id(run_id);
             if let Some(block) =
                 block_id.and_then(|id| self.transcript.iter_mut().find(|block| block.id == id))
             {
@@ -1993,7 +2003,7 @@ impl App {
     /// Mark a QuickJS workflow run terminal (its engine future resolved). The card collapses finished
     /// agents but stays in the transcript.
     fn workflow_run_finished(&mut self, run_id: &str) {
-        let block_id = self.workflow_run_index.get(run_id).copied();
+        let block_id = self.workflow_monitor.block_id(run_id);
         let changed = if let Some(card) = self.workflow_run_card_mut(run_id) {
             card.finished = true;
             true
@@ -2008,12 +2018,26 @@ impl App {
             }
             self.mark_transcript_changed();
         }
-        self.workflow_run_index.remove(run_id);
+        // Settling ends the live binding: the card stays in the transcript, but events for this run
+        // no longer land on it.
+        self.workflow_monitor
+            .ingest(run_id, workflow_region::WorkflowRunSignal::Settled);
         self.autoscroll();
     }
 
     /// Toggle the fold of a collapsible block at transcript index `i`.
     fn toggle_fold(&mut self, i: usize) {
+        // A workflow run's collapse bit belongs to the workflow region's store, and the card's
+        // `verbose` field is the projection the renderer reads. Flipping it there FIRST and writing
+        // the card from that answer keeps one writer for one bit; a block the store does not know
+        // answers `None` and its card falls back to flipping itself.
+        let workflow_run_verbose = self
+            .transcript
+            .get(i)
+            .filter(|b| matches!(b.kind, block::BlockKind::WorkflowRun(_)))
+            .map(|b| b.id)
+            .and_then(|block_id| self.workflow_monitor.toggle_collapsed_for_block(block_id))
+            .map(|collapsed| !collapsed);
         if let Some(b) = self.transcript.get_mut(i) {
             let b = Arc::make_mut(b);
             let changed = match &mut b.kind {
@@ -2027,7 +2051,7 @@ impl App {
                 }
                 block::BlockKind::WorkflowRun(c) => {
                     // The verbose toggle (design §3.3): reveal every finished agent, or collapse them.
-                    c.verbose = !c.verbose;
+                    c.verbose = workflow_run_verbose.unwrap_or(!c.verbose);
                     true
                 }
                 block::BlockKind::Thinking { open, .. } => {
@@ -6141,7 +6165,7 @@ fn clear_transcript_for_adoption(app: &mut App) {
     app.tool_index.clear();
     app.pending_tools.clear();
     app.workflow_index.clear();
-    app.workflow_run_index.clear();
+    app.workflow_monitor.reset();
     app.active_tools.clear();
     app.render_cache.clear();
     app.cur_text.clear();
@@ -12896,9 +12920,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 title: "Explore".into(),
             },
         );
-        let block_id = *app
-            .workflow_run_index
-            .get(run_id)
+        let block_id = app
+            .workflow_monitor
+            .block_id(run_id)
             .expect("indexed run card");
         app.workflow_run_event(
             run_id,
@@ -12940,7 +12964,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .filter(|b| matches!(b.kind, block::BlockKind::WorkflowRun(_)))
             .count();
         assert_eq!(run_blocks, 1, "one live tree, not a line-per-event log");
-        assert_eq!(*app.workflow_run_index.get(run_id).unwrap(), block_id);
+        assert_eq!(app.workflow_monitor.block_id(run_id).unwrap(), block_id);
         let card = match &app
             .transcript
             .iter()
@@ -12964,7 +12988,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         // Terminal transition flips `finished` and drops the live index.
         app.workflow_run_finished(run_id);
-        assert!(!app.workflow_run_index.contains_key(run_id));
+        assert!(!app.workflow_monitor.is_live(run_id));
         let finished = match &app
             .transcript
             .iter()
@@ -12976,6 +13000,49 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             _ => unreachable!(),
         };
         assert!(finished);
+    }
+
+    /// The workflow region's store owns the collapse bit; the card carries the copy the renderer
+    /// reads. One fold has to move both, because two bits that can be moved independently is
+    /// exactly the drift a parallel store must not introduce.
+    #[test]
+    fn folding_a_run_tree_moves_the_store_and_the_card_together() {
+        use core_workflow::events::ProgressEvent;
+
+        let mut app = App::new();
+        app.theme = theme::Theme::dark();
+        let run_id = "wf_fold_1";
+        app.workflow_run_event(
+            run_id,
+            "audit",
+            ProgressEvent::Log {
+                message: "scanning".into(),
+            },
+        );
+        let index = app
+            .transcript
+            .iter()
+            .position(|block| matches!(block.kind, block::BlockKind::WorkflowRun(_)))
+            .expect("the run minted its card");
+        let verbose = |app: &App| match &app.transcript[index].kind {
+            block::BlockKind::WorkflowRun(card) => card.verbose,
+            _ => unreachable!(),
+        };
+
+        assert!(!verbose(&app), "a fresh card collapses its finished agents");
+        assert_eq!(app.workflow_monitor.collapsed(run_id), Some(true));
+
+        app.toggle_fold(index);
+        assert!(verbose(&app), "the card the renderer reads expanded");
+        assert_eq!(
+            app.workflow_monitor.collapsed(run_id),
+            Some(false),
+            "and the store that owns the bit says the same thing"
+        );
+
+        app.toggle_fold(index);
+        assert!(!verbose(&app));
+        assert_eq!(app.workflow_monitor.collapsed(run_id), Some(true));
     }
 
     /// The wire this slice built: a workflow launched from inside the interactive TUI arrives as
@@ -12996,9 +13063,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             name: "audit".into(),
             phases: vec!["Explore".into(), "Report".into()],
         });
-        let block_id = *app
-            .workflow_run_index
-            .get(run_id)
+        let block_id = app
+            .workflow_monitor
+            .block_id(run_id)
             .expect("the card exists before the engine emits anything");
 
         // The kernel's sink is the only thing between the engine and this channel.
@@ -13082,7 +13149,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.workflow_run_ui_event(crate::workflow::WorkflowRunUiEvent::Finished {
             run_id: run_id.into(),
         });
-        assert!(!app.workflow_run_index.contains_key(run_id));
+        assert!(!app.workflow_monitor.is_live(run_id));
         let settled = match &app
             .transcript
             .iter()
