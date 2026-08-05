@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 use async_trait::async_trait;
 use core_agents::AgentCatalog;
@@ -31,15 +31,17 @@ use core_protocol::{
 use core_provider::Provider;
 use core_record::Rollout;
 use core_tools::Registry;
-use core_workflow::{AgentCall, AgentOutcome, AgentSpawner};
+use core_workflow::{AgentActivityReporter, AgentCall, AgentOutcome, AgentSpawner};
 use sha2::{Digest, Sha256};
 
+use super::Agent;
 use super::hooks::Hooks;
 use super::pricing::SharedUsdBudget;
-use super::{Agent, usage_tokens};
 
 const MAX_AGENT_REFUSAL_BYTES: usize = 512;
 const AGENT_REFUSAL_TRUNCATED: &str = " [truncated]";
+
+mod activity;
 
 /// One terminal/journal-safe refusal line. This is the final choke point for child setup and
 /// runtime failures: redact credential shapes, render terminal controls visibly, and retain at
@@ -450,58 +452,15 @@ pub(super) fn intersect_budget(parent: &Budget, definition: &Budget) -> Result<B
 #[async_trait]
 impl AgentSpawner for KernelSpawner {
     async fn spawn(&self, call: AgentCall) -> AgentOutcome {
-        let ordinal = self.next_ordinal.fetch_add(1, Ordering::Relaxed);
-        let mut child = match self.build_child(&call, ordinal) {
-            Ok(child) => child,
-            Err(reason) => {
-                return AgentOutcome::Null {
-                    reason: Some(safe_agent_refusal(&reason)),
-                };
-            }
-        };
+        self.spawn_reporting(call, None).await
+    }
 
-        // Cooperate with the run's cancellation token (trait §B3): bridge it onto the child's
-        // cooperative interrupt flag, which `run_leaf` polls at every turn-atomic safe point. A
-        // cancelled run then stops the child cleanly (durable safe point) rather than relying solely
-        // on the engine's hard task-abort backstop.
-        let interrupt = Arc::new(AtomicBool::new(false));
-        child.set_interrupt(interrupt.clone());
-        let cancel = call.cancel.clone();
-        let cancel_bridge = tokio::spawn(async move {
-            cancel.cancelled().await;
-            interrupt.store(true, Ordering::SeqCst);
-        });
-
-        // `run_leaf` (not `run`): a leaf owns its context and tool loop but never orchestrates, so
-        // its future is `Send + 'static` — exactly what lets the engine `tokio::spawn` this.
-        let outcome = child.run_leaf(&call.prompt).await;
-        cancel_bridge.abort();
-        match outcome {
-            // Any terminal with a non-empty final report becomes the JS string value (real model
-            // output). This mirrors the kernel's own investigator distillation, which treats every
-            // `Ok(_)` outcome as carrying a report and only degrades on an empty one.
-            Ok(_terminal) => {
-                let text = child.last_assistant_text().trim().to_string();
-                if text.is_empty() {
-                    AgentOutcome::Null {
-                        reason: Some("subagent completed without a report".into()),
-                    }
-                } else {
-                    AgentOutcome::Text {
-                        text,
-                        tokens: usage_tokens(&child.ledger.usage),
-                        tool_calls: child.ledger.tool_calls,
-                        // The kernel tracks no per-tool human summary; `tool_calls` is the count.
-                        last_tool_summary: None,
-                    }
-                }
-            }
-            // A harness/provider/budget error resolves to JS `null` (never a thrown rejection) so a
-            // surrounding `parallel`/`pipeline` keeps its other items flowing.
-            Err(error) => AgentOutcome::Null {
-                reason: Some(safe_agent_refusal(&error.public_summary())),
-            },
-        }
+    async fn spawn_with_activity(
+        &self,
+        call: AgentCall,
+        activity: AgentActivityReporter,
+    ) -> AgentOutcome {
+        self.spawn_reporting(call, Some(activity)).await
     }
 }
 

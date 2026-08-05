@@ -45,7 +45,9 @@ pub use events::{
 pub use journal::{JOURNAL_FORMAT_VERSION, Journal, Outcome, Record};
 pub use meta::{Meta, extract_meta, strip_meta};
 pub use schema::{RETRY_MAX, SchemaValidator};
-pub use spawner::{AGENT_SPAWNER_PORT_VERSION, AgentCall, AgentOutcome, AgentSpawner};
+pub use spawner::{
+    AGENT_SPAWNER_PORT_VERSION, AgentActivityReporter, AgentCall, AgentOutcome, AgentSpawner,
+};
 
 use std::path::PathBuf;
 use std::sync::Mutex;
