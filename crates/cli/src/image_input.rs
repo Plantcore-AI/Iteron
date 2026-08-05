@@ -528,7 +528,14 @@ impl Drop for FileReadPermit {
     }
 }
 
-fn read_path_capped(path: &Path, limit: usize) -> Result<Vec<u8>, ImageInputErrorKind> {
+/// Read at most `limit + 1` bytes of a regular file, off the render thread, behind the
+/// process-wide single-flight gate.
+///
+/// `pub(crate)` because the file-attachment chips (UX-6) need the same three properties this
+/// composes — no symlink follow, no device open, a bounded read that stops one byte past the limit
+/// so "too large" is observable without loading the file — and a second copy of it is a second
+/// place for one of the three to go missing.
+pub(crate) fn read_path_capped(path: &Path, limit: usize) -> Result<Vec<u8>, ImageInputErrorKind> {
     let path = path.to_path_buf();
     run_file_read_helper(Arc::clone(&FILE_READ_GATE), FILE_READ_TIMEOUT, move || {
         let file = open_regular_file(&path).map_err(|_| ImageInputErrorKind::OpenFailed)?;

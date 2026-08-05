@@ -150,7 +150,9 @@ mod tests {
             .expect("xtask is directly below the repository root");
         let source = read_bounded(root, OP_SOURCE, MAX_SOURCE_BYTES).unwrap();
         let shapes = tagged_enum_fields(&source, OP_SIGNATURE, "op", 1, &BTreeMap::new()).unwrap();
-        assert_eq!(shapes.len(), 6);
+        // Six original tags plus `user_input_v3`, the file-attachment tag (UX-6). Additive: it
+        // declares its own compatibility surface and fixtures, and every tag below is unchanged.
+        assert_eq!(shapes.len(), 7);
         assert_eq!(
             shapes["user_input"],
             BTreeSet::from(["op".to_owned(), "text".to_owned()])
@@ -158,6 +160,15 @@ mod tests {
         assert_eq!(
             shapes["user_input_v2"],
             BTreeSet::from(["op".to_owned(), "segments".to_owned()])
+        );
+        assert_eq!(
+            shapes["user_input_v3"],
+            BTreeSet::from([
+                "op".to_owned(),
+                "text".to_owned(),
+                "images".to_owned(),
+                "files".to_owned(),
+            ])
         );
         assert_eq!(
             shapes["approval_response"],

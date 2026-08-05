@@ -99,7 +99,7 @@ impl std::error::Error for ImageInputError {}
 pub struct SafeDisplayName(String);
 
 impl SafeDisplayName {
-    pub(super) fn from_path(path: &Path) -> Self {
+    pub(crate) fn from_path(path: &Path) -> Self {
         let raw = path
             .file_name()
             .filter(|name| !name.is_empty())
@@ -108,7 +108,7 @@ impl SafeDisplayName {
         Self::from_label(&raw)
     }
 
-    pub(super) fn from_label(raw: &str) -> Self {
+    pub(crate) fn from_label(raw: &str) -> Self {
         let mut safe = String::new();
         let mut characters = raw.chars();
         for character in characters.by_ref().take(MAX_DISPLAY_CHARS) {

@@ -696,6 +696,7 @@
         { "kind": "tree", "path": "crates/cli/src/config" },
         { "kind": "file", "path": "crates/cli/src/config.rs" },
         { "kind": "file", "path": "crates/cli/src/environment.rs" },
+        { "kind": "file", "path": "crates/cli/src/file_input.rs" },
         { "kind": "file", "path": "crates/cli/src/image_input.rs" },
         { "kind": "tree", "path": "crates/cli/src/image_input" },
         { "kind": "file", "path": "crates/cli/src/main.rs" },

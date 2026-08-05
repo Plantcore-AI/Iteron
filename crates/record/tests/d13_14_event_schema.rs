@@ -1,10 +1,10 @@
 use core_protocol::{
     Block, Budget, CostAttribution, CostProjection, CostProjectionIdentity,
-    DurableEnvironmentContext, DurableInstructionContext, Event, EventKind, ImageContent, Message,
-    Op, PermissionRules, PricingRoute, ProviderState, RateCard, RunGenesisTunableEntry,
-    RunGenesisTunablesInheritance, RunGenesisTunablesSnapshot, SignedRateCard, TokenRateCard,
-    ToolResult, ToolUse, Usage, WorkflowCostEvidence, WorkflowEvent, WorkflowMetrics,
-    WorkflowTaskEvidence,
+    DurableEnvironmentContext, DurableInstructionContext, Event, EventKind, FileContent,
+    ImageContent, Message, Op, PermissionRules, PricingRoute, ProviderState, RateCard,
+    RunGenesisTunableEntry, RunGenesisTunablesInheritance, RunGenesisTunablesSnapshot,
+    SignedRateCard, TokenRateCard, ToolResult, ToolUse, Usage, WorkflowCostEvidence, WorkflowEvent,
+    WorkflowMetrics, WorkflowTaskEvidence,
 };
 use core_record::replay;
 use serde::de::DeserializeOwned;
@@ -79,13 +79,14 @@ const COST_ATTRIBUTION_TAGS: [&str; 2] = ["direct_subagent", "workflow_child"];
 
 // `ArtifactRef` and its `Provenance` became durable with `artifact_produced` (#78):
 // making a type reachable from the record makes its shape a published surface.
-const NAMED_SURFACE_IDS: [&str; 24] = [
+const NAMED_SURFACE_IDS: [&str; 25] = [
     "record.named.artifact-ref",
     "record.named.budget",
     "record.named.cost-projection",
     "record.named.cost-projection-identity",
     "record.named.durable-environment-context",
     "record.named.durable-instruction-context",
+    "record.named.file-content",
     "record.named.image-content",
     "record.named.message",
     "record.named.permission-rules",
@@ -535,6 +536,7 @@ fn assert_named_surface_corpus(
             "record.named.image-content" => {
                 typed_named_fixture_wires::<ImageContent>(root, surface)
             }
+            "record.named.file-content" => typed_named_fixture_wires::<FileContent>(root, surface),
             "record.named.message" => typed_named_fixture_wires::<Message>(root, surface),
             "record.named.provider-state" => {
                 typed_named_fixture_wires::<ProviderState>(root, surface)
@@ -944,6 +946,18 @@ fn record_op_named_values(op: &Op, named: &mut NamedWires) {
         Op::UserInputV2 { segments } => {
             for image in segments.images() {
                 record_named(named, "record.named.image-content", image);
+            }
+        }
+        Op::UserInputV3 {
+            text: _,
+            images,
+            files,
+        } => {
+            for image in images {
+                record_named(named, "record.named.image-content", image);
+            }
+            for file in files {
+                record_named(named, "record.named.file-content", file);
             }
         }
         Op::UserInput { text: _ }

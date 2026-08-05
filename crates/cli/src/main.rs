@@ -10,6 +10,7 @@ mod config;
 mod editor;
 mod environment;
 mod external_editor;
+mod file_input;
 mod highlight;
 mod image_input;
 mod keymap;
