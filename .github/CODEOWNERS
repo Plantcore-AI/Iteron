@@ -222,6 +222,7 @@
 /crates/tools/src/workflow_tool.rs @fr0m-scratch
 /crates/tools/src/write_file.rs @fr0m-scratch
 /crates/tools/src/write_file_tests.rs @fr0m-scratch
+/crates/cli/src/runtime/workflow_spawner/** @fr0m-scratch
 /crates/cli/src/runtime/hooks.rs @fr0m-scratch
 /crates/cli/src/runtime/pricing.rs @fr0m-scratch
 /crates/cli/src/runtime/strategy_runtime.rs @fr0m-scratch

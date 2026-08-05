@@ -5,7 +5,10 @@
 //! (WORKFLOW-REPLICATION-DESIGN.md §2.1).
 
 use async_trait::async_trait;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+
+use crate::events::{TOOL_SUMMARY_MAX, truncate_preview};
 
 pub const AGENT_SPAWNER_PORT_VERSION: u32 = 1;
 /// Request-side agent names use the same documented grammar as executable agent definitions.
@@ -119,6 +122,50 @@ pub enum AgentOutcome {
     Null { reason: Option<String> },
 }
 
+/// Latest live metrics for one running child. The engine keeps this on a single-slot watch channel
+/// and samples it for [`crate::ProgressEvent::AgentActivity`], so a chatty child can only replace
+/// one pending value rather than queue unbounded frontend work.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AgentActivitySnapshot {
+    pub tokens: u64,
+    pub tool_calls: u64,
+    pub last_tool_summary: Option<String>,
+}
+
+/// A child-facing live activity seam. Full child-agent spawners report their cumulative metrics as
+/// turns and tools settle; single-completion spawners can keep implementing only [`AgentSpawner::spawn`].
+/// Tool summaries are bounded before entering the single retained channel slot.
+#[derive(Clone)]
+pub struct AgentActivityReporter {
+    tx: watch::Sender<Option<AgentActivitySnapshot>>,
+}
+
+impl std::fmt::Debug for AgentActivityReporter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("AgentActivityReporter").finish()
+    }
+}
+
+impl AgentActivityReporter {
+    pub(crate) fn channel() -> (Self, watch::Receiver<Option<AgentActivitySnapshot>>) {
+        let (tx, rx) = watch::channel(None);
+        (Self { tx }, rx)
+    }
+
+    /// Replace the latest cumulative snapshot. This is intentionally synchronous and non-blocking;
+    /// the workflow engine owns presentation rate limiting.
+    pub fn report(&self, tokens: u64, tool_calls: u64, last_tool_summary: Option<String>) {
+        let last_tool_summary = last_tool_summary
+            .as_deref()
+            .map(|summary| truncate_preview(summary, TOOL_SUMMARY_MAX));
+        self.tx.send_replace(Some(AgentActivitySnapshot {
+            tokens,
+            tool_calls,
+            last_tool_summary,
+        }));
+    }
+}
+
 impl AgentOutcome {
     /// Convenience: a bare text outcome with no tool metrics (the single-completion path).
     pub fn text(text: impl Into<String>, tokens: u64) -> Self {
@@ -148,6 +195,17 @@ pub trait AgentSpawner: Send + Sync {
     }
 
     async fn spawn(&self, call: AgentCall) -> AgentOutcome;
+
+    /// Run one genuine child while optionally publishing cumulative per-turn activity. The default
+    /// preserves the single-completion spawner contract; the production full-agent spawner
+    /// overrides it.
+    async fn spawn_with_activity(
+        &self,
+        call: AgentCall,
+        _activity: AgentActivityReporter,
+    ) -> AgentOutcome {
+        self.spawn(call).await
+    }
 }
 
 #[cfg(test)]

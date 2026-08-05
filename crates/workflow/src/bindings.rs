@@ -20,7 +20,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rquickjs::function::Async;
 use rquickjs::{Ctx, Function};
@@ -33,13 +33,17 @@ use crate::events::{
 };
 use crate::journal::{Journal, Outcome, Record};
 use crate::schema::{self, SchemaValidator};
-use crate::spawner::{AgentCall, AgentOutcome, AgentSpawner};
+use crate::spawner::{AgentActivityReporter, AgentCall, AgentOutcome, AgentSpawner};
 use core_sched::Governor;
 use core_sched::backoff::{BackoffPolicy, Jitter, full_jitter};
 
 /// Backward-compatible default aggregate ceiling. A kernel-minted [`crate::RunLimits`] may narrow
 /// it, and schema retries consume it one real spawn at a time.
 pub const LIFETIME_CAP: usize = 1000;
+
+/// Live rows are sampled at a human-readable cadence. One hertz keeps the running counters current
+/// while bounding traffic into frontend sinks that commonly forward through unbounded channels.
+const AGENT_ACTIVITY_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Fresh-per-run engine state. All fields are interior-mutable so the `Fn` host closures can share
 /// one `Arc<RunState>` without a `&mut`.
@@ -259,7 +263,7 @@ fn settle_metadata_refusal(
 
 /// Spawn one SEND child, racing the cancel token. `Err` = the child was cancelled (`"stopped"`) or
 /// its task failed. The Governor permit is held by the caller for the whole call.
-async fn spawn_child(env: &AgentEnv, call: &AgentCall) -> Result<AgentOutcome, String> {
+async fn spawn_child(env: &AgentEnv, call: &AgentCall, idx: usize) -> Result<AgentOutcome, String> {
     if !env.state.admit_agent_call() {
         return Err(format!(
             "agent call ceiling {} reached",
@@ -268,20 +272,43 @@ async fn spawn_child(env: &AgentEnv, call: &AgentCall) -> Result<AgentOutcome, S
     }
     let spawner = env.spawner.clone();
     let call = call.clone();
-    let mut child = tokio::spawn(async move { spawner.spawn(call).await });
-    tokio::select! {
-        biased;
-        _ = env.cancel.cancelled() => {
-            child.abort();
-            Err("stopped".to_string())
+    let (activity, activity_rx) = AgentActivityReporter::channel();
+    let mut child = tokio::spawn(async move { spawner.spawn_with_activity(call, activity).await });
+    let mut interval = tokio::time::interval_at(
+        tokio::time::Instant::now() + AGENT_ACTIVITY_INTERVAL,
+        AGENT_ACTIVITY_INTERVAL,
+    );
+    let mut last_emitted = None;
+    loop {
+        tokio::select! {
+            biased;
+            _ = env.cancel.cancelled() => {
+                child.abort();
+                return Err("stopped".to_string());
+            }
+            res = &mut child => {
+                return res.map_err(|join_error| format!("agent task failed: {join_error}"));
+            }
+            _ = interval.tick() => {
+                let latest = activity_rx.borrow().clone();
+                if latest.is_some() && latest != last_emitted {
+                    let snapshot = latest.clone().expect("checked as some");
+                    env.sink.emit(ProgressEvent::AgentActivity {
+                        index: idx,
+                        tokens: snapshot.tokens,
+                        tool_calls: snapshot.tool_calls,
+                        last_tool_summary: snapshot.last_tool_summary,
+                    });
+                    last_emitted = latest;
+                }
+            }
         }
-        res = &mut child => res.map_err(|join_error| format!("agent task failed: {join_error}")),
     }
 }
 
 /// The no-schema path: one child call -> a `Text`/`Null` record + its envelope.
-async fn run_plain(env: &AgentEnv, call: &AgentCall) -> (Record, String) {
-    match spawn_child(env, call).await {
+async fn run_plain(env: &AgentEnv, call: &AgentCall, idx: usize) -> (Record, String) {
+    match spawn_child(env, call, idx).await {
         Ok(AgentOutcome::Text {
             text,
             tokens,
@@ -342,7 +369,7 @@ async fn run_with_schema(
                 tokio::time::sleep(delay).await;
             }
         }
-        match spawn_child(env, &call).await {
+        match spawn_child(env, &call, idx).await {
             Ok(AgentOutcome::Text {
                 text,
                 tokens,
@@ -473,7 +500,7 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
     // --- (4) run live (schema validate+retry when a schema was supplied) ------------------------
     let (record, envelope) = match &raw.schema {
         Some(schema_value) => run_with_schema(&env, &call, schema_value, idx).await,
-        None => run_plain(&env, &call).await,
+        None => run_plain(&env, &call, idx).await,
     };
     drop(permit);
     let duration_ms = started.elapsed().as_millis() as u64;
