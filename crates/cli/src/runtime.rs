@@ -150,6 +150,11 @@ pub enum KernelError {
     ProviderRunNoticeLimit,
     #[error("invalid execution budget: {0}")]
     InvalidBudget(&'static str),
+    /// A queued submission failed the protocol's own admission bounds. Distinct from a budget or
+    /// a record failure: nothing is wrong with the run, the operator asked for something the
+    /// contract does not admit, and the answer is to say so rather than to carry part of it.
+    #[error("submission refused: {0}")]
+    InvalidSubmission(&'static str),
     #[error("cannot enforce a USD ceiling for a route without a verified rate card")]
     UnpricedUsdCeiling,
     #[error("invalid pricing evidence: {0}")]
@@ -223,6 +228,9 @@ impl KernelError {
                 "provider run-notice evidence exceeded its per-run safety bound".into()
             }
             Self::InvalidBudget(reason) => format!("invalid execution budget: {reason}"),
+            // Every reason is a `&'static str` from `core_protocol`, so this echoes a fixed
+            // vocabulary and never a path, a filename or a byte of the file itself.
+            Self::InvalidSubmission(reason) => format!("submission refused: {reason}"),
             Self::UnpricedUsdCeiling => {
                 "cannot enforce the requested USD ceiling: this route has no verified rate card"
                     .into()
@@ -2152,6 +2160,27 @@ enum DurableAppendFault {
     UsdCeiling,
 }
 
+/// What [`Agent::adopt_run`] reached: the identity a frontend must now display, and the identity it
+/// stopped displaying.
+///
+/// The counts come from the state the kernel actually restored from the adopted record, not from
+/// the request — a frontend that renders these is renders what the next turn will continue.
+#[derive(Debug, Clone)]
+pub struct AdoptedRun {
+    pub run_id: String,
+    pub rollout_path: std::path::PathBuf,
+    /// The run this session was on until the adoption. Its writer lock is released by then, so it
+    /// can be adopted back (here or by another process).
+    pub previous_run_id: String,
+    /// Messages reconstructed from the adopted record — the transcript the next turn continues.
+    pub messages: usize,
+    /// Completed model turns rebuilt from the adopted record.
+    pub turns: u32,
+    /// The `(provider_id, model_id)` the adopted record's last durable selection names. `None` for a
+    /// legacy journal that predates provider identity; the caller then keeps its own route.
+    pub recorded_route: Option<(String, String)>,
+}
+
 /// The agent: a controller wired to its five collaborators.
 pub struct Agent {
     /// Shared so read-only subagents can use the same provider (ADR-001 fan-out).
@@ -2204,6 +2233,10 @@ pub struct Agent {
     /// explicitly resolved absence so a later resume cannot begin reading newly-created files.
     /// A recorded ContextInjection always wins over this live proposal.
     instruction_context: Option<(String, Trust)>,
+    /// The composition root's instruction proposal, kept past its consumption so an adopted run can
+    /// be offered the same operator instructions this process was started with. Never authoritative:
+    /// a recorded ContextInjection still wins, exactly as it does for the live proposal.
+    composition_instruction_context: Option<(String, Trust)>,
     /// Bounded frontend-observed facts proposed only for a fresh run. They keep separate Workspace
     /// provenance and become authoritative only after the enclosing ContextInjection is durable.
     /// A recorded ContextInjection always wins over this live proposal.
@@ -2428,6 +2461,7 @@ impl Agent {
             system,
             system_trust: Trust::Trusted,
             instruction_context: None,
+            composition_instruction_context: None,
             environment_context: None,
             compaction: CompactionPolicy::default(),
             compacted_in_run: false,
@@ -3427,6 +3461,12 @@ impl Agent {
         } else {
             trust
         };
+        // Retained beyond the first resolution so [`Self::adopt_run`] can re-propose it. The live
+        // proposal is consumed and cleared once the run records its ContextInjection; a session that
+        // then adopts a run whose record has no injection of its own (a session that never took a
+        // turn) would otherwise resolve with no operator instructions at all, silently weaker than
+        // what `--resume` gives the same record in a fresh process.
+        self.composition_instruction_context = Some((text.clone(), trust));
         self.instruction_context = Some((text, trust));
         Ok(())
     }
@@ -3494,7 +3534,9 @@ impl Agent {
                     }
                     // An approval response has meaning only while `await_approval` owns the queue.
                     Op::ApprovalResponse { .. } => {}
-                    Op::UserInputV2 { .. } | Op::Unknown => unknown = unknown.saturating_add(1),
+                    Op::UserInputV2 { .. } | Op::UserInputV3 { .. } | Op::Unknown => {
+                        unknown = unknown.saturating_add(1)
+                    }
                 }
             }
         }
@@ -3568,7 +3610,9 @@ impl Agent {
                     Op::Steer { text } | Op::UserInput { text } => {
                         self.pending_steers.push_back(text);
                     }
-                    Op::UserInputV2 { .. } | Op::Unknown => unknown = unknown.saturating_add(1),
+                    Op::UserInputV2 { .. } | Op::UserInputV3 { .. } | Op::Unknown => {
+                        unknown = unknown.saturating_add(1)
+                    }
                     Op::ApprovalResponse { .. } | Op::Interrupt | Op::Drain => {}
                 }
             }
@@ -4513,6 +4557,105 @@ impl Agent {
         Ok(())
     }
 
+    /// Adopt another recorded run into THIS live process: the session continues that run's journal,
+    /// identity and transcript without the operator leaving the terminal.
+    ///
+    /// # The per-process / per-run boundary
+    ///
+    /// Everything an `Agent` holds is one of two things, and adoption is exactly the line between
+    /// them.
+    ///
+    /// **Per-process** — built once by the composition root from the environment, not from any
+    /// run's record, and therefore PRESERVED here: the provider handle and registry, the workspace,
+    /// the pinned agent catalog, the system prompt and its trust, hooks, telemetry, the diagnostic
+    /// port, the pricing port, the interrupt/drain atomics, the approvals receiver, the context
+    /// ports and tunables, and the invocation's budget ceilings.
+    ///
+    /// **Per-run** — a projection of one journal, and therefore REPLACED: the rollout itself, the
+    /// working transcript, the ledger, the runtime policy (effort/mode/rules), the turn and
+    /// approval identity counters, taint, the durable route, the injected context segment, the
+    /// at-most-once effect ledger, and the run-scoped provider notices.
+    ///
+    /// Most of the second list is restored from the record by [`Self::set_resume`], which reads
+    /// `self.rollout` — so the swap has to happen first, and the fields `set_resume` does NOT own
+    /// are cleared here so they cannot leak across runs. The one field it owns conditionally is the
+    /// ledger: it rebuilds only an EMPTY one, because an in-process follow-up already holds a richer
+    /// one. Adoption is the case where that live ledger belongs to a different run, so it is reset
+    /// to empty first and the record becomes the authority again.
+    ///
+    /// # What this does not do
+    ///
+    /// It does not bind a route. `set_resume` restores the adopted run's recorded `selected_route`
+    /// but cannot resolve a provider, so `self.model` still names the previous run's model and
+    /// `validate_provider_request_route` will refuse the next provider request until the caller
+    /// records a selection (`record_provider_model_selection`) for the route the session will
+    /// actually use. That refusal is the safe direction: no request is dispatched against a route
+    /// the record does not carry.
+    ///
+    /// # Failure
+    ///
+    /// The replay happens BEFORE anything is mutated, so a torn or unreadable record leaves the live
+    /// run completely untouched and the previous rollout's writer lock still held. After the swap,
+    /// an error means the session is between two runs and the process must be restarted; the
+    /// returned error says so.
+    pub fn adopt_run(&mut self, rollout: Rollout) -> Result<AdoptedRun, KernelError> {
+        // Replay first: this is the only step that can fail without leaving the session between two
+        // runs, so it happens while the live run is still entirely intact.
+        let messages = Self::messages_from_rollout(rollout.path())?;
+        let message_count = messages.len();
+
+        // Dropping the previous rollout releases its exclusive writer lock, so the run this session
+        // is leaving becomes resumable by another process the moment this returns.
+        let previous = std::mem::replace(&mut self.rollout, rollout);
+
+        // Per-run state `set_resume` does not own. Every one of these describes the run being left.
+        self.working_set = None;
+        self.resumed = None;
+        self.ledger = Ledger::new();
+        self.injected = None;
+        self.injected_trust = None;
+        // Re-offer the operator instructions this process was started with. A recorded
+        // ContextInjection in the adopted journal still outranks it — which is every run that has
+        // taken a turn — so this only reaches a run that never resolved one, and keeps it from
+        // resolving with less than `--resume` would have given it. The environment snapshot is NOT
+        // re-proposed: it describes a fresh start, and this is not one.
+        self.instruction_context = self.composition_instruction_context.clone();
+        self.last_assistant_text.clear();
+        self.failed_actions.clear();
+        self.pending_steers.clear();
+        self.verify_attempts = 0;
+        self.compacted_in_run = false;
+        self.interrupt_requested = false;
+        self.pricing = None;
+        // At-most-once identities are per-journal. `guard_unresolved_effects` reseeds this from the
+        // adopted record before the next turn dispatches anything; clearing it now means the window
+        // in between cannot admit an effect against the previous run's ledger.
+        self.effect_admissions = effect_admission::EffectAdmissions::default();
+        // The estimator caches a per-message token estimate for a transcript that is being replaced.
+        self.context_estimator.invalidate_transcript();
+        // A failed append belongs to the journal it failed on. The adopted journal was just replayed
+        // and opened with its own writer descriptor, so the halt does not carry over.
+        self.record_failed = false;
+
+        self.set_resume(messages)?;
+
+        let adopted = AdoptedRun {
+            run_id: self.rollout.run_id().0.clone(),
+            rollout_path: self.rollout.path().to_path_buf(),
+            previous_run_id: previous.run_id().0.clone(),
+            messages: message_count,
+            turns: self.ledger.turns,
+            recorded_route: self.selected_route.as_ref().map(|selected| {
+                (
+                    selected.route.provider_id.clone(),
+                    selected.route.model_id.clone(),
+                )
+            }),
+        };
+        drop(previous);
+        Ok(adopted)
+    }
+
     /// Record the seq-0 session genesis header (SESS-4): cwd/model/effort/created_at, so a session
     /// listing has metadata without replaying the whole rollout and a fork inherits it. `created_at`
     /// crosses the record boundary ONCE here (read from the record on replay, ADR-006 rule 1). The
@@ -4909,6 +5052,43 @@ impl Agent {
     ) -> Result<Outcome, KernelError> {
         let input_images = content.images().cloned().collect();
         self.run_with_images(content.text(), input_images).await
+    }
+
+    /// Run one submission carrying first-class file references.
+    ///
+    /// Two things happen here and nowhere else. First, admission: the payload is re-validated
+    /// against the protocol's bounds even though a frontend already checked them, because the
+    /// kernel is admitting a queue entry, not trusting the process that queued it. Second,
+    /// composition: attached files become part of the submitted text, which makes them durable in
+    /// the transcript and readable by every provider, capable of images or not. An attachment the
+    /// operator can see in the composer but the record cannot show is a worse failure than a
+    /// verbose record.
+    pub async fn run_files(
+        &mut self,
+        text: &str,
+        images: &[core_protocol::ImageContent],
+        files: &[core_protocol::FileContent],
+    ) -> Result<Outcome, KernelError> {
+        core_protocol::input::validate_file_submission(text, images, files)
+            .map_err(KernelError::InvalidSubmission)?;
+        let task = crate::file_input::render_attached_files(text, files);
+        self.run_with_images(&task, images.to_vec()).await
+    }
+
+    /// Continue an already-run agent with one file-carrying submission.
+    pub async fn follow_up_files(
+        &mut self,
+        text: &str,
+        images: &[core_protocol::ImageContent],
+        files: &[core_protocol::FileContent],
+    ) -> Result<Outcome, KernelError> {
+        // Validate before the transcript is staged: a refused submission must leave the session
+        // exactly as it found it, not half-advanced into a turn that never runs.
+        core_protocol::input::validate_file_submission(text, images, files)
+            .map_err(KernelError::InvalidSubmission)?;
+        self.stage_follow_up_transcript()?;
+        self.verify_attempts = 0;
+        self.run_files(text, images, files).await
     }
 
     async fn run_with_images(
@@ -7141,12 +7321,13 @@ impl Agent {
                             // it is admitted immediately after the effect boundary, never dropped.
                             self.pending_steers.push_back(text);
                         }
-                        Op::UserInputV2 { .. } | Op::Unknown => self.record_rejected_submissions(
-                            turn,
-                            1,
-                            SubmissionRejectionReason::UnsupportedOperation,
-                            UNSUPPORTED_SUBMISSION_NOTICE,
-                        ),
+                        Op::UserInputV2 { .. } | Op::UserInputV3 { .. } | Op::Unknown => self
+                            .record_rejected_submissions(
+                                turn,
+                                1,
+                                SubmissionRejectionReason::UnsupportedOperation,
+                                UNSUPPORTED_SUBMISSION_NOTICE,
+                            ),
                     }
                 }
                 Ok(None) => break, // channel closed -> deny
@@ -12330,6 +12511,120 @@ mod gate_integration_tests {
     }
 
     #[tokio::test]
+    async fn an_attached_file_reaches_the_provider_and_the_durable_transcript_as_framed_text() {
+        let ws = temp_ws("file-attachment-carried");
+        let provider = std::sync::Arc::new(CaptureImageInput {
+            capable: false,
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("file-attachment-carried".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let rollout_path = rollout.path().to_path_buf();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 3,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 2,
+            },
+        );
+        agent.workspace = ws.clone();
+
+        let file =
+            core_protocol::FileContent::new("src/main.rs", "fn main() { panic!() }").unwrap();
+        assert_eq!(
+            agent
+                .run_files("why does this panic?", &[], std::slice::from_ref(&file))
+                .await
+                .unwrap(),
+            Outcome::Done
+        );
+
+        let requests = provider.requests.lock().unwrap();
+        let submitted = format!("{:?}", requests[0].messages);
+        assert!(
+            submitted.contains("fn main() { panic!() }"),
+            "the model must actually receive the file it was shown a chip for"
+        );
+        assert!(submitted.contains("src/main.rs"), "with its provenance");
+        assert!(
+            submitted.contains("why does this panic?"),
+            "and the operator's question"
+        );
+        drop(requests);
+
+        // Durable too: a chip the operator saw must be reconstructable from the record alone.
+        let record = std::fs::read_to_string(&rollout_path).unwrap();
+        assert!(record.contains("src/main.rs"));
+        assert!(record.contains("fn main() { panic!() }"));
+
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
+    async fn a_file_submission_over_its_bound_is_refused_before_any_provider_call() {
+        let ws = temp_ws("file-attachment-refused");
+        let provider = std::sync::Arc::new(CaptureImageInput {
+            capable: false,
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("file-attachment-refused".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 3,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 2,
+            },
+        );
+        agent.workspace = ws.clone();
+
+        // An empty file list is not a file submission, and a prompt that no longer leaves room for
+        // the file it carries is refused whole rather than carried in part.
+        assert!(matches!(
+            agent.run_files("nothing attached", &[], &[]).await,
+            Err(KernelError::InvalidSubmission(_))
+        ));
+        let oversized = core_protocol::FileContent::new(
+            "big.txt",
+            "x".repeat(core_protocol::input::MAX_FILE_TEXT_BYTES),
+        )
+        .unwrap();
+        let prompt = "y".repeat(core_protocol::task::MAX_TASK_TEXT_BYTES);
+        assert!(matches!(
+            agent.run_files(&prompt, &[], &[oversized]).await,
+            Err(KernelError::InvalidSubmission(_))
+        ));
+        assert!(
+            provider.requests.lock().unwrap().is_empty(),
+            "a refused submission costs no provider call and no turn"
+        );
+
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
     async fn capable_provider_receives_typed_images_for_each_writer_turn_then_they_clear() {
         let ws = temp_ws("multimodal-capable-provider");
         std::fs::write(ws.join("fixture.txt"), "workspace fixture").unwrap();
@@ -12787,6 +13082,281 @@ mod gate_integration_tests {
             Some(Verdict::Deny)
         );
         drop(resumed);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    /// `agent_for` with an explicit run id, so one workspace can hold two runs at once — which is
+    /// the whole shape adoption exists for.
+    fn agent_for_run(ws: &std::path::Path, run: &str) -> Agent {
+        let registry = Registry::coding_agent(ws).unwrap();
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId(run.into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let budget = Budget {
+            max_turns: 5,
+            max_usd: None,
+            max_tokens: None,
+            max_wall_secs: 30,
+            max_consecutive_tool_errors: 5,
+        };
+        let mut agent = Agent::new(
+            std::sync::Arc::new(ScriptedEdit::default()),
+            registry,
+            rollout,
+            "m".into(),
+            "sys".into(),
+            budget,
+        );
+        agent.workspace = ws.to_path_buf();
+        agent
+    }
+
+    #[test]
+    fn adopting_a_run_moves_the_session_onto_that_journal_identity_and_policy() {
+        let ws = temp_ws("adopt-run");
+        let runs = ws.join(".core/runs");
+        // The run to adopt: its own genesis, its own policy transition, its own transcript.
+        {
+            let mut other = agent_for_run(&ws, "other");
+            other.effort = Effort::Low;
+            other
+                .record_genesis(ws.display().to_string(), 7, String::new(), None)
+                .unwrap();
+            other
+                .transition_effort(Effort::Max, RuntimePolicySource::Operator)
+                .unwrap();
+            other
+                .emit_durable(
+                    TurnId(1),
+                    EventKind::Message {
+                        message: Message::user_text("adopted question"),
+                    },
+                )
+                .unwrap();
+            other
+                .emit_durable(
+                    TurnId(1),
+                    EventKind::Message {
+                        message: Message {
+                            role: Role::Assistant,
+                            content: vec![Block::Text {
+                                text: "adopted answer".into(),
+                            }],
+                        },
+                    },
+                )
+                .unwrap();
+        }
+
+        // The live session, on a different run, carrying live per-run state of its own.
+        let mut live = agent_for_run(&ws, "live");
+        live.effort = Effort::Low;
+        live.record_genesis(ws.display().to_string(), 1, String::new(), None)
+            .unwrap();
+        live.ledger.turns = 3;
+        live.ledger.provider_attempts = 3;
+        live.last_assistant_text = "an answer from the run being left".into();
+        live.working_set = Some(vec![Message::user_text("the transcript being left")]);
+        live.failed_actions
+            .insert("edit:x".into(), "a failure from the run being left".into());
+
+        let rollout = Rollout::open_existing(
+            &runs,
+            &core_protocol::RunId("other".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let adopted = live.adopt_run(rollout).unwrap();
+
+        // Identity, both directions.
+        assert_eq!(adopted.run_id, "other");
+        assert_eq!(adopted.previous_run_id, "live");
+        assert_eq!(live.rollout.run_id().0, "other");
+        assert_eq!(adopted.messages, 2);
+
+        // Per-run state now comes from the adopted record, not from the run that was left.
+        assert_eq!(
+            live.effort(),
+            Effort::Max,
+            "runtime policy must be the adopted record's, not the live session's"
+        );
+        assert_eq!(
+            live.ledger.turns, 0,
+            "the previous run's ledger must not be charged to the adopted run"
+        );
+        assert_eq!(adopted.turns, 0);
+        assert!(live.working_set.is_none());
+        assert!(live.last_assistant_text.is_empty());
+        assert!(live.failed_actions.is_empty());
+        assert_eq!(
+            live.resumed.as_ref().map(Vec::len),
+            Some(2),
+            "the next turn continues the adopted transcript"
+        );
+
+        // A follow-up stages from the ADOPTED journal. This is the property that makes the
+        // adoption real rather than cosmetic: the transcript the next turn continues is read back
+        // from the record this session now writes to.
+        live.working_set = None;
+        live.stage_follow_up_transcript().unwrap();
+        let staged = live.resumed.clone().unwrap();
+        assert!(
+            staged
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .any(|block| matches!(block, Block::Text { text } if text == "adopted answer")),
+            "a follow-up after adoption must continue the adopted transcript"
+        );
+
+        // Writes land on the adopted journal, and only there.
+        live.emit_durable(TurnId(live.seq_turn), EventKind::TurnStart)
+            .unwrap();
+        let adopted_events = core_record::replay(&runs.join("other.jsonl")).unwrap();
+        assert!(
+            adopted_events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::TurnStart))
+                .count()
+                >= 1
+        );
+        let left_events = core_record::replay(&runs.join("live.jsonl")).unwrap();
+        assert!(
+            !left_events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::TurnStart)),
+            "nothing may be appended to the run the session left"
+        );
+
+        // The run that was left released its exclusive writer lock, so it is adoptable again.
+        assert!(
+            Rollout::open_existing(
+                &runs,
+                &core_protocol::RunId("live".into()),
+                core_protocol::TenantId::default(),
+            )
+            .is_ok(),
+            "leaving a run must release its writer lock"
+        );
+
+        drop(live);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn an_adopted_run_is_re_offered_the_operator_instructions_this_process_started_with() {
+        let ws = temp_ws("adopt-instructions");
+        let runs = ws.join(".core/runs");
+        {
+            let mut other = agent_for_run(&ws, "never-ran");
+            other
+                .record_genesis(ws.display().to_string(), 7, String::new(), None)
+                .unwrap();
+        }
+
+        let mut live = agent_for_run(&ws, "live");
+        live.set_instruction_context("AGENTS.md says hello".into(), Trust::Workspace)
+            .unwrap();
+        live.record_genesis(ws.display().to_string(), 1, String::new(), None)
+            .unwrap();
+        // What the first run does once it resolves its own injection.
+        live.clear_frontend_context_proposals();
+        live.injected = Some("resolved for the run being left".into());
+        live.injected_trust = Some(Trust::Workspace);
+
+        let rollout = Rollout::open_existing(
+            &runs,
+            &core_protocol::RunId("never-ran".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        live.adopt_run(rollout).unwrap();
+
+        assert!(
+            live.injected.is_none(),
+            "the previous run's resolved context must not be reused under another identity"
+        );
+        assert_eq!(
+            live.instruction_context,
+            Some(("AGENTS.md says hello".into(), Trust::Workspace)),
+            "a run that never resolved an injection must not be left with fewer instructions than \
+             `--resume` would give it"
+        );
+        // A fresh-start snapshot describes a start this is not.
+        assert!(live.environment_context.is_none());
+
+        drop(live);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn a_record_that_cannot_be_replayed_leaves_the_live_run_untouched() {
+        let ws = temp_ws("adopt-torn");
+        let runs = ws.join(".core/runs");
+        // A fork's logical transcript is its parent's prefix plus its own tail, and the parent
+        // prefix is verified against the recorded `parent_hash_at_seq` at REPLAY time. The child's
+        // own chain stays intact, so taking its writer lock succeeds and the damage is discovered
+        // exactly where `adopt_run` looks for it: in the replay it performs before mutating.
+        let child = {
+            let mut parent = agent_for_run(&ws, "parent");
+            parent
+                .record_genesis(ws.display().to_string(), 7, String::new(), None)
+                .unwrap();
+            parent
+                .emit_durable(
+                    TurnId(1),
+                    EventKind::Message {
+                        message: Message::user_text("recorded before the damage"),
+                    },
+                )
+                .unwrap();
+            // Fork at the last event actually written: `next_sequence` names the position the
+            // NEXT append would take.
+            let at = core_protocol::Seq(parent.rollout.next_sequence().0.saturating_sub(1));
+            drop(parent);
+            core_record::fork(
+                &runs,
+                &core_protocol::RunId("parent".into()),
+                at,
+                &core_protocol::TenantId::default(),
+            )
+            .unwrap()
+        };
+        let parent_path = runs.join("parent.jsonl");
+        let original = std::fs::read_to_string(&parent_path).unwrap();
+        std::fs::write(
+            &parent_path,
+            original.replace("recorded before the damage", "tampered payload!!!!!!"),
+        )
+        .unwrap();
+
+        let mut live = agent_for_run(&ws, "live");
+        live.record_genesis(ws.display().to_string(), 1, String::new(), None)
+            .unwrap();
+        live.working_set = Some(vec![Message::user_text("the live transcript")]);
+        let before = live.rollout.path().to_path_buf();
+
+        let rollout =
+            Rollout::open_existing(&runs, &child, core_protocol::TenantId::default()).unwrap();
+        let error = live.adopt_run(rollout).unwrap_err();
+        assert!(
+            !error.public_summary().is_empty(),
+            "a refused adoption must say why"
+        );
+        assert_eq!(
+            live.rollout.path(),
+            before,
+            "a record that cannot be replayed must not move the live session"
+        );
+        assert_eq!(
+            live.working_set.as_ref().map(Vec::len),
+            Some(1),
+            "a refused adoption must not clear the live transcript"
+        );
+
+        drop(live);
         let _ = std::fs::remove_dir_all(ws);
     }
 

@@ -156,6 +156,25 @@ pub struct ImageContent {
     pub data: ImageBase64,
 }
 
+/// One attached workspace file, carried as a first-class reference beside the prompt.
+///
+/// The payload is UTF-8 text rather than base64: a file chip attaches something a model reads, and
+/// a file that is not text has no reading. `path` is workspace-relative provenance for display and
+/// for the model's benefit — nothing downstream re-opens it, so this type never becomes a
+/// read-anything primitive by being decoded.
+///
+/// Bounds live on [`FileContent::validate`] and [`input::validate_file_submission`]. A file too
+/// large to carry is refused there and never truncated: half a file answered confidently is a
+/// wrong answer wearing the shape of a right one.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileContent {
+    /// Workspace-relative, forward-slash path. Never absolute, never containing a `..` component.
+    pub path: String,
+    /// The complete file text, bounded and NUL-free.
+    pub text: String,
+}
+
 /// One provider-neutral user-input segment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -194,6 +213,25 @@ pub enum Op {
     /// This is a new top-level tag rather than a field added to `UserInput`, so readers predating
     /// multimodal input degrade it to [`Op::Unknown`] without changing legacy text-only bytes.
     UserInputV2 { segments: ContentSegments },
+    /// Start a turn from one text prompt plus bounded, first-class file references, and optionally
+    /// the same images `UserInputV2` carries.
+    ///
+    /// A third top-level tag rather than a field added to `UserInputV2`, because
+    /// [`ContentSegments`] is frozen at "exactly one text segment and at least one image": a
+    /// files-only submission has no legal shape inside it, and widening that type would change
+    /// what an older reader already accepts. A reader predating this tag degrades the whole
+    /// operation to [`Op::Unknown`] and refuses it, which is the outcome we want — such a build
+    /// cannot show the operator the files they attached, so guessing at a text-only turn would
+    /// answer a question nobody asked.
+    ///
+    /// `files` is never empty: a submission with no files belongs on `UserInput` or
+    /// `UserInputV2`. [`input::validate_file_submission`] is the admission check.
+    UserInputV3 {
+        text: String,
+        #[serde(default)]
+        images: Vec<ImageContent>,
+        files: Vec<FileContent>,
+    },
     /// Operator answer to an approval request (ADR-007 capability gate). `remember` = "always
     /// allow this capability for the session" (the `a` answer), which the kernel records as a
     /// session rule so the gate auto-approves the class thereafter.

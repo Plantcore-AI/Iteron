@@ -25,6 +25,11 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub mod bubblewrap;
 mod persistent;
+/// Pseudo-terminal transport for confined children. Unix-only: the whole module is `libc` ioctls,
+/// and the Windows equivalent is ConPTY (`CreatePseudoConsole`), a different API with different
+/// lifetime rules rather than a port of this one.
+#[cfg(unix)]
+pub mod pty;
 pub mod seatbelt;
 
 pub use persistent::{

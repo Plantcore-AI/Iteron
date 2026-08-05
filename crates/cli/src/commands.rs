@@ -236,8 +236,8 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd {
         command: SlashCommand::Resume,
         name: "resume",
-        args: "",
-        help: "how to resume a prior session (lists them)",
+        args: "[run-id]",
+        help: "resume a prior session here (lists them)",
     },
     Cmd {
         command: SlashCommand::Transcript,

@@ -244,6 +244,24 @@ pub(crate) enum Control {
     TurnBudget { set: Option<u32> },
     /// `/side` — the operator's side conversation.
     Side(SideRequest),
+    /// `/resume <run>` — adopt another recorded run into this live session.
+    AdoptRun(Box<AdoptRun>),
+}
+
+/// The inputs of one in-process session adoption, kept together because the runtime applies them as
+/// one: a session that adopted a transcript but not a route would refuse its own next turn.
+///
+/// The `Rollout` is opened by the CLIENT, before the request is sent. That is deliberate: opening it
+/// is what takes the target run's exclusive writer lock, and it is the failure an operator is most
+/// likely to hit (another process is on that run). Taking it client-side means that refusal never
+/// reaches the resident runtime, so the live session cannot be disturbed by an adoption that was
+/// never possible.
+pub(crate) struct AdoptRun {
+    pub(crate) rollout: core_record::Rollout,
+    /// The route the adopted session will actually dispatch on — the record's own route when the
+    /// client could resolve a provider for it, otherwise the route this process is already using.
+    /// Recorded into the adopted journal, so what the session runs on is what its record says.
+    pub(crate) route: Box<ModelSelection>,
 }
 
 /// What the operator wants of the side conversation.
@@ -296,6 +314,20 @@ pub(crate) enum ControlReply {
     SideStatus {
         status: Option<Box<crate::runtime::SideStatus>>,
         closed: bool,
+    },
+    /// The session is now on another run. The identity is what the runtime reached, so a frontend
+    /// that renders it cannot show a run the next turn will not continue.
+    ///
+    /// `blocked` is the honest half. The journal swap and the route rebind are two durable steps,
+    /// and the second one can fail after the first has taken effect. When it does, the session IS on
+    /// the adopted run — that is why this is not a `Refused` — but it cannot dispatch, because the
+    /// kernel refuses every provider request whose route its record does not carry. The frontend
+    /// must show the adopted identity AND this reason: a screen still showing the previous run would
+    /// be the one thing worse than the failure.
+    Adopted {
+        adopted: Box<crate::runtime::AdoptedRun>,
+        snapshot: Box<SessionSnapshot>,
+        blocked: Option<String>,
     },
 }
 
@@ -509,6 +541,23 @@ fn submission_weight(op: &Op) -> usize {
                     core_protocol::ContentSegment::Unknown => bytes,
                 })
         }
+        // Same rule as the segment list above: every variable-size allocation `Op` exposes is
+        // charged at its actual byte length, so a queue full of file chips is bounded in bytes and
+        // not merely in entries.
+        Op::UserInputV3 {
+            text,
+            images,
+            files,
+        } => images
+            .iter()
+            .fold(text.len(), |bytes, image| {
+                bytes.saturating_add(image.data.encoded_len())
+            })
+            .saturating_add(files.iter().fold(0usize, |bytes, file| {
+                bytes
+                    .saturating_add(file.path.len())
+                    .saturating_add(file.text.len())
+            })),
         Op::ApprovalResponse { .. } | Op::Interrupt | Op::Drain | Op::Unknown => 0,
     };
     SQ_ENTRY_OVERHEAD_BYTES.saturating_add(variable_bytes)
@@ -744,6 +793,13 @@ fn wire_with_policy(
 pub(crate) enum RunInput {
     Text(String),
     Content(ContentSegments),
+    /// One text prompt plus first-class file references, and optionally images beside them.
+    /// Carried untouched from the operation so the kernel, not the router, decides admission.
+    Files {
+        text: String,
+        images: Vec<core_protocol::ImageContent>,
+        files: Vec<core_protocol::FileContent>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -764,6 +820,15 @@ pub(crate) fn route(op: &Op) -> Routed {
     match op {
         Op::UserInput { text } => Routed::StartTurn(RunInput::Text(text.clone())),
         Op::UserInputV2 { segments } => Routed::StartTurn(RunInput::Content(segments.clone())),
+        Op::UserInputV3 {
+            text,
+            images,
+            files,
+        } => Routed::StartTurn(RunInput::Files {
+            text: text.clone(),
+            images: images.clone(),
+            files: files.clone(),
+        }),
         Op::Steer { .. } | Op::Interrupt | Op::Drain | Op::ApprovalResponse { .. } => {
             Routed::ToKernel
         }
@@ -856,7 +921,7 @@ impl AppServer {
             let queued = tokio::select! {
                 request = control.recv() => {
                     match request {
-                        Some(request) => { apply_control(&mut agent, &mut side, &mut events, request).await; continue }
+                        Some(request) => { apply_control(&mut agent, &mut side, &mut started, &mut events, request).await; continue }
                         None => break,
                     }
                 }
@@ -900,6 +965,22 @@ impl AppServer {
                                 (RunInput::Content(segments), true) => {
                                     agent.follow_up_content(segments).await
                                 }
+                                (
+                                    RunInput::Files {
+                                        text,
+                                        images,
+                                        files,
+                                    },
+                                    false,
+                                ) => agent.run_files(text, images, files).await,
+                                (
+                                    RunInput::Files {
+                                        text,
+                                        images,
+                                        files,
+                                    },
+                                    true,
+                                ) => agent.follow_up_files(text, images, files).await,
                             }
                         };
                         tokio::pin!(running);
@@ -983,7 +1064,8 @@ impl AppServer {
                     // arrival order, before the snapshot, so the state the frontend receives
                     // already reflects everything it asked for during the turn.
                     for request in deferred {
-                        apply_control(&mut agent, &mut side, &mut events, request).await;
+                        apply_control(&mut agent, &mut side, &mut started, &mut events, request)
+                            .await;
                     }
 
                     let snapshot = snapshot_of(&mut agent);
@@ -1036,6 +1118,7 @@ impl AppServer {
 async fn apply_control(
     agent: &mut Agent,
     side: &mut Option<crate::runtime::SideConversation>,
+    started: &mut bool,
     events: &mut EventPublisher,
     request: ControlRequest,
 ) {
@@ -1134,6 +1217,76 @@ async fn apply_control(
             },
         },
         Control::Side(request) => apply_side(agent, side, request).await,
+        Control::AdoptRun(request) => {
+            let AdoptRun { rollout, route } = *request;
+            match agent.adopt_run(rollout) {
+                Ok(adopted) => {
+                    // The adopted transcript IS this session's transcript now, so the next
+                    // submission must continue it. Leaving `started` false would send it down
+                    // `Agent::run`, which starts from nothing and would silently discard the
+                    // history this adoption just took a writer lock on.
+                    *started = true;
+                    // The side conversation writes into its own journal, minted from the run that
+                    // opened it. It does not travel to another run; the next `/side` opens a fresh
+                    // one under the adopted identity.
+                    *side = None;
+                    let ModelSelection {
+                        provider,
+                        provider_id,
+                        model_id,
+                        catalog_digest,
+                        capability_digest,
+                        context_window_tokens,
+                        max_output_tokens,
+                    } = *route;
+                    // The journal is already swapped. Whatever happens to the route from here, the
+                    // answer reports the adopted identity, because that is where the session is.
+                    let blocked = match agent.record_provider_model_selection(
+                        provider,
+                        provider_id,
+                        model_id,
+                        catalog_digest,
+                        capability_digest,
+                    ) {
+                        Ok(()) => {
+                            agent.model_context_window = context_window_tokens;
+                            agent.model_max_output_tokens = max_output_tokens;
+                            // Usage belongs to the turn that produced it, on the run that produced
+                            // it. Nothing carries across an adoption.
+                            agent.ledger.last_turn_usage = None;
+                            agent.bind_selected_rate_card().err().map(|error| {
+                                format!(
+                                    "session {} was adopted but its rate card could not be bound, \
+                                     so this process cannot continue it: {}. Restart with `core \
+                                     --resume {}`.",
+                                    adopted.run_id,
+                                    error.public_summary(),
+                                    adopted.run_id
+                                )
+                            })
+                        }
+                        // The transcript was adopted and the route was not. The kernel refuses
+                        // every provider request in that state rather than dispatching against a
+                        // route the record does not carry, so this says restart rather than
+                        // pretending the session is usable.
+                        Err(error) => Some(format!(
+                            "session {} was adopted but its route could not be recorded, so this \
+                             process cannot continue it: {error}. Restart with `core --resume {}`.",
+                            adopted.run_id, adopted.run_id
+                        )),
+                    };
+                    ControlReply::Adopted {
+                        adopted: Box::new(adopted),
+                        snapshot: Box::new(snapshot_of(agent)),
+                        blocked,
+                    }
+                }
+                Err(error) => ControlReply::Refused(format!(
+                    "cannot adopt that session here: {}",
+                    error.public_summary()
+                )),
+            }
+        }
     };
     // A frontend that dropped the receiver has moved on; that is not the server's problem.
     let _ = request.reply.send(reply);
@@ -1203,6 +1356,18 @@ fn snapshot_of(agent: &mut Agent) -> SessionSnapshot {
             .and_then(core_provider::RateLimitSnapshot::summary),
     }
 }
+
+/// The heaviest admissible submission still fits the queue.
+///
+/// Admission caps text plus framed files at `MAX_TASK_TEXT_BYTES`, which is exactly what the
+/// capacity reserves. A `const` assertion rather than a runtime one: every term is a compile-time
+/// constant, so `assert!` over them is optimised out and would pass even if the relation broke.
+const _: () = assert!(
+    SQ_ENTRY_OVERHEAD_BYTES
+        + core_protocol::task::MAX_TASK_TEXT_BYTES
+        + core_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
+        <= SQ_BYTE_CAPACITY
+);
 
 #[cfg(test)]
 mod tests {
@@ -1434,6 +1599,29 @@ mod tests {
         assert!(
             SQ_BYTE_CAPACITY <= u32::MAX as usize,
             "tokio's weighted semaphore acquisition accepts a u32 permit count"
+        );
+
+        // File chips are charged the same way, path included, so a queue full of them is bounded
+        // in bytes and not merely in entries.
+        let file = core_protocol::FileContent::new("src/main.rs", "fn main() {}").unwrap();
+        let with_files = Op::UserInputV3 {
+            text: "review".into(),
+            images: vec![
+                core_protocol::ImageContent::new(
+                    core_protocol::ImageMediaType::Png,
+                    "iVBORw0KGgo=",
+                )
+                .unwrap(),
+            ],
+            files: vec![file.clone()],
+        };
+        assert_eq!(
+            submission_weight(&with_files),
+            SQ_ENTRY_OVERHEAD_BYTES
+                + "review".len()
+                + "iVBORw0KGgo=".len()
+                + file.path.len()
+                + file.text.len()
         );
     }
 
@@ -1673,6 +1861,20 @@ mod tests {
                 segments: multimodal.clone(),
             }),
             Routed::StartTurn(RunInput::Content(multimodal))
+        );
+        let files = vec![core_protocol::FileContent::new("src/main.rs", "fn main() {}").unwrap()];
+        assert_eq!(
+            route(&Op::UserInputV3 {
+                text: "review".into(),
+                images: Vec::new(),
+                files: files.clone(),
+            }),
+            Routed::StartTurn(RunInput::Files {
+                text: "review".into(),
+                images: Vec::new(),
+                files,
+            }),
+            "a file submission starts a turn; it is not steering and not a control op"
         );
         for op in [
             Op::Steer { text: "x".into() },

@@ -26,7 +26,7 @@ rather than dispatching an incomplete operation.
 | `/workflows` | Summarize the workflow cards already in this transcript |
 | `/fork` | Branch the current session |
 | `/rewind` | Branch the conversation from the current point |
-| `/resume` | List sessions and show resume guidance |
+| `/resume [run-id]` | Resume a recorded session in this terminal: the live session adopts that run's journal, transcript and identity |
 | `/transcript [query]` | Open the fullscreen, bounded transcript search/view surface |
 | `/export [path]` | Background-export Markdown without overwriting (Linux anonymous-inode publication; fail-closed elsewhere) |
 | `/agents` | List the current run's immutable agent-definition snapshot |

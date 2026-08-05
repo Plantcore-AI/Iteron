@@ -8,7 +8,9 @@ use serde::de::Error;
 use serde::{Deserialize, Deserializer};
 use std::fmt;
 
-pub use crate::{ContentSegment, ContentSegments, ImageBase64, ImageContent, ImageMediaType};
+pub use crate::{
+    ContentSegment, ContentSegments, FileContent, ImageBase64, ImageContent, ImageMediaType,
+};
 
 /// Maximum number of segments in one multimodal submission: one text prompt and up to eight
 /// images.
@@ -19,6 +21,21 @@ pub const MAX_INPUT_IMAGES: usize = 8;
 pub const MAX_IMAGE_BASE64_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum encoded image bytes across one submission.
 pub const MAX_TOTAL_IMAGE_BASE64_BYTES: usize = 32 * 1024 * 1024;
+/// Maximum number of file attachments in one `Op::UserInputV3` submission.
+pub const MAX_INPUT_FILES: usize = 8;
+/// Maximum UTF-8 bytes in one attached file's text.
+pub const MAX_FILE_TEXT_BYTES: usize = 256 * 1024;
+/// Maximum attached-file text across one submission.
+pub const MAX_TOTAL_FILE_TEXT_BYTES: usize = 512 * 1024;
+/// Maximum bytes in one attachment's workspace-relative path.
+pub const MAX_FILE_PATH_BYTES: usize = 1024;
+/// Bytes charged per attachment for the delimiters a frontend wraps it in before the model reads
+/// it.
+///
+/// The bound exists so that "the files fit" is decided here, once, against
+/// [`crate::task::MAX_TASK_TEXT_BYTES`] — rather than by whichever renderer happens to run, which
+/// is how a bound becomes a truncation.
+pub const FILE_ATTACHMENT_FRAMING_BYTES: usize = 128;
 
 impl ImageMediaType {
     pub const fn as_str(self) -> &'static str {
@@ -78,6 +95,153 @@ impl ImageContent {
     pub fn validate(&self) -> Result<(), &'static str> {
         self.data.validate()
     }
+}
+
+impl FileContent {
+    pub fn new(path: impl Into<String>, text: impl Into<String>) -> Result<Self, &'static str> {
+        let content = Self {
+            path: path.into(),
+            text: text.into(),
+        };
+        content.validate()?;
+        Ok(content)
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        validate_file_path(&self.path)?;
+        validate_file_text(&self.text)
+    }
+}
+
+impl fmt::Debug for FileContent {
+    /// Content-free in the payload, exact in the identity. File bytes are operator data and must
+    /// not leak through a log line; the path is already proven free of control characters by
+    /// [`validate_file_path`], so it is safe to print and is the only useful thing here.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FileContent")
+            .field("path", &self.path)
+            .field("text_bytes", &self.text.len())
+            .finish()
+    }
+}
+
+/// Refuse anything that is not a plain workspace-relative path.
+///
+/// This is a *shape* check on a value that already crossed a frontend's containment gate; it is
+/// not itself the containment gate. It exists so a path that reached the queue by another route
+/// still cannot name an absolute location or climb out of a workspace, and so the string is safe
+/// for a terminal to print.
+fn validate_file_path(path: &str) -> Result<(), &'static str> {
+    if path.is_empty() {
+        return Err("attached file path must not be empty");
+    }
+    if path.len() > MAX_FILE_PATH_BYTES {
+        return Err("attached file path exceeds its declared bound");
+    }
+    if path.chars().any(unsafe_path_character) {
+        return Err("attached file path contains a control or bidi-format character");
+    }
+    if path.contains('\\') {
+        // Both a separator this contract does not speak and, on Windows, a UNC/device prefix.
+        return Err("attached file path must use forward slashes");
+    }
+    if path.starts_with('/') || path.as_bytes().get(1) == Some(&b':') {
+        return Err("attached file path must be workspace-relative");
+    }
+    if path
+        .split('/')
+        .any(|component| matches!(component, "" | "." | ".."))
+    {
+        return Err("attached file path must not contain an empty, `.`, or `..` component");
+    }
+    Ok(())
+}
+
+fn validate_file_text(text: &str) -> Result<(), &'static str> {
+    if text.len() > MAX_FILE_TEXT_BYTES {
+        return Err("attached file text exceeds its declared bound");
+    }
+    if text.contains('\0') {
+        return Err("attached file is not text");
+    }
+    Ok(())
+}
+
+/// Control and bidi/zero-width format characters, which corrupt a terminal's column math and can
+/// make a path render as something other than what it names.
+fn unsafe_path_character(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            '\u{200b}'..='\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{feff}'
+        )
+}
+
+/// The admission check for an [`crate::Op::UserInputV3`] payload.
+///
+/// Every failure is a refusal. Nothing here shortens a value to make it fit: a submission that
+/// does not fit is not a smaller submission, it is a different one, and only the operator gets to
+/// decide which files to drop.
+pub fn validate_file_submission(
+    text: &str,
+    images: &[ImageContent],
+    files: &[FileContent],
+) -> Result<(), &'static str> {
+    if text.len() > crate::task::MAX_TASK_TEXT_BYTES {
+        return Err("task text exceeds its declared bound");
+    }
+    if images.len() > MAX_INPUT_IMAGES {
+        return Err("too many input images");
+    }
+    let mut image_base64_bytes = 0usize;
+    for image in images {
+        image.validate()?;
+        image_base64_bytes = image_base64_bytes
+            .checked_add(image.data.encoded_len())
+            .ok_or("image base64 byte count overflowed")?;
+    }
+    if image_base64_bytes > MAX_TOTAL_IMAGE_BASE64_BYTES {
+        return Err("input image payloads exceed their aggregate bound");
+    }
+
+    if files.is_empty() {
+        return Err("a file submission must carry at least one file");
+    }
+    if files.len() > MAX_INPUT_FILES {
+        return Err("too many input files");
+    }
+    let mut file_text_bytes = 0usize;
+    // What the model will actually be handed: the prompt plus every file inside its framing.
+    let mut carried_bytes = text.len();
+    for (index, file) in files.iter().enumerate() {
+        file.validate()?;
+        if files[..index]
+            .iter()
+            .any(|earlier| earlier.path == file.path)
+        {
+            return Err("input files repeat a path");
+        }
+        file_text_bytes = file_text_bytes
+            .checked_add(file.text.len())
+            .ok_or("attached file byte count overflowed")?;
+        carried_bytes = carried_bytes
+            .checked_add(file.text.len())
+            .and_then(|bytes| bytes.checked_add(file.path.len()))
+            .and_then(|bytes| bytes.checked_add(FILE_ATTACHMENT_FRAMING_BYTES))
+            .ok_or("attached file byte count overflowed")?;
+    }
+    if file_text_bytes > MAX_TOTAL_FILE_TEXT_BYTES {
+        return Err("attached file text exceeds its aggregate bound");
+    }
+    if carried_bytes > crate::task::MAX_TASK_TEXT_BYTES {
+        return Err("prompt plus attached files exceed the task text bound");
+    }
+    Ok(())
 }
 
 impl ContentSegments {
@@ -233,8 +397,10 @@ const fn base64_value(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContentSegment, ContentSegments, ImageBase64, ImageContent, ImageMediaType,
-        MAX_IMAGE_BASE64_BYTES, MAX_INPUT_IMAGES, MAX_INPUT_SEGMENTS, MAX_TOTAL_IMAGE_BASE64_BYTES,
+        ContentSegment, ContentSegments, FILE_ATTACHMENT_FRAMING_BYTES, FileContent, ImageBase64,
+        ImageContent, ImageMediaType, MAX_FILE_PATH_BYTES, MAX_FILE_TEXT_BYTES,
+        MAX_IMAGE_BASE64_BYTES, MAX_INPUT_FILES, MAX_INPUT_IMAGES, MAX_INPUT_SEGMENTS,
+        MAX_TOTAL_FILE_TEXT_BYTES, MAX_TOTAL_IMAGE_BASE64_BYTES, validate_file_submission,
     };
 
     fn image() -> ImageContent {
@@ -366,6 +532,148 @@ mod tests {
             }),
         );
         assert!(ContentSegments::new(aggregate).is_err());
+    }
+
+    fn file() -> FileContent {
+        FileContent::new("src/main.rs", "fn main() {}\n").expect("a plain workspace file")
+    }
+
+    #[test]
+    fn an_attached_file_has_one_canonical_wire_shape_and_a_content_free_debug() {
+        let encoded = serde_json::to_value(file()).unwrap();
+        assert_eq!(
+            encoded,
+            serde_json::json!({"path": "src/main.rs", "text": "fn main() {}\n"})
+        );
+        assert_eq!(
+            serde_json::from_value::<FileContent>(encoded).unwrap(),
+            file()
+        );
+
+        let secret = FileContent::new("config/creds.env", "TOKEN=hunter2").unwrap();
+        let debug = format!("{secret:?}");
+        assert!(!debug.contains("hunter2"), "{debug}");
+        assert!(debug.contains("config/creds.env"), "{debug}");
+        assert!(debug.contains("text_bytes"), "{debug}");
+    }
+
+    #[test]
+    fn an_attached_path_is_workspace_relative_plain_and_terminal_safe() {
+        for rejected in [
+            "",
+            "/etc/passwd",
+            "../outside.txt",
+            "src/../../outside.txt",
+            "./src/main.rs",
+            "src//main.rs",
+            "src/main.rs/",
+            r"src\main.rs",
+            r"\\server\share\x.txt",
+            "C:/Windows/win.ini",
+            "src/ma\u{202e}in.rs",
+            "src/ma\u{200b}in.rs",
+            "src/ma\nin.rs",
+        ] {
+            assert!(
+                FileContent::new(rejected, "x").is_err(),
+                "{rejected:?} is not a plain workspace-relative path"
+            );
+            assert!(
+                serde_json::from_value::<FileContent>(
+                    serde_json::json!({"path": rejected, "text": "x"})
+                )
+                .map_or(true, |decoded| decoded.validate().is_err()),
+                "{rejected:?} must not survive admission"
+            );
+        }
+        for accepted in ["a", "src/main.rs", "docs/spec/abi.md", "a.b/c-d_e/f.rs"] {
+            assert!(FileContent::new(accepted, "x").is_ok(), "{accepted:?}");
+        }
+        assert!(FileContent::new("a".repeat(MAX_FILE_PATH_BYTES), "x").is_ok());
+        assert!(FileContent::new("a".repeat(MAX_FILE_PATH_BYTES + 1), "x").is_err());
+    }
+
+    #[test]
+    fn an_oversized_or_binary_file_is_refused_never_shortened() {
+        assert!(FileContent::new("a.txt", "x".repeat(MAX_FILE_TEXT_BYTES)).is_ok());
+        let oversized = FileContent::new("a.txt", "x".repeat(MAX_FILE_TEXT_BYTES + 1));
+        assert_eq!(
+            oversized,
+            Err("attached file text exceeds its declared bound"),
+            "an oversized file is a refusal, not a shorter file"
+        );
+        assert!(FileContent::new("a.bin", "ELF\0\0\0").is_err());
+        // An empty file is a fact about the workspace, not an error.
+        assert!(FileContent::new("empty.txt", "").is_ok());
+    }
+
+    #[test]
+    fn a_file_submission_is_bounded_non_empty_and_free_of_repeated_paths() {
+        assert!(validate_file_submission("review", &[], &[file()]).is_ok());
+        assert_eq!(
+            validate_file_submission("review", &[], &[]),
+            Err("a file submission must carry at least one file")
+        );
+        assert!(
+            validate_file_submission("review", &[], &[file(), file()]).is_err(),
+            "the same path twice is a chip list bug, not two references"
+        );
+
+        let many = (0..=MAX_INPUT_FILES)
+            .map(|index| FileContent::new(format!("f{index}.txt"), "x").unwrap())
+            .collect::<Vec<_>>();
+        assert!(validate_file_submission("review", &[], &many[..MAX_INPUT_FILES]).is_ok());
+        assert_eq!(
+            validate_file_submission("review", &[], &many),
+            Err("too many input files")
+        );
+
+        // Aggregate text: four maximum-size files clear the per-file bound and trip the total.
+        let bulky = (0..4)
+            .map(|index| {
+                FileContent::new(format!("f{index}.txt"), "x".repeat(MAX_FILE_TEXT_BYTES)).unwrap()
+            })
+            .collect::<Vec<_>>();
+        const _: () = assert!(4 * MAX_FILE_TEXT_BYTES > MAX_TOTAL_FILE_TEXT_BYTES);
+        assert_eq!(
+            validate_file_submission("review", &[], &bulky),
+            Err("attached file text exceeds its aggregate bound")
+        );
+
+        // Prompt plus files must fit the task-text bound, framing included, or nothing is sent.
+        let prompt = "x".repeat(crate::task::MAX_TASK_TEXT_BYTES - MAX_FILE_TEXT_BYTES);
+        let one = [FileContent::new("f.txt", "x".repeat(MAX_FILE_TEXT_BYTES)).unwrap()];
+        assert_eq!(
+            validate_file_submission(&prompt, &[], &one),
+            Err("prompt plus attached files exceed the task text bound"),
+            "framing is charged, so a renderer can never be the thing that overflows"
+        );
+        const _: () = assert!(FILE_ATTACHMENT_FRAMING_BYTES > 0);
+        assert!(
+            validate_file_submission(&prompt[..prompt.len() - MAX_FILE_PATH_BYTES], &[], &one)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_file_submission_carries_images_under_the_same_bounds_as_a_segment_list() {
+        assert!(validate_file_submission("both", &[image()], &[file()]).is_ok());
+
+        let too_many = (0..=MAX_INPUT_IMAGES).map(|_| image()).collect::<Vec<_>>();
+        assert_eq!(
+            validate_file_submission("both", &too_many, &[file()]),
+            Err("too many input images")
+        );
+
+        let bounded = ImageContent::new(ImageMediaType::Png, "A".repeat(MAX_IMAGE_BASE64_BYTES))
+            .expect("per-image maximum");
+        let aggregate = (0..=MAX_TOTAL_IMAGE_BASE64_BYTES / MAX_IMAGE_BASE64_BYTES)
+            .map(|_| bounded.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            validate_file_submission("both", &aggregate, &[file()]),
+            Err("input image payloads exceed their aggregate bound")
+        );
     }
 
     #[test]

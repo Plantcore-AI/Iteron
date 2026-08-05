@@ -72,6 +72,31 @@
       "compatibility_shims": []
     },
     {
+      "id": "protocol.op.user-input-v3",
+      "current_version": 2,
+      "version_field": null,
+      "selector": { "field": "op", "value": "user_input_v3" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-user-input-v3-v1.json",
+          "format": "json",
+          "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-user-input-v3-v2.json",
+          "format": "json",
+          "schema_version": 2
+        }
+      ],
+      "fields": [
+        { "name": "op", "introduced_release": 1 },
+        { "name": "text", "introduced_release": 1 },
+        { "name": "images", "introduced_release": 1 },
+        { "name": "files", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
       "id": "protocol.op.approval-response",
       "current_version": 2,
       "version_field": null,
@@ -2670,6 +2695,23 @@
         { "name": "sub_run", "introduced_release": 1 },
         { "name": "task_id", "introduced_release": 1 },
         { "name": "workflow_id", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.file-content",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/protocol/file-content-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        { "name": "path", "introduced_release": 1 },
+        { "name": "text", "introduced_release": 1 }
       ],
       "compatibility_shims": []
     },

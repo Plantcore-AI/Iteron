@@ -119,8 +119,10 @@ use core_protocol::effect::{
     EffectProposal, MAX_EFFECT_ARGUMENTS_BYTES, MAX_EFFECT_WORKSPACE_BYTES,
 };
 use core_protocol::input::{
-    ContentSegment, ContentSegments, ImageBase64, ImageContent, ImageMediaType,
-    MAX_IMAGE_BASE64_BYTES, MAX_INPUT_IMAGES, MAX_INPUT_SEGMENTS, MAX_TOTAL_IMAGE_BASE64_BYTES,
+    ContentSegment, ContentSegments, FILE_ATTACHMENT_FRAMING_BYTES, FileContent, ImageBase64,
+    ImageContent, ImageMediaType, MAX_FILE_PATH_BYTES, MAX_FILE_TEXT_BYTES, MAX_IMAGE_BASE64_BYTES,
+    MAX_INPUT_FILES, MAX_INPUT_IMAGES, MAX_INPUT_SEGMENTS, MAX_TOTAL_FILE_TEXT_BYTES,
+    MAX_TOTAL_IMAGE_BASE64_BYTES,
 };
 use core_protocol::intent::ToolIntent;
 use core_protocol::slot::{MAX_SLOT_ID_BYTES, SlotId, SlotObservation, SlotOutcome};
@@ -259,6 +261,10 @@ fn image_content() -> ImageContent {
         media_type: ImageMediaType::Png,
         data: ImageBase64::new("iVBORw0KGgo=").expect("canonical base64"),
     }
+}
+
+fn file_content() -> FileContent {
+    FileContent::new("src/main.rs", "fn main() {}\n").expect("a plain workspace file")
 }
 
 /// Fully populated on purpose. `max_usd` is part of the original shape; `max_tokens` is the legal
@@ -457,6 +463,13 @@ fn frozen() -> Vec<Shape> {
         shape!(
             "ImageContent", ImageContent, "crates/protocol/src/lib.rs", image_content(),
             { "media_type": String, "data": String }
+        ),
+        // The file-attachment payload behind `Op::UserInputV3` (UX-6). It is a wire shape on the
+        // same terms as `ImageContent`, so it is frozen here rather than only in the compatibility
+        // manifest, where a field could be added without a reader ever noticing.
+        shape!(
+            "FileContent", FileContent, "crates/protocol/src/lib.rs", file_content(),
+            { "path": String, "text": String }
         ),
         shape!("Budget", Budget, "crates/protocol/src/lib.rs", budget(), {
             "max_turns": Number,
@@ -1326,7 +1339,7 @@ fn the_declared_ceilings_are_part_of_the_frozen_contract() {
     // bounds the wire: lowering one refuses a value an older producer legally sent, and raising
     // one lets a newer producer emit a value an older reader refuses. Both are wire changes, so
     // the snapshot pins them exactly rather than one-sidedly.
-    let pinned: [(&str, usize, usize); 21] = [
+    let pinned: [(&str, usize, usize); 26] = [
         // Moved 1 -> 2 with the `tunables_snapshot` event, which reshapes `record.rollout` (7 -> 8)
         // and `record.event-envelope` (3 -> 4) on EQ. Peers re-checked in the same commit: the
         // headless server's `hello`/`submit` handshake and its tests, which now stamp
@@ -1348,6 +1361,23 @@ fn the_declared_ceilings_are_part_of_the_frozen_contract() {
             "MAX_TOTAL_IMAGE_BASE64_BYTES",
             MAX_TOTAL_IMAGE_BASE64_BYTES,
             32 * 1024 * 1024,
+        ),
+        // Appended with `Op::UserInputV3` (UX-6). These bound a tag no older producer emits and no
+        // older reader accepts, so pinning them here starts their history rather than moving one:
+        // the four image bounds above are untouched, and `MAX_INPUT_SEGMENTS` still describes the
+        // frozen `ContentSegments`, which this feature deliberately did not widen.
+        ("MAX_INPUT_FILES", MAX_INPUT_FILES, 8),
+        ("MAX_FILE_TEXT_BYTES", MAX_FILE_TEXT_BYTES, 262_144),
+        (
+            "MAX_TOTAL_FILE_TEXT_BYTES",
+            MAX_TOTAL_FILE_TEXT_BYTES,
+            524_288,
+        ),
+        ("MAX_FILE_PATH_BYTES", MAX_FILE_PATH_BYTES, 1_024),
+        (
+            "FILE_ATTACHMENT_FRAMING_BYTES",
+            FILE_ATTACHMENT_FRAMING_BYTES,
+            128,
         ),
         ("MAX_ACCEPTANCE_CHECKS", MAX_ACCEPTANCE_CHECKS, 256),
         ("MAX_SLOT_ID_BYTES", MAX_SLOT_ID_BYTES, 128),

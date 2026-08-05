@@ -159,6 +159,15 @@ impl TaskEnvelope {
             Op::UserInputV2 { segments } => TaskInput::ContentSegments {
                 segments: segments.clone(),
             },
+            // The envelope exists to carry the authority ceiling, the budget and the definition of
+            // done, none of which an attachment changes; its payload projection is the operator's
+            // instruction. The attached files travel on the SQ operation itself and are re-checked
+            // by `input::validate_file_submission` at admission, so projecting the text here loses
+            // no authority — and a `TaskInput` variant cannot be added without breaking a shape
+            // that older readers already accept.
+            Op::UserInputV3 { text, .. } => TaskInput::Text {
+                text: text.to_owned(),
+            },
             _ => return None,
         };
         Some(Self {

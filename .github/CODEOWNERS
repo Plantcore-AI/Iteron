@@ -119,6 +119,7 @@
 /crates/cli/src/editor.rs @fr0m-scratch
 /crates/cli/src/environment.rs @fr0m-scratch
 /crates/cli/src/external_editor.rs @fr0m-scratch
+/crates/cli/src/file_input.rs @fr0m-scratch
 /crates/cli/src/highlight.rs @fr0m-scratch
 /crates/cli/src/image_input.rs @fr0m-scratch
 /crates/cli/src/keymap.rs @fr0m-scratch

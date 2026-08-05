@@ -623,7 +623,11 @@ fn register_dispatch_agent(r: &mut Registry) -> Result<(), ToolError> {
 /// resolved path (following symlinks) and require the result to stay under the canonical root.
 /// For a not-yet-existing path (a new file to write), we canonicalize its nearest existing
 /// ancestor and re-check.
-pub(crate) fn resolve_in_root(root: &Path, rel: &str) -> Result<PathBuf, String> {
+///
+/// Public because it is the workspace-containment rule for this build, not one tool's private
+/// habit: the frontend's file-attachment chips (UX-6) must refuse exactly the paths `read_file`
+/// refuses, and a second implementation of "under the root" is how the two drift apart.
+pub fn resolve_in_root(root: &Path, rel: &str) -> Result<PathBuf, String> {
     // Cheap lexical pre-check (fast rejection of the obvious cases).
     let mut depth: i32 = 0;
     for comp in Path::new(rel).components() {
