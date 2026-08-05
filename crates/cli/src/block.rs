@@ -496,10 +496,8 @@ pub enum BlockKind {
     /// A live, id-correlated workflow/agent tree (ultracode today; generic workflow vocabulary).
     Workflow(WorkflowCard),
     /// The live QuickJS `core-workflow` phase→agent tree (design §3.3), fed by `ProgressEvent`s.
-    /// The one-shot `core workflow run` live loop renders its `WorkflowRunCard` directly; the
-    /// interactive-REPL seam (`App::workflow_run_event`) has no live caller until ADR-0001 step 1
-    /// lands, which needs a CLI stream schema-version bump to carry a new `UiEvent` variant.
-    #[allow(dead_code)]
+    /// Interactive `WorkflowRunUiEvent`s drive it: `App::workflow_run_started` pushes the card,
+    /// then progress and finished events mutate it in place.
     WorkflowRun(WorkflowRunCard),
     /// A one-line harness hint / confirmation (its level sets color + glyph).
     Notice {

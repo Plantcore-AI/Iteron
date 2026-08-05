@@ -12880,6 +12880,21 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
+    fn workflow_run_started_event_pushes_the_live_tree_variant() {
+        let mut app = App::new();
+        app.workflow_run_ui_event(crate::workflow::WorkflowRunUiEvent::Started {
+            run_id: "wf_reachable".into(),
+            name: "audit".into(),
+            phases: Vec::new(),
+        });
+
+        assert!(matches!(
+            app.transcript.last().map(|block| &block.kind),
+            Some(block::BlockKind::WorkflowRun(card)) if card.run_id == "wf_reachable"
+        ));
+    }
+
+    #[test]
     fn quickjs_workflow_run_events_upsert_one_live_tree() {
         use core_workflow::events::{ProgressEvent, WorkflowState};
 
