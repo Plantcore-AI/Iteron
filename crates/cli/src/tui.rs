@@ -3831,16 +3831,18 @@ pub async fn run(
                             let attached =
                                 app.editor.attach_image_path(&image_path).map(|attachment| {
                                     (
+                                        attachment.id(),
                                         attachment.display_name().to_owned(),
                                         attachment.media_type(),
                                         attachment.file_bytes(),
                                     )
                                 });
                             match attached {
-                                Ok((name, media_type, file_bytes)) => app.note(
+                                Ok((id, name, media_type, file_bytes)) => app.note(
                                     block::NoticeLevel::Ok,
                                     format!(
-                                        "attached {} ({}, {} bytes)",
+                                        "attached {} ({}, {} bytes) as [Image #{id}] at the cursor \
+                                         — backspace removes the anchor, alt+backspace the chip",
                                         name,
                                         media_type.as_str(),
                                         file_bytes
@@ -4033,16 +4035,17 @@ pub async fn run(
                                     .attach_image_bytes("clipboard.png", &bytes)
                                     .map(|attachment| {
                                         (
+                                            attachment.id(),
                                             attachment.display_name().to_owned(),
                                             attachment.media_type(),
                                             attachment.file_bytes(),
                                         )
                                     });
                                 match attached {
-                                    Ok((name, media_type, file_bytes)) => app.note(
+                                    Ok((id, name, media_type, file_bytes)) => app.note(
                                         block::NoticeLevel::Ok,
                                         format!(
-                                            "attached {name} ({}, {file_bytes} bytes)",
+                                            "attached {name} ({}, {file_bytes} bytes) as [Image #{id}] at the cursor — backspace removes the anchor, alt+backspace the chip",
                                             media_type.as_str()
                                         ),
                                     ),
@@ -5026,7 +5029,12 @@ fn submit_composer(
     // guarantee that pasted bytes are inert: text the operator did not write cannot name an
     // `@file(...)` mention and make the composer read it, because by the time those bytes exist in
     // the string there is nothing left that looks for mentions.
-    let text = paste_input::expand(&text, app.editor.pastes());
+    // Image anchors are resolved in the same pass, against the EDITOR's attachments rather than the
+    // staged clone. Only a chip the operator can see may answer an anchor: `staged` also holds the
+    // images just admitted from `@image(...)` mentions, which have no chip and no visible id, and
+    // resolving against it would let a hand-typed `[Image #1]` point at one of them by coincidence
+    // of numbering. An anchor the composer cannot show is an anchor nobody wrote on purpose.
+    let text = paste_input::expand(&text, app.editor.pastes(), app.editor.attachments());
     if text.len() > core_protocol::task::MAX_TASK_TEXT_BYTES {
         app.note(
             block::NoticeLevel::Warn,
@@ -5043,6 +5051,15 @@ fn submit_composer(
     if text.is_empty() && staged.is_empty() && staged_files.is_empty() {
         return;
     }
+    // The frozen segment list cannot interleave text and images, so an anchor's position is
+    // honoured the only way the wire allows: the anchored images lead, in the order the sentence
+    // names them, and everything the sentence does not name follows in attach order — which is
+    // byte-for-byte what an unanchored draft has always sent.
+    // Same store, same reason: a mention's image is never named by an anchor, so it keeps its place
+    // behind the ones that are. `staged` opens as a clone of these attachments, ids and all, so the
+    // ids read from the editor address the very same images inside it.
+    let anchor_order = paste_input::anchored_image_ids(&text, app.editor.attachments());
+    staged.order_by_anchors(&anchor_order);
     let op = if !staged_files.is_empty() {
         // Files present: the one operation that can carry them, images included. Admission is
         // re-run by the kernel, so a refusal here buys the operator a message in the composer
@@ -8894,7 +8911,13 @@ fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
             if index > 0 {
                 chips.push_str("  ");
             }
-            chips.push_str("▧ ");
+            // The `#N` is the same id the in-line `[Image #N]` anchor names. Without it the two
+            // halves of one image are two unrelated things on the screen and the operator cannot
+            // tell which anchor moved which screenshot; with it, the name and size the chip has
+            // always carried are the answer to a question the sentence can now ask.
+            chips.push_str("▧ #");
+            chips.push_str(&attachment.id().to_string());
+            chips.push(' ');
             chips.push_str(attachment.display_name());
             chips.push_str(" · ");
             chips.push_str(&format_attachment_size(attachment.file_bytes()));
@@ -14216,7 +14239,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let session = Session::for_test(tx);
         let mut app = App::new();
-        app.editor.insert_str("describe this");
+        app.editor.insert_str("describe this ");
         app.editor
             .attach_image_bytes("clipboard.png", image_bytes)
             .unwrap();
@@ -14239,7 +14262,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(
             serde_json::to_value(&segments).expect("serialize composer segments"),
             serde_json::json!([
-                {"type": "text", "text": "describe this"},
+                {"type": "text", "text": "describe this [Image #1]"},
                 {
                     "type": "image",
                     "image": {
@@ -14250,7 +14273,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             ]),
             "the composer must preserve ordered text and the exact attached bytes"
         );
-        assert_eq!(segments.text(), "describe this");
+        assert_eq!(segments.text(), "describe this [Image #1]");
         let images = segments.images().collect::<Vec<_>>();
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].media_type, core_protocol::ImageMediaType::Gif);
@@ -14261,6 +14284,174 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 .count(),
             1,
             "the submit preview is projected once without image bytes"
+        );
+    }
+
+    /// Two images that differ in one byte, so "which picture arrived first" is decidable from the
+    /// payload alone rather than from the order we hoped it was in.
+    fn distinct_gifs() -> (&'static [u8], &'static [u8]) {
+        (
+            b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;",
+            b"GIF89a\x01\0\x01\0\x80\0\0\xff\xff\xff\0\0\0!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;",
+        )
+    }
+
+    fn submitted_segments(app: &mut App) -> core_protocol::input::ContentSegments {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let session = Session::for_test(tx);
+        let mut notifier = notification::TerminalNotifier::new(false);
+        submit_composer(app, &session, &mut notifier);
+        let op = rx
+            .try_recv()
+            .expect("composer submits through the bounded SQ")
+            .into_current()
+            .expect("current protocol envelope");
+        match op {
+            Op::UserInputV2 { segments } => segments,
+            other => panic!("expected a multimodal envelope, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_image_payload_arrives_in_the_order_the_sentence_anchors_it() {
+        let (first, second) = distinct_gifs();
+        let mut app = App::new();
+        app.editor.insert_str("compare ");
+        app.editor
+            .attach_image_bytes("left.png", first)
+            .expect("a canonical GIF");
+        app.editor.insert_str(" with ");
+        app.editor
+            .attach_image_bytes("right.png", second)
+            .expect("a second canonical GIF");
+        assert_eq!(app.editor.text(), "compare [Image #1] with [Image #2]");
+
+        // Move the second anchor in front of the first: the sentence now argues the other way, and
+        // the payload has to agree with it or the anchors mean nothing.
+        app.editor.home();
+        app.editor.insert_str("[Image #2] then ");
+        let encode =
+            |bytes| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes);
+        let segments = submitted_segments(&mut app);
+        assert_eq!(
+            segments.text(),
+            "[Image #2] then compare [Image #1] with [Image #2]"
+        );
+        let payload: Vec<&str> = segments.images().map(|image| image.data.as_str()).collect();
+        assert_eq!(
+            payload,
+            vec![encode(second), encode(first)],
+            "the anchored images lead in the order the sentence names them"
+        );
+    }
+
+    #[test]
+    fn an_image_with_no_anchor_still_submits_exactly_as_it_did_before_anchors() {
+        let (first, second) = distinct_gifs();
+        let encode =
+            |bytes| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes);
+
+        let mut app = App::new();
+        app.editor.insert_str("describe these");
+        app.editor
+            .attach_image_bytes("left.png", first)
+            .expect("a canonical GIF");
+        app.editor
+            .attach_image_bytes("right.png", second)
+            .expect("a second canonical GIF");
+        // One backspace per anchor: the operator who does not want position pays one keystroke and
+        // gets the old shape back — the images are still attached, still sent, still in attach
+        // order, and the text is the text they typed.
+        app.editor.backspace();
+        app.editor.backspace();
+        assert_eq!(app.editor.text(), "describe these");
+        assert_eq!(app.editor.chip_count(), 2);
+
+        let segments = submitted_segments(&mut app);
+        assert_eq!(segments.text(), "describe these");
+        let payload: Vec<&str> = segments.images().map(|image| image.data.as_str()).collect();
+        assert_eq!(payload, vec![encode(first), encode(second)]);
+    }
+
+    #[test]
+    fn a_hand_typed_anchor_attaches_nothing_and_says_so() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let session = Session::for_test(tx);
+        let mut app = App::new();
+        let mut notifier = notification::TerminalNotifier::new(false);
+        app.editor.insert_str("show me [Image #7]");
+
+        submit_composer(&mut app, &session, &mut notifier);
+
+        let op = rx
+            .try_recv()
+            .expect("composer submits through the bounded SQ")
+            .into_current()
+            .expect("current protocol envelope");
+        let Op::UserInput { text } = op else {
+            panic!("a typed anchor names no attachment, so this is a text-only turn");
+        };
+        assert_eq!(text, "show me [Image #7 — attachment no longer available]");
+    }
+
+    #[test]
+    fn an_anchor_cannot_be_answered_by_an_image_that_never_had_a_chip() {
+        let root = std::env::temp_dir().join(format!("core-anchor-mention-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test workspace");
+        let (first, _) = distinct_gifs();
+        let fixture = root.join("shot.gif");
+        std::fs::write(&fixture, first).expect("fixture");
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let session = Session::for_test(tx);
+        let mut app = App::new();
+        let mut notifier = notification::TerminalNotifier::new(false);
+        // The mention's image is admitted at submit time and gets id 1 inside the staged store, but
+        // it never had a chip — so the typed `[Image #1]` names nothing the operator could see.
+        app.editor
+            .insert_str(&format!("look at [Image #1] @image({})", fixture.display()));
+
+        submit_composer(&mut app, &session, &mut notifier);
+
+        let op = rx
+            .try_recv()
+            .expect("composer submits through the bounded SQ")
+            .into_current()
+            .expect("current protocol envelope");
+        let Op::UserInputV2 { segments } = op else {
+            panic!("the mention still attaches its image");
+        };
+        assert_eq!(
+            segments.text(),
+            "look at [Image #1 — attachment no longer available]",
+            "numbering coincidence must not turn a typed anchor into a live reference"
+        );
+        assert_eq!(segments.images().count(), 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_chip_row_carries_the_identity_the_anchor_names() {
+        let (first, second) = distinct_gifs();
+        let mut app = App::new();
+        app.editor.insert_str("compare ");
+        app.editor
+            .attach_image_bytes("left.png", first)
+            .expect("a canonical GIF");
+        app.editor.insert_str(" with ");
+        app.editor
+            .attach_image_bytes("right.png", second)
+            .expect("a second canonical GIF");
+
+        let screen = render_text(&mut app, 100, 14);
+        assert!(screen.contains("#1 left.png"), "{screen}");
+        assert!(screen.contains("#2 right.png"), "{screen}");
+        assert!(screen.contains("[Image #1] with [Image #2]"), "{screen}");
+        assert!(
+            !screen.contains("R0lGOD"),
+            "the chip and the anchor are both references; neither prints the bytes"
         );
     }
 
