@@ -1357,6 +1357,18 @@ fn snapshot_of(agent: &mut Agent) -> SessionSnapshot {
     }
 }
 
+/// The heaviest admissible submission still fits the queue.
+///
+/// Admission caps text plus framed files at `MAX_TASK_TEXT_BYTES`, which is exactly what the
+/// capacity reserves. A `const` assertion rather than a runtime one: every term is a compile-time
+/// constant, so `assert!` over them is optimised out and would pass even if the relation broke.
+const _: () = assert!(
+    SQ_ENTRY_OVERHEAD_BYTES
+        + core_protocol::task::MAX_TASK_TEXT_BYTES
+        + core_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
+        <= SQ_BYTE_CAPACITY
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1610,14 +1622,6 @@ mod tests {
                 + "iVBORw0KGgo=".len()
                 + file.path.len()
                 + file.text.len()
-        );
-        // The heaviest admissible file submission still fits the queue: admission caps text plus
-        // framed files at `MAX_TASK_TEXT_BYTES`, which is exactly what the capacity reserves.
-        assert!(
-            SQ_ENTRY_OVERHEAD_BYTES
-                + core_protocol::task::MAX_TASK_TEXT_BYTES
-                + core_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
-                <= SQ_BYTE_CAPACITY
         );
     }
 

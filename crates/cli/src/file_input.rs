@@ -534,11 +534,20 @@ pub fn render_attached_files(text: &str, files: &[FileContent]) -> String {
     rendered
 }
 
+/// The renderer must fit inside the per-file framing the protocol charges for it.
+///
+/// A `const` assertion rather than a test: both sides are compile-time constants, so a runtime
+/// `assert!` over them is optimised out and proves nothing. This one fails the build.
+const _: () = assert!(
+    RENDER_FRAMING_BYTES <= core_protocol::input::FILE_ATTACHMENT_FRAMING_BYTES,
+    "the renderer must fit inside the per-file framing the protocol charges"
+);
+
 #[cfg(test)]
 mod tests {
     use super::{
-        FileAttachments, FileInputErrorKind, FileLoadLimits, RENDER_FRAMING_BYTES,
-        parse_file_mentions, render_attached_files,
+        FileAttachments, FileInputErrorKind, FileLoadLimits, parse_file_mentions,
+        render_attached_files,
     };
     use core_protocol::input::{
         FILE_ATTACHMENT_FRAMING_BYTES, FileContent, MAX_FILE_TEXT_BYTES, validate_file_submission,
@@ -837,10 +846,6 @@ mod tests {
 
     #[test]
     fn the_rendered_submission_never_exceeds_what_admission_charged_for_it() {
-        assert!(
-            RENDER_FRAMING_BYTES <= FILE_ATTACHMENT_FRAMING_BYTES,
-            "the renderer must fit inside the per-file framing the protocol charges"
-        );
         let files = vec![
             FileContent::new("src/main.rs", "fn main() {}\n").unwrap(),
             FileContent::new("docs/a.md", "# title\n").unwrap(),
