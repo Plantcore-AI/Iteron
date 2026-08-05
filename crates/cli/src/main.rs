@@ -17,6 +17,7 @@ mod keymap;
 mod markdown;
 mod mcp;
 mod output;
+mod paste_input;
 mod pricing;
 mod prompt_history;
 mod providers;

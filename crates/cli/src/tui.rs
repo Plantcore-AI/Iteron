@@ -31,6 +31,7 @@ use crate::config::PromptHistoryMode;
 use crate::editor::Editor;
 use crate::file_input;
 use crate::image_input::{self, ImageAttachments};
+use crate::paste_input;
 use crate::providers::{ModelSelection, ProviderDirectory};
 use crate::route::RouteView;
 use crate::runtime::{
@@ -3838,6 +3839,30 @@ pub async fn run(
                                     }
                                     app.completion = None;
                                 }
+                                // A paste too big to read is held aside as one tag rather than
+                                // dumped line by line into the composer: the operator keeps a
+                                // legible draft, and `take_submit` puts the original bytes back
+                                // where the tag stood. Small pastes stay inline — a tag they
+                                // cannot read would be worse than the three lines they can.
+                                _ if paste_input::should_capture(&pasted) => {
+                                    match app.editor.capture_paste(&pasted) {
+                                        Ok(capture) => app.note(
+                                            block::NoticeLevel::Ok,
+                                            format!(
+                                                "held paste #{} aside ({} line{}, {} bytes) — backspace removes the tag",
+                                                capture.id,
+                                                capture.lines + 1,
+                                                if capture.lines == 0 { "" } else { "s" },
+                                                capture.bytes
+                                            ),
+                                        ),
+                                        Err(error) => app.note(
+                                            block::NoticeLevel::Warn,
+                                            format!("paste refused: {error}"),
+                                        ),
+                                    }
+                                    app.refresh_completion(&repo);
+                                }
                                 _ => {
                                     app.editor.insert_str(&pasted);
                                     app.refresh_completion(&repo);
@@ -4923,6 +4948,23 @@ fn submit_composer(
     cuts.sort_by_key(|range| range.start);
     for range in cuts.iter().rev() {
         text.replace_range(range.clone(), "");
+    }
+    // Pasted blocks come back LAST, after the mentions have been parsed and cut. That order is the
+    // guarantee that pasted bytes are inert: text the operator did not write cannot name an
+    // `@file(...)` mention and make the composer read it, because by the time those bytes exist in
+    // the string there is nothing left that looks for mentions.
+    let text = paste_input::expand(&text, app.editor.pastes());
+    if text.len() > core_protocol::task::MAX_TASK_TEXT_BYTES {
+        app.note(
+            block::NoticeLevel::Warn,
+            format!(
+                "submission refused: {} bytes exceeds the {}-byte task limit — the draft and its \
+                 pasted blocks are untouched",
+                text.len(),
+                core_protocol::task::MAX_TASK_TEXT_BYTES
+            ),
+        );
+        return;
     }
     let text = text.trim().to_owned();
     if text.is_empty() && staged.is_empty() && staged_files.is_empty() {
@@ -13508,6 +13550,58 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 .transcript
                 .iter()
                 .any(|block| block.to_text().contains("submission was not accepted"))
+        );
+    }
+
+    /// A block big enough that the paste path holds it aside instead of typing it out.
+    fn pasted_log() -> String {
+        (0..40)
+            .map(|line| format!("line {line}: connection reset by peer"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_pasted_block_submits_as_its_own_bytes_and_cannot_smuggle_a_file_mention() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let session = Session::for_test(tx);
+        let mut app = App::new();
+        let mut notifier = notification::TerminalNotifier::new(false);
+        // The pasted text names a file mention. It is not the operator's request, it is content,
+        // and it must reach the model as the characters it is rather than making the composer
+        // read a file.
+        let pasted = format!("@file(Cargo.toml)\n{}", pasted_log());
+        app.editor.insert_str("explain ");
+        app.editor.capture_paste(&pasted).expect("a bounded paste");
+        assert_eq!(app.editor.text(), "explain [Pasted text #1 +40 lines]");
+
+        submit_composer(&mut app, &session, &mut notifier);
+
+        let op = rx
+            .try_recv()
+            .expect("composer submits through the bounded SQ")
+            .into_current()
+            .expect("current protocol envelope");
+        let Op::UserInput { text } = op else {
+            panic!("a pasted block is text; it must not become an attachment operation");
+        };
+        assert_eq!(text, format!("explain {pasted}"));
+        assert!(!app.editor.has_submission());
+    }
+
+    #[test]
+    fn the_composer_shows_a_paste_tag_and_never_the_pasted_body() {
+        let mut app = App::new();
+        app.editor.insert_str("why? ");
+        app.editor
+            .capture_paste(&pasted_log())
+            .expect("a bounded paste");
+
+        let screen = render_text(&mut app, 100, 14);
+        assert!(screen.contains("[Pasted text #1 +39 lines]"), "{screen}");
+        assert!(
+            !screen.contains("connection reset by peer"),
+            "a tag is a reference; the composer never prints the block it stands for"
         );
     }
 
