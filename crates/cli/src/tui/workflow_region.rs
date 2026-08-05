@@ -365,7 +365,11 @@ mod tests {
         assert_eq!(monitor.live_blocks(), vec![7, 8]);
 
         monitor.ingest("wf_2", WorkflowRunSignal::Settled);
-        assert_eq!(monitor.focus(), Some("wf_2"), "focus is unchanged by design");
+        assert_eq!(
+            monitor.focus(),
+            Some("wf_2"),
+            "focus is unchanged by design"
+        );
         assert_eq!(
             monitor.region_block(),
             Some(7),

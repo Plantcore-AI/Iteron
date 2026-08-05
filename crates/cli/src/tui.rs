@@ -2103,7 +2103,10 @@ impl App {
         // live; without this the store's one collapse writer would be unreachable for exactly the
         // runs an operator wants to expand.
         if let Some(block_id) = self.workflow_monitor.region_block()
-            && let Some(i) = self.transcript.iter().position(|block| block.id == block_id)
+            && let Some(i) = self
+                .transcript
+                .iter()
+                .position(|block| block.id == block_id)
         {
             self.toggle_fold(i);
             return;
@@ -13522,7 +13525,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(app.workflow_monitor.region_block(), Some(block_id));
 
         let live = render_text(&mut app, 100, 30);
-        assert!(live.contains("region audit"), "the tree is on screen: {live}");
+        assert!(
+            live.contains("region audit"),
+            "the tree is on screen: {live}"
+        );
         assert!(live.contains("scan modules"), "{live}");
         assert!(
             live.contains("conversation marker"),
@@ -13633,7 +13639,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the running workflow keeps the card the region draws"
         );
         assert!(
-            !app.transcript.iter().any(|block| block.id == finished_block),
+            !app.transcript
+                .iter()
+                .any(|block| block.id == finished_block),
             "the finished run's record leaves with the conversation it belonged to"
         );
         assert_eq!(

@@ -4188,7 +4188,11 @@ mod tests {
         theme: &Theme,
         spin: usize,
     ) -> Vec<Line<'static>> {
-        window_workflow_rows(render_workflow_run(card, width, theme, spin), max_rows, theme)
+        window_workflow_rows(
+            render_workflow_run(card, width, theme, spin),
+            max_rows,
+            theme,
+        )
     }
 
     fn workflow_line_text(line: &Line<'static>) -> String {
