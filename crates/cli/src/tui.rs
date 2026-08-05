@@ -9069,6 +9069,7 @@ fn draw(f: &mut Frame, app: &mut App) {
             n_input_rows
         },
         lane_rows,
+        0,
         show_status,
         app.pending.is_some(),
     );
@@ -11165,7 +11166,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.route.model_id = "glm-5.2".into();
         app.model = "glm-5.2".into();
         app.effort = Effort::High;
-        let expected = surface::Surface::resolve(Rect::new(0, 0, 80, 12), 1, 0, true, false);
+        let expected = surface::Surface::resolve(Rect::new(0, 0, 80, 12), 1, 0, 0, true, false);
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
