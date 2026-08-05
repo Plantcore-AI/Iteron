@@ -23,6 +23,7 @@ mod transcript_export;
 mod transcript_viewer;
 mod tunables_view;
 mod workflow_region;
+mod workflow_rehydrate;
 
 pub(crate) mod app_server;
 pub(crate) mod headless;
@@ -925,6 +926,11 @@ struct App {
     /// `workflow_run_ui_event` (ADR-0001 step 1). The transcript card remains the authority the
     /// renderer reads; see `workflow_region` for what this store deliberately does not copy.
     workflow_monitor: workflow_region::WorkflowMonitor,
+    /// `<runtime_state_dir>/subagents/workflows` — the directory `core workflow list` enumerates,
+    /// derived the same way the kernel derives it (the rollout file's parent). It is what lets the
+    /// monitor rebuild prior runs after a restart; `None` for a session with no rollout parent,
+    /// which simply restores nothing.
+    workflows_dir: Option<std::path::PathBuf>,
     /// The active color theme (ADR-015 §4).
     theme: theme::Theme,
     /// Captured once at startup; runtime `/theme` previews are projected to the same terminal depth.
@@ -1081,6 +1087,7 @@ impl App {
             pending_tools: VecDeque::new(),
             workflow_index: std::collections::HashMap::new(),
             workflow_monitor: workflow_region::WorkflowMonitor::default(),
+            workflows_dir: None,
             theme,
             color_depth,
             theme_epoch: 0,
@@ -3509,6 +3516,12 @@ pub async fn run(
     }
     update_keymap_status(&mut app, &active_keymap, &vim);
     app.hyperlink_policy = hyperlink::Policy::detect(&repo);
+    // The same derivation the kernel uses (`Agent::runtime_state_dir` is the rollout's parent), so
+    // the runs this frontend restores are exactly the runs this session's own workflows land in.
+    app.workflows_dir = facts
+        .rollout_path
+        .parent()
+        .map(|state_dir| state_dir.join("subagents").join("workflows"));
     app.mode = initial_state.mode;
     app.effort = initial_state.effort;
     app.model = initial_state.model.clone();
@@ -6119,6 +6132,39 @@ fn permission_picker_items(rules: &PermissionRules) -> Vec<PickItem> {
     items
 }
 
+/// `/workflows` rows backed by prior-process sidecars. Kept pure so the same projection can be
+/// terminal-rendered in the rehydration tests without constructing a runtime session.
+fn restored_workflow_rows(monitor: &workflow_region::WorkflowMonitor) -> Vec<block::PanelRow> {
+    let restored: Vec<_> = monitor
+        .restored_runs()
+        .map(|run| block::PanelRow::Item {
+            label: format!(
+                "{} · {}",
+                crate::workflow::ui_safe_label(&run.name),
+                run.status
+            ),
+            hint: format!(
+                "{} · {} agents{}",
+                ui_safe_text(&run.run_id),
+                run.agents,
+                if run.model.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {}", ui_safe_text(&run.model))
+                }
+            ),
+        })
+        .collect();
+    if restored.is_empty() {
+        return restored;
+    }
+    let mut rows = vec![block::PanelRow::Note(
+        "earlier sessions · resume with `core workflow resume <run-id>`".into(),
+    )];
+    rows.extend(restored);
+    rows
+}
+
 fn format_resume_command(run_id: &str) -> String {
     let argument = if !run_id.is_empty()
         && run_id
@@ -7631,6 +7677,11 @@ async fn handle_registered_command(
                     hint: format!("{} · {done}/{} agents", card.run_id, card.agents.len()),
                 });
             }
+            // Runs from EARLIER processes, rebuilt from their sidecars (see `workflow_rehydrate`).
+            // They are listed apart from, and after, this transcript's own runs because they are a
+            // different claim: this session is not driving them and has no tree for them, so what
+            // is on offer is the run id — the argument `core workflow resume` wants.
+            rows.extend(restored_workflow_rows(&app.workflow_monitor));
             if rows.is_empty() {
                 rows.push(block::PanelRow::Note(
                     "no workflow has run in this transcript".into(),
@@ -9255,6 +9306,11 @@ fn workflow_region_cap(frame_height: u16) -> u16 {
 }
 
 fn draw(f: &mut Frame, app: &mut App) {
+    // Rebuild the workflow region's store from disk before the first frame reads it, and again on
+    // the first frame after an adoption (which resets the store, and with it the once-flag). One
+    // call site rather than two triggers: any second entry point is a path that can be forgotten.
+    // Every later frame pays one bool test — `rehydrate` returns before touching the filesystem.
+    app.workflow_monitor.rehydrate(app.workflows_dir.as_deref());
     // A newly arrived capability decision outranks optional inspection chrome. The viewer cannot
     // hide a fail-closed approval surface while the runtime is blocked on it.
     if app.pending.is_some() && app.transcript_viewer.is_open() {

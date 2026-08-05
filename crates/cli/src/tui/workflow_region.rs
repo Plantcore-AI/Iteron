@@ -31,19 +31,50 @@
 //!
 //! The region costs exactly zero rows until `region_block` answers `Some`, so a session in which
 //! no workflow ever runs has the layout it had before this store existed.
+//!
+//! # Runs this process did not launch
+//!
+//! [`WorkflowMonitor::rehydrate`] reads the workspace's durable run sidecars back after a restart.
+//! Those rows are inventory: they carry no card, they are registered settled, and
+//! [`WorkflowRun::live`] refuses them — because no event this session receives can ever belong to
+//! one, and a store that claimed otherwise would make the status row's live counter lie.
+
+use super::workflow_rehydrate;
+
+/// Prior runs retained in the restart inventory. Sixteen keeps `/workflows` readable and, more
+/// importantly, bounds first-frame sidecar reads even when the directory holds years of history.
+pub(crate) const RESTORE_LIMIT: usize = 16;
 
 /// One watched run. Identity plus the presentation state the transcript does not carry.
 #[derive(Debug, Clone)]
 struct WorkflowRun {
     run_id: String,
-    /// The transcript block rendering this run's tree.
-    block_id: u64,
+    /// The transcript block rendering this run's tree, or `None` for a run rebuilt from disk, which
+    /// has no card and never gets one (see [`WorkflowMonitor::rehydrate`]).
+    block_id: Option<u64>,
     /// The engine future resolved. The card stays in the transcript; the live binding does not.
     settled: bool,
     /// Finished agent rows collapse to one dim summary line. `true` is the card's own default
     /// (`WorkflowRunCard::verbose == false`), so a fresh entry and a fresh card agree by
     /// construction.
     collapsed: bool,
+    /// `Some` for a run this process did NOT launch, read back off disk after a restart. The
+    /// summary its sidecars stated is all such a run has; there is no card and no event stream.
+    restored: Option<crate::workflow::RunListing>,
+}
+
+impl WorkflowRun {
+    /// Whether THIS process is driving this run right now.
+    ///
+    /// Two independent reasons a restored run can never answer `true`, which is deliberate: it is
+    /// registered already-settled, AND it has no block. Every liveness question in this store goes
+    /// through this one predicate, so a future edit that flips one of those two still cannot make
+    /// a restored run claim liveness — and `live_count` feeds the status row's `⟳ n run(s)`, which
+    /// would otherwise stand there lying for the rest of the session about a run no event will
+    /// ever arrive for.
+    fn live(&self) -> bool {
+        self.restored.is_none() && !self.settled && self.block_id.is_some()
+    }
 }
 
 /// What a run's lifecycle just told the region.
@@ -65,6 +96,8 @@ pub(crate) struct WorkflowMonitor {
     /// The run the region is pointed at, by id rather than by position so that clearing finished
     /// runs cannot silently re-point it at a different run.
     focus: Option<String>,
+    /// Set after the first rehydration attempt; cleared only by [`Self::reset`].
+    rehydrated: bool,
 }
 
 impl WorkflowMonitor {
@@ -79,12 +112,15 @@ impl WorkflowMonitor {
             WorkflowRunSignal::Live { block_id } => {
                 let fresh = WorkflowRun {
                     run_id: run_id.to_owned(),
-                    block_id,
+                    block_id: Some(block_id),
                     settled: false,
                     collapsed: true,
+                    restored: None,
                 };
                 // A run whose card is minted a second time (it settled, then spoke again) takes
-                // the new block and the new card's collapse default, and keeps its position.
+                // the new block and the new card's collapse default, and keeps its position. The
+                // same replacement upgrades a restored row to a driven run, which is the honest
+                // outcome if a run id this process launches ever coincides with one on disk.
                 match self.position(run_id) {
                     Some(pos) => self.runs[pos] = fresh,
                     None => self.runs.push(fresh),
@@ -105,12 +141,13 @@ impl WorkflowMonitor {
     ///
     /// A settled run answers `None`. Its card is still in the transcript, but the run is over, so
     /// a progress event arriving afterwards mints a fresh card — the same thing that happened when
-    /// this binding was deleted on settle.
+    /// this binding was deleted on settle. A restored run answers `None` for good: it has no card,
+    /// and this session's engine has no run by that id to send progress for.
     pub(crate) fn block_id(&self, run_id: &str) -> Option<u64> {
         self.runs
             .iter()
-            .find(|run| run.run_id == run_id && !run.settled)
-            .map(|run| run.block_id)
+            .find(|run| run.run_id == run_id && run.live())
+            .and_then(|run| run.block_id)
     }
 
     /// Toggle the collapse state of the run rendered by `block_id` and report the NEW value; `None`
@@ -123,7 +160,10 @@ impl WorkflowMonitor {
     /// matching those two strings would silently miss for exactly the run ids that needed
     /// sanitizing.
     pub(crate) fn toggle_collapsed_for_block(&mut self, block_id: u64) -> Option<bool> {
-        let pos = self.runs.iter().position(|run| run.block_id == block_id)?;
+        let pos = self
+            .runs
+            .iter()
+            .position(|run| run.block_id == Some(block_id))?;
         self.runs[pos].collapsed = !self.runs[pos].collapsed;
         Some(self.runs[pos].collapsed)
     }
@@ -131,9 +171,61 @@ impl WorkflowMonitor {
     /// Drop every run, live or settled. Used when the transcript's projections are dropped
     /// wholesale (session adoption), where a retained binding would point at a block that the
     /// incoming run's transcript no longer contains.
+    /// The adopted run's own prior workflows are what should be on screen afterwards, so the
+    /// rehydration flag is cleared too and the next frame reads the directory again.
     pub(crate) fn reset(&mut self) {
         self.runs.clear();
         self.focus = None;
+        self.rehydrated = false;
+    }
+
+    /// Rebuild the runs this workspace has on disk, ONCE per store.
+    ///
+    /// A run's tree lives in a [`crate::block::WorkflowRunCard`], which is memory-only: restarting
+    /// leaves the frontend with no idea that this workspace was in the middle of anything. The runs
+    /// themselves are durable — `core workflow list` reads them from an entirely different process
+    /// — so after a restart this store is the one thing that is emptier than the truth.
+    ///
+    /// An inventory row per run, exactly what the command-side readers state. No card is minted:
+    /// the journal records no `agent()` label or `phase()` title, so a reconstructed tree could
+    /// only be an empty box claiming `0/0 agents` over a journal that says otherwise.
+    ///
+    /// Restored runs are registered SETTLED and blockless, so [`WorkflowRun::live`] refuses them
+    /// twice over. A sidecar may say `running` in another process, but this process cannot receive
+    /// its events; counting it live would permanently corrupt S6's status-line count. A locally
+    /// driven run wins over a disk row with the same id.
+    ///
+    /// Returns how many rows were added. `None` for a session with no run directory (which still
+    /// settles the flag — the path is session-constant, so retrying it every frame would only cost
+    /// syscalls).
+    pub(crate) fn rehydrate(&mut self, workflows_dir: Option<&std::path::Path>) -> usize {
+        if self.rehydrated {
+            return 0;
+        }
+        self.rehydrated = true;
+        let Some(dir) = workflows_dir else {
+            return 0;
+        };
+        let mut added = 0;
+        for restored in workflow_rehydrate::restore(dir, RESTORE_LIMIT) {
+            if self.position(&restored.run_id).is_some() {
+                continue;
+            }
+            self.runs.push(WorkflowRun {
+                run_id: restored.run_id.clone(),
+                block_id: None,
+                settled: true,
+                collapsed: true,
+                restored: Some(restored),
+            });
+            added += 1;
+        }
+        added
+    }
+
+    /// The runs read back off disk, newest creation first — history, not this session's work.
+    pub(crate) fn restored_runs(&self) -> impl Iterator<Item = &crate::workflow::RunListing> + '_ {
+        self.runs.iter().filter_map(|run| run.restored.as_ref())
     }
 
     /// The block the workflow region draws this frame, or `None` when the region must cost zero
@@ -155,10 +247,10 @@ impl WorkflowMonitor {
             .and_then(|run_id| {
                 self.runs
                     .iter()
-                    .find(|run| run.run_id == run_id && !run.settled)
+                    .find(|run| run.run_id == run_id && run.live())
             })
-            .or_else(|| self.runs.iter().rev().find(|run| !run.settled))
-            .map(|run| run.block_id)
+            .or_else(|| self.runs.iter().rev().find(|run| run.live()))
+            .and_then(|run| run.block_id)
     }
 
     /// The blocks of every run that is still running, in first-seen order.
@@ -169,8 +261,8 @@ impl WorkflowMonitor {
     pub(crate) fn live_blocks(&self) -> Vec<u64> {
         self.runs
             .iter()
-            .filter(|run| !run.settled)
-            .map(|run| run.block_id)
+            .filter(|run| run.live())
+            .filter_map(|run| run.block_id)
             .collect()
     }
 
@@ -180,7 +272,7 @@ impl WorkflowMonitor {
     /// the only indication a run is still going on a terminal too short to draw the region.
     /// The test-only marker S5 carried is gone because that bit is a real caller.
     pub(crate) fn live_count(&self) -> usize {
-        self.runs.iter().filter(|run| !run.settled).count()
+        self.runs.iter().filter(|run| run.live()).count()
     }
 
     /// Whether this run is live — it has a card that events still land on.
@@ -189,10 +281,14 @@ impl WorkflowMonitor {
         self.block_id(run_id).is_some()
     }
 
-    /// Forget every settled run, keeping the live ones. Focus follows: a focus on a run that was
-    /// just forgotten is dropped rather than left dangling on an id nothing can resolve.
+    /// Forget every run that is not live, keeping the live ones. Focus follows: a focus on a run
+    /// that was just forgotten is dropped rather than left dangling on an id nothing can resolve.
+    ///
+    /// Restored rows leave here with the settled ones — clearing the conversation clears its
+    /// history, and a run from a previous process is history. They do not come back: `/clear` does
+    /// not touch the rehydration flag, so a cleared conversation stays cleared.
     pub(crate) fn clear_finished(&mut self) {
-        self.runs.retain(|run| !run.settled);
+        self.runs.retain(|run| run.live());
         if let Some(focused) = self.focus.as_deref()
             && self.position(focused).is_none()
         {
