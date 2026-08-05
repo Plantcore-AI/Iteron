@@ -1764,6 +1764,68 @@ pub(crate) fn render_workflow_run(
     out
 }
 
+/// Render a workflow inside a fixed row budget without silently clipping either end of the tree.
+/// The full renderer already establishes the semantic order, so this wrapper only selects a
+/// contiguous window from those rows and reports how many ordered rows sit above and below it.
+/// The final totals row is kept outside that window and is therefore always visible when
+/// `max_rows > 0`; with a one-row budget it is the only row returned.
+#[allow(dead_code)] // Staged renderer seam: a later viewport slice supplies the live row budget.
+pub(crate) fn render_workflow_run_bounded(
+    card: &WorkflowRunCard,
+    width: u16,
+    max_rows: usize,
+    theme: &Theme,
+    spin: usize,
+) -> Vec<Line<'static>> {
+    let mut rows = render_workflow_run(card, width, theme, spin);
+    if rows.len() <= max_rows {
+        return rows;
+    }
+    if max_rows == 0 {
+        return Vec::new();
+    }
+
+    let footer = rows
+        .pop()
+        .expect("workflow renderer always emits a totals footer");
+    if max_rows == 1 {
+        return vec![footer];
+    }
+
+    let indicator = |arrow: char, hidden: usize| {
+        Line::from(Span::styled(
+            format!("{arrow} {hidden} more"),
+            Style::default().fg(theme.faint).add_modifier(Modifier::DIM),
+        ))
+    };
+    let body_slots = max_rows - 1;
+
+    // Budgets of two or three rows cannot hold both directional indicators and useful content.
+    // Keep the tail nearest the immutable footer and account for everything hidden above it.
+    if body_slots < 3 {
+        let visible_rows = body_slots - 1;
+        let hidden_above = rows.len() - visible_rows;
+        let mut out = Vec::with_capacity(max_rows);
+        out.push(indicator('\u{2191}', hidden_above)); // ↑
+        out.extend(rows.into_iter().skip(hidden_above));
+        out.push(footer);
+        return out;
+    }
+
+    // A balanced window preserves context from both halves of a long, already-ordered workflow.
+    // The two indicator rows are part of the hard budget, not additions after truncation.
+    let visible_rows = body_slots - 2;
+    let hidden_rows = rows.len() - visible_rows;
+    let hidden_above = hidden_rows / 2;
+    let hidden_below = hidden_rows - hidden_above;
+    let mut out = Vec::with_capacity(max_rows);
+    out.push(indicator('\u{2191}', hidden_above)); // ↑
+    out.extend(rows.into_iter().skip(hidden_above).take(visible_rows));
+    out.push(indicator('\u{2193}', hidden_below)); // ↓
+    out.push(footer);
+    out
+}
+
 /// The historical Core startup wordmark. It is intentionally a product wordmark, not a mascot.
 const BANNER: [&str; 6] = [
     " ██████╗ ██████╗ ██████╗ ███████╗",
@@ -4043,6 +4105,149 @@ mod tests {
             .collect();
         assert!(drawn.contains("audit"), "header drew into the frame");
         assert!(drawn.contains('\u{276f}'), "narrator drew into the frame");
+    }
+
+    fn bounded_workflow_card(agent_count: usize) -> WorkflowRunCard {
+        let mut card = WorkflowRunCard::new("wf_bounded", "bounded audit");
+        card.declare_phases(["Explore", "Synthesize"]);
+        card.verbose = true;
+        for index in 0..agent_count {
+            card.agents.push(WorkflowRunAgent {
+                index,
+                label: format!("investigator {index:02}"),
+                phase_index: if index + 4 < agent_count { 1 } else { 2 },
+                state: WorkflowState::Error,
+                agent_type: None,
+                model: Some("haiku".into()),
+                tokens: 100,
+                tool_calls: 1,
+                last_tool_summary: None,
+                result_preview: None,
+                started: None,
+                duration_ms: 100,
+                error: None,
+            });
+        }
+        card
+    }
+
+    fn workflow_line_text(line: &Line<'static>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn bounded_workflow_keeps_every_row_when_fewer_than_the_bound() {
+        let theme = Theme::dark();
+        let card = bounded_workflow_card(3);
+        let full = render_workflow_run(&card, 100, &theme, 0);
+        let bounded = render_workflow_run_bounded(&card, 100, full.len() + 5, &theme, 0);
+
+        assert_eq!(bounded.len(), full.len());
+        assert_eq!(plain(bounded), plain(full));
+    }
+
+    #[test]
+    fn bounded_workflow_keeps_every_row_at_the_exact_bound() {
+        let theme = Theme::dark();
+        let card = bounded_workflow_card(3);
+        let full = render_workflow_run(&card, 100, &theme, 0);
+        let bounded = render_workflow_run_bounded(&card, 100, full.len(), &theme, 0);
+
+        assert_eq!(bounded.len(), full.len());
+        assert_eq!(plain(bounded), plain(full));
+    }
+
+    #[test]
+    fn bounded_workflow_windows_far_more_rows_with_truthful_indicators() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let theme = Theme::dark();
+        let card = bounded_workflow_card(24);
+        let full = render_workflow_run(&card, 100, &theme, 0);
+        let footer = workflow_line_text(full.last().expect("totals footer"));
+        let max_rows = 12;
+        let visible_rows = max_rows - 3; // footer + ↑/↓ indicators consume three slots
+        let hidden_rows = full.len() - 1 - visible_rows;
+        let hidden_above = hidden_rows / 2;
+        let hidden_below = hidden_rows - hidden_above;
+
+        let bounded = render_workflow_run_bounded(&card, 100, max_rows, &theme, 0);
+        assert_eq!(bounded.len(), max_rows);
+        assert_eq!(
+            workflow_line_text(&bounded[0]),
+            format!("\u{2191} {hidden_above} more")
+        );
+        assert_eq!(
+            workflow_line_text(&bounded[max_rows - 2]),
+            format!("\u{2193} {hidden_below} more")
+        );
+        assert_eq!(workflow_line_text(bounded.last().unwrap()), footer);
+        for (actual, expected) in bounded[1..max_rows - 2]
+            .iter()
+            .zip(&full[hidden_above..hidden_above + visible_rows])
+        {
+            assert_eq!(workflow_line_text(actual), workflow_line_text(expected));
+        }
+
+        // Terminal-render evidence: both omission directions and the pinned totals reach the pane.
+        let mut terminal = Terminal::new(TestBackend::new(100, max_rows as u16)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    ratatui::widgets::Paragraph::new(bounded.clone()),
+                    frame.area(),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let drawn: String = (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol())
+            .collect();
+        assert!(drawn.contains(&format!("\u{2191} {hidden_above} more")));
+        assert!(drawn.contains(&format!("\u{2193} {hidden_below} more")));
+        assert!(drawn.contains("0/24 agents"), "totals footer was clipped");
+    }
+
+    #[test]
+    fn bounded_workflow_uses_an_up_indicator_next_to_a_tiny_tail() {
+        let theme = Theme::dark();
+        let card = bounded_workflow_card(8);
+        let full = render_workflow_run(&card, 100, &theme, 0);
+        let footer = workflow_line_text(full.last().unwrap());
+        let bounded = render_workflow_run_bounded(&card, 100, 2, &theme, 0);
+
+        assert_eq!(bounded.len(), 2);
+        assert_eq!(
+            workflow_line_text(&bounded[0]),
+            format!("\u{2191} {} more", full.len() - 1)
+        );
+        assert_eq!(workflow_line_text(&bounded[1]), footer);
+    }
+
+    #[test]
+    fn bounded_workflow_returns_only_the_footer_when_one_row_fits() {
+        let theme = Theme::dark();
+        let card = bounded_workflow_card(8);
+        let full = render_workflow_run(&card, 100, &theme, 0);
+        let footer = workflow_line_text(full.last().unwrap());
+        let bounded = render_workflow_run_bounded(&card, 100, 1, &theme, 0);
+
+        assert_eq!(bounded.len(), 1);
+        assert_eq!(workflow_line_text(&bounded[0]), footer);
+        assert!(workflow_line_text(&bounded[0]).contains("0/8 agents"));
+    }
+
+    #[test]
+    fn bounded_workflow_returns_no_rows_when_the_budget_is_zero() {
+        let theme = Theme::dark();
+        let card = bounded_workflow_card(8);
+
+        assert!(render_workflow_run_bounded(&card, 100, 0, &theme, 0).is_empty());
     }
 
     // ---- result_preview: what an individual agent actually RETURNED -------------------------
