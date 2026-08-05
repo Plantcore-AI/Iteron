@@ -1,9 +1,9 @@
 //! Responsive geometry for the interactive terminal surface.
 //!
-//! The TUI is deliberately one full-width column. Transcript, composer, contextual help, and the
-//! bottom status line share the terminal grid at every width; density changes disclosure, never the
-//! usable canvas. This module contains geometry only so transcript/runtime state remains independent
-//! from presentation policy.
+//! The TUI is deliberately one full-width column. Transcript, workflow, composer, contextual help,
+//! and the bottom status line share the terminal grid at every width; density changes disclosure,
+//! never the usable canvas. This module contains geometry only so transcript/runtime state remains
+//! independent from presentation policy.
 
 use ratatui::layout::Rect;
 
@@ -33,6 +33,7 @@ pub struct Surface {
     pub stage: Rect,
     pub transcript: Rect,
     pub scrollbar: Rect,
+    pub workflow: Rect,
     pub status: Rect,
     pub lanes: Rect,
     pub composer: Rect,
@@ -54,6 +55,7 @@ impl Surface {
         frame: Rect,
         editor_rows: u16,
         requested_lane_rows: u16,
+        requested_workflow_rows: u16,
         show_status: bool,
         blocking_input: bool,
     ) -> Self {
@@ -76,11 +78,22 @@ impl Surface {
                 .saturating_sub(transcript_floor)
                 .saturating_sub(2),
         );
+        // Workflow rows follow the same bounded negotiation: existing chrome and lanes keep their
+        // priority, while the transcript floor and composer frame remain available.
+        let workflow_h = requested_workflow_rows.min(
+            body.height
+                .saturating_sub(hint_h)
+                .saturating_sub(status_h)
+                .saturating_sub(lane_h)
+                .saturating_sub(transcript_floor)
+                .saturating_sub(2),
+        );
         let available_for_composer = body
             .height
             .saturating_sub(hint_h)
             .saturating_sub(status_h)
             .saturating_sub(lane_h)
+            .saturating_sub(workflow_h)
             .saturating_sub(transcript_floor);
         // The native prompt has one frame around its editor body. Geometry never steals the
         // transcript floor or lets a region escape the terminal viewport.
@@ -90,6 +103,7 @@ impl Surface {
             .height
             .saturating_sub(status_h)
             .saturating_sub(lane_h)
+            .saturating_sub(workflow_h)
             .saturating_sub(composer_h)
             .saturating_sub(hint_h);
 
@@ -105,7 +119,8 @@ impl Surface {
             u16::from(stage.width > 0),
             transcript.height,
         );
-        let lanes = Rect::new(body.x, transcript.bottom(), body.width, lane_h);
+        let workflow = Rect::new(body.x, transcript.bottom(), body.width, workflow_h);
+        let lanes = Rect::new(body.x, workflow.bottom(), body.width, lane_h);
         let composer = Rect::new(body.x, lanes.bottom(), body.width, composer_h);
         let hint = Rect::new(body.x, composer.bottom(), body.width, hint_h);
         let status = Rect::new(body.x, hint.bottom(), body.width, status_h);
@@ -114,6 +129,7 @@ impl Surface {
             stage,
             transcript,
             scrollbar,
+            workflow,
             status,
             lanes,
             composer,
@@ -134,7 +150,7 @@ mod tests {
 
     #[test]
     fn wide_terminals_use_the_complete_frame_and_bottom_status_line() {
-        let s = Surface::resolve(Rect::new(0, 0, 180, 40), 1, 0, true, false);
+        let s = Surface::resolve(Rect::new(0, 0, 180, 40), 1, 0, 0, true, false);
         assert_eq!(s.stage, Rect::new(0, 0, 180, 40));
         assert_eq!(s.transcript.width, 180);
         assert_eq!(s.transcript.x, 0);
@@ -147,7 +163,7 @@ mod tests {
 
     #[test]
     fn standard_terminals_keep_one_full_width_grid() {
-        let s = Surface::resolve(Rect::new(5, 2, 80, 24), 2, 1, true, false);
+        let s = Surface::resolve(Rect::new(5, 2, 80, 24), 2, 1, 0, true, false);
         assert_eq!(s.stage, Rect::new(5, 2, 80, 24));
         assert_eq!(s.transcript.x, 5);
         assert_eq!(s.transcript.width, 80);
@@ -162,23 +178,23 @@ mod tests {
     #[test]
     fn density_boundaries_change_disclosure_without_changing_width() {
         assert_eq!(
-            Surface::resolve(Rect::new(0, 0, 59, 20), 1, 0, false, false).density,
+            Surface::resolve(Rect::new(0, 0, 59, 20), 1, 0, 0, false, false).density,
             Density::Compact
         );
         assert_eq!(
-            Surface::resolve(Rect::new(0, 0, 60, 20), 1, 0, false, false).density,
+            Surface::resolve(Rect::new(0, 0, 60, 20), 1, 0, 0, false, false).density,
             Density::Standard
         );
         assert_eq!(
-            Surface::resolve(Rect::new(0, 0, 103, 20), 1, 0, false, false).density,
+            Surface::resolve(Rect::new(0, 0, 103, 20), 1, 0, 0, false, false).density,
             Density::Standard
         );
         assert_eq!(
-            Surface::resolve(Rect::new(0, 0, 104, 20), 1, 0, false, false).density,
+            Surface::resolve(Rect::new(0, 0, 104, 20), 1, 0, 0, false, false).density,
             Density::Wide
         );
         for frame_width in [59, 60, 103, 104, 120, 160] {
-            let surface = Surface::resolve(Rect::new(0, 0, frame_width, 20), 1, 0, false, false);
+            let surface = Surface::resolve(Rect::new(0, 0, frame_width, 20), 1, 0, 0, false, false);
             assert_eq!(surface.stage.width, frame_width);
             assert_eq!(surface.transcript.width, frame_width);
         }
@@ -187,11 +203,12 @@ mod tests {
     #[test]
     fn product_widths_keep_one_full_width_body_grid() {
         for width in [40, 80, 120, 200] {
-            let surface = Surface::resolve(Rect::new(0, 0, width, 30), 3, 2, true, false);
+            let surface = Surface::resolve(Rect::new(0, 0, width, 30), 3, 2, 0, true, false);
             assert_eq!(surface.stage.x, 0, "stage x at {width}");
             assert_eq!(surface.stage.width, width, "stage width at {width}");
             for region in [
                 surface.transcript,
+                surface.workflow,
                 surface.lanes,
                 surface.composer,
                 surface.hint,
@@ -208,9 +225,145 @@ mod tests {
     }
 
     #[test]
+    fn zero_workflow_request_preserves_every_existing_region_across_terminal_sweep() {
+        for width in [0, 1, 2, 59, 60, 103, 104, 180] {
+            for height in 0..=32 {
+                for editor_rows in [0, 1, 3, 6, u16::MAX] {
+                    for requested_lane_rows in [0, 1, 2, u16::MAX] {
+                        for show_status in [false, true] {
+                            for blocking_input in [false, true] {
+                                let frame = Rect::new(3, 4, width, height);
+                                let surface = Surface::resolve(
+                                    frame,
+                                    editor_rows,
+                                    requested_lane_rows,
+                                    0,
+                                    show_status,
+                                    blocking_input,
+                                );
+
+                                // Reproduce the pre-workflow resolver so every existing region is
+                                // checked, including offsets and zero-width scrollbar placement.
+                                let hint_h = u16::from(height >= 6);
+                                let status_h = u16::from(show_status && height >= 4);
+                                let transcript_floor =
+                                    u16::from(height >= 1 && !(blocking_input && height <= 2));
+                                let lane_h = requested_lane_rows.min(2).min(
+                                    height
+                                        .saturating_sub(hint_h)
+                                        .saturating_sub(status_h)
+                                        .saturating_sub(transcript_floor)
+                                        .saturating_sub(2),
+                                );
+                                let available_for_composer = height
+                                    .saturating_sub(hint_h)
+                                    .saturating_sub(status_h)
+                                    .saturating_sub(lane_h)
+                                    .saturating_sub(transcript_floor);
+                                let composer_h = editor_rows
+                                    .clamp(1, 6)
+                                    .saturating_add(2)
+                                    .min(available_for_composer);
+                                let transcript_h = height
+                                    .saturating_sub(status_h)
+                                    .saturating_sub(lane_h)
+                                    .saturating_sub(composer_h)
+                                    .saturating_sub(hint_h);
+                                let transcript = Rect::new(frame.x, frame.y, width, transcript_h);
+                                let scrollbar = Rect::new(
+                                    if width == 0 {
+                                        frame.x
+                                    } else {
+                                        frame.right().saturating_sub(1)
+                                    },
+                                    transcript.y,
+                                    u16::from(width > 0),
+                                    transcript.height,
+                                );
+                                let lanes = Rect::new(frame.x, transcript.bottom(), width, lane_h);
+                                let composer =
+                                    Rect::new(frame.x, lanes.bottom(), width, composer_h);
+                                let hint = Rect::new(frame.x, composer.bottom(), width, hint_h);
+                                let status = Rect::new(frame.x, hint.bottom(), width, status_h);
+
+                                assert_eq!(
+                                    [
+                                        surface.stage,
+                                        surface.transcript,
+                                        surface.scrollbar,
+                                        surface.status,
+                                        surface.lanes,
+                                        surface.composer,
+                                        surface.hint,
+                                        surface.overlay_anchor,
+                                    ],
+                                    [
+                                        frame, transcript, scrollbar, status, lanes, composer,
+                                        hint, composer,
+                                    ],
+                                    "legacy layout changed for {frame:?}, editor={editor_rows}, lane={requested_lane_rows}, status={show_status}, blocking={blocking_input}",
+                                );
+                                assert_eq!(
+                                    surface.workflow,
+                                    Rect::new(frame.x, transcript.bottom(), width, 0)
+                                );
+                                assert_eq!(surface.density, Density::for_width(width));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn oversized_workflow_request_degrades_inside_the_available_height() {
+        for height in 0..=12 {
+            let frame = Rect::new(3, 4, 80, height);
+            let surface = Surface::resolve(frame, 6, 2, u16::MAX, true, false);
+
+            for area in [
+                surface.stage,
+                surface.transcript,
+                surface.scrollbar,
+                surface.workflow,
+                surface.status,
+                surface.lanes,
+                surface.composer,
+                surface.hint,
+                surface.overlay_anchor,
+            ] {
+                assert!(area.x >= frame.x && area.y >= frame.y);
+                assert!(area.right() <= frame.right());
+                assert!(area.bottom() <= frame.bottom());
+            }
+            assert_eq!(surface.workflow.y, surface.transcript.bottom());
+            assert_eq!(surface.lanes.y, surface.workflow.bottom());
+            assert_eq!(
+                surface.workflow.height,
+                height
+                    .saturating_sub(surface.hint.height)
+                    .saturating_sub(surface.status.height)
+                    .saturating_sub(surface.lanes.height)
+                    .saturating_sub(u16::from(height >= 1))
+                    .saturating_sub(2)
+            );
+            assert_eq!(
+                surface.transcript.height
+                    + surface.workflow.height
+                    + surface.lanes.height
+                    + surface.composer.height
+                    + surface.hint.height
+                    + surface.status.height,
+                height
+            );
+        }
+    }
+
+    #[test]
     fn transcript_content_reserves_the_scrollbar_without_erasing_a_one_cell_view() {
         for (width, content_width) in [(0, 0), (1, 1), (2, 1), (60, 59), (120, 119)] {
-            let surface = Surface::resolve(Rect::new(0, 0, width, 20), 1, 0, true, false);
+            let surface = Surface::resolve(Rect::new(0, 0, width, 20), 1, 0, 0, true, false);
             assert_eq!(surface.transcript_content_width(), content_width);
         }
     }
@@ -220,11 +373,12 @@ mod tests {
         for width in 0..10 {
             for height in 0..10 {
                 let frame = Rect::new(3, 4, width, height);
-                let s = Surface::resolve(frame, 6, 2, true, false);
+                let s = Surface::resolve(frame, 6, 2, 0, true, false);
                 for area in [
                     s.stage,
                     s.transcript,
                     s.scrollbar,
+                    s.workflow,
                     s.status,
                     s.lanes,
                     s.composer,
@@ -237,6 +391,7 @@ mod tests {
                 }
                 assert_eq!(
                     s.transcript.height
+                        + s.workflow.height
                         + s.lanes.height
                         + s.composer.height
                         + s.hint.height
@@ -250,7 +405,7 @@ mod tests {
     #[test]
     fn blocking_input_owns_the_last_row_on_tiny_frames() {
         for height in [1, 2] {
-            let surface = Surface::resolve(Rect::new(0, 0, 20, height), 6, 0, false, true);
+            let surface = Surface::resolve(Rect::new(0, 0, 20, height), 6, 0, 0, false, true);
             assert_eq!(surface.transcript.height, 0);
             assert_eq!(surface.composer.height, height);
             assert_eq!(surface.composer.bottom(), height);
