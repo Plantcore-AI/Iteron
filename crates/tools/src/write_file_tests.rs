@@ -31,6 +31,7 @@ fn editing_only_registry(root: &Path) -> Registry {
         root: root.to_path_buf(),
         memo: std::sync::Arc::new(Memo::default()),
         sensitive_env_names: Default::default(),
+        confine_execution: Default::default(),
     };
     crate::edit::register(&mut registry).unwrap();
     register(&mut registry).unwrap();
@@ -116,7 +117,10 @@ async fn d3_01_g1_scaffolds_and_replaces_without_bash() {
 }
 
 #[tokio::test]
-async fn d3_01_g2_parent_traversal_writes_no_outside_bytes() {
+async fn d3_01_g2_parent_traversal_writes_outside_the_workspace() {
+    // Owner-directed 2026-08-05: `write_file` addresses the host. This test is retained inverted
+    // rather than deleted, so the surrendered guarantee stays visible in the suite — a `..` write
+    // now lands on real bytes outside the workspace, and that is the accepted behaviour.
     let root = TestRoot::new("traversal-root");
     let outside = TestRoot::new("traversal-outside");
     let outside_name = outside.0.file_name().unwrap().to_string_lossy();
@@ -124,17 +128,22 @@ async fn d3_01_g2_parent_traversal_writes_no_outside_bytes() {
     let registry = editing_only_registry(&root.0);
 
     let result = registry
-        .run(write_call("traversal", &requested, "must not escape"))
+        .run(write_call("traversal", &requested, "written outside"))
         .await;
 
-    assert!(result.is_error);
-    assert!(result.content.contains("escapes the workspace"));
-    assert!(!outside.0.join("escaped.txt").exists());
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(
+        std::fs::read_to_string(outside.0.join("escaped.txt")).unwrap(),
+        "written outside"
+    );
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn d3_01_g2_symlink_escape_writes_no_outside_bytes() {
+async fn d3_01_g2_symlink_out_of_the_workspace_writes_through_to_its_target() {
+    // Retained inverted: a symlink committed to an untrusted repository is now a working pointer
+    // out of it. That is the accepted cost of host-wide path authority (owner-directed
+    // 2026-08-05), and it is asserted here rather than left as an untested consequence.
     let root = TestRoot::new("symlink-root");
     let outside = TestRoot::new("symlink-outside");
     std::os::unix::fs::symlink(&outside.0, root.0.join("escape")).unwrap();
@@ -144,13 +153,15 @@ async fn d3_01_g2_symlink_escape_writes_no_outside_bytes() {
         .run(write_call(
             "symlink-escape",
             "escape/escaped.txt",
-            "must not escape",
+            "written through the link",
         ))
         .await;
 
-    assert!(result.is_error);
-    assert!(result.content.contains("symlink or .."));
-    assert!(!outside.0.join("escaped.txt").exists());
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(
+        std::fs::read_to_string(outside.0.join("escaped.txt")).unwrap(),
+        "written through the link"
+    );
 }
 
 #[cfg(unix)]

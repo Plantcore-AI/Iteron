@@ -364,8 +364,10 @@ where
 {
     validate_input(path, content)?;
 
-    // First resolution rejects lexical and currently-resolvable symlink escapes before creating
-    // anything. It also gives us an inside-root location for missing parent directories.
+    // First resolution follows symlinks and yields the absolute location whose parents may need
+    // creating. It no longer refuses a destination outside the workspace (owner-directed
+    // 2026-08-05); what survives is the dangling-symlink refusal below, which is a data-loss
+    // guard — a link we cannot resolve is one we must not silently replace — not containment.
     let initial_target = resolve_in_root(root, path)?;
     reject_dangling_target_symlink(root, path)?;
     let initial_parent = target_parent(&initial_target, path)?;
@@ -373,8 +375,8 @@ where
         .await
         .map_err(|error| format!("create parent directories for {path}: {error}"))?;
 
-    // Re-resolve after directory creation. A parent that appeared as an escaping symlink between
-    // the two operations is rejected before the transaction file is opened.
+    // Re-resolve after directory creation: a parent that changed between the two operations must
+    // not leave the transaction pointed at the pre-creation location.
     let target = resolve_in_root(root, path)?;
     reject_dangling_target_symlink(root, path)?;
     if tokio::fs::metadata(&target)
@@ -446,9 +448,10 @@ fn target_parent<'a>(target: &'a Path, requested_path: &str) -> Result<&'a Path,
         .ok_or_else(|| format!("write_file target has no parent: {requested_path}"))
 }
 
-/// `resolve_in_root` catches every symlink whose destination currently canonicalizes. A dangling
+/// `resolve_in_root` follows every symlink whose destination currently canonicalizes. A dangling
 /// final symlink cannot be canonicalized, so refuse it explicitly instead of silently replacing a
-/// link that may have been intended to point outside the workspace.
+/// link whose intended destination we cannot see. This survives the move to host-wide paths: it
+/// never was a containment rule, it is the guard against destroying a link by writing through it.
 fn reject_dangling_target_symlink(root: &Path, requested_path: &str) -> Result<(), String> {
     let canonical_root = root
         .canonicalize()

@@ -7,10 +7,11 @@
 //!
 //! Three properties are load-bearing.
 //!
-//! 1. **A file chip is not a read-anything primitive.** Every path is resolved by
-//!    [`core_tools::resolve_in_root`] — the same containment `read_file` routes through — so a
-//!    chip can name exactly what a tool call could have named, including refusing a symlink inside
-//!    the workspace that points out of it. There is no second containment rule here.
+//! 1. **A chip names exactly what a tool call could have named.** Every path is resolved by
+//!    [`core_tools::resolve_in_root`], the same function `read_file` routes through, so the
+//!    composer and the tool can never disagree about which bytes a path means. Since 2026-08-05
+//!    that function addresses the host rather than confining to the workspace, and this module
+//!    follows it rather than keeping a second, stricter rule of its own.
 //! 2. **Bounds are refusals.** A file over the per-file or aggregate bound produces an error the
 //!    operator sees; it is never attached in part. A half-attached file reads as a complete one to
 //!    a model, and answering confidently from half a file is worse than not answering.
@@ -89,7 +90,7 @@ impl fmt::Display for FileInputError {
         let message = match self.kind {
             FileInputErrorKind::InvalidLimits => "invalid file attachment limits",
             FileInputErrorKind::InvalidReference => "invalid local file reference",
-            FileInputErrorKind::OutsideWorkspace => "file is outside the workspace",
+            FileInputErrorKind::OutsideWorkspace => "could not resolve file path",
             FileInputErrorKind::TooManyMentions => "too many file mentions",
             FileInputErrorKind::TooManyAttachments => "too many file attachments",
             FileInputErrorKind::AlreadyAttached => "file is already attached",
@@ -260,8 +261,8 @@ impl FileAttachments {
                 name,
             ));
         }
-        // THE containment check. A symlink inside the workspace that points out of it fails here,
-        // exactly as it fails for `read_file`, because this is the same function.
+        // The same resolution `read_file` performs, for the same reason it always was: the chip
+        // must attach exactly what the tool would read. It is no longer a containment check.
         let resolved = core_tools::resolve_in_root(workspace, &relative).map_err(|_| {
             FileInputError::named(FileInputErrorKind::OutsideWorkspace, name.clone())
         })?;
@@ -350,41 +351,52 @@ impl fmt::Debug for FileAttachments {
     }
 }
 
-/// Reduce an operator-named path to the workspace-relative form `resolve_in_root` speaks.
+/// Reduce an operator-named path to the form `resolve_in_root` speaks.
 ///
-/// This is not the containment check and must not be mistaken for one — it only refuses the shapes
-/// that have no relative form (an absolute path elsewhere on the disk, a `..` climb, a Windows
-/// drive prefix). A path that survives here is still handed to `resolve_in_root`, which is what
-/// catches a symlink that leaves the workspace after resolution.
+/// This never was the containment check, and since 2026-08-05 there is no containment check to be
+/// mistaken for: `resolve_in_root` addresses the host. What survives here is presentation — a file
+/// under the workspace keeps its short relative name, because that is what the chip and the
+/// already-attached comparison display, while anything else keeps its absolute path. The only
+/// refusals left are shapes with no usable form at all: a path that does not resolve, and a
+/// component that is not UTF-8.
 fn workspace_relative(workspace: &Path, requested: &Path) -> Result<String, FileInputErrorKind> {
-    let relative: PathBuf = if requested.is_absolute() {
-        let root = workspace
-            .canonicalize()
-            .map_err(|_| FileInputErrorKind::OpenFailed)?;
-        let canonical = requested
-            .canonicalize()
-            .map_err(|_| FileInputErrorKind::OpenFailed)?;
-        canonical
-            .strip_prefix(&root)
-            .map_err(|_| FileInputErrorKind::OutsideWorkspace)?
-            .to_path_buf()
-    } else {
-        requested.to_path_buf()
+    // `join` on an absolute `requested` yields `requested`, so this one expression covers a
+    // relative name, a `..` climb, and a fully qualified host path alike.
+    let resolved = workspace
+        .join(requested)
+        .canonicalize()
+        .map_err(|_| FileInputErrorKind::OpenFailed)?;
+    let display = match workspace
+        .canonicalize()
+        .ok()
+        .and_then(|root| resolved.strip_prefix(root).ok().map(Path::to_path_buf))
+    {
+        Some(relative) => relative,
+        None => resolved,
     };
 
     let mut text = String::new();
-    for component in relative.components() {
+    for component in display.components() {
         match component {
             Component::Normal(part) => {
                 let part = part.to_str().ok_or(FileInputErrorKind::InvalidReference)?;
-                if !text.is_empty() {
+                if !text.is_empty() && !text.ends_with('/') {
                     text.push('/');
                 }
                 text.push_str(part);
             }
             Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(FileInputErrorKind::OutsideWorkspace);
+            Component::ParentDir => {
+                // Cannot occur: `display` is either canonical or a prefix-stripped canonical path.
+                return Err(FileInputErrorKind::InvalidReference);
+            }
+            Component::RootDir => text.push('/'),
+            Component::Prefix(part) => {
+                text.push_str(
+                    part.as_os_str()
+                        .to_str()
+                        .ok_or(FileInputErrorKind::InvalidReference)?,
+                );
             }
         }
     }
@@ -619,47 +631,54 @@ mod tests {
     }
 
     #[test]
-    fn a_path_escaping_the_workspace_is_refused_by_every_route_into_it() {
+    fn a_path_outside_the_workspace_attaches_by_every_route_into_it() {
+        // Retained inverted (owner-directed 2026-08-05). The chip must attach exactly what
+        // `read_file` would read, and `read_file` now reads the host — so every route that used to
+        // refuse must now succeed, or the composer and the tool disagree about the same path.
         let root = TestRoot::new("escape");
         let outside = TestRoot::new("escape-outside");
         outside.write("secret.txt", "SECRET");
         root.write("inside.txt", "ok");
 
-        let mut files = FileAttachments::default();
-        for escape in [
-            PathBuf::from("../core-file-chip-escape-outside/secret.txt"),
-            PathBuf::from("src/../../secret.txt"),
-            outside.path().join("secret.txt"),
+        let absolute = outside.path().join("secret.txt");
+        // The same file named two ways: a `..` climb out of the workspace, and a fully qualified
+        // host path. The relative form is built from the real fixture directory rather than a
+        // literal, because these roots carry a pid/sequence suffix.
+        let outside_name = outside
+            .path()
+            .file_name()
+            .expect("fixture root has a name")
+            .to_string_lossy()
+            .into_owned();
+        let mut attached = 0usize;
+        for reference in [
+            PathBuf::from(format!("../{outside_name}/secret.txt")),
+            absolute.clone(),
         ] {
-            assert_eq!(
-                files
-                    .attach_path(root.path(), &escape)
-                    .expect_err("a path outside the workspace must be refused")
-                    .kind(),
-                FileInputErrorKind::OutsideWorkspace,
-                "{escape:?}"
-            );
+            let mut files = FileAttachments::default();
+            files
+                .attach_path(root.path(), &reference)
+                .unwrap_or_else(|error| panic!("{reference:?} must attach: {error:?}"));
+            assert_eq!(files.len(), 1, "{reference:?}");
+            attached += 1;
         }
-        assert!(files.is_empty(), "a refused path leaves no chip behind");
+        assert_eq!(attached, 2);
 
-        // A symlink that lives inside the workspace and points out of it is the case a lexical
-        // `..` check misses. It is refused because containment is `resolve_in_root`, not a string
-        // test performed here.
+        // A symlink that lives inside the workspace and points out of it resolves through to its
+        // target, for the same reason: this is `resolve_in_root`, and it follows links now.
         #[cfg(unix)]
         {
+            let mut files = FileAttachments::default();
             std::os::unix::fs::symlink(outside.path(), root.path().join("escape"))
                 .expect("symlink fixture");
-            assert_eq!(
-                files
-                    .attach_path(root.path(), Path::new("escape/secret.txt"))
-                    .expect_err("a symlink out of the workspace must be refused")
-                    .kind(),
-                FileInputErrorKind::OutsideWorkspace
-            );
-            assert!(files.is_empty());
+            files
+                .attach_path(root.path(), Path::new("escape/secret.txt"))
+                .expect("a symlink out of the workspace resolves to its target");
+            assert_eq!(files.len(), 1);
         }
+        let mut files = FileAttachments::default();
 
-        // The containment is not a blanket refusal: an ordinary file still attaches.
+        // And the ordinary case is unchanged: a file under the workspace still attaches.
         assert!(
             files
                 .attach_path(root.path(), Path::new("inside.txt"))

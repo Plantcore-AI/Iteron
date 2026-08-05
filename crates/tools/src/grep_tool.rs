@@ -13,9 +13,12 @@ const MAX_GREP_PATTERN_BYTES: usize = 4 * 1024;
 const MAX_GREP_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_GREP_TOTAL_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_GREP_ENTRIES: usize = 50_000;
-const MAX_GREP_MATCHES: usize = 100;
+/// Owner-directed 2026-08-05: 100 matches was below the size of an ordinary answer ("every call
+/// site of X" in this workspace routinely exceeds it), so the cap was reached on searches whose
+/// results were then silently incomplete. Raised an order of magnitude; still bounded.
+const MAX_GREP_MATCHES: usize = 1_000;
 const MAX_GREP_SNIPPET_BYTES: usize = 1_024;
-const MAX_GREP_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_GREP_OUTPUT_BYTES: usize = 512 * 1024;
 const GREP_NOTICE_RESERVE_BYTES: usize = 1_024;
 const MAX_REGEX_COMPILED_BYTES: usize = 1024 * 1024;
 const MAX_GITIGNORE_FILES: usize = 128;
@@ -172,17 +175,19 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     registry.push_tool(
         ToolSpec {
             name: "grep".into(),
-            description: "Search bounded UTF-8 repository files while respecting .gitignore. \
-                          Literal matching is the backward-compatible default; set `regex=true` \
-                          for a Rust regular expression. Returns `path:line: text` with absolute \
-                          1-based line numbers. File, traversal, source-byte, match, and output \
-                          limits are always disclosed."
+            description: "Search bounded UTF-8 files while respecting .gitignore. `path` may be \
+                          relative to the repo root or an absolute host path. Literal matching is \
+                          the backward-compatible default; set `regex=true` for a Rust regular \
+                          expression. Returns `path:line: text` with absolute 1-based line \
+                          numbers, the path relative when it is under the repo root and absolute \
+                          when it is not. File, traversal, source-byte, match, and output limits \
+                          are always disclosed."
                 .into(),
             input_schema: serde_json::json!({
                 "type":"object",
                 "properties":{
                     "pattern":{"type":"string"},
-                    "path":{"type":"string","description":"subtree relative to repo root; default '.'"},
+                    "path":{"type":"string","description":"subtree relative to the repo root, or an absolute host path; default '.'"},
                     "regex":{"type":"boolean","description":"interpret pattern as a Rust regex; default false"}
                 },
                 "required":["pattern"]
@@ -304,11 +309,22 @@ fn search(root: &Path, base: &Path, matcher: &Matcher) -> Result<SearchResult, S
             result.skipped_for_budget = result.skipped_for_budget.saturating_add(1);
             continue;
         }
+        // Repository scope keeps the hardening that repo-controlled content needs — containment
+        // under the root and `O_NOFOLLOW` — and it is what every in-workspace hit still uses. A
+        // file the operator reached by naming a path outside the workspace cannot pass that check
+        // by construction, and silently counting it as "skipped as binary or unreadable" was a
+        // wrong answer dressed as a bounded one. Such a file is operator-owned content, which is
+        // exactly what `User` scope is for.
+        let scope = if path.starts_with(&root) {
+            core_ctx::source::SourceScope::Repository
+        } else {
+            core_ctx::source::SourceScope::User
+        };
         let content = match core_ctx::source::read_bounded_utf8(
             &root,
             &path,
             remaining.min(MAX_GREP_FILE_BYTES),
-            core_ctx::source::SourceScope::Repository,
+            scope,
         ) {
             Ok(Some(content)) => content,
             Ok(None) | Err(_) => {
@@ -321,10 +337,7 @@ fn search(root: &Path, base: &Path, matcher: &Matcher) -> Result<SearchResult, S
             continue;
         }
         source_bytes = source_bytes.saturating_add(content.len());
-        let relative = path
-            .strip_prefix(&root)
-            .map_err(|_| "grep traversal produced a path outside the workspace".to_string())?;
-        let relative = relative.to_string_lossy().replace('\\', "/");
+        let relative = crate::display_path(&root, &path);
         if suspicious_unicode(&relative).is_some() {
             result.skipped_files = result.skipped_files.saturating_add(1);
             continue;

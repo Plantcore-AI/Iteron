@@ -1715,7 +1715,15 @@ fn consecutive_real_tool_failures_exit_stuck_with_terminal_result() {
         Reply::FailingRead { index: 3 },
     ]);
     let scratch = Scratch::new("stuck", &server.api_root);
-    let output = collect_core(spawn_core(&scratch, "json", 4, &[]));
+    // The floor is named explicitly rather than inherited from the default. What this test is
+    // about is that reaching it produces a terminal `stuck` result and exit 4 — not what the
+    // number happens to be, which changed from 3 to 25 on 2026-08-05.
+    let output = collect_core(spawn_core(
+        &scratch,
+        "json",
+        4,
+        &["--max-consecutive-tool-errors", "3"],
+    ));
     server.finish();
 
     assert_eq!(output.status.code(), Some(4));

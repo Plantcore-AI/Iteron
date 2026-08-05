@@ -46,7 +46,8 @@ their own user config, but its contents are still bounded and strictly parsed.
 !!! warning "No active egress-allow contract"
     `egress_allow` is accepted by the current schema but is not wired to a public
     runtime configuration path. Do not rely on it to grant or prove network
-    access. Code execution remains egress-off in the documented sandbox contract.
+    access. Code execution runs unconfined unless `--confine` is passed; see the
+    sandbox contract for what each posture means.
 
 ## Example user configuration
 

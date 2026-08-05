@@ -467,6 +467,9 @@ fn render_profile(conf: &Confinement, home_rules: &HomeRules) -> Result<String, 
 #[async_trait::async_trait]
 impl Sandbox for Seatbelt {
     async fn run(&self, command: &str, conf: &Confinement) -> Result<RunOutput, SandboxError> {
+        if conf.unconfined {
+            return crate::run_direct(command, conf).await;
+        }
         prepare_private_scratch(&conf.scratch)?;
         let _scratch_cleanup = ScratchCleanup(conf.scratch.clone());
         let prof = profile(conf)?;

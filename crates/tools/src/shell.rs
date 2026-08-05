@@ -1,16 +1,25 @@
-//! The bash tool: Effecting / CodeExecuting, run through the **egress-off sandbox** (ADR-007).
+//! The bash tool: Effecting / CodeExecuting, run with the operator's own authority.
 //!
-//! Repo-controlled code runs under a sandbox that denies network and ambient HOME reads by
-//! default and confines writes to the workspace. Tool output still returns to the already-selected
-//! model provider, so this is capability confinement, not a claim of complete information-flow
-//! isolation. On a platform without a wired backend, code execution refuses closed.
+//! **Owner-directed 2026-08-05: this tool is no longer sandboxed by default.** It runs through
+//! `Confinement::unconfined`, so the command reaches the network, reads any file the operator can
+//! read — `~/.ssh` and `~/.aws` included — and writes anywhere on the host. The egress-off Seatbelt
+//! and bubblewrap backends are unchanged and still selected by `--confine`; what changed is which
+//! of the two postures the harness picks when the operator says nothing.
+//!
+//! The reason is not that the confinement was wrong, it is that it was silently fatal to the tool:
+//! with no network, `git push`, `gh`, `curl`, and every package install failed, and the failures
+//! read as ordinary command errors rather than as a policy denial. The remaining ceilings are
+//! liveness ones — a wall clock and a retained-output bound (invariant #1) — not security ones.
 
 use crate::{Registry, ToolError, ToolExecution, effectfut};
 use core_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
 use core_sandbox::{Confinement, RunOutput, Sandbox, SandboxError, platform_sandbox};
 use std::fmt::Write as _;
 
-const TIMEOUT_SECS: u64 = 120;
+/// One hour. A build, a full test suite, or a slow clone are the commands the old 120 s ceiling cut
+/// off mid-flight; this is still a ceiling, because a wedged child holding host authority is
+/// precisely the thing that must not run unbounded.
+const TIMEOUT_SECS: u64 = Confinement::UNCONFINED_TIMEOUT_SECS;
 const MIN_OUTPUT_BYTES_PER_STREAM: usize = 4 * 1024;
 // `RunOutput` may append one fixed truncation marker after retaining the configured source-byte
 // ceiling. This allowance is framing, not an additional source-output budget.
@@ -25,7 +34,7 @@ struct ShellOutputBudget {
 }
 
 impl ShellOutputBudget {
-    const MAX_PER_STREAM_BYTES: usize = Confinement::DEFAULT_MAX_OUTPUT_BYTES;
+    const MAX_PER_STREAM_BYTES: usize = Confinement::UNCONFINED_MAX_OUTPUT_BYTES;
 
     fn from_input(input: &serde_json::Value) -> Result<Self, String> {
         let Some(requested) = input.get("max_output_bytes") else {
@@ -67,13 +76,16 @@ impl Default for ShellOutputBudget {
 
 pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     let sensitive_env_names = r.sensitive_env_names_handle();
+    let confine_execution = r.confine_execution_handle();
     r.register_external_effect(
         ToolSpec {
             name: "bash".into(),
-            description: "Run a bash command in the workspace root. Use for building, running \
-                          tests, and git. Stdout/stderr are independently length-framed; each \
-                          stream has a fixed-bounded capture budget and an explicit isIncomplete \
-                          flag. Directory changes do not persist across calls; chain with `&&`."
+            description: "Run a bash command, cwd = the workspace root. Use for building, \
+                          running tests, git, and network access; the command runs with your own \
+                          user authority unless the operator passed --confine. Stdout/stderr are \
+                          independently length-framed; each stream has a fixed-bounded capture \
+                          budget and an explicit isIncomplete flag. Directory changes do not \
+                          persist across calls; chain with `&&`."
                 .into(),
             input_schema: serde_json::json!({
                 "type":"object",
@@ -83,7 +95,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                         "type":"integer",
                         "minimum":MIN_OUTPUT_BYTES_PER_STREAM,
                         "description":format!(
-                            "Optional retained bytes per stdout/stderr stream; capped at the sandbox default ({}).",
+                            "Optional retained bytes per stdout/stderr stream; capped at {}.",
                             ShellOutputBudget::MAX_PER_STREAM_BYTES
                         )
                     }
@@ -95,6 +107,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
         },
         move |call, root| {
             let sensitive_env_names = sensitive_env_names.clone();
+            let confine_execution = confine_execution.clone();
             effectfut::box_it(async move {
                 let id = call.id.clone();
                 let cmd = call
@@ -112,15 +125,16 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     }
                 };
                 let sensitive_env_names = sensitive_env_names.lock().unwrap().clone();
-                run_bash_budgeted(&root, cmd, id, sensitive_env_names, budget).await
+                let confine = confine_execution.load(std::sync::atomic::Ordering::Relaxed);
+                run_bash_budgeted(&root, cmd, id, sensitive_env_names, budget, confine).await
             })
         },
     )
 }
 
-/// Run a bash command through the egress-off sandbox (ADR-007). Network is denied and writes
-/// are confined to the workspace; on an unsupported platform the sandbox refuses rather than
-/// running UNconfined.
+/// Run a bash command with the operator's own authority, or — when `confine` is set by
+/// `--confine` — through the egress-off platform sandbox, where network is denied, writes are
+/// confined to the workspace, and an unsupported platform refuses rather than running unconfined.
 #[cfg(test)]
 async fn run_bash(
     root: &std::path::Path,
@@ -134,6 +148,7 @@ async fn run_bash(
         tool_use_id,
         sensitive_env_names,
         ShellOutputBudget::default(),
+        false,
     )
     .await
 }
@@ -144,6 +159,7 @@ async fn run_bash_budgeted(
     tool_use_id: String,
     sensitive_env_names: Vec<String>,
     budget: ShellOutputBudget,
+    confine: bool,
 ) -> ToolExecution {
     let sb = platform_sandbox();
     run_bash_with_budget(
@@ -153,25 +169,7 @@ async fn run_bash_budgeted(
         tool_use_id,
         sensitive_env_names,
         budget,
-    )
-    .await
-}
-
-#[cfg(test)]
-async fn run_bash_with(
-    sb: &dyn Sandbox,
-    root: &std::path::Path,
-    command: &str,
-    tool_use_id: String,
-    sensitive_env_names: Vec<String>,
-) -> ToolExecution {
-    run_bash_with_budget(
-        sb,
-        root,
-        command,
-        tool_use_id,
-        sensitive_env_names,
-        ShellOutputBudget::default(),
+        confine,
     )
     .await
 }
@@ -183,8 +181,9 @@ async fn run_bash_with_budget(
     tool_use_id: String,
     sensitive_env_names: Vec<String>,
     budget: ShellOutputBudget,
+    confine: bool,
 ) -> ToolExecution {
-    let conf = bash_confinement(root, sensitive_env_names, budget);
+    let conf = bash_confinement(root, sensitive_env_names, budget, confine);
     finish_sandbox_run_with_budget(tool_use_id, sb.run(command, &conf).await, budget)
 }
 
@@ -192,8 +191,15 @@ fn bash_confinement(
     root: &std::path::Path,
     sensitive_env_names: Vec<String>,
     budget: ShellOutputBudget,
+    confine: bool,
 ) -> Confinement {
-    let mut conf = Confinement::egress_off(root);
+    // The two postures differ in one bit at construction; every ceiling below is applied to both,
+    // because a liveness bound is not the thing `--confine` is choosing between.
+    let mut conf = if confine {
+        Confinement::egress_off(root)
+    } else {
+        Confinement::unconfined(root)
+    };
     conf.timeout_secs = TIMEOUT_SECS;
     conf.sensitive_env_names = sensitive_env_names;
     budget.apply_to(&mut conf);
@@ -407,14 +413,15 @@ mod tests {
             );
         }
 
-        let execution = run_bash_with(
-            &core_sandbox::Unsupported,
-            &root,
-            "must-not-run",
-            "call".into(),
-            Vec::new(),
-        )
-        .await;
+        // The refusal is still definite, and it is still what an unsupported backend does — but it
+        // now belongs to a request that ASKED to be confined. `bash` no longer makes that request
+        // by default, so this test drives the sandbox directly rather than through `run_bash_with`.
+        let confined = Confinement::egress_off(&root);
+        assert!(!confined.unconfined);
+        let refusal = core_sandbox::Unsupported
+            .run("must-not-run", &confined)
+            .await;
+        let execution = finish_sandbox_run("call".into(), refusal);
         let ToolExecution::Definite(result) = execution else {
             panic!("unsupported confinement must be a definite refusal");
         };
@@ -437,14 +444,39 @@ mod tests {
             .lock()
             .unwrap()
             .clone();
-        let seen = bash_confinement(&root, names, ShellOutputBudget::default());
+        let seen = bash_confinement(&root, names, ShellOutputBudget::default(), false);
         assert_eq!(
             seen.sensitive_env_names,
             vec!["BENIGN_CREDENTIAL_ALIAS", "GATEWAY_KEY"]
         );
-        assert!(!seen.allow_egress);
+        // The exact-name credential scrub is the one thing that survives going unconfined: it does
+        // not restrict what the command may do, and its removal was never asked for.
+        assert!(seen.unconfined, "bash runs with the operator's authority");
+        assert!(seen.allow_egress, "the network denial is what was removed");
         assert_eq!(seen.workspace, root);
         assert_eq!(seen.timeout_secs, TIMEOUT_SECS);
+    }
+
+    #[test]
+    fn confine_selects_the_egress_off_posture_and_keeps_the_same_ceilings() {
+        // `--confine` is the whole opt-out, so it has to change the posture and nothing else: the
+        // liveness ceilings and the credential scrub must be identical on both sides, or the flag
+        // would be silently trading away bounds it was never asked to trade.
+        let root = std::env::temp_dir();
+        let names = vec!["GATEWAY_KEY".to_string()];
+        let budget = ShellOutputBudget::default();
+
+        let confined = bash_confinement(&root, names.clone(), budget, true);
+        assert!(!confined.unconfined);
+        assert!(!confined.allow_egress);
+
+        let unconfined = bash_confinement(&root, names, budget, false);
+        assert!(unconfined.unconfined);
+        assert!(unconfined.allow_egress);
+
+        assert_eq!(confined.timeout_secs, unconfined.timeout_secs);
+        assert_eq!(confined.max_output_bytes, unconfined.max_output_bytes);
+        assert_eq!(confined.sensitive_env_names, unconfined.sensitive_env_names);
     }
 
     #[test]
@@ -503,13 +535,13 @@ mod tests {
         let default = ShellOutputBudget::from_input(&serde_json::json!({})).unwrap();
         assert_eq!(
             default.per_stream_bytes,
-            Confinement::DEFAULT_MAX_OUTPUT_BYTES
+            Confinement::UNCONFINED_MAX_OUTPUT_BYTES
         );
 
         let requested =
             ShellOutputBudget::from_input(&serde_json::json!({"max_output_bytes": 16 * 1024}))
                 .unwrap();
-        let confinement = bash_confinement(&std::env::temp_dir(), Vec::new(), requested);
+        let confinement = bash_confinement(&std::env::temp_dir(), Vec::new(), requested, false);
         assert_eq!(confinement.max_output_bytes, requested.per_stream_bytes);
 
         for rejected in [

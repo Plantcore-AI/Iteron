@@ -424,12 +424,21 @@ impl Default for Budget {
     fn default() -> Self {
         // Turn and wall ceilings are always enforceable. Monetary control is opt-in because a
         // guessed universal price table is worse than no dollar claim at all.
+        //
+        // Owner-directed 2026-08-05: the ceilings were raised, not removed — invariant #1 is that
+        // everything HAS a ceiling, not that the ceiling is small. Each old value was reached in
+        // ordinary use and read as the agent giving up rather than as a declared bound.
         Self {
-            max_turns: 60,
+            max_turns: 600,
             max_usd: None,
             max_tokens: None,
-            max_wall_secs: 900,
-            max_consecutive_tool_errors: 3,
+            max_wall_secs: 14_400,
+            // Three consecutive tool errors used to end a run. That interacted badly with the
+            // path rules removed in this change: an absolute path failed, the model retried with
+            // another absolute path, and the third failure killed a run that had nothing wrong
+            // with it. A stability floor should catch a model that cannot make progress, which
+            // takes more than three tries to establish.
+            max_consecutive_tool_errors: 25,
         }
     }
 }

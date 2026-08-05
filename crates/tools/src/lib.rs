@@ -154,6 +154,11 @@ pub struct Registry {
     root: PathBuf,
     memo: std::sync::Arc<Memo>,
     sensitive_env_names: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// When set, `bash` runs in the egress-off platform sandbox instead of with the operator's own
+    /// authority. Default false (owner-directed 2026-08-05); the CLI sets it from `--confine`.
+    /// Shared exactly like `sensitive_env_names`, so it can be answered after the specs are built
+    /// without rebuilding them and invalidating prompt-cache identity.
+    confine_execution: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Registry {
@@ -165,6 +170,7 @@ impl Registry {
             root,
             memo: Default::default(),
             sensitive_env_names: Default::default(),
+            confine_execution: Default::default(),
         };
         fs_tools::register(&mut r)?;
         git::register(&mut r)?;
@@ -196,6 +202,7 @@ impl Registry {
             root,
             memo: Default::default(),
             sensitive_env_names: Default::default(),
+            confine_execution: Default::default(),
         };
         fs_tools::register(&mut r)?; // read_file, list_dir, grep, repo_map only
         git::register(&mut r)?; // confined Git observations (Effecting/ReadOnly)
@@ -359,6 +366,17 @@ impl Registry {
         &self,
     ) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
         self.sensitive_env_names.clone()
+    }
+
+    /// Put `bash` back inside the egress-off platform sandbox (`--confine`). This is the whole
+    /// opt-out: the confined backends are unchanged, and this selects them.
+    pub fn set_confine_execution(&mut self, confine: bool) {
+        self.confine_execution
+            .store(confine, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn confine_execution_handle(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.confine_execution.clone()
     }
 
     /// Execute a tool call. `latency_ms` is measured here (tau_wall contribution for obs). An
@@ -617,40 +635,41 @@ fn register_dispatch_agent(r: &mut Registry) -> Result<(), ToolError> {
     )
 }
 
-/// Resolve a caller-supplied path against the workspace root and reject escapes — **including
-/// via symlinks** (code review CRITICAL SEC-1: a lexical `..` check alone lets a symlink inside
-/// the repo point outside, so an fs tool reads/writes out of the workspace). We canonicalize the
-/// resolved path (following symlinks) and require the result to stay under the canonical root.
-/// For a not-yet-existing path (a new file to write), we canonicalize its nearest existing
-/// ancestor and re-check.
+/// Resolve a caller-supplied path to an absolute host path.
 ///
-/// Public because it is the workspace-containment rule for this build, not one tool's private
-/// habit: the frontend's file-attachment chips (UX-6) must refuse exactly the paths `read_file`
-/// refuses, and a second implementation of "under the root" is how the two drift apart.
+/// **This function no longer confines (owner-directed, 2026-08-05).** It used to reject three
+/// things: an absolute path, a lexical `..` escape, and a symlink whose destination canonicalized
+/// outside the workspace root. All three are now resolved and returned. A relative path is still
+/// resolved against `root`, so every existing caller keeps its meaning; an absolute path addresses
+/// the host directly, which is the case that made the agent unusable — the model naturally emits
+/// `/Users/me/project/src/main.rs`, and `absolute path not allowed` was the single largest source
+/// of tool errors, three of which in a row tripped the consecutive-error floor and killed the run.
+///
+/// What is surrendered is stated plainly rather than implied: an fs tool can now read and write
+/// anywhere the operator's own account can, including `~/.ssh`, and a symlink committed to an
+/// untrusted repository is a working pointer out of that repository. The corresponding execution
+/// surrender is `Confinement::unconfined`. Path containment is not available behind a flag,
+/// because a boundary that only some callers honour is not a boundary.
+///
+/// Canonicalization is retained, and for a not-yet-existing path (a new file to write) the nearest
+/// existing ancestor is canonicalized and the remainder appended. That is no longer a containment
+/// check — it is what keeps a returned path stable and comparable for the memo cache and for the
+/// symlink-target checks `write_file` performs before it truncates anything.
 pub fn resolve_in_root(root: &Path, rel: &str) -> Result<PathBuf, String> {
-    // Cheap lexical pre-check (fast rejection of the obvious cases).
-    let mut depth: i32 = 0;
-    for comp in Path::new(rel).components() {
-        use std::path::Component::*;
-        match comp {
-            ParentDir => depth -= 1,
-            Normal(_) | CurDir => {}
-            RootDir | Prefix(_) => return Err(format!("absolute path not allowed: {rel}")),
-        }
-        if depth < 0 {
-            return Err(format!("path escapes the workspace: {rel}"));
-        }
-    }
-    let canon_root = root
-        .canonicalize()
-        .map_err(|e| format!("workspace root: {e}"))?;
-    let joined = canon_root.join(rel);
+    let requested = Path::new(rel);
+    let joined = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        root.canonicalize()
+            .map_err(|e| format!("workspace root: {e}"))?
+            .join(requested)
+    };
 
     // Canonicalize the path if it exists; otherwise canonicalize the nearest existing ancestor
-    // (the target file may not exist yet) and append the remainder. This follows symlinks, so a
-    // symlink escape is caught by the containment check below.
-    let resolved = match joined.canonicalize() {
-        Ok(p) => p,
+    // and append the remainder, so a path to a file that does not exist yet still comes back
+    // absolute and symlink-resolved.
+    match joined.canonicalize() {
+        Ok(resolved) => Ok(resolved),
         Err(_) => {
             let mut ancestor = joined.as_path();
             let mut tail: Vec<std::ffi::OsString> = Vec::new();
@@ -668,18 +687,30 @@ pub fn resolve_in_root(root: &Path, rel: &str) -> Result<PathBuf, String> {
                     None => return Err(format!("cannot resolve path: {rel}")),
                 }
             };
-            let mut p = canon_ancestor;
+            let mut resolved = canon_ancestor;
             for name in tail.iter().rev() {
-                p.push(name);
+                resolved.push(name);
             }
-            p
+            Ok(resolved)
         }
-    };
-
-    if !resolved.starts_with(&canon_root) {
-        return Err(format!("path escapes the workspace (symlink or ..): {rel}"));
     }
-    Ok(resolved)
+}
+
+/// Render a resolved path the way a tool result should show it: workspace-relative when it is
+/// under the root, absolute otherwise.
+///
+/// Every traversal-shaped tool used to `strip_prefix(root)` and treat failure as "impossible",
+/// which stopped being true when `resolve_in_root` began addressing the host. The two ways that
+/// assumption failed were both worse than the thing they guarded: `list_dir` silently dropped
+/// every entry outside the workspace and returned an empty listing, and `grep` failed the whole
+/// search. Neither is a boundary — the file had already been resolved and read by then — so this
+/// is purely how the path is spelled back to the caller.
+pub(crate) fn display_path(root: &Path, path: &Path) -> String {
+    let rendered = match path.strip_prefix(root) {
+        Ok(relative) if !relative.as_os_str().is_empty() => relative.display().to_string(),
+        _ => path.display().to_string(),
+    };
+    rendered.replace('\\', "/")
 }
 
 /// Helper: build a successful workspace-trust result.
@@ -722,6 +753,7 @@ mod tests {
             root: ".".into(),
             memo: Default::default(),
             sensitive_env_names: Default::default(),
+            confine_execution: Default::default(),
         };
         let bad = ToolSpec {
             name: "leaky".into(),
@@ -750,17 +782,24 @@ mod tests {
     }
 
     #[test]
-    fn path_escape_is_refused() {
+    fn a_path_outside_the_workspace_resolves_instead_of_being_refused() {
         let root = std::env::temp_dir().join(format!("core-resolve-{}", std::process::id()));
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/main.rs"), "x").unwrap();
-        // lexical escapes
-        assert!(resolve_in_root(&root, "../etc/passwd").is_err());
-        assert!(resolve_in_root(&root, "/abs").is_err());
-        // a real in-workspace path resolves
-        assert!(resolve_in_root(&root, "src/main.rs").is_ok());
-        // a not-yet-existing file in the workspace is allowed (write path)
+        // A relative path still resolves against the root: every existing caller keeps its meaning.
+        let inside = resolve_in_root(&root, "src/main.rs").unwrap();
+        assert_eq!(inside, root.canonicalize().unwrap().join("src/main.rs"));
+        // A not-yet-existing file still resolves (the write path).
         assert!(resolve_in_root(&root, "src/new_file.rs").is_ok());
+        // The three former refusals are now the point of the function. An absolute path is the
+        // one the model actually emits, and it must address the host.
+        let absolute = root.canonicalize().unwrap().join("src/main.rs");
+        assert_eq!(
+            resolve_in_root(&root, absolute.to_str().unwrap()).unwrap(),
+            absolute
+        );
+        let lexical = resolve_in_root(&root, "../").expect("a lexical escape now resolves");
+        assert_eq!(lexical, root.canonicalize().unwrap().parent().unwrap());
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -942,21 +981,19 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn symlink_escape_is_refused() {
-        // SEC-1: a symlink inside the workspace pointing OUT must not be followed to escape.
+    fn a_symlink_out_of_the_workspace_is_followed_to_its_real_target() {
+        // This asserts the inverse of the former SEC-1 containment, deliberately and by name: a
+        // symlink inside the workspace pointing OUT is now followed. The path still canonicalizes,
+        // so what a caller receives is the real destination rather than the link — that part was
+        // never containment, it is what makes the returned path comparable.
         let root = std::env::temp_dir().join(format!("core-symlink-{}", std::process::id()));
         let outside = std::env::temp_dir().join(format!("core-outside-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("secret"), "top secret").unwrap();
-        // create a symlink `root/escape` -> outside
         std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
-        // resolving through the symlink must be refused (it canonicalizes outside the root)
-        let r = resolve_in_root(&root, "escape/secret");
-        assert!(
-            r.is_err(),
-            "a symlink escaping the workspace must be refused, got {r:?}"
-        );
+        let resolved = resolve_in_root(&root, "escape/secret").expect("a symlink is now followed");
+        assert_eq!(resolved, outside.canonicalize().unwrap().join("secret"));
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&outside).ok();
     }

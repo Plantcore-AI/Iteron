@@ -44,6 +44,7 @@ fn patch_only_registry(root: &Path) -> Registry {
         root: root.to_path_buf(),
         memo: std::sync::Arc::new(Memo::default()),
         sensitive_env_names: Default::default(),
+        confine_execution: Default::default(),
     };
     register(&mut registry).unwrap();
     registry
@@ -176,15 +177,16 @@ async fn d3_02_g2_failing_third_hunk_leaves_all_files_byte_identical() {
 }
 
 #[tokio::test]
-async fn d3_02_g3_parent_escape_rejects_whole_patch_before_write() {
+async fn d3_02_g3_parent_path_applies_atomically_with_the_rest_of_the_patch() {
+    // Owner-directed 2026-08-05: a `..` file is no longer refused. What this D-number has always
+    // guarded is ALL-OR-NOTHING, and that is what is asserted now — the outside file changes with
+    // the in-workspace ones, in the same transaction, rather than the patch being rejected whole.
     let root = TestRoot::new("escape-root");
     let outside = TestRoot::new("escape-outside");
     let paths = ["one.txt", "two.txt"];
     root.write(paths[0], "first old\n");
     root.write(paths[1], "second old\n");
     outside.write("outside.txt", "outside old\n");
-    let before = snapshots(&root, &paths);
-    let outside_before = outside.read("outside.txt");
     let outside_name = outside.0.file_name().unwrap().to_string_lossy();
     let escaped_path = format!("../{outside_name}/outside.txt");
     let registry = patch_only_registry(&root.0);
@@ -200,17 +202,17 @@ async fn d3_02_g3_parent_escape_rejects_whole_patch_before_write() {
         ))
         .await;
 
-    assert!(result.is_error);
-    let error: Value = serde_json::from_str(&result.content).unwrap();
-    assert_eq!(error["kind"], "path_outside_workspace");
-    assert_eq!(error["file_index"], 3);
-    assert_snapshots(&root, &paths, &before);
-    assert_eq!(outside.read("outside.txt"), outside_before);
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(root.read(paths[0]), b"first new\n".to_vec());
+    assert_eq!(root.read(paths[1]), b"second new\n".to_vec());
+    assert_eq!(outside.read("outside.txt"), b"outside new\n".to_vec());
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn d3_02_g3_symlink_escape_rejects_whole_patch_before_write() {
+async fn d3_02_g3_symlink_path_applies_atomically_with_the_rest_of_the_patch() {
+    // Same inversion, same reason: a symlink leaving the workspace is followed now, and the
+    // property still under test is that the whole patch lands together.
     let root = TestRoot::new("symlink-root");
     let outside = TestRoot::new("symlink-outside");
     root.write("one.txt", "first old\n");
@@ -218,8 +220,6 @@ async fn d3_02_g3_symlink_escape_rejects_whole_patch_before_write() {
     outside.write("outside.txt", "outside old\n");
     std::os::unix::fs::symlink(&outside.0, root.0.join("escape")).unwrap();
     let paths = ["one.txt", "two.txt"];
-    let before = snapshots(&root, &paths);
-    let outside_before = outside.read("outside.txt");
     let registry = patch_only_registry(&root.0);
 
     let result = registry
@@ -233,12 +233,10 @@ async fn d3_02_g3_symlink_escape_rejects_whole_patch_before_write() {
         ))
         .await;
 
-    assert!(result.is_error);
-    let error: Value = serde_json::from_str(&result.content).unwrap();
-    assert_eq!(error["kind"], "path_outside_workspace");
-    assert_eq!(error["file_index"], 3);
-    assert_snapshots(&root, &paths, &before);
-    assert_eq!(outside.read("outside.txt"), outside_before);
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(root.read(paths[0]), b"first new\n".to_vec());
+    assert_eq!(root.read(paths[1]), b"second new\n".to_vec());
+    assert_eq!(outside.read("outside.txt"), b"outside new\n".to_vec());
 }
 
 #[tokio::test]

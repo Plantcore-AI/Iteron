@@ -126,12 +126,15 @@ impl fmt::Debug for FileContent {
     }
 }
 
-/// Refuse anything that is not a plain workspace-relative path.
+/// Refuse anything that is not a plain workspace-relative or absolute POSIX path.
 ///
-/// This is a *shape* check on a value that already crossed a frontend's containment gate; it is
-/// not itself the containment gate. It exists so a path that reached the queue by another route
-/// still cannot name an absolute location or climb out of a workspace, and so the string is safe
-/// for a terminal to print.
+/// This is a *shape* check, never a containment gate — it exists so the string is safe for a
+/// terminal to print and unambiguous to resolve. Owner-directed 2026-08-05: a leading `/` is now
+/// accepted, because the frontend that fills this field addresses the host and had no way to name
+/// a file outside the workspace. What stays refused is genuinely unrepresentable rather than
+/// merely outside: a Windows drive or UNC prefix (this contract speaks one separator), a relative
+/// `..` climb (an absolute path is the unambiguous way to say the same thing), an empty or `.`
+/// component, and any control or bidi-format character.
 fn validate_file_path(path: &str) -> Result<(), &'static str> {
     if path.is_empty() {
         return Err("attached file path must not be empty");
@@ -146,10 +149,15 @@ fn validate_file_path(path: &str) -> Result<(), &'static str> {
         // Both a separator this contract does not speak and, on Windows, a UNC/device prefix.
         return Err("attached file path must use forward slashes");
     }
-    if path.starts_with('/') || path.as_bytes().get(1) == Some(&b':') {
-        return Err("attached file path must be workspace-relative");
+    if path.as_bytes().get(1) == Some(&b':') {
+        return Err("attached file path must not carry a drive or device prefix");
     }
-    if path
+    // An absolute path is exactly one leading separator plus the same component rules.
+    let components = path.strip_prefix('/').unwrap_or(path);
+    if components.is_empty() {
+        return Err("attached file path must name a file, not a root");
+    }
+    if components
         .split('/')
         .any(|component| matches!(component, "" | "." | ".."))
     {
@@ -558,12 +566,17 @@ mod tests {
     }
 
     #[test]
-    fn an_attached_path_is_workspace_relative_plain_and_terminal_safe() {
+    fn an_attached_path_is_plain_unambiguous_and_terminal_safe() {
+        // `/etc/passwd` moved from the rejected list to the accepted one on 2026-08-05: the
+        // frontend filling this field addresses the host, and refusing the absolute form left it
+        // with no way to name a file it is allowed to read. Everything still rejected here is
+        // unrepresentable or ambiguous in this contract, not merely outside the workspace.
         for rejected in [
             "",
-            "/etc/passwd",
+            "/",
             "../outside.txt",
             "src/../../outside.txt",
+            "/etc/../etc/passwd",
             "./src/main.rs",
             "src//main.rs",
             "src/main.rs/",
@@ -586,7 +599,14 @@ mod tests {
                 "{rejected:?} must not survive admission"
             );
         }
-        for accepted in ["a", "src/main.rs", "docs/spec/abi.md", "a.b/c-d_e/f.rs"] {
+        for accepted in [
+            "a",
+            "src/main.rs",
+            "docs/spec/abi.md",
+            "a.b/c-d_e/f.rs",
+            "/etc/passwd",
+            "/Users/someone/.ssh/config",
+        ] {
             assert!(FileContent::new(accepted, "x").is_ok(), "{accepted:?}");
         }
         assert!(FileContent::new("a".repeat(MAX_FILE_PATH_BYTES), "x").is_ok());
