@@ -4593,15 +4593,46 @@ pub async fn run(
     history_writer.finish(app.editor.persistence_state());
     if let Some(exit_code) = termination_exit {
         drop(session);
+        // A catchable termination still gives the server its shutdown: that is where a live
+        // workflow run is cancelled and its terminal record written, and `process::exit` below
+        // would otherwise kill the run's thread mid-flight and leave it listing as `running`
+        // forever. Bounded, because a signal must not be answered by hanging — with no live run
+        // this resolves immediately, so the wait exists exactly when it is earning something.
+        let stopped = tokio::time::timeout(
+            crate::workflow::SHUTDOWN_GRACE + std::time::Duration::from_secs(1),
+            server_task,
+        )
+        .await
+        .ok()
+        .and_then(|joined| joined.ok())
+        .unwrap_or_default();
         restore_terminal(&guard.keyboard_restorer());
+        report_stopped_workflows(&stopped);
         std::process::exit(exit_code);
     }
     // Dropping the last SQ sender is how the server learns the session is over. Wait for it to run
-    // out — the runtime's own shutdown (the final rollout flush) happens in there, and returning
-    // before it completes would race the process exit against the record on disk.
+    // out — the runtime's own shutdown (the final rollout flush, and cancelling any workflow run
+    // the session still owned) happens in there, and returning before it completes would race the
+    // process exit against the record on disk.
     drop(session);
-    let _ = server_task.await;
+    let stopped = server_task.await.unwrap_or_default();
+    // The terminal goes back to normal BEFORE this prints. The alternate screen is torn down with
+    // the guard, so a line written above it would be erased in the same breath — and a run the
+    // operator was never told about is the failure this report exists to prevent.
+    drop(guard);
+    report_stopped_workflows(&stopped);
     tui_result
+}
+
+/// Tell the operator which workflow runs the session stopped on its way out, and how to continue
+/// them. Silent when there were none, which is the overwhelmingly common case.
+fn report_stopped_workflows(stopped: &crate::workflow::ShutdownReport) {
+    if stopped.is_empty() {
+        return;
+    }
+    for line in &stopped.lines {
+        eprintln!("core: {line}");
+    }
 }
 
 /// Execute one already-submitted slash command. Both ordinary Enter and Enter on a slash

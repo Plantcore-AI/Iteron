@@ -550,28 +550,98 @@ pub struct PreparedWorkflow {
     pub sink: Arc<dyn ProgressSink>,
     /// The reasons agents resolved to JS `null`. Only meaningful after the run settles.
     pub degraded: Arc<DegradedAgentSink>,
+    /// The model asked for this run to outlive its turn (`Workflow({background: true})`).
+    ///
+    /// A **request**, not a guarantee. Only a launcher that can own a run past the turn may honour
+    /// it; [`InTurnWorkflowLauncher`] deliberately ignores it and runs in-turn, and the kernel says
+    /// so in the tool result rather than pretending the run detached. That asymmetry is what keeps
+    /// a run from ever being started by nobody: the request is granted only where an owner exists.
+    pub background: bool,
 }
 
-/// Who starts a [`PreparedWorkflow`].
+/// What a [`WorkflowLauncher`] did with a [`PreparedWorkflow`] — the answer to "does this run
+/// belong to the turn or to something that outlives it".
 ///
-/// The `Workflow` tool prepares a run and then joins it inside the turn, which is the whole reason a
-/// run cannot outlive the turn that asked for it: the [`RunHandle`] is a local binding. This trait
-/// is the single point where "who starts the run" is decided, so a session-scoped owner can later be
+/// This is the S9 half of the S8 seam. S8 could only say *who starts* a run because the return type
+/// was a bare handle and the kernel always joined it; a launcher that detaches has to be able to
+/// say "do not join, and here is what to tell the model instead", which is exactly the two variants
+/// below.
+pub enum Launched {
+    /// The run belongs to this turn. The kernel joins the handle, bridges its interrupt surfaces
+    /// onto it, settles the card and returns the aggregated report to the model — byte-for-byte the
+    /// behavior that existed before this variant did.
+    InTurn(Arc<RunHandle>),
+    /// The run belongs to a session-scoped owner that outlives this turn. The kernel does **not**
+    /// join, does **not** settle the card and does **not** persist a terminal sidecar: all three are
+    /// the owner's obligations now, because it is the only thing still holding the run.
+    Detached(DetachedRun),
+}
+
+/// A run an owner took off the turn's hands.
+pub struct DetachedRun {
+    pub run_id: String,
+    pub name: String,
+    /// One sentence naming who owns the run and what ends it, written by the owner because the
+    /// owner — not the kernel — decides the session-exit rule. It is rendered verbatim into the
+    /// tool result, so the model is never told a lifetime the owner does not actually enforce.
+    pub ownership: String,
+}
+
+/// What an owner knows about one of its runs, in the vocabulary the `Workflow` tool answers in.
+///
+/// Every variant is a complete, honest answer. There is deliberately no "maybe" and no silent
+/// `None`: a `collect` that returned nothing would be indistinguishable from a lost result, which
+/// is the one failure a detached run must not have.
+pub enum Collected {
+    /// This run id is not one this owner started (or nothing owns runs here at all).
+    Unknown(String),
+    /// The run exists and has not settled. `elapsed_ms` is wall-clock since launch.
+    Running {
+        run_id: String,
+        name: String,
+        elapsed_ms: u64,
+    },
+    /// The run settled. `summary` is the SAME string the in-turn path returns to the model, built
+    /// by [`run_result_summary`] so a detached result and an in-turn result cannot drift. It names
+    /// the run, which is why this variant carries no separate id.
+    Settled { summary: String },
+    /// The run ended without a report (the engine itself failed). Reported as a tool error.
+    Failed { run_id: String, error: String },
+}
+
+/// Who starts a [`PreparedWorkflow`], and whether the turn is still holding it afterwards.
+///
+/// The `Workflow` tool prepares a run and then hands it here. This trait is the single point where
+/// "who starts the run" and "who owns it once started" are decided, so a session-scoped owner can be
 /// installed through `Agent::set_workflow_launcher` without the tool handler learning what a session
 /// is.
 ///
-/// It deliberately does **not** decide whether the turn joins. The kernel joins the returned handle
-/// either way, so installing [`InTurnWorkflowLauncher`] — or installing nothing at all — is
-/// byte-for-byte the behavior that existed before this seam. A launcher that means to *detach* has
-/// to answer two questions this signature cannot express yet: what the model is told the tool
-/// returned when the run's value does not exist yet, and what happens to a live run when the session
-/// exits. Both are left open on purpose.
+/// Installing [`InTurnWorkflowLauncher`] — or installing nothing at all — is byte-for-byte the
+/// behavior that existed before this trait: [`Launched::InTurn`], joined by the turn.
 ///
 /// The handle is shared rather than owned because a detaching launcher must keep it: both
 /// [`RunHandle::cancel`] and [`RunHandle::join`] take `&self`, so the turn's 25 ms interrupt poll and
 /// an owner's later bookkeeping can hold the same run at once.
 pub trait WorkflowLauncher: Send + Sync {
-    fn launch(&self, prepared: PreparedWorkflow) -> Arc<RunHandle>;
+    fn launch(&self, prepared: PreparedWorkflow) -> Launched;
+
+    /// Report on a run this owner started. Non-blocking on purpose: a `collect` that awaited would
+    /// put the run back inside a turn, which is the thing detaching exists to stop.
+    ///
+    /// The default is the truth for every launcher that owns nothing past the turn.
+    fn collect(&self, run_id: &str) -> Collected {
+        Collected::Unknown(format!(
+            "Workflow: run `{run_id}` is not owned by this session. Runs launched here complete \
+             inside the turn that started them, so there is nothing to collect; \
+             `core workflow list` shows every run on disk."
+        ))
+    }
+
+    /// Stop a run this owner started. Same vocabulary as [`Self::collect`] so the tool has one
+    /// answer shape; cancellation is a request, and the settled result is read by a later collect.
+    fn cancel(&self, run_id: &str) -> Collected {
+        self.collect(run_id)
+    }
 }
 
 /// The default launcher: exactly [`WorkflowEngine::launch`], owned by nobody but its caller.
@@ -581,12 +651,15 @@ pub trait WorkflowLauncher: Send + Sync {
 pub struct InTurnWorkflowLauncher;
 
 impl WorkflowLauncher for InTurnWorkflowLauncher {
-    fn launch(&self, prepared: PreparedWorkflow) -> Arc<RunHandle> {
-        Arc::new(WorkflowEngine::launch(
+    fn launch(&self, prepared: PreparedWorkflow) -> Launched {
+        // `prepared.background` is ignored here, and that is the point: this launcher has no life
+        // beyond the caller's stack frame, so honouring the request would leave the run owned by a
+        // frame that is about to return. The kernel tells the model the request was not granted.
+        Launched::InTurn(Arc::new(WorkflowEngine::launch(
             prepared.spec,
             prepared.spawner,
             prepared.sink,
-        ))
+        )))
     }
 }
 
@@ -599,10 +672,526 @@ impl WorkflowLauncher for InTurnWorkflowLauncher {
 pub fn launch_prepared(
     launcher: Option<&Arc<dyn WorkflowLauncher>>,
     prepared: PreparedWorkflow,
-) -> Arc<RunHandle> {
+) -> Launched {
     match launcher {
         Some(launcher) => launcher.launch(prepared),
         None => InTurnWorkflowLauncher.launch(prepared),
+    }
+}
+
+/// The one rendering of a settled run for the model.
+///
+/// Extracted from the in-turn tool handler so the detached path cannot drift from it: a background
+/// run's `collect` returns this exact string, so "ran in-turn" and "ran detached then collected"
+/// differ in *when* the model is told and in nothing else. The degraded section is an ERROR block
+/// because a degraded `agent()` resolves to JS `null` and a script's `.filter(Boolean)` deletes it —
+/// without it an exhausted budget reaches the model as a plausibly-short result.
+pub fn run_result_summary(
+    name: &str,
+    run_id: &str,
+    report: &RunReport,
+    degraded: &[String],
+) -> String {
+    let value =
+        serde_json::to_string_pretty(&report.value).unwrap_or_else(|_| report.value.to_string());
+    let degraded_section = if degraded.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nERROR: {} agent(s) did not complete and were resolved to null:\n{}",
+            degraded.len(),
+            degraded
+                .iter()
+                .map(|reason| format!("  - {reason}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    format!(
+        "Workflow `{name}` (run {run_id}) {}: {} agent(s) replayed from cache, {} ran live.{degraded_section}\n\nResult:\n{value}",
+        if report.stopped {
+            "stopped"
+        } else {
+            "finished"
+        },
+        report.cache_hits,
+        report.cache_misses
+    )
+}
+
+/// The terminal record for a run that produced no report of its own.
+///
+/// A run that never reported is still a directory `core workflow list` enumerates — `persist_inputs`
+/// created it before the engine started — so leaving it unwritten is the "stub that never reaches a
+/// terminal state" failure, one layer up. The zeroed totals mean "none were settled", which is true:
+/// the engine failed before it could aggregate any. They are not a claim that the run was free.
+pub fn unreported_run(run_id: &str, message: &str) -> RunReport {
+    RunReport {
+        run_id: core_workflow::RunId::new(run_id.to_string()),
+        value: serde_json::json!({ "error": message }),
+        stopped: true,
+        cache_hits: 0,
+        cache_misses: 0,
+        errors: 0,
+        tokens: 0,
+        tool_calls: 0,
+        elapsed_ms: 0,
+    }
+}
+
+/// One settled background run, announced to the session loop that owns the event queue.
+///
+/// The supervisor cannot publish anything itself — it lives behind an `Arc` shared with a turn that
+/// holds `&mut Agent` — so it reports through a channel the session's `select!` drains. That is what
+/// makes a run settling while the operator is idle still reach the screen.
+pub struct RunSettled {
+    pub run_id: String,
+    /// The operator-facing line. Names the run, its terminal state, and how to read the result.
+    pub notice: String,
+}
+
+/// What the session did with the runs it still owned when it ended.
+///
+/// Returned by the session loop rather than published, because by the time it exists the event
+/// queue's reader is already gone: the session ends *because* the frontend hung up. The client
+/// prints it after restoring the terminal.
+#[derive(Debug, Default)]
+pub struct ShutdownReport {
+    pub lines: Vec<String>,
+}
+
+impl ShutdownReport {
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+}
+
+/// Total bytes of settled-run summaries this owner keeps in memory for `collect`.
+///
+/// A bound, not a buffer: past it the OLDEST settled summary is dropped and the drop is recorded, so
+/// a `collect` on an evicted run names the durable `result.json` instead of answering "unknown".
+/// A silently forgotten result would be indistinguishable from a run that never happened.
+const MAX_RETAINED_SUMMARY_BYTES: usize = 4 * 1024 * 1024;
+
+/// How long a session waits for the runs it cancelled at exit before writing their terminal record
+/// itself. The engine interrupts a sync JS loop at its own safe point; this bounds the wait so
+/// quitting can never hang on a script that ignores it.
+pub const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+enum SupervisedState {
+    Running {
+        handle: Arc<RunHandle>,
+        started: std::time::Instant,
+        /// Set once `cancel` has been requested, so the operator is not told "running" about a run
+        /// that is already stopping.
+        cancelling: bool,
+    },
+    /// Settled with a report. `summary` is `None` only when it was evicted under the byte bound.
+    Settled { summary: Option<String> },
+    /// The engine failed before producing a report.
+    Failed { error: String },
+}
+
+struct SupervisedRun {
+    name: String,
+    workflows_dir: PathBuf,
+    degraded: Arc<DegradedAgentSink>,
+    state: SupervisedState,
+    /// Monotonic registration order, so eviction drops the oldest settled summary first.
+    ordinal: u64,
+}
+
+#[derive(Default)]
+struct SupervisorInner {
+    runs: std::collections::HashMap<String, SupervisedRun>,
+    next_ordinal: u64,
+    retained_bytes: usize,
+    evicted: usize,
+}
+
+/// The session-scoped owner of detached workflow runs.
+///
+/// # Why it lives beside the session loop and not inside the turn
+///
+/// A run cannot outlive its turn while the only thing holding it is a local binding inside a method
+/// that borrows `&mut Agent`. This type is the owner that fixes that: it is an `Arc` installed on
+/// the agent as a [`WorkflowLauncher`] *and* held by `app_server::serve`, i.e. it is reachable from
+/// both sides of the turn's exclusive borrow without either side lending the other anything.
+///
+/// # What it guarantees
+///
+/// 1. **Nothing is orphaned.** Every detached run is registered before it is announced, and a reaper
+///    task holds the handle for as long as the run lives. `serve` cannot return without going
+///    through [`Self::shutdown`], which cancels and reaps.
+/// 2. **No result is lost.** The reaper persists the terminal sidecar (`core workflow list`) and
+///    keeps the model-facing summary for `collect`, which is built by [`run_result_summary`] — the
+///    same function the in-turn path uses.
+/// 3. **The model is never told a turn completed when it did not.** `launch` returns
+///    [`Launched::Detached`] with a receipt that states, in words, that there is no result yet.
+pub struct WorkflowSupervisor {
+    /// A self-reference so a reaper task can be handed the owner without the launcher call site
+    /// having to pass one in. `WorkflowLauncher` is implemented for `WorkflowSupervisor` (not for
+    /// `Arc<WorkflowSupervisor>`), so `&self` is all `launch` receives.
+    me: std::sync::Weak<WorkflowSupervisor>,
+    inner: std::sync::Mutex<SupervisorInner>,
+    settled: tokio::sync::mpsc::UnboundedSender<RunSettled>,
+}
+
+impl WorkflowSupervisor {
+    /// The one sentence handed to the model with every receipt. A constant so the exit rule the
+    /// model is told and the exit rule [`Self::shutdown`] enforces cannot drift apart.
+    pub const OWNERSHIP: &'static str = "This session owns the run. Ending the session stops it at the engine's next safe point; \
+         its journal is kept, so `core workflow resume <run-id>` continues it in a new process.";
+
+    pub fn new(settled: tokio::sync::mpsc::UnboundedSender<RunSettled>) -> Arc<Self> {
+        Arc::new_cyclic(|me| WorkflowSupervisor {
+            me: me.clone(),
+            inner: std::sync::Mutex::new(SupervisorInner::default()),
+            settled,
+        })
+    }
+
+    /// Register and start one detached run, spawning the reaper that owns it from here on.
+    fn detach(
+        &self,
+        owner: Arc<WorkflowSupervisor>,
+        prepared: PreparedWorkflow,
+        runtime: tokio::runtime::Handle,
+    ) -> Launched {
+        let PreparedWorkflow {
+            run_id,
+            name,
+            workflows_dir,
+            spec,
+            spawner,
+            sink,
+            degraded,
+            ..
+        } = prepared;
+        let handle = Arc::new(WorkflowEngine::launch(spec, spawner, sink));
+        {
+            let mut inner = self.inner.lock().unwrap();
+            let ordinal = inner.next_ordinal;
+            inner.next_ordinal += 1;
+            inner.runs.insert(
+                run_id.clone(),
+                SupervisedRun {
+                    name: name.clone(),
+                    workflows_dir: workflows_dir.clone(),
+                    degraded: degraded.clone(),
+                    state: SupervisedState::Running {
+                        handle: Arc::clone(&handle),
+                        started: std::time::Instant::now(),
+                        cancelling: false,
+                    },
+                    ordinal,
+                },
+            );
+        }
+
+        // The reaper. It is the only joiner of this handle (`RunHandle::join` consumes the
+        // receiver), which is why `shutdown` waits on the settled channel instead of joining too.
+        let reaped_id = run_id.clone();
+        let reaped_name = name.clone();
+        runtime.spawn(async move {
+            let outcome = handle.join().await;
+            owner.settle(&reaped_id, &reaped_name, outcome);
+        });
+
+        Launched::Detached(DetachedRun {
+            run_id,
+            name,
+            ownership: Self::OWNERSHIP.to_string(),
+        })
+    }
+
+    /// Record a settled run: persist its terminal sidecar, keep its model-facing summary, announce
+    /// it. Called from the reaper, and from [`Self::shutdown`] for a run that ignored its cancel.
+    fn settle(&self, run_id: &str, name: &str, outcome: anyhow::Result<RunReport>) {
+        let (workflows_dir, degraded) = {
+            let inner = self.inner.lock().unwrap();
+            match inner.runs.get(run_id) {
+                // Already settled (shutdown got there first). Settling twice would publish a second
+                // terminal line for one run, so stop here.
+                Some(run) if !matches!(run.state, SupervisedState::Running { .. }) => return,
+                Some(run) => (run.workflows_dir.clone(), run.degraded.clone()),
+                None => return,
+            }
+        };
+
+        // Render first, WITHOUT the lock: `run_result_summary` is pure and the report can be large.
+        let (report, state, notice) = match outcome {
+            Ok(report) => {
+                let summary = run_result_summary(name, run_id, &report, &degraded.reasons());
+                let terminal = if report.stopped {
+                    "stopped"
+                } else {
+                    "finished"
+                };
+                (
+                    report,
+                    SupervisedState::Settled {
+                        summary: Some(summary),
+                    },
+                    format!(
+                        "Workflow `{name}` (run {run_id}) {terminal} in the background; the model \
+                         can read it with Workflow({{\"collect\":\"{run_id}\"}}), and \
+                         `core workflow list` records it"
+                    ),
+                )
+            }
+            Err(error) => {
+                let message = format!("Workflow run failed: {error}");
+                (
+                    unreported_run(run_id, &message),
+                    SupervisedState::Failed {
+                        error: message.clone(),
+                    },
+                    format!("Workflow `{name}` (run {run_id}) failed in the background: {message}"),
+                )
+            }
+        };
+
+        // CLAIM THE RUN BEFORE WRITING ITS FILE. `shutdown` decides whether to write a synthetic
+        // terminal record while holding this same lock and reading this same state, so taking the
+        // state first makes "who writes result.json" a single decision instead of a race in which
+        // the loser's file lands last. A reaper that finds the state already taken writes nothing.
+        let mut notice = notice;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            match inner.runs.get_mut(run_id) {
+                Some(run) if matches!(run.state, SupervisedState::Running { .. }) => {
+                    run.state = state;
+                }
+                // Shutdown claimed it in the window above and has already written its record.
+                _ => return,
+            }
+            if let Some(SupervisedState::Settled {
+                summary: Some(summary),
+            }) = inner.runs.get(run_id).map(|run| &run.state)
+            {
+                inner.retained_bytes += summary.len();
+            }
+            evict_summaries(&mut inner);
+        }
+
+        if let Err(error) = persist_result(&workflows_dir, run_id, &report) {
+            // Degrade, never destroy: a sidecar that cannot be written must not cost the operator a
+            // run they already paid for. The summary is still in memory and `collect` still answers.
+            notice.push_str(&format!(
+                " (its result sidecar could not be written: {error})"
+            ));
+        }
+
+        let _ = self.settled.send(RunSettled {
+            run_id: run_id.to_string(),
+            notice,
+        });
+    }
+
+    /// Cancel every run still live, wait `grace` for them to settle through their reapers, and write
+    /// a terminal record for any that did not.
+    ///
+    /// The wait is on `settled` — the reapers' channel — because the reaper holds the only joinable
+    /// receiver for each handle. Draining it here also means a run that settles *during* shutdown is
+    /// recorded with its real report rather than the synthetic one below.
+    pub async fn shutdown(
+        &self,
+        settled: &mut tokio::sync::mpsc::UnboundedReceiver<RunSettled>,
+        grace: std::time::Duration,
+    ) -> ShutdownReport {
+        let live: Vec<String> = {
+            let inner = self.inner.lock().unwrap();
+            inner
+                .runs
+                .iter()
+                .filter(|(_, run)| matches!(run.state, SupervisedState::Running { .. }))
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        if live.is_empty() {
+            return ShutdownReport::default();
+        }
+
+        {
+            let inner = self.inner.lock().unwrap();
+            for id in &live {
+                if let Some(SupervisedState::Running { handle, .. }) =
+                    inner.runs.get(id).map(|run| &run.state)
+                {
+                    handle.cancel();
+                }
+            }
+        }
+
+        let deadline = tokio::time::Instant::now() + grace;
+        let mut outstanding = live.len();
+        while outstanding > 0 {
+            match tokio::time::timeout_at(deadline, settled.recv()).await {
+                Ok(Some(message)) => {
+                    if live.contains(&message.run_id) {
+                        outstanding -= 1;
+                    }
+                }
+                // The channel cannot close while the supervisor holds a sender, so `None` and a
+                // timeout are the same terminal condition: stop waiting and record the truth.
+                Ok(None) | Err(_) => break,
+            }
+        }
+
+        let mut lines = Vec::new();
+        let mut inner = self.inner.lock().unwrap();
+        for id in live {
+            let Some(run) = inner.runs.get_mut(&id) else {
+                continue;
+            };
+            match &run.state {
+                SupervisedState::Running { .. } => {
+                    let message =
+                        "the session ended before this run settled; it was cancelled at exit"
+                            .to_string();
+                    let _ = persist_result(&run.workflows_dir, &id, &unreported_run(&id, &message));
+                    run.state = SupervisedState::Failed { error: message };
+                    lines.push(format!(
+                        "workflow `{}` (run {id}) did not stop within {}s and was recorded as \
+                         stopped at exit; resume it with `core workflow resume {id}`",
+                        run.name,
+                        grace.as_secs()
+                    ));
+                }
+                _ => lines.push(format!(
+                    "workflow `{}` (run {id}) was stopped when the session ended; resume it with \
+                     `core workflow resume {id}`",
+                    run.name
+                )),
+            }
+        }
+        ShutdownReport { lines }
+    }
+}
+
+/// Drop the oldest settled summaries until the retained bytes fit the bound, counting the drops.
+///
+/// The entry itself is kept: an evicted run answers `collect` by naming its durable `result.json`,
+/// which is a different and honest answer from "unknown run".
+fn evict_summaries(inner: &mut SupervisorInner) {
+    while inner.retained_bytes > MAX_RETAINED_SUMMARY_BYTES {
+        let victim = inner
+            .runs
+            .iter()
+            .filter(|(_, run)| matches!(run.state, SupervisedState::Settled { summary: Some(_) }))
+            .min_by_key(|(_, run)| run.ordinal)
+            .map(|(id, _)| id.clone());
+        let Some(victim) = victim else { return };
+        if let Some(run) = inner.runs.get_mut(&victim)
+            && let SupervisedState::Settled { summary } = &mut run.state
+            && let Some(dropped) = summary.take()
+        {
+            inner.retained_bytes = inner.retained_bytes.saturating_sub(dropped.len());
+            inner.evicted += 1;
+        }
+    }
+}
+
+impl WorkflowLauncher for WorkflowSupervisor {
+    fn launch(&self, prepared: PreparedWorkflow) -> Launched {
+        if !prepared.background {
+            // An unrequested run is byte-for-byte the in-turn run it always was, even with an owner
+            // installed. Detaching is opt-in because the model, not the session, knows whether it
+            // has anything to do while the run executes.
+            return InTurnWorkflowLauncher.launch(prepared);
+        }
+        // No ambient runtime, or no live `Arc` to hand the reaper, means no owner for the run — and
+        // a detached run with no owner is an orphan. Run it in-turn instead; the kernel tells the
+        // model the request was not granted rather than pretending it was.
+        let (Ok(runtime), Some(owner)) = (tokio::runtime::Handle::try_current(), self.me.upgrade())
+        else {
+            return InTurnWorkflowLauncher.launch(prepared);
+        };
+        self.detach(owner, prepared, runtime)
+    }
+
+    fn collect(&self, run_id: &str) -> Collected {
+        let inner = self.inner.lock().unwrap();
+        let Some(run) = inner.runs.get(run_id) else {
+            return Collected::Unknown(format!(
+                "Workflow: run `{run_id}` was not started by this session. `core workflow list` \
+                 shows every run on disk."
+            ));
+        };
+        match &run.state {
+            SupervisedState::Running {
+                started,
+                cancelling,
+                ..
+            } => Collected::Running {
+                run_id: run_id.to_string(),
+                name: if *cancelling {
+                    format!("{} (cancelling)", run.name)
+                } else {
+                    run.name.clone()
+                },
+                elapsed_ms: started.elapsed().as_millis() as u64,
+            },
+            SupervisedState::Settled {
+                summary: Some(summary),
+            } => Collected::Settled {
+                summary: summary.clone(),
+            },
+            SupervisedState::Settled { summary: None } => Collected::Settled {
+                summary: format!(
+                    "Workflow `{}` (run {run_id}) finished, but this session no longer holds its \
+                     summary in memory ({} older result(s) were dropped to stay within its \
+                     retention bound). The authoritative result is on disk at {}.",
+                    run.name,
+                    inner.evicted,
+                    run_dir(&run.workflows_dir, run_id)
+                        .join("result.json")
+                        .display()
+                ),
+            },
+            SupervisedState::Failed { error } => Collected::Failed {
+                run_id: run_id.to_string(),
+                error: error.clone(),
+            },
+        }
+    }
+
+    fn cancel(&self, run_id: &str) -> Collected {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(run) = inner.runs.get_mut(run_id) else {
+            return Collected::Unknown(format!(
+                "Workflow: run `{run_id}` was not started by this session, so there is nothing to \
+                 cancel."
+            ));
+        };
+        match &mut run.state {
+            SupervisedState::Running {
+                handle,
+                started,
+                cancelling,
+            } => {
+                handle.cancel();
+                *cancelling = true;
+                Collected::Running {
+                    run_id: run_id.to_string(),
+                    name: format!("{} (cancelling)", run.name),
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                }
+            }
+            SupervisedState::Settled {
+                summary: Some(summary),
+            } => Collected::Settled {
+                summary: summary.clone(),
+            },
+            SupervisedState::Settled { summary: None } => Collected::Unknown(format!(
+                "Workflow: run `{run_id}` had already settled; its result is on disk."
+            )),
+            SupervisedState::Failed { error } => Collected::Failed {
+                run_id: run_id.to_string(),
+                error: error.clone(),
+            },
+        }
     }
 }
 
@@ -2055,5 +2644,203 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
             vec!["#2 starved: agent call ceiling 1 reached".to_string()],
             "an exhausted budget must stay visible instead of being filtered away as a null"
         );
+    }
+
+    // ---- S9: the session-scoped owner of detached runs -----------------------------------------
+
+    /// Build a `PreparedWorkflow` for `script` the way `Agent::prepare_workflow` does, minus
+    /// everything that needs a live route. The manifest is written first for the same reason the
+    /// kernel writes it first: a run must be listable before anything can start it.
+    fn prepared_for(tag: &str, script: &str, background: bool) -> PreparedWorkflow {
+        let workflows_dir = scratch_dir(tag);
+        let run_id = format!("wf-{tag}");
+        let name = "owned".to_string();
+        persist_inputs(
+            &workflows_dir,
+            &RunManifest {
+                run_id: run_id.clone(),
+                name: name.clone(),
+                args: serde_json::Value::Null,
+                provider_id: "provider-a".into(),
+                model: "model-a".into(),
+                created_at: 0,
+            },
+            script,
+        )
+        .unwrap();
+        let degraded = Arc::new(DegradedAgentSink::new());
+        PreparedWorkflow {
+            run_id: run_id.clone(),
+            name,
+            declared_phases: Vec::new(),
+            workflows_dir: workflows_dir.clone(),
+            spec: RunSpec::new(script)
+                .with_run_id(RunId::new(run_id))
+                .with_workflows_dir(workflows_dir),
+            spawner: Arc::new(ProviderSpawner::new(
+                Arc::new(RecordingProvider::successful()),
+                "parent-model".into(),
+            )),
+            sink: degraded.clone(),
+            degraded,
+            background,
+        }
+    }
+
+    /// Pure QuickJS, so these tests never touch a provider.
+    const OWNED_SCRIPT: &str =
+        "export const meta = { name: 'owned', description: '', phases: [] };\nreturn 7;\n";
+    /// A script that will not finish on its own: the only way out is cancellation.
+    const ENDLESS_SCRIPT: &str =
+        "export const meta = { name: 'owned', description: '', phases: [] };\nwhile (true) {}\n";
+
+    async fn settled_line(rx: &mut tokio::sync::mpsc::UnboundedReceiver<RunSettled>) -> RunSettled {
+        tokio::time::timeout(std::time::Duration::from_secs(20), rx.recv())
+            .await
+            .expect("the reaper announced the run within the test timeout")
+            .expect("the supervisor still holds a sender")
+    }
+
+    #[tokio::test]
+    async fn an_unrequested_run_still_belongs_to_the_turn_even_with_an_owner_installed() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let owner = WorkflowSupervisor::new(tx);
+        let prepared = prepared_for("owner-default", OWNED_SCRIPT, false);
+        let dir = prepared.workflows_dir.clone();
+
+        let Launched::InTurn(handle) = owner.launch(prepared) else {
+            panic!("detaching is opt-in; an unrequested run must stay in-turn");
+        };
+        assert_eq!(handle.join().await.unwrap().value, serde_json::json!(7));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_backgrounded_run_is_detached_and_its_result_is_readable_only_by_collecting_it() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let owner = WorkflowSupervisor::new(tx);
+        let prepared = prepared_for("owner-detach", OWNED_SCRIPT, true);
+        let dir = prepared.workflows_dir.clone();
+        let run_id = prepared.run_id.clone();
+
+        let Launched::Detached(detached) = owner.launch(prepared) else {
+            panic!("an owner that can hold a run must grant the request");
+        };
+        assert_eq!(detached.run_id, run_id);
+        assert_eq!(detached.ownership, WorkflowSupervisor::OWNERSHIP);
+
+        // Before the run settles, collect is a status and NEVER a value: this is the property that
+        // stops the model reporting a completion that has not happened.
+        match owner.collect(&run_id) {
+            Collected::Running { .. } | Collected::Settled { .. } => {}
+            other => panic!(
+                "a live detached run is running or settled, never unknown: {}",
+                matches!(other, Collected::Unknown(_))
+            ),
+        }
+
+        let settled = settled_line(&mut rx).await;
+        assert_eq!(settled.run_id, run_id);
+        assert!(settled.notice.contains("finished"), "{}", settled.notice);
+
+        let Collected::Settled { summary } = owner.collect(&run_id) else {
+            panic!("a settled run collects its result");
+        };
+        // The SAME rendering the in-turn path would have returned for this report.
+        assert!(summary.contains(&run_id), "{summary}");
+        assert!(summary.contains("finished"), "{summary}");
+        assert!(summary.contains('7'), "{summary}");
+
+        // And the result is durable, so a model that never collects has still not destroyed it.
+        let listed = list_runs(&dir);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].status, "done");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn collecting_a_run_this_session_never_started_is_answered_not_guessed() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let owner = WorkflowSupervisor::new(tx);
+        let Collected::Unknown(message) = owner.collect("wf-never-existed") else {
+            panic!("an unknown id is unknown, not a result");
+        };
+        assert!(message.contains("wf-never-existed"), "{message}");
+        // The in-turn launcher owns nothing past the turn and says exactly that.
+        assert!(matches!(
+            InTurnWorkflowLauncher.collect("wf-anything"),
+            Collected::Unknown(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_session_that_ends_with_a_live_run_stops_it_and_records_a_terminal_state() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let owner = WorkflowSupervisor::new(tx);
+        let prepared = prepared_for("owner-shutdown", ENDLESS_SCRIPT, true);
+        let dir = prepared.workflows_dir.clone();
+        let run_id = prepared.run_id.clone();
+        let Launched::Detached(_) = owner.launch(prepared) else {
+            panic!("the run must detach for this to be a test of session exit");
+        };
+
+        let report = owner
+            .shutdown(&mut rx, std::time::Duration::from_secs(10))
+            .await;
+        assert!(!report.is_empty(), "a stopped run is always reported");
+        let line = report.lines.join("\n");
+        assert!(line.contains(&run_id), "{line}");
+        assert!(
+            line.contains("core workflow resume"),
+            "the operator is told how to continue it: {line}"
+        );
+
+        // The run is no longer listed as `running`: the exact "stub that never reaches a terminal
+        // state" failure an unowned detached run would have created.
+        let listed = list_runs(&dir);
+        assert_eq!(listed.len(), 1);
+        assert_ne!(listed[0].status, "running", "{:?}", listed[0].status);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_session_with_no_live_run_reports_nothing_at_exit() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let owner = WorkflowSupervisor::new(tx);
+        assert!(
+            owner
+                .shutdown(&mut rx, std::time::Duration::from_secs(1))
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_detached_run_stops_it_and_the_owner_still_records_it() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let owner = WorkflowSupervisor::new(tx);
+        let prepared = prepared_for("owner-cancel", ENDLESS_SCRIPT, true);
+        let dir = prepared.workflows_dir.clone();
+        let run_id = prepared.run_id.clone();
+        let Launched::Detached(_) = owner.launch(prepared) else {
+            panic!("the run must detach to be cancellable out of band");
+        };
+
+        let Collected::Running { name, .. } = owner.cancel(&run_id) else {
+            panic!("cancel is a request; the settled result arrives through the reaper");
+        };
+        assert!(name.contains("cancelling"), "{name}");
+
+        let settled = settled_line(&mut rx).await;
+        assert_eq!(settled.run_id, run_id);
+        let Collected::Settled { summary } = owner.collect(&run_id) else {
+            panic!("a cancelled run still settles with a readable outcome");
+        };
+        assert!(summary.contains("stopped"), "{summary}");
+        assert_eq!(
+            list_runs(&dir)[0].status,
+            run_status(&unreported_run(&run_id, ""))
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 }

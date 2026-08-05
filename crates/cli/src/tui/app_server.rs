@@ -596,8 +596,11 @@ pub(crate) struct SessionFacts {
 pub(crate) struct Attached {
     pub(crate) handle: AppServerHandle,
     /// The server task. Awaiting it after dropping the client is how a client waits for the
-    /// runtime's own shutdown — the final rollout flush happens in there.
-    pub(crate) task: tokio::task::JoinHandle<()>,
+    /// runtime's own shutdown — the final rollout flush happens in there, and so does cancelling
+    /// and recording any workflow run the session still owned. It yields what it did with those
+    /// runs; a client that renders to a terminal prints it after restoring the terminal, because
+    /// the event queue's reader is gone by the time this resolves.
+    pub(crate) task: tokio::task::JoinHandle<crate::workflow::ShutdownReport>,
     pub(crate) facts: SessionFacts,
     pub(crate) initial_state: SessionSnapshot,
     /// Ctrl-C: cancel the in-flight provider turn at the next safe point.
@@ -885,7 +888,20 @@ impl AppServer {
     /// the event publisher are disjoint locals, so the `select!` below can keep draining the SQ and
     /// republishing the EQ *while* a turn runs. Destructuring `self` is what makes that legal, and
     /// it is the whole trick.
-    pub(crate) async fn serve(self) {
+    ///
+    /// # The workflow run owner
+    ///
+    /// [`crate::workflow::WorkflowSupervisor`] is installed here for exactly the same reason. A
+    /// `Workflow` run could not outlive its turn because the only thing holding it was a local
+    /// binding inside a method that borrows `&mut agent`; the supervisor is an `Arc` reachable from
+    /// both sides of that borrow, so a detached run has an owner while the turn that started it
+    /// returns. Its settled-run channel is selected on in BOTH loops below, which is what makes a
+    /// background run finishing while the operator sits idle still reach the screen.
+    ///
+    /// Returns what the session did with the runs it still owned when it ended: by that point the
+    /// EQ's reader is already gone (the session ends *because* the frontend hung up), so the client
+    /// prints it after restoring the terminal rather than receiving it as an event.
+    pub(crate) async fn serve(self) -> crate::workflow::ShutdownReport {
         let Self {
             mut agent,
             mut submissions,
@@ -908,6 +924,14 @@ impl AppServer {
             mpsc::unbounded_channel::<crate::workflow::WorkflowRunUiEvent>();
         agent.set_workflow_progress(workflow_tx);
 
+        // The session-scoped owner for `Workflow({background: true})` runs. Installed OUTSIDE the
+        // turn's borrow — that placement is the whole point, not an implementation detail: it is
+        // what lets a run be held while the turn that started it returns. Its channel is unbounded
+        // for the same reason the two above are: a reaper task must never block on the frontend.
+        let (settled_tx, mut settled_rx) = mpsc::unbounded_channel::<crate::workflow::RunSettled>();
+        let workflows = crate::workflow::WorkflowSupervisor::new(settled_tx);
+        agent.set_workflow_launcher(workflows.clone());
+
         // `run` versus `follow_up` was a caller-side boolean the frontend chose. With a resident
         // runtime it is session state and belongs here: the first admitted turn starts the session,
         // every later one continues it.
@@ -924,6 +948,18 @@ impl AppServer {
                         Some(request) => { apply_control(&mut agent, &mut side, &mut started, &mut events, request).await; continue }
                         None => break,
                     }
+                }
+                // A detached run keeps emitting between turns. Without this arm its tree froze on
+                // the frame the turn ended on and only resumed when the operator typed again —
+                // "the run is invisible while it is the only thing happening", which is precisely
+                // the state detaching would otherwise create.
+                Some(progress) = workflow_rx.recv() => {
+                    let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
+                    continue
+                }
+                Some(settled) = settled_rx.recv() => {
+                    publish_settled(&mut events, settled).await;
+                    continue
                 }
                 queued = submissions.recv() => {
                     match queued { Some(queued) => queued, None => break }
@@ -1001,6 +1037,12 @@ impl AppServer {
                                     // aborts a run that is already executing.
                                     let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
                                 }
+                                Some(settled) = settled_rx.recv() => {
+                                    // A run detached by an EARLIER turn can settle during this one.
+                                    // Its terminal row belongs in the transcript at the moment it
+                                    // happened, not at the end of whatever turn is running.
+                                    publish_settled(&mut events, settled).await;
+                                }
                                 Some(request) = control.recv() => {
                                     // Configuration DURING a turn is DEFERRED, not applied.
                                     //
@@ -1059,6 +1101,9 @@ impl AppServer {
                     while let Ok(progress) = workflow_rx.try_recv() {
                         let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
                     }
+                    while let Ok(settled) = settled_rx.try_recv() {
+                        publish_settled(&mut events, settled).await;
+                    }
 
                     // The turn's borrow has ended, so the deferred control plane can run — in
                     // arrival order, before the snapshot, so the state the frontend receives
@@ -1105,7 +1150,40 @@ impl AppServer {
                 }
             }
         }
+
+        // SESSION EXIT WITH A RUN STILL LIVE.
+        //
+        // The three candidate policies were: refuse to exit, kill, or let it finish alone. The
+        // third is not available and saying otherwise would be a lie — a workflow run is an OS
+        // thread inside THIS process, so "detached" has never meant "survives the process". The
+        // first turns one wedged script into an unquittable session. So: cancel, wait a bounded
+        // grace for the engine's own safe point, and write the terminal record either way, so no
+        // run is left listing as `running` forever. The operator is told twice — the receipt the
+        // model got stated this exact rule up front, and the report below names every run that was
+        // stopped together with the `core workflow resume` that continues it.
+        //
+        // This runs on EVERY exit from the loop above, which is what makes "the session cannot end
+        // with a run it does not account for" a property of the type rather than of a call site.
+        workflows
+            .shutdown(&mut settled_rx, crate::workflow::SHUTDOWN_GRACE)
+            .await
     }
+}
+
+/// Publish one settled background run: settle its card, then say what happened.
+///
+/// Both events, always. The card settles on every terminal state for the same reason the in-turn
+/// path settles it on both exits — a run whose tree spins forever is a transcript that is wrong —
+/// and the notice is the operator's copy of an outcome that otherwise only the model can read.
+async fn publish_settled(events: &mut EventPublisher, settled: crate::workflow::RunSettled) {
+    let _ = events
+        .publish(ServerEvent::WorkflowRun(
+            crate::workflow::WorkflowRunUiEvent::Finished {
+                run_id: settled.run_id,
+            },
+        ))
+        .await;
+    let _ = events.publish(ServerEvent::Notice(settled.notice)).await;
 }
 
 /// Apply one control request against the resident runtime.

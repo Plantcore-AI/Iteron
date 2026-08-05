@@ -2018,7 +2018,12 @@ async fn run_cli() -> anyhow::Result<u8> {
     drop(events);
     drop(control);
     drop(client);
-    server_task.await?;
+    // A one-shot session owns background workflow runs too, and ending it stops them. That goes to
+    // stderr, beside the interrupt notice above: stdout is the machine contract and takes no
+    // additions from a runtime concern.
+    for line in server_task.await?.lines {
+        eprintln!("core: {line}");
+    }
     diagnostic_drain.flush();
 
     let outcome: Outcome = summary.outcome;
