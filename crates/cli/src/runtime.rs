@@ -150,6 +150,11 @@ pub enum KernelError {
     ProviderRunNoticeLimit,
     #[error("invalid execution budget: {0}")]
     InvalidBudget(&'static str),
+    /// A queued submission failed the protocol's own admission bounds. Distinct from a budget or
+    /// a record failure: nothing is wrong with the run, the operator asked for something the
+    /// contract does not admit, and the answer is to say so rather than to carry part of it.
+    #[error("submission refused: {0}")]
+    InvalidSubmission(&'static str),
     #[error("cannot enforce a USD ceiling for a route without a verified rate card")]
     UnpricedUsdCeiling,
     #[error("invalid pricing evidence: {0}")]
@@ -223,6 +228,9 @@ impl KernelError {
                 "provider run-notice evidence exceeded its per-run safety bound".into()
             }
             Self::InvalidBudget(reason) => format!("invalid execution budget: {reason}"),
+            // Every reason is a `&'static str` from `core_protocol`, so this echoes a fixed
+            // vocabulary and never a path, a filename or a byte of the file itself.
+            Self::InvalidSubmission(reason) => format!("submission refused: {reason}"),
             Self::UnpricedUsdCeiling => {
                 "cannot enforce the requested USD ceiling: this route has no verified rate card"
                     .into()
@@ -3526,7 +3534,9 @@ impl Agent {
                     }
                     // An approval response has meaning only while `await_approval` owns the queue.
                     Op::ApprovalResponse { .. } => {}
-                    Op::UserInputV2 { .. } | Op::Unknown => unknown = unknown.saturating_add(1),
+                    Op::UserInputV2 { .. } | Op::UserInputV3 { .. } | Op::Unknown => {
+                        unknown = unknown.saturating_add(1)
+                    }
                 }
             }
         }
@@ -3600,7 +3610,9 @@ impl Agent {
                     Op::Steer { text } | Op::UserInput { text } => {
                         self.pending_steers.push_back(text);
                     }
-                    Op::UserInputV2 { .. } | Op::Unknown => unknown = unknown.saturating_add(1),
+                    Op::UserInputV2 { .. } | Op::UserInputV3 { .. } | Op::Unknown => {
+                        unknown = unknown.saturating_add(1)
+                    }
                     Op::ApprovalResponse { .. } | Op::Interrupt | Op::Drain => {}
                 }
             }
@@ -5040,6 +5052,43 @@ impl Agent {
     ) -> Result<Outcome, KernelError> {
         let input_images = content.images().cloned().collect();
         self.run_with_images(content.text(), input_images).await
+    }
+
+    /// Run one submission carrying first-class file references.
+    ///
+    /// Two things happen here and nowhere else. First, admission: the payload is re-validated
+    /// against the protocol's bounds even though a frontend already checked them, because the
+    /// kernel is admitting a queue entry, not trusting the process that queued it. Second,
+    /// composition: attached files become part of the submitted text, which makes them durable in
+    /// the transcript and readable by every provider, capable of images or not. An attachment the
+    /// operator can see in the composer but the record cannot show is a worse failure than a
+    /// verbose record.
+    pub async fn run_files(
+        &mut self,
+        text: &str,
+        images: &[core_protocol::ImageContent],
+        files: &[core_protocol::FileContent],
+    ) -> Result<Outcome, KernelError> {
+        core_protocol::input::validate_file_submission(text, images, files)
+            .map_err(KernelError::InvalidSubmission)?;
+        let task = crate::file_input::render_attached_files(text, files);
+        self.run_with_images(&task, images.to_vec()).await
+    }
+
+    /// Continue an already-run agent with one file-carrying submission.
+    pub async fn follow_up_files(
+        &mut self,
+        text: &str,
+        images: &[core_protocol::ImageContent],
+        files: &[core_protocol::FileContent],
+    ) -> Result<Outcome, KernelError> {
+        // Validate before the transcript is staged: a refused submission must leave the session
+        // exactly as it found it, not half-advanced into a turn that never runs.
+        core_protocol::input::validate_file_submission(text, images, files)
+            .map_err(KernelError::InvalidSubmission)?;
+        self.stage_follow_up_transcript()?;
+        self.verify_attempts = 0;
+        self.run_files(text, images, files).await
     }
 
     async fn run_with_images(
@@ -7272,12 +7321,13 @@ impl Agent {
                             // it is admitted immediately after the effect boundary, never dropped.
                             self.pending_steers.push_back(text);
                         }
-                        Op::UserInputV2 { .. } | Op::Unknown => self.record_rejected_submissions(
-                            turn,
-                            1,
-                            SubmissionRejectionReason::UnsupportedOperation,
-                            UNSUPPORTED_SUBMISSION_NOTICE,
-                        ),
+                        Op::UserInputV2 { .. } | Op::UserInputV3 { .. } | Op::Unknown => self
+                            .record_rejected_submissions(
+                                turn,
+                                1,
+                                SubmissionRejectionReason::UnsupportedOperation,
+                                UNSUPPORTED_SUBMISSION_NOTICE,
+                            ),
                     }
                 }
                 Ok(None) => break, // channel closed -> deny
@@ -12457,6 +12507,120 @@ mod gate_integration_tests {
             }
         }
         assert!(saw_ui_notice, "the same bounded notice must reach the UI");
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
+    async fn an_attached_file_reaches_the_provider_and_the_durable_transcript_as_framed_text() {
+        let ws = temp_ws("file-attachment-carried");
+        let provider = std::sync::Arc::new(CaptureImageInput {
+            capable: false,
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("file-attachment-carried".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let rollout_path = rollout.path().to_path_buf();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 3,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 2,
+            },
+        );
+        agent.workspace = ws.clone();
+
+        let file =
+            core_protocol::FileContent::new("src/main.rs", "fn main() { panic!() }").unwrap();
+        assert_eq!(
+            agent
+                .run_files("why does this panic?", &[], std::slice::from_ref(&file))
+                .await
+                .unwrap(),
+            Outcome::Done
+        );
+
+        let requests = provider.requests.lock().unwrap();
+        let submitted = format!("{:?}", requests[0].messages);
+        assert!(
+            submitted.contains("fn main() { panic!() }"),
+            "the model must actually receive the file it was shown a chip for"
+        );
+        assert!(submitted.contains("src/main.rs"), "with its provenance");
+        assert!(
+            submitted.contains("why does this panic?"),
+            "and the operator's question"
+        );
+        drop(requests);
+
+        // Durable too: a chip the operator saw must be reconstructable from the record alone.
+        let record = std::fs::read_to_string(&rollout_path).unwrap();
+        assert!(record.contains("src/main.rs"));
+        assert!(record.contains("fn main() { panic!() }"));
+
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
+    async fn a_file_submission_over_its_bound_is_refused_before_any_provider_call() {
+        let ws = temp_ws("file-attachment-refused");
+        let provider = std::sync::Arc::new(CaptureImageInput {
+            capable: false,
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("file-attachment-refused".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 3,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 2,
+            },
+        );
+        agent.workspace = ws.clone();
+
+        // An empty file list is not a file submission, and a prompt that no longer leaves room for
+        // the file it carries is refused whole rather than carried in part.
+        assert!(matches!(
+            agent.run_files("nothing attached", &[], &[]).await,
+            Err(KernelError::InvalidSubmission(_))
+        ));
+        let oversized = core_protocol::FileContent::new(
+            "big.txt",
+            "x".repeat(core_protocol::input::MAX_FILE_TEXT_BYTES),
+        )
+        .unwrap();
+        let prompt = "y".repeat(core_protocol::task::MAX_TASK_TEXT_BYTES);
+        assert!(matches!(
+            agent.run_files(&prompt, &[], &[oversized]).await,
+            Err(KernelError::InvalidSubmission(_))
+        ));
+        assert!(
+            provider.requests.lock().unwrap().is_empty(),
+            "a refused submission costs no provider call and no turn"
+        );
+
         std::fs::remove_dir_all(ws).ok();
     }
 

@@ -239,6 +239,7 @@ fn op_tag(op: &Op) -> &'static str {
     match op {
         Op::UserInput { .. } => "user_input",
         Op::UserInputV2 { .. } => "user_input_v2",
+        Op::UserInputV3 { .. } => "user_input_v3",
         Op::ApprovalResponse { .. } => "approval_response",
         Op::Steer { .. } => "steer",
         Op::Interrupt => "interrupt",
@@ -319,6 +320,9 @@ fn d13_14_every_manifest_sq_op_fixture_typed_round_trips() {
             "steer".to_owned(),
             "user_input".to_owned(),
             "user_input_v2".to_owned(),
+            // The file-attachment tag (UX-6). Additive: it declares its own surface and fixtures,
+            // and every tag above still round-trips through the exact bytes it did before.
+            "user_input_v3".to_owned(),
         ])
     );
 

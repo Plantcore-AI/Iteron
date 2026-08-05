@@ -28,6 +28,7 @@ pub(crate) mod headless;
 use crate::commands::{self, SlashCommand};
 use crate::config::PromptHistoryMode;
 use crate::editor::Editor;
+use crate::file_input;
 use crate::image_input::{self, ImageAttachments};
 use crate::providers::{ModelSelection, ProviderDirectory};
 use crate::route::RouteView;
@@ -3786,8 +3787,38 @@ pub async fn run(
                             app.completion = None;
                         }
                         Ok(None) => {
-                            app.editor.insert_str(&pasted);
-                            app.refresh_completion(&repo);
+                            // Not an image. A whole-input paste that is an absolute path already
+                            // inside the workspace is a dragged-in file, and becomes a file chip
+                            // on the same terms; anything else is ordinary pasted text.
+                            match (app.running, file_input::parse_dropped_file_path(&repo, &pasted))
+                            {
+                                (false, Some(dropped)) => {
+                                    let attached = app
+                                        .editor
+                                        .attach_file_path(&repo, &dropped)
+                                        .map(|attachment| {
+                                            (
+                                                attachment.display_name().to_owned(),
+                                                attachment.text_bytes(),
+                                            )
+                                        });
+                                    match attached {
+                                        Ok((name, text_bytes)) => app.note(
+                                            block::NoticeLevel::Ok,
+                                            format!("attached {name} ({text_bytes} bytes)"),
+                                        ),
+                                        Err(error) => app.note(
+                                            block::NoticeLevel::Warn,
+                                            format!("file attachment refused: {error}"),
+                                        ),
+                                    }
+                                    app.completion = None;
+                                }
+                                _ => {
+                                    app.editor.insert_str(&pasted);
+                                    app.refresh_completion(&repo);
+                                }
+                            }
                         }
                         Err(error) => app.note(
                             block::NoticeLevel::Warn,
@@ -4281,7 +4312,7 @@ pub async fn run(
                             refresh = true;
                         }
                         KeyCode::Backspace
-                            if alt && !app.running && !app.editor.attachments().is_empty() =>
+                            if alt && !app.running && app.editor.chip_count() > 0 =>
                         {
                             let _ = app.editor.remove_last_attachment();
                             refresh = true;
@@ -4318,7 +4349,7 @@ pub async fn run(
                                 app.resume_handoff = None;
                                 let line = app.editor.text();
                                 let trimmed = line.trim().to_string();
-                                let has_attachments = !app.editor.attachments().is_empty();
+                                let has_attachments = app.editor.chip_count() > 0;
                                 app.completion = None;
                                 if trimmed.is_empty() && !has_attachments {
                                     // nothing
@@ -4828,15 +4859,75 @@ fn submit_composer(
             return;
         }
     }
+    // File mentions resolve on the same terms, into the same kind of staged clone, and are
+    // contained by `file_input::FileAttachments` — which routes every path through the workspace
+    // containment `read_file` uses. A refusal here leaves the draft and its chips untouched.
+    let file_mentions = match file_input::parse_file_mentions(&raw) {
+        Ok(mentions) => mentions,
+        Err(error) => {
+            app.note(
+                block::NoticeLevel::Warn,
+                format!("file attachment refused: {error}"),
+            );
+            return;
+        }
+    };
+    let mut staged_files: file_input::FileAttachments = app.editor.files().clone();
+    for mention in &file_mentions {
+        if let Err(error) = staged_files.attach_path(session.workspace(), mention.path()) {
+            app.note(
+                block::NoticeLevel::Warn,
+                format!("file attachment refused: {error}"),
+            );
+            return;
+        }
+    }
+
     let mut text = raw;
-    for mention in mentions.iter().rev() {
-        text.replace_range(mention.byte_range.clone(), "");
+    // Both mention kinds are cut out of the prompt by byte range, so the ranges must be removed
+    // from the end backwards across the *union* of them, not once per kind: two independent
+    // reverse passes shift the offsets the second pass is still holding.
+    let mut cuts: Vec<std::ops::Range<usize>> = mentions
+        .iter()
+        .map(|mention| mention.byte_range.clone())
+        .chain(
+            file_mentions
+                .iter()
+                .map(|mention| mention.byte_range.clone()),
+        )
+        .collect();
+    cuts.sort_by_key(|range| range.start);
+    for range in cuts.iter().rev() {
+        text.replace_range(range.clone(), "");
     }
     let text = text.trim().to_owned();
-    if text.is_empty() && staged.is_empty() {
+    if text.is_empty() && staged.is_empty() && staged_files.is_empty() {
         return;
     }
-    let op = if staged.is_empty() {
+    let op = if !staged_files.is_empty() {
+        // Files present: the one operation that can carry them, images included. Admission is
+        // re-run by the kernel, so a refusal here buys the operator a message in the composer
+        // rather than being the only thing standing between a bad payload and a turn.
+        let images = staged
+            .as_slice()
+            .iter()
+            .map(|attachment| attachment.content().clone())
+            .collect::<Vec<_>>();
+        let files = staged_files.to_file_contents();
+        if let Err(reason) = core_protocol::input::validate_file_submission(&text, &images, &files)
+        {
+            app.note(
+                block::NoticeLevel::Warn,
+                format!("file attachment refused: {reason}"),
+            );
+            return;
+        }
+        Op::UserInputV3 {
+            text: text.clone(),
+            images,
+            files,
+        }
+    } else if staged.is_empty() {
         Op::UserInput { text: text.clone() }
     } else {
         let segments = match staged.to_content_segments(text.clone()) {
@@ -4854,15 +4945,29 @@ fn submit_composer(
     if submit_operation(app, session, notifier, op) {
         // Only the plain-text turn is offered back: re-sending staged attachments would re-read
         // files that may have changed since, which is a different request, not a retry (I-39).
-        app.retryable_task = staged.is_empty().then(|| text.clone());
+        app.retryable_task = (staged.is_empty() && staged_files.is_empty()).then(|| text.clone());
         let image_count = staged.len();
+        let file_count = staged_files.len();
         let _ = app.editor.take_submit();
         app.push_user(if text.is_empty() {
-            format!(
-                "[{} image attachment{}]",
-                image_count,
-                if image_count == 1 { "" } else { "s" }
-            )
+            let mut summary = String::from("[");
+            if image_count > 0 {
+                summary.push_str(&format!(
+                    "{image_count} image attachment{}",
+                    if image_count == 1 { "" } else { "s" }
+                ));
+            }
+            if file_count > 0 {
+                if image_count > 0 {
+                    summary.push_str(", ");
+                }
+                summary.push_str(&format!(
+                    "{file_count} file attachment{}",
+                    if file_count == 1 { "" } else { "s" }
+                ));
+            }
+            summary.push(']');
+            summary
         } else {
             text
         });
@@ -8474,7 +8579,9 @@ fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
     let text = app.editor.text();
-    let attachment_count = app.editor.attachments().len();
+    let image_count = app.editor.attachments().len();
+    let file_count = app.editor.files().len();
+    let attachment_count = image_count + file_count;
     let is_bash = text.starts_with('!');
     let line_color = if app.pending.is_some() {
         app.theme.warn
@@ -8501,10 +8608,16 @@ fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
         "Prompt"
     }
     .to_owned();
-    if app.pending.is_none() && attachment_count > 0 {
+    if app.pending.is_none() && image_count > 0 {
         title.push_str(&format!(
-            " · {attachment_count} image{}",
-            if attachment_count == 1 { "" } else { "s" }
+            " · {image_count} image{}",
+            if image_count == 1 { "" } else { "s" }
+        ));
+    }
+    if app.pending.is_none() && file_count > 0 {
+        title.push_str(&format!(
+            " · {file_count} file{}",
+            if file_count == 1 { "" } else { "s" }
         ));
     }
     // One frame owns the complete input/approval surface. Tiny terminals cannot spare two border
@@ -8609,6 +8722,17 @@ fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
             chips.push_str(attachment.display_name());
             chips.push_str(" · ");
             chips.push_str(&format_attachment_size(attachment.file_bytes()));
+        }
+        // File chips share the row and the glyph grammar: a different mark, the same sanitised
+        // label and the same honest byte count. Nothing here prints file text.
+        for (index, attachment) in app.editor.files().as_slice().iter().enumerate() {
+            if index > 0 || image_count > 0 {
+                chips.push_str("  ");
+            }
+            chips.push_str("▤ ");
+            chips.push_str(attachment.display_name());
+            chips.push_str(" · ");
+            chips.push_str(&format_attachment_size(attachment.text_bytes()));
         }
         let suffix = if body.width >= 36 {
             "  alt+backspace removes last"
@@ -8838,8 +8962,8 @@ fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, app: &App) 
         } else {
             "type to steer · tab queues · ctrl+j newline · esc interrupt"
         }
-    } else if !text.is_empty() || !app.editor.attachments().is_empty() {
-        "enter send · ctrl+j newline · ctrl+g edit · alt+backspace remove image · esc clear"
+    } else if !text.is_empty() || app.editor.chip_count() > 0 {
+        "enter send · ctrl+j newline · ctrl+g edit · alt+backspace remove chip · esc clear"
     } else if density == surface::Density::Compact {
         "/ commands · @ image/file · ctrl+v image · ? help"
     } else {
@@ -8927,7 +9051,7 @@ fn draw(f: &mut Frame, app: &mut App) {
     // The dock grows for multiline input, bounded to six editable rows. A blocking approval asks
     // for the full six-row decision surface; short terminals degrade through Surface::resolve.
     let n_input_rows = (app.editor.text().split('\n').count().clamp(1, 6) as u16)
-        .saturating_add(u16::from(!app.editor.attachments().is_empty()))
+        .saturating_add(u16::from(app.editor.chip_count() > 0))
         .min(6);
     let lane_rows = if app.pending.is_some() {
         0
@@ -10954,6 +11078,40 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(screen.contains("alt+backspace"));
         assert!(screen.contains("inspect"));
         assert!(!screen.contains("R0lGOD"));
+    }
+
+    #[test]
+    fn composer_renders_a_file_chip_beside_an_image_chip_and_never_its_contents() {
+        let root = std::env::temp_dir().join(format!("core-tui-file-chip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test workspace");
+        let secret = "SUPER_SECRET_FILE_BODY";
+        std::fs::write(root.join("notes.md"), format!("# notes\n{secret}\n")).expect("fixture");
+
+        let mut app = App::new();
+        app.editor.insert_str("inspect");
+        app.editor
+            .attach_image_bytes(
+                "clipboard.png",
+                b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;",
+            )
+            .unwrap();
+        app.editor
+            .attach_file_path(&root, Path::new("notes.md"))
+            .expect("a plain workspace file");
+
+        let screen = render_text(&mut app, 100, 14);
+        assert!(screen.contains("1 image"), "{screen}");
+        assert!(screen.contains("1 file"), "{screen}");
+        assert!(screen.contains("clipboard.png"), "{screen}");
+        assert!(screen.contains("notes.md"), "{screen}");
+        assert!(screen.contains("inspect"), "{screen}");
+        assert!(
+            !screen.contains(secret),
+            "a chip is a reference; the composer never prints the file it stands for"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

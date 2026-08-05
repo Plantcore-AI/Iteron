@@ -9,6 +9,7 @@
 //! (Ctrl-A/Ctrl-E), word-left/right, Ctrl-W (delete word), Ctrl-U (kill to start), Ctrl-K (kill to
 //! end), multi-line newline insertion, and ↑/↓ input history with a stash of the in-progress line.
 
+use crate::file_input::{FileAttachment, FileAttachments, FileInputError};
 use crate::image_input::{ImageAttachment, ImageAttachments, ImageInputError};
 use std::path::Path;
 
@@ -48,12 +49,25 @@ pub struct Editor {
     /// Bounded, already-sniffed image chips attached to the current draft. They are deliberately
     /// not copied into text history or the recoverable-text slot.
     attachments: ImageAttachments,
+    /// Bounded, already-contained file chips on the same draft, under the same rule: file text
+    /// never enters text history or the recoverable-text slot.
+    files: FileAttachments,
+    /// The order the two chip collections were filled in, so "remove the last chip" removes the
+    /// chip the operator last saw appear rather than the last chip of whichever kind we asked
+    /// first. One entry per live attachment; both collections and this log are cleared together.
+    chip_order: Vec<ChipKind>,
     /// State for repeated Ctrl-R searches. The query is the text that was present before the first
     /// search; `before` makes every subsequent press continue toward older entries.
     reverse_search: Option<ReverseSearch>,
     /// Monotonic dirty marker consumed by the persistence adapter. It deliberately counts text
     /// mutations rather than wall time so tests and replay remain deterministic.
     persistence_revision: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChipKind {
+    Image,
+    File,
 }
 
 #[derive(Debug)]
@@ -82,15 +96,42 @@ impl Editor {
     }
 
     pub fn has_submission(&self) -> bool {
-        !self.buf.is_empty() || !self.attachments.is_empty()
+        !self.buf.is_empty() || !self.attachments.is_empty() || !self.files.is_empty()
+    }
+
+    /// Total chips on the draft, images and files together — what the composer draws.
+    pub fn chip_count(&self) -> usize {
+        self.attachments.len() + self.files.len()
     }
 
     pub fn attachments(&self) -> &ImageAttachments {
         &self.attachments
     }
 
+    pub fn files(&self) -> &FileAttachments {
+        &self.files
+    }
+
     pub fn attach_image_path(&mut self, path: &Path) -> Result<&ImageAttachment, ImageInputError> {
-        self.attachments.attach_path(path)
+        let attached = self.attachments.attach_path(path);
+        if attached.is_ok() {
+            self.chip_order.push(ChipKind::Image);
+        }
+        attached
+    }
+
+    /// Attach one workspace file. Containment, bounds and sanitisation all live in
+    /// [`crate::file_input`]; the editor only owns the draft state and the chip order.
+    pub fn attach_file_path(
+        &mut self,
+        workspace: &Path,
+        path: &Path,
+    ) -> Result<&FileAttachment, FileInputError> {
+        let attached = self.files.attach_path(workspace, path);
+        if attached.is_ok() {
+            self.chip_order.push(ChipKind::File);
+        }
+        attached
     }
 
     pub fn attach_image_bytes(
@@ -98,15 +139,30 @@ impl Editor {
         display_label: &str,
         bytes: &[u8],
     ) -> Result<&ImageAttachment, ImageInputError> {
-        self.attachments.attach_bytes(display_label, bytes)
+        let attached = self.attachments.attach_bytes(display_label, bytes);
+        if attached.is_ok() {
+            self.chip_order.push(ChipKind::Image);
+        }
+        attached
     }
 
+    /// Remove the most recently added chip of either kind.
     pub fn remove_last_attachment(&mut self) -> bool {
-        self.attachments
-            .len()
-            .checked_sub(1)
-            .and_then(|index| self.attachments.remove(index))
-            .is_some()
+        match self.chip_order.pop() {
+            Some(ChipKind::Image) => self
+                .attachments
+                .len()
+                .checked_sub(1)
+                .and_then(|index| self.attachments.remove(index))
+                .is_some(),
+            Some(ChipKind::File) => self
+                .files
+                .len()
+                .checked_sub(1)
+                .and_then(|index| self.files.remove(index))
+                .is_some(),
+            None => false,
+        }
     }
 
     /// Cursor position as a (row, col) within the possibly multi-line buffer — for rendering.
@@ -378,6 +434,8 @@ impl Editor {
         self.hist_pos = None;
         self.stash = None;
         self.attachments.clear();
+        self.files.clear();
+        self.chip_order.clear();
         self.reverse_search = None;
         if text_changed {
             self.mark_persistence_change();
@@ -462,6 +520,8 @@ impl Editor {
         self.stash = None;
         self.recently_cleared = None;
         self.attachments.clear();
+        self.files.clear();
+        self.chip_order.clear();
         self.reverse_search = None;
         self.persistence_revision = 0;
     }
@@ -470,6 +530,7 @@ impl Editor {
     /// attachments remain ordered on the draft and never cross the editor file boundary.
     pub fn replace_text(&mut self, text: &str) {
         let attachments = std::mem::take(&mut self.attachments);
+        let files = std::mem::take(&mut self.files);
         self.buf.clear();
         self.cursor = 0;
         self.leave_navigation();
@@ -480,6 +541,7 @@ impl Editor {
         }
         self.cursor = self.buf.len();
         self.attachments = attachments;
+        self.files = files;
         self.mark_persistence_change();
     }
 
@@ -650,6 +712,55 @@ mod tests {
         editor.history_prev();
         assert_eq!(editor.text(), "describe");
         assert!(editor.attachments().is_empty());
+    }
+
+    #[test]
+    fn file_chips_are_draft_state_and_removal_follows_the_order_they_appeared() {
+        let root = std::env::temp_dir().join(format!("core-editor-chips-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test workspace");
+        std::fs::write(root.join("a.txt"), "alpha").expect("fixture");
+        std::fs::write(root.join("b.txt"), "beta").expect("fixture");
+
+        let mut editor = ed("review");
+        editor
+            .attach_file_path(&root, Path::new("a.txt"))
+            .expect("a plain workspace file");
+        editor
+            .attach_image_bytes(
+                "clipboard",
+                b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;",
+            )
+            .expect("a canonical GIF");
+        editor
+            .attach_file_path(&root, Path::new("b.txt"))
+            .expect("a second workspace file");
+        assert_eq!(editor.chip_count(), 3);
+        assert_eq!(editor.text(), "review", "chip text never enters the buffer");
+
+        // Newest first, across both kinds: the operator removes what they last saw appear.
+        assert!(editor.remove_last_attachment());
+        assert_eq!(editor.files().len(), 1);
+        assert_eq!(editor.attachments().len(), 1);
+        assert!(editor.remove_last_attachment());
+        assert_eq!(editor.files().len(), 1);
+        assert!(editor.attachments().is_empty());
+        assert!(editor.remove_last_attachment());
+        assert_eq!(editor.chip_count(), 0);
+        assert!(!editor.remove_last_attachment());
+
+        // A submitted draft carries nothing forward, and file text never reaches history.
+        editor
+            .attach_file_path(&root, Path::new("a.txt"))
+            .expect("re-attach");
+        assert!(editor.has_submission());
+        assert_eq!(editor.take_submit(), "review");
+        assert!(editor.files().is_empty());
+        editor.history_prev();
+        assert_eq!(editor.text(), "review");
+        assert!(editor.files().is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

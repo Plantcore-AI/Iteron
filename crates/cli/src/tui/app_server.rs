@@ -541,6 +541,23 @@ fn submission_weight(op: &Op) -> usize {
                     core_protocol::ContentSegment::Unknown => bytes,
                 })
         }
+        // Same rule as the segment list above: every variable-size allocation `Op` exposes is
+        // charged at its actual byte length, so a queue full of file chips is bounded in bytes and
+        // not merely in entries.
+        Op::UserInputV3 {
+            text,
+            images,
+            files,
+        } => images
+            .iter()
+            .fold(text.len(), |bytes, image| {
+                bytes.saturating_add(image.data.encoded_len())
+            })
+            .saturating_add(files.iter().fold(0usize, |bytes, file| {
+                bytes
+                    .saturating_add(file.path.len())
+                    .saturating_add(file.text.len())
+            })),
         Op::ApprovalResponse { .. } | Op::Interrupt | Op::Drain | Op::Unknown => 0,
     };
     SQ_ENTRY_OVERHEAD_BYTES.saturating_add(variable_bytes)
@@ -776,6 +793,13 @@ fn wire_with_policy(
 pub(crate) enum RunInput {
     Text(String),
     Content(ContentSegments),
+    /// One text prompt plus first-class file references, and optionally images beside them.
+    /// Carried untouched from the operation so the kernel, not the router, decides admission.
+    Files {
+        text: String,
+        images: Vec<core_protocol::ImageContent>,
+        files: Vec<core_protocol::FileContent>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -796,6 +820,15 @@ pub(crate) fn route(op: &Op) -> Routed {
     match op {
         Op::UserInput { text } => Routed::StartTurn(RunInput::Text(text.clone())),
         Op::UserInputV2 { segments } => Routed::StartTurn(RunInput::Content(segments.clone())),
+        Op::UserInputV3 {
+            text,
+            images,
+            files,
+        } => Routed::StartTurn(RunInput::Files {
+            text: text.clone(),
+            images: images.clone(),
+            files: files.clone(),
+        }),
         Op::Steer { .. } | Op::Interrupt | Op::Drain | Op::ApprovalResponse { .. } => {
             Routed::ToKernel
         }
@@ -932,6 +965,22 @@ impl AppServer {
                                 (RunInput::Content(segments), true) => {
                                     agent.follow_up_content(segments).await
                                 }
+                                (
+                                    RunInput::Files {
+                                        text,
+                                        images,
+                                        files,
+                                    },
+                                    false,
+                                ) => agent.run_files(text, images, files).await,
+                                (
+                                    RunInput::Files {
+                                        text,
+                                        images,
+                                        files,
+                                    },
+                                    true,
+                                ) => agent.follow_up_files(text, images, files).await,
                             }
                         };
                         tokio::pin!(running);
@@ -1539,6 +1588,37 @@ mod tests {
             SQ_BYTE_CAPACITY <= u32::MAX as usize,
             "tokio's weighted semaphore acquisition accepts a u32 permit count"
         );
+
+        // File chips are charged the same way, path included, so a queue full of them is bounded
+        // in bytes and not merely in entries.
+        let file = core_protocol::FileContent::new("src/main.rs", "fn main() {}").unwrap();
+        let with_files = Op::UserInputV3 {
+            text: "review".into(),
+            images: vec![
+                core_protocol::ImageContent::new(
+                    core_protocol::ImageMediaType::Png,
+                    "iVBORw0KGgo=",
+                )
+                .unwrap(),
+            ],
+            files: vec![file.clone()],
+        };
+        assert_eq!(
+            submission_weight(&with_files),
+            SQ_ENTRY_OVERHEAD_BYTES
+                + "review".len()
+                + "iVBORw0KGgo=".len()
+                + file.path.len()
+                + file.text.len()
+        );
+        // The heaviest admissible file submission still fits the queue: admission caps text plus
+        // framed files at `MAX_TASK_TEXT_BYTES`, which is exactly what the capacity reserves.
+        assert!(
+            SQ_ENTRY_OVERHEAD_BYTES
+                + core_protocol::task::MAX_TASK_TEXT_BYTES
+                + core_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
+                <= SQ_BYTE_CAPACITY
+        );
     }
 
     #[test]
@@ -1777,6 +1857,20 @@ mod tests {
                 segments: multimodal.clone(),
             }),
             Routed::StartTurn(RunInput::Content(multimodal))
+        );
+        let files = vec![core_protocol::FileContent::new("src/main.rs", "fn main() {}").unwrap()];
+        assert_eq!(
+            route(&Op::UserInputV3 {
+                text: "review".into(),
+                images: Vec::new(),
+                files: files.clone(),
+            }),
+            Routed::StartTurn(RunInput::Files {
+                text: "review".into(),
+                images: Vec::new(),
+                files,
+            }),
+            "a file submission starts a turn; it is not steering and not a control op"
         );
         for op in [
             Op::Steer { text: "x".into() },
