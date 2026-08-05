@@ -175,7 +175,10 @@ impl WorkflowMonitor {
     }
 
     /// How many runs are still live.
-    #[cfg_attr(not(test), allow(dead_code))]
+    ///
+    /// Read by the status row's compact liveness bit (`crate::tui::status_right_bits`), which is
+    /// the only indication a run is still going on a terminal too short to draw the region.
+    /// The test-only marker S5 carried is gone because that bit is a real caller.
     pub(crate) fn live_count(&self) -> usize {
         self.runs.iter().filter(|run| !run.settled).count()
     }
