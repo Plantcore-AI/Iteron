@@ -21,8 +21,16 @@
 //! card's `verbose` field is written from that call's return value at the same instant. There is
 //! no second path that can move one without the other.
 //!
-//! This slice installs the store beside the transcript without changing what anything renders;
-//! making it the authority the workflow region draws from is a later step.
+//! # This store decides where a run is watched
+//!
+//! It is the authority for ONE placement question, and [`WorkflowMonitor::region_block`] is the
+//! whole of it: while a run is live, its tree is drawn in the workflow region above the composer
+//! and the transcript draws nothing for it; once it settles, the region lets go and the card it
+//! was drawing — the same card, at the position in the conversation where the run began — becomes
+//! the run's permanent record. The tree is therefore never rendered twice and never disappears.
+//!
+//! The region costs exactly zero rows until `region_block` answers `Some`, so a session in which
+//! no workflow ever runs has the layout it had before this store existed.
 
 /// One watched run. Identity plus the presentation state the transcript does not carry.
 #[derive(Debug, Clone)]
@@ -128,9 +136,45 @@ impl WorkflowMonitor {
         self.focus = None;
     }
 
+    /// The block the workflow region draws this frame, or `None` when the region must cost zero
+    /// rows.
+    ///
+    /// Only a LIVE run is watched here. Focus picks which one when several are running, but focus
+    /// survives a settle on purpose (see [`Self::ingest`]), so it is filtered rather than trusted:
+    /// a settled run's card belongs to the transcript from the instant it settles, and answering
+    /// with it would keep the region holding a tree that has stopped moving while the conversation
+    /// still owed the reader its record. When focus names a settled run the region falls back to
+    /// the most recently started live run, and to `None` when nothing is running at all — which is
+    /// every frame of a session that never launched a workflow.
+    ///
+    /// `draw` skips exactly this block in the transcript pass, so this one answer is what keeps a
+    /// tree from being rendered twice or nowhere.
+    pub(crate) fn region_block(&self) -> Option<u64> {
+        self.focus
+            .as_deref()
+            .and_then(|run_id| {
+                self.runs
+                    .iter()
+                    .find(|run| run.run_id == run_id && !run.settled)
+            })
+            .or_else(|| self.runs.iter().rev().find(|run| !run.settled))
+            .map(|run| run.block_id)
+    }
+
+    /// The blocks of every run that is still running, in first-seen order.
+    ///
+    /// Clearing the conversation does not cancel a QuickJS run, so these are the cards the
+    /// transcript has to keep: they are the region's backing store, and dropping them would leave
+    /// a run with nowhere to draw itself for the rest of its life.
+    pub(crate) fn live_blocks(&self) -> Vec<u64> {
+        self.runs
+            .iter()
+            .filter(|run| !run.settled)
+            .map(|run| run.block_id)
+            .collect()
+    }
+
     /// How many runs are still live.
-    // Not yet read: the region that displays it, and the focus/collapse queries below, arrive with
-    // the slice that makes this store the authority the workflow region renders from.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn live_count(&self) -> usize {
         self.runs.iter().filter(|run| !run.settled).count()
@@ -144,7 +188,6 @@ impl WorkflowMonitor {
 
     /// Forget every settled run, keeping the live ones. Focus follows: a focus on a run that was
     /// just forgotten is dropped rather than left dangling on an id nothing can resolve.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn clear_finished(&mut self) {
         self.runs.retain(|run| !run.settled);
         if let Some(focused) = self.focus.as_deref()
@@ -292,6 +335,48 @@ mod tests {
         assert_eq!(monitor.live_count(), 1);
         assert_eq!(monitor.block_id("wf_2"), Some(8));
         assert_eq!(monitor.collapsed("wf_1"), None, "wf_1 is gone entirely");
+    }
+
+    /// The region watches what is RUNNING. Focus survives a settle on purpose, so `region_block`
+    /// filters it rather than trusting it — otherwise the region would go on holding a tree that
+    /// had stopped moving while the conversation still owed the reader its record.
+    #[test]
+    fn the_region_draws_a_live_run_and_lets_go_the_moment_it_settles() {
+        let mut monitor = WorkflowMonitor::default();
+        assert_eq!(
+            monitor.region_block(),
+            None,
+            "no workflow ever ran: the region costs nothing"
+        );
+        assert!(monitor.live_blocks().is_empty());
+
+        monitor.ingest("wf_1", live(7));
+        assert_eq!(monitor.region_block(), Some(7));
+
+        monitor.ingest("wf_2", live(8));
+        assert_eq!(
+            monitor.region_block(),
+            Some(8),
+            "a run that just started takes the focus, and with it the region"
+        );
+        assert_eq!(monitor.live_blocks(), vec![7, 8]);
+
+        monitor.ingest("wf_2", WorkflowRunSignal::Settled);
+        assert_eq!(monitor.focus(), Some("wf_2"), "focus is unchanged by design");
+        assert_eq!(
+            monitor.region_block(),
+            Some(7),
+            "the region does not follow it: it falls back to what is still running"
+        );
+        assert_eq!(monitor.live_blocks(), vec![7]);
+
+        monitor.ingest("wf_1", WorkflowRunSignal::Settled);
+        assert_eq!(
+            monitor.region_block(),
+            None,
+            "both cards are the transcript's records now"
+        );
+        assert!(monitor.live_blocks().is_empty());
     }
 
     #[test]

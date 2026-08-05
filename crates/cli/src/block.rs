@@ -1779,20 +1779,22 @@ pub(crate) fn render_workflow_run(
     out
 }
 
-/// Render a workflow inside a fixed row budget without silently clipping either end of the tree.
-/// The full renderer already establishes the semantic order, so this wrapper only selects a
-/// contiguous window from those rows and reports how many ordered rows sit above and below it.
+/// Fit already-rendered workflow rows into a fixed row budget without silently clipping either end
+/// of the tree. [`render_workflow_run`] already establishes the semantic order, so this only selects
+/// a contiguous window from those rows and reports how many ordered rows sit above and below it.
 /// The final totals row is kept outside that window and is therefore always visible when
 /// `max_rows > 0`; with a one-row budget it is the only row returned.
-#[allow(dead_code)] // Staged renderer seam: a later viewport slice supplies the live row budget.
-pub(crate) fn render_workflow_run_bounded(
-    card: &WorkflowRunCard,
-    width: u16,
+///
+/// It takes rows rather than a card because the workflow region has to render the tree BEFORE the
+/// layout is resolved — the natural row count is what it asks the layout for — and then fit the
+/// height it is granted. Rendering the card a second time here would build the same live tree twice
+/// per frame at 10 fps, and would let the two renders disagree if a spinner frame or an event landed
+/// between them.
+pub(crate) fn window_workflow_rows(
+    mut rows: Vec<Line<'static>>,
     max_rows: usize,
     theme: &Theme,
-    spin: usize,
 ) -> Vec<Line<'static>> {
-    let mut rows = render_workflow_run(card, width, theme, spin);
     if rows.len() <= max_rows {
         return rows;
     }
@@ -4144,6 +4146,17 @@ mod tests {
             });
         }
         card
+    }
+
+    /// Render then window, which is what the workflow region does across the two halves of a frame.
+    fn render_workflow_run_bounded(
+        card: &WorkflowRunCard,
+        width: u16,
+        max_rows: usize,
+        theme: &Theme,
+        spin: usize,
+    ) -> Vec<Line<'static>> {
+        window_workflow_rows(render_workflow_run(card, width, theme, spin), max_rows, theme)
     }
 
     fn workflow_line_text(line: &Line<'static>) -> String {
