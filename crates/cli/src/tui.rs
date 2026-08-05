@@ -219,6 +219,22 @@ impl Session {
         self.state = snapshot;
     }
 
+    /// Follow the runtime onto another run.
+    ///
+    /// `rollout_path` is the one session fact that is NOT a session invariant once a session can
+    /// change runs in place. Everything else in `SessionFacts` is per-process — the workspace, the
+    /// pinned agent catalog, the registered tools — and deliberately survives. Leaving the old path
+    /// here would point `/sessions`, `/rewind` and the transcript export at the run this session
+    /// just left.
+    pub(crate) fn adopt_run(
+        &mut self,
+        rollout_path: std::path::PathBuf,
+        snapshot: app_server::SessionSnapshot,
+    ) {
+        self.facts.rollout_path = rollout_path;
+        self.state = snapshot;
+    }
+
     /// Submit one operation on the SQ.
     pub(crate) fn submit(&self, op: Op) -> Result<(), app_server::SubmitError> {
         self.client.submit(op)
@@ -499,8 +515,10 @@ enum PickAction {
     SetMode(PermissionMode),
     SetCap(Capability, Verdict),
     SetTheme(theme::Theme),
-    /// Prepare an explicit restart command in the composer. This never swaps or executes an Agent.
-    PrepareResume(String),
+    /// Take over that recorded run in THIS process: the live session adopts its journal, identity
+    /// and transcript. The documented restart command remains the fallback when a run cannot be
+    /// adopted here — another process holding its writer lock is the ordinary case.
+    AdoptRun(String),
     /// Open one bounded, read-only L1 detail panel from the tunables L0 registry picker.
     InspectTunable(tunables_view::Detail),
     /// Informational row (agents/skills browse) — accepting does nothing.
@@ -2355,6 +2373,9 @@ impl App {
         true
     }
 
+    /// The fallback after an adoption this process could not perform — most often because another
+    /// `core` process holds that run's exclusive writer lock, which no amount of retrying here will
+    /// change. The command is display/copy state only; nothing executes it.
     fn prepare_resume_handoff(&mut self, run_id: &str) {
         let command = format_resume_command(run_id);
         self.editor.clear();
@@ -5497,7 +5518,7 @@ async fn apply_action(
     action: PickAction,
 ) {
     match action {
-        PickAction::PrepareResume(run_id) => app.prepare_resume_handoff(&run_id),
+        PickAction::AdoptRun(run_id) => adopt_session(app, session, directory, &run_id).await,
         PickAction::InspectTunable(detail) => show_tunable_detail(app, detail),
         PickAction::Info => {}
         PickAction::SetModel(selection) => {
@@ -5851,6 +5872,453 @@ fn format_resume_command(run_id: &str) -> String {
     format!("core --resume {argument}")
 }
 
+/// Most transcript blocks an adopted run contributes to the live transcript.
+///
+/// The kernel replays the WHOLE record — the next turn continues all of it. This is the screen
+/// bound only, so a thousand-turn session cannot push the live transcript past its own eviction cap
+/// on the way in. The notice above the projection says how much was left out, because a history
+/// silently rendered short reads as a shorter conversation than the one the model will see.
+const MAX_ADOPTED_BLOCKS: usize = 120;
+
+/// Bound on one recorded tool result rendered back into a card.
+const MAX_ADOPTED_TOOL_OUTPUT_BYTES: usize = 4 * 1024;
+
+/// The `(provider_id, model_id)` an existing record says its last turn dispatched on.
+///
+/// Same rule the `--resume` startup path applies: the last durable `ModelSelected` is authoritative;
+/// a legacy journal that predates provider identity offers only `RunStart.model`, and its model is
+/// never used to guess a provider.
+fn recorded_route(events: &[core_protocol::Event]) -> Option<(Option<String>, String)> {
+    if let Some(route) = events.iter().rev().find_map(|event| match &event.kind {
+        core_protocol::EventKind::ModelSelected {
+            provider_id,
+            model_id,
+            ..
+        } => Some((Some(provider_id.clone()), model_id.clone())),
+        _ => None,
+    }) {
+        return Some(route);
+    }
+    events.iter().find_map(|event| match &event.kind {
+        core_protocol::EventKind::RunStart { model, .. } if !model.is_empty() => {
+            Some((None, model.clone()))
+        }
+        _ => None,
+    })
+}
+
+/// One recorded tool call, rebuilt from the durable transcript.
+struct AdoptedTool {
+    is_error: bool,
+    content: String,
+    latency_ms: u64,
+}
+
+/// Project an adopted run's durable transcript into settled transcript blocks.
+///
+/// This renders the RECORD, not a replay of the run: no tool is re-executed, no card is live, and
+/// nothing here can start a turn. Returns `(rendered, total)` so the caller can state the bound it
+/// applied instead of quietly showing a shorter conversation.
+fn adopted_transcript_blocks(events: &[core_protocol::Event]) -> (Vec<block::BlockKind>, usize) {
+    use core_protocol::{Block as MessageBlock, EventKind, Role};
+
+    let mut results: std::collections::HashMap<String, AdoptedTool> =
+        std::collections::HashMap::new();
+    for event in events {
+        let EventKind::Message { message } = &event.kind else {
+            continue;
+        };
+        for block in &message.content {
+            if let MessageBlock::ToolResult(result) = block {
+                results.insert(
+                    result.tool_use_id.clone(),
+                    AdoptedTool {
+                        is_error: result.is_error,
+                        content: result.content.clone(),
+                        latency_ms: result.latency_ms,
+                    },
+                );
+            }
+        }
+    }
+
+    let mut blocks = Vec::new();
+    for event in events {
+        let EventKind::Message { message } = &event.kind else {
+            continue;
+        };
+        for block in &message.content {
+            match block {
+                MessageBlock::Text { text } if text.trim().is_empty() => {}
+                MessageBlock::Text { text } => {
+                    let text = ui_safe_text(text);
+                    blocks.push(match message.role {
+                        Role::User => block::BlockKind::User(text),
+                        Role::Assistant => {
+                            block::BlockKind::Assistant(crate::markdown::MarkdownDoc::parse(&text))
+                        }
+                    });
+                }
+                MessageBlock::Thinking { thinking } if !thinking.trim().is_empty() => {
+                    blocks.push(block::BlockKind::Thinking {
+                        text: ui_safe_text(thinking),
+                        open: false,
+                    });
+                }
+                MessageBlock::ToolUse(call) => {
+                    // A recorded call with no recorded result is a real shape: the run stopped
+                    // between the two. Saying so beats inventing a status for it.
+                    let recorded = results.get(&call.id);
+                    let (status, output, elapsed) = match recorded {
+                        Some(result) => (
+                            if result.is_error {
+                                block::ToolStatus::Err
+                            } else {
+                                block::ToolStatus::Ok
+                            },
+                            ui_safe_text(&bounded_prefix(
+                                &result.content,
+                                MAX_ADOPTED_TOOL_OUTPUT_BYTES,
+                            )),
+                            Some(Duration::from_millis(result.latency_ms)),
+                        ),
+                        None => (
+                            block::ToolStatus::Err,
+                            "no recorded result — the run stopped before this tool answered".into(),
+                            None,
+                        ),
+                    };
+                    blocks.push(block::BlockKind::Tool(block::ToolCard {
+                        name: ui_safe_text(&call.name),
+                        args: call.input.clone(),
+                        status,
+                        output,
+                        diff: None,
+                        exit_code: None,
+                        started: Instant::now(),
+                        elapsed,
+                        open: false,
+                    }));
+                }
+                MessageBlock::Thinking { .. }
+                | MessageBlock::ToolResult(_)
+                | MessageBlock::ProviderState(_) => {}
+            }
+        }
+    }
+
+    let total = blocks.len();
+    if total > MAX_ADOPTED_BLOCKS {
+        blocks.drain(..total - MAX_ADOPTED_BLOCKS);
+    }
+    (blocks, total)
+}
+
+/// Truncate on a char boundary, never mid-UTF-8.
+fn bounded_prefix(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_owned();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n[truncated for display]", &text[..end])
+}
+
+/// Drop every projection of the run being left.
+///
+/// Retained UI state is per-run exactly as kernel state is: a card, an index entry or a half-streamed
+/// paragraph from the previous run would render under the adopted run's identity.
+fn clear_transcript_for_adoption(app: &mut App) {
+    app.transcript.clear();
+    app.mark_transcript_changed();
+    app.tool_index.clear();
+    app.pending_tools.clear();
+    app.workflow_index.clear();
+    app.workflow_run_index.clear();
+    app.active_tools.clear();
+    app.render_cache.clear();
+    app.cur_text.clear();
+    app.cur_text_revision = app.cur_text_revision.wrapping_add(1);
+    app.cur_doc_revision = app.cur_text_revision;
+    app.cur_doc = None;
+    app.cur_think.clear();
+    app.last_result = None;
+    app.retryable_task = None;
+    app.resume_handoff = None;
+    app.follow_latest();
+}
+
+/// Adopt a recorded session into THIS running TUI: the live session takes over that run's journal,
+/// identity and transcript, and the next turn continues it.
+///
+/// # Why the client opens the rollout
+///
+/// Opening it is what takes the target run's exclusive writer lock, and that is the refusal an
+/// operator actually meets — another `core` process is on that session. Taking it here means such an
+/// adoption is refused before the resident runtime is asked to do anything, so a session that cannot
+/// be adopted cannot disturb the one that is running.
+///
+/// # Why a route is always sent
+///
+/// The kernel restores the adopted record's route but cannot resolve a provider for it. Sending the
+/// route the session will actually dispatch on — the record's own when this process can build it,
+/// this process's current route otherwise — is what makes the adopted run's next request match its
+/// own record instead of being refused by the route gate.
+async fn adopt_session(
+    app: &mut App,
+    session: &mut Session,
+    directory: &ProviderDirectory,
+    run_id: &str,
+) {
+    if app.running || app.pending.is_some() {
+        app.note(
+            block::NoticeLevel::Warn,
+            "finish the current turn before resuming another session",
+        );
+        return;
+    }
+    if !app.queued.is_empty() || !app.steer_previews.is_empty() {
+        // Those submissions were composed for THIS run. Dispatching them into an adopted session
+        // would send the operator's words to a conversation they were not written for.
+        app.note(
+            block::NoticeLevel::Warn,
+            format!(
+                "{} still pending for this session; send or clear them before resuming another one",
+                block::plural(
+                    app.queued.len().saturating_add(app.steer_previews.len()),
+                    "submission"
+                )
+            ),
+        );
+        return;
+    }
+    let rollout_path = session.rollout_path().to_path_buf();
+    let runs = rollout_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let current_run = rollout_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    if run_id == current_run {
+        app.note(
+            block::NoticeLevel::Info,
+            "that session is already the live one",
+        );
+        return;
+    }
+    let run = core_protocol::RunId(run_id.to_owned());
+    let tenant = core_protocol::TenantId::default();
+
+    // One read of the record serves both halves: the route to bind and the history to render.
+    let events = match core_record::load_forked(&runs, &run) {
+        Ok(events) => events,
+        Err(error) => {
+            app.note(
+                block::NoticeLevel::Err,
+                format!("cannot read session {}: {error}", ui_safe_text(run_id)),
+            );
+            return;
+        }
+    };
+
+    // The record's own route when this process can build it. A provider the operator has not
+    // configured, or one that fails to construct, is NOT silently substituted — the session
+    // continues on the route this process is already using, and says so.
+    let recorded = recorded_route(&events);
+    let current_selection = ModelSelection {
+        provider_id: app.route.provider_id.clone(),
+        model_id: session.model().to_owned(),
+    };
+    let (selection, built, substituted) = match &recorded {
+        Some((Some(provider_id), model_id)) => {
+            let candidate = ModelSelection {
+                provider_id: provider_id.clone(),
+                model_id: model_id.clone(),
+            };
+            // Building it IS the resolvability test, and the instance is kept: constructing a
+            // second one to answer the same question would open a second client for nothing.
+            match directory.build(&candidate) {
+                Ok(provider) => (candidate, Some(provider), None),
+                Err(error) => (
+                    current_selection,
+                    None,
+                    Some(format!(
+                        "the recorded route {provider_id}:{model_id} is not usable here ({error})"
+                    )),
+                ),
+            }
+        }
+        Some((None, model_id)) => (
+            current_selection,
+            None,
+            Some(format!(
+                "this session predates provider identity and records only model `{model_id}`"
+            )),
+        ),
+        None => (
+            current_selection,
+            None,
+            Some("this session records no route".into()),
+        ),
+    };
+    let provider = match built {
+        Some(provider) => provider,
+        None => match directory.build(&selection) {
+            Ok(provider) => provider,
+            Err(error) => {
+                app.note(
+                    block::NoticeLevel::Err,
+                    format!("cannot resume that session here: {error}"),
+                );
+                return;
+            }
+        },
+    };
+
+    // Takes the target run's exclusive writer lock. The live run keeps its own until the runtime
+    // swaps them, so a refusal here costs the operator nothing.
+    let rollout = match core_record::Rollout::open_existing(&runs, &run, tenant) {
+        Ok(rollout) => rollout,
+        Err(error) => {
+            app.note(
+                block::NoticeLevel::Err,
+                format!(
+                    "cannot take over session {}: {error}. Another core process may still be \
+                     running it.",
+                    ui_safe_text(run_id)
+                ),
+            );
+            app.prepare_resume_handoff(run_id);
+            return;
+        }
+    };
+
+    let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
+    let capabilities = directory.selection_capabilities(&selection);
+    let reply = session
+        .control(app_server::Control::AdoptRun(Box::new(
+            app_server::AdoptRun {
+                rollout,
+                route: Box::new(app_server::ModelSelection {
+                    provider,
+                    provider_id: selection.provider_id.clone(),
+                    model_id: selection.model_id.clone(),
+                    catalog_digest,
+                    capability_digest,
+                    context_window_tokens: capabilities.context_window_tokens,
+                    max_output_tokens: capabilities.max_output_tokens,
+                }),
+            },
+        )))
+        .await;
+    let (adopted, state, blocked) = match reply {
+        Some(app_server::ControlReply::Adopted {
+            adopted,
+            snapshot,
+            blocked,
+        }) => (adopted, snapshot, blocked),
+        Some(app_server::ControlReply::Refused(reason)) => {
+            app.note(block::NoticeLevel::Err, reason);
+            // The documented restart still works, so the operator keeps a way through.
+            app.prepare_resume_handoff(run_id);
+            return;
+        }
+        _ => {
+            app.note(
+                block::NoticeLevel::Err,
+                "the runtime is no longer reachable",
+            );
+            return;
+        }
+    };
+
+    // Everything below renders the identity the RUNTIME reached. The frontend never displays a run
+    // the next turn would not continue.
+    clear_transcript_for_adoption(app);
+    let (blocks, total) = adopted_transcript_blocks(&events);
+    let rendered = blocks.len();
+    if rendered < total {
+        app.note(
+            block::NoticeLevel::Info,
+            format!(
+                "showing the last {rendered} of {total} recorded transcript blocks; the model \
+                 continues from all of them"
+            ),
+        );
+    }
+    for kind in blocks {
+        app.push_block(kind);
+    }
+
+    session.adopt_run(adopted.rollout_path.clone(), (*state).clone());
+    app.mode = state.mode;
+    app.effort = state.effort;
+    app.model = state.model.clone();
+    app.cost = state.cost.clone();
+    app.turns = adopted.turns;
+    app.route = app.route.reselect(
+        directory,
+        &ModelSelection {
+            provider_id: selection.provider_id.clone(),
+            model_id: state.model.clone(),
+        },
+    );
+    app.model_context_window = capabilities.context_window_tokens;
+    clear_last_turn_telemetry_from(app, &state);
+    app.status = format!("idle · resumed {}", adopted.run_id);
+
+    if let Some(reason) = substituted {
+        app.note(
+            block::NoticeLevel::Warn,
+            format!(
+                "{reason}; this session continues on {}:{}",
+                selection.provider_id, selection.model_id
+            ),
+        );
+    } else if let Some((recorded_provider, recorded_model)) = adopted
+        .recorded_route
+        .as_ref()
+        .filter(|(provider_id, model_id)| {
+            provider_id != &selection.provider_id || model_id != &selection.model_id
+        })
+    {
+        // The kernel reports the route it restored FROM THE RECORD, independently of what this
+        // frontend parsed out of the same events. A disagreement means the session is dispatching
+        // on a route its own record does not name, which the operator has to be told.
+        app.note(
+            block::NoticeLevel::Warn,
+            format!(
+                "the runtime restored route {recorded_provider}:{recorded_model} from that record, \
+                 but this session dispatches on {}:{}",
+                selection.provider_id, selection.model_id
+            ),
+        );
+    }
+    app.note(
+        block::NoticeLevel::Ok,
+        format!(
+            "resumed {} here · {} · {} · {}:{} · left {}",
+            adopted.run_id,
+            block::plural(adopted.messages, "message"),
+            block::plural(adopted.turns as usize, "turn"),
+            selection.provider_id,
+            state.model,
+            adopted.previous_run_id
+        ),
+    );
+
+    // The session moved and cannot dispatch. The identity above is still rendered — it is where the
+    // runtime is — and this says, last and loudest, that the process has to be restarted to use it.
+    if let Some(blocked) = blocked {
+        app.note(block::NoticeLevel::Err, blocked);
+        app.prepare_resume_handoff(&adopted.run_id);
+    }
+}
+
 fn session_picker_items(
     mut sessions: Vec<core_record::SessionMeta>,
     current_run: &str,
@@ -5891,7 +6359,7 @@ fn session_picker_items(
                     block::plural(session.turns as usize, "turn")
                 ),
                 run_id == current_run,
-                PickAction::PrepareResume(run_id),
+                PickAction::AdoptRun(run_id),
             )
         })
         .collect()
@@ -5925,7 +6393,7 @@ fn open_session_picker(app: &mut App, session: &Session) {
     }
     let sel = initial_picker_selection(&items);
     app.picker = Some(Picker {
-        title: "Sessions · restart to resume".into(),
+        title: "Sessions · resume here".into(),
         items,
         sel,
         query: String::new(),
@@ -7176,7 +7644,7 @@ async fn handle_registered_command(
                     .iter()
                     .any(|session| session.run_id.0 == arg);
                 if exists {
-                    app.prepare_resume_handoff(arg);
+                    adopt_session(app, session, directory, arg).await;
                 } else {
                     app.note(
                         block::NoticeLevel::Err,
@@ -9357,6 +9825,139 @@ mod tests {
         assert!(screen.contains("$0.0123"), "{screen}");
     }
 
+    fn adopted_event(seq: u64, kind: core_protocol::EventKind) -> core_protocol::Event {
+        core_protocol::Event {
+            seq: core_protocol::Seq(seq),
+            turn: core_protocol::TurnId(1),
+            kind,
+        }
+    }
+
+    fn adopted_message(
+        role: core_protocol::Role,
+        content: Vec<core_protocol::Block>,
+    ) -> core_protocol::Message {
+        core_protocol::Message { role, content }
+    }
+
+    #[test]
+    fn an_adopted_record_renders_its_conversation_and_its_recorded_tool_results() {
+        use core_protocol::{Block as MessageBlock, EventKind, Role};
+        let events = vec![
+            adopted_event(
+                1,
+                EventKind::Message {
+                    message: core_protocol::Message::user_text("find the parser bug"),
+                },
+            ),
+            adopted_event(
+                2,
+                EventKind::Message {
+                    message: adopted_message(
+                        Role::Assistant,
+                        vec![
+                            MessageBlock::Text {
+                                text: "reading the parser".into(),
+                            },
+                            MessageBlock::ToolUse(core_protocol::ToolUse {
+                                id: "call-1".into(),
+                                name: "read_file".into(),
+                                input: serde_json::json!({ "path": "src/parse.rs" }),
+                            }),
+                            MessageBlock::ToolUse(core_protocol::ToolUse {
+                                id: "call-2".into(),
+                                name: "bash".into(),
+                                input: serde_json::json!({ "command": "cargo test" }),
+                            }),
+                        ],
+                    ),
+                },
+            ),
+            adopted_event(
+                3,
+                EventKind::Message {
+                    message: adopted_message(
+                        Role::User,
+                        vec![MessageBlock::ToolResult(core_protocol::ToolResult {
+                            tool_use_id: "call-1".into(),
+                            content: "fn parse() {}".into(),
+                            is_error: false,
+                            trust: core_protocol::Trust::Workspace,
+                            latency_ms: 12,
+                        })],
+                    ),
+                },
+            ),
+        ];
+
+        let (blocks, total) = adopted_transcript_blocks(&events);
+        assert_eq!(total, 4, "user text, assistant text, and two tool calls");
+        assert_eq!(blocks.len(), 4);
+        assert!(
+            matches!(&blocks[0], block::BlockKind::User(text) if text == "find the parser bug")
+        );
+        assert!(matches!(&blocks[1], block::BlockKind::Assistant(_)));
+        let block::BlockKind::Tool(answered) = &blocks[2] else {
+            panic!("the recorded tool call must render as a card")
+        };
+        assert_eq!(answered.name, "read_file");
+        assert!(matches!(answered.status, block::ToolStatus::Ok));
+        assert_eq!(answered.output, "fn parse() {}");
+        assert_eq!(answered.elapsed, Some(Duration::from_millis(12)));
+        let block::BlockKind::Tool(unanswered) = &blocks[3] else {
+            panic!("a call with no recorded result is still real history")
+        };
+        // The run stopped between the call and its result. Saying so beats inventing a status.
+        assert!(matches!(unanswered.status, block::ToolStatus::Err));
+        assert!(unanswered.output.contains("no recorded result"));
+        assert!(unanswered.elapsed.is_none());
+    }
+
+    #[test]
+    fn an_adopted_transcript_is_bounded_on_screen_and_reports_what_it_left_out() {
+        use core_protocol::EventKind;
+        let events: Vec<core_protocol::Event> = (0..MAX_ADOPTED_BLOCKS as u64 + 40)
+            .map(|index| {
+                adopted_event(
+                    index,
+                    EventKind::Message {
+                        message: core_protocol::Message::user_text(format!("message {index}")),
+                    },
+                )
+            })
+            .collect();
+        let (blocks, total) = adopted_transcript_blocks(&events);
+        assert_eq!(total, MAX_ADOPTED_BLOCKS + 40);
+        assert_eq!(blocks.len(), MAX_ADOPTED_BLOCKS);
+        // The TAIL is what a returning operator needs: the newest exchange, not the oldest.
+        assert!(
+            matches!(blocks.last(), Some(block::BlockKind::User(text)) if text.ends_with(&format!("{}", MAX_ADOPTED_BLOCKS + 39))),
+            "the bound must keep the newest blocks"
+        );
+    }
+
+    #[test]
+    fn the_route_to_bind_comes_from_the_records_last_durable_selection() {
+        use core_protocol::EventKind;
+        let selection = |provider: &str, model: &str| EventKind::ModelSelected {
+            provider_id: provider.into(),
+            model_id: model.into(),
+            catalog_digest: String::new(),
+            capability_digest: String::new(),
+        };
+        let events = vec![
+            adopted_event(1, selection("glm", "glm-5.1")),
+            adopted_event(2, selection("anthropic", "sonnet")),
+        ];
+        assert_eq!(
+            recorded_route(&events),
+            Some((Some("anthropic".into()), "sonnet".into()))
+        );
+        // A journal with no selection at all offers no route, and its model is never used to guess
+        // a provider that was never recorded.
+        assert_eq!(recorded_route(&[]), None);
+    }
+
     #[test]
     fn session_picker_is_latest_first_and_discloses_route_cost_turns_and_run() {
         let items = session_picker_items(
@@ -9368,7 +9969,7 @@ mod tests {
             "",
         );
         assert_eq!(items[0].label, "Newest task");
-        assert!(matches!(&items[0].action, PickAction::PrepareResume(id) if id == "newer"));
+        assert!(matches!(&items[0].action, PickAction::AdoptRun(id) if id == "newer"));
         for expected in ["run newer", "7 turns", "$2.5000", "glm/glm-5.2"] {
             assert!(
                 items[0].hint.contains(expected),
@@ -9379,7 +9980,7 @@ mod tests {
     }
 
     #[test]
-    fn session_picker_one_enter_prepares_but_never_executes_restart_handoff() {
+    fn session_picker_one_enter_selects_the_run_to_adopt_in_process() {
         let mut app = App::new();
         app.picker = Some(Picker {
             title: "sessions".into(),
@@ -9402,9 +10003,12 @@ mod tests {
             Some(PickerEvent::Accept(action)) => action,
             _ => panic!("one Enter should select the session"),
         };
-        let PickAction::PrepareResume(run_id) = action else {
+        let PickAction::AdoptRun(run_id) = action else {
             panic!("session selection returned the wrong action")
         };
+        assert_eq!(run_id, "run-42");
+        // The restart handoff is now the FALLBACK, taken when a run cannot be adopted here — most
+        // often because another process holds its writer lock. It must still be exact.
         app.prepare_resume_handoff(&run_id);
         assert_eq!(app.editor.text(), "core --resume run-42");
         assert!(app.is_resume_handoff_draft());
