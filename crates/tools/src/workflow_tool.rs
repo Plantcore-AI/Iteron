@@ -5,7 +5,11 @@
 //! read-only investigator cannot recurse into a fan-out of writer sub-agents — the same gating
 //! discipline as `dispatch_agent` (design §4.1).
 //!
-//! STATUS: in-turn launch is LIVE. The kernel intercepts this tool by name (like `DISPATCH_AGENT`)
+//! STATUS: in-turn launch is LIVE, and so is detached launch where a session owns runs —
+//! `background`/`collect`/`cancel` are answered by the CLI's `WorkflowSupervisor` through the
+//! `WorkflowLauncher` seam. A `background` request in a context with no owner runs in-turn and the
+//! tool result says the request was not granted; it is never silently downgraded.
+//! The kernel intercepts this tool by name (like `DISPATCH_AGENT`)
 //! and drives `core_workflow::WorkflowEngine::launch` with a `KernelSpawner` built from the running
 //! agent's route (see `crates/kernel` `launch_workflow`). This registered executor therefore never
 //! runs on the kernel path; its body is only a fallback message for a non-kernel caller (e.g. a
@@ -27,7 +31,10 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                           script inline (`script`) or by path (`scriptPath`), plus optional `args` \
                           exposed to the script as the ambient `args`. The workflow fans out real \
                           sub-agents under a bounded concurrency governor and returns their results. \
-                          Use it for wide, structured multi-agent work that a single turn cannot do."
+                          Use it for wide, structured multi-agent work that a single turn cannot do. \
+                          Set `background: true` to get an immediate receipt instead of the result \
+                          and read the outcome later with `collect`; a backgrounded run's result is \
+                          NOT in the receipt and must be collected before you report on it."
                 .into(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -42,6 +49,18 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                     },
                     "args": {
                         "description": "arbitrary JSON exposed to the script as the ambient `args`"
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": "return a receipt immediately instead of waiting for the run; the result is unknown until you call `collect`. Granted only where the session owns runs; otherwise the run executes in-turn and the result says so."
+                    },
+                    "collect": {
+                        "type": "string",
+                        "description": "run id of an earlier `background` launch: reports RUNNING, or returns that run's full result. Does not launch anything."
+                    },
+                    "cancel": {
+                        "type": "string",
+                        "description": "run id of an earlier `background` launch to stop at its next safe point. Does not launch anything; read the outcome with `collect`."
                     }
                 }
             }),
@@ -53,6 +72,24 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
         |call, _root| {
             boxfut::box_it(async move {
                 let id = call.id.clone();
+                // `collect`/`cancel` address a run that already exists, so they need no script.
+                // Only an owner can answer them, and a non-kernel caller has none.
+                for field in ["collect", "cancel"] {
+                    if call
+                        .input
+                        .get(field)
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|value| !value.trim().is_empty())
+                    {
+                        return err_result(
+                            id,
+                            format!(
+                                "Workflow: `{field}` addresses a run owned by a live session; this \
+                                 caller owns none. Use `core workflow list` to inspect runs on disk."
+                            ),
+                        );
+                    }
+                }
                 let has_script = call
                     .input
                     .get("script")

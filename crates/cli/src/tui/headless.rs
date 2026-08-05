@@ -312,7 +312,17 @@ pub(crate) async fn serve(attached: Attached, listen: SocketAddr) -> Result<()> 
     while connections.join_next().await.is_some() {}
     drop(handle.control);
     drop(shared);
-    server_task.await.context("App Server task join")?;
+    let stopped = server_task.await.context("App Server task join")?;
+    // A headless session owns background workflow runs exactly like an interactive one, and its
+    // operator reads this log, not a terminal. Silence here would be the one place a run is stopped
+    // without anyone being told.
+    if !stopped.is_empty() {
+        log(json!({
+            "component": "app_server",
+            "event": "workflow_runs_stopped_at_exit",
+            "runs": stopped.lines,
+        }));
+    }
     if !pump_was_observed {
         pump.await.context("headless event pump join")?;
     }
