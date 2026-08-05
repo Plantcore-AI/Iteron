@@ -132,6 +132,7 @@ impl Default for StdoutProgressSink {
 
 impl ProgressSink for StdoutProgressSink {
     fn emit(&self, event: ProgressEvent) {
+        let event = ui_safe_progress(event);
         let line = match event {
             ProgressEvent::Phase { title, .. } => {
                 format!("\u{2500}\u{2500} {title} \u{2500}\u{2500}")
@@ -246,7 +247,7 @@ impl CardProgressSink {
 impl ProgressSink for CardProgressSink {
     fn emit(&self, event: ProgressEvent) {
         if let Ok(mut card) = self.card.lock() {
-            card.ingest(event);
+            card.ingest(ui_safe_progress(event));
         }
     }
 }
@@ -872,6 +873,8 @@ pub struct RunManifest {
 pub struct RunResult {
     pub value: serde_json::Value,
     pub stopped: bool,
+    #[serde(default)]
+    pub errors: usize,
     pub cache_hits: usize,
     pub cache_misses: usize,
     pub finished_at: u64,
@@ -914,6 +917,7 @@ pub fn persist_result(
     let result = RunResult {
         value: report.value.clone(),
         stopped: report.stopped,
+        errors: report.errors,
         cache_hits: report.cache_hits,
         cache_misses: report.cache_misses,
         finished_at: now_secs(),
@@ -960,8 +964,8 @@ fn journal_agent_count(workflows_dir: &Path, run_id: &str) -> usize {
 }
 
 /// Enumerate every persisted run under `<workflows_dir>`, newest first. A run's status is derived
-/// from its sidecars: `done`/`stopped` once `result.json` exists, else `running` if a journal is
-/// present, else `pending`.
+/// from its sidecars: `done`/`failed`/`stopped` once `result.json` exists, else `running` if a
+/// journal is present, else `pending`.
 pub fn list_runs(workflows_dir: &Path) -> Vec<RunListing> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(workflows_dir) else {
@@ -979,6 +983,7 @@ pub fn list_runs(workflows_dir: &Path) -> Vec<RunListing> {
             .exists();
         let status = match &result {
             Some(r) if r.stopped => "stopped",
+            Some(r) if r.errors > 0 => "failed",
             Some(_) => "done",
             None if has_journal => "running",
             None => "pending",
@@ -1005,6 +1010,44 @@ pub fn list_runs(workflows_dir: &Path) -> Vec<RunListing> {
             .then(b.run_id.cmp(&a.run_id))
     });
     out
+}
+
+/// Stable CLI outcome label for a settled workflow. Cancellation takes precedence because it has
+/// its own operator action and exit contract even if some children failed before the interrupt.
+pub fn run_status(report: &RunReport) -> &'static str {
+    if report.stopped {
+        "stopped"
+    } else if report.errors > 0 {
+        "failed"
+    } else {
+        "done"
+    }
+}
+
+/// Stable process contract for `core workflow run|resume|watch`: clean success is 0, any settled
+/// agent failure is 1, and operator cancellation remains 130.
+pub fn run_exit_code(report: &RunReport) -> u8 {
+    if report.stopped {
+        crate::output::EXIT_INTERRUPTED
+    } else if report.errors > 0 {
+        crate::output::EXIT_WORKFLOW_FAILED
+    } else {
+        crate::output::EXIT_SUCCESS
+    }
+}
+
+/// The terminal status line shared by TTY and piped workflow commands.
+pub fn final_status_line(run_id: &str, report: &RunReport) -> String {
+    format!(
+        "run {run_id} \u{b7} {} \u{b7} {} failed \u{b7} {} tok \u{b7} {} tool call(s) \u{b7} {} \u{b7} cache {} hit / {} miss",
+        run_status(report),
+        report.errors,
+        fmt_count(report.tokens),
+        report.tool_calls,
+        fmt_duration(report.elapsed_ms),
+        report.cache_hits,
+        report.cache_misses
+    )
 }
 
 #[cfg(test)]
@@ -1235,6 +1278,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
                 stopped: false,
                 cache_hits: 0,
                 cache_misses: 2,
+                errors: 0,
                 tokens: 1_234,
                 tool_calls: 7,
                 elapsed_ms: 4_200,
@@ -1257,6 +1301,79 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
         );
 
         let _ = std::fs::remove_dir_all(&workflows_dir);
+    }
+
+    #[test]
+    fn a_persisted_agent_failure_lists_as_failed() {
+        let workflows_dir = scratch_dir("persisted-agent-failure");
+        let manifest = RunManifest {
+            run_id: "wf_agent_failed".into(),
+            name: "triage".into(),
+            args: serde_json::Value::Null,
+            provider_id: "anthropic".into(),
+            model: "core-model-1".into(),
+            created_at: 43,
+        };
+        persist_inputs(&workflows_dir, &manifest, "export const meta = {};").unwrap();
+        persist_result(
+            &workflows_dir,
+            "wf_agent_failed",
+            &RunReport {
+                run_id: RunId::new("wf_agent_failed"),
+                value: serde_json::json!(["ok", null]),
+                stopped: false,
+                cache_hits: 0,
+                cache_misses: 2,
+                errors: 1,
+                tokens: 7,
+                tool_calls: 0,
+                elapsed_ms: 10,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(list_runs(&workflows_dir)[0].status, "failed");
+        assert_eq!(
+            load_result(&workflows_dir, "wf_agent_failed")
+                .unwrap()
+                .errors,
+            1
+        );
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+    }
+
+    #[test]
+    fn workflow_failure_exit_and_status_contract_distinguishes_clean_failed_and_cancelled() {
+        let report = |errors, stopped| RunReport {
+            run_id: RunId::new("wf_contract"),
+            value: serde_json::Value::Null,
+            stopped,
+            cache_hits: 0,
+            cache_misses: 3,
+            errors,
+            tokens: 21,
+            tool_calls: 0,
+            elapsed_ms: 10,
+        };
+
+        let clean = report(0, false);
+        assert_eq!(run_status(&clean), "done");
+        assert_eq!(run_exit_code(&clean), crate::output::EXIT_SUCCESS);
+        assert!(final_status_line("wf_contract", &clean).contains("done \u{b7} 0 failed"));
+
+        for errors in [1, 3] {
+            let failed = report(errors, false);
+            assert_eq!(run_status(&failed), "failed");
+            assert_eq!(run_exit_code(&failed), crate::output::EXIT_WORKFLOW_FAILED);
+            assert!(
+                final_status_line("wf_contract", &failed)
+                    .contains(&format!("failed \u{b7} {errors} failed"))
+            );
+        }
+
+        let cancelled = report(1, true);
+        assert_eq!(run_status(&cancelled), "stopped");
+        assert_eq!(run_exit_code(&cancelled), crate::output::EXIT_INTERRUPTED);
     }
 
     #[test]
@@ -1291,6 +1408,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
                 stopped: true,
                 cache_hits: 0,
                 cache_misses: 0,
+                errors: 0,
                 tokens: 0,
                 tool_calls: 0,
                 elapsed_ms: 0,
@@ -1334,6 +1452,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
             stopped: true,
             cache_hits: 0,
             cache_misses: 0,
+            errors: 0,
             tokens: 0,
             tool_calls: 0,
             elapsed_ms: 1,

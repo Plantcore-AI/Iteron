@@ -48,6 +48,7 @@ pub struct RunState {
     agent_calls: AtomicUsize,
     max_agent_calls: usize,
     phases: Mutex<Vec<String>>,
+    errors: AtomicUsize,
     tokens: AtomicU64,
     tool_calls: AtomicU64,
 }
@@ -60,22 +61,27 @@ impl RunState {
             agent_calls: AtomicUsize::new(0),
             max_agent_calls,
             phases: Mutex::new(Vec::new()),
+            errors: AtomicUsize::new(0),
             tokens: AtomicU64::new(0),
             tool_calls: AtomicU64::new(0),
         }
     }
 
-    /// Fold one settled agent's metrics into the run totals. Every finish event already carries
-    /// them; without this they were reported per row and never summed for the run.
-    fn observe(&self, tokens: u64, tool_calls: u64) {
+    /// Fold one settled agent's outcome and metrics into the run totals. Every finish event already
+    /// carries them; without this they were reported per row and never summed for the run.
+    fn observe(&self, state: WorkflowState, tokens: u64, tool_calls: u64) {
+        if state == WorkflowState::Error {
+            self.errors.fetch_add(1, Ordering::Relaxed);
+        }
         self.tokens.fetch_add(tokens, Ordering::Relaxed);
         self.tool_calls.fetch_add(tool_calls, Ordering::Relaxed);
     }
 
-    /// `(tokens, tool_calls)` accumulated across every agent this run settled (cache replays
-    /// included — a replayed outcome cost tokens once and is still part of the run's evidence).
-    pub fn totals(&self) -> (u64, u64) {
+    /// `(errors, tokens, tool_calls)` accumulated across every agent this run settled (cache
+    /// replays included — a replayed outcome is still part of the run's result evidence).
+    pub fn totals(&self) -> (usize, u64, u64) {
         (
+            self.errors.load(Ordering::Relaxed),
             self.tokens.load(Ordering::Relaxed),
             self.tool_calls.load(Ordering::Relaxed),
         )
@@ -170,6 +176,15 @@ fn label_for(prompt: &str, idx: usize) -> String {
     truncate_preview(trimmed, 40)
 }
 
+/// Keep a refused call identifiable without allowing its label to become a multi-line or terminal
+/// control surface. Empty labels fall back to the same prompt-derived identity as admitted calls.
+fn refusal_label(label: Option<&str>, prompt: &str, idx: usize) -> String {
+    label
+        .map(|label| truncate_preview(label, 40))
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| label_for(prompt, idx))
+}
+
 /// A requested model id is untrusted routing metadata and may itself be credential-shaped. The
 /// engine cannot prove the selected route (that belongs to the spawner), so progress reports only
 /// the presence of an override and never reflects the raw id to a terminal sink.
@@ -205,7 +220,7 @@ fn emit_finished(env: &AgentEnv, idx: usize, label: String, record: &Record, dur
             Some("unknown journal outcome".into()),
         ),
     };
-    env.state.observe(record.tokens, record.tool_calls);
+    env.state.observe(state, record.tokens, record.tool_calls);
     env.sink.emit(ProgressEvent::AgentFinished {
         index: idx,
         label,
@@ -223,17 +238,17 @@ fn emit_finished(env: &AgentEnv, idx: usize, label: String, record: &Record, dur
 }
 
 /// Terminalize a request-metadata refusal without acquiring a Governor permit or calling the
-/// spawner. Negative outcomes remain journaled for deterministic resume, but neither the progress
-/// row nor the record reflects caller metadata: both carry one static bounded reason and a
-/// harness-minted label.
+/// spawner. Negative outcomes remain journaled for deterministic resume. The record reflects no
+/// rejected routing metadata: it carries one static bounded reason. The progress row retains the
+/// separately-sanitized display label so the operator can identify which agent was refused.
 fn settle_metadata_refusal(
     env: &AgentEnv,
     idx: usize,
+    label: String,
     key: &str,
     reason: &'static str,
     journal_miss: bool,
 ) -> String {
-    let label = format!("agent {idx}");
     env.sink.emit(ProgressEvent::AgentQueued {
         index: idx,
         label: label.clone(),
@@ -414,7 +429,8 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
         if let Err(error) = metadata {
             // Ignore the stored prose for a rejected request. Core wrote the same static outcome,
             // but reconstructing it from the validator also stays safe if a journal was replaced.
-            return settle_metadata_refusal(&env, idx, &key, error.public_reason(), false);
+            let label = refusal_label(raw.label.as_deref(), &raw.prompt, idx);
+            return settle_metadata_refusal(&env, idx, label, &key, error.public_reason(), false);
         }
         let label = raw
             .label
@@ -431,7 +447,8 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
     }
 
     if let Err(error) = metadata {
-        return settle_metadata_refusal(&env, idx, &key, error.public_reason(), true);
+        let label = refusal_label(raw.label.as_deref(), &raw.prompt, idx);
+        return settle_metadata_refusal(&env, idx, label, &key, error.public_reason(), true);
     }
 
     let label = raw

@@ -323,16 +323,21 @@ impl WorkflowRunCard {
         }
     }
 
-    /// Run-level totals: `(done, total, tokens, tool_calls)` across every row.
-    pub fn totals(&self) -> (usize, usize, u64, u64) {
+    /// Run-level totals: `(done, total, errors, tokens, tool_calls)` across every row.
+    pub fn totals(&self) -> (usize, usize, usize, u64, u64) {
         let done = self
             .agents
             .iter()
             .filter(|agent| agent.state == WorkflowState::Done)
             .count();
+        let errors = self
+            .agents
+            .iter()
+            .filter(|agent| agent.state == WorkflowState::Error)
+            .count();
         let tokens = self.agents.iter().map(|agent| agent.tokens).sum();
         let tool_calls = self.agents.iter().map(|agent| agent.tool_calls).sum();
-        (done, self.agents.len(), tokens, tool_calls)
+        (done, self.agents.len(), errors, tokens, tool_calls)
     }
 
     /// Resolve an agent's group: an explicit `opts.phase` title binds to (or registers) a phase;
@@ -1616,7 +1621,7 @@ pub(crate) fn render_workflow_run(
     spin: usize,
 ) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
-    let (done, total, tokens, tool_calls) = card.totals();
+    let (done, total, errors, tokens, tool_calls) = card.totals();
 
     // Title row: the tree had no header at all, so a run was a set of anonymous boxes with no name,
     // no run id, no run-level progress and no clock.
@@ -1643,6 +1648,12 @@ pub(crate) fn render_workflow_run(
             Style::default().fg(theme.muted),
         ),
     ];
+    if errors > 0 {
+        head.push(Span::styled(
+            format!(" \u{b7} {errors} failed"),
+            Style::default().fg(theme.error),
+        ));
+    }
     if width >= 60 {
         head.push(Span::styled(
             format!(" \u{b7} {}", card.run_id),
@@ -1739,6 +1750,12 @@ pub(crate) fn render_workflow_run(
         format!("{done}/{total} agents"),
         Style::default().fg(theme.muted),
     )];
+    if errors > 0 {
+        totals.push(Span::styled(
+            format!(" \u{b7} {errors} failed"),
+            Style::default().fg(theme.error),
+        ));
+    }
     if tokens > 0 {
         totals.push(Span::styled(
             format!(" \u{b7} {} tok", events::fmt_count(tokens)),
@@ -4002,8 +4019,8 @@ mod tests {
         println!("\n===== workflow-run tree (width {width}) =====\n{text}\n=====");
 
         // Header (name · run-level progress · run id) + run totals line.
-        assert!(text.contains("audit \u{b7} 1/3 agents \u{b7} wf_demo"));
-        assert!(text.contains("1/3 agents \u{b7} 2k tok \u{b7} 3 tool calls"));
+        assert!(text.contains("audit \u{b7} 1/3 agents \u{b7} 1 failed \u{b7} wf_demo"));
+        assert!(text.contains("1/3 agents \u{b7} 1 failed \u{b7} 2k tok \u{b7} 3 tool calls"));
         // Narrator + phase boxes + rows + collapse + meta + error tail.
         assert!(text.contains("\u{276f} synthesizing findings")); // ❯ newest log
         assert!(text.contains("mapping the repository")); // prior log, dim
@@ -4341,7 +4358,7 @@ mod tests {
                 model: Some("haiku".into()),
             });
         }
-        let (_, total, _, _) = c.totals();
+        let (_, total, _, _, _) = c.totals();
         assert_eq!(total, 20, "the denominator is fixed by the queued rows");
 
         // Six permits are granted; the remaining fourteen stay visibly pending.
@@ -4367,7 +4384,7 @@ mod tests {
                 .count(),
             6
         );
-        let (_, total_after, _, _) = c.totals();
+        let (_, total_after, _, _, _) = c.totals();
         assert_eq!(total_after, 20, "the denominator must not move mid-run");
 
         c.verbose = true;

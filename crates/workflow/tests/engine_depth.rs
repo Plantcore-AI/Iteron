@@ -121,13 +121,13 @@ async fn malformed_routing_metadata_is_negative_replay_evidence_without_a_spawn(
     let oversized_agent_type = "a".repeat(core_workflow::spawner::MAX_AGENT_TYPE_BYTES + 1);
     let oversized_model = "m".repeat(core_workflow::spawner::MAX_AGENT_MODEL_BYTES + 1);
     let requests = serde_json::json!([
-        {"agentType": "reviewer/child", "label": secret, "phase": secret},
-        {"agentType": oversized_agent_type.clone(), "label": secret, "phase": secret},
-        {"agentType": format!("reviewer\n{secret}\u{1b}[2J"), "label": secret},
-        {"agentType": "reviewer界", "label": secret},
-        {"model": "", "label": secret, "phase": secret},
-        {"model": oversized_model.clone(), "label": secret, "phase": secret},
-        {"model": format!("model\r{secret}\u{202e}"), "label": secret},
+        {"agentType": "reviewer/child", "label": "invalid type", "phase": secret},
+        {"agentType": oversized_agent_type.clone(), "label": "oversized type", "phase": secret},
+        {"agentType": format!("reviewer\n{secret}\u{1b}[2J"), "label": "dead\nagent\u{1b}[31m", "phase": secret},
+        {"agentType": "reviewer界", "label": "unicode type", "phase": secret},
+        {"model": "", "label": "empty model", "phase": secret},
+        {"model": oversized_model.clone(), "label": "oversized model", "phase": secret},
+        {"model": format!("model\r{secret}\u{202e}"), "label": "control model", "phase": secret},
     ]);
     let request_count = requests.as_array().unwrap().len();
     let args = serde_json::json!({"requests": requests});
@@ -152,6 +152,7 @@ return results;
     );
     assert_eq!(report.cache_hits, 0);
     assert_eq!(report.cache_misses, request_count);
+    assert_eq!(report.errors, request_count);
     assert_eq!(spawns.load(Ordering::SeqCst), 0);
 
     {
@@ -172,6 +173,7 @@ return results;
             "a metadata refusal never starts a child"
         );
         let mut finished = 0;
+        let mut saw_hostile_label = false;
         for event in events.iter() {
             match event {
                 ProgressEvent::AgentQueued {
@@ -180,7 +182,15 @@ return results;
                     model,
                     ..
                 } => {
-                    assert!(label.starts_with("agent "));
+                    assert!(
+                        !label.starts_with("agent "),
+                        "the caller label was discarded"
+                    );
+                    assert!(!label.chars().any(char::is_control), "{label:?}");
+                    if label.starts_with("dead agent") {
+                        saw_hostile_label = true;
+                        assert!(label.contains("\\u{1b}[31m"), "{label:?}");
+                    }
                     assert!(phase.is_none());
                     assert!(model.is_none());
                 }
@@ -190,7 +200,11 @@ return results;
                     ..
                 } => {
                     finished += 1;
-                    assert!(label.starts_with("agent "));
+                    assert!(
+                        !label.starts_with("agent "),
+                        "the caller label was discarded"
+                    );
+                    assert!(!label.chars().any(char::is_control), "{label:?}");
                     assert!(error.len() <= 128, "{error}");
                     assert!(!error.chars().any(char::is_control), "{error:?}");
                     assert!(!error.contains(secret), "{error}");
@@ -199,6 +213,10 @@ return results;
             }
         }
         assert_eq!(finished, request_count);
+        assert!(
+            saw_hostile_label,
+            "the hostile label was dropped rather than neutralized"
+        );
     }
 
     let journal = std::fs::read_to_string(dir.join("invalid-1/journal.jsonl")).unwrap();
@@ -231,6 +249,7 @@ return results;
         .expect("negative metadata outcomes replay");
     assert_eq!(replay.cache_hits, request_count);
     assert_eq!(replay.cache_misses, 0);
+    assert_eq!(replay.errors, request_count);
     assert_eq!(spawns.load(Ordering::SeqCst), 0);
     assert_eq!(replay.value, report.value);
 
