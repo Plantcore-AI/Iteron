@@ -145,8 +145,6 @@ def create_build_info(arguments: argparse.Namespace) -> None:
         "target": target,
         "version": version,
     }
-    if arguments.receipt.resolve() == arguments.output.resolve():
-        raise ReleaseToolError("manifest and receipt outputs must be distinct")
     atomic_write_text(arguments.output, canonical_json(document))
     print(arguments.output)
 
@@ -161,6 +159,8 @@ def create_release(arguments: argparse.Namespace) -> None:
         validate_target(target)
     if not arguments.dist.is_dir():
         raise ReleaseToolError(f"distribution directory does not exist: {arguments.dist}")
+    if arguments.receipt.resolve() == arguments.output.resolve():
+        raise ReleaseToolError("manifest and receipt outputs must be distinct")
 
     installer = digest_entry(arguments.dist / "install.sh")
     legal = {
