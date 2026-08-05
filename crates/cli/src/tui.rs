@@ -1949,6 +1949,28 @@ impl App {
         self.autoscroll();
     }
 
+    /// The rows the workflow region draws this frame, at `width`, in their NATURAL length — the
+    /// count is what the layout is then asked for, and `block::window_workflow_rows` fits the same
+    /// rows into whatever height it grants.
+    ///
+    /// The region renders the transcript's card, not a copy: `workflow_region` holds no tree of its
+    /// own precisely so that there is nothing to drift. An empty answer is the honest one for every
+    /// frame with no live run, and it is what makes the region cost zero rows.
+    fn workflow_region_rows(&self, width: u16) -> Vec<Line<'static>> {
+        let Some(block_id) = self.workflow_monitor.region_block() else {
+            return Vec::new();
+        };
+        self.transcript
+            .iter()
+            .find(|block| block.id == block_id)
+            .and_then(|block| match &block.kind {
+                block::BlockKind::WorkflowRun(card) => Some(card),
+                _ => None,
+            })
+            .map(|card| block::render_workflow_run(card, width, &self.theme, self.spin))
+            .unwrap_or_default()
+    }
+
     // REPL seam (see `workflow_monitor`). Live since ADR-0001 step 1: `app_server::ServerEvent`
     // carries the engine's progress off the kernel thread and `workflow_run_ui_event` lands it here.
     fn workflow_run_card_mut(&mut self, run_id: &str) -> Option<&mut block::WorkflowRunCard> {
@@ -2075,6 +2097,17 @@ impl App {
     /// Ctrl-O: toggle the fold of the most recent collapsible block (Claude Code's `ctrl+o` expand
     /// affordance; teardown D10 — a keyboard-truthful replacement for the removed mouse click).
     fn toggle_last_fold(&mut self) {
+        // The run the region is drawing is the most recent collapsible thing on screen, and it is
+        // deliberately absent from the transcript's row map, so the click that used to reach its
+        // fold no longer can. Ctrl-O is what keeps design §3.3's collapse reachable while a run is
+        // live; without this the store's one collapse writer would be unreachable for exactly the
+        // runs an operator wants to expand.
+        if let Some(block_id) = self.workflow_monitor.region_block()
+            && let Some(i) = self.transcript.iter().position(|block| block.id == block_id)
+        {
+            self.toggle_fold(i);
+            return;
+        }
         if let Some(i) = self.transcript.iter().rposition(|b| {
             matches!(
                 b.kind,
@@ -2352,12 +2385,18 @@ impl App {
         // projection of durable state, so pin its one card until RunFinished arrives; otherwise a
         // long foreground transcript can silently discard the only place the terminal update can
         // land. With the current one-foreground-run TUI there is always an evictable settled block.
+        //
+        // A live script run's card is pinned for a second reason as well: it is the tree the
+        // workflow region draws, and the region renders that card rather than a copy of it (see
+        // `workflow_region`). Evicting it would blank the region mid-run — the failure this pin
+        // already existed to prevent, on the surface the operator is actually watching.
         if self.transcript.len() > MAX_BLOCKS {
             let mut drop = self.transcript.len() - MAX_BLOCKS;
             let pinned = self
                 .workflow_index
                 .values()
                 .copied()
+                .chain(self.workflow_monitor.live_blocks())
                 .collect::<std::collections::HashSet<_>>();
             let mut evicted = std::collections::HashSet::new();
             self.transcript.retain(|block| {
@@ -6962,6 +7001,37 @@ fn show_agent_catalog(app: &mut App, session: &Session) {
     app.panel("⑂", "agents", rows);
 }
 
+/// `/clear`: drop the conversation, keep what is still running.
+///
+/// The command clears the CONVERSATION; it cancels nothing. A QuickJS script run launched before it
+/// is still running afterwards, still spending tokens, and still the thing the operator most needs
+/// to see — so the workflow region survives `/clear`, and the card it draws survives with it. The
+/// card is the region's only copy of the tree (see `workflow_region`), so dropping it would blank a
+/// running workflow with nothing able to restore it; a cleared conversation that retains one block
+/// the transcript never draws is the smaller lie. Nothing of that run is visible in the conversation
+/// either way: the region is where a live run is watched, and its permanent record is only written
+/// into the transcript when it settles.
+///
+/// Settled runs leave with the rest of the conversation, permanent records included — that is what
+/// clearing was asked to do — and their bindings are dropped in the same breath rather than left
+/// pointing at blocks that no longer exist.
+fn clear_conversation(app: &mut App) {
+    let live_workflow_blocks = app.workflow_monitor.live_blocks();
+    app.transcript
+        .retain(|block| live_workflow_blocks.contains(&block.id));
+    app.workflow_monitor.clear_finished();
+    app.mark_transcript_changed();
+    app.tool_index.clear();
+    app.workflow_index.clear();
+    app.cur_text.clear();
+    app.cur_text_revision = app.cur_text_revision.wrapping_add(1);
+    app.cur_doc_revision = app.cur_text_revision;
+    app.cur_doc = None;
+    app.cur_think.clear();
+    app.render_cache.clear();
+    app.push(dim(), "transcript cleared");
+}
+
 /// In-process half of the slash-command dispatcher (runs only while idle). Matching the typed
 /// identity exhaustively makes a newly registered variant a compile error until it has a handler.
 async fn handle_registered_command(
@@ -6987,19 +7057,7 @@ async fn handle_registered_command(
             ));
             app.panel("?", "commands", rows);
         }
-        SlashCommand::Clear => {
-            app.transcript.clear();
-            app.mark_transcript_changed();
-            app.tool_index.clear();
-            app.workflow_index.clear();
-            app.cur_text.clear();
-            app.cur_text_revision = app.cur_text_revision.wrapping_add(1);
-            app.cur_doc_revision = app.cur_text_revision;
-            app.cur_doc = None;
-            app.cur_think.clear();
-            app.render_cache.clear();
-            app.push(dim(), "transcript cleared");
-        }
+        SlashCommand::Clear => clear_conversation(app),
         SlashCommand::Effort => {
             if arg.is_empty() {
                 open_picker(app, session, directory, "effort"); // interactive picker (R7.a)
@@ -9104,6 +9162,23 @@ fn push_viewport_rows(
     }
 }
 
+/// The largest number of rows the workflow region may ask for on a frame this tall.
+///
+/// The region is pinned chrome, not the conversation. A fan of forty investigators renders a tree
+/// far taller than any terminal, and `Surface::resolve` would hand it everything down to the
+/// transcript's one-row floor — so the operator would be watching a workflow with no record of the
+/// turn that launched it. Half the frame is the bound; the tree windows into it and reports what it
+/// hid, which is a truthful summary rather than a silent clip.
+///
+/// A zero- or one-row frame yields zero: on a frame that small the composer and the fail-closed
+/// decision surface outrank inspection chrome.
+fn workflow_region_cap(frame_height: u16) -> u16 {
+    if frame_height < 2 {
+        return 0;
+    }
+    frame_height.div_ceil(2)
+}
+
 fn draw(f: &mut Frame, app: &mut App) {
     // A newly arrived capability decision outranks optional inspection chrome. The viewer cannot
     // hide a fail-closed approval surface while the runtime is blocked on it.
@@ -9127,6 +9202,16 @@ fn draw(f: &mut Frame, app: &mut App) {
     // The status line is stable chrome below the composer, including on the fresh landing. Surface
     // geometry drops it only when a physically tiny frame cannot spare the row.
     let show_status = true;
+    // The workflow region asks for its own height. A live script run's tree is drawn HERE, pinned
+    // above the composer, and the transcript pass below skips that block, so the tree exists on
+    // exactly one surface. Rows are built once and reused: the natural count is the request, and
+    // the granted height windows the SAME rows (see `block::window_workflow_rows`). Every region
+    // shares the stage's full-width grid (`surface::Surface::resolve`, asserted by
+    // `product_widths_keep_one_full_width_body_grid`), so the frame width is the region's width.
+    let workflow_rows = app.workflow_region_rows(f.area().width);
+    let requested_workflow_rows = u16::try_from(workflow_rows.len())
+        .unwrap_or(u16::MAX)
+        .min(workflow_region_cap(f.area().height));
     let surface = surface::Surface::resolve(
         f.area(),
         if app.pending.is_some() {
@@ -9135,10 +9220,18 @@ fn draw(f: &mut Frame, app: &mut App) {
             n_input_rows
         },
         lane_rows,
-        0,
+        requested_workflow_rows,
         show_status,
         app.pending.is_some(),
     );
+
+    // Which block the transcript must NOT draw, because the region is drawing it. Decided from the
+    // GRANTED height rather than the request: a frame too small to spare the region even one row
+    // grants zero, and hiding the run from the transcript as well would leave a running workflow
+    // rendered nowhere at all. On such a frame the run falls back into the conversation.
+    let region_block = (surface.workflow.height > 0)
+        .then(|| app.workflow_monitor.region_block())
+        .flatten();
 
     // Reset the complete alternate-screen frame, then draw only semantic terminal primitives.
     // There is intentionally no desktop canvas, window fill, chrome strip, or card background.
@@ -9174,16 +9267,24 @@ fn draw(f: &mut Frame, app: &mut App) {
         let spin = app.spin;
         let hyperlink_policy = &app.hyperlink_policy;
         let render_cache = &mut app.render_cache;
+        // The gap is measured against the previous VISIBLE block, not the previous block. A run the
+        // region is drawing occupies no transcript rows at all, so charging the conversation for
+        // the blank line in front of it would leave a hole where the card is not.
+        let mut previous: Option<&block::BlockKind> = None;
         for (bi, b) in app.transcript.iter().enumerate() {
-            if bi > 0 {
+            if Some(b.id) == region_block {
+                continue;
+            }
+            if let Some(previous) = previous {
                 // Variable rhythm (critique P1): a bigger gap at real turn boundaries, none between
                 // adjacent tool cards / notices / dividers, so structure is scannable, not monotone.
-                let gap = usize::from(block::gap_before(&app.transcript[bi - 1].kind, &b.kind));
+                let gap = usize::from(block::gap_before(previous, &b.kind));
                 if gap > 0 {
                     plan.push((TranscriptRows::Blank, gap, usize::MAX));
                     total_rows += gap;
                 }
             }
+            previous = Some(&b.kind);
             let rows = if b.cacheable() {
                 if render_cache.get(&b.id).map(|(revision, _)| *revision) != Some(b.revision) {
                     let rendered = b.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy);
@@ -9358,6 +9459,19 @@ fn draw(f: &mut Frame, app: &mut App) {
             .thumb_style(Style::default().fg(app.theme.muted))
             .track_style(Style::default().fg(app.theme.code_bg));
         f.render_stateful_widget(sb, surface.scrollbar, &mut sb_state);
+    }
+
+    // The workflow region, between the transcript and the queued/steer lanes. On every frame with
+    // no live run the height is 0 and this paints nothing — the region is free until it is earned.
+    // A granted height smaller than the tree is not a clip: `window_workflow_rows` keeps the totals
+    // footer and states how many rows it hid above and below.
+    if surface.workflow.height > 0 && !workflow_rows.is_empty() {
+        let rows = block::window_workflow_rows(
+            workflow_rows,
+            usize::from(surface.workflow.height),
+            &app.theme,
+        );
+        f.render_widget(Paragraph::new(rows), surface.workflow);
     }
 
     render_pending_lanes(f, surface.lanes, app);
@@ -13219,6 +13333,340 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             _ => unreachable!(),
         };
         assert!(settled);
+    }
+
+    /// The region is where a run in flight is watched, and the conversation is where it is recorded
+    /// once it is over. Both halves are checked against the two numbers `draw` leaves behind:
+    /// `last_total_rows` is how many rows the CONVERSATION rendered, and `view_h` is how many rows
+    /// the conversation was GIVEN. A live run must move the second and not the first — the region
+    /// takes rows from the same frame, while the transcript draws nothing for the run at all, not
+    /// the tree and not even the blank line that would normally precede its block.
+    #[test]
+    fn a_live_run_is_watched_in_the_region_and_recorded_in_the_transcript_when_it_settles() {
+        use core_workflow::events::ProgressEvent;
+
+        let mut app = App::new();
+        app.theme = theme::Theme::dark();
+        app.push(fg(Color::White), "conversation marker");
+
+        let before = render_text(&mut app, 100, 30);
+        assert!(before.contains("conversation marker"), "{before}");
+        let conversation_rows = app.last_total_rows;
+        let conversation_height = app.view_h;
+
+        let run_id = "wf_region_1";
+        app.workflow_run_started(run_id, "region audit", &["Explore".to_string()]);
+        app.workflow_run_event(
+            run_id,
+            "region audit",
+            ProgressEvent::AgentStarted {
+                index: 0,
+                label: "scan modules".into(),
+                phase: Some("Explore".into()),
+                model: Some("haiku".into()),
+            },
+        );
+        let block_id = app
+            .workflow_monitor
+            .block_id(run_id)
+            .expect("the run minted its card");
+        assert_eq!(app.workflow_monitor.region_block(), Some(block_id));
+
+        let live = render_text(&mut app, 100, 30);
+        assert!(live.contains("region audit"), "the tree is on screen: {live}");
+        assert!(live.contains("scan modules"), "{live}");
+        assert!(
+            live.contains("conversation marker"),
+            "the conversation is still readable behind it: {live}"
+        );
+        assert_eq!(
+            app.last_total_rows, conversation_rows,
+            "the transcript renders nothing for a live run — not the tree, not a gap in front of it"
+        );
+        let region_height = conversation_height - app.view_h;
+        assert!(
+            region_height > 0,
+            "the region took its rows from the same frame"
+        );
+        assert!(
+            region_height <= workflow_region_cap(30),
+            "and never more than its half of it"
+        );
+
+        // The handover. The region lets go the instant the run settles, because from that instant
+        // the tree has stopped moving and the conversation owes the reader its record.
+        app.workflow_run_finished(run_id);
+        let settled = render_text(&mut app, 100, 30);
+        assert_eq!(
+            app.workflow_monitor.region_block(),
+            None,
+            "nothing is running, so the region is back to costing nothing"
+        );
+        assert_eq!(
+            app.view_h, conversation_height,
+            "the rows it borrowed go back to the conversation"
+        );
+        assert!(
+            app.last_total_rows > conversation_rows,
+            "which now renders the run's permanent record"
+        );
+        assert!(
+            settled.contains("region audit") && settled.contains("scan modules"),
+            "the same tree, at the point in the conversation where the run began: {settled}"
+        );
+        assert!(
+            app.transcript.iter().any(|block| block.id == block_id),
+            "one card, moved between surfaces rather than copied"
+        );
+    }
+
+    /// The region must be free until it is earned: a session in which no workflow ever runs has the
+    /// geometry it had before the region existed.
+    #[test]
+    fn a_session_without_a_workflow_pays_no_rows_for_the_region() {
+        let mut app = App::new();
+        app.theme = theme::Theme::dark();
+        app.push(fg(Color::White), "conversation only");
+
+        assert_eq!(app.workflow_monitor.region_block(), None);
+        assert!(app.workflow_region_rows(100).is_empty());
+
+        for (width, height) in PRODUCT_SIZES {
+            let screen = render_text(&mut app, width, height);
+            let unchanged =
+                surface::Surface::resolve(Rect::new(0, 0, width, height), 1, 0, 0, true, false);
+            assert_eq!(unchanged.workflow.height, 0);
+            assert_eq!(
+                app.view_h, unchanged.transcript.height,
+                "the transcript keeps every row it had at {width}x{height}: {screen}"
+            );
+        }
+    }
+
+    /// `/clear` clears the CONVERSATION, and a QuickJS run does not stop because the conversation
+    /// did. The run still in flight keeps the card the region draws — losing it would blank a
+    /// running workflow with nothing able to restore it. The run that already finished leaves with
+    /// its record, exactly like every other block of the cleared conversation.
+    #[test]
+    fn clearing_the_conversation_keeps_a_running_workflow_and_drops_a_finished_one() {
+        use core_workflow::events::ProgressEvent;
+
+        let mut app = App::new();
+        app.theme = theme::Theme::dark();
+        app.push(fg(Color::White), "conversation marker");
+
+        let finished_run = "wf_clear_done";
+        app.workflow_run_started(finished_run, "finished audit", &["Explore".to_string()]);
+        let finished_block = app
+            .workflow_monitor
+            .block_id(finished_run)
+            .expect("the finished run minted its card");
+        app.workflow_run_finished(finished_run);
+
+        let live_run = "wf_clear_live";
+        app.workflow_run_started(live_run, "running audit", &["Explore".to_string()]);
+        app.workflow_run_event(
+            live_run,
+            "running audit",
+            ProgressEvent::Log {
+                message: "still scanning".into(),
+            },
+        );
+        let live_block = app
+            .workflow_monitor
+            .block_id(live_run)
+            .expect("the live run minted its card");
+
+        clear_conversation(&mut app);
+
+        assert!(
+            app.transcript.iter().any(|block| block.id == live_block),
+            "the running workflow keeps the card the region draws"
+        );
+        assert!(
+            !app.transcript.iter().any(|block| block.id == finished_block),
+            "the finished run's record leaves with the conversation it belonged to"
+        );
+        assert_eq!(
+            app.workflow_monitor.region_block(),
+            Some(live_block),
+            "and the region is still pointed at what is still running"
+        );
+        assert_eq!(app.workflow_monitor.live_count(), 1);
+        assert_eq!(
+            app.workflow_monitor.collapsed(finished_run),
+            None,
+            "the settled binding is dropped, not left pointing at a block that was just removed"
+        );
+
+        let screen = render_text(&mut app, 100, 30);
+        assert!(screen.contains("running audit"), "{screen}");
+        assert!(screen.contains("still scanning"), "{screen}");
+        assert!(screen.contains("transcript cleared"), "{screen}");
+        assert!(!screen.contains("conversation marker"), "{screen}");
+        assert!(!screen.contains("finished audit"), "{screen}");
+    }
+
+    /// Moving the live tree out of the transcript takes it out of the row map the mouse fold uses,
+    /// so the fold has to stay reachable from the keyboard — and it has to move the store's bit and
+    /// the card's mirror together, exactly as the transcript fold does.
+    #[test]
+    fn ctrl_o_folds_the_run_the_region_is_drawing() {
+        use core_workflow::events::ProgressEvent;
+
+        let mut app = App::new();
+        app.theme = theme::Theme::dark();
+        app.push(fg(Color::White), "conversation marker");
+
+        let run_id = "wf_region_fold";
+        app.workflow_run_started(run_id, "region audit", &["Explore".to_string()]);
+        app.workflow_run_event(
+            run_id,
+            "region audit",
+            ProgressEvent::Log {
+                message: "scanning".into(),
+            },
+        );
+        let block_id = app
+            .workflow_monitor
+            .block_id(run_id)
+            .expect("the run minted its card");
+        let verbose = |app: &App| {
+            app.transcript
+                .iter()
+                .find(|block| block.id == block_id)
+                .map(|block| match &block.kind {
+                    block::BlockKind::WorkflowRun(card) => card.verbose,
+                    _ => unreachable!(),
+                })
+                .expect("the region's card is still in the transcript")
+        };
+
+        assert!(!verbose(&app));
+        app.toggle_last_fold();
+        assert!(verbose(&app), "the card the region renders expanded");
+        assert_eq!(
+            app.workflow_monitor.collapsed(run_id),
+            Some(false),
+            "through the store that owns the bit, not around it"
+        );
+        app.toggle_last_fold();
+        assert!(!verbose(&app));
+        assert_eq!(app.workflow_monitor.collapsed(run_id), Some(true));
+
+        // Once nothing is running, Ctrl-O goes back to the last collapsible transcript block.
+        app.workflow_run_finished(run_id);
+        app.tool_start(
+            "t1".into(),
+            "read_file".into(),
+            serde_json::json!({"path": "a"}),
+        );
+        app.toggle_last_fold();
+        assert!(
+            !verbose(&app),
+            "the settled run is a record now, not the thing Ctrl-O reaches for"
+        );
+    }
+
+    #[test]
+    fn the_region_never_asks_for_more_than_half_the_frame() {
+        assert_eq!(workflow_region_cap(0), 0);
+        assert_eq!(
+            workflow_region_cap(1),
+            0,
+            "a one-row frame belongs to the composer, not to inspection chrome"
+        );
+        assert_eq!(workflow_region_cap(2), 1);
+        assert_eq!(workflow_region_cap(24), 12);
+        assert_eq!(workflow_region_cap(41), 21);
+        for height in 2..=64u16 {
+            assert!(
+                height - workflow_region_cap(height) >= height / 2,
+                "the conversation keeps its half at height {height}"
+            );
+        }
+    }
+
+    /// A frame too small to spare the region a single row must not make a running workflow vanish:
+    /// the region is where a live run is watched, but "nowhere" is never an option.
+    #[test]
+    fn a_frame_too_small_for_the_region_keeps_the_run_in_the_conversation() {
+        use core_workflow::events::ProgressEvent;
+
+        let mut app = App::new();
+        app.theme = theme::Theme::dark();
+        // The landing already has a conversation (the welcome block), so the run is measured as a
+        // DELTA against it rather than against an empty transcript.
+        let _ = render_text(&mut app, 60, 30);
+        let conversation_rows = app.last_total_rows;
+
+        let run_id = "wf_region_tiny";
+        app.workflow_run_started(run_id, "tiny frame audit", &["Explore".to_string()]);
+        app.workflow_run_event(
+            run_id,
+            "tiny frame audit",
+            ProgressEvent::Log {
+                message: "scanning".into(),
+            },
+        );
+
+        // Four rows leave the status line, the transcript floor and the composer frame nothing to
+        // give away, so the region is granted zero — and the tree renders through the transcript.
+        let tiny = render_text(&mut app, 60, 4);
+        assert!(
+            app.last_total_rows > conversation_rows,
+            "the transcript drew the run rather than dropping it: {tiny}"
+        );
+
+        // The same run on a frame with room is drawn by the region and by nothing else.
+        let roomy = render_text(&mut app, 60, 30);
+        assert_eq!(
+            app.last_total_rows, conversation_rows,
+            "the conversation renders nothing for it: {roomy}"
+        );
+        assert!(roomy.contains("tiny frame audit"), "{roomy}");
+    }
+
+    /// A wide fan renders a tree taller than any terminal. The cap keeps it from swallowing the
+    /// conversation, and the window states what it hid instead of clipping the tree in silence.
+    #[test]
+    fn a_tree_taller_than_the_terminal_windows_instead_of_eating_the_conversation() {
+        use core_workflow::events::ProgressEvent;
+
+        let mut app = App::new();
+        app.theme = theme::Theme::dark();
+        app.push(fg(Color::White), "conversation marker");
+        let _ = render_text(&mut app, 100, 30);
+        let conversation_height = app.view_h;
+
+        let run_id = "wf_region_fan";
+        app.workflow_run_started(run_id, "wide fan", &["Explore".to_string()]);
+        for index in 0..40 {
+            app.workflow_run_event(
+                run_id,
+                "wide fan",
+                ProgressEvent::AgentStarted {
+                    index,
+                    label: format!("investigator {index:02}"),
+                    phase: Some("Explore".into()),
+                    model: Some("haiku".into()),
+                },
+            );
+        }
+
+        let screen = render_text(&mut app, 100, 30);
+        assert!(
+            conversation_height - app.view_h <= workflow_region_cap(30),
+            "the region is capped however tall the tree is"
+        );
+        assert!(
+            screen.contains("more"),
+            "the window says how many rows it hid: {screen}"
+        );
+        assert!(
+            screen.contains("conversation marker"),
+            "and the conversation is still readable: {screen}"
+        );
     }
 
     /// A workflow script is untrusted input and the interactive transcript is retained state, so
