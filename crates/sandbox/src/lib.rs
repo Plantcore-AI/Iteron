@@ -25,6 +25,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub mod bubblewrap;
 mod persistent;
+pub mod pty;
 pub mod seatbelt;
 
 pub use persistent::{
