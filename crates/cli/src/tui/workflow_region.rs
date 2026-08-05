@@ -129,9 +129,9 @@ impl WorkflowMonitor {
     }
 
     /// How many runs are still live.
-    // Not yet read: the region that displays it, and the focus/collapse queries below, arrive with
-    // the slice that makes this store the authority the workflow region renders from.
-    #[cfg_attr(not(test), allow(dead_code))]
+    ///
+    /// Read by the status row's compact liveness bit (`crate::tui::status_right_bits`), which is
+    /// the only indication a run is still going on a terminal too short to draw the region.
     pub(crate) fn live_count(&self) -> usize {
         self.runs.iter().filter(|run| !run.settled).count()
     }

@@ -8331,6 +8331,24 @@ fn status_right_bits(app: &App, density: surface::Density) -> Vec<String> {
     if app.keymap_status != "keys:standard" {
         bits.push(app.keymap_status.clone());
     }
+    // A live QuickJS workflow run announces itself only through its transcript card, and a
+    // terminal too short for that card — the workflow region negotiates down to zero rows before
+    // the status row gives up its last one (`surface::Surface::resolve`) — showed no sign that a
+    // run was still going at all. This bit is that sign and nothing more: `⟳ n run(s)`, the
+    // smallest thing that answers "is something still running?".
+    //
+    // It follows the keymap bit's rule — say it only when it is not the default — so an operator
+    // with no workflow running never pays a column for it. It is placed here, immediately after
+    // mouse ownership, because it is a redundancy: whenever the region itself is on screen the
+    // region is the better answer, so under width pressure this yields ahead of context, mode,
+    // the pending count, and the route/effort identity, which have no second place to be read.
+    let live_runs = app.workflow_monitor.live_count();
+    if live_runs > 0 {
+        bits.push(format!(
+            "\u{27f3} {live_runs} run{}", // ⟳
+            if live_runs == 1 { "" } else { "s" }
+        ));
+    }
     // Economics is drill-down information and the first metadata dropped under pressure. Keep it
     // off the standard surface; `/cost` remains the authoritative full-run view.
     if density == surface::Density::Wide
@@ -11256,6 +11274,106 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(
             bottom.contains("● high"),
             "effort stays in bottom row: {bottom:?}"
+        );
+    }
+
+    /// A terminal too short for the workflow region drops it to zero rows before the status row
+    /// gives up its own (`surface::Surface::resolve`), so the status row is the last place that can
+    /// say a run is still going. It is also the row with the least space, so the bit is tiny and
+    /// yields early: this pins both halves of that bargain.
+    #[test]
+    fn a_live_workflow_run_shows_on_the_status_row_and_yields_before_the_bits_that_matter_more() {
+        const GLYPH: char = '\u{27f3}'; // ⟳
+        let mut app = App::new();
+
+        // Nothing running: the row does not spend a column saying so.
+        let idle = status_right_bits(&app, surface::Density::Wide);
+        assert!(
+            !idle.iter().any(|bit| bit.contains(GLYPH)),
+            "an idle session must not carry a workflow bit: {idle:?}"
+        );
+
+        app.workflow_monitor.ingest(
+            "wf_status_a",
+            workflow_region::WorkflowRunSignal::Live { block_id: 7 },
+        );
+        let one = status_right_bits(&app, surface::Density::Wide);
+        assert!(
+            one.iter().any(|bit| bit == &format!("{GLYPH} 1 run")),
+            "one live run: {one:?}"
+        );
+        app.workflow_monitor.ingest(
+            "wf_status_b",
+            workflow_region::WorkflowRunSignal::Live { block_id: 8 },
+        );
+        let two = status_right_bits(&app, surface::Density::Wide);
+        assert!(
+            two.iter().any(|bit| bit == &format!("{GLYPH} 2 runs")),
+            "two live runs: {two:?}"
+        );
+
+        // The bit tracks LIVE runs, not cards: a run whose engine future resolved stops counting.
+        app.workflow_monitor
+            .ingest("wf_status_b", workflow_region::WorkflowRunSignal::Settled);
+        app.workflow_monitor
+            .ingest("wf_status_a", workflow_region::WorkflowRunSignal::Settled);
+        let settled = status_right_bits(&app, surface::Density::Wide);
+        assert!(
+            !settled.iter().any(|bit| bit.contains(GLYPH)),
+            "settled runs must not keep claiming to be live: {settled:?}"
+        );
+
+        app.workflow_monitor.ingest(
+            "wf_status_a",
+            workflow_region::WorkflowRunSignal::Live { block_id: 9 },
+        );
+        // `render_status` drops right-hand bits from the FRONT, so position IS drop order: the
+        // workflow bit sits ahead of context, mode, the pending count and the route/effort
+        // identity, and behind only mouse ownership.
+        for density in [
+            surface::Density::Compact,
+            surface::Density::Standard,
+            surface::Density::Wide,
+        ] {
+            let bits = status_right_bits(&app, density);
+            let at = bits
+                .iter()
+                .position(|bit| bit.contains(GLYPH))
+                .unwrap_or_else(|| panic!("{density:?}: no workflow bit in {bits:?}"));
+            assert_eq!(at, 1, "{density:?}: wrong drop rank in {bits:?}");
+            assert!(at < bits.len() - 1, "{density:?}: it must not be the last");
+        }
+
+        // Width sweep through the real renderer: present while the row has room, gone once it does
+        // not — and the route/effort identity it yields to is still on screen at that width.
+        let identity = effort_status_label(&app);
+        let mut widest_without = None;
+        let mut narrowest_with = None;
+        for width in [200u16, 160, 120, 100, 80, 60, 50, 40, 30, 24] {
+            let screen = render_text(&mut app, width, 14);
+            if screen.contains(&format!("{GLYPH} 1 run")) {
+                narrowest_with = Some(width);
+            } else if widest_without.is_none() {
+                widest_without = Some(width);
+            }
+        }
+        assert!(
+            narrowest_with.is_some() && widest_without.is_some(),
+            "the sweep must cross the drop point: with={narrowest_with:?} without={widest_without:?}"
+        );
+        assert!(
+            widest_without.unwrap() < narrowest_with.unwrap(),
+            "the bit must drop monotonically as the row narrows: \
+             last seen at {narrowest_with:?}, first missing at {widest_without:?}"
+        );
+        // At the width that dropped it, what it yielded to is still readable.
+        let narrow = render_text(&mut app, widest_without.unwrap(), 14);
+        assert!(
+            identity
+                .chars()
+                .next()
+                .is_some_and(|symbol| narrow.contains(symbol)),
+            "the route/effort identity ({identity}) must outlive the workflow bit:\n{narrow}"
         );
     }
 

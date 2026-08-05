@@ -1472,17 +1472,37 @@ fn agent_row_lines(
 
 /// Truncate `spans` to exactly `width` display columns, padding with spaces — so a bordered box's
 /// right edge stays aligned regardless of styled/variable-width content.
+///
+/// Content that does not fit ends in `…`, the same marker [`crate::tui::clip_text`] leaves, so a
+/// cut row says it was cut instead of just stopping. A double-width glyph is never split across
+/// the boundary: it is dropped whole and the freed column becomes padding, which is why the marker
+/// costs one column rather than replacing whatever happened to land last.
 fn fit_spans(spans: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
+    let total = spans
+        .iter()
+        .flat_map(|span| span.content.chars())
+        .map(crate::tui::char_width)
+        .fold(0u16, u16::saturating_add);
+    let overflows = total > width;
+    // The marker's column is reserved only when the content actually overflows; a row that fits
+    // keeps every one of its columns.
+    let budget = if overflows {
+        width.saturating_sub(1)
+    } else {
+        width
+    };
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut used: u16 = 0;
+    let mut cut_style = Style::default();
     for span in spans {
-        if used >= width {
+        if used >= budget {
             break;
         }
+        cut_style = span.style;
         let mut piece = String::new();
         for ch in span.content.chars() {
             let cw = crate::tui::char_width(ch);
-            if used + cw > width {
+            if used + cw > budget {
                 break;
             }
             piece.push(ch);
@@ -1491,6 +1511,10 @@ fn fit_spans(spans: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
         if !piece.is_empty() {
             out.push(Span::styled(piece, span.style));
         }
+    }
+    if overflows && width > 0 {
+        out.push(Span::styled("\u{2026}".to_string(), cut_style)); // …
+        used = used.saturating_add(1);
     }
     if used < width {
         out.push(Span::raw(" ".repeat((width - used) as usize)));
@@ -1658,7 +1682,12 @@ pub(crate) fn render_workflow_run(
             Style::default().fg(theme.faint),
         ));
     }
-    out.push(Line::from(head));
+    // A run name is operator-supplied and unbounded, so the title row is the one row that can be
+    // longer than the pane. Every other row in this tree is already budgeted (`fit_spans` inside
+    // the phase box, `clip_text` for the result preview); the title was not, and a wide terminal
+    // hid that until a narrow one cut the row at the pane edge with nothing to say it had. It goes
+    // through the same helper the box rows do.
+    out.push(Line::from(fit_spans(head, width)));
     out.push(Line::default());
 
     // Narrator: newest log as `❯ <msg>`, up to two prior logs dim below, then a blank margin row.
@@ -1774,7 +1803,10 @@ pub(crate) fn render_workflow_run(
         Style::default().fg(theme.muted),
     ));
     out.push(Line::default());
-    out.push(Line::from(totals));
+    // The footer accumulates columns as a run grows (agents, failures, tokens, tool calls, clock),
+    // so it outgrows a narrow pane on its own without any operator input. Same helper, same
+    // guarantee: the elapsed column is the one that disappears first, and the row says so.
+    out.push(Line::from(fit_spans(totals, width)));
 
     out
 }
@@ -4444,6 +4476,104 @@ mod tests {
         );
     }
 
+    /// A run name is whatever the workflow author wrote, and the totals row grows on its own as a
+    /// run accumulates agents/failures/tokens/tool calls/elapsed. Both used to be handed to the
+    /// pane unbudgeted, so a narrow terminal cut them at the pane edge with no marker and — with a
+    /// double-width title — at a column that is inside a glyph rather than between two.
+    #[test]
+    fn the_run_title_and_totals_rows_are_ellipsised_at_every_width() {
+        use core_workflow::events::WorkflowState;
+
+        let theme = Theme::dark();
+        // Wide (2-column) glyphs, so a cut that lands mid-glyph is observable as a row that is one
+        // column short of the pane rather than flush with it.
+        let title = "追踪一个非常长的工作流标题".repeat(6);
+        let mut c = WorkflowRunCard::new("wf_a_very_long_run_identifier", title.clone());
+        c.ingest(ProgressEvent::Phase {
+            index: 1,
+            title: "Explore".into(),
+        });
+        c.ingest(ProgressEvent::AgentFinished {
+            index: 0,
+            label: "scan modules".into(),
+            state: WorkflowState::Error,
+            tokens: 123_456,
+            tool_calls: 42,
+            duration_ms: 3_200,
+            result_preview: None,
+            last_tool_summary: None,
+            error: Some("provider timeout".into()),
+        });
+
+        for width in [120u16, 78, 60, 40, 30, 20, 12, 6, 2, 1] {
+            let lines = render_workflow_run(&c, width, &theme, 0);
+            let head = lines.first().expect("a title row");
+            let footer = lines.last().expect("a totals footer");
+
+            // Both rows land exactly on the pane edge: the marker costs a column, and a wide glyph
+            // that no longer fits is dropped whole and replaced by padding, never half-drawn.
+            assert_eq!(
+                line_width(head),
+                width,
+                "width {width}: the title row is not flush: {head:?}"
+            );
+            assert_eq!(
+                line_width(footer),
+                width,
+                "width {width}: the totals row is not flush: {footer:?}"
+            );
+
+            let head_text = workflow_line_text(head);
+            let footer_text = workflow_line_text(footer);
+            assert!(
+                head_text.contains('\u{2026}'),
+                "width {width}: a {}-column title was cut with no marker: {head_text:?}",
+                title.chars().count() * 2
+            );
+            assert!(
+                !head_text.contains(&title),
+                "width {width}: the full title cannot fit and must not be claimed"
+            );
+
+            // What survives is a genuine PREFIX of the name — proof the cut fell between glyphs.
+            // (The row may also have taken the leading space of the field after the name, since a
+            // wide glyph that no longer fits leaves a single column the next field can start in.)
+            if width >= 12 {
+                let shown: String = head_text
+                    .trim_end()
+                    .trim_end_matches('\u{2026}')
+                    .trim_end()
+                    .chars()
+                    .skip(2) // the run marker/spinner glyph and its space
+                    .collect();
+                assert!(
+                    !shown.is_empty() && title.starts_with(&shown),
+                    "width {width}: {shown:?} is not a prefix of the run name"
+                );
+            }
+
+            // The totals row is the same story once a run has enough columns of evidence to report.
+            assert!(
+                width >= 60 || footer_text.contains('\u{2026}'),
+                "width {width}: the totals row was cut with no marker: {footer_text:?}"
+            );
+        }
+
+        // Wide enough for everything: no marker is spent, and the evidence is all there.
+        let roomy = plain(render_workflow_run(&c, 260, &theme, 0));
+        assert!(
+            roomy.contains(&title),
+            "a 260-column pane shows the whole name"
+        );
+        assert!(
+            roomy.contains("0/1 agents \u{b7} 1 failed \u{b7} 123.5k tok \u{b7} 42 tool calls")
+        );
+        assert!(
+            !roomy.lines().next().unwrap().contains('\u{2026}'),
+            "a title that fits must not be marked as cut"
+        );
+    }
+
     #[test]
     fn a_long_result_preview_is_truncated_to_the_available_width() {
         let theme = Theme::dark();
@@ -4452,8 +4582,9 @@ mod tests {
 
         // From "comfortably wide" down to "a phone in portrait", the phase box stays rectangular:
         // the preview is budgeted against the width its own sub-line will actually be fit to.
-        // (The run header/totals lines are NOT width-fit — that is pre-existing and untouched here,
-        // so this pins the box interior, which is where the preview lands.)
+        // (The run title/totals rows now go through `fit_spans` as well — see
+        // `the_run_title_and_totals_rows_are_ellipsised_at_every_width` — so this test pins the box
+        // interior, which is where the preview lands.)
         let mut boxed_widths = 0;
         for width in [120u16, 78, 60, 40, 30, 20, 14, 8] {
             let lines = render_workflow_run(&c, width, &theme, 0);
