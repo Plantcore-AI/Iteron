@@ -2173,12 +2173,37 @@ fn discover_agent_catalog(repo: &std::path::Path) -> core_agents::AgentCatalog {
         Some(home) => core_agents::AgentCatalog::discover(&home, repo),
         None => core_agents::AgentCatalog::discover_without_user(repo),
     };
+    // A skipped symlink and a truncated directory are SCAN STEPS, not rejected agent definitions.
+    // Printing one line each turned startup in a large tree into 150 lines of noise that buried the
+    // three lines an operator actually needs — and called every `node_modules/.bin` entry a rejected
+    // agent, which is not what happened to it.
+    //
+    // Real rejections (a definition that exists and is malformed, over-broad, or unsafe) still print
+    // one line each: those are the operator's own files failing, and they have to stay loud.
+    let mut skipped = 0usize;
     for error in catalog.errors() {
         let source = safe_agent_diagnostic(&error.source);
         let reason = safe_agent_diagnostic(&error.reason);
+        if is_scan_limit(&error.reason) {
+            skipped += 1;
+            continue;
+        }
         eprintln!("agent definition rejected: {} ({})", source, reason);
     }
+    if skipped > 0 {
+        eprintln!(
+            "agent scan: {skipped} path{} skipped (symlinks not followed, or a directory past its scan bound); no definition was rejected",
+            if skipped == 1 { "" } else { "s" }
+        );
+    }
     catalog
+}
+
+/// Whether a catalog error describes the SCAN refusing to walk further, rather than a definition
+/// being refused. Matched on the reason the scanner writes, because the scanner is the only thing
+/// that produces these and the operator never sees the enum.
+fn is_scan_limit(reason: &str) -> bool {
+    reason.contains("skipped a symlink") || reason.contains("truncated")
 }
 
 fn safe_agent_diagnostic(value: &str) -> String {

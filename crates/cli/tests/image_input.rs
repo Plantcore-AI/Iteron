@@ -673,3 +673,15 @@ fn reserving_an_id_stops_a_restored_draft_from_claiming_a_fresh_image() {
         "the reserved id belongs to nothing in this process"
     );
 }
+
+/// The exact bytes a macOS screenshot drag put into the composer, as reported from a live session.
+#[test]
+fn diag_a_macos_screenshot_drop_parses_as_one_image_reference() {
+    let dropped = "/var/folders/8_/rq579cj53gd7vhd9z2pp_s640000gn/T/TemporaryItems/NSIRD_screencaptureui_h8rbk9/Screenshot\\ 2026-08-06\\ at\\ 3.57.44\\ PM.png";
+    let parsed = parse_explicit_image_path(dropped).expect("a dropped png is not an error");
+    let reference = parsed.expect("the drop parses as an image path");
+    assert_eq!(
+        reference.path().to_string_lossy(),
+        "/var/folders/8_/rq579cj53gd7vhd9z2pp_s640000gn/T/TemporaryItems/NSIRD_screencaptureui_h8rbk9/Screenshot 2026-08-06 at 3.57.44 PM.png"
+    );
+}

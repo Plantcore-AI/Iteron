@@ -327,6 +327,14 @@ impl FileConfig {
     /// (fail loud on a config the operator wrote), but an absent file is fine.
     pub fn load(repo: &Path) -> anyhow::Result<FileConfig> {
         let path = core_protocol::home::path(repo, "config.json");
+        // Running `core` from the operator's home makes the PROJECT config path resolve to the very
+        // file the USER config lives in. Reading it a second time under untrusted-origin rules made
+        // the operator's own `providers`/`provider` look like a cloned repository's suggestion, and
+        // the session warned that it was ignoring them — from the one file that is allowed to
+        // declare them. Trust is a property of WHERE a file is, and this is the same `where`.
+        if user_config_path().is_some_and(|user| same_file(&user, &path)) {
+            return Ok(FileConfig::default());
+        }
         let Some(text) = read_bounded_config(&path, false)? else {
             return Ok(FileConfig::default());
         };
@@ -550,6 +558,18 @@ impl FileConfig {
         Self::parse(&text).map_err(|error| {
             anyhow::Error::new(error).context(format!("failed to load {}", path.display()))
         })
+    }
+}
+
+/// Whether two paths name the same file on disk.
+///
+/// Canonicalized, so `~/.core/config.json` and `<repo>/.core/config.json` are recognised as one file
+/// when the repo IS the home directory — including through a symlinked home, which is why this is
+/// not a string comparison.
+fn same_file(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
     }
 }
 
