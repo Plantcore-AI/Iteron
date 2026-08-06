@@ -95,12 +95,19 @@ impl Default for ImageLoadLimits {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ImageAttachment {
+    /// Draft-local identity, shown on the chip as `#N` and named by the in-line
+    /// `[Image #N]` anchor. See [`ImageAttachments::next_id`] for why it is monotonic.
+    id: u32,
     display_name: SafeDisplayName,
     content: ImageContent,
     file_bytes: usize,
 }
 
 impl ImageAttachment {
+    pub const fn id(&self) -> u32 {
+        self.id
+    }
+
     pub fn display_name(&self) -> &str {
         self.display_name.as_str()
     }
@@ -130,6 +137,7 @@ impl fmt::Debug for ImageAttachment {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ImageAttachment")
+            .field("id", &self.id)
             .field("display_name", &self.display_name())
             .field("media_type", &self.media_type())
             .field("file_bytes", &self.file_bytes())
@@ -144,6 +152,11 @@ pub struct ImageAttachments {
     items: Vec<ImageAttachment>,
     file_bytes: usize,
     encoded_bytes: usize,
+    /// Monotonic for the life of this collection, and deliberately *not* reset by
+    /// [`Self::clear`] — exactly the rule [`crate::paste_input::PastedTexts`] follows, for exactly
+    /// the reason. An id names a moment, so an `[Image #1]` anchor left over in a restored draft can
+    /// never be answered by a later, unrelated screenshot that happened to reuse the number.
+    next_id: u32,
 }
 
 impl ImageAttachments {
@@ -153,11 +166,37 @@ impl ImageAttachments {
             items: Vec::new(),
             file_bytes: 0,
             encoded_bytes: 0,
+            next_id: 0,
         }
     }
 
     pub fn as_slice(&self) -> &[ImageAttachment] {
         &self.items
+    }
+
+    pub fn get(&self, id: u32) -> Option<&ImageAttachment> {
+        self.items.iter().find(|item| item.id == id)
+    }
+
+    /// Put the images an anchored draft names first, in the order it names them, and leave every
+    /// unanchored image behind them in the order the operator attached it.
+    ///
+    /// This is the whole substance of an anchor at submission time. The protocol's segment list is
+    /// frozen at one text segment plus images, so position cannot be expressed by interleaving;
+    /// it is expressed by making the image order agree with the anchor order, which is what lets a
+    /// reader tie `[Image #2]` in the sentence to a specific picture beside it.
+    pub fn order_by_anchors(&mut self, ids: &[u32]) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut ordered = Vec::with_capacity(self.items.len());
+        for id in ids {
+            if let Some(index) = self.items.iter().position(|item| item.id == *id) {
+                ordered.push(self.items.remove(index));
+            }
+        }
+        ordered.append(&mut self.items);
+        self.items = ordered;
     }
 
     pub fn len(&self) -> usize {
@@ -256,6 +295,12 @@ impl ImageAttachments {
         self.encoded_bytes = 0;
     }
 
+    /// Guarantee that no id this store mints from now on is `id` or below — the image half of
+    /// [`crate::paste_input::PastedTexts::reserve_id`], for the same restored-draft reason.
+    pub fn reserve_id(&mut self, id: u32) {
+        self.next_id = self.next_id.max(id);
+    }
+
     pub fn to_content_segments(&self, text: String) -> Result<ContentSegments, ImageInputError> {
         let mut segments = Vec::with_capacity(self.items.len() + 1);
         segments.push(ContentSegment::Text { text });
@@ -301,7 +346,10 @@ impl ImageAttachments {
         })?;
         self.file_bytes += bytes.len();
         self.encoded_bytes = aggregate_encoded;
+        let id = self.next_id.wrapping_add(1);
+        self.next_id = id;
         self.items.push(ImageAttachment {
+            id,
             display_name: name,
             content,
             file_bytes: bytes.len(),

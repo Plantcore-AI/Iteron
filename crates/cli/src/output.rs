@@ -19,6 +19,8 @@ pub const SCHEMA_VERSION: u32 = 5;
 pub const LEGACY_SCHEMA_VERSION: u32 = 4;
 pub const SUPPORTED_SCHEMA_VERSIONS: [u32; 2] = [LEGACY_SCHEMA_VERSION, SCHEMA_VERSION];
 pub const EXIT_SUCCESS: u8 = 0;
+/// A workflow settled, but one or more fan-out agents failed. Kept distinct from cancellation 130.
+pub const EXIT_WORKFLOW_FAILED: u8 = 1;
 pub const EXIT_HARNESS: u8 = 2;
 pub const EXIT_BUDGET: u8 = 3;
 pub const EXIT_STUCK: u8 = 4;

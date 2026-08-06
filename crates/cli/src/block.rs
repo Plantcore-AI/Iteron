@@ -323,16 +323,21 @@ impl WorkflowRunCard {
         }
     }
 
-    /// Run-level totals: `(done, total, tokens, tool_calls)` across every row.
-    pub fn totals(&self) -> (usize, usize, u64, u64) {
+    /// Run-level totals: `(done, total, errors, tokens, tool_calls)` across every row.
+    pub fn totals(&self) -> (usize, usize, usize, u64, u64) {
         let done = self
             .agents
             .iter()
             .filter(|agent| agent.state == WorkflowState::Done)
             .count();
+        let errors = self
+            .agents
+            .iter()
+            .filter(|agent| agent.state == WorkflowState::Error)
+            .count();
         let tokens = self.agents.iter().map(|agent| agent.tokens).sum();
         let tool_calls = self.agents.iter().map(|agent| agent.tool_calls).sum();
-        (done, self.agents.len(), tokens, tool_calls)
+        (done, self.agents.len(), errors, tokens, tool_calls)
     }
 
     /// Resolve an agent's group: an explicit `opts.phase` title binds to (or registers) a phase;
@@ -496,10 +501,8 @@ pub enum BlockKind {
     /// A live, id-correlated workflow/agent tree (ultracode today; generic workflow vocabulary).
     Workflow(WorkflowCard),
     /// The live QuickJS `core-workflow` phase→agent tree (design §3.3), fed by `ProgressEvent`s.
-    /// The one-shot `core workflow run` live loop renders its `WorkflowRunCard` directly; the
-    /// interactive-REPL seam (`App::workflow_run_event`) has no live caller until ADR-0001 step 1
-    /// lands, which needs a CLI stream schema-version bump to carry a new `UiEvent` variant.
-    #[allow(dead_code)]
+    /// Interactive `WorkflowRunUiEvent`s drive it: `App::workflow_run_started` pushes the card,
+    /// then progress and finished events mutate it in place.
     WorkflowRun(WorkflowRunCard),
     /// A one-line harness hint / confirmation (its level sets color + glyph).
     Notice {
@@ -1469,17 +1472,37 @@ fn agent_row_lines(
 
 /// Truncate `spans` to exactly `width` display columns, padding with spaces — so a bordered box's
 /// right edge stays aligned regardless of styled/variable-width content.
+///
+/// Content that does not fit ends in `…`, the same marker [`crate::tui::clip_text`] leaves, so a
+/// cut row says it was cut instead of just stopping. A double-width glyph is never split across
+/// the boundary: it is dropped whole and the freed column becomes padding, which is why the marker
+/// costs one column rather than replacing whatever happened to land last.
 fn fit_spans(spans: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
+    let total = spans
+        .iter()
+        .flat_map(|span| span.content.chars())
+        .map(crate::tui::char_width)
+        .fold(0u16, u16::saturating_add);
+    let overflows = total > width;
+    // The marker's column is reserved only when the content actually overflows; a row that fits
+    // keeps every one of its columns.
+    let budget = if overflows {
+        width.saturating_sub(1)
+    } else {
+        width
+    };
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut used: u16 = 0;
+    let mut cut_style = Style::default();
     for span in spans {
-        if used >= width {
+        if used >= budget {
             break;
         }
+        cut_style = span.style;
         let mut piece = String::new();
         for ch in span.content.chars() {
             let cw = crate::tui::char_width(ch);
-            if used + cw > width {
+            if used + cw > budget {
                 break;
             }
             piece.push(ch);
@@ -1488,6 +1511,10 @@ fn fit_spans(spans: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
         if !piece.is_empty() {
             out.push(Span::styled(piece, span.style));
         }
+    }
+    if overflows && width > 0 {
+        out.push(Span::styled("\u{2026}".to_string(), cut_style)); // …
+        used = used.saturating_add(1);
     }
     if used < width {
         out.push(Span::raw(" ".repeat((width - used) as usize)));
@@ -1616,7 +1643,7 @@ pub(crate) fn render_workflow_run(
     spin: usize,
 ) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
-    let (done, total, tokens, tool_calls) = card.totals();
+    let (done, total, errors, tokens, tool_calls) = card.totals();
 
     // Title row: the tree had no header at all, so a run was a set of anonymous boxes with no name,
     // no run id, no run-level progress and no clock.
@@ -1643,13 +1670,24 @@ pub(crate) fn render_workflow_run(
             Style::default().fg(theme.muted),
         ),
     ];
+    if errors > 0 {
+        head.push(Span::styled(
+            format!(" \u{b7} {errors} failed"),
+            Style::default().fg(theme.error),
+        ));
+    }
     if width >= 60 {
         head.push(Span::styled(
             format!(" \u{b7} {}", card.run_id),
             Style::default().fg(theme.faint),
         ));
     }
-    out.push(Line::from(head));
+    // A run name is operator-supplied and unbounded, so the title row is the one row that can be
+    // longer than the pane. Every other row in this tree is already budgeted (`fit_spans` inside
+    // the phase box, `clip_text` for the result preview); the title was not, and a wide terminal
+    // hid that until a narrow one cut the row at the pane edge with nothing to say it had. It goes
+    // through the same helper the box rows do.
+    out.push(Line::from(fit_spans(head, width)));
     out.push(Line::default());
 
     // Narrator: newest log as `❯ <msg>`, up to two prior logs dim below, then a blank margin row.
@@ -1739,6 +1777,12 @@ pub(crate) fn render_workflow_run(
         format!("{done}/{total} agents"),
         Style::default().fg(theme.muted),
     )];
+    if errors > 0 {
+        totals.push(Span::styled(
+            format!(" \u{b7} {errors} failed"),
+            Style::default().fg(theme.error),
+        ));
+    }
     if tokens > 0 {
         totals.push(Span::styled(
             format!(" \u{b7} {} tok", events::fmt_count(tokens)),
@@ -1759,8 +1803,75 @@ pub(crate) fn render_workflow_run(
         Style::default().fg(theme.muted),
     ));
     out.push(Line::default());
-    out.push(Line::from(totals));
+    // The footer accumulates columns as a run grows (agents, failures, tokens, tool calls, clock),
+    // so it outgrows a narrow pane on its own without any operator input. Same helper, same
+    // guarantee: the elapsed column is the one that disappears first, and the row says so.
+    out.push(Line::from(fit_spans(totals, width)));
 
+    out
+}
+
+/// Fit already-rendered workflow rows into a fixed row budget without silently clipping either end
+/// of the tree. [`render_workflow_run`] already establishes the semantic order, so this only selects
+/// a contiguous window from those rows and reports how many ordered rows sit above and below it.
+/// The final totals row is kept outside that window and is therefore always visible when
+/// `max_rows > 0`; with a one-row budget it is the only row returned.
+///
+/// It takes rows rather than a card because the workflow region has to render the tree BEFORE the
+/// layout is resolved — the natural row count is what it asks the layout for — and then fit the
+/// height it is granted. Rendering the card a second time here would build the same live tree twice
+/// per frame at 10 fps, and would let the two renders disagree if a spinner frame or an event landed
+/// between them.
+pub(crate) fn window_workflow_rows(
+    mut rows: Vec<Line<'static>>,
+    max_rows: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    if rows.len() <= max_rows {
+        return rows;
+    }
+    if max_rows == 0 {
+        return Vec::new();
+    }
+
+    let footer = rows
+        .pop()
+        .expect("workflow renderer always emits a totals footer");
+    if max_rows == 1 {
+        return vec![footer];
+    }
+
+    let indicator = |arrow: char, hidden: usize| {
+        Line::from(Span::styled(
+            format!("{arrow} {hidden} more"),
+            Style::default().fg(theme.faint).add_modifier(Modifier::DIM),
+        ))
+    };
+    let body_slots = max_rows - 1;
+
+    // Budgets of two or three rows cannot hold both directional indicators and useful content.
+    // Keep the tail nearest the immutable footer and account for everything hidden above it.
+    if body_slots < 3 {
+        let visible_rows = body_slots - 1;
+        let hidden_above = rows.len() - visible_rows;
+        let mut out = Vec::with_capacity(max_rows);
+        out.push(indicator('\u{2191}', hidden_above)); // ↑
+        out.extend(rows.into_iter().skip(hidden_above));
+        out.push(footer);
+        return out;
+    }
+
+    // A balanced window preserves context from both halves of a long, already-ordered workflow.
+    // The two indicator rows are part of the hard budget, not additions after truncation.
+    let visible_rows = body_slots - 2;
+    let hidden_rows = rows.len() - visible_rows;
+    let hidden_above = hidden_rows / 2;
+    let hidden_below = hidden_rows - hidden_above;
+    let mut out = Vec::with_capacity(max_rows);
+    out.push(indicator('\u{2191}', hidden_above)); // ↑
+    out.extend(rows.into_iter().skip(hidden_above).take(visible_rows));
+    out.push(indicator('\u{2193}', hidden_below)); // ↓
+    out.push(footer);
     out
 }
 
@@ -4002,8 +4113,8 @@ mod tests {
         println!("\n===== workflow-run tree (width {width}) =====\n{text}\n=====");
 
         // Header (name · run-level progress · run id) + run totals line.
-        assert!(text.contains("audit \u{b7} 1/3 agents \u{b7} wf_demo"));
-        assert!(text.contains("1/3 agents \u{b7} 2k tok \u{b7} 3 tool calls"));
+        assert!(text.contains("audit \u{b7} 1/3 agents \u{b7} 1 failed \u{b7} wf_demo"));
+        assert!(text.contains("1/3 agents \u{b7} 1 failed \u{b7} 2k tok \u{b7} 3 tool calls"));
         // Narrator + phase boxes + rows + collapse + meta + error tail.
         assert!(text.contains("\u{276f} synthesizing findings")); // ❯ newest log
         assert!(text.contains("mapping the repository")); // prior log, dim
@@ -4043,6 +4154,164 @@ mod tests {
             .collect();
         assert!(drawn.contains("audit"), "header drew into the frame");
         assert!(drawn.contains('\u{276f}'), "narrator drew into the frame");
+    }
+
+    fn bounded_workflow_card(agent_count: usize) -> WorkflowRunCard {
+        let mut card = WorkflowRunCard::new("wf_bounded", "bounded audit");
+        card.declare_phases(["Explore", "Synthesize"]);
+        card.verbose = true;
+        for index in 0..agent_count {
+            card.agents.push(WorkflowRunAgent {
+                index,
+                label: format!("investigator {index:02}"),
+                phase_index: if index + 4 < agent_count { 1 } else { 2 },
+                state: WorkflowState::Error,
+                agent_type: None,
+                model: Some("haiku".into()),
+                tokens: 100,
+                tool_calls: 1,
+                last_tool_summary: None,
+                result_preview: None,
+                started: None,
+                duration_ms: 100,
+                error: None,
+            });
+        }
+        card
+    }
+
+    /// Render then window, which is what the workflow region does across the two halves of a frame.
+    fn render_workflow_run_bounded(
+        card: &WorkflowRunCard,
+        width: u16,
+        max_rows: usize,
+        theme: &Theme,
+        spin: usize,
+    ) -> Vec<Line<'static>> {
+        window_workflow_rows(
+            render_workflow_run(card, width, theme, spin),
+            max_rows,
+            theme,
+        )
+    }
+
+    fn workflow_line_text(line: &Line<'static>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn bounded_workflow_keeps_every_row_when_fewer_than_the_bound() {
+        let theme = Theme::dark();
+        let card = bounded_workflow_card(3);
+        let full = render_workflow_run(&card, 100, &theme, 0);
+        let bounded = render_workflow_run_bounded(&card, 100, full.len() + 5, &theme, 0);
+
+        assert_eq!(bounded.len(), full.len());
+        assert_eq!(plain(bounded), plain(full));
+    }
+
+    #[test]
+    fn bounded_workflow_keeps_every_row_at_the_exact_bound() {
+        let theme = Theme::dark();
+        let card = bounded_workflow_card(3);
+        let full = render_workflow_run(&card, 100, &theme, 0);
+        let bounded = render_workflow_run_bounded(&card, 100, full.len(), &theme, 0);
+
+        assert_eq!(bounded.len(), full.len());
+        assert_eq!(plain(bounded), plain(full));
+    }
+
+    #[test]
+    fn bounded_workflow_windows_far_more_rows_with_truthful_indicators() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let theme = Theme::dark();
+        let card = bounded_workflow_card(24);
+        let full = render_workflow_run(&card, 100, &theme, 0);
+        let footer = workflow_line_text(full.last().expect("totals footer"));
+        let max_rows = 12;
+        let visible_rows = max_rows - 3; // footer + ↑/↓ indicators consume three slots
+        let hidden_rows = full.len() - 1 - visible_rows;
+        let hidden_above = hidden_rows / 2;
+        let hidden_below = hidden_rows - hidden_above;
+
+        let bounded = render_workflow_run_bounded(&card, 100, max_rows, &theme, 0);
+        assert_eq!(bounded.len(), max_rows);
+        assert_eq!(
+            workflow_line_text(&bounded[0]),
+            format!("\u{2191} {hidden_above} more")
+        );
+        assert_eq!(
+            workflow_line_text(&bounded[max_rows - 2]),
+            format!("\u{2193} {hidden_below} more")
+        );
+        assert_eq!(workflow_line_text(bounded.last().unwrap()), footer);
+        for (actual, expected) in bounded[1..max_rows - 2]
+            .iter()
+            .zip(&full[hidden_above..hidden_above + visible_rows])
+        {
+            assert_eq!(workflow_line_text(actual), workflow_line_text(expected));
+        }
+
+        // Terminal-render evidence: both omission directions and the pinned totals reach the pane.
+        let mut terminal = Terminal::new(TestBackend::new(100, max_rows as u16)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    ratatui::widgets::Paragraph::new(bounded.clone()),
+                    frame.area(),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let drawn: String = (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol())
+            .collect();
+        assert!(drawn.contains(&format!("\u{2191} {hidden_above} more")));
+        assert!(drawn.contains(&format!("\u{2193} {hidden_below} more")));
+        assert!(drawn.contains("0/24 agents"), "totals footer was clipped");
+    }
+
+    #[test]
+    fn bounded_workflow_uses_an_up_indicator_next_to_a_tiny_tail() {
+        let theme = Theme::dark();
+        let card = bounded_workflow_card(8);
+        let full = render_workflow_run(&card, 100, &theme, 0);
+        let footer = workflow_line_text(full.last().unwrap());
+        let bounded = render_workflow_run_bounded(&card, 100, 2, &theme, 0);
+
+        assert_eq!(bounded.len(), 2);
+        assert_eq!(
+            workflow_line_text(&bounded[0]),
+            format!("\u{2191} {} more", full.len() - 1)
+        );
+        assert_eq!(workflow_line_text(&bounded[1]), footer);
+    }
+
+    #[test]
+    fn bounded_workflow_returns_only_the_footer_when_one_row_fits() {
+        let theme = Theme::dark();
+        let card = bounded_workflow_card(8);
+        let full = render_workflow_run(&card, 100, &theme, 0);
+        let footer = workflow_line_text(full.last().unwrap());
+        let bounded = render_workflow_run_bounded(&card, 100, 1, &theme, 0);
+
+        assert_eq!(bounded.len(), 1);
+        assert_eq!(workflow_line_text(&bounded[0]), footer);
+        assert!(workflow_line_text(&bounded[0]).contains("0/8 agents"));
+    }
+
+    #[test]
+    fn bounded_workflow_returns_no_rows_when_the_budget_is_zero() {
+        let theme = Theme::dark();
+        let card = bounded_workflow_card(8);
+
+        assert!(render_workflow_run_bounded(&card, 100, 0, &theme, 0).is_empty());
     }
 
     // ---- result_preview: what an individual agent actually RETURNED -------------------------
@@ -4224,6 +4493,104 @@ mod tests {
         );
     }
 
+    /// A run name is whatever the workflow author wrote, and the totals row grows on its own as a
+    /// run accumulates agents/failures/tokens/tool calls/elapsed. Both used to be handed to the
+    /// pane unbudgeted, so a narrow terminal cut them at the pane edge with no marker and — with a
+    /// double-width title — at a column that is inside a glyph rather than between two.
+    #[test]
+    fn the_run_title_and_totals_rows_are_ellipsised_at_every_width() {
+        use core_workflow::events::WorkflowState;
+
+        let theme = Theme::dark();
+        // Wide (2-column) glyphs, so a cut that lands mid-glyph is observable as a row that is one
+        // column short of the pane rather than flush with it.
+        let title = "追踪一个非常长的工作流标题".repeat(6);
+        let mut c = WorkflowRunCard::new("wf_a_very_long_run_identifier", title.clone());
+        c.ingest(ProgressEvent::Phase {
+            index: 1,
+            title: "Explore".into(),
+        });
+        c.ingest(ProgressEvent::AgentFinished {
+            index: 0,
+            label: "scan modules".into(),
+            state: WorkflowState::Error,
+            tokens: 123_456,
+            tool_calls: 42,
+            duration_ms: 3_200,
+            result_preview: None,
+            last_tool_summary: None,
+            error: Some("provider timeout".into()),
+        });
+
+        for width in [120u16, 78, 60, 40, 30, 20, 12, 6, 2, 1] {
+            let lines = render_workflow_run(&c, width, &theme, 0);
+            let head = lines.first().expect("a title row");
+            let footer = lines.last().expect("a totals footer");
+
+            // Both rows land exactly on the pane edge: the marker costs a column, and a wide glyph
+            // that no longer fits is dropped whole and replaced by padding, never half-drawn.
+            assert_eq!(
+                line_width(head),
+                width,
+                "width {width}: the title row is not flush: {head:?}"
+            );
+            assert_eq!(
+                line_width(footer),
+                width,
+                "width {width}: the totals row is not flush: {footer:?}"
+            );
+
+            let head_text = workflow_line_text(head);
+            let footer_text = workflow_line_text(footer);
+            assert!(
+                head_text.contains('\u{2026}'),
+                "width {width}: a {}-column title was cut with no marker: {head_text:?}",
+                title.chars().count() * 2
+            );
+            assert!(
+                !head_text.contains(&title),
+                "width {width}: the full title cannot fit and must not be claimed"
+            );
+
+            // What survives is a genuine PREFIX of the name — proof the cut fell between glyphs.
+            // (The row may also have taken the leading space of the field after the name, since a
+            // wide glyph that no longer fits leaves a single column the next field can start in.)
+            if width >= 12 {
+                let shown: String = head_text
+                    .trim_end()
+                    .trim_end_matches('\u{2026}')
+                    .trim_end()
+                    .chars()
+                    .skip(2) // the run marker/spinner glyph and its space
+                    .collect();
+                assert!(
+                    !shown.is_empty() && title.starts_with(&shown),
+                    "width {width}: {shown:?} is not a prefix of the run name"
+                );
+            }
+
+            // The totals row is the same story once a run has enough columns of evidence to report.
+            assert!(
+                width >= 60 || footer_text.contains('\u{2026}'),
+                "width {width}: the totals row was cut with no marker: {footer_text:?}"
+            );
+        }
+
+        // Wide enough for everything: no marker is spent, and the evidence is all there.
+        let roomy = plain(render_workflow_run(&c, 260, &theme, 0));
+        assert!(
+            roomy.contains(&title),
+            "a 260-column pane shows the whole name"
+        );
+        assert!(
+            roomy.contains("0/1 agents \u{b7} 1 failed \u{b7} 123.5k tok \u{b7} 42 tool calls")
+        );
+        assert!(
+            !roomy.lines().next().unwrap().contains('\u{2026}'),
+            "a title that fits must not be marked as cut"
+        );
+    }
+
     #[test]
     fn a_long_result_preview_is_truncated_to_the_available_width() {
         let theme = Theme::dark();
@@ -4232,8 +4599,9 @@ mod tests {
 
         // From "comfortably wide" down to "a phone in portrait", the phase box stays rectangular:
         // the preview is budgeted against the width its own sub-line will actually be fit to.
-        // (The run header/totals lines are NOT width-fit — that is pre-existing and untouched here,
-        // so this pins the box interior, which is where the preview lands.)
+        // (The run title/totals rows now go through `fit_spans` as well — see
+        // `the_run_title_and_totals_rows_are_ellipsised_at_every_width` — so this test pins the box
+        // interior, which is where the preview lands.)
         let mut boxed_widths = 0;
         for width in [120u16, 78, 60, 40, 30, 20, 14, 8] {
             let lines = render_workflow_run(&c, width, &theme, 0);
@@ -4341,7 +4709,7 @@ mod tests {
                 model: Some("haiku".into()),
             });
         }
-        let (_, total, _, _) = c.totals();
+        let (_, total, _, _, _) = c.totals();
         assert_eq!(total, 20, "the denominator is fixed by the queued rows");
 
         // Six permits are granted; the remaining fourteen stay visibly pending.
@@ -4367,7 +4735,7 @@ mod tests {
                 .count(),
             6
         );
-        let (_, total_after, _, _) = c.totals();
+        let (_, total_after, _, _, _) = c.totals();
         assert_eq!(total_after, 20, "the denominator must not move mid-run");
 
         c.verbose = true;

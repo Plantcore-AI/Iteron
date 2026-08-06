@@ -128,6 +128,7 @@
 /crates/cli/src/markdown.rs @fr0m-scratch
 /crates/cli/src/mcp.rs @fr0m-scratch
 /crates/cli/src/output.rs @fr0m-scratch
+/crates/cli/src/paste_input.rs @fr0m-scratch
 /crates/cli/src/pricing.rs @fr0m-scratch
 /crates/cli/src/prompt_history.rs @fr0m-scratch
 /crates/cli/src/providers.rs @fr0m-scratch
@@ -222,6 +223,7 @@
 /crates/tools/src/workflow_tool.rs @fr0m-scratch
 /crates/tools/src/write_file.rs @fr0m-scratch
 /crates/tools/src/write_file_tests.rs @fr0m-scratch
+/crates/cli/src/runtime/workflow_spawner/** @fr0m-scratch
 /crates/cli/src/runtime/hooks.rs @fr0m-scratch
 /crates/cli/src/runtime/pricing.rs @fr0m-scratch
 /crates/cli/src/runtime/strategy_runtime.rs @fr0m-scratch

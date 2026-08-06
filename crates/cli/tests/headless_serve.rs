@@ -19,6 +19,12 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
+struct CoreProcess {
+    child: Child,
+    listening: Receiver<Result<SocketAddr, String>>,
+    stderr: Option<thread::JoinHandle<Vec<u8>>>,
+}
+
 struct Scratch {
     root: PathBuf,
 }
@@ -180,11 +186,6 @@ fn write_success(stream: &mut TcpStream, chunks: usize) {
     stream.flush().unwrap();
 }
 
-fn reserve_address() -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap()
-}
-
 fn fresh_bearer_token() -> String {
     let mut random = [0_u8; 32];
     getrandom::fill(&mut random).expect("generate a fresh per-server bearer token");
@@ -197,7 +198,7 @@ fn fresh_bearer_token() -> String {
     encoded
 }
 
-fn core_command(scratch: &Scratch, address: SocketAddr) -> Command {
+fn core_command(scratch: &Scratch) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_core"));
     command
         .env_clear()
@@ -229,7 +230,7 @@ fn core_command(scratch: &Scratch, address: SocketAddr) -> Command {
         .arg("1")
         .arg("serve")
         .arg("--listen")
-        .arg(address.to_string())
+        .arg("127.0.0.1:0")
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     if cfg!(windows) {
@@ -242,42 +243,98 @@ fn core_command(scratch: &Scratch, address: SocketAddr) -> Command {
     command
 }
 
-fn spawn_core_with_token_input(
-    scratch: &Scratch,
-    address: SocketAddr,
-    token_input: &[u8],
-) -> Child {
-    let mut child = core_command(scratch, address)
+fn spawn_core_with_token_input(scratch: &Scratch, token_input: &[u8]) -> CoreProcess {
+    let mut child = core_command(scratch)
         .stdin(Stdio::piped())
         .spawn()
         .expect("spawn real headless core process");
+    let stderr = child.stderr.take().expect("headless stderr pipe");
+    let (listening_tx, listening) = sync_channel(1);
+    let stderr = thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut captured = Vec::new();
+        loop {
+            let mut line = Vec::new();
+            let read = reader
+                .read_until(b'\n', &mut line)
+                .expect("read headless stderr");
+            if read == 0 {
+                break;
+            }
+            if let Ok(event) = serde_json::from_slice::<Value>(&line)
+                && event.get("component").and_then(Value::as_str) == Some("app_server")
+                && event.get("event").and_then(Value::as_str) == Some("listening")
+            {
+                let address = event
+                    .get("listen")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "listening event omitted its string `listen` field".to_owned())
+                    .and_then(|listen| {
+                        listen.parse::<SocketAddr>().map_err(|error| {
+                            format!("invalid listening address {listen:?}: {error}")
+                        })
+                    });
+                let _ = listening_tx.try_send(address);
+            }
+            captured.extend_from_slice(&line);
+        }
+        captured
+    });
     let mut stdin = child.stdin.take().expect("headless token pipe");
     stdin
         .write_all(token_input)
         .expect("write headless bearer token");
     drop(stdin);
-    child
+    CoreProcess {
+        child,
+        listening,
+        stderr: Some(stderr),
+    }
 }
 
-fn spawn_core(scratch: &Scratch, address: SocketAddr) -> (Child, String) {
+fn spawn_core(scratch: &Scratch) -> (CoreProcess, String, SocketAddr) {
     let token = fresh_bearer_token();
-    let child = spawn_core_with_token_input(scratch, address, token.as_bytes());
-    (child, token)
+    let mut child = spawn_core_with_token_input(scratch, token.as_bytes());
+    let address = wait_for_listening(&mut child);
+    (child, token, address)
+}
+
+fn wait_for_listening(process: &mut CoreProcess) -> SocketAddr {
+    let readiness = process.listening.recv_timeout(TIMEOUT);
+    match readiness {
+        Ok(Ok(address)) => address,
+        Ok(Err(error)) => {
+            terminate_after_readiness_failure(process);
+            panic!("invalid app_server listening log while waiting for bound address: {error}");
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            terminate_after_readiness_failure(process);
+            panic!(
+                "timed out after {TIMEOUT:?} waiting for app_server listening log with bound address"
+            );
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            terminate_after_readiness_failure(process);
+            panic!(
+                "headless stderr closed while waiting for app_server listening log with bound address"
+            );
+        }
+    }
+}
+
+fn terminate_after_readiness_failure(process: &mut CoreProcess) {
+    let _ = process.child.kill();
+    let _ = process.child.wait();
+    let _ = take_stderr(process);
 }
 
 fn connect(address: SocketAddr) -> TcpStream {
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        match TcpStream::connect(address) {
-            Ok(stream) => {
-                stream.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
-                stream.set_write_timeout(Some(IO_TIMEOUT)).unwrap();
-                return stream;
-            }
-            Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
-            Err(error) => panic!("headless listener did not start: {error}"),
-        }
-    }
+    let stream = TcpStream::connect(address).unwrap_or_else(|error| {
+        panic!("connect to headless listener at child-reported address {address}: {error}")
+    });
+    stream.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
+    stream.set_write_timeout(Some(IO_TIMEOUT)).unwrap();
+    stream
 }
 
 fn send(stream: &mut TcpStream, value: Value) {
@@ -352,49 +409,48 @@ fn only_rollout(runs: &Path) -> PathBuf {
     }
 }
 
-fn wait_for_exit(mut child: Child) -> (std::process::ExitStatus, Vec<u8>) {
+fn take_stderr(process: &mut CoreProcess) -> Vec<u8> {
+    process
+        .stderr
+        .take()
+        .expect("headless stderr reader")
+        .join()
+        .expect("headless stderr reader completes")
+}
+
+fn wait_for_exit(mut process: CoreProcess) -> (std::process::ExitStatus, Vec<u8>) {
     let deadline = Instant::now() + TIMEOUT;
     loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            let mut stderr = Vec::new();
-            child
-                .stderr
-                .take()
-                .unwrap()
-                .read_to_end(&mut stderr)
-                .unwrap();
-            return (status, stderr);
+        if let Some(status) = process.child.try_wait().unwrap() {
+            return (status, take_stderr(&mut process));
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
+            let _ = process.child.kill();
+            let _ = process.child.wait();
+            let _ = take_stderr(&mut process);
             panic!("headless process did not exit after rejecting its startup token");
         }
         thread::sleep(Duration::from_millis(20));
     }
 }
 
-fn stop(mut child: Child) -> Vec<u8> {
+fn stop(mut process: CoreProcess) -> Vec<u8> {
     #[cfg(unix)]
     unsafe {
-        let _ = libc::kill(child.id() as libc::pid_t, libc::SIGINT);
+        let _ = libc::kill(process.child.id() as libc::pid_t, libc::SIGINT);
     }
     #[cfg(not(unix))]
-    let _ = child.kill();
+    let _ = process.child.kill();
 
     let deadline = Instant::now() + TIMEOUT;
     loop {
-        if child.try_wait().unwrap().is_some() {
-            let mut stderr = Vec::new();
-            child
-                .stderr
-                .take()
-                .unwrap()
-                .read_to_end(&mut stderr)
-                .unwrap();
-            return stderr;
+        if process.child.try_wait().unwrap().is_some() {
+            return take_stderr(&mut process);
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
+            let _ = process.child.kill();
+            let _ = process.child.wait();
+            let _ = take_stderr(&mut process);
             panic!("headless process did not stop after interrupt");
         }
         thread::sleep(Duration::from_millis(20));
@@ -404,15 +460,14 @@ fn stop(mut child: Child) -> Vec<u8> {
 #[test]
 fn malformed_parent_token_fails_before_the_listener_binds_and_is_not_disclosed() {
     let scratch = Scratch::new("http://127.0.0.1:9/v1");
-    let address = reserve_address();
     let token = fresh_bearer_token();
     let overlong = format!("{token}0");
-    let child = spawn_core_with_token_input(&scratch, address, overlong.as_bytes());
+    let child = spawn_core_with_token_input(&scratch, overlong.as_bytes());
     let (status, stderr) = wait_for_exit(child);
     assert!(!status.success());
-    let _listener = TcpListener::bind(address).expect("invalid token must fail before bind");
     let stderr = String::from_utf8(stderr).unwrap();
     assert!(stderr.contains("invalid headless bearer token on stdin"));
+    assert!(!stderr.contains("\"event\":\"listening\""));
     assert!(!stderr.contains(&token));
     assert!(!stderr.contains(&overlong));
 }
@@ -420,8 +475,7 @@ fn malformed_parent_token_fails_before_the_listener_binds_and_is_not_disclosed()
 #[test]
 fn authentication_precedes_version_replay_and_submission_behavior_without_token_leaks() {
     let scratch = Scratch::new("http://127.0.0.1:9/v1");
-    let address = reserve_address();
-    let (child, token) = spawn_core(&scratch, address);
+    let (child, token, address) = spawn_core(&scratch);
 
     let mut wrong = token.as_bytes().to_vec();
     wrong[0] = if wrong[0] == b'0' { b'1' } else { b'0' };
@@ -466,8 +520,7 @@ fn authentication_precedes_version_replay_and_submission_behavior_without_token_
 #[test]
 fn connection_limit_drops_rejects_without_tasks_and_completed_connections_are_reaped() {
     let scratch = Scratch::new("http://127.0.0.1:9/v1");
-    let address = reserve_address();
-    let (child, token) = spawn_core(&scratch, address);
+    let (child, token, address) = spawn_core(&scratch);
 
     let mut blockers = Vec::new();
     for _ in 0..32 {
@@ -500,8 +553,7 @@ fn connection_limit_drops_rejects_without_tasks_and_completed_connections_are_re
 fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server() {
     let provider = PausedProvider::spawn();
     let scratch = Scratch::new(&provider.api_root);
-    let address = reserve_address();
-    let (child, token) = spawn_core(&scratch, address);
+    let (child, token, address) = spawn_core(&scratch);
 
     // A skewed hello is refused before any SQ submission or Rollout mutation.
     let mut skewed = connect(address);
@@ -604,8 +656,7 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     // test-only capacity override.
     let provider = PausedProvider::spawn_with_chunks(4200);
     let scratch = Scratch::new(&provider.api_root);
-    let address = reserve_address();
-    let (child, token) = spawn_core(&scratch, address);
+    let (child, token, address) = spawn_core(&scratch);
 
     let mut client = connect(address);
     send(&mut client, hello(&token, PROTOCOL_VERSION, 0));

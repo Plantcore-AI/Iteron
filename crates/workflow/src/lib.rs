@@ -45,7 +45,9 @@ pub use events::{
 pub use journal::{JOURNAL_FORMAT_VERSION, Journal, Outcome, Record};
 pub use meta::{Meta, extract_meta, strip_meta};
 pub use schema::{RETRY_MAX, SchemaValidator};
-pub use spawner::{AGENT_SPAWNER_PORT_VERSION, AgentCall, AgentOutcome, AgentSpawner};
+pub use spawner::{
+    AGENT_SPAWNER_PORT_VERSION, AgentActivityReporter, AgentCall, AgentOutcome, AgentSpawner,
+};
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -198,6 +200,8 @@ pub struct RunReport {
     pub cache_hits: usize,
     /// Agents that ran live (cache misses).
     pub cache_misses: usize,
+    /// Agents that settled with a null or otherwise unknown outcome.
+    pub errors: usize,
     /// Tokens summed across every agent this run settled. Every finish event already carried this;
     /// nothing aggregated it, so a completed run reported no cost evidence at all.
     pub tokens: u64,

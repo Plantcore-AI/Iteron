@@ -587,3 +587,89 @@ fn debug_and_errors_expose_neither_parent_paths_nor_encoded_payloads() {
         .unwrap();
     assert!(!format!("{parsed:?}").contains("parent-secret-token"));
 }
+
+/// The three methods an anchored draft needs at submission time, exercised here because this file
+/// compiles `src/image_input.rs` standalone via `#[path]` and therefore cannot see the callers in
+/// `paste_input` and `editor`. Without a test that uses them, they read as dead code in this
+/// compilation unit and `-D warnings` refuses the build — which is how they surfaced.
+#[test]
+fn anchored_order_is_how_position_survives_a_frozen_segment_list() {
+    let scratch = TempTree::new("anchor-order");
+    let mut attachments = ImageAttachments::default();
+    let mut ids = Vec::new();
+    for name in ["first.png", "second.png", "third.png"] {
+        let path = scratch.write(name, &png());
+        ids.push(attachments.attach_path(&path).unwrap().id());
+    }
+
+    // `get` answers by id, which is what a `[Image #N]` anchor resolves through.
+    for id in &ids {
+        assert_eq!(attachments.get(*id).map(|item| item.id()), Some(*id));
+    }
+    assert!(
+        attachments.get(u32::MAX).is_none(),
+        "an id nothing was attached under must not answer with a neighbour"
+    );
+
+    // The protocol's segment list is frozen at one text segment plus images, so an anchor cannot be
+    // expressed by interleaving. It is expressed by ORDER: the images a draft names come first, in
+    // the order it names them.
+    attachments.order_by_anchors(&[ids[2], ids[0]]);
+    let order: Vec<u32> = attachments
+        .as_slice()
+        .iter()
+        .map(|item| item.id())
+        .collect();
+    assert_eq!(
+        order,
+        vec![ids[2], ids[0], ids[1]],
+        "anchored images lead in anchor order; an unanchored one keeps its attach position behind them"
+    );
+
+    // An empty anchor list is the no-anchor draft, and must not disturb attach order.
+    let before = order.clone();
+    attachments.order_by_anchors(&[]);
+    let after: Vec<u32> = attachments
+        .as_slice()
+        .iter()
+        .map(|item| item.id())
+        .collect();
+    assert_eq!(
+        after, before,
+        "no anchors means no reordering, not an arbitrary one"
+    );
+
+    // An anchor naming an image that is gone is skipped rather than dropping the others.
+    attachments.order_by_anchors(&[u32::MAX, ids[1]]);
+    let survived: Vec<u32> = attachments
+        .as_slice()
+        .iter()
+        .map(|item| item.id())
+        .collect();
+    assert_eq!(
+        survived.len(),
+        3,
+        "a dead anchor must not lose an attachment"
+    );
+    assert_eq!(survived[0], ids[1]);
+}
+
+/// A restart resets the id counter, so a placeholder left in a restored draft could be answered by
+/// the first image of the new process. `reserve_id` is what steps the counter past every id the
+/// restored text names.
+#[test]
+fn reserving_an_id_stops_a_restored_draft_from_claiming_a_fresh_image() {
+    let scratch = TempTree::new("reserve-id");
+    let mut attachments = ImageAttachments::default();
+    attachments.reserve_id(7);
+    let path = scratch.write("after-restore.png", &png());
+    let minted = attachments.attach_path(&path).unwrap().id();
+    assert!(
+        minted > 7,
+        "an id already spoken for in a restored draft must not be minted again (got {minted})"
+    );
+    assert!(
+        attachments.get(7).is_none(),
+        "the reserved id belongs to nothing in this process"
+    );
+}
