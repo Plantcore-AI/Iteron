@@ -537,7 +537,7 @@
       "paths": [
         { "kind": "tree", "path": "crates/sandbox" }
       ],
-      "contracts": ["workspace-confinement", "egress-off-default", "bounded-child-process"],
+      "contracts": ["selectable-workspace-confinement", "operator-selected-egress", "bounded-child-process"],
       "checks": ["cargo test -p core-sandbox --locked"]
     },
     {
@@ -575,7 +575,7 @@
         { "kind": "file", "path": "crates/tools/src/write_file.rs" },
         { "kind": "file", "path": "crates/tools/src/write_file_tests.rs" }
       ],
-      "contracts": ["tool-abi", "workspace-path-boundary", "purity-capability-coupling"],
+      "contracts": ["tool-abi", "host-path-authority", "purity-capability-coupling"],
       "checks": ["cargo test -p core-tools --locked"]
     },
     {
@@ -593,7 +593,7 @@
         { "kind": "file", "path": "crates/tools/src/web.rs" },
         { "kind": "file", "path": "crates/tools/src/workflow_tool.rs" }
       ],
-      "contracts": ["sandboxed-code-execution", "ssrf-boundary", "external-effect-classification"],
+      "contracts": ["selectable-code-confinement", "ssrf-boundary", "external-effect-classification"],
       "checks": ["cargo test -p core-tools --locked"]
     },
     {

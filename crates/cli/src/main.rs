@@ -446,24 +446,45 @@ struct Cli {
     #[arg(long)]
     max_tokens: Option<u64>,
 
+    /// Consecutive failing tool calls before the run stops as stuck (stability floor; overrides
+    /// the default of 25). Raised from 3 on 2026-08-05: three was reachable by a model correcting
+    /// its own mistake, so the floor fired on runs that were making progress.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    max_consecutive_tool_errors: Option<u32>,
+
     /// Wall-clock ceiling for ONE submission, in seconds (bounded invariant; overrides config /
-    /// default). One long refactor turn can reach the 1800s default, which was previously
-    /// settable only by hand-editing the user config.
+    /// default). The default is 14400s (4h), raised from 1800s on 2026-08-05 because one long
+    /// refactor turn reached the old ceiling and ended reporting a budget instead of a result.
     #[arg(long)]
     max_wall_secs: Option<u64>,
 
-    /// Enable code execution (bash/build/test). OFF by default; only this flag or a trusted
-    /// `~/.core/config.json` "allow_code": true may grant it, and a project `.core/config.json`
-    /// "allow_code": false or `--mode plan` still tightens it back off. Code runs in an egress-off
-    /// sandbox: network denied, writes confined to the workspace (ADR-007).
+    /// Enable code execution (bash/build/test). ON by default; a trusted `~/.core/config.json`
+    /// "allow_code": false, a project `.core/config.json` "allow_code": false, or `--mode plan`
+    /// tightens it back off. The command runs with your own user authority unless `--confine`.
     #[arg(long)]
     allow_code: bool,
 
-    /// DANGEROUS: auto-approve EVERY tool so the agent never prompts (used by the internal team
-    /// edition). Skips the whole capability gate; Plan mode still hard-denies and an explicit
-    /// `/permissions deny` is still honored. Off by default.
+    /// Put code execution back inside the platform sandbox: network denied, writes confined to
+    /// the workspace, ambient HOME credential paths denied (ADR-007). Off by default — bash
+    /// otherwise runs with your own user authority, which is what makes `git push`, `gh`, `curl`
+    /// and package installs work. Filesystem tools address the host either way; this flag governs
+    /// executed code only.
+    #[arg(long)]
+    confine: bool,
+
+    /// Auto-approve EVERY tool so the agent never prompts. ON by default since 2026-08-05, so
+    /// this flag is now an explicit statement of the default rather than a change to it; pass
+    /// `--ask-permissions` for the opposite. Plan mode still hard-denies and an explicit
+    /// `/permissions deny` is still honored either way.
     #[arg(long)]
     dangerously_bypass_permissions: bool,
+
+    /// Restore the capability gate: edits, code execution, trust changes and external actions ask
+    /// for approval according to the permission mode. This is the opt-out from the default
+    /// bypass. In one-shot (`-p`) there is no approval channel, so an "ask" there is a refusal —
+    /// pair it with `--mode acceptEdits` or an explicit `/permissions` allow rule.
+    #[arg(long, conflicts_with = "dangerously_bypass_permissions")]
+    ask_permissions: bool,
 
     /// Permission mode: default | acceptEdits | plan | yolo (ADR-007 §3). Reads always auto; the
     /// mode governs edits/code/etc. Defaults to `default` (edits ask) in the interactive TUI and to
@@ -565,13 +586,22 @@ struct Cli {
 /// (it may only tighten, via `config::tighten_grant`). The internal team edition opts back into the
 /// permissive posture by writing that user-config key (or by passing the flag), which is an
 /// explicit, auditable act rather than a shipped default.
+/// Owner-directed 2026-08-05: code execution is ON unless an operator-owned source turns it off.
+/// A cloned repository is still not an authorization principal — a project `allow_code:false` may
+/// TIGHTEN this off and `--mode plan` hard-disables it — but the untouched default is now a grant,
+/// because a coding agent whose `bash` is off by default fails its first useful instruction.
 fn trusted_allow_code(cli_flag: bool, user_config: Option<bool>) -> bool {
-    cli_flag || user_config.unwrap_or(false)
+    cli_flag || user_config.unwrap_or(true)
 }
 
-/// The permission mode a run starts in when `--mode` is absent. The interactive TUI has an approval
-/// channel, so it starts in `Default` and prompts before an edit; one-shot has none, so it starts in
-/// `AcceptEdits` (quickstart §4/§5). Neither grants code execution — that is `--allow-code`.
+/// The permission mode a run starts in when `--mode` is absent.
+///
+/// Since 2026-08-05 this mostly does not decide whether anything prompts, because bypass is on by
+/// default and replaces the mode gate. It still decides two things that bypass never touches:
+/// `Plan` hard-denies regardless, and the mode is what the gate falls back to under
+/// `--ask-permissions`. The values are unchanged so that opting back in lands where it always did:
+/// the TUI has an approval channel and starts in `Default`; one-shot has none and starts in
+/// `AcceptEdits` (quickstart §4/§5).
 fn default_permission_mode(one_shot: bool) -> core_protocol::PermissionMode {
     if one_shot {
         core_protocol::PermissionMode::AcceptEdits
@@ -1203,6 +1233,8 @@ async fn run_cli() -> anyhow::Result<u8> {
     credential_env_names.sort();
     credential_env_names.dedup();
     registry.set_sensitive_env_names(credential_env_names.clone());
+    // One bit, set once, read per bash call: which of the two execution postures this run uses.
+    registry.set_confine_execution(cli.confine);
     // A file-backed credential is never in the environment, so the env deny-list above says
     // nothing about it. The one place a tool, a child agent, or a hook can reach a file is the
     // workspace, so a credential file inside it is refused outright rather than trusted to stay
@@ -1239,11 +1271,14 @@ async fn run_cli() -> anyhow::Result<u8> {
         None => (None, None),
     };
     let model_from_project = model_origin == Some(config::ConfigOrigin::ProjectConfig);
+    // Owner-directed 2026-08-05: the CLI default follows `Budget::default()` instead of carrying
+    // its own smaller number. 40 turns was reached by ordinary multi-file work, and the run ended
+    // reporting a budget rather than a result.
     let trusted_max_turns = config::pick(
         cli.max_turns,
         config::env_u32("CORE_MAX_TURNS"),
         user_file.max_turns,
-        40,
+        Budget::default().max_turns,
     );
     let max_turns = config::tighten(file.max_turns, trusted_max_turns);
     let trusted_max_usd = cli
@@ -1255,12 +1290,13 @@ async fn run_cli() -> anyhow::Result<u8> {
     let trusted_max_wall_secs = cli
         .max_wall_secs
         .or(user_file.max_wall_secs)
-        .unwrap_or(1800);
+        .unwrap_or_else(|| Budget::default().max_wall_secs);
     let max_wall_secs = config::tighten(file.max_wall_secs, trusted_max_wall_secs);
-    // Deny-by-default (README, SECURITY.md, docs/using/permissions-and-sandbox.md all state it):
-    // code execution is OFF until an operator-owned source grants it. A cloned repository is not an
-    // authorization principal — a project `allow_code:false` may TIGHTEN this off and `--mode plan`
-    // hard-disables it, while a project `true` stays inert.
+    // Grant-by-default (owner-directed 2026-08-05; README, SECURITY.md and
+    // docs/using/permissions-and-sandbox.md are updated to state it): code execution is ON until an
+    // operator-owned source turns it off. A cloned repository is still not an authorization
+    // principal — a project `allow_code:false` may TIGHTEN this off and `--mode plan` hard-disables
+    // it, while a project `true` stays inert.
     let trusted_allow_code = trusted_allow_code(cli.allow_code, user_file.allow_code);
     let allow_code = config::tighten_grant(file.allow_code, trusted_allow_code);
 
@@ -1605,7 +1641,9 @@ async fn run_cli() -> anyhow::Result<u8> {
         max_usd,
         max_tokens,
         max_wall_secs,
-        max_consecutive_tool_errors: 3,
+        max_consecutive_tool_errors: cli
+            .max_consecutive_tool_errors
+            .unwrap_or_else(|| Budget::default().max_consecutive_tool_errors),
     };
 
     // ONE route view, built from the values this run dispatches and enforces with. The banner,
@@ -1724,10 +1762,13 @@ async fn run_cli() -> anyhow::Result<u8> {
     // durable snapshot; only explicit runtime overrides append a new policy event.
     let initial_rules = initial_permission_rules(allow_code);
     agent.workspace = repo.clone();
-    agent.bypass_permissions = cli.dangerously_bypass_permissions;
+    // Owner-directed 2026-08-05: bypass is the default posture, and `--ask-permissions` is the
+    // way back to the gate. The banner still prints on every bypassed run — a default that
+    // auto-approves everything has to announce itself, or the operator learns it from the damage.
+    agent.bypass_permissions = !cli.ask_permissions;
     if agent.bypass_permissions {
         eprintln!(
-            "permissions: BYPASS (every tool auto-approved; plan mode + explicit denies still apply)"
+            "permissions: BYPASS (every tool auto-approved; plan mode + explicit denies still apply; --ask-permissions restores the gate)"
         );
     }
     agent.memory_workspace = Some(repo.clone()); // modular memory: .core/memory (R5)
@@ -2923,25 +2964,31 @@ mod tests {
     }
 
     #[test]
-    fn a_default_install_denies_code_execution_until_an_operator_source_grants_it() {
-        // The shipped default was `unwrap_or(true)`, so a public install auto-ran bash/build/test
-        // while README and SECURITY.md both said "code execution is disabled by default".
+    fn a_default_install_grants_code_execution_and_only_an_operator_source_takes_it_away() {
+        // This assertion was inverted on 2026-08-05 by owner direction. It exists because code and
+        // prose once disagreed — the default granted while README and SECURITY.md said it did not
+        // — so the pairing, not the direction, is the invariant: whichever way this points, those
+        // two documents must say the same thing. They were updated in the same commit.
         assert!(
-            !trusted_allow_code(false, None),
-            "a default install must not grant code execution"
+            trusted_allow_code(false, None),
+            "a default install grants code execution"
         );
-        assert!(trusted_allow_code(true, None), "--allow-code grants it");
+        assert!(
+            trusted_allow_code(true, None),
+            "--allow-code still grants it"
+        );
         assert!(
             trusted_allow_code(false, Some(true)),
-            "the trusted user config grants it — this is how the internal team edition opts in"
+            "an explicit user-config true is redundant but still a grant"
         );
         assert!(
             !trusted_allow_code(false, Some(false)),
-            "an explicit user-config false stays off"
+            "an explicit user-config false is how an operator takes it away"
         );
         // A repository is input, not a principal: it may tighten the grant away but never mint one.
+        // With the default now a grant, the load-bearing half of that rule is the tightening one.
         assert!(!config::tighten_grant(
-            Some(true),
+            Some(false),
             trusted_allow_code(false, None)
         ));
         assert!(!config::tighten_grant(
@@ -2951,9 +2998,43 @@ mod tests {
     }
 
     #[test]
-    fn the_interactive_default_mode_asks_before_an_edit_and_before_code() {
+    fn bypass_is_the_default_and_ask_permissions_is_the_way_back() {
+        // `--ask-permissions` is the whole opt-out, and `--dangerously-bypass-permissions` is now
+        // a statement of the default rather than a change to it. Clap refuses both together, so
+        // there is no combination whose meaning has to be guessed.
+        let bypass_of = |ask: bool| !ask;
+        assert!(
+            bypass_of(false),
+            "an untouched invocation bypasses the gate"
+        );
+        assert!(!bypass_of(true), "--ask-permissions restores it");
+
+        let command = <Cli as clap::CommandFactory>::command();
+        let ask = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "ask_permissions")
+            .expect("--ask-permissions is a real flag");
+        assert!(
+            ask.get_long() == Some("ask-permissions"),
+            "the opt-out keeps its documented spelling"
+        );
+        assert!(
+            command
+                .get_arguments()
+                .any(|arg| arg.get_id() == "dangerously_bypass_permissions"),
+            "the explicit grant is retained so existing invocations keep working"
+        );
+    }
+
+    #[test]
+    fn the_gated_default_mode_asks_before_an_edit_and_before_code() {
         use core_protocol::{Capability, PermissionMode, Verdict, gate};
 
+        // This is what the MODE decides, which since 2026-08-05 is not what a default run does:
+        // bypass is on and replaces this gate entirely, so nothing here prompts unless the
+        // operator passed `--ask-permissions`. The mode still has to be right, because that flag
+        // falls back to exactly these values — see `bypass_is_the_default_and_ask_permissions_is_the_way_back`.
+        //
         // Quickstart §4: "The interactive default mode automatically permits reads and asks before
         // an edit or command." Shipping AcceptEdits in the TUI contradicted that.
         assert_eq!(default_permission_mode(false), PermissionMode::Default);

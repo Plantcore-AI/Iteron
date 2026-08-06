@@ -153,6 +153,10 @@ impl Session {
         self.state.mode
     }
 
+    pub(crate) fn bypass_permissions(&self) -> bool {
+        self.facts.bypass_permissions
+    }
+
     pub(crate) fn permission_rules(&self) -> &PermissionRules {
         &self.state.permission_rules
     }
@@ -200,6 +204,7 @@ impl Session {
                 memory_workspace: None,
                 rollout_path: std::path::PathBuf::new(),
                 compaction_trigger_tokens: 0,
+                bypass_permissions: false,
                 initial_model_context_window: None,
                 registry_tools: Vec::new(),
                 agent_catalog: Arc::new(core_agents::AgentCatalog::builtin_only()),
@@ -6077,7 +6082,19 @@ fn mode_picker_items(current: PermissionMode, rules: &PermissionRules) -> Vec<Pi
         .collect()
 }
 
-fn permission_picker_items(rules: &PermissionRules) -> Vec<PickItem> {
+/// The mode label as an operator should read it. Under the default bypass the mode still exists —
+/// it is what `--ask-permissions` falls back to, and `plan` still hard-denies — but on its own the
+/// label reads as a promise to prompt, which is false. Say both rather than either.
+fn permission_mode_row_value(session: &Session) -> String {
+    let label = session.permission_mode().label().to_string();
+    if session.bypass_permissions() {
+        format!("{label} (bypassed: every tool auto-approves)")
+    } else {
+        label
+    }
+}
+
+fn permission_picker_items(rules: &PermissionRules, bypass: bool) -> Vec<PickItem> {
     let caps = [
         (Capability::ReversibleLocal, "Reversible edits"),
         (Capability::CodeExecuting, "Code execution"),
@@ -6092,7 +6109,27 @@ fn permission_picker_items(rules: &PermissionRules) -> Vec<PickItem> {
         (Verdict::Ask, "ask every time"),
         (Verdict::Deny, "deny"),
     ];
-    let mut items = vec![PickItem {
+    let mut items = Vec::new();
+    if bypass {
+        items.push(PickItem {
+            label: "Permission gate → BYPASSED for this session".into(),
+            hint: "every tool auto-approves; the rows below take effect only under \
+                   --ask-permissions, except an explicit deny, which still applies"
+                .into(),
+            is_current: false,
+            action: PickAction::Info,
+            parent: None,
+            depth: 0,
+            expandable: false,
+            expanded: false,
+            enabled: false,
+            disabled_reason: Some(
+                "started with the default bypass; re-run with --ask-permissions to restore the gate"
+                    .into(),
+            ),
+        });
+    }
+    items.push(PickItem {
         label: "Read-only operations → always allow".into(),
         hint: "viewing files and metadata does not prompt".into(),
         is_current: false,
@@ -6105,7 +6142,7 @@ fn permission_picker_items(rules: &PermissionRules) -> Vec<PickItem> {
         disabled_reason: Some(
             "read-only operations are always allowed and are not configurable".into(),
         ),
-    }];
+    });
 
     for (capability, capability_label) in caps {
         for (verdict, verdict_label) in verdicts {
@@ -6797,7 +6834,7 @@ fn open_picker(app: &mut App, session: &Session, directory: &ProviderDirectory, 
         ),
         "permissions" => (
             "Permissions",
-            permission_picker_items(session.permission_rules()),
+            permission_picker_items(session.permission_rules(), session.bypass_permissions()),
         ),
         "theme" => {
             let items = theme::Theme::presets()
@@ -7240,7 +7277,7 @@ async fn handle_registered_command(
                 rows.push(kv("effort applied", "not observed yet"));
             }
             rows.extend([
-                kv("mode", session.permission_mode().label()),
+                kv("mode", &permission_mode_row_value(session)),
                 kv("cwd", &session.workspace().display().to_string()),
                 kv("run", &run),
             ]);
@@ -7448,7 +7485,7 @@ async fn handle_registered_command(
             match sub.next() {
                 None => open_picker(app, session, directory, "permissions"),
                 Some("show" | "list") => {
-                    let mut rows = vec![kv("mode", session.permission_mode().label())];
+                    let mut rows = vec![kv("mode", &permission_mode_row_value(session))];
                     let rules = session.permission_rules().describe();
                     if rules.is_empty() {
                         rows.push(block::PanelRow::Note(
@@ -7756,7 +7793,7 @@ async fn handle_registered_command(
                 .map(|(key, value)| kv(key, value))
                 .collect();
             rows.push(kv("effort", session.effort().label()));
-            rows.push(kv("mode", session.permission_mode().label()));
+            rows.push(kv("mode", &permission_mode_row_value(session)));
             for (key, value) in app.route.limits.rows() {
                 rows.push(kv(key, &value));
             }
@@ -10519,8 +10556,41 @@ mod tests {
     }
 
     #[test]
+    fn the_permission_picker_states_the_bypass_instead_of_listing_rules_that_do_not_decide() {
+        // The default posture auto-approves every tool. A picker that renders "ask every time"
+        // rows without saying so would be describing a gate that is not running.
+        let gated = permission_picker_items(&PermissionRules::new(), false)
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!gated.contains("BYPASSED"), "{gated}");
+
+        let bypassed = permission_picker_items(&PermissionRules::new(), true);
+        let first = bypassed.first().expect("the picker is never empty");
+        assert!(first.label.contains("BYPASSED"), "{}", first.label);
+        assert!(
+            first.hint.contains("--ask-permissions"),
+            "the operator is told how to get the gate back: {}",
+            first.hint
+        );
+        assert!(
+            first.hint.contains("deny"),
+            "an explicit deny still applies and the screen must not imply otherwise: {}",
+            first.hint
+        );
+        assert!(!first.enabled, "the notice is not a selectable action");
+        // Everything the gated screen offered is still present and still selectable, because
+        // `--ask-permissions` makes those rows decide again.
+        assert_eq!(
+            bypassed.len(),
+            permission_picker_items(&PermissionRules::new(), false).len() + 1
+        );
+    }
+
+    #[test]
     fn permission_picker_uses_human_labels_only() {
-        let text = permission_picker_items(&PermissionRules::new())
+        let text = permission_picker_items(&PermissionRules::new(), false)
             .into_iter()
             .map(|item| item.label)
             .collect::<Vec<_>>()
@@ -10605,7 +10675,7 @@ mod tests {
     #[test]
     fn permissions_picker_starts_actionable_and_accepts_in_one_enter() {
         let mut rules = PermissionRules::new();
-        let items = permission_picker_items(&rules);
+        let items = permission_picker_items(&rules, false);
         let selection = initial_picker_selection(&items);
         assert_ne!(
             selection, 0,
@@ -10639,7 +10709,7 @@ mod tests {
         rules
             .try_set_cap(Capability::CodeExecuting, Verdict::Deny)
             .unwrap();
-        let items = permission_picker_items(&rules);
+        let items = permission_picker_items(&rules, false);
         let current = initial_picker_selection(&items);
         assert!(matches!(
             &items[current].action,

@@ -585,6 +585,11 @@ pub(crate) struct SessionFacts {
     /// The window of the model selected at startup. Only an initial value: `/model` replaces it,
     /// and the client tracks the current one itself.
     pub(crate) initial_model_context_window: Option<u64>,
+    /// Whether the capability gate is replaced by blanket auto-approval for this session. A
+    /// startup fact, not runtime state: nothing changes it after `wire`. It is carried here so the
+    /// permission surfaces can say so — a `/permissions` screen listing "ask every time" rows while
+    /// nothing asks would be a lie, and one this project's own truth overlay exists to prevent.
+    pub(crate) bypass_permissions: bool,
     pub(crate) registry_tools: Vec<ToolFact>,
     /// The exact immutable `Arc` the runtime resolves child definitions against. Keeping object
     /// identity across the attach boundary prevents `/agents` from presenting filesystem drift as
@@ -640,6 +645,7 @@ pub(crate) fn attach(
         rollout_path: agent.rollout.path().to_path_buf(),
         compaction_trigger_tokens: agent.compaction.trigger_tokens,
         initial_model_context_window: agent.model_context_window,
+        bypass_permissions: agent.bypass_permissions,
         registry_tools: agent
             .registry
             .specs()

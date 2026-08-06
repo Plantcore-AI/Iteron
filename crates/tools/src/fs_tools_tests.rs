@@ -130,7 +130,13 @@ async fn d3_06_g2_ranged_read_anchor_round_trips_through_edit() {
 #[tokio::test]
 async fn d3_06_g3_huge_range_has_explicit_byte_bound_and_resume_marker() {
     let root = TestRoot::new("bounded-range");
-    std::fs::write(root.0.join("large.txt"), large_fixture(8_000)).unwrap();
+    // Sized from the cap rather than a literal: each numbered line costs ~21 bytes, so this is
+    // comfortably past MAX_READ_OUTPUT_BYTES and stays past it if the cap is raised again.
+    std::fs::write(
+        root.0.join("large.txt"),
+        large_fixture(MAX_READ_OUTPUT_BYTES / 16),
+    )
+    .unwrap();
     let registry = Registry::read_only(&root.0).unwrap();
 
     let result = registry
@@ -162,7 +168,7 @@ async fn d3_06_g4_small_whole_file_and_schema_remain_explicit() {
         .find(|spec| spec.name == "read_file")
         .unwrap();
     assert!(spec.description.contains("optional 1-based first line"));
-    assert!(spec.description.contains("capped at 40,000 bytes"));
+    assert!(spec.description.contains("capped at 400000 bytes"));
     assert_eq!(spec.input_schema["properties"]["offset"]["type"], "integer");
     assert_eq!(spec.input_schema["properties"]["offset"]["minimum"], 1);
     assert_eq!(spec.input_schema["properties"]["limit"]["type"], "integer");
@@ -184,7 +190,76 @@ async fn d3_06_g4_small_whole_file_and_schema_remain_explicit() {
 }
 
 #[tokio::test]
-async fn d3_16_g1_read_file_routes_through_workspace_containment() {
+async fn traversal_tools_report_outside_paths_instead_of_dropping_or_failing_on_them() {
+    // `read_file` addressing the host was only half of it. Both traversal tools mapped every hit
+    // back through `strip_prefix(root)` and treated failure as impossible: `list_dir` dropped the
+    // entry silently and returned an empty listing, and `grep` failed the whole search. A silent
+    // empty result is the worse of the two, which is why this is asserted rather than assumed.
+    let root = TestRoot::new("traversal-outside-root");
+    let outside = TestRoot::new("traversal-outside-target");
+    std::fs::write(root.0.join("inside.txt"), "needle inside\n").unwrap();
+    std::fs::write(outside.0.join("outside.txt"), "needle outside\n").unwrap();
+    let registry = Registry::read_only(&root.0).unwrap();
+    let outside_dir = outside.0.canonicalize().unwrap();
+
+    let listed = registry
+        .dispatch(ToolUse {
+            id: "list".into(),
+            name: "list_dir".into(),
+            input: serde_json::json!({"path": outside_dir.to_str().unwrap()}),
+        })
+        .await;
+    assert!(!listed.is_error, "{}", listed.content);
+    assert!(
+        listed.content.contains("outside.txt"),
+        "an outside listing must not come back empty: {:?}",
+        listed.content
+    );
+    assert!(
+        listed.content.starts_with('/'),
+        "a path outside the root is spelled absolutely: {:?}",
+        listed.content
+    );
+
+    let found = registry
+        .dispatch(ToolUse {
+            id: "grep".into(),
+            name: "grep".into(),
+            input: serde_json::json!({
+                "pattern": "needle",
+                "path": outside_dir.to_str().unwrap(),
+            }),
+        })
+        .await;
+    assert!(!found.is_error, "{}", found.content);
+    assert!(found.content.contains("outside.txt:1"), "{}", found.content);
+
+    // And a search inside the workspace still renders the short relative form.
+    let inside = registry
+        .dispatch(ToolUse {
+            id: "grep-inside".into(),
+            name: "grep".into(),
+            input: serde_json::json!({"pattern": "needle"}),
+        })
+        .await;
+    assert!(!inside.is_error, "{}", inside.content);
+    assert!(
+        inside.content.contains("inside.txt:1"),
+        "{}",
+        inside.content
+    );
+    assert!(
+        !inside.content.contains(root.0.to_str().unwrap()),
+        "an in-workspace hit stays relative: {}",
+        inside.content
+    );
+}
+
+#[tokio::test]
+async fn d3_16_g1_read_file_addresses_the_host_not_only_the_workspace() {
+    // The inverse of the former containment test, kept under the same D-number because it covers
+    // the same decision point: which paths `read_file` will resolve. Owner-directed 2026-08-05 —
+    // both a relative and an absolute path resolve, and neither `..` nor an outside root refuses.
     let root = TestRoot::new("read-containment");
     std::fs::write(root.0.join("inside.txt"), "inside\n").unwrap();
     let registry = Registry::read_only(&root.0).unwrap();
@@ -198,16 +273,30 @@ async fn d3_16_g1_read_file_routes_through_workspace_containment() {
     assert!(!inside.is_error, "{}", inside.content);
     assert!(inside.content.contains("inside"));
 
-    for (hostile, expected) in [
-        ("../outside.txt", "path escapes the workspace"),
-        ("/etc/passwd", "absolute path not allowed"),
-    ] {
-        let refused = registry
-            .dispatch(read_call("escape", serde_json::json!({"path":hostile})))
-            .await;
-        assert!(refused.is_error, "{hostile} unexpectedly escaped");
-        assert!(refused.content.contains(expected), "{}", refused.content);
-    }
+    // The same file named absolutely: this is what the model actually emits, and refusing it was
+    // the single largest source of tool errors before this change.
+    let absolute = root.0.canonicalize().unwrap().join("inside.txt");
+    let by_absolute = registry
+        .dispatch(read_call(
+            "absolute",
+            serde_json::json!({"path": absolute.to_str().unwrap()}),
+        ))
+        .await;
+    assert!(!by_absolute.is_error, "{}", by_absolute.content);
+    assert!(by_absolute.content.contains("inside"));
+
+    // A file genuinely outside the workspace, reached by `..`.
+    let outside = TestRoot::new("read-outside");
+    std::fs::write(outside.0.join("outside.txt"), "outside\n").unwrap();
+    let outside_name = outside.0.file_name().unwrap().to_string_lossy();
+    let traversed = registry
+        .dispatch(read_call(
+            "traverse",
+            serde_json::json!({"path": format!("../{outside_name}/outside.txt")}),
+        ))
+        .await;
+    assert!(!traversed.is_error, "{}", traversed.content);
+    assert!(traversed.content.contains("outside"));
 }
 
 #[tokio::test]

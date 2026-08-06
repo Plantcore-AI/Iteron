@@ -75,7 +75,10 @@ async fn run_git_diff_inner(
                             relative.to_path_buf()
                         }
                     })
-                    .map_err(|_| format!("path escapes the workspace: {path}"))
+                    // NOT a policy boundary: `git diff -- <path>` takes a repository-relative
+                    // pathspec, and a path outside this repository has no such form. The fs tools
+                    // address the whole host now; this one refusal is what `git` itself can mean.
+                    .map_err(|_| format!("path is outside the repository being diffed: {path}"))
             })
         })
         .transpose()?;
@@ -806,7 +809,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registry_rejects_a_path_escape_before_spawning_git() {
+    async fn registry_rejects_an_undiffable_path_before_spawning_git() {
+        // The fs tools address the host, but a pathspec still has to name something this
+        // repository can diff. That refusal is structural, not a confinement policy.
         let temp = TestDir::new("path-escape");
         let registry = Registry::read_only(&temp.0).unwrap();
         let result = registry
@@ -817,6 +822,12 @@ mod tests {
             })
             .await;
         assert!(result.is_error);
-        assert!(result.content.contains("escapes the workspace"));
+        assert!(
+            result
+                .content
+                .contains("outside the repository being diffed"),
+            "{}",
+            result.content
+        );
     }
 }

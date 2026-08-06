@@ -267,21 +267,21 @@ Offline policy, trajectory, evidence, and promotion contracts without runtime au
 
 Platform confinement, child environment, process groups, output bounds, and egress policy.
 
-- Contracts: `workspace-confinement`, `egress-off-default`, `bounded-child-process`
+- Contracts: `selectable-workspace-confinement`, `operator-selected-egress`, `bounded-child-process`
 - Required checks: `cargo test -p core-sandbox --locked`
 
 ### `tools-core` — Tools core
 
 Tool registry, capability and purity coupling, filesystem, edit, and Git tools.
 
-- Contracts: `tool-abi`, `workspace-path-boundary`, `purity-capability-coupling`
+- Contracts: `tool-abi`, `host-path-authority`, `purity-capability-coupling`
 - Required checks: `cargo test -p core-tools --locked`
 
 ### `tools-execution` — Tools execution
 
 Code execution, external web egress, deadlines, output bounds, and external effects.
 
-- Contracts: `sandboxed-code-execution`, `ssrf-boundary`, `external-effect-classification`
+- Contracts: `selectable-code-confinement`, `ssrf-boundary`, `external-effect-classification`
 - Required checks: `cargo test -p core-tools --locked`
 
 ### `tools-context` — Tools context

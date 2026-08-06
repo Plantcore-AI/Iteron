@@ -7,6 +7,23 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (security posture): the default is now unconfined.** By owner
+  decision on 2026-08-05, `core` ships with the operator's own authority instead
+  of the sandbox. `bash` reaches the network and the whole filesystem; `read_file`
+  and `write_file` resolve any absolute path, `..` climb, or symlink the invoking
+  account can reach, including `~/.ssh`; code execution is enabled by default
+  rather than requiring `--allow-code`. The Seatbelt and bubblewrap backends are
+  unchanged and are selected by the new `--confine` flag, which governs executed
+  code; filesystem tools address the host in either posture. `--mode plan` still
+  disables effects entirely. See `docs/using/permissions-and-sandbox.md`.
+- Ceilings raised, not removed (invariant #1 is that a ceiling exists, not that it
+  is small): turns 40 → 600, wall clock 1800s → 14400s, consecutive tool errors
+  3 → 25, `bash` timeout 120s → 3600s and retained output 256 KiB → 8 MiB per
+  stream, `read_file` output 40 KB → 400 KB, `grep` 100 → 1000 matches and 64 KB →
+  512 KB, `web_fetch` 100 KB/1500 lines → 1 MB/15000 lines and 15s → 60s.
+
 ### Added
 
 - Offline evolution evidence, checkpoint algebra, recorded-run projection,

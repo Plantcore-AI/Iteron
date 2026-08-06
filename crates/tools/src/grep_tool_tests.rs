@@ -133,7 +133,13 @@ async fn d3_08_g4_match_cap_is_explicit_and_output_is_bounded() {
         result.content.matches("many.txt:").count(),
         MAX_GREP_MATCHES
     );
-    assert!(result.content.contains("results capped at 100 matches"));
+    assert!(
+        result
+            .content
+            .contains(&format!("results capped at {MAX_GREP_MATCHES} matches")),
+        "{}",
+        result.content
+    );
     assert!(result.content.len() <= MAX_GREP_OUTPUT_BYTES);
 }
 

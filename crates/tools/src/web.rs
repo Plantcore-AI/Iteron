@@ -29,11 +29,14 @@
 use crate::{Registry, ToolError, boxfut, err_result};
 use core_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
 
-/// Default output cap (~100 KB) and line cap (~1500 lines) — bounded invariant #1.
-const DEFAULT_MAX_BYTES: usize = 100_000;
-const MAX_LINES: usize = 1500;
-/// Overall request timeout and same-host redirect hop cap.
-const TIMEOUT_SECS: u64 = 15;
+/// Default output cap and line cap — bounded invariant #1. Raised from 100 KB / 1500 lines
+/// (owner-directed 2026-08-05): a single API reference or changelog page routinely exceeds both,
+/// and a page truncated mid-document is a wrong answer rather than a short one.
+const DEFAULT_MAX_BYTES: usize = 1_000_000;
+const MAX_LINES: usize = 15_000;
+/// Overall request timeout and same-host redirect hop cap. 15 s was short enough that slow origins
+/// failed as errors rather than as slow successes.
+const TIMEOUT_SECS: u64 = 60;
 const MAX_REDIRECTS: usize = 5;
 /// Agent identity sent on every request.
 const USER_AGENT: &str = concat!(
@@ -1275,7 +1278,7 @@ mod tests {
     #[test]
     fn output_is_bounded_by_lines_and_bytes_with_notice() {
         // line bound
-        let many = (0..5000)
+        let many = (0..MAX_LINES + 500)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -1283,7 +1286,7 @@ mod tests {
         assert!(trunc, "5000 lines must truncate");
         assert!(bounded.lines().count() <= MAX_LINES);
         // byte bound (few lines, but huge)
-        let big = "x".repeat(300_000);
+        let big = "x".repeat(DEFAULT_MAX_BYTES * 3);
         let (b2, t2) = bound_text(&big, MAX_LINES, DEFAULT_MAX_BYTES);
         assert!(t2);
         assert!(b2.len() <= DEFAULT_MAX_BYTES);
@@ -1292,7 +1295,7 @@ mod tests {
         assert!(!t3);
         assert_eq!(b3, "hello\nworld");
         // byte bound is char-safe on multibyte
-        let cjk = "写".repeat(50_000); // 150000 bytes
+        let cjk = "写".repeat(DEFAULT_MAX_BYTES); // 3x DEFAULT_MAX_BYTES, 3 bytes per char
         let (b4, t4) = bound_text(&cjk, MAX_LINES, DEFAULT_MAX_BYTES);
         assert!(t4);
         assert!(b4.len() <= DEFAULT_MAX_BYTES);

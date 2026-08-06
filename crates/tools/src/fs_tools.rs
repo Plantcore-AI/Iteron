@@ -7,7 +7,11 @@ use std::path::Path;
 use tokio::io::AsyncReadExt;
 use walkdir::WalkDir;
 
-const MAX_READ_OUTPUT_BYTES: usize = 40_000;
+/// Retained output for one `read_file` window. Raised from 40 KB (owner-directed 2026-08-05): the
+/// old ceiling truncated ordinary source files, and the model's only recovery was to re-issue the
+/// call with an offset — turning one read into three or four and burning the turn budget the run
+/// was actually bounded by. Still a ceiling, because an unbounded read is a context overflow.
+const MAX_READ_OUTPUT_BYTES: usize = 400_000;
 const MAX_READ_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 const TRUNCATION_MARKER_RESERVE_BYTES: usize = 256;
 const UTF8_BOM: &[u8; 3] = b"\xef\xbb\xbf";
@@ -251,17 +255,22 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     r.push_tool(
         ToolSpec {
             name: "read_file".into(),
-            description: "Read a bounded window of a UTF-8 text file relative to the workspace \
-                          root. Returns absolute 1-based line numbers so edits can reference exact \
-                          text. `offset` is the optional 1-based first line (default 1); `limit` is \
-                          the optional number of lines. Output is capped at 40,000 bytes and source \
-                          reads at 8 MiB; binary, unsupported-encoding, and oversized files are not \
-                          injected. Truncation reports the next offset to read."
-                .into(),
+            description: format!(
+                "Read a bounded window of a UTF-8 text file. `path` may be relative to the \
+                 workspace root or an absolute host path. Returns absolute 1-based line numbers so \
+                 edits can reference exact text. `offset` is the optional 1-based first line \
+                 (default 1); `limit` is the optional number of lines. Output is capped at \
+                 {MAX_READ_OUTPUT_BYTES} bytes and source reads at 8 MiB; binary, \
+                 unsupported-encoding, and oversized files are not injected. Truncation reports \
+                 the next offset to read."
+            ),
             input_schema: serde_json::json!({
                 "type":"object",
                 "properties":{
-                    "path":{"type":"string","description":"path relative to the repo root"},
+                    "path":{
+                        "type":"string",
+                        "description":"path relative to the repo root, or an absolute host path"
+                    },
                     "offset":{
                         "type":"integer",
                         "minimum":1,
@@ -270,7 +279,10 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     "limit":{
                         "type":"integer",
                         "minimum":1,
-                        "description":"optional maximum number of lines to return; the 40,000-byte output cap still applies"
+                        "description":format!(
+                            "optional maximum number of lines to return; the \
+                             {MAX_READ_OUTPUT_BYTES}-byte output cap still applies"
+                        )
                     }
                 },
                 "required":["path"]
@@ -281,7 +293,11 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
         |call, root| {
             boxfut::box_it(async move {
                 let id = call.id.clone();
-                let path = call.input.get("path").and_then(|x| x.as_str()).unwrap_or("");
+                let path = call
+                    .input
+                    .get("path")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
                 let window = match ReadWindow::from_input(&call.input) {
                     Ok(window) => window,
                     Err(error) => return err_result(id, error),
@@ -300,12 +316,14 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     r.push_tool(
         ToolSpec {
             name: "list_dir".into(),
-            description: "List files under a directory (relative to the repo root), skipping \
-                          .git and common build/vendor dirs. Returns paths, one per line."
+            description: "List files under a directory, skipping .git and common build/vendor \
+                          dirs. `path` may be relative to the repo root or an absolute host path. \
+                          Returns one path per line: relative when the file is under the repo \
+                          root, absolute when it is not."
                 .into(),
             input_schema: serde_json::json!({
                 "type":"object",
-                "properties":{"path":{"type":"string","description":"dir relative to repo root; default '.'"}},
+                "properties":{"path":{"type":"string","description":"dir relative to the repo root, or an absolute host path; default '.'"}},
             }),
             purity: Purity::Pure,
             capability: Capability::ReadOnly,
@@ -324,10 +342,9 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                             .filter_entry(|e| !is_ignored(e.file_name().to_str().unwrap_or("")))
                             .flatten()
                         {
-                            if entry.file_type().is_file()
-                                && let Ok(p) = entry.path().strip_prefix(&root) {
-                                    out.push(p.display().to_string());
-                                }
+                            if entry.file_type().is_file() {
+                                out.push(crate::display_path(&root, entry.path()));
+                            }
                             if out.len() > 400 {
                                 out.push("… (truncated at 400 entries; narrow the path)".into());
                                 break;

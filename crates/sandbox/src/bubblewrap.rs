@@ -83,10 +83,21 @@ impl Bubblewrap {
         conf: &Confinement,
         pre_sanitization_env: &[(&str, &str)],
     ) -> Result<RunOutput, SandboxError> {
+        if conf.unconfined {
+            // Nothing for a namespace to enforce, so a missing or unusable bwrap is not a refusal
+            // in this posture. `pre_sanitization_env` is a confinement-only test seam (it exists to
+            // prove exact-name removal survives a synthetic parent env inside the namespace);
+            // production always passes an empty slice, and there is no namespace here to place it in.
+            debug_assert!(
+                pre_sanitization_env.is_empty(),
+                "the synthetic parent-env seam is only meaningful for a confined namespace"
+            );
+            return crate::run_direct(command, conf).await;
+        }
         let Some(binary) = Self::usable_bwrap_off_worker().await else {
-            // Deny-by-default: missing *or unusable* bwrap means we refuse, never run unconfined.
-            // This covers hosts where an LSM/kernel policy permits `--version` but rejects the
-            // user namespace that actually provides confinement.
+            // Deny-by-default: missing *or unusable* bwrap means we refuse, never run a command
+            // that ASKED to be confined. This covers hosts where an LSM/kernel policy permits
+            // `--version` but rejects the user namespace that actually provides confinement.
             return Err(SandboxError::Unsupported);
         };
         let synthetic_home = pre_sanitization_env

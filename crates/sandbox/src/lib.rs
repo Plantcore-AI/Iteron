@@ -1,11 +1,18 @@
 //! core-sandbox — capability confinement.
 //!
 //! A sandbox confines capability, never judgment (`docs/intake/sandbox-and-security.md`). Its
-//! job here is ADR-007: run repo-controlled code (bash/build/test) with **egress OFF by default**
-//! and writes confined to the workspace, so the child cannot directly send data over the network
-//! or overwrite arbitrary host files. It does not govern data a caller later relays to a provider.
+//! job here is ADR-007: run repo-controlled code (bash/build/test) with writes confined to the
+//! workspace and egress denied, so the child cannot directly send data over the network or
+//! overwrite arbitrary host files. It does not govern data a caller later relays to a provider.
 //!
-//! Backends:
+//! **The default posture is no longer confinement (owner-directed, 2026-08-05).** A confinement
+//! now carries an explicit `unconfined` bit, and the harness constructs it set: `bash` runs with
+//! the operator's own authority, reaching the whole filesystem and the network. The confined
+//! posture below is fully retained, exercised by the same tests it always was, and selected by
+//! `--confine`; it is a choice the operator makes, not a floor the crate imposes. Read
+//! `Confinement::unconfined` for what that surrenders.
+//!
+//! Backends (used only when the confinement is NOT `unconfined`):
 //!   - **macOS Seatbelt** (`sandbox-exec` + an SBPL profile): implemented. Denies network by
 //!     default, allowlists the workspace, system runtime/toolchain roots, and explicit user
 //!     toolchain/cache roots, and confines writes to the workspace + a capability-private scratch
@@ -19,6 +26,7 @@
 //! decision recorded above this crate (ADR-007 §2: network tests are a separate, gated escalation).
 
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -73,13 +81,46 @@ pub struct Confinement {
     /// secret detection intentionally remains a second layer; custom names such as `GATEWAY_KEY`
     /// must also be removed from model-driven child processes.
     pub sensitive_env_names: Vec<String>,
+    /// Run with the operator's own authority: no `sandbox-exec`, no `bwrap`, no profile. Every
+    /// other field except the ceilings and `sensitive_env_names` becomes inert, because there is
+    /// no backend left to enforce them. This is the harness default (owner-directed, 2026-08-05).
+    pub unconfined: bool,
 }
 
 impl Confinement {
     pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
+    /// Retained bytes per stream once the sandbox is not the thing bounding the run. A confined
+    /// child is a build or a test; an unconfined one is routinely a full log the operator asked
+    /// for, and truncating it at 256 KiB was the ceiling this change exists to remove.
+    pub const UNCONFINED_MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+    /// One hour. Still a ceiling — invariant #1 does not have an off switch, and a wedged child
+    /// with host authority is exactly the case that must not run forever — but no longer a number
+    /// that a release build or a large test suite trips over.
+    pub const UNCONFINED_TIMEOUT_SECS: u64 = 3_600;
 
-    /// The default posture for running repo code: no egress, writes confined to the workspace.
+    /// The confined posture for running repo code: no egress, writes confined to the workspace.
+    /// Selected by `--confine`; see `unconfined` for what the harness does by default.
     pub fn egress_off(workspace: impl Into<PathBuf>) -> Self {
+        Self::new(workspace, false)
+    }
+
+    /// The harness default: the child runs with the operator's own authority.
+    ///
+    /// This is not a widened sandbox, it is the absence of one. The child can read `~/.ssh`, write
+    /// outside the workspace, and reach the network, because that is what the operator asked for
+    /// when they chose this posture. Two things deliberately survive: the wall-clock and output
+    /// ceilings (invariant #1 is a liveness property, not a security one), and the exact-name
+    /// credential scrub, which is not a restriction on what the tool may DO — the operator can
+    /// still read any file holding the same secret — and whose removal was not asked for.
+    pub fn unconfined(workspace: impl Into<PathBuf>) -> Self {
+        let mut conf = Self::new(workspace, true);
+        conf.allow_egress = true;
+        conf.timeout_secs = Self::UNCONFINED_TIMEOUT_SECS;
+        conf.max_output_bytes = Self::UNCONFINED_MAX_OUTPUT_BYTES;
+        conf
+    }
+
+    fn new(workspace: impl Into<PathBuf>, unconfined: bool) -> Self {
         static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
         let serial = NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
@@ -96,6 +137,7 @@ impl Confinement {
             timeout_secs: 120,
             max_output_bytes: Self::DEFAULT_MAX_OUTPUT_BYTES,
             sensitive_env_names: Vec::new(),
+            unconfined,
         }
     }
 }
@@ -301,8 +343,53 @@ pub trait Sandbox: Send + Sync {
     async fn run(&self, command: &str, conf: &Confinement) -> Result<RunOutput, SandboxError>;
 }
 
-/// Pick the best backend for this platform. Deny-by-default: on an unsupported platform this
-/// returns a backend whose `run` refuses, so `--allow-code` cannot silently run UNconfined.
+/// Run a command with no backend at all, under the operator's own authority.
+///
+/// Every backend delegates here when `conf.unconfined` is set, which is why an absent
+/// `sandbox-exec` or `bwrap` stops being a refusal in that posture — there is nothing left for
+/// them to enforce. What this still does is exactly what a sandbox never provided: it bounds the
+/// wall clock and the retained output, keeps the child in its own process group so a timeout can
+/// reap the whole tree, and strips the exact credential names the provider directory declared.
+///
+/// The confined path is not a superset of this one and this one is not a widened version of it.
+/// They are two postures, and `Confinement::unconfined` documents what selecting this surrenders.
+pub(crate) async fn run_direct(
+    command: &str,
+    conf: &Confinement,
+) -> Result<RunOutput, SandboxError> {
+    let mut cmd = tokio::process::Command::new(confined_shell());
+    cmd.arg("-c").arg(command).current_dir(&conf.workspace);
+    // No scratch redirection: an unconfined child shares the operator's own temp directory, since
+    // a private scratch exists to keep a CONFINED child out of the ambient one.
+    confine_env_with_exact(&mut cmd, &conf.sensitive_env_names);
+    cmd.env("TERM", "dumb")
+        .env("PAGER", "cat")
+        .env("MANPAGER", "cat")
+        .env("GIT_PAGER", "cat")
+        .env("PIP_PROGRESS_BAR", "off")
+        .env("TQDM_DISABLE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    configure_process_group(&mut cmd);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| SandboxError::Spawn(e.to_string()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| SandboxError::Spawn("child stdout was not piped".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| SandboxError::Spawn("child stderr was not piped".into()))?;
+    collect_child_output(child, stdout, stderr, conf).await
+}
+
+/// Pick the best backend for this platform. An unconfined confinement never reaches a backend's
+/// enforcement path, so on an unsupported platform this still returns a backend whose `run`
+/// refuses any request that asked to BE confined, rather than silently running it unconfined.
 pub fn platform_sandbox() -> Box<dyn Sandbox> {
     #[cfg(target_os = "macos")]
     {
@@ -461,12 +548,16 @@ pub fn clear_to_safe_child_env_with_exact(
     cmd.envs(retained);
 }
 
-/// A backend that refuses on unsupported platforms. Refusal, not fallthrough.
+/// A backend that refuses on unsupported platforms. Refusal, not fallthrough — for a request that
+/// asked to be confined. An unconfined request has nothing to fall through to and runs directly.
 pub struct Unsupported;
 
 #[async_trait::async_trait]
 impl Sandbox for Unsupported {
-    async fn run(&self, _command: &str, _conf: &Confinement) -> Result<RunOutput, SandboxError> {
+    async fn run(&self, command: &str, conf: &Confinement) -> Result<RunOutput, SandboxError> {
+        if conf.unconfined {
+            return run_direct(command, conf).await;
+        }
         Err(SandboxError::Unsupported)
     }
 }

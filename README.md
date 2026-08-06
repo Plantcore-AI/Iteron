@@ -26,10 +26,16 @@
 </p>
 
 > [!WARNING]
-> **Public pre-alpha.** Core Code is ready for development and evaluation, not
-> unattended use on sensitive repositories. Interfaces may change before the
-> first compatibility-stable release. The sandbox reduces blast radius; it is
-> not a VM or a confidentiality boundary.
+> **Public pre-alpha, and unconfined by default.** Core Code is ready for
+> development and evaluation, not unattended use on sensitive repositories.
+> Interfaces may change before the first compatibility-stable release.
+>
+> Since 2026-08-05 the shipped default is the operator's own authority, and it is
+> ungated: every tool auto-approves without prompting, `bash` reaches the network
+> and the whole filesystem, and the file tools address any path the operator's
+> account can. `--ask-permissions` restores the capability gate and `--confine`
+> puts executed code back inside the Seatbelt/bubblewrap sandbox. Run an untrusted
+> repository with both, or with `--mode plan`, or not at all.
 
 Core Code combines a focused coding-agent experience with a reusable agent
 runtime substrate. The `core` command provides a full-screen TUI and bounded
@@ -71,7 +77,8 @@ Inside the TUI:
 
 - describe the outcome you want in the composer;
 - use `/model` to inspect selectable providers and account-visible models;
-- use `/permissions` before granting edits, code execution, or egress;
+- `/permissions` shows the gate state; on a default run it opens with a
+  `BYPASSED` notice, because nothing below it is deciding anything;
 - use `/help` for the complete command registry.
 
 A missing credential leaves the provider and its models visibly unavailable.
@@ -85,14 +92,21 @@ core -p -C /path/to/repository \
   "Explain the failing test and propose the smallest correct fix"
 ```
 
-Code execution is disabled by default. Grant it explicitly and keep completion
-behind a harness-owned verification gate:
+Code execution is enabled by default and runs with your own user authority. Keep
+completion behind a harness-owned verification gate, and add `--confine` when the
+repository is not yours:
 
 ```sh
 core -p -C /path/to/repository \
-  --allow-code \
   --verify 'cargo test --workspace --all-targets --locked' \
   "Fix the failing test, verify the change, and summarize the evidence"
+```
+
+```sh
+# The same run, with executed code back inside the sandbox: no network, writes
+# confined to the workspace, ambient credential paths denied.
+core -p -C /path/to/untrusted-repository --confine \
+  "Explain what this repository's build script does"
 ```
 
 Continue with the [five-minute quickstart](docs/getting-started/quickstart.md),
@@ -118,8 +132,9 @@ Continue with the [five-minute quickstart](docs/getting-started/quickstart.md),
   plus bounded operator-defined OpenAI-compatible routes.
 - Repository read, search, edit, shell, Git, web, memory, skills, hooks, MCP, and
   verification primitives with typed capabilities.
-- Deny-by-default permissions, macOS Seatbelt and Linux bubblewrap backends, and
-  explicit external-egress escalation.
+- Typed permission rules behind `--ask-permissions`, macOS Seatbelt and Linux
+  bubblewrap backends behind `--confine`, and a kernel admission layer that
+  neither flag can widen.
 - Hash-chained local sessions with resume, continue, fork, checkpoint, and
   replay-oriented contracts.
 - Replaceable context, decomposition, verification, evaluation, observability,
@@ -176,7 +191,7 @@ Read the [architecture](docs/architecture.md),
 | TUI and one-shot CLI | Stable CLI/config/record compatibility |
 | Six provider profiles and three wire adapters | Complete provider and production conformance |
 | Typed tools, permissions, hooks, skills, and initial MCP client | Complete MCP/LSP/plugin and persistent PTY lifecycle |
-| macOS/Linux sandbox backends with live CI tests | VM-grade isolation or confidentiality guarantees |
+| macOS/Linux sandbox backends with live CI tests, selected by `--confine` | A default-on sandbox, VM-grade isolation, or confidentiality guarantees |
 | Durable session, resume, fork, and checkpoint primitives | Full pure-reducer App Server runtime and crash reconciliation |
 | Evaluation and evolution boundary crates | Production evaluation corpus or live self-evolution |
 
