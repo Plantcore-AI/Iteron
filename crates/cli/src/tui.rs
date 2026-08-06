@@ -4625,6 +4625,7 @@ pub async fn run(
                             // the attachment the operator just watched land. The chips are taken out
                             // of the composer WITH the text, because `take_submit` clears the stores
                             // and anything left behind would ride the next, unrelated message.
+                            attach_bare_image_paths(&mut app, &repo);
                             if app.editor.chip_count() > 0 {
                                 // Refusal (queue bound or byte ceiling) leaves the draft, its pasted
                                 // blocks and its chips exactly where they are, with the reason in
@@ -4667,6 +4668,7 @@ pub async fn run(
                         }
                         // Codex/Claude-style explicit queue: Tab defers the text until this run ends.
                         KeyCode::Tab if app.running && !app.editor.is_empty() => {
+                            attach_bare_image_paths(&mut app, &repo);
                             if app.editor.chip_count() > 0 {
                                 queue_draft_with_chips(&mut app);
                             } else {
@@ -5093,6 +5095,92 @@ fn submit_operation(
 /// Resolve explicit `@path.png` mentions into the same bounded attachment collection used by
 /// drag/drop, then submit one legacy or multimodal SQ operation. Work is staged against a clone:
 /// an invalid file or a saturated SQ leaves the operator's draft and chips intact.
+/// Image paths sitting in the draft as bare text, as `(char_start, char_end, path)` spans.
+///
+/// A terminal drop is supposed to arrive as a bracketed paste, and when it does the paste lane turns
+/// it into a chip. Not every terminal sends one: some replay a drop as ordinary keystrokes, and then
+/// the path is just text the operator watched appear — no chip, no anchor, and the picture is not
+/// sent. This scan is the backstop that does not depend on which lane the bytes came in through.
+///
+/// Tokens are split on whitespace that is NOT backslash-escaped, because that is exactly how a
+/// terminal writes a dropped path: `/tmp/Screenshot\ 2026-08-06\ at\ 3.57.44\ PM.png` is ONE
+/// token. A token counts only if it parses as an image reference — an absolute-looking path with a
+/// recognised image extension — and the caller drops it again if the bytes do not sniff as that
+/// image, so prose that merely mentions a path is never converted.
+fn bare_image_path_spans(text: &str) -> Vec<(usize, usize, std::path::PathBuf)> {
+    let mut spans = Vec::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0usize;
+    while index < chars.len() {
+        if chars[index].is_whitespace() {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        let mut token = String::new();
+        while index < chars.len() {
+            let character = chars[index];
+            if character == '\\' && index + 1 < chars.len() {
+                token.push(character);
+                token.push(chars[index + 1]);
+                index += 2;
+                continue;
+            }
+            if character.is_whitespace() {
+                break;
+            }
+            token.push(character);
+            index += 1;
+        }
+        if let Ok(Some(reference)) = image_input::parse_explicit_image_path(&token) {
+            spans.push((start, index, reference.path().to_path_buf()));
+        }
+    }
+    spans
+}
+
+/// Turn every bare image path in the draft into the chip and anchor it should have been.
+///
+/// Right to left, so the span of a path earlier in the sentence is still valid after a later one is
+/// replaced. A path whose bytes cannot be read or do not sniff as an image is LEFT AS TEXT: the
+/// operator may simply have been talking about a file, and refusing their submission over it would
+/// be the composer inventing a problem.
+fn attach_bare_image_paths(app: &mut App, workspace: &std::path::Path) {
+    let spans = bare_image_path_spans(&app.editor.text());
+    for (start, end, path) in spans.into_iter().rev() {
+        let absolute = if path.is_absolute() {
+            path
+        } else {
+            workspace.join(path)
+        };
+        // Captured BEFORE the span is removed: after the delete these indices address different
+        // characters, and reading them then is how a failed attach put the wrong words back.
+        let original = app.editor.span(start, end);
+        let before = app.editor.chip_count();
+        app.editor.delete_span(start, end);
+        app.editor.set_cursor(start);
+        match app.editor.attach_image_path(&absolute) {
+            Ok(attachment) => {
+                let (id, name, bytes) = (
+                    attachment.id(),
+                    attachment.display_name().to_owned(),
+                    attachment.file_bytes(),
+                );
+                app.note(
+                    block::NoticeLevel::Ok,
+                    format!("attached {name} ({bytes} bytes) as [Image #{id}]"),
+                );
+            }
+            Err(_) => {
+                // Put the words back exactly as they were. `delete_span` took them out on the
+                // assumption this would attach; it did not, so the draft owes the operator its text.
+                debug_assert_eq!(app.editor.chip_count(), before);
+                app.editor.insert_str(&original);
+            }
+        }
+    }
+}
+
 /// Queue a mid-run draft that carries chips, moving the chips out of the composer with the text.
 ///
 /// Returns whether it was queued. Admission is checked against the text the submission would
@@ -5137,6 +5225,10 @@ fn submit_composer(
     session: &Session,
     notifier: &mut notification::TerminalNotifier,
 ) {
+    // A drop that arrived as keystrokes rather than as a bracketed paste is still a drop. Convert
+    // it before anything reads the draft, so the rest of this function sees the chips and anchors
+    // the paste lane would have produced.
+    attach_bare_image_paths(app, session.workspace());
     let raw = app.editor.text();
     let mentions = match image_input::parse_image_mentions(&raw) {
         Ok(mentions) => mentions,
@@ -14674,6 +14766,58 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 .iter()
                 .any(|block| block.to_text().contains("cannot carry attachments")),
             "the operator is told why"
+        );
+    }
+
+    /// The exact failure from a live session: a screenshot dragged onto the composer arrived as
+    /// keystrokes, not as a bracketed paste, so the paste lane never saw it and the operator got a
+    /// line of escaped path text where a chip should have been.
+    #[test]
+    fn a_dropped_path_that_arrived_as_typing_still_becomes_a_chip_and_an_anchor() {
+        let (gif, _) = distinct_gifs();
+        let dir = std::env::temp_dir().join(format!("core-drop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch dir");
+        // A canonical GIF under a .gif name: the declared extension has to agree with the bytes,
+        // which is the same rule a real screenshot .png meets. The mechanism under test is the
+        // typed path becoming a chip, not the codec.
+        let shot = dir.join("Screenshot 2026-08-06 at 3.57.44 PM.gif");
+        std::fs::write(&shot, gif).expect("a canonical GIF");
+
+        let mut app = App::new();
+        // Typed, not pasted: exactly what the terminal wrote, escapes and all.
+        app.editor.insert_str("look at ");
+        for character in shot.to_string_lossy().replace(' ', "\\ ").chars() {
+            app.editor.insert(character);
+        }
+        assert_eq!(
+            app.editor.chip_count(),
+            0,
+            "typing attaches nothing by itself"
+        );
+
+        attach_bare_image_paths(&mut app, std::path::Path::new("/"));
+        assert_eq!(app.editor.chip_count(), 1, "the path became a chip");
+        assert_eq!(
+            app.editor.text(),
+            "look at [Image #1]",
+            "the anchor stands where the path stood"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Prose that merely names a path must not be rewritten, and a path that cannot be read as an
+    /// image must leave the draft exactly as the operator typed it.
+    #[test]
+    fn a_path_that_is_not_a_readable_image_is_left_as_the_text_it_was() {
+        let mut app = App::new();
+        app.editor
+            .insert_str("compare /nope/definitely-missing.png with the old one");
+        attach_bare_image_paths(&mut app, std::path::Path::new("/"));
+        assert_eq!(app.editor.chip_count(), 0);
+        assert_eq!(
+            app.editor.text(),
+            "compare /nope/definitely-missing.png with the old one"
         );
     }
 
