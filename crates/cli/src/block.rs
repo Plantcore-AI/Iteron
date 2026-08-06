@@ -1427,6 +1427,33 @@ fn agent_row_lines(
         ]);
     }
 
+    // The live tree has to stay a GLANCE, not a page. A 16-way fan put sixteen full task
+    // descriptions on screen, each wrapping to three lines, and the conversation above it was
+    // gone. Two bounds fix that without hiding a failure: at most MAX_LIVE_ROWS rows are drawn
+    // and the remainder is counted on one line; and every row is ONE line, its label clipped to
+    // the width it has rather than wrapped. Errors and still-running work sort first, so the
+    // rows that survive the bound are the ones an operator was looking for. The collapse toggle
+    // (`verbose`) still shows every row in full.
+    const MAX_LIVE_ROWS: usize = 6;
+    let mut visible = visible;
+    if !verbose {
+        visible.sort_by_key(|agent| match agent.state {
+            WorkflowState::Error => 0,
+            WorkflowState::Running => 1,
+            _ => 2,
+        });
+    }
+    let hidden = if verbose {
+        0
+    } else {
+        visible.len().saturating_sub(MAX_LIVE_ROWS)
+    };
+    if hidden > 0 {
+        visible.truncate(MAX_LIVE_ROWS);
+    }
+    // Branch glyph, state glyph and the trailing meta all take columns before the label does.
+    let label_budget = width.saturating_sub(28).max(24);
+
     let n = visible.len();
     for (i, agent) in visible.iter().enumerate() {
         let last = i + 1 == n;
@@ -1446,7 +1473,14 @@ fn agent_row_lines(
         let mut row = vec![
             Span::styled(branch.to_string(), Style::default().fg(theme.faint)),
             Span::styled(format!("{glyph} "), glyph_style),
-            Span::styled(agent.label.clone(), label_style),
+            Span::styled(
+                if verbose {
+                    agent.label.clone()
+                } else {
+                    crate::tui::clip_text(&agent.label, label_budget)
+                },
+                label_style,
+            ),
         ];
         if let Some(meta) = agent_meta_string(agent) {
             row.push(Span::styled(
@@ -1466,6 +1500,12 @@ fn agent_row_lines(
         if let Some(preview) = result_preview_line(agent, width, last, theme) {
             lines.push(preview);
         }
+    }
+    if hidden > 0 {
+        lines.push(vec![Span::styled(
+            format!("\u{2026} +{hidden} more"),
+            Style::default().fg(theme.faint).add_modifier(Modifier::DIM),
+        )]);
     }
     lines
 }
