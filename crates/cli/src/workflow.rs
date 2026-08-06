@@ -231,6 +231,145 @@ impl ProgressSink for DegradedAgentSink {
     }
 }
 
+/// Total bytes of already-finished agent results ONE detached run keeps so that killing it can
+/// still answer with them.
+///
+/// Past the bound the newest results are refused rather than the oldest evicted, and every refusal
+/// is counted. Keeping the earliest makes each answer a prefix of the one before it: a result a
+/// client already read in one `collect` cannot disappear from the next. Evicting the oldest instead
+/// would make a partial answer shrink under the client's feet, which is worse than admitting the
+/// tail is missing.
+const MAX_PARTIAL_RESULT_BYTES: usize = 256 * 1024;
+
+/// One agent that finished with a result before its run was killed.
+#[derive(Debug, Clone)]
+pub struct FinishedAgent {
+    pub index: usize,
+    pub label: String,
+    pub result: String,
+}
+
+/// What a run had actually produced at the moment somebody killed it.
+#[derive(Debug, Clone, Default)]
+pub struct PartialWork {
+    /// Agents that reached [`WorkflowState::Done`], in completion order.
+    pub finished: Vec<FinishedAgent>,
+    /// Agents that had started and not finished when the kill was REQUESTED — not when the engine
+    /// got round to honouring it, by which time it has already retired those rows as `stopped`
+    /// errors and the count would flatter the kill by reading zero.
+    pub running: usize,
+    /// Results refused by [`MAX_PARTIAL_RESULT_BYTES`]. Counted, never silent.
+    pub dropped: usize,
+}
+
+/// A [`ProgressSink`] that keeps the work a run had already finished, so that KILLING it returns
+/// that work instead of nothing.
+///
+/// The engine resolves a cancelled run's script value to `null` deliberately — a half-evaluated JS
+/// value is meaningless — so `RunReport.value` carries nothing at all after a kill. Every agent the
+/// operator already paid for would therefore vanish from the answer, and a cancellation whose
+/// output is discarded is indistinguishable from a crash. Between the kill and the journal on disk
+/// this is the only record of that work.
+///
+/// It is a separate sink rather than a widening of [`DegradedAgentSink`] because the two keep
+/// opposite halves: that one keeps the agents that produced NO result, this one keeps the results.
+#[derive(Default)]
+pub struct PartialWorkSink {
+    retained: std::sync::Mutex<PartialWorkState>,
+}
+
+#[derive(Default)]
+struct PartialWorkState {
+    finished: Vec<FinishedAgent>,
+    retained_bytes: usize,
+    dropped: usize,
+    /// Agents that emitted `AgentStarted` with no matching `AgentFinished` yet.
+    in_flight: std::collections::BTreeSet<usize>,
+    /// `in_flight.len()` sampled when the kill was requested.
+    in_flight_at_kill: Option<usize>,
+}
+
+impl PartialWorkSink {
+    pub fn new() -> Self {
+        PartialWorkSink::default()
+    }
+
+    /// Sample what the kill is about to interrupt.
+    ///
+    /// Must be called BEFORE [`RunHandle::cancel`]: the engine retires in-flight rows as `stopped`
+    /// errors on its way out, so a sample taken afterwards reports that nothing was running and the
+    /// answer silently understates what the operator threw away.
+    ///
+    /// Only the FIRST kill is recorded — a second cancel of an already-stopping run must not shrink
+    /// the count of what the first one interrupted.
+    pub fn note_kill(&self) {
+        if let Ok(mut retained) = self.retained.lock()
+            && retained.in_flight_at_kill.is_none()
+        {
+            retained.in_flight_at_kill = Some(retained.in_flight.len());
+        }
+    }
+
+    /// The work so far. `running` is the kill sample when there was a kill, else what is in flight
+    /// right now.
+    pub fn snapshot(&self) -> PartialWork {
+        let Ok(retained) = self.retained.lock() else {
+            return PartialWork::default();
+        };
+        PartialWork {
+            finished: retained.finished.clone(),
+            running: retained
+                .in_flight_at_kill
+                .unwrap_or_else(|| retained.in_flight.len()),
+            dropped: retained.dropped,
+        }
+    }
+}
+
+impl ProgressSink for PartialWorkSink {
+    fn emit(&self, event: ProgressEvent) {
+        let Ok(mut retained) = self.retained.lock() else {
+            return;
+        };
+        match event {
+            ProgressEvent::AgentStarted { index, .. } => {
+                retained.in_flight.insert(index);
+            }
+            ProgressEvent::AgentFinished {
+                index,
+                label,
+                state,
+                result_preview,
+                ..
+            } => {
+                retained.in_flight.remove(&index);
+                // A degraded row produced no result to keep; naming why it degraded is
+                // `DegradedAgentSink`'s half of the answer, and duplicating it here would let the
+                // two drift into disagreeing about what happened to one agent.
+                if !matches!(state, WorkflowState::Done) {
+                    return;
+                }
+                // Re-bounded here rather than trusted from the emitter: this is retained state, and
+                // a bound that lives only in the producer is one refactor away from not existing.
+                let result = truncate_preview(result_preview.as_deref().unwrap_or(""), PREVIEW_MAX);
+                let label = truncate_preview(&label, UI_LABEL_MAX);
+                let cost = result.len() + label.len();
+                if retained.retained_bytes + cost > MAX_PARTIAL_RESULT_BYTES {
+                    retained.dropped += 1;
+                    return;
+                }
+                retained.retained_bytes += cost;
+                retained.finished.push(FinishedAgent {
+                    index,
+                    label,
+                    result,
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
 /// A [`ProgressSink`] that folds every engine event into a shared live [`crate::block::WorkflowRunCard`]
 /// — the TTY counterpart of [`StdoutProgressSink`]. Reading the card each frame + this upsert IS the
 /// design §3.2 store step; the live loop below drives the render.
@@ -681,13 +820,32 @@ pub fn launch_prepared(
     }
 }
 
+/// The ERROR block naming the agents that resolved to JS `null`.
+///
+/// One function, used by both renderings below, because a degraded `agent()` is deleted by a
+/// script's idiomatic `.filter(Boolean)`: if the two summaries disagreed about how a degradation is
+/// reported, an exhausted budget would reach the model as a plausibly-short result on whichever
+/// path forgot it.
+fn degraded_section(degraded: &[String]) -> String {
+    if degraded.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\nERROR: {} agent(s) did not complete and were resolved to null:\n{}",
+        degraded.len(),
+        degraded
+            .iter()
+            .map(|reason| format!("  - {reason}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
 /// The one rendering of a settled run for the model.
 ///
 /// Extracted from the in-turn tool handler so the detached path cannot drift from it: a background
 /// run's `collect` returns this exact string, so "ran in-turn" and "ran detached then collected"
-/// differ in *when* the model is told and in nothing else. The degraded section is an ERROR block
-/// because a degraded `agent()` resolves to JS `null` and a script's `.filter(Boolean)` deletes it —
-/// without it an exhausted budget reaches the model as a plausibly-short result.
+/// differ in *when* the model is told and in nothing else.
 pub fn run_result_summary(
     name: &str,
     run_id: &str,
@@ -696,19 +854,7 @@ pub fn run_result_summary(
 ) -> String {
     let value =
         serde_json::to_string_pretty(&report.value).unwrap_or_else(|_| report.value.to_string());
-    let degraded_section = if degraded.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\n\nERROR: {} agent(s) did not complete and were resolved to null:\n{}",
-            degraded.len(),
-            degraded
-                .iter()
-                .map(|reason| format!("  - {reason}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
-    };
+    let degraded_section = degraded_section(degraded);
     format!(
         "Workflow `{name}` (run {run_id}) {}: {} agent(s) replayed from cache, {} ran live.{degraded_section}\n\nResult:\n{value}",
         if report.stopped {
@@ -716,6 +862,63 @@ pub fn run_result_summary(
         } else {
             "finished"
         },
+        report.cache_hits,
+        report.cache_misses
+    )
+}
+
+/// The one rendering of a KILLED run for the model — the counterpart of [`run_result_summary`],
+/// which renders a run that reached its own `return`.
+///
+/// A kill is a deliberate act with a result, not a crash, and the two must not read the same. The
+/// engine cannot make that distinction here: it resolves a stopped run's value to `null` because a
+/// half-evaluated script value is meaningless, so the finished agents' work survives only because
+/// [`PartialWorkSink`] kept it. This states, in one string, what was produced, what was interrupted,
+/// and where the durable copy is — the three facts that separate "I stopped it, and here is what I
+/// got" from "it died and everything is gone".
+pub fn killed_run_summary(
+    name: &str,
+    run_id: &str,
+    report: &RunReport,
+    partial: &PartialWork,
+    degraded: &[String],
+) -> String {
+    let produced = if partial.finished.is_empty() {
+        "No agent had finished when the kill was requested, so this run produced no partial result."
+            .to_string()
+    } else {
+        format!(
+            "{} agent(s) finished before the kill, and their results ARE this run's output:\n{}",
+            partial.finished.len(),
+            partial
+                .finished
+                .iter()
+                .map(|agent| format!("  - #{} {}: {}", agent.index, agent.label, agent.result))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    let omitted = if partial.dropped > 0 {
+        format!(
+            "\n({} further result(s) exceeded this session's retention bound and are omitted here; \
+             the run's journal on disk has every one.)",
+            partial.dropped
+        )
+    } else {
+        String::new()
+    };
+    // Always stated, including as zero: "nothing was interrupted" is itself an answer the client
+    // needs in order to know the partial result above is the whole result.
+    let interrupted = format!(
+        "\n{} agent(s) were still running when the kill was requested; their work was discarded.",
+        partial.running
+    );
+    format!(
+        "Workflow `{name}` (run {run_id}) was KILLED at the engine's next safe point. It never \
+         reached its own `return`, so it has no return value — this is a cancellation with a \
+         partial result, not a crash.\n\n{produced}{omitted}{interrupted}{}\n\n{} agent(s) replayed \
+         from cache, {} ran live. `core workflow list` records the run.",
+        degraded_section(degraded),
         report.cache_hits,
         report.cache_misses
     )
@@ -798,9 +1001,29 @@ struct SupervisedRun {
     name: String,
     workflows_dir: PathBuf,
     degraded: Arc<DegradedAgentSink>,
+    /// The results this run had already produced, so a kill answers with them rather than with the
+    /// `null` the engine resolves a stopped script to.
+    partial: Arc<PartialWorkSink>,
     state: SupervisedState,
     /// Monotonic registration order, so eviction drops the oldest settled summary first.
     ordinal: u64,
+}
+
+/// The one answer for a settled run whose summary is no longer held in memory.
+///
+/// `collect` and `cancel` must give the SAME answer here. `cancel` used to reply `Unknown` — "this
+/// session never started that run" — to a run this session demonstrably did start, which is
+/// indistinguishable from a lost result, the one failure a detached run must not have.
+fn evicted_summary(run: &SupervisedRun, run_id: &str, evicted: usize) -> String {
+    format!(
+        "Workflow `{}` (run {run_id}) settled, but this session no longer holds its summary in \
+         memory ({evicted} older result(s) were dropped to stay within its retention bound). The \
+         authoritative result is on disk at {}.",
+        run.name,
+        run_dir(&run.workflows_dir, run_id)
+            .join("result.json")
+            .display()
+    )
 }
 
 #[derive(Default)]
@@ -870,6 +1093,12 @@ impl WorkflowSupervisor {
             degraded,
             ..
         } = prepared;
+        // Fanned in rather than passed by the caller: only a run that DETACHES can be killed out of
+        // band, so only a detached run needs its finished work held in memory. Wrapping can never
+        // lower what the fan-out reports as its port version below what `sink` already reported.
+        let partial = Arc::new(PartialWorkSink::new());
+        let sink: Arc<dyn ProgressSink> =
+            Arc::new(FanoutProgressSink::new(vec![sink, partial.clone()]));
         let handle = Arc::new(WorkflowEngine::launch(spec, spawner, sink));
         {
             let mut inner = self.inner.lock().unwrap();
@@ -881,6 +1110,7 @@ impl WorkflowSupervisor {
                     name: name.clone(),
                     workflows_dir: workflows_dir.clone(),
                     degraded: degraded.clone(),
+                    partial,
                     state: SupervisedState::Running {
                         handle: Arc::clone(&handle),
                         started: std::time::Instant::now(),
@@ -910,25 +1140,42 @@ impl WorkflowSupervisor {
     /// Record a settled run: persist its terminal sidecar, keep its model-facing summary, announce
     /// it. Called from the reaper, and from [`Self::shutdown`] for a run that ignored its cancel.
     fn settle(&self, run_id: &str, name: &str, outcome: anyhow::Result<RunReport>) {
-        let (workflows_dir, degraded) = {
+        let (workflows_dir, degraded, partial) = {
             let inner = self.inner.lock().unwrap();
             match inner.runs.get(run_id) {
                 // Already settled (shutdown got there first). Settling twice would publish a second
                 // terminal line for one run, so stop here.
                 Some(run) if !matches!(run.state, SupervisedState::Running { .. }) => return,
-                Some(run) => (run.workflows_dir.clone(), run.degraded.clone()),
+                Some(run) => (
+                    run.workflows_dir.clone(),
+                    run.degraded.clone(),
+                    run.partial.clone(),
+                ),
                 None => return,
             }
         };
 
-        // Render first, WITHOUT the lock: `run_result_summary` is pure and the report can be large.
+        // Render first, WITHOUT the lock: both summaries are pure and the report can be large.
         let (report, state, notice) = match outcome {
             Ok(report) => {
-                let summary = run_result_summary(name, run_id, &report, &degraded.reasons());
-                let terminal = if report.stopped {
-                    "stopped"
+                // `stopped` is set for exactly the cancellation token this owner trips, so it is
+                // the kill signal. A run that returned on its own a moment before the cancel landed
+                // reports `false` and is rendered as what it is: completed.
+                let summary = if report.stopped {
+                    killed_run_summary(
+                        name,
+                        run_id,
+                        &report,
+                        &partial.snapshot(),
+                        &degraded.reasons(),
+                    )
                 } else {
-                    "finished"
+                    run_result_summary(name, run_id, &report, &degraded.reasons())
+                };
+                let terminal = if report.stopped {
+                    "was killed and kept the results it had already produced"
+                } else {
+                    "finished in the background"
                 };
                 (
                     report,
@@ -936,9 +1183,8 @@ impl WorkflowSupervisor {
                         summary: Some(summary),
                     },
                     format!(
-                        "Workflow `{name}` (run {run_id}) {terminal} in the background; the model \
-                         can read it with Workflow({{\"collect\":\"{run_id}\"}}), and \
-                         `core workflow list` records it"
+                        "Workflow `{name}` (run {run_id}) {terminal}; the model can read it with \
+                         Workflow({{\"collect\":\"{run_id}\"}}), and `core workflow list` records it"
                     ),
                 )
             }
@@ -1018,11 +1264,16 @@ impl WorkflowSupervisor {
         {
             let inner = self.inner.lock().unwrap();
             for id in &live {
-                if let Some(SupervisedState::Running { handle, .. }) =
-                    inner.runs.get(id).map(|run| &run.state)
-                {
-                    handle.cancel();
-                }
+                let Some(run) = inner.runs.get(id) else {
+                    continue;
+                };
+                let SupervisedState::Running { handle, .. } = &run.state else {
+                    continue;
+                };
+                // Sample BEFORE the cancel, for the reason `note_kill` documents: afterwards the
+                // engine has already retired the in-flight rows and the count reads zero.
+                run.partial.note_kill();
+                handle.cancel();
             }
         }
 
@@ -1049,9 +1300,15 @@ impl WorkflowSupervisor {
             };
             match &run.state {
                 SupervisedState::Running { .. } => {
-                    let message =
-                        "the session ended before this run settled; it was cancelled at exit"
-                            .to_string();
+                    // The count goes into the record because this run never reached `settle`, so
+                    // this message is the only place its partial work is named at all; `collect`
+                    // will answer `Failed` with exactly this string.
+                    let finished = run.partial.snapshot().finished.len();
+                    let message = format!(
+                        "the session ended before this run settled; it was cancelled at exit \
+                         ({finished} agent result(s) had already been produced and are in its \
+                         journal)"
+                    );
                     let _ = persist_result(&run.workflows_dir, &id, &unreported_run(&id, &message));
                     run.state = SupervisedState::Failed { error: message };
                     lines.push(format!(
@@ -1143,16 +1400,7 @@ impl WorkflowLauncher for WorkflowSupervisor {
                 summary: summary.clone(),
             },
             SupervisedState::Settled { summary: None } => Collected::Settled {
-                summary: format!(
-                    "Workflow `{}` (run {run_id}) finished, but this session no longer holds its \
-                     summary in memory ({} older result(s) were dropped to stay within its \
-                     retention bound). The authoritative result is on disk at {}.",
-                    run.name,
-                    inner.evicted,
-                    run_dir(&run.workflows_dir, run_id)
-                        .join("result.json")
-                        .display()
-                ),
+                summary: evicted_summary(run, run_id, inner.evicted),
             },
             SupervisedState::Failed { error } => Collected::Failed {
                 run_id: run_id.to_string(),
@@ -1161,20 +1409,34 @@ impl WorkflowLauncher for WorkflowSupervisor {
         }
     }
 
+    /// Kill a run, and answer with what killing it produced.
+    ///
+    /// The kill stays a REQUEST honoured at the engine's next safe point — this returns as soon as
+    /// the token is tripped, and the terminal answer is read by a later `collect`, because blocking
+    /// here would put a detached run back inside the turn that detaching exists to free. What
+    /// changes is that the terminal answer is now a "killed" one carrying the finished agents'
+    /// results and a count of what was interrupted ([`killed_run_summary`]), instead of the engine's
+    /// bare `null`.
     fn cancel(&self, run_id: &str) -> Collected {
         let mut inner = self.inner.lock().unwrap();
+        // Copied out before the mutable borrow below, so the evicted-summary answer can name the
+        // same drop count `collect` names.
+        let evicted = inner.evicted;
         let Some(run) = inner.runs.get_mut(run_id) else {
             return Collected::Unknown(format!(
                 "Workflow: run `{run_id}` was not started by this session, so there is nothing to \
                  cancel."
             ));
         };
+        let partial = run.partial.clone();
         match &mut run.state {
             SupervisedState::Running {
                 handle,
                 started,
                 cancelling,
             } => {
+                // Sample, then trip the token — never the other way round (see `note_kill`).
+                partial.note_kill();
                 handle.cancel();
                 *cancelling = true;
                 Collected::Running {
@@ -1188,9 +1450,11 @@ impl WorkflowLauncher for WorkflowSupervisor {
             } => Collected::Settled {
                 summary: summary.clone(),
             },
-            SupervisedState::Settled { summary: None } => Collected::Unknown(format!(
-                "Workflow: run `{run_id}` had already settled; its result is on disk."
-            )),
+            // Settled, but the summary was evicted. This is the SAME answer `collect` gives: a
+            // `cancel` that replied "unknown" here would deny a run this session really did own.
+            SupervisedState::Settled { summary: None } => Collected::Settled {
+                summary: evicted_summary(run, run_id, evicted),
+            },
             SupervisedState::Failed { error } => Collected::Failed {
                 run_id: run_id.to_string(),
                 error: error.clone(),
@@ -2725,6 +2989,25 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
     /// everything that needs a live route. The manifest is written first for the same reason the
     /// kernel writes it first: a run must be listable before anything can start it.
     fn prepared_for(tag: &str, script: &str, background: bool) -> PreparedWorkflow {
+        prepared_with(
+            tag,
+            script,
+            background,
+            Arc::new(ProviderSpawner::new(
+                Arc::new(RecordingProvider::successful()),
+                "parent-model".into(),
+            )),
+        )
+    }
+
+    /// The same, with the spawner chosen by the caller: the owner tests below need to decide when
+    /// an agent finishes and which one degrades, which no provider stand-in can express.
+    fn prepared_with(
+        tag: &str,
+        script: &str,
+        background: bool,
+        spawner: Arc<dyn AgentSpawner>,
+    ) -> PreparedWorkflow {
         let workflows_dir = scratch_dir(tag);
         let run_id = format!("wf-{tag}");
         let name = "owned".to_string();
@@ -2750,10 +3033,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
             spec: RunSpec::new(script)
                 .with_run_id(RunId::new(run_id))
                 .with_workflows_dir(workflows_dir),
-            spawner: Arc::new(ProviderSpawner::new(
-                Arc::new(RecordingProvider::successful()),
-                "parent-model".into(),
-            )),
+            spawner,
             sink: degraded.clone(),
             degraded,
             background,
@@ -2909,10 +3189,351 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
         let Collected::Settled { summary } = owner.collect(&run_id) else {
             panic!("a cancelled run still settles with a readable outcome");
         };
-        assert!(summary.contains("stopped"), "{summary}");
+        assert!(summary.contains("KILLED"), "{summary}");
         assert_eq!(
             list_runs(&dir)[0].status,
             run_status(&unreported_run(&run_id, ""))
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    // ---- Killing a run returns the work it had already finished -------------------------------
+    //
+    // The engine forces a stopped run's value to `null` on purpose (a half-evaluated JS value is
+    // meaningless), so nothing INSIDE it can carry the finished agents' results across a kill. If
+    // the owner does not keep them, a deliberate cancellation and a crash produce byte-identical
+    // answers, and the operator silently pays for work they are never shown.
+
+    /// A spawner with no provider behind it, so these tests exercise the OWNER rather than a route.
+    /// `fail_on` degrades to null; `block_on` never returns on its own, so the run's cancellation is
+    /// the only way out. Every call announces itself, which is what lets a test act at a known point
+    /// in the run instead of racing it.
+    struct ScriptedSpawner {
+        started: tokio::sync::mpsc::UnboundedSender<String>,
+        calls: AtomicUsize,
+        fail_on: Option<&'static str>,
+        block_on: Option<&'static str>,
+    }
+
+    impl ScriptedSpawner {
+        fn new(started: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
+            ScriptedSpawner {
+                started,
+                calls: AtomicUsize::new(0),
+                fail_on: None,
+                block_on: None,
+            }
+        }
+
+        fn failing_on(mut self, prompt: &'static str) -> Self {
+            self.fail_on = Some(prompt);
+            self
+        }
+
+        fn blocking_on(mut self, prompt: &'static str) -> Self {
+            self.block_on = Some(prompt);
+            self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AgentSpawner for ScriptedSpawner {
+        async fn spawn(&self, call: AgentCall) -> AgentOutcome {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let _ = self.started.send(call.prompt.clone());
+            if self.fail_on == Some(call.prompt.as_str()) {
+                return AgentOutcome::null("provider exploded");
+            }
+            if self.block_on == Some(call.prompt.as_str()) {
+                // The engine also aborts this child on cancel; awaiting the token makes the intent
+                // explicit rather than leaning on that backstop.
+                call.cancel.cancelled().await;
+                return AgentOutcome::null("stopped");
+            }
+            AgentOutcome::text(format!("{}-result", call.prompt), 3)
+        }
+    }
+
+    async fn next_started(rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> String {
+        tokio::time::timeout(std::time::Duration::from_secs(20), rx.recv())
+            .await
+            .expect("the spawner reported a call within the test timeout")
+            .expect("the run still holds the spawner")
+    }
+
+    /// Two agents in sequence, the second of which blocks forever: a kill therefore lands on a run
+    /// with one agent's work already done and exactly one agent in flight.
+    const KILL_SCRIPT: &str = "export const meta = { name: 'owned', description: '', phases: [] };\n\
+         const first = await agent('alpha');\n\
+         const second = await agent('beta');\n\
+         return [first, second];\n";
+
+    /// A fan of three, one of which degrades to null.
+    const FAN_SCRIPT: &str = "export const meta = { name: 'owned', description: '', phases: [] };\n\
+         return await parallel([() => agent('alpha'), () => agent('boom'), () => agent('gamma')]);\n";
+
+    #[tokio::test]
+    async fn killing_a_detached_run_returns_the_agents_that_had_already_finished() {
+        let (settled_tx, mut settled_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let owner = WorkflowSupervisor::new(settled_tx);
+        let prepared = prepared_with(
+            "owner-kill-partial",
+            KILL_SCRIPT,
+            true,
+            Arc::new(ScriptedSpawner::new(started_tx).blocking_on("beta")),
+        );
+        let dir = prepared.workflows_dir.clone();
+        let run_id = prepared.run_id.clone();
+        let Launched::Detached(_) = owner.launch(prepared) else {
+            panic!("the run must detach to be killable out of band");
+        };
+
+        // `beta` having started proves `alpha` finished: the script awaits them in sequence. So the
+        // kill below lands on a run with one real result behind it and one agent still running —
+        // no sleep, no polling, no race.
+        assert_eq!(next_started(&mut started_rx).await, "alpha");
+        assert_eq!(next_started(&mut started_rx).await, "beta");
+
+        let Collected::Running { name, .. } = owner.cancel(&run_id) else {
+            panic!("cancel stays a request honoured at the engine's next safe point");
+        };
+        assert!(name.contains("cancelling"), "{name}");
+
+        settled_line(&mut settled_rx).await;
+        let Collected::Settled { summary } = owner.collect(&run_id) else {
+            panic!("a killed run still has a terminal answer");
+        };
+        assert!(
+            summary.contains("alpha-result"),
+            "a kill must return the work the run had already finished, or it is indistinguishable \
+             from a crash: {summary}"
+        );
+        assert!(
+            summary.contains("1 agent(s) were still running"),
+            "the answer must count what the kill interrupted: {summary}"
+        );
+        assert!(summary.contains("KILLED"), "{summary}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn one_agent_failing_does_not_kill_the_run_or_its_siblings() {
+        let (settled_tx, mut settled_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (started_tx, _started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let owner = WorkflowSupervisor::new(settled_tx);
+        let spawner = Arc::new(ScriptedSpawner::new(started_tx).failing_on("boom"));
+        let prepared = prepared_with("owner-one-failure", FAN_SCRIPT, true, spawner.clone());
+        let dir = prepared.workflows_dir.clone();
+        let run_id = prepared.run_id.clone();
+        let Launched::Detached(_) = owner.launch(prepared) else {
+            panic!("the run must detach for this to be a test of the owner");
+        };
+
+        let settled = settled_line(&mut settled_rx).await;
+        assert!(
+            settled.notice.contains("finished"),
+            "a failed agent is not a killed run: {}",
+            settled.notice
+        );
+        let Collected::Settled { summary } = owner.collect(&run_id) else {
+            panic!("the run settles");
+        };
+        assert!(!summary.contains("KILLED"), "{summary}");
+        assert_eq!(
+            spawner.calls.load(Ordering::SeqCst),
+            3,
+            "every declared agent is still dispatched after one of them fails"
+        );
+        for survivor in ["alpha-result", "gamma-result"] {
+            assert!(
+                summary.contains(survivor),
+                "a sibling's failure must not delete {survivor}: {summary}"
+            );
+        }
+        assert!(
+            summary.contains("provider exploded"),
+            "the one that failed is named, because it resolved to JS null and a script's \
+             `.filter(Boolean)` would otherwise delete it silently: {summary}"
+        );
+        assert_ne!(
+            list_runs(&dir)[0].status,
+            "stopped",
+            "an agent failure must not record the run as cancelled"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_partial_work_sink_keeps_finished_results_and_counts_what_the_kill_interrupted() {
+        let sink = PartialWorkSink::new();
+        let started = |index: usize| ProgressEvent::AgentStarted {
+            index,
+            label: format!("agent-{index}"),
+            phase: None,
+            model: None,
+        };
+        let finished = |index: usize, state, preview: Option<&str>| ProgressEvent::AgentFinished {
+            index,
+            label: format!("agent-{index}"),
+            state,
+            tokens: 0,
+            tool_calls: 0,
+            duration_ms: 1,
+            result_preview: preview.map(str::to_string),
+            last_tool_summary: None,
+            error: None,
+        };
+
+        for index in 0..3 {
+            sink.emit(started(index));
+        }
+        sink.emit(finished(0, WorkflowState::Done, Some("first")));
+        assert_eq!(sink.snapshot().running, 2);
+
+        sink.note_kill();
+        // The engine retires the in-flight rows as `stopped` errors on its way out. The answer must
+        // report what the kill INTERRUPTED, not the zero that is left once it has finished
+        // interrupting — a sample taken after the cancel flatters the kill.
+        sink.emit(finished(1, WorkflowState::Error, None));
+        sink.emit(finished(2, WorkflowState::Error, None));
+        sink.note_kill();
+
+        let partial = sink.snapshot();
+        assert_eq!(partial.running, 2, "the count is sampled at the first kill");
+        assert_eq!(partial.finished.len(), 1, "only results are kept");
+        assert_eq!(partial.finished[0].result, "first");
+        assert_eq!(partial.dropped, 0);
+    }
+
+    #[test]
+    fn retained_partial_results_are_bounded_and_every_refusal_is_counted() {
+        let sink = PartialWorkSink::new();
+        let wide = 4_000usize;
+        for index in 0..wide {
+            sink.emit(ProgressEvent::AgentFinished {
+                index,
+                label: "row".into(),
+                state: WorkflowState::Done,
+                tokens: 0,
+                tool_calls: 0,
+                duration_ms: 1,
+                result_preview: Some("x".repeat(PREVIEW_MAX)),
+                last_tool_summary: None,
+                error: None,
+            });
+        }
+
+        let partial = sink.snapshot();
+        assert!(
+            partial.finished.len() < wide,
+            "a wide fan-out cannot be retained whole"
+        );
+        assert_eq!(
+            partial.finished.len() + partial.dropped,
+            wide,
+            "every result is either kept or counted as dropped; silent truncation would make a \
+             short answer look complete"
+        );
+        assert_eq!(
+            partial.finished[0].index, 0,
+            "the earliest results are the ones kept, so a result a client already read in one \
+             collect cannot vanish from the next"
+        );
+    }
+
+    #[test]
+    fn a_killed_summary_and_a_completed_one_cannot_be_mistaken_for_each_other() {
+        let killed_report = RunReport {
+            run_id: RunId::new("wf_kill"),
+            value: serde_json::Value::Null,
+            stopped: true,
+            cache_hits: 0,
+            cache_misses: 2,
+            errors: 1,
+            tokens: 9,
+            tool_calls: 0,
+            elapsed_ms: 5,
+        };
+        let partial = PartialWork {
+            finished: vec![FinishedAgent {
+                index: 0,
+                label: "alpha".into(),
+                result: "alpha said this".into(),
+            }],
+            running: 2,
+            dropped: 0,
+        };
+
+        let killed = killed_run_summary(
+            "triage",
+            "wf_kill",
+            &killed_report,
+            &partial,
+            &["#1 beta: stopped".to_string()],
+        );
+        assert!(killed.contains("KILLED"), "{killed}");
+        assert!(killed.contains("alpha said this"), "{killed}");
+        assert!(killed.contains("2 agent(s) were still running"), "{killed}");
+        assert!(killed.contains("#1 beta: stopped"), "{killed}");
+
+        let mut done_report = killed_report.clone();
+        done_report.stopped = false;
+        let done = run_result_summary("triage", "wf_done", &done_report, &[]);
+        assert!(done.contains("finished"), "{done}");
+        assert!(
+            !done.contains("KILLED"),
+            "a completed run must never read as a kill: {done}"
+        );
+
+        // A kill with nothing behind it says so, rather than leaving the client to read an empty
+        // list as either "no work" or "the work was dropped".
+        let nothing = killed_run_summary(
+            "triage",
+            "wf_kill",
+            &killed_report,
+            &PartialWork::default(),
+            &[],
+        );
+        assert!(nothing.contains("no partial result"), "{nothing}");
+        assert!(
+            nothing.contains("0 agent(s) were still running"),
+            "{nothing}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_run_whose_summary_was_evicted_still_admits_the_run_existed() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let owner = WorkflowSupervisor::new(tx);
+        let prepared = prepared_for("owner-evicted-cancel", OWNED_SCRIPT, true);
+        let dir = prepared.workflows_dir.clone();
+        let run_id = prepared.run_id.clone();
+        let Launched::Detached(_) = owner.launch(prepared) else {
+            panic!("the run must detach to be owned");
+        };
+        settled_line(&mut rx).await;
+
+        // Force the state the byte bound eventually produces. Driving 4 MiB of real summaries
+        // through the reaper would exercise the same branch a thousand times more slowly.
+        {
+            let mut inner = owner.inner.lock().unwrap();
+            inner.evicted = 1;
+            inner.runs.get_mut(&run_id).unwrap().state = SupervisedState::Settled { summary: None };
+        }
+
+        let Collected::Settled { summary } = owner.cancel(&run_id) else {
+            panic!(
+                "a run this session owned is never unknown to it, even once its summary is gone"
+            );
+        };
+        assert!(summary.contains("result.json"), "{summary}");
+        let Collected::Settled { summary: collected } = owner.collect(&run_id) else {
+            panic!("collect gives the same answer");
+        };
+        assert_eq!(
+            summary, collected,
+            "cancel and collect disagreeing about one run is how a result gets reported as lost"
         );
         std::fs::remove_dir_all(dir).ok();
     }

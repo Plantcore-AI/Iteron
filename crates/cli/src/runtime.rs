@@ -661,7 +661,12 @@ fn investigator_report_from_outcome(
     let (mut text, mut error_code, mut error_detail) = match outcome {
         Ok(_) => {
             let s = strict_utf8_head(last_assistant_text.trim(), 16 * 1024);
-            if s.is_empty() {
+            // An operator stop is NOT an empty report. A cancelled child has no assistant text by
+            // construction — the interrupt drops the provider stream mid-flight, so the turn
+            // produces no text and no usage — and relabelling that `empty_report`/`Failed` told the
+            // operator that the workers they had just killed had failed to answer. It stayed
+            // invisible only for as long as a stop could not reach a mid-flight worker at all.
+            if s.is_empty() && state != WorkflowAgentOutcomeUi::Interrupted {
                 state = WorkflowAgentOutcomeUi::Failed;
                 (
                     "[subagent returned no summary]".into(),
@@ -727,6 +732,17 @@ fn skipped_investigator_report(
         error_code: Some(error_code.into()),
         error_detail: Some(error_detail.into()),
     }
+}
+
+/// What the caller decides about ONE fan worker's execution: the bounded budget it runs under and
+/// the cancellation flag the caller will stop it with.
+///
+/// They travel together because a worker built with a budget but no reachable stop is exactly how a
+/// fan became unkillable — an operator's Esc had nothing to set. Pairing them makes "prepare a
+/// worker" and "be able to stop that worker" one decision instead of two.
+struct WorkerControl<'a> {
+    budget: &'a Budget,
+    stop: &'a std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 enum FanRun {
@@ -7179,6 +7195,36 @@ impl Agent {
         self.finish_requested_control(turn)
     }
 
+    /// Drain the submission queue and republish an operator stop onto `stop` — the cancellation
+    /// flag held by the children THIS TURN IS AWAITING — then report what control is pending.
+    ///
+    /// Two things this exists to get right, both of them latency:
+    ///
+    /// 1. **Coverage.** The stop is read through [`Self::requested_control`], never through the
+    ///    out-of-band atomic directly. A queued SQ `Op::Interrupt` on an embedder that installed no
+    ///    atomic sets only `interrupt_requested` — the parent-local half of that predicate — and
+    ///    children inherited the atomic or nothing at all. So exactly that operator's stop reached
+    ///    the parent and no worker: the parent went on joining mid-flight children to completion,
+    ///    which is what made a fan feel unkillable. This is the same canonical-predicate rule the
+    ///    in-turn workflow join and `run_bounded_verify` already follow.
+    /// 2. **Where it lands.** A child observes this flag inside `turn_cancellable`, so the stop
+    ///    drops an in-flight provider stream within one poll interval instead of waiting for the
+    ///    model to finish the turn and only then hitting a between-turn safe point.
+    ///
+    /// `stop` is deliberately a flag the CALLER owns and scopes to the children it is awaiting, not
+    /// a process-wide or session-wide one: a detached workflow run or a background agent outlives
+    /// this turn and ends only through its own run-scoped kill, so it must never be reachable from
+    /// here. Drain is not republished — unlike an interrupt it never cancels an admitted effect; it
+    /// travels on the shared drain flag and each child quiesces at its own safe point.
+    fn pump_child_stop(&mut self, stop: &std::sync::atomic::AtomicBool) -> InboundControl {
+        let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+        let control = self.requested_control();
+        if control.interrupts() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        control
+    }
+
     fn finish_drained(&mut self, turn: TurnId) -> Result<Outcome, KernelError> {
         if self.runtime_state_dir.as_os_str().is_empty() {
             return Err(KernelError::Record(core_record::RecordError::Io(
@@ -7486,12 +7532,23 @@ impl Agent {
     /// propagated through the shared flag but never cancels the child mid-effect; the child exits
     /// only at its own safe point, after which the parent records the child terminal before it can
     /// checkpoint itself. Polling is fixed and bounded just like verification cancellation.
+    ///
+    /// An interrupt, unlike drain, IS a cancel: it is republished onto a call-scoped stop flag the
+    /// child observes mid-stream, so an operator stop drops the child's in-flight provider stream
+    /// within one poll interval. Same defect and same fix as the fan — see
+    /// [`Self::pump_child_stop`]. The flag is scoped to this call because this child is one the turn
+    /// is awaiting; a detached run or a background agent is never reachable from here.
     async fn run_child_with_control(
         &mut self,
         child: &mut Agent,
         task: &str,
     ) -> Result<Outcome, KernelError> {
         const CHILD_CONTROL_POLL: Duration = Duration::from_millis(25);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Seed before the child starts: a stop the operator raised while the parent was still
+        // admitting must make the child refuse at its first safe point, not one poll interval in.
+        self.pump_child_stop(&stop);
+        child.set_interrupt(stop.clone());
         // A dispatched subagent is read-only + SingleAgent effort, so it never orchestrates:
         // `run_leaf` is behavior-identical to `run` here and keeps `run` (hence `run_orchestrated`
         // -> `run_fan`) OUT of every child's call graph, so the fan's owned `tokio::spawn` of a
@@ -7505,7 +7562,7 @@ impl Agent {
                     return outcome;
                 }
                 Err(_) => {
-                    let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+                    self.pump_child_stop(&stop);
                 }
             }
         }
@@ -7988,9 +8045,10 @@ impl Agent {
         sub.run_deadline = Some(child_deadline);
         self.inherit_route_and_pricing(&mut sub)
             .map_err(|error| error.public_summary())?;
-        if let Some(interrupt) = &self.interrupt {
-            sub.set_interrupt(interrupt.clone());
-        }
+        // No interrupt flag is installed here on purpose. `run_child_with_control` below owns the
+        // child's stop surface: it mints a call-scoped flag and republishes BOTH of the parent's
+        // stop surfaces onto it. Inheriting the parent's optional atomic here as well would give
+        // the child two flags, only one of which the queued-`Op::Interrupt` operator can ever set.
         sub.drain = self.drain.clone();
         sub.owns_drain = false;
         let prompt = format!(
@@ -8669,9 +8727,9 @@ impl Agent {
     /// `Send` cycle a naive `&mut self` spawn would hit). A `Governor` permit pool caps inflight
     /// work at `min(FAN_CAP, cores-2, admitted)`. The turn budget still bounds total cost (per-worker
     /// slices sum within the fan share, so the writer reserve survives even under concurrency); the
-    /// permit pool bounds wall-clock. Operator stop translates queued Interrupt/Drain into the shared
-    /// flags every child observes, and the run finishes only once every admitted child has quiesced
-    /// — never orphaning an in-flight worker.
+    /// permit pool bounds wall-clock. Operator stop is republished onto a FAN-SCOPED cancellation
+    /// flag every worker observes mid-stream (see `fan_stop` below), and the run finishes only once
+    /// every admitted child has quiesced — never orphaning an in-flight worker.
     async fn run_fan(
         &mut self,
         workflow_run_id: &str,
@@ -8697,6 +8755,21 @@ impl Agent {
         // workers, so each worker may use the whole fan wall window (tightened by the run deadline).
         let per_wall = aggregate.max_wall_secs.max(1);
         let governor = core_sched::Governor::new(fan_concurrency_permits(active_workers));
+        // The fan's OWN stop surface, and the only cancellation flag its workers observe.
+        //
+        // Fan-scoped is the ratified requirement, not an implementation detail: this flag is minted
+        // here, handed to exactly the workers this turn awaits, and dropped with them. A detached
+        // workflow run or a background agent outlives the turn and is stopped only through its own
+        // run-scoped kill, so neither is reachable from here — an operator stop of the fan cannot
+        // reach into work the turn is not holding.
+        //
+        // Workers used to inherit the parent's out-of-band interrupt atomic instead, and only when
+        // one existed. That left a stop stranded on the parent whenever the operator's Esc arrived
+        // as a queued SQ `Op::Interrupt` with no atomic installed, and it read as an unkillable fan:
+        // Phase B joined every mid-flight child to completion. `pump_child_stop` republishes both
+        // stop surfaces onto this one flag, so a stop lands inside `turn_cancellable` and drops the
+        // child's in-flight provider stream instead of waiting for the next between-turn safe point.
+        let fan_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         // Phase A: prepare each admitted worker under `&mut self` (its durable spawn records), then
         // move it into an OWNED `tokio::spawn` task — so no `&mut self` borrow is held across the
@@ -8709,9 +8782,10 @@ impl Agent {
         let mut inline: Vec<(usize, InvestigatorReport)> = Vec::new();
         for task in tasks {
             // Stop admitting NEW workers once operator control is requested; already-spawned workers
-            // are joined (and quiesce via the shared flags) in Phase B before the run finishes.
-            let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
-            if !matches!(self.requested_control(), InboundControl::None) {
+            // are cancelled through `fan_stop` and joined in Phase B before the run finishes. The
+            // pump runs per task, not once, so a stop that arrives while the parent is still opening
+            // child rollouts reaches the workers already in flight.
+            if !matches!(self.pump_child_stop(&fan_stop), InboundControl::None) {
                 break;
             }
             let idx = task.id;
@@ -8772,7 +8846,10 @@ impl Agent {
                 root_task,
                 class,
                 task,
-                &worker_budget,
+                WorkerControl {
+                    budget: &worker_budget,
+                    stop: &fan_stop,
+                },
             )? {
                 Ok(prepared) => {
                     let idx = prepared.idx;
@@ -8789,8 +8866,9 @@ impl Agent {
         }
 
         // Phase B: terminalize. Emit the inline (never-ran) reports first, then each concurrent
-        // worker's terminal as it completes — pumping operator control so a stop reaches every
-        // child's shared flags.
+        // worker's terminal as it completes — pumping operator control onto `fan_stop` on every
+        // poll, so a stop reaches the workers WHILE they are mid-stream rather than after their
+        // in-flight provider turns finish on their own.
         let mut summaries: Vec<core_agents::Summary> = Vec::with_capacity(tasks.len());
         for (idx, report) in inline {
             let question = tasks
@@ -8808,7 +8886,7 @@ impl Agent {
         const FAN_JOIN_POLL: Duration = Duration::from_millis(25);
         let mut cursor = 0usize;
         while !running.is_empty() {
-            let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+            self.pump_child_stop(&fan_stop);
             let index = cursor % running.len();
             let joined = tokio::time::timeout(FAN_JOIN_POLL, &mut running[index].2).await;
             let Ok(joined) = joined else {
@@ -8932,13 +9010,18 @@ impl Agent {
     }
 
     /// Prepare one read-only fan worker: build its owned child `Agent` (generic investigator prompt,
-    /// a durable child rollout under `<runs>/subagents/`, inherited provider/route/pricing/hooks and
-    /// the shared interrupt/drain flags), emit its durable spawn + `ChildStarted` records, and
-    /// return it ready to run on its own task. The child's actual `run` is deliberately NOT done
-    /// here: keeping preparation (`&mut self`) separate from execution (owned) is what lets the
-    /// caller move the worker onto `tokio::spawn` and escape the `&mut self` borrow — the only thing
-    /// that forced the fan sequential. `Ok(Err(report))` is a setup failure that still terminalizes
-    /// cleanly; `Err(_)` is a durable-record failure that halts the run.
+    /// a durable child rollout under `<runs>/subagents/`, inherited provider/route/pricing/hooks,
+    /// the caller's `stop` flag and the shared drain flag), emit its durable spawn + `ChildStarted`
+    /// records, and return it ready to run on its own task. The child's actual `run` is deliberately
+    /// NOT done here: keeping preparation (`&mut self`) separate from execution (owned) is what lets
+    /// the caller move the worker onto `tokio::spawn` and escape the `&mut self` borrow — the only
+    /// thing that forced the fan sequential. `Ok(Err(report))` is a setup failure that still
+    /// terminalizes cleanly; `Err(_)` is a durable-record failure that halts the run.
+    ///
+    /// `control.stop` is the CALLER's cancellation flag, scoped to the group of workers it is
+    /// awaiting, and it is installed unconditionally — see [`Self::pump_child_stop`] for why
+    /// inheriting the parent's optional out-of-band atomic instead left a whole class of operator
+    /// stop unable to reach any worker.
     fn prepare_investigator(
         &mut self,
         workflow_run_id: &str,
@@ -8946,8 +9029,9 @@ impl Agent {
         root_task: &str,
         class: core_agents::TaskClass,
         task: &core_agents::AgentTask,
-        budget: &Budget,
+        control: WorkerControl<'_>,
     ) -> Result<Result<PreparedInvestigator, InvestigatorReport>, KernelError> {
+        let WorkerControl { budget, stop } = control;
         if self.delegation_depth >= MAX_DELEGATION_DEPTH {
             return Err(KernelError::DelegationDepthExceeded);
         }
@@ -9124,9 +9208,7 @@ impl Agent {
         let read_only = CapabilitySet::from_iter_capabilities([Capability::ReadOnly]);
         sub.authority_ceiling = sub.authority_ceiling.intersect(read_only);
         sub.policy_capabilities = sub.policy_capabilities.intersect(read_only);
-        if let Some(interrupt) = &self.interrupt {
-            sub.set_interrupt(interrupt.clone());
-        }
+        sub.set_interrupt(stop.clone());
         sub.drain = self.drain.clone();
         sub.owns_drain = false;
         let forwarder = self.ui_tx.as_ref().map(|parent_tx| {
@@ -10771,6 +10853,89 @@ mod gate_integration_tests {
         }
     }
 
+    /// Every model turn that matters here is MID-STREAM and never finishes on its own — the shape of
+    /// the 16-way ultracode fan-out an operator pressed Esc on. Decomposition answers immediately;
+    /// each fan investigator, and the background agent inside a detached workflow run, parks
+    /// forever. So nothing in a test using this provider can terminate except by having its
+    /// in-flight stream dropped, which is what makes "the stop landed mid-stream" observable at all
+    /// — and, for the detached run, makes "the stop did NOT land here" observable too.
+    ///
+    /// Parked turns are counted separately by role: a fan worker is the thing an operator stop is
+    /// supposed to reach, the background agent is the thing it must not.
+    /// The prompt that marks a parked turn as the DETACHED run's background agent rather than a
+    /// fan worker. One constant, because the provider that recognises it and the script that plants
+    /// it must not drift — a typo would silently reclassify the run this test is proving untouched.
+    const BACKGROUND_AGENT_PROMPT: &str = "keep-sweeping-in-the-background";
+
+    #[derive(Default)]
+    struct ParkedFan {
+        fan_started: AtomicUsize,
+        background_started: AtomicUsize,
+        background_cancelled: AtomicUsize,
+    }
+
+    /// Increments a counter when dropped, which for a parked provider turn happens exactly when
+    /// something cancelled it. A plain counter could only say the turn started.
+    struct CountOnCancel<'a>(&'a AtomicUsize);
+    impl Drop for CountOnCancel<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ParkedFan {
+        async fn turn(
+            &self,
+            req: &TurnRequest,
+            _on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            if req.system.starts_with("You decompose") {
+                return Ok(TurnResult {
+                    blocks: vec![Block::Text {
+                        text: "Investigate the error types\nInvestigate the logging paths\n\
+                               Investigate the retry paths\nInvestigate the timeout paths"
+                            .to_string(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage::default()),
+                });
+            }
+            // Checked before the investigator system prompt: a workflow's `agent()` child is built
+            // from the same read-only definition, so only its prompt tells the two roles apart.
+            let prompt = req
+                .messages
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .filter_map(|block| match block {
+                    Block::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if prompt.contains(BACKGROUND_AGENT_PROMPT) {
+                self.background_started.fetch_add(1, Ordering::SeqCst);
+                let _cancelled = CountOnCancel(&self.background_cancelled);
+                std::future::pending::<()>().await;
+                unreachable!("a parked provider turn is only ever cancelled");
+            }
+            if req.system.contains("read-only investigation subagent") {
+                self.fan_started.fetch_add(1, Ordering::SeqCst);
+                // Park. Only dropping this future ends the "stream", which is exactly what a
+                // mid-flight cancellation has to do.
+                std::future::pending::<()>().await;
+                unreachable!("a parked provider turn is only ever cancelled");
+            }
+            Ok(TurnResult {
+                blocks: vec![Block::Text {
+                    text: "done".into(),
+                }],
+                stop_reason: StopReason::EndTurn,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
+    }
+
     /// Issues the SAME failing edit (to a nonexistent file) on turns 0 and 1, then "done" — to
     /// exercise the ADR-003 failed-action dedup.
     #[derive(Default)]
@@ -11946,7 +12111,10 @@ mod gate_integration_tests {
                 "root",
                 core_agents::TaskClass::MultiFile,
                 &task,
-                &budget,
+                WorkerControl {
+                    budget: &budget,
+                    stop: &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                },
             ) {
                 Ok(Err(report)) => report,
                 Ok(Ok(_)) => panic!("malformed or unresolved agent type was admitted"),
@@ -17325,6 +17493,196 @@ ant-api03-SuperSecretModelToken12345"
             "workflow child counters must replay byte-for-byte"
         );
         drop(resumed);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// An operator stop pressed during a fan must land WHILE the workers are mid-stream, and it
+    /// must land only there.
+    ///
+    /// Every worker here is parked inside its provider turn and will never return on its own, so
+    /// the only way this run can terminate at all is a cancellation that drops an in-flight stream.
+    /// Before the fix it could not: the stop reached workers solely through the parent's OPTIONAL
+    /// out-of-band interrupt atomic, so an operator whose Esc arrived as a queued SQ `Op::Interrupt`
+    /// (no atomic installed — the shape every non-TUI embedder has) set only the parent-local half
+    /// of `requested_control`, and `run_fan` joined each mid-flight child to completion. This exact
+    /// test hung for the full 10s bound below and would have hung out the 600s wall budget.
+    ///
+    /// Three properties, which can regress in different directions:
+    ///  * the stop REACHES the children the turn is awaiting, promptly;
+    ///  * a killed fan still REPORTS its partial work — every admitted worker terminalizes with its
+    ///    `operator_stop` / "interrupted at a safe point" record rather than vanishing;
+    ///  * the stop reaches NOTHING ELSE. A detached workflow run and the background agent inside it
+    ///    outlive the turn and stop only through their own run-scoped kill, which the final
+    ///    `cancel` proves is both live and the thing that actually ends them.
+    #[tokio::test]
+    async fn an_operator_stop_lands_mid_fan_and_leaves_a_detached_run_running() {
+        let background_script = format!(
+            "export const meta = {{ name: 'sweep', description: '', phases: ['one'] }};\n\
+             return await agent('{BACKGROUND_AGENT_PROMPT}');\n"
+        );
+
+        let ws = temp_ws("ultra-stop-scope");
+        let registry = Registry::coding_agent(&ws).unwrap();
+        let runs = ws.join(".core/runs");
+        let run = core_protocol::RunId("ultra-stop-scope".into());
+        let rollout = Rollout::open(&runs, &run, core_protocol::TenantId::default()).unwrap();
+        let provider = std::sync::Arc::new(ParkedFan::default());
+        let mut a = Agent::new(
+            provider.clone(),
+            registry,
+            rollout,
+            // Matches the durable model selection below: the `Workflow` tool only prepares a run
+            // under a bound route.
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 20,
+                max_usd: None,
+                max_tokens: None,
+                // Far longer than the test's own bound, so a wall deadline can never be what ends
+                // this run. Only a mid-stream cancellation can.
+                max_wall_secs: 600,
+                max_consecutive_tool_errors: 5,
+            },
+        );
+        a.workspace = ws.clone();
+        a.record_model_selection(
+            "provider-a".into(),
+            "model-a".into(),
+            test_pricing_digests().0,
+            test_pricing_digests().1,
+        )
+        .unwrap();
+
+        // A real detached run, started through the production owner, parked in a background agent.
+        use crate::workflow::WorkflowLauncher as _;
+        let (settled_tx, mut settled_rx) = tokio::sync::mpsc::unbounded_channel();
+        let supervisor = crate::workflow::WorkflowSupervisor::new(settled_tx);
+        a.set_workflow_launcher(supervisor.clone());
+        let receipt = a
+            .launch_workflow(
+                TurnId(0),
+                serde_json::json!({ "script": background_script, "background": true }),
+            )
+            .await
+            .expect("the owner detaches a requested background run");
+        assert!(receipt.contains("still running"), "{receipt}");
+        let detached_run_id = receipt
+            .split_once("(run ")
+            .and_then(|(_, tail)| tail.split_once(')'))
+            .map(|(id, _)| id.to_string())
+            .expect("the receipt names the detached run");
+        while provider.background_started.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        // Now the fan. No interrupt atomic is installed: the operator's stop arrives ONLY as a
+        // queued `Op::Interrupt`, which is the case that used to strand it on the parent.
+        a.effort = core_protocol::Effort::Ultracode;
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        a.set_ui(ui_tx);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        a.set_approvals(rx);
+        let running = tokio::spawn(async move {
+            a.run("improve error handling across the whole project")
+                .await
+        });
+        while provider.fan_started.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let pressed = Instant::now();
+        tx.send(Op::Interrupt.into()).unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(10), running)
+            .await
+            .expect("an operator stop must settle a fan whose workers are still mid-stream")
+            .unwrap()
+            .unwrap();
+        let settled_in = pressed.elapsed();
+        assert_eq!(outcome, Outcome::Interrupted);
+        assert!(
+            settled_in < Duration::from_secs(3),
+            "the stop is bounded by the 25ms control poll, not by a child's stream: {settled_in:?}"
+        );
+        assert!(
+            provider.fan_started.load(Ordering::SeqCst) > 0,
+            "the workers must have been mid-stream, not merely never started"
+        );
+
+        // Partial work survives the kill: each admitted worker has a durable terminal that says,
+        // in the operator's vocabulary, that it was stopped rather than that it failed.
+        let events = core_record::replay(&runs.join("ultra-stop-scope.jsonl")).unwrap();
+        let interrupted_children = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.kind,
+                    EventKind::WorkflowV2 {
+                        event: core_protocol::WorkflowEvent::ChildFinished {
+                            outcome: core_protocol::WorkflowChildOutcome::Interrupted,
+                            error_code: Some(code),
+                            error_detail: Some(detail),
+                            ..
+                        },
+                        ..
+                    } if code == "operator_stop" && detail.contains("interrupted at a safe point")
+                )
+            })
+            .count();
+        assert!(
+            interrupted_children > 0,
+            "a killed fan still terminalizes every admitted worker it was awaiting"
+        );
+        let mut ui_events = Vec::new();
+        while let Ok(event) = ui_rx.try_recv() {
+            ui_events.push(event);
+        }
+        assert!(
+            ui_events.iter().any(|event| matches!(
+                event,
+                UiEvent::Workflow(WorkflowUiEvent::AgentFinished {
+                    outcome: WorkflowAgentOutcomeUi::Interrupted,
+                    error_preview: Some(preview),
+                    ..
+                }) if preview.contains("interrupted at a safe point")
+            )),
+            "the frontend is told which workers the stop caught, not just that the run ended"
+        );
+
+        // The detached run never saw any of it. Its stop surface is its own, and it is still live.
+        assert!(
+            matches!(
+                supervisor.collect(&detached_run_id),
+                crate::workflow::Collected::Running { .. }
+            ),
+            "a fan-scoped stop must not reach a run the turn is not holding"
+        );
+        assert_eq!(
+            provider.background_cancelled.load(Ordering::SeqCst),
+            0,
+            "the background agent inside the detached run was never cancelled"
+        );
+
+        // …and the run-scoped kill IS what ends it, so the assertion above is not vacuous.
+        supervisor.cancel(&detached_run_id);
+        let killed = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let crate::workflow::Collected::Settled { summary } =
+                    supervisor.collect(&detached_run_id)
+                {
+                    return summary;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a detached run stops when its OWN kill is used");
+        assert!(killed.contains(&detached_run_id), "{killed}");
+        assert_eq!(provider.background_cancelled.load(Ordering::SeqCst), 1);
+
+        supervisor
+            .shutdown(&mut settled_rx, Duration::from_secs(5))
+            .await;
         let _ = std::fs::remove_dir_all(&ws);
     }
 
