@@ -4708,6 +4708,19 @@ pub async fn run(
                         _ => {}
                     }
                     if refresh {
+                        // A drop that the terminal replays as keystrokes finishes on the LAST
+                        // character of the path, and nothing else announces it. Convert as soon as
+                        // the draft holds a readable image path, so the chip appears when the file
+                        // lands rather than at submit time — the chip is the operator's only
+                        // evidence the picture is attached, and evidence that arrives after the
+                        // decision is not evidence.
+                        //
+                        // Cheap by construction: the scan is string work, and the one file read it
+                        // can trigger happens once, because a converted path is replaced by its
+                        // anchor and is no longer a path the next keystroke can find.
+                        if app.editor.chip_count() < core_protocol::input::MAX_INPUT_IMAGES {
+                            attach_bare_image_paths(&mut app, &repo);
+                        }
                         app.refresh_completion(&repo);
                     }
                 } // end CEvent::Key
