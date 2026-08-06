@@ -137,6 +137,13 @@ pub struct KernelSpawnerContext {
     pub permission_rules: PermissionRules,
     pub authority_ceiling: CapabilitySet,
     pub policy_capabilities: CapabilitySet,
+    /// The parent's permission posture, inherited by every child this spawner starts.
+    ///
+    /// A workflow child has no approval channel, so with the gate running it can only take what the
+    /// mode table already auto-approves. Inheriting the bypass is what makes a fan-out under the
+    /// operator's own authority behave like the session that launched it. What bounds the child is
+    /// the read-only ceiling intersected below, not this flag.
+    pub bypass_permissions: bool,
 }
 
 impl KernelSpawnerContext {
@@ -191,6 +198,7 @@ impl KernelSpawnerContext {
             permission_rules: PermissionRules::new(),
             authority_ceiling: all_capabilities,
             policy_capabilities: all_capabilities,
+            bypass_permissions: false,
         }
     }
 }
@@ -343,7 +351,7 @@ impl KernelSpawner {
         // Hooks are executable processes, so a read-only child cannot inherit them. Credential
         // names still propagate as deny metadata, never values.
         sub.hooks = Hooks::default();
-        sub.bypass_permissions = false;
+        sub.bypass_permissions = cx.bypass_permissions;
         sub.agent_catalog = cx.agent_catalog.clone();
         sub.agent_catalog_pinned = true;
         // Installs the deny-list on the agent, its hooks, and (already, above) its registry.
@@ -561,6 +569,30 @@ mod tests {
         }
     }
 
+    /// A fan-out child has no approval channel, so a gate it cannot answer is a refusal wearing a
+    /// question's clothes: a bypassed session used to delegate work its own children could not do.
+    /// The posture is inherited; the read-only CEILING is still intersected, and that is what keeps
+    /// the child bounded.
+    #[test]
+    fn a_child_inherits_the_session_posture_but_never_its_ceiling() {
+        let root = scratch("posture");
+        let catalog = discovered_catalog(&root);
+        let mut cx = context(&root, catalog);
+        cx.bypass_permissions = true;
+        let spawner = KernelSpawner::new(cx);
+
+        let child = spawner.build_child(&call(None, None), 0).unwrap();
+        assert!(
+            child.bypass_permissions,
+            "a child of an operator-authority session does not stop to ask what it cannot ask"
+        );
+        assert!(child.authority_ceiling.contains(Capability::ReadOnly));
+        assert!(
+            !child.authority_ceiling.contains(Capability::CodeExecuting),
+            "inheriting the posture must not widen the ceiling"
+        );
+    }
+
     #[test]
     fn selected_definition_controls_system_tools_budget_authority_and_genesis_tag() {
         let root = scratch("selected");
@@ -593,7 +625,10 @@ mod tests {
                 .contains(Capability::ReversibleLocal)
         );
         assert!(child.hooks.is_empty());
-        assert!(!child.bypass_permissions);
+        assert!(
+            !child.bypass_permissions,
+            "a child of a gated session is gated"
+        );
 
         let events = core_record::replay(child.rollout.path()).unwrap();
         let tag = events.iter().find_map(|event| match &event.kind {

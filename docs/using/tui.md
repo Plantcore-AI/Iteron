@@ -23,7 +23,12 @@ required. A pipeline should use [one-shot mode](one-shot.md) instead.
 - Paste or terminal-drag a whole local image path to create an attachment chip.
   Press ++ctrl+v++ for bitmap clipboard capture when `pngpaste` (macOS),
   `wl-paste`/`xclip` (Linux), or PowerShell clipboard support (Windows) is
-  available.
+  available. Both work while a run is in flight: the chip lands on the draft, and
+  because a steer cannot carry an image, ++enter++ on a draft with chips queues it
+  behind the running turn instead of steering it. The whole terminal drop must be
+  one path — an interior line break is two references, not one — and the drop has
+  to reach Core Code as a paste; a terminal that replays it as individual
+  keystrokes leaves it as ordinary text.
 - An attached image also gets an in-line anchor `[Image #N]` at the cursor, so a
   prompt can say *where* the picture belongs: "compare this screenshot
   `[Image #1]` with this log `[Pasted text #1 +200 lines]`". The images are sent

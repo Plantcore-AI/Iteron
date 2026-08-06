@@ -32,9 +32,11 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                           exposed to the script as the ambient `args`. The workflow fans out real \
                           sub-agents under a bounded concurrency governor and returns their results. \
                           Use it for wide, structured multi-agent work that a single turn cannot do. \
-                          Set `background: true` to get an immediate receipt instead of the result \
-                          and read the outcome later with `collect`; a backgrounded run's result is \
-                          NOT in the receipt and must be collected before you report on it."
+                          A run DETACHES by default: you get an immediate receipt, the conversation \
+                          stays usable while it executes, and the result is NOT in the receipt — \
+                          read it with `collect` before you report on it. Pass `background: false` \
+                          only when you cannot continue without the result, which makes this call \
+                          wait for the whole fan-out."
                 .into(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -52,7 +54,7 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                     },
                     "background": {
                         "type": "boolean",
-                        "description": "return a receipt immediately instead of waiting for the run; the result is unknown until you call `collect`. Granted only where the session owns runs; otherwise the run executes in-turn and the result says so."
+                        "description": "defaults to TRUE: the run detaches, you get a receipt immediately, and the result is unknown until you call `collect`. Set it to false to wait for the result inside this call. Detaching is granted only where the session owns runs; otherwise the run executes in-turn and the result says so."
                     },
                     "collect": {
                         "type": "string",

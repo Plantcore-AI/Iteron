@@ -33,9 +33,12 @@
 > Since 2026-08-05 the shipped default is the operator's own authority, and it is
 > ungated: every tool auto-approves without prompting, `bash` reaches the network
 > and the whole filesystem, and the file tools address any path the operator's
-> account can. `--ask-permissions` restores the capability gate and `--confine`
-> puts executed code back inside the Seatbelt/bubblewrap sandbox. Run an untrusted
-> repository with both, or with `--mode plan`, or not at all.
+> account can. Since 2026-08-06 that authority is also carried by delegated
+> sub-agents, and a turn that has read untrusted content may still reach the
+> network — the trust-egress conjunct does not apply to an operator-authority
+> session. `--ask-permissions` restores the capability gate and the conjunct,
+> `--confine` puts executed code back inside the Seatbelt/bubblewrap sandbox. Run
+> an untrusted repository with both, or with `--mode plan`, or not at all.
 
 Core Code combines a focused coding-agent experience with a reusable agent
 runtime substrate. The `core` command provides a full-screen TUI and bounded

@@ -2630,6 +2630,21 @@ impl Agent {
         self.last_rate_limit
     }
 
+    /// The posture the kernel's admission layer is asked to apply.
+    ///
+    /// A bypassed session is the operator's own authority, so the trust-egress conjunct does not
+    /// apply to it; `--ask-permissions` and `--mode plan` both put the constrained posture back.
+    /// Plan is included because Plan is a hard denial of everything above read-only, and a posture
+    /// that quietly relaxed one of its conjuncts would be the exact "quiet lie" the permission
+    /// surface is built to avoid.
+    fn operator_authority(&self) -> core_kernel::admission::OperatorAuthority {
+        if self.bypass_permissions && self.permission_mode != PermissionMode::Plan {
+            core_kernel::admission::OperatorAuthority::Operator
+        } else {
+            core_kernel::admission::OperatorAuthority::Constrained
+        }
+    }
+
     /// Bind an admitted task envelope. Repeated calls only narrow the previous ceiling.
     pub fn narrow_authority_ceiling(&mut self, ceiling: CapabilitySet) {
         self.authority_ceiling = self.authority_ceiling.intersect(ceiling);
@@ -6439,12 +6454,13 @@ impl Agent {
                 };
                 // Task, immutable-policy and trust constraints remain in force even when a
                 // separately recorded operator bypass replaces the final permission-mode gate.
-                let verdict = core_kernel::admission::constrain(
+                let verdict = core_kernel::admission::constrain_under_authority(
                     gate_verdict,
                     cap,
                     self.authority_ceiling,
                     self.policy_capabilities,
                     Some(governing_trust),
+                    self.operator_authority(),
                 );
                 let approval_projection_incomplete = verdict == Verdict::Ask
                     && ui_approval_arguments(&tu.input)
@@ -6829,12 +6845,13 @@ impl Agent {
                 };
             // Only Auto. `Ask` needs the operator in sequence and `Deny` needs the loop's specific
             // refusal text, so both end the group rather than being decided here a second time.
-            if core_kernel::admission::constrain(
+            if core_kernel::admission::constrain_under_authority(
                 gate_verdict,
                 capability,
                 self.authority_ceiling,
                 self.policy_capabilities,
                 Some(governing_trust),
+                self.operator_authority(),
             ) != Verdict::Auto
             {
                 break;
@@ -7542,12 +7559,17 @@ impl Agent {
             .get("args")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
-        // A REQUEST to outlive the turn. Only an installed owner can grant it; see
-        // `crate::workflow::PreparedWorkflow::background`.
+        // A REQUEST to outlive the turn, and since 2026-08-06 the DEFAULT one. Only an installed
+        // owner can grant it; see `crate::workflow::PreparedWorkflow::background`.
+        //
+        // The default flipped because the old one made the decoupling unreachable in practice: a
+        // run only left the turn when the model remembered to ask, so the common case was still a
+        // conversation frozen behind a fan-out. Detaching is the posture; `background: false` is
+        // how a model that genuinely needs the result inside this turn asks to wait for it.
         let background = input
             .get("background")
             .and_then(|value| value.as_bool())
-            .unwrap_or(false);
+            .unwrap_or(true);
 
         // Children re-record the parent's exact durable route byte-for-byte; a run before any route
         // selection cannot bind one.
@@ -7606,6 +7628,7 @@ impl Agent {
             .map(|remaining| remaining / 2);
         cx.authority_ceiling = self.authority_ceiling;
         cx.policy_capabilities = self.policy_capabilities;
+        cx.bypass_permissions = self.bypass_permissions;
         let kernel_limits = in_turn_workflow_budget()
             .map_err(|error| format!("Workflow: invalid kernel aggregate budget: {error}"))?;
         let engine_limits = core_workflow::RunLimits::new(
@@ -7685,7 +7708,8 @@ impl Agent {
     ///
     /// # Detached runs
     ///
-    /// `Workflow({background: true})` asks for a run that outlives the turn. The request is granted
+    /// A run asks to outlive its turn **by default**; `Workflow({background: false})` is how a model
+    /// that needs the result inside this call opts out. The request is granted
     /// only when the installed launcher returns [`crate::workflow::Launched::Detached`] — i.e. only
     /// where a session-scoped owner exists to hold it. When it is granted this method returns a
     /// **receipt**, not a result: the run has no value yet, and saying otherwise would report a
@@ -9062,9 +9086,15 @@ impl Agent {
         sub.model_max_output_tokens = self.model_max_output_tokens;
         sub.sensitive_env_names = self.sensitive_env_names.clone();
         // Lifecycle hooks are executable processes and therefore outside a read-only definition's
-        // authority. The child receives no hook process surface and cannot bypass permissions.
+        // authority. The child receives no hook process surface.
         sub.hooks = Hooks::default();
-        sub.bypass_permissions = false;
+        // The gate is inherited, the CEILING is not. A child has no approval channel: with the gate
+        // running it can only auto-approve what the mode table already allows and refuse the rest,
+        // so a bypassed parent used to delegate work its child could not do — and the failure read
+        // as a capable agent that would not act. What actually keeps a child bounded is the
+        // capability ceiling below (`read_only` for a read-only definition) and its tool filter,
+        // and those are intersected, never inherited upward.
+        sub.bypass_permissions = self.bypass_permissions;
         sub.delegation_depth = self.delegation_depth.saturating_add(1);
         let child_effort = if self.effort == core_protocol::Effort::Ultracode {
             core_protocol::Effort::Max
@@ -11686,6 +11716,59 @@ mod gate_integration_tests {
         assert!(result.contains("no workflow run owner"), "{result}");
         assert!(result.contains("Result:"), "{result}");
         assert!(result.contains("42"), "{result}");
+
+        drop(agent);
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
+    /// The decoupling has to be the DEFAULT to be worth having: a run only left the turn when the
+    /// model remembered to ask, which meant the common case was still a conversation frozen behind a
+    /// fan-out. `background: false` is the opt-out, and it has to keep working, or a model that
+    /// genuinely needs the result inside its turn cannot say so.
+    #[tokio::test]
+    async fn a_workflow_detaches_by_default_and_waits_only_when_asked_to() {
+        #[derive(Clone)]
+        struct Recording(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl crate::workflow::WorkflowLauncher for Recording {
+            fn launch(
+                &self,
+                prepared: crate::workflow::PreparedWorkflow,
+            ) -> crate::workflow::Launched {
+                self.0
+                    .store(prepared.background, std::sync::atomic::Ordering::SeqCst);
+                crate::workflow::Launched::Detached(crate::workflow::DetachedRun {
+                    run_id: prepared.run_id.clone(),
+                    name: prepared.name.clone(),
+                    ownership: "OWNED-BY-THE-TEST.".into(),
+                })
+            }
+        }
+
+        let ws = temp_ws("workflow-detach-default");
+        let mut agent = workflow_seam_agent(&ws);
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        agent.set_workflow_launcher(std::sync::Arc::new(Recording(asked.clone())));
+
+        agent
+            .launch_workflow(TurnId(0), serde_json::json!({ "script": SEAM_SCRIPT }))
+            .await
+            .expect("a launch with no `background` key");
+        assert!(
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            "a workflow that says nothing about background asks to outlive its turn"
+        );
+
+        agent
+            .launch_workflow(
+                TurnId(0),
+                serde_json::json!({ "script": SEAM_SCRIPT, "background": false }),
+            )
+            .await
+            .expect("an explicit in-turn launch");
+        assert!(
+            !asked.load(std::sync::atomic::Ordering::SeqCst),
+            "`background: false` is how a model asks to wait for the result"
+        );
 
         drop(agent);
         std::fs::remove_dir_all(ws).unwrap();
