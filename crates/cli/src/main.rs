@@ -1812,8 +1812,16 @@ async fn run_cli() -> anyhow::Result<u8> {
         .permission_rules()
         .cap_rule(core_protocol::Capability::CodeExecuting)
     {
+        // The posture has to be read off the flag that decides it. This line kept saying
+        // "egress-off sandbox" after `--confine` became the way to ask for one, which told the
+        // operator the blast radius was the workspace while `bash` was in fact running with their
+        // own authority. A banner that overstates confinement is worse than no banner: it is the
+        // sentence someone quotes when deciding to run an untrusted repository.
+        Some(core_protocol::Verdict::Auto) if cli.confine => eprintln!(
+            "code execution: ON (--confine: egress-off sandbox, network denied, writes confined to workspace)"
+        ),
         Some(core_protocol::Verdict::Auto) => eprintln!(
-            "code execution: ON (egress-off sandbox: network denied, writes confined to workspace)"
+            "code execution: ON (your own authority: network reachable, writes anywhere your account can; --confine restores the sandbox)"
         ),
         _ => {
             eprintln!("code execution: OFF (bash/build/test refused). Pass --allow-code to enable.")
