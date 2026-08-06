@@ -652,7 +652,14 @@ impl Editor {
     /// what history recalls. Recalling such a line and sending it again degrades the anchor to the
     /// visible "attachment no longer available" form, which is the truth: that draft's images went
     /// with that draft.
-    pub fn take_submit(&mut self) -> String {
+    /// Exactly the text [`Self::take_submit`] would return, and nothing else: no history entry, no
+    /// clear, no persistence tick.
+    ///
+    /// A caller that must decide whether a submission is admissible BEFORE consuming the draft needs
+    /// the expanded bytes to decide on — the raw buffer is a different length, and a check against
+    /// it would admit a submission the real one rejects. Peeking is how a rejected queue attempt
+    /// leaves the draft, its pasted blocks and its chips exactly where the operator left them.
+    pub fn submission_text(&self) -> String {
         // Join backslash-newline continuations into spaces-free logical lines: a trailing `\` before
         // a newline (or at end) is removed.
         let raw: String = self.buf.iter().collect();
@@ -661,11 +668,15 @@ impl Editor {
         // submitted as the bytes it is rather than as a continuation marker. What leaves here is
         // the real text: the tag is a composer affordance and must not outlive the composer, in
         // the submission or in the history the operator recalls with ↑.
-        let out = crate::paste_input::expand(
+        crate::paste_input::expand(
             joined.trim_end_matches('\\'),
             &self.pastes,
             &self.attachments,
-        );
+        )
+    }
+
+    pub fn take_submit(&mut self) -> String {
+        let out = self.submission_text();
         let trimmed = out.trim();
         if !trimmed.is_empty() && self.history.last().map(|h| h.as_str()) != Some(out.as_str()) {
             self.history.push(out.clone());

@@ -550,7 +550,9 @@ pub struct PreparedWorkflow {
     pub sink: Arc<dyn ProgressSink>,
     /// The reasons agents resolved to JS `null`. Only meaningful after the run settles.
     pub degraded: Arc<DegradedAgentSink>,
-    /// The model asked for this run to outlive its turn (`Workflow({background: true})`).
+    /// This run should outlive its turn. **True unless the model asked to wait**
+    /// (`Workflow({background: false})`), because a workflow that holds the conversation open for
+    /// its whole fan-out is the thing the supervisor exists to stop.
     ///
     /// A **request**, not a guarantee. Only a launcher that can own a run past the turn may honour
     /// it; [`InTurnWorkflowLauncher`] deliberately ignores it and runs in-turn, and the kernel says
@@ -1096,9 +1098,11 @@ fn evict_summaries(inner: &mut SupervisorInner) {
 impl WorkflowLauncher for WorkflowSupervisor {
     fn launch(&self, prepared: PreparedWorkflow) -> Launched {
         if !prepared.background {
-            // An unrequested run is byte-for-byte the in-turn run it always was, even with an owner
-            // installed. Detaching is opt-in because the model, not the session, knows whether it
-            // has anything to do while the run executes.
+            // `background: false` is the model saying it cannot proceed without the result, so the
+            // run is byte-for-byte the in-turn run it always was, even with an owner installed.
+            // Everything else detaches: holding the conversation open for a whole fan-out is the
+            // cost this supervisor exists to remove, and a default that only applied when the model
+            // remembered to ask for it did not remove it.
             return InTurnWorkflowLauncher.launch(prepared);
         }
         // No ambient runtime, or no live `Arc` to hand the reaper, means no owner for the run — and

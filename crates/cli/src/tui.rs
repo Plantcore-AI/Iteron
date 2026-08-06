@@ -849,10 +849,51 @@ fn input_destination(running: bool, text: &str) -> InputDestination {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 struct PendingInput {
     seq: u64,
     text: String,
+    /// The chips this submission was composed with, moved out of the composer when it was queued.
+    ///
+    /// They travel WITH the text because `Editor::take_submit` clears the attachment stores: an
+    /// image dropped during a run and queued behind it would otherwise be discarded on the way to
+    /// the queue, or — worse — still be sitting in the composer when the operator writes an
+    /// unrelated message next, and would be sent with that one instead. Neither is a thing anyone
+    /// asked for. A steer cannot carry them at all (`Op::Steer` is text, and the protocol is
+    /// frozen), which is why a draft with chips is always routed to this queue.
+    images: image_input::ImageAttachments,
+    files: file_input::FileAttachments,
+}
+
+/// Identity of a queued submission is what it will send: its order, its words, and how many chips
+/// ride with it. The attachment stores hold decoded bytes and are deliberately not compared —
+/// equality is used by the queue-ordering assertions, not to decide whether two images are alike.
+impl PartialEq for PendingInput {
+    fn eq(&self, other: &Self) -> bool {
+        self.seq == other.seq
+            && self.text == other.text
+            && self.images.len() == other.images.len()
+            && self.files.len() == other.files.len()
+    }
+}
+
+impl Eq for PendingInput {}
+
+impl std::fmt::Debug for PendingInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingInput")
+            .field("seq", &self.seq)
+            .field("text", &self.text)
+            .field("images", &self.images.len())
+            .field("files", &self.files.len())
+            .finish()
+    }
+}
+
+impl PendingInput {
+    fn has_attachments(&self) -> bool {
+        !self.images.is_empty() || !self.files.is_empty()
+    }
 }
 
 /// A model tool which is active in the activity shelf but has not yet earned a transcript row.
@@ -2487,10 +2528,40 @@ impl App {
     }
 
     fn queue_after_turn(&mut self, text: String) -> Result<(), String> {
+        self.queue_after_turn_with(
+            text,
+            image_input::ImageAttachments::default(),
+            file_input::FileAttachments::default(),
+        )
+    }
+
+    /// Queue a submission together with the chips it was composed with.
+    ///
+    /// An empty draft is still queued when it carries attachments: "[1 image attachment]" is a real
+    /// submission, and the admission check would otherwise drop it as empty and take the images with
+    /// it. The admission BOUND (how many may be pending) still applies to both.
+    fn queue_after_turn_with(
+        &mut self,
+        text: String,
+        images: image_input::ImageAttachments,
+        files: file_input::FileAttachments,
+    ) -> Result<(), String> {
+        let has_attachments = !images.is_empty() || !files.is_empty();
         let pending = self.queued.len().saturating_add(self.steer_previews.len());
         match self.submission_admission(&text, pending, "pending input") {
             SubmissionAdmission::Accept => {
-                let input = self.pending_input(text);
+                let mut input = self.pending_input(text);
+                input.images = images;
+                input.files = files;
+                self.queued.push_back(input);
+            }
+            SubmissionAdmission::IgnoreEmpty if has_attachments => {
+                if pending >= MAX_PENDING_SUBMISSIONS {
+                    return Err(text);
+                }
+                let mut input = self.pending_input(text);
+                input.images = images;
+                input.files = files;
                 self.queued.push_back(input);
             }
             SubmissionAdmission::IgnoreEmpty => {}
@@ -2543,16 +2614,25 @@ impl App {
     fn pending_input(&mut self, text: String) -> PendingInput {
         let seq = self.next_submission_seq;
         self.next_submission_seq = self.next_submission_seq.wrapping_add(1);
-        PendingInput { seq, text }
+        PendingInput {
+            seq,
+            text,
+            images: image_input::ImageAttachments::default(),
+            files: file_input::FileAttachments::default(),
+        }
     }
 
     fn requeue_unadmitted(&mut self, unadmitted: Vec<String>) -> (usize, usize) {
         let count = unadmitted.len();
         for text in unadmitted {
             let input = if let Some(preview) = self.steer_previews.pop_front() {
+                // A steered submission never carried chips (a draft with any is queued, never
+                // steered), so the requeued form has none to restore.
                 PendingInput {
                     seq: preview.seq,
                     text,
+                    images: image_input::ImageAttachments::default(),
+                    files: file_input::FileAttachments::default(),
                 }
             } else {
                 self.pending_input(text)
@@ -3682,11 +3762,30 @@ pub async fn run(
             // PROSE item starts a run and we stop — the remaining items dispatch on the next
             // reclaim (a run is single-writer; we cannot start two at once).
             while !app.queued.is_empty() && !app.running {
-                let q = app
-                    .queued
-                    .pop_front()
-                    .expect("queue checked non-empty")
-                    .text;
+                let item = app.queued.pop_front().expect("queue checked non-empty");
+                // An item composed with chips is a submission, not a line of text: it goes out
+                // through the same staging the composer uses, so the images and files it was queued
+                // with are on the wire and the `[Image #N]` anchors it names still decide their
+                // order. A slash command or `!bash` cannot carry attachments, so this branch owns
+                // the whole classification for them.
+                if item.has_attachments() {
+                    let text = item.text.trim().to_owned();
+                    // Anchors resolve against the chips this item was queued with — the same store
+                    // the operator was looking at when they wrote them.
+                    let anchor_order = paste_input::anchored_image_ids(&text, &item.images);
+                    submit_staged_input(
+                        &mut app,
+                        &session,
+                        &mut notifier,
+                        text,
+                        item.images,
+                        item.files,
+                        anchor_order,
+                        false,
+                    );
+                    break; // a run started; remaining items dispatch after it finishes
+                }
+                let q = item.text;
                 let q = q.trim().to_string();
                 if q.is_empty() {
                     continue;
@@ -3834,11 +3933,13 @@ pub async fn run(
                 // Bracketed paste: insert the WHOLE pasted text (incl. newlines) into the editor
                 // rather than letting each pasted newline submit a partial line (review HIGH).
                 CEvent::Paste(pasted) => {
-                    let pasted_image = if app.running {
-                        Ok(None)
-                    } else {
-                        image_input::parse_explicit_image_path(&pasted)
-                    };
+                    // A drop is a drop whether or not a run is in flight. This used to be gated on
+                    // `!app.running`, which meant dragging a screenshot onto a working agent
+                    // silently produced a line of path text — the operator's evidence that the
+                    // feature exists at all is the chip, and there was none. The draft that carries
+                    // the chip is queued rather than steered (`Op::Steer` cannot hold an image), so
+                    // nothing about the running turn changes.
+                    let pasted_image = image_input::parse_explicit_image_path(&pasted);
                     match pasted_image {
                         Ok(Some(reference)) => {
                             let image_path = if reference.path().is_absolute() {
@@ -3877,9 +3978,12 @@ pub async fn run(
                             // Not an image. A whole-input paste that is an absolute path already
                             // inside the workspace is a dragged-in file, and becomes a file chip
                             // on the same terms; anything else is ordinary pasted text.
-                            match (app.running, file_input::parse_dropped_file_path(&repo, &pasted))
-                            {
-                                (false, Some(dropped)) => {
+                            // A dropped FILE is admitted on the same terms as a dropped image,
+                            // during a run as well: the chip lands on the draft and the draft is
+                            // queued behind the turn. The `app.running` half of this match used to
+                            // send it to the composer as raw path text instead.
+                            match file_input::parse_dropped_file_path(&repo, &pasted) {
+                                Some(dropped) => {
                                     let attached = app
                                         .editor
                                         .attach_file_path(&repo, &dropped)
@@ -4044,8 +4148,10 @@ pub async fn run(
 
                     // Ctrl-V asks a fixed platform clipboard adapter for image bytes. Ordinary text
                     // paste continues to arrive as `CEvent::Paste`; this branch owns only bitmap
-                    // capture and is intentionally unavailable for mid-run steering.
-                    if k.code == KeyCode::Char('v') && ctrl && !app.running {
+                    // capture. It is available during a run for the same reason a drop is: the
+                    // capture lands as a chip on the draft, and a draft with chips is queued behind
+                    // the turn rather than steered into it.
+                    if k.code == KeyCode::Char('v') && ctrl {
                         match clipboard_image_bytes().await {
                             Ok(Some(bytes)) => {
                                 let attached = app
@@ -4513,6 +4619,18 @@ pub async fn run(
                         // input remains a
                         // post-run frontend action; it must not be injected as model prose.
                         KeyCode::Enter if app.running && !app.editor.is_empty() => {
+                            // A draft carrying chips has exactly one honest destination. `Op::Steer`
+                            // is text — the protocol is frozen, there is no image or file field on
+                            // it — so steering this draft would mean sending the words and dropping
+                            // the attachment the operator just watched land. The chips are taken out
+                            // of the composer WITH the text, because `take_submit` clears the stores
+                            // and anything left behind would ride the next, unrelated message.
+                            if app.editor.chip_count() > 0 {
+                                // Refusal (queue bound or byte ceiling) leaves the draft, its pasted
+                                // blocks and its chips exactly where they are, with the reason in
+                                // the transcript.
+                                queue_draft_with_chips(&mut app);
+                            } else {
                             let text = app.editor.take_submit();
                             match input_destination(app.running, &text) {
                                 InputDestination::AfterTurn => {
@@ -4544,13 +4662,18 @@ pub async fn run(
                                     "the running Enter branch cannot resolve to StartTurn"
                                 ),
                             }
+                            }
                             app.completion = None;
                         }
                         // Codex/Claude-style explicit queue: Tab defers the text until this run ends.
                         KeyCode::Tab if app.running && !app.editor.is_empty() => {
+                            if app.editor.chip_count() > 0 {
+                                queue_draft_with_chips(&mut app);
+                            } else {
                             let text = app.editor.take_submit();
                             if let Err(text) = app.queue_after_turn(text) {
                                 app.editor.insert_str(&text);
+                            }
                             }
                             app.completion = None;
                         }
@@ -4970,6 +5093,45 @@ fn submit_operation(
 /// Resolve explicit `@path.png` mentions into the same bounded attachment collection used by
 /// drag/drop, then submit one legacy or multimodal SQ operation. Work is staged against a clone:
 /// an invalid file or a saturated SQ leaves the operator's draft and chips intact.
+/// Queue a mid-run draft that carries chips, moving the chips out of the composer with the text.
+///
+/// Returns whether it was queued. Admission is checked against the text the submission would
+/// actually carry — [`crate::editor::Editor::submission_text`], not the raw buffer — and it is
+/// checked BEFORE the draft is consumed, because the alternative is a refusal that has already
+/// cleared the composer and dropped the images on the floor.
+fn queue_draft_with_chips(app: &mut App) -> bool {
+    let preview = app.editor.submission_text();
+    // A slash command or a `!bash` line is a frontend action, not a message: neither can carry an
+    // attachment. Queuing one with chips would either send the command to the model as prose or
+    // drop the chips on the way, and both are silent. Say so and keep everything where it is.
+    if slash_command_body(preview.trim()).is_some() || preview.trim_start().starts_with('!') {
+        app.note(
+            block::NoticeLevel::Warn,
+            "a slash command cannot carry attachments — send the chips as a message first, or \
+             remove them with alt+backspace"
+                .to_string(),
+        );
+        return false;
+    }
+    let pending = app.queued.len().saturating_add(app.steer_previews.len());
+    if matches!(
+        app.submission_admission(&preview, pending, "pending input"),
+        SubmissionAdmission::Reject
+    ) {
+        return false;
+    }
+    let images = app.editor.attachments().clone();
+    let files = app.editor.files().clone();
+    let text = app.editor.take_submit();
+    if let Err(text) = app.queue_after_turn_with(text, images, files) {
+        // Unreachable in practice: the same admission just accepted this text. Preserve the words
+        // rather than assume it.
+        app.editor.insert_str(&text);
+        return false;
+    }
+    true
+}
+
 fn submit_composer(
     app: &mut App,
     session: &Session,
@@ -5077,6 +5239,35 @@ fn submit_composer(
     // behind the ones that are. `staged` opens as a clone of these attachments, ids and all, so the
     // ids read from the editor address the very same images inside it.
     let anchor_order = paste_input::anchored_image_ids(&text, app.editor.attachments());
+    submit_staged_input(
+        app,
+        session,
+        notifier,
+        text,
+        staged,
+        staged_files,
+        anchor_order,
+        true,
+    );
+}
+
+/// Send one composed submission: text plus the images and files it was staged with.
+///
+/// Shared by the composer and by the after-turn queue, so a submission that waited behind a run is
+/// assembled by the same code that assembles an immediate one. `clear_composer` is the only
+/// difference between them: the composer path consumes the draft it just read, and the queued path
+/// has no draft to consume — its chips were moved out of the composer when it was queued.
+#[allow(clippy::too_many_arguments)]
+fn submit_staged_input(
+    app: &mut App,
+    session: &Session,
+    notifier: &mut notification::TerminalNotifier,
+    text: String,
+    mut staged: image_input::ImageAttachments,
+    staged_files: file_input::FileAttachments,
+    anchor_order: Vec<u32>,
+    clear_composer: bool,
+) -> bool {
     staged.order_by_anchors(&anchor_order);
     let op = if !staged_files.is_empty() {
         // Files present: the one operation that can carry them, images included. Admission is
@@ -5094,7 +5285,7 @@ fn submit_composer(
                 block::NoticeLevel::Warn,
                 format!("file attachment refused: {reason}"),
             );
-            return;
+            return false;
         }
         Op::UserInputV3 {
             text: text.clone(),
@@ -5111,7 +5302,7 @@ fn submit_composer(
                     block::NoticeLevel::Warn,
                     format!("image attachment refused: {error}"),
                 );
-                return;
+                return false;
             }
         };
         Op::UserInputV2 { segments }
@@ -5122,7 +5313,9 @@ fn submit_composer(
         app.retryable_task = (staged.is_empty() && staged_files.is_empty()).then(|| text.clone());
         let image_count = staged.len();
         let file_count = staged_files.len();
-        let _ = app.editor.take_submit();
+        if clear_composer {
+            let _ = app.editor.take_submit();
+        }
         app.push_user(if text.is_empty() {
             let mut summary = String::from("[");
             if image_count > 0 {
@@ -5145,7 +5338,9 @@ fn submit_composer(
         } else {
             text
         });
+        return true;
     }
+    false
 }
 
 #[derive(Clone)]
@@ -14411,6 +14606,122 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             1,
             "the submit preview is projected once without image bytes"
         );
+    }
+
+    /// A screenshot dropped onto a working agent used to become a line of path text: the paste lane
+    /// skipped image parsing while `running`, so the one piece of evidence the operator has that the
+    /// attachment landed — the chip — never appeared.
+    #[test]
+    fn a_draft_composed_during_a_run_keeps_its_chips_and_is_queued_with_them() {
+        let (gif, _) = distinct_gifs();
+        let mut app = App::new();
+        app.running = true;
+        app.editor.insert_str("look at ");
+        app.editor
+            .attach_image_bytes("shot.png", gif)
+            .expect("a canonical GIF");
+        assert_eq!(app.editor.chip_count(), 1);
+
+        assert!(
+            queue_draft_with_chips(&mut app),
+            "a chip-carrying draft is admissible while a run is in flight"
+        );
+        assert_eq!(
+            app.editor.chip_count(),
+            0,
+            "the chips leave the composer with the text, not after it"
+        );
+        assert!(app.editor.is_empty(), "the draft was consumed");
+        let queued = app.queued.front().expect("one queued submission");
+        assert_eq!(
+            queued.images.len(),
+            1,
+            "the image travels with the words it was composed with"
+        );
+        assert!(queued.text.contains("look at"), "{}", queued.text);
+        assert!(
+            queued.text.contains("[Image #1]"),
+            "the anchor survives into the queued text: {}",
+            queued.text
+        );
+    }
+
+    /// A command is a frontend action and cannot carry an attachment. Queuing one with chips would
+    /// either send `/model` to the model as prose or drop the images on the way — both silent.
+    #[test]
+    fn a_command_carrying_chips_is_refused_with_everything_left_intact() {
+        let (gif, _) = distinct_gifs();
+        let mut app = App::new();
+        app.running = true;
+        app.editor.insert_str("/model");
+        app.editor
+            .attach_image_bytes("shot.png", gif)
+            .expect("a canonical GIF");
+
+        assert!(
+            !queue_draft_with_chips(&mut app),
+            "a slash command with chips is not queued"
+        );
+        assert_eq!(app.editor.chip_count(), 1, "the chip is still on the draft");
+        assert!(
+            app.editor.text().starts_with("/model"),
+            "the command is still in the composer: {}",
+            app.editor.text()
+        );
+        assert!(app.queued.is_empty(), "nothing was queued");
+        assert!(
+            app.transcript
+                .iter()
+                .any(|block| block.to_text().contains("cannot carry attachments")),
+            "the operator is told why"
+        );
+    }
+
+    /// The queue drains into the same staging the composer uses, so an image that waited behind a
+    /// run is on the wire rather than lost between the two lanes.
+    #[test]
+    fn a_queued_submission_sends_the_image_it_was_queued_with() {
+        let (gif, _) = distinct_gifs();
+        let mut app = App::new();
+        app.running = true;
+        app.editor.insert_str("describe ");
+        app.editor
+            .attach_image_bytes("shot.png", gif)
+            .expect("a canonical GIF");
+        assert!(queue_draft_with_chips(&mut app));
+        let item = app.queued.pop_front().expect("one queued submission");
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let session = Session::for_test(tx);
+        let mut notifier = notification::TerminalNotifier::new(false);
+        let text = item.text.trim().to_owned();
+        let anchor_order = paste_input::anchored_image_ids(&text, &item.images);
+        assert!(submit_staged_input(
+            &mut app,
+            &session,
+            &mut notifier,
+            text,
+            item.images,
+            item.files,
+            anchor_order,
+            false,
+        ));
+        let op = rx
+            .try_recv()
+            .expect("the drained submission goes out through the bounded SQ")
+            .into_current()
+            .expect("current protocol envelope");
+        match op {
+            Op::UserInputV2 { segments } => {
+                assert_eq!(
+                    segments.images().count(),
+                    1,
+                    "the queued image is on the wire"
+                );
+                assert!(segments.text().contains("describe"));
+            }
+            other => panic!("expected a multimodal envelope, got {other:?}"),
+        }
     }
 
     /// Two images that differ in one byte, so "which picture arrived first" is decidable from the

@@ -18,8 +18,18 @@ is an owner decision recorded in `docs/using/permissions-and-sandbox.md`, not an
 oversight. `--ask-permissions` restores the gate, `--confine` puts executed code
 back inside the Seatbelt/bubblewrap sandbox, and `--mode plan` disables effects
 entirely. `--mode plan` and an explicit `/permissions deny` are honored even under
-the bypass; so is the kernel's own admission layer, which is not part of the
-permission gate. Treat a prompt-injection payload in an untrusted repository as
+the bypass; so is the kernel's capability ceiling (`task_ceiling ∩
+policy_capabilities`), which is not part of the permission gate and is why a
+read-only sub-agent stays read-only in every posture.
+
+Since 2026-08-06 the default also clears the **trust-egress conjunct**: a turn that
+has read untrusted content may still call an egress tool. That conjunct was the last
+automatic barrier between a prompt-injection payload and the network, and it never
+covered `bash` — that tool is classified `code_executing`, so `curl` inside it was
+never held by it. `--ask-permissions` and `--mode plan` put the conjunct back.
+Delegated sub-agents now inherit the session's posture instead of running gated with
+nobody to ask; their capability ceiling is unchanged and still intersected downward.
+Treat a prompt-injection payload in an untrusted repository as
 having the authority of the account running `core`, and choose the posture
 accordingly. A sandbox never made hostile code safe; its absence makes the blast
 radius your home directory.

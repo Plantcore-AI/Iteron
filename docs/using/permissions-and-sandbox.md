@@ -40,9 +40,23 @@ Three things still apply, and they are the whole of what is left:
 - `--mode plan` hard-denies everything above read-only. Bypass never punches
   through Plan.
 - An explicit `/permissions deny` on a tool or a capability is still honored.
-- The kernel's own admission still holds: the task authority ceiling, the
-  immutable policy capability set, and the trust constraint are not part of the
-  permission gate and are not bypassed with it.
+- The kernel's **capability ceiling** still holds: the task authority ceiling
+  intersected with the immutable policy capability set is not part of the
+  permission gate and is not bypassed with it. A task that never held a capability
+  cannot use it in any posture.
+
+**Owner decision, 2026-08-06 — two of those were narrowed further.** The kernel's
+**trust conjunct** no longer applies to an operator-authority session: a turn that
+has read untrusted content may still call an egress tool. It never covered `bash`
+(classified `code_executing`, so a `curl` inside it was never held by it), so the
+conjunct was a boundary on one path and not the other. And **delegated sub-agents
+now inherit the session posture** rather than running gated: a child has no
+approval channel, so a gate it cannot answer is a refusal wearing a question's
+clothes, and a bypassed session was delegating work its own children could not do.
+What bounds a child is its ceiling and its tool filter, both still intersected
+downward — a read-only definition stays read-only.
+
+`--ask-permissions` and `--mode plan` restore the gate AND the trust conjunct.
 
 `--ask-permissions` restores the gate, and then the modes above mean exactly what
 they say. In one-shot (`-p`) there is no approval channel, so an "ask" resolves as

@@ -10,7 +10,9 @@ use core_protocol::{Capability, PermissionMode, PermissionRules, Trust, Verdict,
 /// Apply task/policy/trust constraints to a gate decision.
 ///
 /// This lower-level form also protects explicitly recorded operator bypasses: a bypass may replace
-/// the final gate decision, but it cannot clear a task ceiling or launder tainted egress.
+/// the final gate decision, but it cannot clear a task ceiling. See
+/// [`constrain_under_authority`] for the one conjunct an operator bypass does now clear, and for
+/// what that costs.
 pub fn constrain(
     gate_verdict: Verdict,
     effective_capability: Capability,
@@ -18,14 +20,60 @@ pub fn constrain(
     policy_capabilities: CapabilitySet,
     governing_trust: Option<Trust>,
 ) -> Verdict {
+    constrain_under_authority(
+        gate_verdict,
+        effective_capability,
+        task_ceiling,
+        policy_capabilities,
+        governing_trust,
+        OperatorAuthority::Constrained,
+    )
+}
+
+/// Whether the caller is running as the operator's own authority (the shipped default since
+/// 2026-08-06) or under the constrained posture `--ask-permissions` restores.
+///
+/// It is an enum rather than a `bool` because the two readings of a bare `true` here are opposite
+/// and both plausible at a call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorAuthority {
+    /// Ceilings and the trust conjunct both apply. What every caller had before this parameter.
+    Constrained,
+    /// The session was explicitly launched as the operator, so the trust-egress conjunct does not
+    /// apply.
+    ///
+    /// **What this surrenders, stated rather than implied:** with the conjunct off, a turn that has
+    /// read untrusted content may still reach the network. That conjunct was the last thing
+    /// standing between a prompt-injection payload in a repository and an egress tool, and it is
+    /// now the operator's own authority doing the reaching. It was already true of `bash` — that
+    /// tool is `CodeExecuting`, never classified as egress, so `curl` inside it was never held by
+    /// this rule — and this makes the declared egress tools agree with the shell rather than
+    /// pretending a boundary exists on one path and not the other.
+    ///
+    /// Ceilings are NOT surrendered. `task_ceiling ∩ policy_capabilities` still decides what a task
+    /// may do at all, which is why a read-only sub-agent stays read-only under any posture.
+    Operator,
+}
+
+/// [`constrain`], with the trust conjunct made conditional on the operator's posture.
+pub fn constrain_under_authority(
+    gate_verdict: Verdict,
+    effective_capability: Capability,
+    task_ceiling: CapabilitySet,
+    policy_capabilities: CapabilitySet,
+    governing_trust: Option<Trust>,
+    authority: OperatorAuthority,
+) -> Verdict {
     let admitted = task_ceiling.intersect(policy_capabilities);
-    if !admitted.contains(effective_capability)
-        || (effective_capability.is_egress() && governing_trust != Some(Trust::Trusted))
-    {
-        Verdict::Deny
-    } else {
-        gate_verdict
+    if !admitted.contains(effective_capability) {
+        return Verdict::Deny;
     }
+    let tainted_egress =
+        effective_capability.is_egress() && governing_trust != Some(Trust::Trusted);
+    if tainted_egress && authority == OperatorAuthority::Constrained {
+        return Verdict::Deny;
+    }
+    gate_verdict
 }
 
 /// Complete normal admission in its fixed order: classified capability, ceiling intersection,
@@ -74,6 +122,51 @@ mod tests {
 
     fn all_capabilities() -> CapabilitySet {
         CapabilitySet::from_iter_capabilities(CAPABILITIES)
+    }
+
+    /// The operator posture clears exactly one conjunct, and the test says which one in both
+    /// directions — the cost of the default is only visible if the suite states it.
+    #[test]
+    fn operator_authority_clears_the_trust_conjunct_and_nothing_else() {
+        let all = all_capabilities();
+        let egress = Capability::IrreversibleExternal;
+
+        assert_eq!(
+            constrain(Verdict::Auto, egress, all, all, Some(Trust::Untrusted)),
+            Verdict::Deny,
+            "the constrained posture still refuses tainted egress"
+        );
+        assert_eq!(
+            constrain_under_authority(
+                Verdict::Auto,
+                egress,
+                all,
+                all,
+                Some(Trust::Untrusted),
+                OperatorAuthority::Operator,
+            ),
+            Verdict::Auto,
+            "the operator's own authority reaches the network after reading untrusted content — \
+             this is the guarantee the default surrenders"
+        );
+
+        // The ceiling is NOT surrendered: a task that never held the capability still cannot use it,
+        // whatever posture the session is in.
+        let read_only = CapabilitySet::from_iter_capabilities([Capability::ReadOnly]);
+        for authority in [OperatorAuthority::Constrained, OperatorAuthority::Operator] {
+            assert_eq!(
+                constrain_under_authority(
+                    Verdict::Auto,
+                    Capability::CodeExecuting,
+                    read_only,
+                    all,
+                    Some(Trust::Trusted),
+                    authority,
+                ),
+                Verdict::Deny,
+                "a ceiling holds under {authority:?}"
+            );
+        }
     }
 
     #[test]
