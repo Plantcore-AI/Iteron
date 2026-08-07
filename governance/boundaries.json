@@ -694,6 +694,8 @@
       "reviewers": [],
       "paths": [
         { "kind": "file", "path": "crates/cli/Cargo.toml" },
+        { "kind": "file", "path": "crates/cli/src/app_server.rs" },
+        { "kind": "tree", "path": "crates/cli/src/app_server" },
         { "kind": "file", "path": "crates/cli/src/commands.rs" },
         { "kind": "tree", "path": "crates/cli/src/config" },
         { "kind": "file", "path": "crates/cli/src/config.rs" },
@@ -720,6 +722,7 @@
         { "kind": "file", "path": "crates/cli/src/startup.rs" },
         { "kind": "file", "path": "crates/cli/src/tunables.rs" },
         { "kind": "file", "path": "crates/cli/src/workflow.rs" },
+        { "kind": "tree", "path": "crates/cli/src/workflow" },
         { "kind": "file", "path": "crates/cli/src/workspace_review.rs" }
       ],
       "contracts": [

@@ -81,4 +81,4 @@ pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v2";
 pub const DIGEST_ALGORITHM: &str = "sha256";
 /// Golden digest for revision 4; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "da4d3fe51dbd9ab28e511b9ad39c1997e1a6fc97143200f9d10971fcc6e65f95";
+    "c36f74c84c198eda6171905dd618035f31439ee704e98583a383eac03064209c";

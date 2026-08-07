@@ -1,7 +1,7 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "da4d3fe51dbd9ab28e511b9ad39c1997e1a6fc97143200f9d10971fcc6e65f95"
+    "value": "c36f74c84c198eda6171905dd618035f31439ee704e98583a383eac03064209c"
   },
   "payload": {
     "schema_version": 3,
@@ -7744,7 +7744,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f9807cf8410a2e40f6df493b9a94a876d16a33137eeb16c532d3fb09e33b2e93"
+          "value": "f770572d49340784e497f19f332bba8bc839621db09f88d93a6fa6dbc74867d5"
         },
         "schema_version": 2,
         "ordinal": 69,
@@ -7756,7 +7756,7 @@
         "activation": {
           "predicate": {
             "type": "runtime_derived",
-            "seam": "crates/cli/src/tui/app_server.rs"
+            "seam": "crates/cli/src/app_server.rs"
           },
           "inactive_reason": "grouped_or_incomplete_seam"
         },
@@ -7822,7 +7822,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/tui/app_server.rs"
+              "locator": "crates/cli/src/app_server.rs"
             }
           ]
         },

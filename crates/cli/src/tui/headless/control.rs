@@ -5,9 +5,7 @@
 //! the last byte cursors it observed. Server-process restart is deliberately a different boundary:
 //! this transport never turns a stale journal row into a live process capability.
 
-use super::super::app_server::{
-    Control, ControlReply, ControlRequest, JobControl, SessionSnapshot,
-};
+use crate::app_server::{Control, ControlReply, ControlRequest, JobControl, SessionSnapshot};
 use anyhow::{Context, Result};
 use core_protocol::{Capability, Effort, PermissionMode, Verdict, task::MAX_TASK_TEXT_BYTES};
 use serde::{Deserialize, Deserializer, de};

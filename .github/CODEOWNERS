@@ -93,12 +93,14 @@
 /docs/project/governance.md @fr0m-scratch
 /docs/project/releases.md @fr0m-scratch
 /docs/reference/platforms.md @fr0m-scratch
+/crates/cli/src/app_server/** @fr0m-scratch
 /crates/cli/src/block/** @fr0m-scratch
 /crates/cli/src/config/** @fr0m-scratch
 /crates/cli/src/image_input/** @fr0m-scratch
 /crates/cli/src/runtime/** @fr0m-scratch
 /crates/cli/src/theme/** @fr0m-scratch
 /crates/cli/src/tui/** @fr0m-scratch
+/crates/cli/src/workflow/** @fr0m-scratch
 /crates/tools/src/lsp/** @fr0m-scratch
 /crates/tools/src/process/** @fr0m-scratch
 /crates/agents/src/catalog.rs @fr0m-scratch
@@ -110,6 +112,7 @@
 /crates/agents/src/policy_tests.rs @fr0m-scratch
 /crates/agents/src/reduce.rs @fr0m-scratch
 /crates/agents/src/stage.rs @fr0m-scratch
+/crates/cli/src/app_server.rs @fr0m-scratch
 /crates/cli/src/block.rs @fr0m-scratch
 /crates/cli/src/bundle_adapter.rs @fr0m-scratch
 /crates/cli/src/bundle_adapter_tests.rs @fr0m-scratch

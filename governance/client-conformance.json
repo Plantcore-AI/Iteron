@@ -130,7 +130,7 @@
       "evidence": [
         {
           "kind": "test",
-          "path": "crates/cli/src/tui/app_server.rs",
+          "path": "crates/cli/src/app_server.rs",
           "selector": "fn version_skew_is_refused_up_front()"
         },
         {
@@ -148,7 +148,7 @@
       "evidence": [
         {
           "kind": "test",
-          "path": "crates/cli/src/tui/app_server.rs",
+          "path": "crates/cli/src/app_server.rs",
           "selector": "fn a_lossless_client_backpressures_instead_of_dropping_cosmetic_events()"
         },
         {
@@ -176,7 +176,7 @@
     "evidence": [
       {
         "kind": "test",
-        "path": "crates/cli/src/tui/app_server.rs",
+        "path": "crates/cli/src/app_server.rs",
         "selector": "fn version_skew_is_refused_up_front()"
       },
       {

@@ -1,6 +1,6 @@
 //! Bounded loopback transport for headless App Server clients.
 //!
-//! The runtime and its SQ/EQ semantics remain in `tui::app_server`; this module is only a framed
+//! The runtime and its SQ/EQ semantics remain in `crate::app_server`; this module is only a framed
 //! transport adapter. A client must complete the version handshake before it can submit an op or
 //! make a control request.
 
@@ -17,7 +17,7 @@ use self::framing::{
 use self::input::{
     ClientFrame, FrameBytes, FrameReader, MAX_CLIENT_FRAME_BYTES, MAX_PENDING_CLIENT_BYTES,
 };
-use super::app_server::{AppServerClient, Attached, ControlRequest, ServerEvent, TerminalSummary};
+use crate::app_server::{AppServerClient, Attached, ControlRequest, ServerEvent, TerminalSummary};
 use crate::output;
 use crate::runtime::UiEvent;
 use anyhow::{Context, Result, bail};
