@@ -10,6 +10,7 @@ accepted = [
     "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
+    "MIT-0",
     "Unicode-3.0",
     "Unlicense",
     "Zlib",
