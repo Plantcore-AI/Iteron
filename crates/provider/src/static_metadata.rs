@@ -76,6 +76,7 @@ pub struct StaticModelCapabilities {
     pub max_output_tokens: Option<u32>,
     pub tool_calling: Option<bool>,
     pub semantic_effort: Option<bool>,
+    pub image_input: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -610,12 +611,20 @@ mod tests {
             .expect("the bundled Anthropic route carries capabilities");
         assert_eq!(anthropic.context_window_tokens, Some(1_000_000));
         assert_eq!(anthropic.max_output_tokens, Some(128_000));
+        assert_eq!(anthropic.image_input, Some(true));
         // An official catalog serves dated leaves; the family bound covers them.
         assert_eq!(
             embedded
                 .route_model_capabilities(ANTHROPIC_ROOT, "claude-opus-4-7-20260720")
                 .and_then(|snapshot| snapshot.context_window_tokens),
             Some(1_000_000)
+        );
+        assert_eq!(
+            embedded
+                .route_model_capabilities(ANTHROPIC_ROOT, "claude-sonnet-4-5")
+                .and_then(|snapshot| snapshot.image_input),
+            Some(true),
+            "the official Claude 4 family inherits the documented vision wire"
         );
 
         // Longest-family match: a smaller sibling never inherits the larger model's bounds.

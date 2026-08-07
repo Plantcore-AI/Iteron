@@ -261,6 +261,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
                 true,
                 int_domain!(1, 1_000_000, "tokens")
             ),
+            scalar_field!("image_input", true, bool_domain!()),
             scalar_field!("evidence_sha256", true, text_domain!(64, 64, Sha256))
         ],
         [less_equal_rule!("max_output_tokens", "context_window")]

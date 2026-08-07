@@ -1,7 +1,7 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "fa7a2bda3912ef644aaba760a9f74886907c76ec990a6db3fde680d320527f40"
+    "value": "da4d3fe51dbd9ab28e511b9ad39c1997e1a6fc97143200f9d10971fcc6e65f95"
   },
   "payload": {
     "schema_version": 3,
@@ -8947,7 +8947,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7f12bbdf816656640d402482f2ceb05830c391d451a23c2c668e6092a9afea11"
+          "value": "76361633d3958d576f547672c6caba24d8b2a5cd40b79e79dbc0fb458bf20a6b"
         },
         "schema_version": 2,
         "ordinal": 77,
@@ -9062,6 +9062,16 @@
                     "min": 1,
                     "max": 1000000,
                     "unit": "tokens"
+                  }
+                }
+              },
+              {
+                "name": "image_input",
+                "required": true,
+                "domain": {
+                  "type": "scalar",
+                  "domain": {
+                    "type": "boolean"
                   }
                 }
               },

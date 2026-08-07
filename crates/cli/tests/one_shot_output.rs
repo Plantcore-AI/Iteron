@@ -66,7 +66,10 @@ impl Scratch {
                 "key_env": TEST_KEY_ENV,
                 "enabled": true,
                 "catalog": false,
-                "models": [MODEL_ID]
+                "models": [MODEL_ID],
+                "model_capabilities": {
+                    (MODEL_ID): {"image_input": true}
+                }
             }]
         });
         fs::write(
@@ -1245,7 +1248,7 @@ fn stream_json_one_shot_process_contract_matches_golden() {
 }
 
 #[test]
-fn image_one_shot_emits_metadata_then_degrades_cleanly_for_a_text_only_provider() {
+fn image_one_shot_emits_metadata_then_uploads_to_a_declared_capable_provider() {
     let (server, requests) = MockProvider::spawn_capturing_script(vec![Reply::Success]);
     let scratch = Scratch::new("image-stream-json", &server.api_root);
     let image_path = scratch.repo().join("fixture.gif");
@@ -1256,7 +1259,7 @@ fn image_one_shot_emits_metadata_then_degrades_cleanly_for_a_text_only_provider(
     let output = run_core(&scratch, "stream-json", &["--image", image_arg]);
     let request = requests
         .recv_timeout(SERVER_TIMEOUT)
-        .expect("capture the text-only provider request");
+        .expect("capture the multimodal provider request");
     server.finish();
 
     assert_eq!(output.status.code(), Some(0));
@@ -1272,28 +1275,27 @@ fn image_one_shot_emits_metadata_then_degrades_cleanly_for_a_text_only_provider(
         })),
         "attachment metadata precedes every runtime event"
     );
-    assert!(
-        records.iter().any(|record| {
-            record["type"] == "notice"
-                && record["message"]
-                    .as_str()
-                    .is_some_and(|message| message.contains("image"))
-        }),
-        "a text-only provider exposes one clear degradation notice"
-    );
     assert_terminal_result(records.last().expect("terminal result"), 0, "done");
 
     let request_text = serde_json::to_string(&request).unwrap();
     assert!(request_text.contains("return the deterministic fixture response"));
     assert!(!request_text.contains(image_arg));
-    assert!(!request_text.contains("R0lGODlh"));
+    assert!(request_text.contains("R0lGODlh"));
+    let user_content = request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "user")
+        .and_then(|message| message["content"].as_array())
+        .expect("the declared-capable route receives multimodal user content");
     assert!(
-        request["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|message| message["content"].is_string()),
-        "the stubbed text-only adapter receives no provider-specific image block"
+        user_content.iter().any(|part| {
+            part["type"] == "image_url"
+                && part["image_url"]["url"]
+                    .as_str()
+                    .is_some_and(|url| url.starts_with("data:image/gif;base64,R0lGODlh"))
+        }),
+        "the admitted GIF reaches the provider as an inline data URL"
     );
 }
 

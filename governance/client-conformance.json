@@ -77,7 +77,7 @@
         {
           "kind": "test",
           "path": "crates/cli/tests/one_shot_output.rs",
-          "selector": "fn image_one_shot_emits_metadata_then_degrades_cleanly_for_a_text_only_provider()"
+          "selector": "fn image_one_shot_emits_metadata_then_uploads_to_a_declared_capable_provider()"
         },
         {
           "kind": "test",

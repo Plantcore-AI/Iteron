@@ -713,6 +713,7 @@
         { "kind": "file", "path": "crates/cli/src/runtime.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/pricing.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/strategy_runtime.rs" },
+        { "kind": "file", "path": "crates/cli/src/runtime/tool_interrupt.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime/workflow_spawner.rs" },
         { "kind": "tree", "path": "crates/cli/src/runtime/workflow_spawner" },
         { "kind": "file", "path": "crates/cli/src/setup.rs" },

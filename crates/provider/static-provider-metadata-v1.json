@@ -1,11 +1,34 @@
 {
-  "schema_version": 1,
-  "bundle_revision": "core-provider-static-metadata@2026-08-03+sha256:0900a6f064bed739fe6191c2fe196744aa6034962afe66cb6a8191a401934a79",
+  "anthropic_messages": {
+    "effort": {
+      "api_root": "https://api.anthropic.com/v1",
+      "beta_header": "effort-2025-11-24",
+      "captured_at_unix_secs": 1763942400,
+      "models": [
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-sonnet-4-6"
+      ],
+      "source": "https://docs.claude.com/en/api/beta-headers",
+      "version": "anthropic-effort-beta@2025-11-24+sha256:5e6597a69f9ed3cf5d646deaa4690d9e09b95285f119a3ea73a1ddb788607fb1"
+    }
+  },
+  "bundle_revision": "core-provider-static-metadata@2026-08-03+sha256:7ecb92aa59e8fae1f9e589eacb2c3eac2468ac8d3dfc89b525f39c676f01c36f",
   "glm_standard_chat": {
-    "version": "glm-chat-completions-schema@2026-07-14+sha256:11d83bc656448de43b2bbf7d1fd78863f75d3f6f75e405a767bfab8d3b14170b",
-    "source": "https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E5%AF%B9%E8%AF%9D%E8%A1%A5%E5%85%A8",
-    "captured_at_unix_secs": 1783987200,
     "api_root": "https://open.bigmodel.cn/api/paas/v4",
+    "capabilities": {
+      "glm-5.2": {
+        "captured_at_unix_secs": 1784073600,
+        "context_window_tokens": 1000000,
+        "image_input": null,
+        "max_output_tokens": 128000,
+        "semantic_effort": true,
+        "source": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2",
+        "tool_calling": true,
+        "version": "glm-5.2-model-page@2026-07-15+sha256:0001d28fc771762809f949723420c39bea74cf0173e79c87d439ebb6a38d1e3e"
+      }
+    },
+    "captured_at_unix_secs": 1783987200,
     "default_model": "glm-5.2",
     "models": [
       "glm-5.2",
@@ -22,71 +45,92 @@
       "glm-4-flash-250414",
       "glm-4-flashx-250414"
     ],
-    "capabilities": {
-      "glm-5.2": {
-        "version": "glm-5.2-model-page@2026-07-15+sha256:eaccca3a8bb43cf8030daafab1926c3e561067d7a56c7cb58042f1ba8a430334",
-        "source": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2",
-        "captured_at_unix_secs": 1784073600,
-        "context_window_tokens": 1000000,
-        "max_output_tokens": 128000,
-        "tool_calling": true,
-        "semantic_effort": true
-      }
-    }
-  },
-  "anthropic_messages": {
-    "effort": {
-      "version": "anthropic-effort-beta@2025-11-24+sha256:5e6597a69f9ed3cf5d646deaa4690d9e09b95285f119a3ea73a1ddb788607fb1",
-      "source": "https://docs.claude.com/en/api/beta-headers",
-      "captured_at_unix_secs": 1763942400,
-      "api_root": "https://api.anthropic.com/v1",
-      "beta_header": "effort-2025-11-24",
-      "models": [
-        "claude-opus-4-7",
-        "claude-opus-4-6",
-        "claude-sonnet-4-6"
-      ]
-    }
+    "source": "https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E5%AF%B9%E8%AF%9D%E8%A1%A5%E5%85%A8",
+    "version": "glm-chat-completions-schema@2026-07-14+sha256:11d83bc656448de43b2bbf7d1fd78863f75d3f6f75e405a767bfab8d3b14170b"
   },
   "model_capabilities": {
     "anthropic_messages": {
       "api_root": "https://api.anthropic.com/v1",
       "families": {
-        "claude-opus-4-7": {
-          "version": "anthropic-model-overview@2026-08-01+sha256:5f8fde7e5687e27b06696dbd9c85d53888db41d3661b3c3b6d85a60505061785",
-          "source": "https://docs.claude.com/en/docs/about-claude/models/overview",
-          "captured_at_unix_secs": 1785542400,
-          "context_window_tokens": 1000000,
-          "max_output_tokens": 128000,
-          "tool_calling": true,
-          "semantic_effort": true
+        "claude-3": {
+          "captured_at_unix_secs": 1786060800,
+          "context_window_tokens": null,
+          "image_input": true,
+          "max_output_tokens": null,
+          "semantic_effort": null,
+          "source": "https://docs.anthropic.com/en/docs/build-with-claude/vision",
+          "tool_calling": null,
+          "version": "anthropic-vision@2026-08-07+sha256:36be83e2ddbf6038ab9a686ef59b8abd1fab4e575298405ded70b292f0fd71e9"
         },
-        "claude-opus-4-6": {
-          "version": "anthropic-model-overview@2026-08-01+sha256:5d7d6b225ca0b3fe21d5e1ba0699d93e779184d26830b26099cd3a655ef00f63",
-          "source": "https://docs.claude.com/en/docs/about-claude/models/overview",
-          "captured_at_unix_secs": 1785542400,
-          "context_window_tokens": 1000000,
-          "max_output_tokens": 128000,
-          "tool_calling": true,
-          "semantic_effort": true
-        },
-        "claude-sonnet-4-6": {
-          "version": "anthropic-model-overview@2026-08-01+sha256:a81364462e1fda512936e13b7000bb94153575c12172c041a48a92efc9c7ca65",
-          "source": "https://docs.claude.com/en/docs/about-claude/models/overview",
-          "captured_at_unix_secs": 1785542400,
-          "context_window_tokens": 1000000,
-          "max_output_tokens": 128000,
-          "tool_calling": true,
-          "semantic_effort": true
+        "claude-haiku-4": {
+          "captured_at_unix_secs": 1786060800,
+          "context_window_tokens": null,
+          "image_input": true,
+          "max_output_tokens": null,
+          "semantic_effort": null,
+          "source": "https://docs.anthropic.com/en/docs/build-with-claude/vision",
+          "tool_calling": null,
+          "version": "anthropic-vision@2026-08-07+sha256:686f6b7e4f8d106b1b5cb13eab798b6187899d1c916a798ced65b06c752bfa42"
         },
         "claude-haiku-4-5": {
-          "version": "anthropic-model-overview@2026-08-01+sha256:9692d0febf5e6e4f638e69390882d5f2c01aaa5583ae6680b9616cc82853bbb2",
-          "source": "https://docs.claude.com/en/docs/about-claude/models/overview",
           "captured_at_unix_secs": 1785542400,
           "context_window_tokens": 200000,
+          "image_input": true,
           "max_output_tokens": 64000,
+          "semantic_effort": false,
+          "source": "https://docs.claude.com/en/docs/about-claude/models/overview",
           "tool_calling": true,
-          "semantic_effort": false
+          "version": "anthropic-model-overview@2026-08-01+sha256:02e142fa94dec50fc3b84a75a7aca6379a54762d38b9a0fc79b85351ea9b0806"
+        },
+        "claude-opus-4": {
+          "captured_at_unix_secs": 1786060800,
+          "context_window_tokens": null,
+          "image_input": true,
+          "max_output_tokens": null,
+          "semantic_effort": null,
+          "source": "https://docs.anthropic.com/en/docs/build-with-claude/vision",
+          "tool_calling": null,
+          "version": "anthropic-vision@2026-08-07+sha256:ddfebc35b745138ab5499471a0f8c7f143bb5c64d9cac00880c8ca2a6fc595f5"
+        },
+        "claude-opus-4-6": {
+          "captured_at_unix_secs": 1785542400,
+          "context_window_tokens": 1000000,
+          "image_input": true,
+          "max_output_tokens": 128000,
+          "semantic_effort": true,
+          "source": "https://docs.claude.com/en/docs/about-claude/models/overview",
+          "tool_calling": true,
+          "version": "anthropic-model-overview@2026-08-01+sha256:a0399a260897367e55a845cd7ba59c40e42d01b2725477e0cb6df686ef664203"
+        },
+        "claude-opus-4-7": {
+          "captured_at_unix_secs": 1785542400,
+          "context_window_tokens": 1000000,
+          "image_input": true,
+          "max_output_tokens": 128000,
+          "semantic_effort": true,
+          "source": "https://docs.claude.com/en/docs/about-claude/models/overview",
+          "tool_calling": true,
+          "version": "anthropic-model-overview@2026-08-01+sha256:6facfe3168f2f3d1a44ca9e443a2d0947f01e9e60dcf9a1679375cd1aae7337a"
+        },
+        "claude-sonnet-4": {
+          "captured_at_unix_secs": 1786060800,
+          "context_window_tokens": null,
+          "image_input": true,
+          "max_output_tokens": null,
+          "semantic_effort": null,
+          "source": "https://docs.anthropic.com/en/docs/build-with-claude/vision",
+          "tool_calling": null,
+          "version": "anthropic-vision@2026-08-07+sha256:e817e927a7a0a2f0cb3a556ff2b3c347f74ab706a574042b531115e197be6f94"
+        },
+        "claude-sonnet-4-6": {
+          "captured_at_unix_secs": 1785542400,
+          "context_window_tokens": 1000000,
+          "image_input": true,
+          "max_output_tokens": 128000,
+          "semantic_effort": true,
+          "source": "https://docs.claude.com/en/docs/about-claude/models/overview",
+          "tool_calling": true,
+          "version": "anthropic-model-overview@2026-08-01+sha256:879b8f611d0edf33173b61ce91143460a56be2a029ff08df826ca8abe1015065"
         }
       }
     },
@@ -94,24 +138,27 @@
       "api_root": "https://api.openai.com/v1",
       "families": {
         "gpt-5": {
-          "version": "openai-model-page@2026-08-01+sha256:398fcfad4829a32237e6b09c5fb1127e1b82079f5bf748859d0cf2b5100de58a",
-          "source": "https://platform.openai.com/docs/models/gpt-5",
           "captured_at_unix_secs": 1785542400,
           "context_window_tokens": 400000,
+          "image_input": true,
           "max_output_tokens": 128000,
+          "semantic_effort": true,
+          "source": "https://platform.openai.com/docs/models/gpt-5",
           "tool_calling": true,
-          "semantic_effort": true
+          "version": "openai-model-page@2026-08-01+sha256:d539af5d5923841d100749b8717d91432d36c53f9fb175670df4128bb89ec775"
         },
         "gpt-5-mini": {
-          "version": "openai-model-page@2026-08-01+sha256:6da890055e81ed408deb4647447a5c1aaf084a4d090c48c191a8c8606d48e90a",
-          "source": "https://platform.openai.com/docs/models/gpt-5-mini",
           "captured_at_unix_secs": 1785542400,
           "context_window_tokens": 400000,
+          "image_input": true,
           "max_output_tokens": 128000,
+          "semantic_effort": true,
+          "source": "https://platform.openai.com/docs/models/gpt-5-mini",
           "tool_calling": true,
-          "semantic_effort": true
+          "version": "openai-model-page@2026-08-01+sha256:2d806ca791cc624ad173e0518bb6a3280387e2b03fce17c03eeca54d4e76ea1c"
         }
       }
     }
-  }
+  },
+  "schema_version": 1
 }

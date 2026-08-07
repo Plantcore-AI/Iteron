@@ -5,8 +5,8 @@ use std::io::{self, Write};
 /// Whether terminal mouse events belong to Core or to the terminal's native selection UI.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) enum State {
-    #[default]
     Captured,
+    #[default]
     Released,
 }
 
@@ -24,8 +24,8 @@ impl State {
 
     pub(super) fn hint(self) -> &'static str {
         match self {
-            Self::Captured => "ctrl+t select",
-            Self::Released => "ctrl+t mouse",
+            Self::Captured => "ctrl+t selection",
+            Self::Released => "ctrl+t app mouse",
         }
     }
 
@@ -56,11 +56,11 @@ pub(super) struct Controller<W: Write> {
 }
 
 impl<W: Write> Controller<W> {
-    pub(super) fn capture(mut writer: W) -> io::Result<Self> {
-        State::Captured.write_to(&mut writer)?;
+    pub(super) fn release_to_terminal(mut writer: W) -> io::Result<Self> {
+        State::Released.write_to(&mut writer)?;
         Ok(Self {
             writer,
-            state: State::Captured,
+            state: State::Released,
         })
     }
 
@@ -119,9 +119,15 @@ mod tests {
     fn toggle_commits_protocol_mode_and_exposes_truthful_labels() {
         let sink = SharedWriter::default();
         let bytes = sink.0.clone();
-        let mut controller = Controller::capture(sink).unwrap();
+        let mut controller = Controller::release_to_terminal(sink).unwrap();
 
-        assert_eq!(controller.state(), State::Captured);
+        assert_eq!(controller.state(), State::Released);
+        assert_eq!(controller.state().status_label(), "selection:on");
+        let mut disable = Vec::new();
+        State::Released.write_to(&mut disable).unwrap();
+        assert!(bytes.lock().unwrap().ends_with(&disable));
+
+        assert_eq!(controller.toggle().unwrap(), State::Captured);
         assert_eq!(controller.state().status_label(), "mouse:on");
         let mut enable = Vec::new();
         State::Captured.write_to(&mut enable).unwrap();
@@ -129,14 +135,8 @@ mod tests {
 
         assert_eq!(controller.toggle().unwrap(), State::Released);
         assert_eq!(State::Released.status_label(), "selection:on");
-        let mut disable = Vec::new();
-        State::Released.write_to(&mut disable).unwrap();
         assert!(bytes.lock().unwrap().ends_with(&disable));
-
-        assert_eq!(controller.toggle().unwrap(), State::Captured);
-        assert_eq!(controller.state().status_label(), "mouse:on");
-        assert_eq!(State::Captured.hint(), "ctrl+t select");
-        assert!(bytes.lock().unwrap().ends_with(&enable));
+        assert_eq!(State::Captured.hint(), "ctrl+t selection");
 
         drop(controller);
         let output = bytes.lock().unwrap().clone();
@@ -152,9 +152,9 @@ mod tests {
             let sink = SharedWriter::default();
             let bytes = sink.0.clone();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut controller = Controller::capture(sink).unwrap();
-                if release_before_panic {
-                    assert_eq!(controller.toggle().unwrap(), State::Released);
+                let mut controller = Controller::release_to_terminal(sink).unwrap();
+                if !release_before_panic {
+                    assert_eq!(controller.toggle().unwrap(), State::Captured);
                 }
                 let _controller = controller;
                 panic!("exercise mouse-capture unwind");

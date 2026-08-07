@@ -388,6 +388,97 @@ impl InterruptHandoffProvider {
     }
 }
 
+/// Emits one real `bash` tool call whose shell and background descendant both remain live until
+/// the terminal sends Ctrl-C or Esc. The marker files let the PTY test distinguish "the key was
+/// painted" from "the admitted child process tree was actually cancelled".
+struct BlockingBashToolProvider {
+    api_root: String,
+    started: PathBuf,
+    escaped: PathBuf,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl BlockingBashToolProvider {
+    fn spawn(repo: &std::path::Path) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind bash-tool fixture provider");
+        listener
+            .set_nonblocking(true)
+            .expect("make bash-tool fixture accept bounded");
+        let address = listener.local_addr().expect("read provider address");
+        let started = repo.join("bash-tool-started");
+        let escaped = repo.join("bash-tool-escaped");
+        let command = format!(
+            "printf started > {}; (sleep 2; printf escaped > {}) & wait",
+            started.display(),
+            escaped.display()
+        );
+        let handle = thread::spawn(move || {
+            let mut stream = accept_provider_connection(&listener);
+            let _ = read_provider_request(&mut stream);
+            stream
+                .set_write_timeout(Some(PROVIDER_IO_TIMEOUT))
+                .expect("bound bash-tool provider write");
+            let delta = json!({
+                "id": "chatcmpl-bash-tool",
+                "object": "chat.completion.chunk",
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call-blocking-bash",
+                            "type": "function",
+                            "function": {
+                                "name": "bash",
+                                "arguments": serde_json::to_string(&json!({"command": command}))
+                                    .expect("encode bash-tool arguments")
+                            }
+                        }]
+                    },
+                    "finish_reason": null
+                }],
+                "usage": null
+            });
+            let terminal = json!({
+                "id": "chatcmpl-bash-tool",
+                "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                "usage": null
+            });
+            let usage = json!({
+                "id": "chatcmpl-bash-tool",
+                "object": "chat.completion.chunk",
+                "choices": [],
+                "usage": {"prompt_tokens": 9, "completion_tokens": 6, "total_tokens": 15}
+            });
+            let body =
+                format!("data: {delta}\n\ndata: {terminal}\n\ndata: {usage}\n\ndata: [DONE]\n\n");
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .expect("write bash-tool provider response");
+            stream.flush().expect("flush bash-tool provider response");
+        });
+        Self {
+            api_root: format!("http://{address}/v1"),
+            started,
+            escaped,
+            handle: Some(handle),
+        }
+    }
+
+    fn finish(mut self) {
+        self.handle
+            .take()
+            .expect("bash-tool provider thread exists")
+            .join()
+            .expect("bash-tool provider completed cleanly");
+    }
+}
+
 fn accept_provider_connection(listener: &TcpListener) -> TcpStream {
     let deadline = Instant::now() + PROVIDER_TIMEOUT;
     loop {
@@ -934,7 +1025,7 @@ fn wait_for_ready(pty: &mut PtyHarness) {
         let text = screen.contents();
         screen.alternate_screen()
             && screen.bracketed_paste()
-            && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+            && screen.mouse_protocol_mode() == vt100::MouseProtocolMode::None
             && text.contains("▄██")
             && text.contains("ask about this codebase")
             && text.contains("glm-5.2")
@@ -1114,10 +1205,10 @@ fn experiment_lab_is_terminal_real_read_only_by_default_and_blocks_promotion() {
         !scratch.repo().join(".core/experiments").exists(),
         "opening the lab must not create state"
     );
-    assert_ne!(
+    assert_eq!(
         pty.parser.screen().mouse_protocol_mode(),
         vt100::MouseProtocolMode::None,
-        "the lab must preserve real mouse capture"
+        "the lab must preserve native selection ownership"
     );
 
     pty.send(b"/lab promote\r");
@@ -1708,20 +1799,61 @@ fn esc_interrupt_keeps_real_pty_input_live_dispatches_the_next_prompt_and_then_e
     provider.finish();
 }
 
+fn interrupt_running_bash_tool_from_real_pty(key: &[u8], label: &str) {
+    let scratch = Scratch::new(label);
+    let provider = BlockingBashToolProvider::spawn(&scratch.repo());
+    scratch.configure_link_provider(&provider.api_root);
+    let mut pty = PtyHarness::spawn_link_fixture(&scratch, 96, 26);
+
+    pty.wait_until("the model-declared bash child is running", |pty| {
+        provider.started.is_file() && pty.screen_text().contains("Bash")
+    });
+    pty.send(key);
+    pty.wait_until("the interrupted tool returns the composer to idle", |pty| {
+        pty.screen_text().contains("idle · last: interrupted")
+    });
+
+    // The shell intentionally launched a delayed background descendant. Waiting past that delay
+    // proves cancellation killed the process group, not merely the direct shell future.
+    thread::sleep(Duration::from_millis(2200));
+    pty.drain_ready();
+    assert!(
+        !provider.escaped.exists(),
+        "the interrupted bash descendant survived the process-group cancellation"
+    );
+
+    pty.send(b"\x1b");
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "post-interrupt TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+    provider.finish();
+}
+
+#[test]
+fn ctrl_c_interrupts_a_running_bash_tool_and_kills_its_descendants() {
+    interrupt_running_bash_tool_from_real_pty(b"\x03", "ctrl-c-bash-tool");
+}
+
+#[test]
+fn esc_interrupts_a_running_bash_tool_and_kills_its_descendants() {
+    interrupt_running_bash_tool_from_real_pty(b"\x1b", "esc-bash-tool");
+}
+
 #[test]
 fn mouse_capture_toggle_releases_selection_and_restores_wheel_and_fold() {
     let scratch = Scratch::new("mouse-toggle");
     let mut pty = PtyHarness::spawn(&scratch, 80, 24);
     wait_for_ready(&mut pty);
 
-    // Ctrl-T releases terminal mouse protocols, which is the PTY-observable condition for native
-    // terminal selection/copy owning drag events again.
-    pty.send(b"\x14");
+    // Native selection/copy owns drag at startup. Mouse protocol `None` is the terminal-observable
+    // contract that makes ordinary drag + system copy work without a hidden modifier.
     pty.wait_until("native terminal selection mode", |pty| {
         let screen = pty.parser.screen();
         screen.mouse_protocol_mode() == vt100::MouseProtocolMode::None
             && screen.contents().contains("selection:on")
-            && screen.contents().contains("ctrl+t mouse")
+            && screen.contents().contains("ctrl+t app mouse")
     });
 
     pty.send(b"\x14");
@@ -1729,7 +1861,7 @@ fn mouse_capture_toggle_releases_selection_and_restores_wheel_and_fold() {
         let screen = pty.parser.screen();
         screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
             && screen.contents().contains("mouse:on")
-            && screen.contents().contains("ctrl+t select")
+            && screen.contents().contains("ctrl+t selection")
     });
 
     // A long local-only shell card gives both mouse behaviors a real transcript target. SGR wheel

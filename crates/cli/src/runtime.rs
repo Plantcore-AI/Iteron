@@ -19,6 +19,7 @@ pub mod hooks;
 mod pricing;
 mod strategy_runtime;
 pub mod telemetry;
+mod tool_interrupt;
 mod workflow_spawner;
 use core_ctx::{CompactionPolicy, ContextEstimate};
 // The uncached projection is now only a test oracle: the turn loop reads `Agent::context_estimator`.
@@ -48,6 +49,7 @@ use pricing::{
 };
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
+use tool_interrupt::{await_tool_or_interrupt, interrupted_tool_result};
 pub(crate) use workflow_spawner::safe_agent_refusal;
 pub use workflow_spawner::{KernelSpawner, KernelSpawnerContext};
 
@@ -83,8 +85,8 @@ const INTERRUPTED_STREAM_MARKER: &str =
 /// Ceiling on the partial answer preserved from an interrupted stream. Generous enough for a real
 /// response, bounded because the bytes come from the provider.
 const INTERRUPTED_STREAM_MAX_BYTES: usize = 256 * 1024;
-const IMAGE_INPUT_UNSUPPORTED_NOTICE: &str = "image attachments were omitted because the selected \
-provider does not support image input; continuing with text only";
+const IMAGE_INPUT_UNSUPPORTED_REASON: &str =
+    "the selected model has no verified image-input capability; attachments were not submitted";
 const PROVIDER_RUN_NOTICE_LABEL: &str = "provider run notice";
 const PROVIDER_RUN_NOTICE_PREFIX: &str = "provider run notice [key=sha256:";
 const PROVIDER_RUN_NOTICE_KEY_BODY_LEN: usize = 71;
@@ -5777,28 +5779,24 @@ impl Agent {
         task: &str,
         input_images: &[core_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
-        let messages = self.admit_submission(task)?;
         let input_images = self.admit_input_images(input_images)?;
+        let messages = self.admit_submission(task)?;
         self.drive_admitted(messages, task, input_images).await
     }
 
-    /// Bind attachments to one admitted top-level submission. Unsupported providers get one
-    /// durable, frontend-visible notice and the writer proceeds with the exact text transcript.
+    /// Bind attachments to one admitted top-level submission. A route without verified image
+    /// support refuses the whole submission before its text is recorded; silently stripping the
+    /// binary payload would make the model answer misleading placeholders as if it saw the image.
     fn admit_input_images<'a>(
-        &mut self,
+        &self,
         input_images: &'a [core_protocol::ImageContent],
     ) -> Result<&'a [core_protocol::ImageContent], KernelError> {
         if input_images.is_empty() || self.provider.supports_image_input() {
             return Ok(input_images);
         }
-        self.emit_durable(
-            TurnId(self.seq_turn),
-            EventKind::Notice {
-                text: IMAGE_INPUT_UNSUPPORTED_NOTICE.into(),
-            },
-        )?;
-        self.ui(UiEvent::Notice(IMAGE_INPUT_UNSUPPORTED_NOTICE.into()));
-        Ok(&[])
+        Err(KernelError::InvalidSubmission(
+            IMAGE_INPUT_UNSUPPORTED_REASON,
+        ))
     }
 
     /// Resolve the complete durable context before any provider request, including Ultracode's
@@ -6015,6 +6013,7 @@ impl Agent {
             let tool_policy = self.tool_policy.clone();
             let argument_trust = self.governing_turn_trust(messages);
             let ui_tx = self.ui_tx.clone();
+            let tool_interrupt = self.interrupt.clone();
             // If a PreToolUse hook is configured, pure tools must NOT early-dispatch — the read
             // would be in flight before the hook could block it (security review MEDIUM #2: an
             // operator hook meant to block reading ~/.ssh would silently no-op). Route them through
@@ -6133,6 +6132,8 @@ impl Agent {
                             // replaces — an overflow list drained inline during collection — made
                             // every call past the cap serial with nothing in the record saying so.
                             let fut = reg.dispatch_intent(intent);
+                            let tool_use_id = tu_ui.id.clone();
+                            let interrupt = tool_interrupt.clone();
                             let permit = gov.try_acquire();
                             if permit.is_none() {
                                 queued_pure += 1;
@@ -6143,7 +6144,21 @@ impl Agent {
                                     Some(permit) => permit,
                                     None => gov.acquire().await,
                                 };
-                                fut.await
+                                match await_tool_or_interrupt(fut, interrupt.as_deref()).await {
+                                    Ok(result) => result,
+                                    // Pure tools have no externally visible effect by contract, so
+                                    // dropping one on interrupt is a definite cancelled read rather
+                                    // than an unknown effect settlement.
+                                    Err(()) => ToolResult {
+                                        tool_use_id,
+                                        content:
+                                            "operator interrupted the read before it completed"
+                                                .into(),
+                                        is_error: true,
+                                        trust: Trust::Workspace,
+                                        latency_ms: 0,
+                                    },
+                                }
                             });
                             pure.push((idx, tu_ui, handle, Instant::now()));
                         } else {
@@ -6719,14 +6734,23 @@ impl Agent {
             // group did not take, in the order it always ran them.
             let batch = self.select_concurrent_deferred_batch(&deferred, argument_trust, messages);
             if batch.len() > 1 {
-                self.run_concurrent_deferred_batch(
-                    turn_id,
-                    batch,
-                    &gov,
-                    &mut results,
-                    &mut any_error,
-                )
-                .await?;
+                let execution = self
+                    .run_concurrent_deferred_batch(
+                        turn_id,
+                        batch,
+                        &gov,
+                        &mut results,
+                        &mut any_error,
+                    )
+                    .await;
+                if let Err(error) = execution {
+                    if matches!(error, KernelError::UnknownEffects { .. })
+                        && let Some(outcome) = self.collect_and_finish_requested_control(turn_id)?
+                    {
+                        return Ok(outcome);
+                    }
+                    return Err(error);
+                }
             }
             for (idx, tu) in deferred {
                 // Already settled by the concurrent group above, terminal and all.
@@ -7108,19 +7132,31 @@ impl Agent {
                     intent: proposal.admit(CapabilitySet::only(base_cap)),
                 };
                 let registry = &self.registry;
+                let interrupt = self.interrupt.clone();
                 let admissions = &mut self.effect_admissions;
                 let execution = match effects::execute_registry_tool(
                     &mut self.rollout,
                     admissions,
                     admitted,
                     |intent| async move {
-                        match registry.run_admitted_intent(intent).await {
-                            core_tools::ToolExecution::Definite(result) => {
+                        let tool_use_id = intent.call.id.clone();
+                        let started = Instant::now();
+                        match await_tool_or_interrupt(
+                            registry.run_admitted_intent(intent),
+                            interrupt.as_deref(),
+                        )
+                        .await
+                        {
+                            Ok(core_tools::ToolExecution::Definite(result)) => {
                                 effects::ToolExecution::Definite(result)
                             }
-                            core_tools::ToolExecution::Unknown(result) => {
+                            Ok(core_tools::ToolExecution::Unknown(result)) => {
                                 effects::ToolExecution::Unknown(result)
                             }
+                            Err(()) => effects::ToolExecution::Unknown(interrupted_tool_result(
+                                tool_use_id,
+                                started.elapsed().as_millis() as u64,
+                            )),
                         }
                     },
                 )
@@ -7134,6 +7170,9 @@ impl Agent {
                     effects::ToolExecution::Unknown(result) => {
                         self.ledger.tool(result.latency_ms, 0, true);
                         self.ui(tool_end_ui(&tu_ui, &result));
+                        if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
+                            return Ok(outcome);
+                        }
                         return Err(KernelError::UnknownEffects { count: 1 });
                     }
                 };
@@ -7371,17 +7410,33 @@ impl Agent {
         // structural, never content an executor returned. Dispatching concurrently changes which
         // wrapper opens and settles the boundary; it must not change that guarantee.
         let registry = &self.registry;
-        let executions = futures_util::future::join_all(intents.into_iter().map(|intent| async {
-            let provider_tool_use_id = intent.call.id.clone();
-            let _permit = governor.acquire().await;
-            let mut execution = registry.run_admitted_intent(intent).await;
-            match &mut execution {
-                core_tools::ToolExecution::Definite(result)
-                | core_tools::ToolExecution::Unknown(result) => {
-                    result.tool_use_id = provider_tool_use_id;
+        let interrupt = self.interrupt.clone();
+        let executions = futures_util::future::join_all(intents.into_iter().map(|intent| {
+            let interrupt = interrupt.clone();
+            async move {
+                let provider_tool_use_id = intent.call.id.clone();
+                let _permit = governor.acquire().await;
+                let started = Instant::now();
+                let mut execution = match await_tool_or_interrupt(
+                    registry.run_admitted_intent(intent),
+                    interrupt.as_deref(),
+                )
+                .await
+                {
+                    Ok(execution) => execution,
+                    Err(()) => core_tools::ToolExecution::Unknown(interrupted_tool_result(
+                        provider_tool_use_id.clone(),
+                        started.elapsed().as_millis() as u64,
+                    )),
+                };
+                match &mut execution {
+                    core_tools::ToolExecution::Definite(result)
+                    | core_tools::ToolExecution::Unknown(result) => {
+                        result.tool_use_id = provider_tool_use_id;
+                    }
                 }
+                execution
             }
-            execution
         }))
         .await;
 
@@ -8902,8 +8957,8 @@ impl Agent {
         input_images: &[core_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
         self.orchestrating = true;
-        let mut messages = self.admit_submission(task)?;
         let input_images = self.admit_input_images(input_images)?;
+        let mut messages = self.admit_submission(task)?;
         let signals = core_agents::RepoSignals {
             has_test_command: self.verify_command.is_some(),
             file_count: self.workspace_file_count().await,
@@ -13701,6 +13756,206 @@ mod gate_integration_tests {
             .collect()
     }
 
+    #[tokio::test]
+    async fn operator_interrupt_cancels_an_admitted_effecting_tool_without_waiting_for_it() {
+        let ws = temp_ws("interrupt-admitted-effect");
+        let started = std::sync::Arc::new(tokio::sync::Notify::new());
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        let tool_started = started.clone();
+        let tool_cancelled = cancelled.clone();
+        registry
+            .register_external_effect(
+                ToolSpec {
+                    name: "pending_effect".into(),
+                    description: "test-only effect that runs until the operator interrupts".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity: Purity::Effecting,
+                    capability: Capability::CodeExecuting,
+                },
+                move |call, _root| {
+                    let started = tool_started.clone();
+                    let cancelled = tool_cancelled.clone();
+                    core_tools::effectfut::box_it(async move {
+                        let _guard = CancellationGuard(cancelled);
+                        started.notify_one();
+                        std::future::pending::<()>().await;
+                        core_tools::ToolExecution::Definite(ToolResult {
+                            tool_use_id: call.id,
+                            content: String::new(),
+                            is_error: false,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        })
+                    })
+                },
+            )
+            .unwrap();
+        let run = core_protocol::RunId("interrupt-admitted-effect".into());
+        let mut agent =
+            concurrency_agent(&ws, &run, registry, burst_calls("pending_effect", 1, &[]));
+        agent.permission_mode = PermissionMode::Yolo;
+        let interrupt = std::sync::Arc::new(AtomicBool::new(false));
+        agent.set_interrupt(interrupt.clone());
+
+        let request_interrupt = async {
+            started.notified().await;
+            interrupt.store(true, Ordering::SeqCst);
+        };
+        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(agent.run("run the pending effect"), request_interrupt)
+        })
+        .await
+        .expect("an operator interrupt must cancel an admitted tool promptly");
+
+        assert_eq!(outcome.unwrap(), Outcome::Interrupted);
+        assert!(
+            cancelled.load(Ordering::SeqCst),
+            "cancelling the run must drop the in-flight executor future"
+        );
+        assert!(
+            recorded_events(&ws, &run)
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::EffectUnknown { .. }))
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
+    async fn operator_interrupt_cancels_an_early_dispatched_pure_tool() {
+        let ws = temp_ws("interrupt-pure-tool");
+        let started = std::sync::Arc::new(tokio::sync::Notify::new());
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        let tool_started = started.clone();
+        let tool_cancelled = cancelled.clone();
+        registry
+            .register_external(
+                ToolSpec {
+                    name: "pending_read".into(),
+                    description: "test-only pure read that runs until interrupted".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity: Purity::Pure,
+                    capability: Capability::ReadOnly,
+                },
+                move |call, _root| {
+                    let started = tool_started.clone();
+                    let cancelled = tool_cancelled.clone();
+                    core_tools::boxfut::box_it(async move {
+                        let _guard = CancellationGuard(cancelled);
+                        started.notify_one();
+                        std::future::pending::<()>().await;
+                        ToolResult {
+                            tool_use_id: call.id,
+                            content: String::new(),
+                            is_error: false,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        }
+                    })
+                },
+            )
+            .unwrap();
+        let run = core_protocol::RunId("interrupt-pure-tool".into());
+        let mut agent = concurrency_agent(&ws, &run, registry, burst_calls("pending_read", 1, &[]));
+        let interrupt = std::sync::Arc::new(AtomicBool::new(false));
+        agent.set_interrupt(interrupt.clone());
+
+        let request_interrupt = async {
+            started.notified().await;
+            interrupt.store(true, Ordering::SeqCst);
+        };
+        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(agent.run("read until interrupted"), request_interrupt)
+        })
+        .await
+        .expect("an operator interrupt must cancel an early pure tool promptly");
+
+        assert_eq!(outcome.unwrap(), Outcome::Interrupted);
+        assert!(cancelled.load(Ordering::SeqCst));
+        let events = recorded_events(&ws, &run);
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event.kind, EventKind::EffectUnknown { .. }))
+        );
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::ToolDone { result, .. }
+                if result.content.contains("operator interrupted the read")
+        )));
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
+    async fn operator_interrupt_cancels_every_member_of_a_concurrent_effect_batch() {
+        let ws = temp_ws("interrupt-effect-batch");
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(3));
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        let tool_barrier = barrier.clone();
+        let tool_cancelled = cancelled.clone();
+        registry
+            .register_external_effect(
+                ToolSpec {
+                    name: "pending_batch_effect".into(),
+                    description: "test-only concurrent effect that runs until interrupted".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity: Purity::Effecting,
+                    capability: Capability::CodeExecuting,
+                },
+                move |call, _root| {
+                    let barrier = tool_barrier.clone();
+                    let cancelled = tool_cancelled.clone();
+                    core_tools::effectfut::box_it(async move {
+                        let _guard = CancellationGuard(cancelled);
+                        barrier.wait().await;
+                        std::future::pending::<()>().await;
+                        core_tools::ToolExecution::Definite(ToolResult {
+                            tool_use_id: call.id,
+                            content: String::new(),
+                            is_error: false,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        })
+                    })
+                },
+            )
+            .unwrap();
+        let run = core_protocol::RunId("interrupt-effect-batch".into());
+        let mut agent = concurrency_agent(
+            &ws,
+            &run,
+            registry,
+            burst_calls("pending_batch_effect", 2, &[]),
+        );
+        agent.permission_mode = PermissionMode::Yolo;
+        let interrupt = std::sync::Arc::new(AtomicBool::new(false));
+        agent.set_interrupt(interrupt.clone());
+
+        let request_interrupt = async {
+            barrier.wait().await;
+            interrupt.store(true, Ordering::SeqCst);
+        };
+        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(agent.run("run concurrent effects"), request_interrupt)
+        })
+        .await
+        .expect("an operator interrupt must cancel the whole admitted batch promptly");
+
+        assert_eq!(outcome.unwrap(), Outcome::Interrupted);
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert_eq!(
+            recorded_events(&ws, &run)
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::EffectUnknown { .. }))
+                .count(),
+            2,
+            "each admitted concurrent effect receives its own conservative terminal"
+        );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
     fn write_user_hooks(home: &std::path::Path, hooks: serde_json::Value) {
         std::fs::create_dir_all(core_protocol::home::path(home, "")).unwrap();
         std::fs::write(
@@ -14403,7 +14658,7 @@ mod gate_integration_tests {
     }
 
     #[tokio::test]
-    async fn text_only_provider_omits_images_once_and_still_completes_on_exact_text() {
+    async fn text_only_provider_refuses_images_before_recording_or_dispatching_text() {
         let ws = temp_ws("multimodal-text-only-provider");
         let runs = ws.join(".core/runs");
         let run = core_protocol::RunId("multimodal-text-only-provider".into());
@@ -14421,43 +14676,24 @@ mod gate_integration_tests {
             Budget::default(),
         );
         agent.workspace = ws.clone();
-        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
-        agent.set_ui(ui_tx);
         let text = "describe this screenshot without dropping my text";
         let (content, _) = test_multimodal_content(text);
 
-        assert_eq!(agent.run_content(&content).await.unwrap(), Outcome::Done);
+        assert!(matches!(
+            agent.run_content(&content).await.unwrap_err(),
+            KernelError::InvalidSubmission(reason) if reason == IMAGE_INPUT_UNSUPPORTED_REASON
+        ));
         let requests = provider.requests.lock().unwrap();
-        assert_eq!(requests.len(), 1);
-        assert!(requests[0].input_images.is_empty());
-        assert!(requests[0].messages.iter().any(|message| {
-            message
-                .content
-                .iter()
-                .any(|block| matches!(block, Block::Text { text: seen } if seen == text))
-        }));
+        assert!(requests.is_empty());
         drop(requests);
 
         let events = core_record::replay(agent.rollout.path()).unwrap();
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(
-                    &event.kind,
-                    EventKind::Notice { text } if text == IMAGE_INPUT_UNSUPPORTED_NOTICE
-                ))
-                .count(),
-            1
-        );
-        assert_eq!(
-            std::iter::from_fn(|| ui_rx.try_recv().ok())
-                .filter(|event| matches!(
-                    event,
-                    UiEvent::Notice(text) if text == IMAGE_INPUT_UNSUPPORTED_NOTICE
-                ))
-                .count(),
-            1
-        );
+        assert!(!events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::Message { message } if message.content.iter().any(
+                |block| matches!(block, Block::Text { text: seen } if seen == text)
+            )
+        )));
         let physical = std::fs::read_to_string(agent.rollout.path()).unwrap();
         assert!(!physical.contains("iVBORw0KGgo="));
         drop(agent);
@@ -22655,7 +22891,8 @@ ant-api03-SuperSecretModelToken12345"
             child_calls >= 1,
             "at least one admitted investigator runs its turn before drain"
         );
-        // planning (1) + every child that ran a turn; the writer is never admitted after drain.
+        // Provider calls are planning (1) + every child that actually entered a turn; the writer
+        // is never admitted after drain.
         assert_eq!(provider.total_calls.load(Ordering::SeqCst), 1 + child_calls);
         let workflows_dir = ws.join(".core/runs/subagents/workflows");
         let runs = crate::workflow::list_runs(&workflows_dir);
@@ -22664,10 +22901,16 @@ ant-api03-SuperSecretModelToken12345"
             1,
             "one engine run owns planning and its children"
         );
-        assert_eq!(runs[0].agents, 1 + child_calls);
+        assert_eq!(
+            runs[0].agents, 3,
+            "the journal records the planner plus both planned child terminals even when drain prevents one child from entering its provider turn"
+        );
         let result = crate::workflow::load_result(&workflows_dir, &runs[0].run_id)
             .expect("the engine run settles its result sidecar");
-        assert_eq!(result.errors, child_calls);
+        assert_eq!(
+            result.errors, 2,
+            "both planned children settle as interrupted errors, including a child drain stopped before its provider turn"
+        );
         assert!(result.stopped, "drain stops the engine immediately");
 
         // The root owns the resumable checkpoint. Engine cancellation drops children immediately;

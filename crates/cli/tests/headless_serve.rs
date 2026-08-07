@@ -52,7 +52,10 @@ impl Scratch {
                 "key_env": KEY_ENV,
                 "enabled": true,
                 "catalog": false,
-                "models": [MODEL_ID]
+                "models": [MODEL_ID],
+                "model_capabilities": {
+                    (MODEL_ID): {"image_input": true}
+                }
             }]
         });
         fs::write(

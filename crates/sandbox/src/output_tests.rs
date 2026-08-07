@@ -126,6 +126,48 @@ async fn ignored_sigterm_is_force_killed_after_one_bounded_grace_and_reaped() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn dropping_the_collector_kills_the_shells_entire_process_group() {
+    let root = termination_fixture("collector-drop");
+    std::fs::create_dir_all(&root).unwrap();
+    let ready = root.join("ready");
+    let escaped = root.join("escaped-descendant");
+    let mut child = piped_grouped_bash(&format!(
+        "printf ready > {}; (sleep 1; printf leaked > {}) & wait",
+        ready.display(),
+        escaped.display()
+    ));
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let mut conf = Confinement::egress_off(&root);
+    conf.timeout_secs = 30;
+    let mut collecting = Box::pin(collect_child_output(child, stdout, stderr, &conf));
+
+    tokio::select! {
+        result = &mut collecting => panic!("collector finished before cancellation: {result:?}"),
+        () = async {
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                while !ready.exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("shell reached its long-running section");
+        } => {}
+    }
+
+    // This is the cancellation shape used by the runtime: dropping the admitted tool future
+    // drops the sandbox collector rather than waiting for its one-hour command timeout.
+    drop(collecting);
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    assert!(
+        !escaped.exists(),
+        "a background descendant must not survive collector cancellation"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn simultaneous_stdout_and_stderr_floods_are_bounded_without_deadlock() {
     let mut child =
         piped_grouped_bash("(yes O | head -c 1048576) & (yes E | head -c 1048576 >&2) & wait");

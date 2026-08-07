@@ -3284,9 +3284,9 @@ impl TermGuard {
     fn new() -> std::io::Result<Self> {
         let keyboard = keyboard_enhancement::Controller::default();
         terminal::enable_raw_mode()?;
-        // EnableMouseCapture so trackpad/wheel scroll arrives as ScrollUp/Down events and scrolls the
-        // CHAT transcript. WITHOUT capture the terminal maps scroll to ↑/↓, which then drives prompt
-        // history — the user wants scroll=chat, arrow keys=history, so the two must be distinct events.
+        // Native selection/copy owns the mouse at startup, matching ordinary terminal and Codex
+        // behavior. Ctrl-T opts into application mouse mode when transcript wheel/click handling is
+        // more useful; another Ctrl-T returns ownership to the terminal immediately.
         // Cleanup runs on every CATCHABLE exit: the Drop below AND the panic hook restore raw-mode +
         // alt-screen + mouse capture, so a `?`-return, panic, or normal quit never leaves 乱码. Only a
         // hard `kill -9` (uncatchable) can leave capture on → `reset` clears it (documented tradeoff).
@@ -3301,7 +3301,8 @@ impl TermGuard {
             restore_terminal(&keyboard.restorer());
             return Err(error);
         }
-        let mouse_capture = match mouse_capture::Controller::capture(std::io::stdout()) {
+        let mouse_capture = match mouse_capture::Controller::release_to_terminal(std::io::stdout())
+        {
             Ok(mouse_capture) => mouse_capture,
             Err(error) => {
                 restore_terminal(&keyboard.restorer());
@@ -13324,14 +13325,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn mouse_capture_state_is_visible_in_hint_and_status_chrome() {
         let mut app = App::new();
-        let captured = render_text(&mut app, 80, 12);
-        assert!(captured.contains("mouse:on"));
-        assert!(captured.contains("ctrl+t select"));
-
-        app.mouse_capture = mouse_capture::State::Released;
         let released = render_text(&mut app, 80, 12);
         assert!(released.contains("selection:on"));
-        assert!(released.contains("ctrl+t mouse"));
+        assert!(released.contains("ctrl+t app mouse"));
+
+        app.mouse_capture = mouse_capture::State::Captured;
+        let captured = render_text(&mut app, 80, 12);
+        assert!(captured.contains("mouse:on"));
+        assert!(captured.contains("ctrl+t selection"));
     }
 
     #[test]
