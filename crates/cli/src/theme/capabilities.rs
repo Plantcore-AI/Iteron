@@ -48,7 +48,9 @@ impl Environment {
             && std::env::var_os("TMUX").is_none()
             && std::env::var_os("STY").is_none();
         Self {
-            no_color: std::env::var_os("NO_COLOR").is_some(),
+            // NO_COLOR is active when present and non-empty. `NO_COLOR=` is the convention's
+            // explicit inactive shape and must not silently flatten a configured theme.
+            no_color: std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
             preset: bounded_env("CORE_THEME").as_deref().and_then(parse_preset),
             colorfgbg: bounded_env("COLORFGBG"),
             color_depth: ColorDepth::from_hints(term.as_deref(), colorterm.as_deref()),
@@ -98,6 +100,9 @@ impl ColorDepth {
             &mut theme.fg,
             &mut theme.muted,
             &mut theme.accent,
+            &mut theme.brand_back,
+            &mut theme.brand_mid,
+            &mut theme.brand_front,
             &mut theme.border,
             &mut theme.user_bg,
             &mut theme.user_fg,
@@ -284,6 +289,12 @@ mod tests {
             snapshot
                 .iter()
                 .all(|color| !matches!(color, Color::Rgb(..) | Color::Indexed(_)))
+        );
+        assert!(
+            [theme.brand_back, theme.brand_mid, theme.brand_front]
+                .iter()
+                .all(|color| !matches!(color, Color::Rgb(..) | Color::Indexed(_))),
+            "Plantcore brand planes are projected with the rest of the semantic palette"
         );
         assert_eq!(
             format!("{snapshot:?}"),

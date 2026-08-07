@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "0a30e0c1d7789d5c8230122178fab78e74c3193994c359925065dfe59b4b8718"
+    "value": "fa7a2bda3912ef644aaba760a9f74886907c76ec990a6db3fde680d320527f40"
   },
   "payload": {
     "schema_version": 3,
     "registry_id": "core-tunables",
-    "registry_revision": 3,
+    "registry_revision": 4,
     "canonicalization": "core-tunables-json-v3",
     "family_count": 160,
     "scalar_catalogs": [
@@ -9109,7 +9109,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a949f172ee2c5b188446296ac9055cf6d3fbd6678f803f95f3136e7e20ac5198"
+          "value": "dfe7584975c527bd3a09bf83d91c6fa0150b055c68adfd6b323eab3933f041da"
         },
         "schema_version": 2,
         "ordinal": 78,
@@ -9184,7 +9184,8 @@
                   "domain": {
                     "type": "enum",
                     "values": [
-                      "stdio"
+                      "stdio",
+                      "http"
                     ],
                     "catalog_id": null
                   }
@@ -17483,7 +17484,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d68c9b341292ca8feb82ce52a646bfbcc2145ffb127465de7a0faec9d16bdaed"
+          "value": "27d0a54737dbb398ad0f4e461e5ef3f1525631ef9583dbfee12849970eda12fe"
         },
         "schema_version": 2,
         "ordinal": 147,
@@ -17494,10 +17495,12 @@
         "summary": "Select an admitted MCP transport.",
         "activation": {
           "predicate": {
-            "type": "runtime_derived",
-            "seam": "crates/mcp/src/client.rs"
+            "type": "configured",
+            "sources": [
+              "user_config"
+            ]
           },
-          "inactive_reason": "grouped_or_incomplete_seam"
+          "inactive_reason": "configuration_absent"
         },
         "requirements": {
           "provider": "none",
@@ -17522,9 +17525,14 @@
         "source": {
           "bindings": [
             {
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs"
+            },
+            {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/mcp/src/client.rs"
+              "locator": "crates/mcp/src/http/reqwest_exchange.rs"
             }
           ]
         },
@@ -17536,7 +17544,8 @@
             "domain": {
               "type": "enum",
               "values": [
-                "stdio"
+                "stdio",
+                "http"
               ],
               "catalog_id": null
             }
@@ -17563,7 +17572,7 @@
           },
           "rationale": "Select an admitted MCP transport."
         },
-        "implementation_status": "partial",
+        "implementation_status": "full",
         "optimization": {
           "class": "c_component",
           "search_phase": "conditional",
@@ -18153,7 +18162,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5ec33841b51c43de7ce1139fb386b499944f4e04ff4d7a6b2981a2e88ebbd10b"
+          "value": "50263f3b6ab54c5163f0134c8974b52948a1fb51bf87d2e4b72d4afebda78ad7"
         },
         "schema_version": 2,
         "ordinal": 153,
@@ -18164,9 +18173,12 @@
         "summary": "Manage MCP OAuth and authentication lifecycle.",
         "activation": {
           "predicate": {
-            "type": "unavailable"
+            "type": "configured",
+            "sources": [
+              "user_config"
+            ]
           },
-          "inactive_reason": "not_implemented"
+          "inactive_reason": "configuration_absent"
         },
         "requirements": {
           "provider": "none",
@@ -18189,9 +18201,14 @@
         "source": {
           "bindings": [
             {
-              "kind": "registry",
-              "trust": "registry_declaration",
-              "locator": "crates/tunables/src/families.rs"
+              "kind": "user_config",
+              "trust": "operator",
+              "locator": "crates/cli/src/config.rs"
+            },
+            {
+              "kind": "builtin",
+              "trust": "builtin",
+              "locator": "crates/mcp/src/oauth.rs"
             }
           ]
         },
@@ -18275,7 +18292,7 @@
           },
           "rationale": "Manage MCP OAuth and authentication lifecycle."
         },
-        "implementation_status": "missing",
+        "implementation_status": "full",
         "optimization": {
           "class": "pin",
           "search_phase": "pinned",

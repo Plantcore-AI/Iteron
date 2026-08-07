@@ -82,6 +82,10 @@ pub struct FileConfig {
     /// Immutable signed pricing artifacts. Consumed only from trusted user configuration; a
     /// repository value is parsed for strictness but ignored by the composition root.
     pub rate_cards: Option<Vec<crate::pricing::RateCardConfig>>,
+    /// Exact active policy-bundle identity selected by the operator's offline promotion process.
+    /// Consumed only from trusted user configuration; it carries identities/digests, never policy
+    /// bodies or credentials.
+    pub active_policy_bundle: Option<core_evolve::PolicyBundle>,
     /// MCP servers to connect and expose as tools (each an operator-configured stdio server).
     pub mcp_servers: Option<Vec<McpServerConfig>>,
     /// Lifecycle hooks are consumed by `crate::runtime::hooks::Hooks`, but they must also be part
@@ -94,6 +98,18 @@ pub struct FileConfig {
     /// instead of deleting it. Never consumed as configuration.
     #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown: BTreeMap<String, serde_json::Value>,
+}
+
+fn validate_upper_env_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty()
+        || name.len() > 128
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return Err("environment names must be uppercase ASCII and at most 128 bytes");
+    }
+    Ok(())
 }
 
 impl Default for FileConfig {
@@ -117,6 +133,7 @@ impl Default for FileConfig {
             base_url: None,
             providers: None,
             rate_cards: None,
+            active_policy_bundle: None,
             mcp_servers: None,
             hooks: None,
             unknown: BTreeMap::new(),
@@ -157,12 +174,68 @@ pub(crate) fn starter_project_config() -> String {
 #[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     pub name: String,
-    pub command: String,
+    /// Omitted for legacy documents and therefore defaults to stdio.
+    #[serde(default, skip_serializing_if = "McpTransportConfig::is_stdio")]
+    pub transport: McpTransportConfig,
+    /// Direct executable for stdio transport. Mutually exclusive with `url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Streamable-HTTP endpoint. HTTPS is required except for loopback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Header name -> environment-variable name. Values never enter configuration.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub header_env: BTreeMap<String, String>,
+    /// Optional bearer/OAuth lifecycle. Every secret is named by environment source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<McpOAuthConfig>,
     /// Exact bare-name filter. Empty `allow` means all safe names; `deny` is applied last.
     #[serde(default, skip_serializing_if = "core_mcp::McpToolFilter::is_empty")]
     pub tools: core_mcp::McpToolFilter,
+    /// Authority ceiling for this server's tools, narrowing only.
+    ///
+    /// Distinct from `tools`, and not a second spelling of it. `tools` names the tools that exist
+    /// today; a server that adds a tool after installation is admitted by an empty allow-list
+    /// because the operator could not have named a tool that did not exist. `policy` bounds the
+    /// authority of every tool of the server, including the ones it has not published yet, so
+    /// `{"capabilities": []}` is a statement about the server rather than about a list of names.
+    /// Absent means inherit: it never widens what the host already allows.
+    #[serde(default, skip_serializing_if = "core_mcp::McpServerPolicy::is_empty")]
+    pub policy: core_mcp::McpServerPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransportConfig {
+    #[default]
+    Stdio,
+    Http,
+}
+
+impl McpTransportConfig {
+    fn is_stdio(&self) -> bool {
+        matches!(self, Self::Stdio)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpOAuthConfig {
+    pub access_token_env: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoke_url: Option<String>,
 }
 
 /// Where one provider instance's credential comes from.
@@ -501,6 +574,11 @@ impl FileConfig {
         if let Some(rate_cards) = &self.rate_cards {
             crate::pricing::validate_rate_card_configs(rate_cards)?;
         }
+        if let Some(bundle) = &self.active_policy_bundle {
+            bundle
+                .validate()
+                .map_err(|error| format!("active_policy_bundle: {error}"))?;
+        }
         if let Some(servers) = &self.mcp_servers {
             if servers.len() > MAX_MCP_SERVERS {
                 return Err(format!(
@@ -516,14 +594,6 @@ impl FileConfig {
                         "mcp_servers contains a duplicate server namespace at index {index}"
                     ));
                 }
-                if server.command.is_empty()
-                    || server.command.len() > 4096
-                    || server.command.contains('\0')
-                {
-                    return Err(format!(
-                        "mcp_servers[{index}].command must be 1..=4096 bytes and contain no NUL"
-                    ));
-                }
                 if server.args.len() > MAX_MCP_SERVER_ARGS
                     || server
                         .args
@@ -534,10 +604,86 @@ impl FileConfig {
                         "mcp_servers[{index}].args exceeds its 128-entry/16-KiB-per-entry bound or contains NUL"
                     ));
                 }
+                match server.transport {
+                    McpTransportConfig::Stdio => {
+                        let command = server.command.as_deref().ok_or_else(|| {
+                            format!("mcp_servers[{index}].command is required for stdio")
+                        })?;
+                        if command.is_empty() || command.len() > 4096 || command.contains('\0') {
+                            return Err(format!(
+                                "mcp_servers[{index}].command must be 1..=4096 bytes and contain no NUL"
+                            ));
+                        }
+                        if server.url.is_some()
+                            || !server.header_env.is_empty()
+                            || server.oauth.is_some()
+                        {
+                            return Err(format!(
+                                "mcp_servers[{index}] stdio transport cannot declare url, header_env, or oauth"
+                            ));
+                        }
+                    }
+                    McpTransportConfig::Http => {
+                        if server.command.is_some() || !server.args.is_empty() {
+                            return Err(format!(
+                                "mcp_servers[{index}] http transport cannot declare command or args"
+                            ));
+                        }
+                        let url = server.url.as_deref().ok_or_else(|| {
+                            format!("mcp_servers[{index}].url is required for http")
+                        })?;
+                        core_mcp::http::McpHttpEndpoint::parse(url)
+                            .map_err(|error| format!("mcp_servers[{index}].url: {error}"))?;
+                        core_mcp::http::McpHttpHeaderPolicy::new(
+                            server.header_env.keys().cloned().collect(),
+                        )
+                        .map_err(|error| format!("mcp_servers[{index}].header_env: {error}"))?;
+                        for env_name in server.header_env.values() {
+                            validate_upper_env_name(env_name).map_err(|reason| {
+                                format!("mcp_servers[{index}].header_env: {reason}")
+                            })?;
+                        }
+                        if let Some(oauth) = &server.oauth {
+                            validate_upper_env_name(&oauth.access_token_env).map_err(|reason| {
+                                format!("mcp_servers[{index}].oauth.access_token_env: {reason}")
+                            })?;
+                            for name in [
+                                oauth.expires_at_env.as_deref(),
+                                oauth.refresh_token_env.as_deref(),
+                                oauth.client_secret_env.as_deref(),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            {
+                                validate_upper_env_name(name).map_err(|reason| {
+                                    format!("mcp_servers[{index}].oauth: {reason}")
+                                })?;
+                            }
+                            if oauth.refresh_url.is_some() != oauth.refresh_token_env.is_some() {
+                                return Err(format!(
+                                    "mcp_servers[{index}].oauth refresh_url and refresh_token_env must be declared together"
+                                ));
+                            }
+                            for endpoint in
+                                [oauth.refresh_url.as_deref(), oauth.revoke_url.as_deref()]
+                                    .into_iter()
+                                    .flatten()
+                            {
+                                core_mcp::http::McpHttpEndpoint::parse(endpoint).map_err(
+                                    |error| format!("mcp_servers[{index}].oauth endpoint: {error}"),
+                                )?;
+                            }
+                        }
+                    }
+                }
                 server
                     .tools
                     .validate()
                     .map_err(|error| format!("mcp_servers[{index}].tools: {error}"))?;
+                server
+                    .policy
+                    .validate()
+                    .map_err(|error| format!("mcp_servers[{index}].policy: {error}"))?;
             }
         }
         Ok(())

@@ -1,6 +1,7 @@
 use super::LspToolError;
 use core_lsp::intel::Position;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
 #[cfg(unix)]
@@ -79,6 +80,8 @@ pub(super) struct SourceDocument {
     text: String,
     digest: String,
     adapter: Adapter,
+    command: String,
+    server_label: String,
     #[cfg(unix)]
     root_binding: RootBinding,
     #[cfg(unix)]
@@ -86,7 +89,11 @@ pub(super) struct SourceDocument {
 }
 
 impl SourceDocument {
-    pub(super) async fn load(root: &Path, requested: &str) -> Result<Self, LspToolError> {
+    pub(super) async fn load(
+        root: &Path,
+        requested: &str,
+        routes: &BTreeMap<String, String>,
+    ) -> Result<Self, LspToolError> {
         #[cfg(not(unix))]
         {
             let _ = (root, requested);
@@ -111,6 +118,15 @@ impl SourceDocument {
             let relative_path = PathBuf::from(requested);
             let canonical_path = canonical_root.join(&relative_path);
             let adapter = Adapter::for_path(&relative_path)?;
+            let command = routes
+                .get(adapter.language_id())
+                .cloned()
+                .unwrap_or_else(|| adapter.command().to_owned());
+            let server_label = if routes.contains_key(adapter.language_id()) {
+                format!("plugin:{}", adapter.language_id())
+            } else {
+                adapter.server_label().to_owned()
+            };
             let source_binding = root_binding
                 .bind_source(&relative_path)
                 .map_err(|_| LspToolError::SourceUnavailable)?;
@@ -143,6 +159,8 @@ impl SourceDocument {
                 text,
                 digest,
                 adapter,
+                command,
+                server_label,
                 root_binding,
                 source_binding,
             })
@@ -183,6 +201,14 @@ impl SourceDocument {
 
     pub(super) fn adapter(&self) -> Adapter {
         self.adapter
+    }
+
+    pub(super) fn command(&self) -> &str {
+        &self.command
+    }
+
+    pub(super) fn server_label(&self) -> &str {
+        &self.server_label
     }
 
     pub(super) fn position(&self, line: u32, character: u32) -> Result<Position, LspToolError> {

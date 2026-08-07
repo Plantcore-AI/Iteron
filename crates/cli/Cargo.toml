@@ -21,10 +21,15 @@ core-kernel = { path = "../kernel" }
 core-ctx = { path = "../ctx" }
 core-agents = { path = "../agents" }
 core-evolve = { path = "../evolve" }
+core-eval = { path = "../eval" }
 core-mcp = { path = "../mcp" }
 core-verify = { path = "../verify" }
 core-sandbox = { path = "../sandbox" }
 core-tunables = { path = "../tunables" }
+core-changeset = { path = "../changeset" }
+core-marketplace = { path = "../marketplace" }
+core-statusline = { path = "../statusline" }
+core-support = { path = "../support" }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
@@ -37,6 +42,7 @@ futures-util = { workspace = true }
 async-trait = "0.1"
 url = "2"
 sha2 = { workspace = true }
+hex = { workspace = true }
 getrandom = { workspace = true }
 zeroize = { workspace = true }
 libc = "0.2"

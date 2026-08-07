@@ -46,8 +46,7 @@ redaction would hide.
 
 ## MCP servers
 
-MCP stdio servers also load only from trusted user configuration because
-Core Code spawns their command at startup:
+MCP servers load only from trusted user configuration. A local server uses supervised stdio:
 
 ```json
 {
@@ -62,11 +61,77 @@ Core Code spawns their command at startup:
 }
 ```
 
+A remote server uses Streamable HTTP. Plain HTTP is accepted only on loopback; non-loopback
+servers must use HTTPS. Header and OAuth values are named by environment variable so credentials
+never become printable configuration:
+
+```json
+{
+  "schema_version": 2,
+  "mcp_servers": [
+    {
+      "name": "remote-example",
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp",
+      "header_env": { "x-tenant": "CORE_MCP_TENANT" },
+      "oauth": {
+        "access_token_env": "CORE_MCP_ACCESS_TOKEN",
+        "expires_at_env": "CORE_MCP_ACCESS_EXPIRES_AT",
+        "refresh_url": "https://mcp.example.com/oauth/token",
+        "refresh_token_env": "CORE_MCP_REFRESH_TOKEN",
+        "revoke_url": "https://mcp.example.com/oauth/revoke",
+        "client_id": "core-code",
+        "client_secret_env": "CORE_MCP_CLIENT_SECRET"
+      }
+    }
+  ]
+}
+```
+
+Remote sessions negotiate current and compatible final MCP revisions, carry the negotiated version
+and server session on later requests, stream bounded SSE, and refuse redirects or implicit effect
+retries. Tools, resources, and prompts are available through the client API. Form elicitation is
+advertised only by an interactive frontend that installs an operator decision handler; one-shot and
+other noninteractive paths fail closed. OAuth refresh rotates the retained refresh token and
+explicit revocation clears the active bearer credential.
+
 Discovered MCP tools are currently classified as `irreversible_external` because
 they can reach external systems outside the local sandbox. Every call therefore
 requires approval; `--allow-code` and `yolo` do not auto-approve it.
 
-!!! note "Current limit"
-    Core Code implements an initial stdio client and tool registration path, not a
-    complete production MCP lifecycle. Reconnect, broader transport support, and
-    full interoperability evidence remain roadmap work.
+### Bounding one server's authority
+
+`tools` filters exact bare names; `policy` bounds the capability classes the
+server's tools may carry. They are not two spellings of the same control. A
+filter can only name tools that already exist, so a server that publishes a new
+tool after you configured it is admitted by an empty allow list. A policy binds
+the server, including the tools it has not published yet.
+
+```json
+{
+  "schema_version": 2,
+  "mcp_servers": [
+    {
+      "name": "example",
+      "command": "/absolute/path/to/operator-owned-server",
+      "args": [],
+      "tools": { "deny": ["delete_all"] },
+      "policy": {
+        "capabilities": ["irreversible_external"],
+        "tools": { "risky_tool": [] }
+      }
+    }
+  ]
+}
+```
+
+Both `policy.capabilities` and each `policy.tools` entry are intersected with
+what the host already allows, never unioned. Omitting `policy` inherits the host
+ceiling unchanged; writing a wider set than the host permits does not widen
+anything. A tool left with no admitted class is not exposed to the model at all
+rather than exposed with a reduced one.
+
+!!! note "Transport recovery"
+    Stdio lifecycle recovery and bounded reconnect are supervised. HTTP requests carry effect
+    certainty and never retry a possibly-applied tool call. SSE `Last-Event-ID` redelivery is not
+    inferred without a server replay contract.

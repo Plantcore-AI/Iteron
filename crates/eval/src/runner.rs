@@ -1,5 +1,8 @@
 //! Real-repository, fixed-model evaluation runner.
 
+use crate::attempts::{
+    AttemptEvent, AttemptKey, AttemptLedger, AttemptLedgerError, MAX_PHYSICAL_ATTEMPTS,
+};
 use crate::contract::parse_final_result;
 use crate::corpus::{CorpusManifest, CorpusTask};
 use crate::process::{ProcessOutput, ProcessSpec, find_core, run_process};
@@ -81,6 +84,9 @@ pub struct EvalOptions {
     pub checkout_timeout: Duration,
     pub oracle_timeout: Duration,
     pub max_turns: u32,
+    /// Maximum fresh physical executions of one logical task/config/seed cell. Only harness
+    /// errors and timeouts are retryable; model outcomes are never retried into a better score.
+    pub max_attempts: u8,
 }
 
 /// Versioned WS4 execution controls layered behind the frozen `EvalOptions`/CLI seam.
@@ -110,6 +116,7 @@ pub struct ParallelEvalOptions {
     /// Explicitly omit the CLI turn ceiling. `max_turns` remains populated for capped runs and for
     /// stable CLI defaults, but is ignored when this flag is set.
     pub uncapped: bool,
+    pub max_attempts: u8,
 }
 
 impl From<&EvalOptions> for ParallelEvalOptions {
@@ -133,6 +140,7 @@ impl From<&EvalOptions> for ParallelEvalOptions {
             workers: 50,
             max_turns: options.max_turns,
             uncapped: options.max_turns == 0,
+            max_attempts: options.max_attempts,
         }
     }
 }
@@ -181,10 +189,73 @@ pub enum RunnerError {
     },
     #[error("evaluation worker failed to join: {0}")]
     WorkerJoin(String),
+    #[error(transparent)]
+    AttemptLedger(#[from] AttemptLedgerError),
+    #[error(transparent)]
+    Attestation(#[from] crate::attestation::AttestationError),
 }
 
 pub async fn run_evaluation(options: &EvalOptions) -> Result<EvaluationManifest, RunnerError> {
     run_evaluation_parallel(&ParallelEvalOptions::from(options)).await
+}
+
+fn append_attempt(
+    ledger: &std::sync::Mutex<AttemptLedger>,
+    event: AttemptEvent,
+) -> Result<(), AttemptLedgerError> {
+    ledger
+        .lock()
+        .map_err(|_| AttemptLedgerError::Poisoned)?
+        .append(event)
+}
+
+struct PhysicalAttempt<'a> {
+    core: &'a Path,
+    cell_root: &'a Path,
+    oracle_root: &'a Path,
+    run_root: &'a Path,
+    task: &'a CorpusTask,
+    config: HarnessConfig,
+    seed: u64,
+    legacy_options: &'a EvalOptions,
+    options: &'a ParallelEvalOptions,
+}
+
+impl PhysicalAttempt<'_> {
+    async fn execute(self) -> CellResult {
+        let checkout = match authorize_repository(self.task, self.options.allow_local_repositories)
+        {
+            Ok(()) => {
+                materialize_repository(self.task, self.cell_root, self.options.checkout_timeout)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        match checkout {
+            Ok(()) => match canonical_cell_workspace(self.cell_root, self.run_root) {
+                Ok(workspace) => {
+                    let cell = run_cell(
+                        self.core,
+                        &workspace,
+                        self.task,
+                        self.config,
+                        self.seed,
+                        self.legacy_options,
+                    )
+                    .await;
+                    attach_two_sided_verdict(cell, self.oracle_root, self.task, self.options).await
+                }
+                Err(error) => errored_cell(
+                    self.task,
+                    self.config,
+                    self.seed,
+                    "checkout_identity",
+                    error,
+                ),
+            },
+            Err(error) => errored_cell(self.task, self.config, self.seed, "checkout", error),
+        }
+    }
 }
 
 pub async fn run_evaluation_parallel(
@@ -247,6 +318,7 @@ pub async fn run_evaluation_parallel(
         } else {
             runtime_options.max_turns
         },
+        max_attempts: runtime_options.max_attempts,
     };
 
     let seeds = usize::try_from(options.seeds)
@@ -273,6 +345,9 @@ pub async fn run_evaluation_parallel(
 
     let options = std::sync::Arc::new(runtime_options);
     let legacy_options = std::sync::Arc::new(legacy_options);
+    let attempt_ledger = std::sync::Arc::new(std::sync::Mutex::new(AttemptLedger::create(
+        &crate::attempts::sidecar_path(&options.output_path),
+    )?));
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(options.workers));
     let mut running = tokio::task::JoinSet::new();
     let mut cells = Vec::with_capacity(total_cells);
@@ -286,38 +361,62 @@ pub async fn run_evaluation_parallel(
             let options = std::sync::Arc::clone(&options);
             let legacy_options = std::sync::Arc::clone(&legacy_options);
             let semaphore = std::sync::Arc::clone(&semaphore);
+            let attempt_ledger = std::sync::Arc::clone(&attempt_ledger);
             running.spawn(async move {
                 let _permit = semaphore
                     .acquire_owned()
                     .await
                     .expect("evaluation semaphore is owned until all workers join");
                 let directory = cell_directory(&task, config, seed);
-                let cell_root = run_root.join(&directory);
-                let oracle_root = run_root.join(format!("{directory}-oracle"));
-                let checkout = match authorize_repository(&task, options.allow_local_repositories) {
-                    Ok(()) => {
-                        materialize_repository(&task, &cell_root, options.checkout_timeout).await
+                let mut final_cell = None;
+                for attempt in 1..=options.max_attempts {
+                    let key = AttemptKey {
+                        task: task.id.clone(),
+                        config: config.name.into(),
+                        seed,
+                        attempt,
+                    };
+                    append_attempt(&attempt_ledger, AttemptEvent::Planned { key: key.clone() })?;
+                    append_attempt(&attempt_ledger, AttemptEvent::Started { key: key.clone() })?;
+                    let attempt_directory = format!("{directory}-attempt-{attempt}");
+                    let cell_root = run_root.join(&attempt_directory);
+                    let oracle_root = run_root.join(format!("{attempt_directory}-oracle"));
+                    let mut cell = PhysicalAttempt {
+                        core: &core,
+                        cell_root: &cell_root,
+                        oracle_root: &oracle_root,
+                        run_root: &run_root,
+                        task: &task,
+                        config,
+                        seed,
+                        legacy_options: &legacy_options,
+                        options: &options,
                     }
-                    Err(error) => Err(error),
-                };
-                let mut cell = match checkout {
-                    Ok(()) => match canonical_cell_workspace(&cell_root, &run_root) {
-                        Ok(workspace) => {
-                            let cell =
-                                run_cell(&core, &workspace, &task, config, seed, &legacy_options)
-                                    .await;
-                            attach_two_sided_verdict(cell, &oracle_root, &task, &options).await
-                        }
-                        Err(error) => errored_cell(&task, config, seed, "checkout_identity", error),
-                    },
-                    Err(error) => errored_cell(&task, config, seed, "checkout", error),
-                };
-                cell.benchmark = benchmark_reference(&task);
-                cell
+                    .execute()
+                    .await;
+                    cell.benchmark = benchmark_reference(&task);
+                    append_attempt(
+                        &attempt_ledger,
+                        AttemptEvent::Finished {
+                            key,
+                            run_status: cell.run_status,
+                            failure_phase: cell.failure_phase.clone(),
+                        },
+                    )?;
+                    let retryable =
+                        matches!(cell.run_status, RunStatus::Errored | RunStatus::TimedOut);
+                    final_cell = Some(cell);
+                    if !retryable {
+                        break;
+                    }
+                }
+                Ok::<CellResult, RunnerError>(
+                    final_cell.expect("validated max_attempts always executes at least once"),
+                )
             });
         }
         if let Some(joined) = running.join_next().await {
-            cells.push(joined.map_err(|error| RunnerError::WorkerJoin(error.to_string()))?);
+            cells.push(joined.map_err(|error| RunnerError::WorkerJoin(error.to_string()))??);
         }
     }
     cells.sort_by(|left, right| {
@@ -346,8 +445,8 @@ pub async fn run_evaluation_parallel(
     let manifest = EvaluationManifest {
         schema_version: EVAL_SCHEMA_VERSION,
         run_id,
-        corpus_version: corpus.corpus_version,
-        dataset_digest: corpus.dataset_digest,
+        corpus_version: corpus.corpus_version.clone(),
+        dataset_digest: corpus.dataset_digest.clone(),
         model: options.model.clone(),
         provider: options.provider.clone(),
         bundle_digest,
@@ -367,6 +466,52 @@ pub async fn run_evaluation_parallel(
         kernel_tax,
     };
     write_artifact_atomic(&manifest, &options.output_path)?;
+    let attempt_path = crate::attempts::sidecar_path(&options.output_path);
+    let (attempt_head, attempt_record_count) = {
+        let ledger = attempt_ledger
+            .lock()
+            .map_err(|_| AttemptLedgerError::Poisoned)?;
+        (ledger.head_hash().to_owned(), ledger.record_count())
+    };
+    let reopened = AttemptLedger::open(&attempt_path)?;
+    if reopened.head_hash() != attempt_head || reopened.record_count() != attempt_record_count {
+        return Err(AttemptLedgerError::Corrupt(attempt_record_count.saturating_add(1)).into());
+    }
+    let attestation =
+        crate::attestation::RunAttestation::build(crate::attestation::RunAttestationInput {
+            run_id: &manifest.run_id,
+            corpus: &corpus,
+            core_path: &core,
+            corpus_path: &options.corpus_path,
+            result_path: &options.output_path,
+            attempt_ledger_path: &attempt_path,
+            attempt_ledger_head: &attempt_head,
+            attempt_record_count,
+            model: &options.model,
+            provider: options.provider.as_deref(),
+            bundle_digest: manifest.bundle_digest.as_deref(),
+            purpose: options.purpose,
+            limits: crate::attestation::ExecutionLimits {
+                seeds: options.seeds,
+                minimum_seeds: options.minimum_seeds,
+                workers: options.workers as u16,
+                max_attempts: options.max_attempts,
+                max_turns: (!options.uncapped).then_some(options.max_turns),
+                run_timeout_secs: options.run_timeout.as_secs(),
+                checkout_timeout_secs: options.checkout_timeout.as_secs(),
+                oracle_timeout_secs: options.oracle_timeout.as_secs(),
+            },
+        })?;
+    attestation.verify_artifacts(
+        &core,
+        &options.corpus_path,
+        &options.output_path,
+        &attempt_path,
+    )?;
+    crate::attestation::write_atomic(
+        &attestation,
+        &crate::attestation::sidecar_path(&options.output_path),
+    )?;
     Ok(manifest)
 }
 
@@ -400,6 +545,11 @@ fn validate_parallel_options(options: &ParallelEvalOptions) -> Result<(), Runner
         return Err(RunnerError::InvalidOption(
             "workers must be in 1..=100".into(),
         ));
+    }
+    if !(1..=MAX_PHYSICAL_ATTEMPTS).contains(&options.max_attempts) {
+        return Err(RunnerError::InvalidOption(format!(
+            "max_attempts must be in 1..={MAX_PHYSICAL_ATTEMPTS}"
+        )));
     }
     for (name, duration, maximum_secs) in [
         ("run_timeout", options.run_timeout, MAX_CORE_AGENT_WALL_SECS),
@@ -1600,6 +1750,7 @@ mod tests {
             workers: 1,
             max_turns: 1,
             uncapped: false,
+            max_attempts: 1,
         }
     }
 
@@ -1768,6 +1919,7 @@ mod tests {
             checkout_timeout: Duration::from_secs(1),
             oracle_timeout: Duration::from_secs(1),
             max_turns: 1,
+            max_attempts: 1,
         };
         let spec = core_process_spec(&core, &workspace, &fixture_task, CONFIGS[0], &options)
             .expect("build isolated Core process specification");

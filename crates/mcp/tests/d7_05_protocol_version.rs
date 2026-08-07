@@ -2,7 +2,7 @@
 
 use core_mcp::{McpClient, McpError};
 
-const CLIENT_VERSION: &str = "2024-11-05";
+const CLIENT_VERSION: &str = "2025-11-25";
 const NEWER_SERVER_VERSION: &str = "2099-01-01";
 
 #[tokio::test]
@@ -11,7 +11,7 @@ async fn newer_server_version_is_refused_with_actionable_public_diagnostic() {
         "-c".to_owned(),
         concat!(
             "IFS= read -r initialize; ",
-            "case \"$initialize\" in *'\"protocolVersion\":\"2024-11-05\"'*) ;; *) exit 40;; esac; ",
+            "case \"$initialize\" in *'\"protocolVersion\":\"2025-11-25\"'*) ;; *) exit 40;; esac; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2099-01-01\"}}'; ",
             "IFS= read -r initialized"
         )

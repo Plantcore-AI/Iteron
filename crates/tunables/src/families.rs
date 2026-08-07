@@ -233,13 +233,13 @@ static FAMILIES: &[Family] = &[
     missing!(146, "task_retry_reassignment_policy", Orchestration, "Retry or reassign a failed agent task.", Direct, Direct, OfflineSearch),
 
     // Appendix F.6 — N-MP01..N-MP08, MCP and plugin lifecycle (8).
-    partial!(147, "mcp_transport_selection", Extensibility, "Select an admitted MCP transport.", Indirect, Indirect, CatalogCurated),
+    full!(147, "mcp_transport_selection", Extensibility, "Select an admitted MCP transport.", Indirect, Indirect, CatalogCurated),
     partial!(148, "deferred_discovery_threshold", Extensibility, "Defer MCP discovery after a bounded threshold.", Indirect, Indirect, OfflineSearch),
     missing!(149, "mcp_reconnect_backoff", Extensibility, "Bound MCP reconnect attempts and delay.", Indirect, Indirect, OfflineSearch),
     fixed!(150, "per_server_startup_deadline", Extensibility, "Bound MCP server startup and initialization.", Indirect, Indirect, OfflineSearch),
     fixed!(151, "per_tool_mcp_deadline", Extensibility, "Bound one MCP tool exchange.", Direct, Indirect, OfflineSearch),
     partial!(152, "mcp_result_cap_spill_policy", Extensibility, "Cap or spill MCP results before model exposure.", Indirect, Indirect, OfflineSearch),
-    missing!(153, "oauth_auth_lifecycle_policy", Extensibility, "Manage MCP OAuth and authentication lifecycle.", Conditional, Conditional, FixedInvariant),
+    full!(153, "oauth_auth_lifecycle_policy", Extensibility, "Manage MCP OAuth and authentication lifecycle.", Conditional, Conditional, FixedInvariant),
     partial!(154, "resource_prompt_plugin_capability_exposure", Extensibility, "Expose trusted MCP resources, prompts, and plugin capabilities.", Indirect, Indirect, CatalogCurated),
 
     // Appendix F.7 — N-SR01..N-SR06, session, cache, and reliability (6).

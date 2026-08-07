@@ -14,7 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
@@ -1501,7 +1501,7 @@ fn d6_11_resume_uses_durable_instruction_bytes_once_after_live_file_changes() {
 
 #[cfg(unix)]
 #[test]
-fn d6_02_environment_snapshot_is_bounded_durable_and_resume_does_not_invoke_git() {
+fn d6_02_environment_snapshot_is_bounded_durable_and_resume_does_not_recapture_it() {
     let (server, requests) =
         MockProvider::spawn_capturing_script(vec![Reply::Success, Reply::Success]);
     let scratch = Scratch::new("environment-facts", &server.api_root);
@@ -1593,33 +1593,20 @@ fn d6_02_environment_snapshot_is_bounded_durable_and_resume_does_not_invoke_git(
     )
     .unwrap();
 
-    let fake_bin = scratch.root.join("fake-bin");
-    fs::create_dir_all(&fake_bin).unwrap();
-    let marker = scratch.root.join("git-called-on-resume");
-    let fake_git = fake_bin.join("git");
-    fs::write(
-        &fake_git,
-        format!(
-            "#!/bin/sh\nprintf called > \"{}\"\nexit 97\n",
-            marker.display()
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o700)).unwrap();
-
-    let mut resume_command = core_command(&scratch, "json", 2, &["--resume", &run_id]);
-    resume_command.env("PATH", format!("{}:/usr/bin:/bin", fake_bin.display()));
-    let resumed = collect_core(resume_command.spawn().expect("spawn resumed Core"));
+    // A terminal boundary now records an independent workspace checkpoint, which legitimately
+    // invokes hardened Git on both fresh and resumed turns. The environment contract is narrower:
+    // resume must reuse the exact durable ContextInjection instead of sampling live facts again.
+    let resumed = collect_core(
+        core_command(&scratch, "json", 2, &["--resume", &run_id])
+            .spawn()
+            .expect("spawn resumed Core"),
+    );
     assert_eq!(resumed.status.code(), Some(0));
     let resumed_request = requests
         .recv_timeout(SERVER_TIMEOUT)
         .expect("capture resumed provider request");
     server.finish();
 
-    assert!(
-        !marker.exists(),
-        "resume must not invoke the live Git collector"
-    );
     let resumed_system = request_system(&resumed_request);
     assert_eq!(resumed_system, first_system);
     assert!(!resumed_system.contains("facts-changed"));

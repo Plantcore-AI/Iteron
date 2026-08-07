@@ -32,6 +32,7 @@ fn editing_only_registry(root: &Path) -> Registry {
         memo: std::sync::Arc::new(Memo::default()),
         sensitive_env_names: Default::default(),
         confine_execution: Default::default(),
+        process_control: None,
     };
     crate::edit::register(&mut registry).unwrap();
     register(&mut registry).unwrap();

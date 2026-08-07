@@ -2,24 +2,34 @@ use super::{ImageInputErrorKind, decode::validate_decodable};
 use core_protocol::input::ImageMediaType;
 use std::path::Path;
 
-pub(super) fn extension_media_type(path: &Path) -> Option<ImageMediaType> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SourceFormat {
+    Provider(ImageMediaType),
+    Heic,
+}
+
+pub(super) fn extension_format(path: &Path) -> Option<SourceFormat> {
     let extension = path.extension()?.to_str()?;
     extension
         .eq_ignore_ascii_case("png")
-        .then_some(ImageMediaType::Png)
+        .then_some(SourceFormat::Provider(ImageMediaType::Png))
         .or_else(|| {
             (extension.eq_ignore_ascii_case("jpg") || extension.eq_ignore_ascii_case("jpeg"))
-                .then_some(ImageMediaType::Jpeg)
+                .then_some(SourceFormat::Provider(ImageMediaType::Jpeg))
         })
         .or_else(|| {
             extension
                 .eq_ignore_ascii_case("gif")
-                .then_some(ImageMediaType::Gif)
+                .then_some(SourceFormat::Provider(ImageMediaType::Gif))
         })
         .or_else(|| {
             extension
                 .eq_ignore_ascii_case("webp")
-                .then_some(ImageMediaType::Webp)
+                .then_some(SourceFormat::Provider(ImageMediaType::Webp))
+        })
+        .or_else(|| {
+            (extension.eq_ignore_ascii_case("heic") || extension.eq_ignore_ascii_case("heif"))
+                .then_some(SourceFormat::Heic)
         })
 }
 

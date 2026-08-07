@@ -6,9 +6,9 @@ This is the versioned semantic registry and contract source for Core's determini
 
 Every entry carries a canonical runtime-control semantic key, aliases, a structured activation predicate and inactive reason, provider/capability requirements, one or more of the nine core StrategySlot bindings, exact source provenance, implementation status, a tagged and bounded value domain, source-controlled external-constraint projection/relation/action, formal SWE-bench Pro then Terminal-Bench 2.1 relevance, optimization/search phase, risk, authority, schema version, and an independent SHA-256 family digest in the machine artifact. Semantic keys—not family digests—enforce single ownership of runtime controls. Invalid, unattested, unresolved, or rejected active entries fail atomically; explanation output is bounded and redacted.
 
-- Registry schema: `core-tunables/v3` (revision `3`)
+- Registry schema: `core-tunables/v3` (revision `4`)
 - Pure resolution input schema: `core-tunables-resolution/v1`
-- Canonical digest: `sha256:0a30e0c1d7789d5c8230122178fab78e74c3193994c359925065dfe59b4b8718`
+- Canonical digest: `sha256:fa7a2bda3912ef644aaba760a9f74886907c76ec990a6db3fde680d320527f40`
 - Machine artifact: [`tunables.json`](tunables.json)
 
 
@@ -33,9 +33,9 @@ Every entry carries a canonical runtime-control semantic key, aliases, a structu
 
 | Implementation status | Families |
 |---|---:|
-| `full` | 28 |
-| `partial` | 52 |
-| `missing` | 27 |
+| `full` | 30 |
+| `partial` | 51 |
+| `missing` | 26 |
 | `fixed_hidden` | 53 |
 
 ## Value kind counts
@@ -216,13 +216,13 @@ Every entry carries a canonical runtime-control semantic key, aliases, a structu
 | 144 | `merge_conflict_arbitration` | `core.control.verification.child_merge_arbitration` | `verification` | closed object (3 fields, 3 required) | `derived`: builtin:core://tunables/resolvers/merge_conflict_arbitration-v1 | registry/registry_declaration (crates/tunables/src/families.rs) | provider=none; verification | `high` | `low` | `c_structured` | `missing` | `core/collaboration`, `core/verifier` |
 | 145 | `inter_agent_messaging_topology` | `core.control.orchestration.agent_message_routing` | `orchestration` | enum [parent_mediated, peer, broadcast] | `literal`: {"type":"enum","value":"parent_mediated"} | builtin/builtin (crates/agents/src/reduce.rs) | provider=none; agent_messaging | `high` | `medium` | `c_structured` | `fixed_hidden` | `core/collaboration` |
 | 146 | `task_retry_reassignment_policy` | `core.control.orchestration.failed_task_reassignment` | `orchestration` | closed object (3 fields, 3 required) | `derived`: builtin:core://tunables/resolvers/task_retry_reassignment_policy-v1 | registry/registry_declaration (crates/tunables/src/families.rs) | provider=none; agent_spawn | `high` | `high` | `p2` | `missing` | `core/scheduler`, `core/collaboration` |
-| 147 | `mcp_transport_selection` | `core.control.extensibility.mcp_transport` | `extensibility` | enum [stdio] | `literal`: {"type":"enum","value":"stdio"} | builtin/builtin (crates/mcp/src/client.rs) | provider=none; mcp_transport | `medium` | `medium` | `c_component` | `partial` | `core/tool_policy` |
+| 147 | `mcp_transport_selection` | `core.control.extensibility.mcp_transport` | `extensibility` | enum [stdio, http] | `literal`: {"type":"enum","value":"stdio"} | user_config/operator (crates/cli/src/config.rs), builtin/builtin (crates/mcp/src/http/reqwest_exchange.rs) | provider=none; mcp_transport | `medium` | `medium` | `c_component` | `full` | `core/tool_policy` |
 | 148 | `deferred_discovery_threshold` | `core.control.extensibility.mcp_discovery_deferral` | `extensibility` | integer [0..100000] discovery_units | `literal`: {"type":"integer","value":0} | builtin/builtin (crates/cli/src/mcp.rs) | provider=none; mcp_transport, context_read | `medium` | `medium` | `p2` | `partial` | `core/context`, `core/tool_policy` |
 | 149 | `mcp_reconnect_backoff` | `core.control.extensibility.mcp_reconnect_schedule` | `extensibility` | closed object (3 fields, 3 required) | `derived`: builtin:core://tunables/resolvers/mcp_reconnect_backoff-v1 | registry/registry_declaration (crates/tunables/src/families.rs) | provider=none; mcp_transport | `medium` | `medium` | `p2` | `missing` | `core/tool_policy` |
 | 150 | `per_server_startup_deadline` | `core.control.extensibility.mcp_server_startup_deadline` | `extensibility` | integer [1..86400000] milliseconds | `derived`: builtin:core://tunables/resolvers/per_server_startup_deadline-v1 | builtin/builtin (crates/mcp/src/client.rs) | provider=none; mcp_transport | `medium` | `medium` | `p2` | `fixed_hidden` | `core/tool_policy` |
 | 151 | `per_tool_mcp_deadline` | `core.control.extensibility.mcp_tool_deadline` | `extensibility` | integer [1..86400000] milliseconds | `derived`: builtin:core://tunables/resolvers/per_tool_mcp_deadline-v1 | builtin/builtin (crates/mcp/src/client.rs) | provider=none; mcp_transport | `medium` | `high` | `p2` | `fixed_hidden` | `core/tool_policy` |
 | 152 | `mcp_result_cap_spill_policy` | `core.control.extensibility.mcp_result_spill` | `extensibility` | closed object (4 fields, 4 required) | `literal`: {"type":"object","fields":[{"name":"visible_max_bytes","value":{"type":"integer","value":1048576}},{"name":"spill_max_bytes","value":{"type":"integer","value":1048576}},{"name":"cleanup","value":{"type":"enum","value":"tool_end"}},{"name":"private_storage","value":{"type":"boolean","value":true}}]} | builtin/builtin (crates/mcp/src/client/content.rs) | provider=none; mcp_transport, context_read | `medium` | `medium` | `p2` | `partial` | `core/context`, `core/tool_policy` |
-| 153 | `oauth_auth_lifecycle_policy` | `core.control.extensibility.mcp_oauth_lifecycle` | `extensibility` | closed object (4 fields, 4 required) | `dynamic`: transport:oauth_lifecycle | registry/registry_declaration (crates/tunables/src/families.rs) | provider=none; o_auth | `low` | `low` | `pin` | `missing` | `core/tool_policy` |
+| 153 | `oauth_auth_lifecycle_policy` | `core.control.extensibility.mcp_oauth_lifecycle` | `extensibility` | closed object (4 fields, 4 required) | `dynamic`: transport:oauth_lifecycle | user_config/operator (crates/cli/src/config.rs), builtin/builtin (crates/mcp/src/oauth.rs) | provider=none; o_auth | `low` | `low` | `pin` | `full` | `core/tool_policy` |
 | 154 | `resource_prompt_plugin_capability_exposure` | `core.control.extensibility.mcp_resource_prompt_exposure` | `extensibility` | closed object (4 fields, 4 required) | `literal`: {"type":"object","fields":[{"name":"resource_schemes","value":{"type":"list","items":[]}},{"name":"prompt_ids","value":{"type":"list","items":[]}},{"name":"plugin_ids","value":{"type":"list","items":[]}},{"name":"max_visible_bytes","value":{"type":"integer","value":0}}]} | builtin/builtin (crates/mcp/src/client/content.rs) | provider=none; mcp_resource, context_read | `medium` | `medium` | `c_artifact` | `partial` | `core/tool_policy`, `core/context` |
 | 155 | `request_compression_policy` | `core.control.provider.request_compression` | `provider` | enum [none, gzip, zstd] | `dynamic`: provider_capability:request_compression | registry/registry_declaration (crates/tunables/src/families.rs) | provider=selected_route; provider_request_compression | `low` | `medium` | `p2` | `missing` | `core/model_router` |
 | 156 | `http_pool_keepalive_idle_policy` | `core.control.provider.connection_pool_lifetime` | `provider` | closed object (3 fields, 3 required) | `literal`: {"type":"object","fields":[{"name":"pool_idle_seconds","value":{"type":"integer","value":300}},{"name":"tcp_keepalive_seconds","value":{"type":"integer","value":30}},{"name":"connection_reuse","value":{"type":"boolean","value":true}}]} | builtin/builtin (crates/provider/src/catalog.rs) | provider=any_admitted_route; provider_transport | `low` | `medium` | `p2` | `fixed_hidden` | `core/model_router` |

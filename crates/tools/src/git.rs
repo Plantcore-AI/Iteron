@@ -30,7 +30,12 @@ use std::{io, process::Stdio, time::Duration};
 
 const STDOUT_LIMIT: usize = 40_000;
 
-fn git_diff_args(stat: bool, path: Option<&Path>, filter_drivers: &[String]) -> Vec<OsString> {
+fn git_diff_args(
+    stat: bool,
+    path: Option<&Path>,
+    cached: bool,
+    filter_drivers: &[String],
+) -> Vec<OsString> {
     let mut operation: Vec<OsString> = [
         "diff",
         "--no-ext-diff",
@@ -48,6 +53,9 @@ fn git_diff_args(stat: bool, path: Option<&Path>, filter_drivers: &[String]) -> 
     if stat {
         operation.push("--stat".into());
     }
+    if cached {
+        operation.push("--cached".into());
+    }
     if let Some(path) = path {
         operation.push("--".into());
         operation.push(path.as_os_str().to_owned());
@@ -59,6 +67,7 @@ async fn run_git_diff_inner(
     root: &Path,
     stat: bool,
     requested_path: Option<&str>,
+    cached: bool,
 ) -> Result<String, String> {
     let root = root
         .canonicalize()
@@ -86,7 +95,7 @@ async fn run_git_diff_inner(
     let git = resolve_git_executable(std::env::var_os("PATH").as_deref(), &root)
         .map_err(|error| format!("could not resolve trusted Git: {error}"))?;
     let filter_drivers = discover_filter_drivers(&git, &repository).await?;
-    let args = git_diff_args(stat, relative_path.as_deref(), &filter_drivers);
+    let args = git_diff_args(stat, relative_path.as_deref(), cached, &filter_drivers);
     let mut command = hardened_git_command(&git, &repository, &args);
     let captured = run_command_bounded(&mut command, GIT_TIMEOUT, STDOUT_LIMIT, STDERR_LIMIT)
         .await
@@ -116,9 +125,25 @@ pub(crate) async fn run_git_diff(
     // The filter-config inspection and diff share one end-to-end deadline. Dropping either active
     // command invokes `ProcessGroupGuard`, so outer timeout/caller cancellation tears down the
     // whole Unix process group rather than leaking a repository-triggered descendant.
-    tokio::time::timeout(GIT_TIMEOUT, run_git_diff_inner(root, stat, requested_path))
-        .await
-        .map_err(|_| format!("Git diff exceeded {} seconds", GIT_TIMEOUT.as_secs()))?
+    tokio::time::timeout(
+        GIT_TIMEOUT,
+        run_git_diff_inner(root, stat, requested_path, false),
+    )
+    .await
+    .map_err(|_| format!("Git diff exceeded {} seconds", GIT_TIMEOUT.as_secs()))?
+}
+
+pub(crate) async fn run_git_index_diff(
+    root: &Path,
+    stat: bool,
+    requested_path: Option<&str>,
+) -> Result<String, String> {
+    tokio::time::timeout(
+        GIT_TIMEOUT,
+        run_git_diff_inner(root, stat, requested_path, true),
+    )
+    .await
+    .map_err(|_| format!("Git index diff exceeded {} seconds", GIT_TIMEOUT.as_secs()))?
 }
 
 pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
@@ -292,6 +317,7 @@ mod tests {
         let args = git_diff_args(
             true,
             Some(Path::new("-looks-like-an-option")),
+            false,
             &["filter.Evil".to_owned()],
         );
         let args: Vec<String> = args

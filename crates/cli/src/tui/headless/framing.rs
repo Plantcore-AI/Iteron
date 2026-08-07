@@ -54,6 +54,11 @@ pub(super) enum ServerFrame {
         rollout_seq: u64,
         event: Value,
     },
+    ControlReply {
+        protocol_version: u32,
+        request_id: u64,
+        reply: Value,
+    },
     Error {
         protocol_version: u32,
         code: &'static str,
@@ -81,6 +86,7 @@ impl ServerFrame {
             Self::Event { seq, .. } | Self::Result { seq, .. } => Some(*seq),
             Self::Hello { .. }
             | Self::Rollout { .. }
+            | Self::ControlReply { .. }
             | Self::Error { .. }
             | Self::FrameChunk { .. } => None,
         }
@@ -92,6 +98,7 @@ impl ServerFrame {
             Self::Event { seq, .. } => LogicalIdentity::live("event", *seq),
             Self::Result { seq, .. } => LogicalIdentity::live("result", *seq),
             Self::Rollout { rollout_seq, .. } => LogicalIdentity::rollout(*rollout_seq),
+            Self::ControlReply { .. } => LogicalIdentity::control("control_reply"),
             Self::Error { .. } => LogicalIdentity::control("error"),
             Self::FrameChunk { .. } => {
                 bail!("an already-fragmented frame cannot be fragmented recursively")

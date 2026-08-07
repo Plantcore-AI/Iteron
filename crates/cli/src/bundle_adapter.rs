@@ -6,16 +6,15 @@
 //! invariant is about the dependency. The projection is therefore done exactly here, in the one
 //! crate whose job is to know about everything.
 //!
-//! The data contract is single-direction and read-only. Nothing here can activate, admit, or roll
-//! back a bundle: it reads the pointer the offline `PromotionAuthority` already wrote, and the only
-//! thing it produces is a view with no policy bodies in it.
+//! The data contract is single-direction and read-only. Nothing here can train, promote, or roll
+//! back a bundle: it projects the trusted user configuration's operator-selected active identity
+//! snapshot, and the only thing it produces is a view with no policy bodies in it.
 //!
 //! # Only an already-promoted bundle can be resolved
 //!
-//! `PromotionAuthority::active_bundle` is the single source. A candidate or shadow bundle has no
-//! path into this function, because there is no other input: the resolver holds an authority and
-//! asks it for the active pointer. That is the structural form of "a candidate cannot be resolved
-//! as active" — not a filter that could be forgotten, but an absence of any other way in.
+//! `FileConfig::active_policy_bundle` is the single composition-root input. Project configuration
+//! is explicitly ignored, so workspace content cannot select a candidate. The snapshot must pass
+//! `PolicyBundle::validate` before boot and is resolved once into an immutable `BootBundle`.
 
 use core_protocol::bundle::{
     BundleResolutionError, PolicyBundleResolver, ResolvedBundle, ResolvedPolicy,
@@ -68,6 +67,47 @@ impl PolicyBundleResolver for ActiveBundleResolver {
     fn active_bundle(&self) -> Result<Option<ResolvedBundle>, BundleResolutionError> {
         self.active.as_ref().map(project).transpose()
     }
+}
+
+/// Resolve the hand-written baseline when no trusted active snapshot was selected.
+pub(crate) fn resolve_boot_bundle() -> std::sync::Arc<core_agents::BootBundle> {
+    resolve_boot_bundle_from_active(None)
+}
+
+/// Resolve one operator-selected, already-active identity snapshot at process boot.
+pub(crate) fn resolve_boot_bundle_from_active(
+    active: Option<core_evolve::PolicyBundle>,
+) -> std::sync::Arc<core_agents::BootBundle> {
+    let resolver = ActiveBundleResolver::from_active(active);
+    // A malformed projection is not a licence to improvise: fall to the baseline, like absence.
+    std::sync::Arc::new(
+        core_agents::BootBundle::resolve(&resolver)
+            .unwrap_or_else(|_| core_agents::BootBundle::baseline()),
+    )
+}
+
+/// Narrow a freshly built read-only registry into the child tool set the bundle in force governs.
+///
+/// This is where the promotion machinery stops being a ledger nobody reads. Both child paths (the
+/// parent-internal fan-out and the workflow `AgentSpawner`) go through here, so the governed
+/// selection cannot be applied on one path and forgotten on the other.
+///
+/// Two separate guarantees, both from `core-agents`:
+/// - `narrow_under` decides the SET, and can only ever return a subset of what the definition's
+///   filter already allowed — a promoted bundle can reorder what a worker reaches for and can
+///   never hand it a tool the filter refused;
+/// - `promoted_leading` decides the ORDER, and is empty for the baseline, so an ungoverned run
+///   gets exactly the registration order `narrow_to` would have produced.
+pub(crate) fn narrow_child_registry(
+    registry: &mut core_tools::Registry,
+    filter: &core_agents::ToolFilter,
+    boot: &core_agents::BootBundle,
+) -> Vec<String> {
+    let preference = boot.tool_preference();
+    registry.narrow_to_promoting(
+        &core_agents::narrow_under(filter, preference),
+        preference.promoted_leading(),
+    )
 }
 
 #[cfg(test)]

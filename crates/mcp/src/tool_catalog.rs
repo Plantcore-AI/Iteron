@@ -1,9 +1,10 @@
+use crate::policy::{McpServerPolicy, default_host_ceiling};
 use crate::{
     MAX_MCP_TOOL_CATALOG_BYTES, MAX_MCP_TOOL_DESCRIPTION_BYTES, MAX_MCP_TOOL_DESCRIPTIONS_BYTES,
     MAX_MCP_TOOL_NAME_BYTES, MAX_MCP_TOOL_SCHEMA_BYTES, McpError, suspicious_unicode,
     tool_filter::{McpToolFilter, namespace_tool_name},
 };
-use core_protocol::{Capability, Purity, ToolSpec};
+use core_protocol::{Capability, Purity, ToolSpec, capability_set::CapabilitySet};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -13,6 +14,11 @@ const TRUNCATED_MARKER: &str = "\n[truncated]";
 const PROTOCOL_HEAD_MARKER: &str = "\n… (truncated)";
 const EMPTY_CATALOG_BYTES: usize = 2;
 const DEFAULT_INPUT_SCHEMA_BYTES: usize = 17;
+
+/// The untrusted class every MCP tool is registered with (ADR-007 R16), and therefore the class
+/// the authority policy must admit for that tool to be exposed at all. Named once so the gate and
+/// the `ToolSpec` below cannot drift into disagreeing about what is being asked for.
+const MCP_TOOL_CAPABILITY: Capability = Capability::IrreversibleExternal;
 
 #[derive(Clone, Copy)]
 pub(crate) struct ToolCatalogLimits {
@@ -38,6 +44,9 @@ impl Default for ToolCatalogLimits {
 pub(crate) struct ToolCatalogBuilder {
     limits: ToolCatalogLimits,
     filter: McpToolFilter,
+    policy: McpServerPolicy,
+    /// The authority the host is willing to admit for this server before its policy narrows it.
+    host_ceiling: CapabilitySet,
     specs: Vec<ToolSpec>,
     names: BTreeSet<String>,
     description_bytes: usize,
@@ -47,11 +56,24 @@ pub(crate) struct ToolCatalogBuilder {
 impl ToolCatalogBuilder {
     #[cfg(test)]
     pub(crate) fn new() -> Self {
-        Self::with_filter(McpToolFilter::default())
+        Self::with_limits_and_filter(ToolCatalogLimits::default(), McpToolFilter::default())
     }
 
-    pub(crate) fn with_filter(filter: McpToolFilter) -> Self {
-        Self::with_limits_and_filter(ToolCatalogLimits::default(), filter)
+    /// Build a catalog governed by both the name filter and the authority policy.
+    ///
+    /// The two gates are deliberately separate: the filter decides which names exist, the policy
+    /// decides what authority a surviving name may carry. Neither can substitute for the other,
+    /// and a server participates in neither.
+    pub(crate) fn governed(
+        filter: McpToolFilter,
+        policy: McpServerPolicy,
+        host_ceiling: CapabilitySet,
+    ) -> Self {
+        Self {
+            policy,
+            host_ceiling,
+            ..Self::with_limits_and_filter(ToolCatalogLimits::default(), filter)
+        }
     }
 
     #[cfg(test)]
@@ -63,6 +85,8 @@ impl ToolCatalogBuilder {
         Self {
             limits,
             filter,
+            policy: McpServerPolicy::inherit(),
+            host_ceiling: default_host_ceiling(),
             specs: Vec::new(),
             names: BTreeSet::new(),
             description_bytes: 0,
@@ -100,6 +124,17 @@ impl ToolCatalogBuilder {
         // Apply the exact operator filter before parsing any excluded description or schema. A
         // filtered tool therefore cannot consume retained catalog budget or reach registration.
         if !self.filter.allows(bare_name) {
+            return Ok(());
+        }
+        // The authority gate runs at the same point and for the same reason. An MCP tool is
+        // registered at the untrusted default below, so a tool the host/server/tool intersection
+        // does not admit is dropped here rather than being exposed with a quietly reduced
+        // capability -- a narrower spec would still be callable, and "callable but weaker" is not
+        // what an operator who removed the class asked for.
+        if !self
+            .policy
+            .admits(self.host_ceiling, bare_name, MCP_TOOL_CAPABILITY)
+        {
             return Ok(());
         }
         let name = namespace_tool_name(server_name, bare_name)?;
@@ -151,7 +186,7 @@ impl ToolCatalogBuilder {
             description,
             input_schema,
             purity: Purity::Effecting,
-            capability: Capability::IrreversibleExternal,
+            capability: MCP_TOOL_CAPABILITY,
         };
         let spec_bytes = serialized_len(&spec)?;
         let separator_bytes = usize::from(!self.specs.is_empty());
@@ -313,6 +348,115 @@ mod tests {
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name, "server__visible");
         assert_eq!(specs[0].description, "shown");
+    }
+
+    #[test]
+    fn a_server_policy_cannot_widen_the_host_ceiling_at_the_catalog_seam() {
+        // A server that declares every class for itself, and shouts louder for one tool. The host
+        // admits nothing. Nothing may be exposed, however the declaration is written.
+        let greedy = McpServerPolicy {
+            capabilities: Some(CapabilitySet::from_iter_capabilities([
+                Capability::ReadOnly,
+                Capability::ReversibleLocal,
+                Capability::CodeExecuting,
+                Capability::TrustMutating,
+                Capability::IrreversibleExternal,
+            ])),
+            tools: std::collections::BTreeMap::from([(
+                "escalate".into(),
+                CapabilitySet::from_iter_capabilities([Capability::IrreversibleExternal]),
+            )]),
+        };
+        greedy.validate().unwrap();
+
+        let mut catalog =
+            ToolCatalogBuilder::governed(McpToolFilter::default(), greedy, CapabilitySet::none());
+        catalog
+            .accept_page(
+                "server",
+                &page(vec![
+                    json!({"name": "escalate", "description": "d"}),
+                    json!({"name": "ordinary", "description": "d"}),
+                ]),
+            )
+            .unwrap();
+        assert!(
+            catalog.finish().is_empty(),
+            "an installed server must never be able to widen what the host allows"
+        );
+    }
+
+    #[test]
+    fn a_per_tool_ceiling_excludes_only_its_own_tool_and_spends_no_catalog_budget() {
+        let policy = McpServerPolicy {
+            capabilities: None,
+            tools: std::collections::BTreeMap::from([
+                // Disjoint from the class an MCP tool demands: this one is refused.
+                (
+                    "refused".into(),
+                    CapabilitySet::from_iter_capabilities([Capability::ReadOnly]),
+                ),
+                // Still contains the demanded class: this one survives.
+                (
+                    "kept".into(),
+                    CapabilitySet::from_iter_capabilities([Capability::IrreversibleExternal]),
+                ),
+            ]),
+        };
+        policy.validate().unwrap();
+
+        // A description budget that only fits the surviving tool proves the refused tool was
+        // dropped before its untrusted description was retained, exactly like a filtered name.
+        let mut catalog = ToolCatalogBuilder {
+            limits: ToolCatalogLimits {
+                descriptions_bytes: 5,
+                ..ToolCatalogLimits::default()
+            },
+            ..ToolCatalogBuilder::governed(McpToolFilter::default(), policy, default_host_ceiling())
+        };
+        catalog
+            .accept_page(
+                "server",
+                &page(vec![
+                    json!({"name": "refused", "description": "excluded-and-oversized"}),
+                    json!({"name": "kept", "description": "shown"}),
+                    json!({"name": "unlisted", "description": ""}),
+                ]),
+            )
+            .unwrap();
+
+        let specs = catalog.finish();
+        let names: Vec<&str> = specs.iter().map(|spec| spec.name.as_str()).collect();
+        assert_eq!(names, ["server__kept", "server__unlisted"]);
+        assert_eq!(specs[0].capability, Capability::IrreversibleExternal);
+        assert_eq!(specs[0].purity, Purity::Effecting);
+    }
+
+    #[test]
+    fn an_inherited_policy_leaves_the_default_catalog_behaviour_unchanged() {
+        // Adding the authority gate must not quietly drop tools for operators who configured no
+        // policy at all: `inherit` is the identity, not a new deny-by-default.
+        let mut governed = ToolCatalogBuilder::governed(
+            McpToolFilter::default(),
+            McpServerPolicy::inherit(),
+            default_host_ceiling(),
+        );
+        governed
+            .accept_page("server", &page(vec![json!({"name": "read"})]))
+            .unwrap();
+        let mut plain = ToolCatalogBuilder::new();
+        plain
+            .accept_page("server", &page(vec![json!({"name": "read"})]))
+            .unwrap();
+        let (governed, plain) = (governed.finish(), plain.finish());
+        assert_eq!(governed.len(), plain.len());
+        for (governed, plain) in governed.iter().zip(&plain) {
+            assert_eq!(governed.name, plain.name);
+            assert_eq!(governed.description, plain.description);
+            assert_eq!(governed.input_schema, plain.input_schema);
+            assert_eq!(governed.purity, plain.purity);
+            assert_eq!(governed.capability, plain.capability);
+        }
     }
 
     #[test]

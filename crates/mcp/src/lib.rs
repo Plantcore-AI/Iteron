@@ -19,22 +19,36 @@ use serde_json::{Value, json};
 use std::io::Write;
 
 pub mod client;
+mod elicitation;
 mod evidence;
+pub mod http;
+pub mod oauth;
 mod pagination;
+mod policy;
 mod protocol_version;
 pub mod reconnect;
+mod remote;
 pub mod supervisor;
 pub mod token;
 mod tool_catalog;
 mod tool_filter;
+pub mod wire;
 
 pub use client::{McpClient, McpToolOutcome};
+pub use elicitation::{
+    ElicitationAction, ElicitationRequest, ElicitationResponse, MAX_ELICITATION_CONTENT_BYTES,
+    MAX_ELICITATION_FIELD_NAME_BYTES, MAX_ELICITATION_FIELDS, MAX_ELICITATION_MESSAGE_BYTES,
+    MAX_ELICITATION_SCHEMA_BYTES, McpElicitationHandler,
+};
 pub use evidence::McpToolCallEvidence;
+pub use policy::{MAX_MCP_TOOL_POLICY_ENTRIES, McpServerPolicy, default_host_ceiling};
+pub use remote::{McpRemoteClient, McpServerCapabilities};
 pub use tool_filter::{
     CombinedToolCatalog, MAX_COMBINED_MCP_CATALOG_BYTES, MAX_COMBINED_MCP_TOOLS,
     MAX_MCP_BARE_TOOL_NAME_BYTES, MAX_MCP_SERVER_NAME_BYTES, MAX_MCP_TOOL_FILTER_ENTRIES,
     McpToolFilter, validate_server_name,
 };
+pub use wire::{McpFuture, McpTransportKind, McpWire};
 
 /// Maximum payload size of one newline-delimited JSON-RPC frame, in bytes.
 ///
@@ -120,6 +134,8 @@ pub enum McpError {
     InvalidToolName { limit: usize },
     #[error("invalid MCP tool filter (exact unique safe names; at most {limit} entries)")]
     InvalidToolFilter { limit: usize },
+    #[error("invalid MCP tool policy (exact unique safe names; at most {limit} entries)")]
+    InvalidToolPolicy { limit: usize },
     #[error("duplicate MCP namespaced tool identity")]
     ToolNameCollision,
     #[error("combined MCP tool catalog exceeds {limit} tool limit")]
@@ -175,6 +191,29 @@ pub enum McpError {
     Server { code: i64, message: String },
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    /// The credential a request would have carried is not usable. Raised *before* dispatch, so a
+    /// stale credential can never be confused with a revoked one by reading a 401 after the fact.
+    #[error("MCP credential is not usable: {0}")]
+    Credential(#[from] token::TokenError),
+    #[error("invalid MCP HTTP endpoint field `{field}` (limit {limit})")]
+    InvalidEndpoint { field: &'static str, limit: usize },
+    #[error("MCP HTTP endpoint returned status {status}")]
+    HttpStatus { status: u16 },
+    /// A 3xx was answered, not followed. The configured endpoint is an authority boundary: a
+    /// redirect target chosen by the peer must never receive the bearer credential or the body.
+    #[error(
+        "MCP HTTP endpoint attempted a redirect to an authority the operator did not configure"
+    )]
+    HttpRedirectRefused,
+    #[error("MCP HTTP response media type is neither JSON nor an event stream")]
+    UnsupportedMediaType,
+    #[error("MCP HTTP session expired and must be re-initialized")]
+    SessionExpired,
+    /// The HTTP transport is designed, framed, and unit-tested in this crate, but no HTTP client
+    /// is admitted into `core-mcp`'s dependency graph, so nothing in-tree can perform the
+    /// exchange. Selecting it fails closed rather than silently falling back to stdio.
+    #[error("MCP HTTP transport is not available in this build")]
+    HttpTransportUnavailable,
 }
 
 impl McpError {
@@ -241,6 +280,9 @@ impl McpError {
             Self::InvalidToolFilter { limit } => {
                 format!("invalid MCP tool filter (maximum {limit} entries)")
             }
+            Self::InvalidToolPolicy { limit } => {
+                format!("invalid MCP tool policy (maximum {limit} entries)")
+            }
             Self::ToolNameCollision => "duplicate MCP namespaced tool identity".into(),
             Self::CombinedToolLimit { limit } => {
                 format!("combined MCP tool catalog exceeds {limit} tool limit")
@@ -291,6 +333,23 @@ impl McpError {
             Self::LifecycleFailed => "MCP server lifecycle failed terminally".into(),
             Self::Server { code, .. } => format!("MCP server returned error code {code}"),
             Self::Json(_) => "MCP peer returned invalid JSON".into(),
+            // `TokenError` is a closed set of repository-owned sentences with one numeric skew;
+            // it can carry neither the secret nor peer text, so it is safe to project verbatim.
+            Self::Credential(error) => format!("MCP credential is not usable: {error}"),
+            // The field name is repository vocabulary, but the endpoint itself is operator
+            // configuration whose path may be capability-bearing, so nothing is reflected.
+            Self::InvalidEndpoint { .. } => "invalid MCP HTTP endpoint".into(),
+            Self::HttpStatus { status } => format!("MCP HTTP endpoint returned status {status}"),
+            Self::HttpRedirectRefused => {
+                "MCP HTTP endpoint attempted a refused cross-authority redirect".into()
+            }
+            Self::UnsupportedMediaType => {
+                "MCP HTTP response media type is neither JSON nor an event stream".into()
+            }
+            Self::SessionExpired => "MCP HTTP session expired and must be re-initialized".into(),
+            Self::HttpTransportUnavailable => {
+                "MCP HTTP transport is not available in this build".into()
+            }
         }
     }
 }
@@ -439,6 +498,10 @@ mod tests {
             },
             McpError::CatalogContract {
                 reason: injected_static,
+            },
+            McpError::InvalidEndpoint {
+                field: injected_static,
+                limit: 1,
             },
         ] {
             let summary = local_error.public_summary();

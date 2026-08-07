@@ -592,6 +592,10 @@ struct EffectPrimitive {
 // finished with (so an in-process follow-up need not rebuild it from the rollout), and the body
 // moved to `drive_admitted_loop`. Both names are admitted because the boundary semantics did not
 // move with it — the loop still opens and settles every effect it dispatches.
+//
+// Turn-end checkpointing now shares `checkpoint_at_turn_end` between ordinary completion and
+// drain. The helper itself owns the exact open/copy/settle sequence, so it is the one admitted
+// physical checkpoint dispatch site.
 const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     EffectPrimitive {
         needle: "hooks.run(",
@@ -624,7 +628,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     },
     EffectPrimitive {
         needle: "checkpoint_excluding_runtime_state(",
-        allowed_in: &["finish_drained"],
+        allowed_in: &["checkpoint_at_turn_end"],
         guidance: "a checkpoint writes the workspace tree; it must be opened at the boundary before \
                    the copy and settled after it",
     },
@@ -636,7 +640,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     },
     EffectPrimitive {
         needle: "self.launch_workflow(",
-        allowed_in: &["drive_admitted", "drive_admitted_loop"],
+        allowed_in: &["drive_admitted", "drive_admitted_loop", "run_orchestrated"],
         guidance: "an in-turn workflow launch fans out real children that spend budget; it crosses \
                    the boundary under EffectClass::Workflow",
     },

@@ -10,8 +10,8 @@ use zune_jpeg::zune_core::options::DecoderOptions;
 
 /// A 4K frame fits, but attacker-controlled dimensions cannot turn a small compressed file into
 /// an unbounded allocation. The independent area limit still permits narrow panoramas.
-const MAX_IMAGE_DIMENSION: u32 = 8 * 1024;
-const MAX_IMAGE_PIXELS: u64 = 8 * 1024 * 1024;
+pub(super) const MAX_IMAGE_DIMENSION: u32 = 8 * 1024;
+pub(super) const MAX_IMAGE_PIXELS: u64 = 8 * 1024 * 1024;
 /// Decode one frame at a time and reject animations whose aggregate work exceeds eight maximum
 /// frames. The count ceiling separately bounds tiny-frame iteration overhead.
 const MAX_ANIMATION_FRAMES: u32 = 256;

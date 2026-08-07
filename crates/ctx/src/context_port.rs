@@ -2,12 +2,14 @@
 
 use crate::context_strategy::MAX_CONTEXT_OUTLINE_DEPTH;
 use crate::instructions::framed;
-use crate::memory::{FileMemory, MemBudget, MemStore, MemTier, MemoryStrategy};
+use crate::memory::{
+    FileMemory, MemBudget, MemStore, MemTier, MemoryRecallStrategy, MemoryStrategy,
+};
 use crate::{outline, skills};
 use core_protocol::context::{
     ContextGrant, ContextSegment, ContextSelector, ContextSource, MAX_CONTEXT_SEGMENTS,
 };
-use core_protocol::{Trust, home};
+use core_protocol::{Trust, home, slot::StrategySlot};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
@@ -31,6 +33,8 @@ pub struct ContextPortInput {
     pub active_dir: PathBuf,
     pub environment: Option<ContextValue>,
     pub transcript: Vec<ContextValue>,
+    /// Exact verified plugin skill directories selected by runtime composition.
+    pub dependency_skill_dirs: Vec<(PathBuf, PathBuf)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +55,16 @@ pub trait ContextPort: Send + Sync {
         plan: &ContextPlan,
         input: &ContextPortInput,
     ) -> Result<ContextGrant, ContextPortError>;
+
+    /// Resolve context with the exact `core/memory` policy pinned by the composition root.
+    fn resolve_with_memory_strategy(
+        &self,
+        plan: &ContextPlan,
+        input: &ContextPortInput,
+        _memory_strategy: &dyn StrategySlot,
+    ) -> Result<ContextGrant, ContextPortError> {
+        self.resolve(plan, input)
+    }
 }
 
 /// Filesystem-backed context adapter composed from the existing bounded ctx mechanisms.
@@ -62,6 +76,15 @@ impl ContextPort for DefaultContextPort {
         &self,
         plan: &ContextPlan,
         input: &ContextPortInput,
+    ) -> Result<ContextGrant, ContextPortError> {
+        self.resolve_with_memory_strategy(plan, input, &MemoryRecallStrategy::default())
+    }
+
+    fn resolve_with_memory_strategy(
+        &self,
+        plan: &ContextPlan,
+        input: &ContextPortInput,
+        memory_strategy: &dyn StrategySlot,
     ) -> Result<ContextGrant, ContextPortError> {
         plan.request
             .validate()
@@ -133,7 +156,12 @@ impl ContextPort for DefaultContextPort {
         }
 
         if plan.recall_memory && builder.remaining_bytes() > 0 {
-            let segment = FileMemory.recall(&stores, &plan.task, &MemBudget::default());
+            let segment = FileMemory.recall_with_slot(
+                &stores,
+                &plan.task,
+                &MemBudget::default(),
+                memory_strategy,
+            );
             if !segment.is_empty() {
                 builder.push(
                     segment.render(),
@@ -148,7 +176,11 @@ impl ContextPort for DefaultContextPort {
                 .home_dir
                 .as_deref()
                 .map(|home| home::path(home, "skills"));
-            let catalog = skills::SkillCatalog::discover_optional(user.as_deref(), &workspace);
+            let catalog = skills::SkillCatalog::discover_with_dependencies(
+                user.as_deref(),
+                &workspace,
+                &input.dependency_skill_dirs,
+            );
             let active = skills::active_paths_from_text(&plan.task);
             let listing = catalog
                 .listing_for_paths(SKILL_INDEX_BYTES.min(builder.remaining_bytes()), &active);
@@ -417,6 +449,7 @@ mod tests {
                         text: "prior transcript".into(),
                         trust: Trust::Trusted,
                     }],
+                    dependency_skill_dirs: Vec::new(),
                 },
             )
             .unwrap();

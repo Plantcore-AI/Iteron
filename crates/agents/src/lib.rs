@@ -5,8 +5,8 @@
 //! functions**. It holds no provider, no kernel, no tokio (see `Cargo.toml`), so the plan and the
 //! reduction are unit-testable without a network — the reproducibility invariant (Principal §可复现:
 //! "a run can be replayed from its record and produce the same decisions"). The executor that
-//! spawns real subagents lives in `kernel::orchestrator`; the split mirrors the existing
-//! `ctx`/`kernel` seam (ctx holds compaction *policy*; the kernel makes the LLM call).
+//! spawns real subagents is `crates/workflow` plus the CLI's `KernelSpawner`; the split mirrors the
+//! existing `ctx`/kernel seam (ctx holds compaction *policy*; the runtime makes the LLM call).
 //!
 //! # Scope (re-scoped by the R5 design review, `docs/reviews/R5-design-review.md`)
 //!
@@ -17,14 +17,14 @@
 //! `LoopUntilDry`/`AdversarialVerify` have no proven consumer. Only `Fan → declaration-order Reduce
 //! → single writer` is justified and buildable today (it is `spawn_subagent` + `Governor` +
 //! index-ordered collect, all already present in the kernel). This crate therefore ships exactly
-//! those two variants.
+//! those two variants as the typed plan consumed by the built-in workflow script.
 //!
 //! # The honest benefit (do not overstate)
 //!
 //! The review corrected the R5 draft's rationale: ultracode fans out **only read-only
 //! investigation** and forbids parallel edit/verify (ADR-001, the single-writer invariant). The
-//! kernel now runs those read-only workers **bounded-concurrent** (each an owned task under a
-//! `Governor` permit cap), so there is a real but modest wall-clock overlap; the harness makes no
+//! workflow engine runs those read-only workers **bounded-concurrent** (each an owned task under
+//! one `Governor` permit cap), so there is a real but modest wall-clock overlap; the harness makes no
 //! inflated "2.9× speedup" claim. The primary, defensible benefit remains
 //! **context-window management and investigation breadth**: N read-only workers each explore an
 //! isolated slice in their own context window and return ~1–2k tokens, so the single writer sees a
@@ -42,15 +42,25 @@
 mod catalog;
 mod decompose;
 mod def;
+mod planner;
 mod policy;
 mod reduce;
 mod stage;
 
 pub use catalog::{AgentCatalog, LoadError};
 pub use decompose::{
-    Decomposer, FAN_CAP, LEAF_MAX_CHARS, NormalizedLeaves, RepoSignals, TaskClass,
+    Decomposer, FAN_CAP, LEAF_MAX_CHARS, MAX_ROUTER_TASK_BYTES, NormalizedLeaves,
+    ROUTER_SLOT_VERSION, RepoSignals, RouterProposal, RouterRoute, RouterSlotDecision,
+    RouterSlotError, RouterSlotObservation, RouterStrategy, TaskClass, router_slot,
 };
-pub use def::{AgentDef, READ_ONLY_TOOLS, ToolFilter, subagent_budget, subagent_budget_ceiling};
+pub use def::{
+    AgentDef, READ_ONLY_TOOLS, ToolFilter, ULTRACODE_PLANNER_NAME, subagent_budget,
+    subagent_budget_ceiling,
+};
+pub use planner::{
+    PLANNER_SLOT_VERSION, PlannerDecision, PlannerError, PlannerObservation, PlannerPlan,
+    PlannerProposal, PlannerStrategy,
+};
 pub use policy::{BootBundle, ToolPreference, narrow_under, tool_policy_slot};
 pub use reduce::{OrderedBundle, Summary, SummaryOutcome, reduce};
 pub use stage::{

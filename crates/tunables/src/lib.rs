@@ -70,7 +70,7 @@ pub const FAMILY_SCHEMA_VERSION: u16 = 2;
 /// Stable logical registry identity.
 pub const REGISTRY_ID: &str = "core-tunables";
 /// Revision of the family set under schema v3.
-pub const REGISTRY_REVISION: u16 = 3;
+pub const REGISTRY_REVISION: u16 = 4;
 /// Exact family cardinality required by the R0/R1 contract.
 pub const EXPECTED_FAMILY_COUNT: usize = 160;
 /// Canonical byte encoding used as the digest input.
@@ -79,6 +79,6 @@ pub const CANONICALIZATION: &str = "core-tunables-json-v3";
 pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v2";
 /// Digest algorithm for canonical artifacts.
 pub const DIGEST_ALGORITHM: &str = "sha256";
-/// Golden digest for revision 3; metadata changes require an explicit revision and digest update.
+/// Golden digest for revision 4; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "0a30e0c1d7789d5c8230122178fab78e74c3193994c359925065dfe59b4b8718";
+    "fa7a2bda3912ef644aaba760a9f74886907c76ec990a6db3fde680d320527f40";

@@ -31,7 +31,8 @@ Diagnostics remain on stderr for machine formats. The current machine schema
 version is `5`; consumers must inspect `schema_version` rather than Rust enum or
 debug text.
 
-`--image PATH` is repeatable for up to eight PNG, JPEG, GIF, or WebP files. Core
+`--image PATH` is repeatable for up to eight PNG, JPEG, GIF, or WebP files. On macOS, HEIC/HEIF
+is locally resized when needed and normalized to JPEG before it reaches the provider. Core
 streams each file through a hard limit, checks its magic bytes and container
 minimums, and refuses extension spoofing before constructing the SQ submission.
 The limits are 6 MiB raw / 8 MiB base64 per image and 24 MiB raw / 32 MiB base64

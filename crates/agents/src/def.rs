@@ -65,6 +65,17 @@ pub(crate) const SUBAGENT_SYSTEM: &str = "You are a read-only investigation suba
     done, reply with a concise summary (aim for under ~1500 tokens): the direct answer, with \
     file:line references for anything you claim.";
 
+/// Internal agent type used by the built-in Ultracode workflow's first, dynamic planning phase.
+/// It is intentionally tool-less and one-turn: the model proposes investigation leaves, while the
+/// harness still normalizes, narrows, and caps those leaves before the workflow may fan out.
+pub const ULTRACODE_PLANNER_NAME: &str = "ultracode-planner";
+
+const ULTRACODE_PLANNER_SYSTEM: &str = "You plan a READ-ONLY repository investigation. Return \
+    mutually distinct, non-overlapping, self-contained assignments. Every line must name a \
+    concrete search scope and the evidence expected from that worker. Cover different causal \
+    surfaces rather than paraphrasing the task. Do not inspect the repository, propose edits, ask \
+    questions, add a preamble, or add a conclusion. Output exactly one assignment per line.";
+
 /// How an agent's `tools` frontmatter narrows the read-only registry. Tools can only **narrow**
 /// (ADR-001): `All` is the whole read-only set, `Allow` intersects it, `Deny` subtracts from it.
 /// `Deny` is the recommended idiom (the local Claude Code agents use `disallowedTools:` precisely so
@@ -195,6 +206,26 @@ impl AgentDef {
             tools: ToolFilter::All,
             model: None,
             budget: subagent_budget_ceiling(),
+            trust: Trust::Trusted,
+        }
+    }
+
+    /// The built-in dynamic-workflow planner. It is visible to the engine's pinned catalog but has
+    /// no tools and exactly one provider turn, so planning cannot quietly become a second explorer.
+    pub fn ultracode_planner() -> AgentDef {
+        AgentDef {
+            name: ULTRACODE_PLANNER_NAME.into(),
+            description: "Internal one-turn planner for the built-in Ultracode workflow.".into(),
+            system: ULTRACODE_PLANNER_SYSTEM.into(),
+            tools: ToolFilter::Allow(Vec::new()),
+            model: None,
+            budget: Budget {
+                max_turns: 1,
+                max_usd: None,
+                max_tokens: Some(4_096),
+                max_wall_secs: 60,
+                max_consecutive_tool_errors: 1,
+            },
             trust: Trust::Trusted,
         }
     }

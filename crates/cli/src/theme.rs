@@ -38,6 +38,11 @@ pub struct Theme {
     pub fg: Color,
     pub muted: Color,
     pub accent: Color,
+    /// The three public Plantcore icon planes. They are entrance-only brand colors, not general UI
+    /// accents; active interaction continues to use the single `accent` token.
+    pub brand_back: Color,
+    pub brand_mid: Color,
+    pub brand_front: Color,
     /// Passive structural edge. Focused edges continue to use `accent`/state colors.
     pub border: Color,
     /// Subtle full-row surface for submitted operator messages. The live composer uses one terminal
@@ -130,6 +135,9 @@ impl Theme {
             // muted must stay LEGIBLE (TUI v3 §3): a real gray, not the near-invisible DarkGray.
             muted: Color::Gray,
             accent: Color::Cyan,
+            brand_back: Color::Rgb(0x0d, 0x65, 0xa8),
+            brand_mid: Color::Rgb(0x18, 0x45, 0x9a),
+            brand_front: Color::Rgb(0x0b, 0xa0, 0xd6),
             border: Color::DarkGray,
             // Codex blends a quiet user surface from the detected terminal background. When that
             // background is unavailable, use a portable ANSI gray/white pair instead of silently
@@ -169,6 +177,9 @@ impl Theme {
             fg: rgb(0xdc, 0xe3, 0xf0),
             muted: rgb(0x9a, 0xa7, 0xba),
             accent: rgb(0x7a, 0xa2, 0xf7),
+            brand_back: rgb(0x1d, 0x70, 0xb7),
+            brand_mid: rgb(0x3f, 0x63, 0xbd),
+            brand_front: rgb(0x18, 0xa8, 0xdc),
             border: rgb(0x3a, 0x43, 0x5f),
             // Approximately a 12% white lift over the dark canvas, matching the low-contrast
             // submitted-message treatment used by Codex without retaining the old blue card tint.
@@ -208,6 +219,9 @@ impl Theme {
             fg: rgb(0x18, 0x20, 0x33),
             muted: rgb(0x53, 0x60, 0x78),
             accent: rgb(0x34, 0x5b, 0xd1),
+            brand_back: rgb(0x0d, 0x65, 0xa8),
+            brand_mid: rgb(0x0f, 0x38, 0x90),
+            brand_front: rgb(0x0b, 0xa0, 0xd6),
             border: rgb(0xd6, 0xdc, 0xe8),
             // Approximately a 4% black veil over a light canvas.
             user_bg: rgb(0xf1, 0xf2, 0xf3),
@@ -244,6 +258,9 @@ impl Theme {
             fg: rgb(0xff, 0xff, 0xff),
             muted: rgb(0xb0, 0xb0, 0xb0),
             accent: rgb(0x6c, 0xb6, 0xff),
+            brand_back: rgb(0x2f, 0x8f, 0xdd),
+            brand_mid: rgb(0x6c, 0x80, 0xff),
+            brand_front: rgb(0x29, 0xd4, 0xff),
             border: rgb(0xb0, 0xb0, 0xb0),
             user_bg: rgb(0x24, 0x24, 0x24),
             user_fg: rgb(0xff, 0xff, 0xff),
@@ -290,6 +307,9 @@ impl Theme {
             fg: d,
             muted: d,
             accent: d,
+            brand_back: d,
+            brand_mid: d,
+            brand_front: d,
             border: d,
             user_bg: Color::Reset,
             user_fg: d,

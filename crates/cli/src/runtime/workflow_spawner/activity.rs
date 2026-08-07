@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use core_protocol::Phase;
 use core_workflow::{AgentActivityReporter, AgentCall, AgentOutcome};
 
 use super::{KernelSpawner, safe_agent_refusal};
@@ -12,6 +13,8 @@ impl KernelSpawner {
         call: AgentCall,
         activity: Option<AgentActivityReporter>,
     ) -> AgentOutcome {
+        let ultracode_planner =
+            call.agent_type.as_deref() == Some(core_agents::ULTRACODE_PLANNER_NAME);
         let ordinal = self.next_ordinal.fetch_add(1, Ordering::Relaxed);
         let mut child = match self.build_child(&call, ordinal) {
             Ok(child) => child,
@@ -62,11 +65,18 @@ impl KernelSpawner {
             live.observe(event, activity.as_ref());
         }
         cancel_bridge.abort();
-        match outcome {
+        if let Some(collector) = &self.cx.child_outcomes {
+            let terminal = outcome
+                .as_ref()
+                .map(|outcome| (*outcome).clone())
+                .map_err(|error| safe_agent_refusal(&error.public_summary()));
+            collector.lock().unwrap().push((ordinal, terminal));
+        }
+        let result = match outcome {
             // Any terminal with a non-empty final report becomes the JS string value (real model
             // output). This mirrors the kernel's own investigator distillation, which treats every
             // `Ok(_)` outcome as carrying a report and only degrades on an empty one.
-            Ok(_terminal) => {
+            Ok(core_protocol::Outcome::Done) => {
                 let text = child.last_assistant_text().trim().to_string();
                 if text.is_empty() {
                     AgentOutcome::Null {
@@ -81,11 +91,106 @@ impl KernelSpawner {
                     }
                 }
             }
+            Ok(core_protocol::Outcome::Drained) => AgentOutcome::Null {
+                reason: Some("subagent drained after a durable checkpoint".into()),
+            },
+            Ok(core_protocol::Outcome::Interrupted) => AgentOutcome::Null {
+                reason: Some("subagent interrupted at a safe point".into()),
+            },
+            Ok(core_protocol::Outcome::BudgetExhausted(_)) => AgentOutcome::Null {
+                reason: Some("subagent exhausted its bounded budget".into()),
+            },
+            Ok(core_protocol::Outcome::Stuck) => AgentOutcome::Null {
+                reason: Some("subagent reached the tool-error limit".into()),
+            },
+            Ok(core_protocol::Outcome::HarnessError) => AgentOutcome::Null {
+                reason: Some("subagent stopped on a harness error".into()),
+            },
             // A harness/provider/budget error resolves to JS `null` (never a thrown rejection) so a
             // surrounding `parallel`/`pipeline` keeps its other items flowing.
             Err(error) => AgentOutcome::Null {
                 reason: Some(safe_agent_refusal(&error.public_summary())),
             },
+        };
+        if let Some(collector) = &self.cx.child_ledgers {
+            collector
+                .lock()
+                .unwrap()
+                .push((ordinal, std::mem::take(&mut child.ledger)));
+        }
+        if ultracode_planner {
+            self.normalize_ultracode_plan(result)
+        } else {
+            result
+        }
+    }
+
+    /// Convert the planner's untrusted line list into a harness-authored JSON task list. This is
+    /// deliberately inside the spawner boundary: QuickJS never gets raw model control-flow data,
+    /// and the pinned `core/planner` seat can narrow/reorder but cannot invent a leaf.
+    fn normalize_ultracode_plan(&self, outcome: AgentOutcome) -> AgentOutcome {
+        let Some(config) = self.cx.ultracode_planning else {
+            return AgentOutcome::null(
+                "the ultracode planner is available only to the built-in dynamic workflow",
+            );
+        };
+        let AgentOutcome::Text {
+            text,
+            tokens,
+            tool_calls,
+            last_tool_summary,
+        } = outcome
+        else {
+            return outcome;
+        };
+        let leaves = text.lines().map(str::to_owned).collect::<Vec<_>>();
+        let planned = match core_agents::Decomposer::plan_within_with(
+            self.cx.planner.as_ref(),
+            config.class,
+            leaves,
+            config.max_leaves,
+            core_protocol::capability_set::CapabilitySet::only(core_protocol::Capability::ReadOnly)
+                .intersect(self.cx.authority_ceiling),
+        ) {
+            Ok(planned) => planned,
+            Err(error) => {
+                return AgentOutcome::null(format!("planner policy refused the plan: {error}"));
+            }
+        };
+        let (tasks, dropped, duplicates_removed, invalid_removed) = match planned {
+            Some(plan) => {
+                let tasks = plan
+                    .fan_tasks()
+                    .iter()
+                    .map(|task| {
+                        serde_json::json!({
+                            "objective": task.objective,
+                            "scope": task.scope,
+                            "deliverable": task.deliverable,
+                            "agentType": task.agent_type,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                (
+                    tasks,
+                    plan.truncated.unwrap_or(0),
+                    plan.duplicates_removed,
+                    plan.invalid_removed,
+                )
+            }
+            None => (Vec::new(), 0, 0, 0),
+        };
+        AgentOutcome::Text {
+            text: serde_json::json!({
+                "tasks": tasks,
+                "dropped": dropped,
+                "duplicatesRemoved": duplicates_removed,
+                "invalidRemoved": invalid_removed,
+            })
+            .to_string(),
+            tokens,
+            tool_calls,
+            last_tool_summary,
         }
     }
 }
@@ -95,24 +200,47 @@ struct LiveAgentActivity {
     tokens: u64,
     tool_calls: u64,
     last_tool_summary: Option<String>,
+    current_activity: Option<String>,
+    output_chars: usize,
+    thinking_chars: usize,
 }
 
 impl LiveAgentActivity {
     fn observe(&mut self, event: UiEvent, reporter: Option<&AgentActivityReporter>) {
-        let changed = match event {
+        let changed = match &event {
             UiEvent::TurnEnd { usage, .. } => {
-                self.tokens = self.tokens.saturating_add(usage_tokens(&usage));
+                self.tokens = self.tokens.saturating_add(usage_tokens(usage));
+                self.current_activity = workflow_child_activity(&event);
                 true
             }
-            event @ UiEvent::ToolStart { .. } => {
+            UiEvent::ToolStart { .. } => {
                 self.tool_calls = self.tool_calls.saturating_add(1);
-                self.last_tool_summary = workflow_child_activity(event);
+                self.last_tool_summary = workflow_child_activity(&event);
+                self.current_activity = self.last_tool_summary.clone();
+                true
+            }
+            UiEvent::Text(delta) => {
+                self.output_chars = self.output_chars.saturating_add(delta.chars().count());
+                self.current_activity =
+                    Some(format!("drafting report · {} chars", self.output_chars));
+                true
+            }
+            UiEvent::Thinking(delta) => {
+                self.thinking_chars = self.thinking_chars.saturating_add(delta.chars().count());
+                self.current_activity = Some(format!(
+                    "reasoning over evidence · {} chars",
+                    self.thinking_chars
+                ));
+                true
+            }
+            UiEvent::Phase(Phase::Model | Phase::Tools | Phase::Verify) => {
+                self.current_activity = workflow_child_activity(&event);
                 true
             }
             _ => false,
         };
         if changed && let Some(reporter) = reporter {
-            reporter.report(self.tokens, self.tool_calls, self.last_tool_summary.clone());
+            reporter.report(self.tokens, self.tool_calls, self.current_activity.clone());
         }
     }
 }
@@ -205,8 +333,12 @@ mod tests {
             _request: &TurnRequest,
             on_item: &mut (dyn FnMut(StreamItem) + Send),
         ) -> Result<TurnResult, ProviderError> {
-            tokio::time::sleep(Duration::from_millis(1_100)).await;
             let turn = self.turn.fetch_add(1, Ordering::SeqCst);
+            on_item(StreamItem::ThinkingDelta("checking evidence ".into()));
+            if turn >= 2 {
+                on_item(StreamItem::TextDelta("production report".into()));
+            }
+            tokio::time::sleep(Duration::from_millis(1_100)).await;
             let usage = UsageReport::complete(Usage {
                 input: 5,
                 output: 5,
@@ -219,6 +351,7 @@ mod tests {
                     input: serde_json::json!({"path": "evidence.txt"}),
                 };
                 on_item(StreamItem::ToolUseComplete(tool.clone()));
+                tokio::time::sleep(Duration::from_millis(1_100)).await;
                 Ok(TurnResult {
                     blocks: vec![Block::ToolUse(tool)],
                     stop_reason: StopReason::ToolUse,
@@ -377,7 +510,13 @@ mod tests {
                 .windows(2)
                 .all(|pair| pair[0].0 <= pair[1].0 && pair[0].1 <= pair[1].1)
         );
-        assert!(activity.iter().all(|(_, _, summary)| {
+        assert!(activity.iter().any(|(_, _, summary)| {
+            summary.is_some_and(|summary| summary.contains("reasoning over evidence"))
+        }));
+        assert!(activity.iter().any(|(_, _, summary)| {
+            summary.is_some_and(|summary| summary.contains("drafting report"))
+        }));
+        assert!(activity.iter().any(|(_, _, summary)| {
             summary.is_some_and(|summary| summary.contains("read_file"))
         }));
         assert!(matches!(

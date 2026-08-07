@@ -7,6 +7,11 @@
 
 use ratatui::layout::Rect;
 
+/// A fresh session is the one intentional exception to the edge-to-edge conversation grid. Keeping
+/// the logo, prompt and route facts in one bounded cluster removes the empty "splash screen plus
+/// distant dock" composition while the active session remains a full-width terminal transcript.
+pub const LANDING_MAX_WIDTH: u16 = 88;
+
 /// Information density selected from the actual content width, not a terminal-name heuristic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Density {
@@ -124,6 +129,77 @@ impl Surface {
         let composer = Rect::new(body.x, lanes.bottom(), body.width, composer_h);
         let hint = Rect::new(body.x, composer.bottom(), body.width, hint_h);
         let status = Rect::new(body.x, hint.bottom(), body.width, status_h);
+
+        Self {
+            stage,
+            transcript,
+            scrollbar,
+            workflow,
+            status,
+            lanes,
+            composer,
+            hint,
+            overlay_anchor: composer,
+            density,
+        }
+    }
+
+    /// Resolve the pre-conversation landing. The stage remains the real terminal; only the compact
+    /// entrance cluster is width-capped and vertically grouped. Once a turn exists, `resolve`
+    /// restores the complete edge-to-edge transcript and workflow grid.
+    pub fn resolve_landing(
+        frame: Rect,
+        editor_rows: u16,
+        welcome_rows: u16,
+        show_status: bool,
+    ) -> Self {
+        let stage = content_rect(frame);
+        let column_width = stage.width.min(LANDING_MAX_WIDTH);
+        let column = Rect::new(
+            stage
+                .x
+                .saturating_add(stage.width.saturating_sub(column_width) / 2),
+            stage.y,
+            column_width,
+            stage.height,
+        );
+        let density = Density::for_width(column.width);
+
+        let hint_h = u16::from(column.height >= 6);
+        let status_h = u16::from(show_status && column.height >= 4);
+        let transcript_floor = u16::from(column.height > hint_h.saturating_add(status_h));
+        let available_for_composer = column
+            .height
+            .saturating_sub(hint_h)
+            .saturating_sub(status_h)
+            .saturating_sub(transcript_floor);
+        let composer_h = editor_rows
+            .clamp(1, 6)
+            .saturating_add(2)
+            .min(available_for_composer);
+        let remaining = column
+            .height
+            .saturating_sub(composer_h)
+            .saturating_sub(hint_h)
+            .saturating_sub(status_h);
+        let welcome_h = welcome_rows.max(transcript_floor).min(remaining);
+        let gap_h = u16::from(remaining > welcome_h);
+        let transcript_h = welcome_h.saturating_add(gap_h);
+        let group_h = transcript_h
+            .saturating_add(composer_h)
+            .saturating_add(hint_h)
+            .saturating_add(status_h);
+        let top = column
+            .y
+            .saturating_add(column.height.saturating_sub(group_h) / 2);
+
+        let transcript = Rect::new(column.x, top, column.width, transcript_h);
+        let workflow = Rect::new(column.x, transcript.bottom(), column.width, 0);
+        let lanes = Rect::new(column.x, workflow.bottom(), column.width, 0);
+        let composer = Rect::new(column.x, lanes.bottom(), column.width, composer_h);
+        let hint = Rect::new(column.x, composer.bottom(), column.width, hint_h);
+        let status = Rect::new(column.x, hint.bottom(), column.width, status_h);
+        let scrollbar = Rect::new(column.right().saturating_sub(1), transcript.y, 0, 0);
 
         Self {
             stage,
@@ -410,5 +486,25 @@ mod tests {
             assert_eq!(surface.composer.height, height);
             assert_eq!(surface.composer.bottom(), height);
         }
+    }
+
+    #[test]
+    fn fresh_landing_groups_a_capped_prompt_while_active_surface_stays_full_width() {
+        let landing = Surface::resolve_landing(Rect::new(0, 0, 200, 40), 1, 6, true);
+        assert_eq!(landing.stage.width, 200);
+        assert_eq!(landing.composer.width, LANDING_MAX_WIDTH);
+        assert_eq!(landing.composer.x, 56);
+        assert!(
+            landing.transcript.y > 0,
+            "landing cluster is vertically grouped"
+        );
+        assert_eq!(landing.transcript.x, landing.composer.x);
+        assert_eq!(landing.status.right(), landing.composer.right());
+        assert_eq!(landing.workflow.height, 0);
+
+        let active = Surface::resolve(Rect::new(0, 0, 200, 40), 1, 0, 0, true, false);
+        assert_eq!(active.composer.x, 0);
+        assert_eq!(active.composer.width, 200);
+        assert_eq!(active.status.bottom(), 40);
     }
 }

@@ -160,3 +160,20 @@ fn a_promoted_policy_cannot_widen_a_narrowed_filter() {
         "a promoted policy cannot hand back a tool the filter refused"
     );
 }
+
+/// The ungoverned promotion is the identity, so a host may apply it unconditionally.
+///
+/// This is what makes the boot wiring safe to land before any bundle exists: a host that always
+/// promotes `promoted_leading()` reorders nothing at all until a bundle is actually promoted.
+#[test]
+fn the_baseline_promotes_nothing_and_a_governed_preference_promotes_real_tools() {
+    assert!(ToolPreference::Baseline.promoted_leading().is_empty());
+    let governed = ToolPreference::PreferStructuralSearch.promoted_leading();
+    assert_eq!(governed, STRUCTURAL_SEARCH_ORDER);
+    assert!(
+        governed
+            .iter()
+            .all(|name| crate::def::READ_ONLY_TOOLS.contains(name)),
+        "a promoted tool that is not a read-only tool would silently promote nothing"
+    );
+}

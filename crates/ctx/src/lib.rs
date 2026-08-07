@@ -43,8 +43,12 @@ pub use instructions::{
     framed,
 };
 pub use memory::{
-    Fact, FactRef, FileMemory, Framed, MemBudget, MemError, MemIndex, MemStore, MemTier,
-    MemorySegment, MemoryStore, MemoryStrategy, StoredFact, merged_index,
+    Fact, FactRef, FileMemory, Framed, MAX_MEMORY_CANDIDATE_TEXT_BYTES, MAX_MEMORY_CANDIDATES,
+    MAX_MEMORY_SLUG_BYTES, MAX_MEMORY_TASK_BYTES, MEMORY_SLOT_VERSION, MemBudget, MemError,
+    MemIndex, MemStore, MemTier, MemoryCandidate, MemoryRecallPlan, MemoryRecallProposal,
+    MemoryRecallStrategy, MemorySegment, MemorySlotDecision, MemorySlotError,
+    MemorySlotObservation, MemoryStore, MemoryStrategy, MemoryWriteProposal, StoredFact,
+    merged_index,
 };
 pub use outline::{repo_outline, repo_outline_for_task};
 

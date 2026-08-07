@@ -97,7 +97,26 @@ impl SkillCatalog {
     /// supply a home directory; it must not be replaced with `.` and accidentally treated as
     /// trusted user material.
     pub fn discover_optional(user_skills_dir: Option<&Path>, repo: &Path) -> Self {
-        Self::discover_with_user(user_skills_dir, repo)
+        Self::discover_with_dependencies(user_skills_dir, repo, &[])
+    }
+
+    /// Discover the ordinary tiers plus exact, already-admitted plugin skill directories.
+    ///
+    /// Each tuple is `(verified package root, exact skill directory)`. Plugin packages are still
+    /// framed as dependency guidance: a publisher signature proves identity and integrity, not
+    /// that model-facing instructions may override operator or workspace policy.
+    pub fn discover_with_dependencies(
+        user_skills_dir: Option<&Path>,
+        repo: &Path,
+        dependencies: &[(PathBuf, PathBuf)],
+    ) -> Self {
+        let mut cat = Self::discover_with_user(user_skills_dir, repo);
+        for (root, directory) in dependencies {
+            cat.scan(root, directory, SkillTier::Dependency);
+        }
+        cat.defs.sort_by(|a, b| a.name.cmp(&b.name));
+        cat.defs.dedup_by(|a, b| a.name == b.name);
+        cat
     }
 
     /// Discover repository skills when no validated operator home is available.

@@ -247,6 +247,7 @@ esac\n";
             checkout_timeout: Duration::from_secs(60),
             oracle_timeout: Duration::from_secs(5),
             max_turns: 4,
+            max_attempts: 1,
         };
 
         let manifest = tokio::time::timeout(Duration::from_secs(120), run_evaluation(&options))

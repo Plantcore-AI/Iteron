@@ -21,6 +21,9 @@ pub enum ImageInputErrorKind {
     InvalidImage,
     TruncatedImage,
     ExtensionMismatch,
+    HeicConversionUnavailable,
+    HeicConversionFailed,
+    HeicConversionTimedOut,
     ProtocolRejected,
 }
 
@@ -77,6 +80,11 @@ impl fmt::Display for ImageInputError {
             ImageInputErrorKind::ExtensionMismatch => {
                 "image bytes do not match the filename extension"
             }
+            ImageInputErrorKind::HeicConversionUnavailable => {
+                "HEIC conversion is unavailable on this platform"
+            }
+            ImageInputErrorKind::HeicConversionFailed => "could not convert HEIC image to JPEG",
+            ImageInputErrorKind::HeicConversionTimedOut => "HEIC conversion timed out",
             ImageInputErrorKind::ProtocolRejected => "image submission failed validation",
         };
         formatter.write_str(message)?;

@@ -209,13 +209,13 @@ pub(super) const SOURCES: [SourceSpec; crate::EXPECTED_FAMILY_COUNT] = [
     source!(Registry, RegistryDeclaration, "crates/tunables/src/families.rs"), // 144 merge_conflict_arbitration
     source!(Builtin, Builtin, "crates/agents/src/reduce.rs"), // 145 inter_agent_messaging_topology
     source!(Registry, RegistryDeclaration, "crates/tunables/src/families.rs"), // 146 task_retry_reassignment_policy
-    source!(Builtin, Builtin, "crates/mcp/src/client.rs"), // 147 mcp_transport_selection
+    source!([(UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/mcp/src/http/reqwest_exchange.rs")]), // 147 mcp_transport_selection
     source!(Builtin, Builtin, "crates/cli/src/mcp.rs"), // 148 deferred_discovery_threshold
     source!(Registry, RegistryDeclaration, "crates/tunables/src/families.rs"), // 149 mcp_reconnect_backoff
     source!(Builtin, Builtin, "crates/mcp/src/client.rs"), // 150 per_server_startup_deadline
     source!(Builtin, Builtin, "crates/mcp/src/client.rs"), // 151 per_tool_mcp_deadline
     source!(Builtin, Builtin, "crates/mcp/src/client/content.rs"), // 152 mcp_result_cap_spill_policy
-    source!(Registry, RegistryDeclaration, "crates/tunables/src/families.rs"), // 153 oauth_auth_lifecycle_policy
+    source!([(UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/mcp/src/oauth.rs")]), // 153 oauth_auth_lifecycle_policy
     source!(Builtin, Builtin, "crates/mcp/src/client/content.rs"), // 154 resource_prompt_plugin_capability_exposure
     source!(Registry, RegistryDeclaration, "crates/tunables/src/families.rs"), // 155 request_compression_policy
     source!(Builtin, Builtin, "crates/provider/src/catalog.rs"), // 156 http_pool_keepalive_idle_policy
@@ -373,13 +373,13 @@ pub(super) const ACTIVATIONS: [ActivationSpec; crate::EXPECTED_FAMILY_COUNT] = [
     unavailable!(), // 144 merge_conflict_arbitration
     always!(), // 145 inter_agent_messaging_topology
     unavailable!(), // 146 task_retry_reassignment_policy
-    runtime_derived!("crates/mcp/src/client.rs"), // 147 mcp_transport_selection
+    configured!(UserConfig), // 147 mcp_transport_selection
     runtime_derived!("crates/cli/src/mcp.rs"), // 148 deferred_discovery_threshold
     unavailable!(), // 149 mcp_reconnect_backoff
     always!(), // 150 per_server_startup_deadline
     always!(), // 151 per_tool_mcp_deadline
     runtime_derived!("crates/mcp/src/client/content.rs"), // 152 mcp_result_cap_spill_policy
-    unavailable!(), // 153 oauth_auth_lifecycle_policy
+    configured!(UserConfig), // 153 oauth_auth_lifecycle_policy
     runtime_derived!("crates/mcp/src/client/content.rs"), // 154 resource_prompt_plugin_capability_exposure
     unavailable!(), // 155 request_compression_policy
     always!(), // 156 http_pool_keepalive_idle_policy

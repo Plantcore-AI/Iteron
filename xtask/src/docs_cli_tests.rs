@@ -34,6 +34,8 @@ fn every_shipped_flag_and_subcommand_appears() {
         "core workflow watch",
         "core tunables resolve",
         "core tunables explain",
+        "core plugin install",
+        "core plugin doctor",
         "--allow-code",
         "--image",
         "--timeline",
@@ -51,8 +53,9 @@ fn every_shipped_flag_and_subcommand_appears() {
 fn a_new_flag_without_a_doc_entry_is_a_rendering_difference() {
     let root = repository_root();
     let source = std::fs::read_to_string(root.join(CLI_SOURCE)).unwrap();
+    let plugin = std::fs::read_to_string(root.join("crates/cli/src/plugin.rs")).unwrap();
     let tunables = std::fs::read_to_string(root.join("crates/cli/src/tunables.rs")).unwrap();
-    let modules = [("tunables", tunables.as_str())];
+    let modules = [("plugin", plugin.as_str()), ("tunables", tunables.as_str())];
     let published = render_sources(&source, &modules).unwrap();
     let with_new_flag = source.replacen(
         "    /// The repository to work in (defaults to the current directory).",

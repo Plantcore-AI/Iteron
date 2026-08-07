@@ -77,11 +77,8 @@ pub(super) async fn run_query_owned(
     let root_capability = document
         .root_capability()
         .map_err(|error| RunFailure::new(error, false))?;
-    let spawn = spawn_confined_process_from_workspace(
-        document.adapter().command(),
-        &confinement,
-        root_capability,
-    );
+    let spawn =
+        spawn_confined_process_from_workspace(document.command(), &confinement, root_capability);
     let process = match tokio::select! {
         biased;
         _ = &mut cancelled => return Err(RunFailure::new(LspToolError::OperationCancelled, false)),

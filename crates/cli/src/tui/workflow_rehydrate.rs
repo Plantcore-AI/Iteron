@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn workflow_rehydrate_terminal_renders_the_restored_inventory_as_history() {
-        use super::super::{App, draw, restored_workflow_rows};
+        use super::super::{App, draw};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -188,8 +188,7 @@ mod tests {
         );
         let mut app = App::new();
         assert_eq!(app.workflow_monitor.rehydrate(Some(scratch.path())), 1);
-        let rows = restored_workflow_rows(&app.workflow_monitor);
-        app.panel("", "workflows", rows);
+        app.workflows_panel.open();
 
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -202,11 +201,13 @@ mod tests {
             rendered.push('\n');
         }
 
-        assert!(rendered.contains("earlier sessions"), "{rendered}");
         assert!(
-            rendered.contains("restored measurement · done"),
+            rendered.contains("plantcore · New session · workflows"),
             "{rendered}"
         );
+        assert!(rendered.contains("restored measurement"), "{rendered}");
+        assert!(rendered.contains("done"), "{rendered}");
+        assert!(rendered.contains("durable history"), "{rendered}");
         assert!(rendered.contains("wf_18d0000000000000_0"), "{rendered}");
     }
 

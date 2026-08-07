@@ -104,6 +104,36 @@ impl Hooks {
         }
     }
 
+    /// Append one hook selected from a signature-verified plugin manifest. The plugin runtime has
+    /// already enforced capability intersection and conflict order; this method keeps the
+    /// executable surface bounded and rejects event spellings that could otherwise no-op silently.
+    pub(crate) fn append_verified_plugin(
+        &mut self,
+        event: &str,
+        command: String,
+    ) -> Result<(), &'static str> {
+        if ![
+            HookEvent::PreToolUse.key(),
+            HookEvent::PostToolUse.key(),
+            HookEvent::Stop.key(),
+            HookEvent::UserPromptSubmit.key(),
+            HookEvent::SessionStart.key(),
+        ]
+        .contains(&event)
+        {
+            return Err("unknown lifecycle event");
+        }
+        if command.is_empty() || command.len() > 4096 || command.chars().any(char::is_control) {
+            return Err("command must be visible text of 1..=4096 bytes");
+        }
+        let commands = self.by_event.entry(event.to_owned()).or_default();
+        if commands.len() >= 128 {
+            return Err("hook chain exceeds 128 commands");
+        }
+        commands.push(command);
+        Ok(())
+    }
+
     /// Remove these exact credential indirections from every hook process. Hook commands are
     /// operator-authored, but they do not need provider or pricing signing keys.
     pub fn set_sensitive_env_names(&mut self, mut names: Vec<String>) {

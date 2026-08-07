@@ -22,7 +22,7 @@ This page is generated from the argument parser, so every shipped flag and subco
 | --- | --- |
 | `--tui` | Force the interactive TUI (it is the default when a terminal is attached). |
 | `-p`, `--print` | One-shot / non-interactive: run the task, stream text, exit (like `claude -p`). Requires a task. Without -p, core opens the interactive TUI (the default). |
-| `--image <PATH>` | Attach a local PNG, JPEG, GIF, or WebP to a one-shot task. Repeat up to the bounded attachment limit; bytes are sniffed before they enter the SQ. Repeatable. |
+| `--image <PATH>` | Attach a local PNG, JPEG, GIF, or WebP to a one-shot task. On macOS, HEIC/HEIF is locally normalized to bounded JPEG. Repeat up to the attachment limit; bytes are sniffed before SQ. Repeatable. |
 | `--output-format <OUTPUT_FORMAT>` | One-shot stdout contract: text \| json \| stream-json. Machine formats keep stdout as valid JSON/JSONL; diagnostics continue on stderr. Only valid in one-shot mode. Default `text`. |
 | `--output-schema-version <VERSION>` | Pin a published machine stdout schema. Supported versions are reported by `--machine-contract`; omission keeps the current v5 default. |
 | `--machine-contract` | Print the bounded, provider-free CLI capability report as JSON and exit. |
@@ -90,6 +90,19 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `core tunables <SUBCOMMAND>` | Resolve or explain one explicit tunables request without binding it to a live run. |
 | `core tunables resolve <REQUEST>` | Resolve a frozen request and print one machine-readable simulation report. |
 | `core tunables explain <REQUEST> [--family <FAMILY>] [--format <FORMAT>]` | Explain a frozen request. Text covers all 160 families; JSON selects one family. |
+| `core doctor` | Run local configuration, recovery, and terminal diagnostics without contacting a provider. |
+| `core support [--output <PATH>]` | Build a deterministic redacted support bundle; it is never transmitted by this command. |
+| `core plugin <SUBCOMMAND>` | Manage signed, cached plugins without contacting a provider. |
+| `core plugin list` | List installed versions, enablement, rollback availability, and publisher identity. |
+| `core plugin trust <KEY_ID> <PUBLIC_KEY_FILE>` | Add an immutable trusted Ed25519 publisher key from a raw-32-byte or base64 file. |
+| `core plugin install <PACKAGE_DIR> [--precedence <PRECEDENCE>]` | Verify and install a local signed package directory. |
+| `core plugin update <PACKAGE_DIR> [--precedence <PRECEDENCE>]` | Verify and update from a newer local signed package directory. |
+| `core plugin enable <NAME>` | Enable an installed plugin for future runtime composition. |
+| `core plugin disable <NAME>` | Disable an installed plugin while retaining its offline cache. |
+| `core plugin rank <NAME> <PRECEDENCE>` | Change the operator-owned conflict rank without reinstalling. |
+| `core plugin uninstall <NAME>` | Remove a plugin from runtime composition while retaining cached artifacts. |
+| `core plugin rollback <NAME>` | Atomically return to the one retained, re-verified prior artifact. |
+| `core plugin doctor` | Re-verify every enabled cache entry and explain composition refusals/conflicts. |
 
 Local validation runs before a new rollout is opened, so malformed mode, effort,
 verification, or TUI/one-shot combinations should fail without creating a

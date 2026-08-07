@@ -312,6 +312,7 @@ async fn public_runner_continues_fault_sweep_and_persists_typed_artifact() {
         checkout_timeout: Duration::from_secs(5),
         oracle_timeout: Duration::from_secs(2),
         max_turns: 4,
+        max_attempts: 1,
     };
 
     // Cells run concurrently, so this bounds the slowest cell plus overhead, not 24 x run_timeout.

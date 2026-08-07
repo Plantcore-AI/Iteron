@@ -1,6 +1,8 @@
 use super::actor::{StopControl, WriteControl, spawn_actor};
 use super::output::OutputRing;
-use super::types::{ActionError, JobId, JobShared, JobState, ProcessSnapshot, WriteReceipt, lock};
+use super::types::{
+    ActionError, JobId, JobShared, JobState, ProcessSnapshot, ProcessSummary, WriteReceipt, lock,
+};
 use super::{CONTROL_RESPONSE_SECS, MAX_ACTIVE_JOBS, MAX_JOB_RECORDS, MAX_JOB_RUNTIME_SECS};
 use core_sandbox::{
     ConfinedProcess, ConfinedProcessControl, Confinement, PersistentBackend, SandboxError,
@@ -52,7 +54,7 @@ impl Supervisor {
         let process = spawn_confined_process(command, &confinement)
             .await
             .map_err(spawn_error)?;
-        let job = Job::spawn(id, process).await?;
+        let job = Job::spawn(id, command.to_owned(), process).await?;
         let snapshot = job.snapshot(0, 0)?;
         lock(&self.state).jobs.insert(id, job);
         Ok(snapshot)
@@ -81,6 +83,14 @@ impl Supervisor {
 
     pub(super) async fn stop(&self, raw_id: &str) -> Result<ProcessSnapshot, ActionError> {
         self.lookup(raw_id)?.stop().await
+    }
+
+    pub(super) fn list(&self) -> Vec<ProcessSummary> {
+        lock(&self.state)
+            .jobs
+            .values()
+            .map(|job| job.summary())
+            .collect()
     }
 
     fn reserve_id(&self) -> Result<JobId, ActionError> {
@@ -152,6 +162,7 @@ fn spawn_error(error: SandboxError) -> ActionError {
 
 struct Job {
     id: JobId,
+    command: String,
     backend: PersistentBackend,
     process_control: ConfinedProcessControl,
     shared: Arc<JobShared>,
@@ -168,7 +179,11 @@ enum StopAdmission {
 }
 
 impl Job {
-    async fn spawn(id: JobId, mut process: ConfinedProcess) -> Result<Arc<Self>, ActionError> {
+    async fn spawn(
+        id: JobId,
+        command: String,
+        mut process: ConfinedProcess,
+    ) -> Result<Arc<Self>, ActionError> {
         let backend = process.backend();
         let process_control = process.control();
         let Some(stdin) = process.take_stdin() else {
@@ -196,6 +211,7 @@ impl Job {
         drop(channels.task);
         Ok(Arc::new(Self {
             id,
+            command,
             backend,
             process_control,
             shared,
@@ -230,6 +246,18 @@ impl Job {
             stdout,
             stderr,
         })
+    }
+
+    fn summary(&self) -> ProcessSummary {
+        ProcessSummary {
+            schema_version: 1,
+            job_id: self.id.to_string(),
+            backend: self.backend.as_str(),
+            command: self.command.clone(),
+            state: lock(&self.shared.state).clone(),
+            stdout_cursor: lock(&self.shared.stdout).end_cursor(),
+            stderr_cursor: lock(&self.shared.stderr).end_cursor(),
+        }
     }
 
     async fn poll(

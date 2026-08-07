@@ -9,9 +9,9 @@
 //! (Ctrl-A/Ctrl-E), word-left/right, Ctrl-W (delete word), Ctrl-U (kill to start), Ctrl-K (kill to
 //! end), multi-line newline insertion, and ↑/↓ input history with a stash of the in-progress line.
 
-use crate::file_input::{FileAttachment, FileAttachments, FileInputError};
+use crate::file_input::{ContextKind, FileAttachment, FileAttachments, FileInputError};
 use crate::image_input::{ImageAttachment, ImageAttachments, ImageInputError};
-use crate::paste_input::{PasteCapture, PasteInputError, PastedTexts};
+use crate::paste_input::{ImageAnchors, PasteCapture, PasteInputError, PastedTexts};
 use std::path::Path;
 
 /// A cleared draft is a convenience, not another unbounded transcript. Count source UTF-8 bytes
@@ -69,7 +69,7 @@ pub struct Editor {
     /// referenced *in-band*, by a tag inside `buf`, because a pasted block has a position in the
     /// sentence being written; `take_submit` expands the tags back into the submitted text.
     pastes: PastedTexts,
-    /// The order the two chip collections were filled in, so "remove the last chip" removes the
+    /// The order all chip collections were filled in, so "remove the last chip" removes the
     /// chip the operator last saw appear rather than the last chip of whichever kind we asked
     /// first. One entry per live attachment; both collections and this log are cleared together.
     chip_order: Vec<ChipKind>,
@@ -83,8 +83,17 @@ pub struct Editor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChipKind {
-    Image,
+    Image(u32),
     File,
+    Paste(u32),
+}
+
+/// One composer chip in the exact order it was attached. Payloads stay borrowed and never enter
+/// terminal text; the renderer uses this projection solely for one-row identity/metadata lines.
+pub enum DraftChip<'a> {
+    Image(&'a ImageAttachment),
+    File(&'a FileAttachment),
+    Paste(&'a crate::paste_input::PastedText),
 }
 
 #[derive(Debug)]
@@ -113,12 +122,24 @@ impl Editor {
     }
 
     pub fn has_submission(&self) -> bool {
-        !self.buf.is_empty() || !self.attachments.is_empty() || !self.files.is_empty()
+        !self.buf.is_empty() || self.chip_count() > 0
     }
 
-    /// Total chips on the draft, images and files together — what the composer draws.
+    /// Total chips on the draft — what the composer draws and reserves one line for.
     pub fn chip_count(&self) -> usize {
-        self.attachments.len() + self.files.len()
+        self.chip_order.len()
+    }
+
+    pub fn chips(&self) -> Vec<DraftChip<'_>> {
+        let mut files = self.files.as_slice().iter();
+        self.chip_order
+            .iter()
+            .filter_map(|kind| match kind {
+                ChipKind::Image(id) => self.attachments.get(*id).map(DraftChip::Image),
+                ChipKind::File => files.next().map(DraftChip::File),
+                ChipKind::Paste(id) => self.pastes.get(*id).map(DraftChip::Paste),
+            })
+            .collect()
     }
 
     pub fn attachments(&self) -> &ImageAttachments {
@@ -153,6 +174,9 @@ impl Editor {
                 stored.tag(),
             )
         };
+        if !self.chip_order.contains(&ChipKind::Paste(capture.id)) {
+            self.chip_order.push(ChipKind::Paste(capture.id));
+        }
         // The tag is text this module generated, so it needs no sanitising — but it goes through
         // `insert` for the cursor, history-navigation and persistence bookkeeping every other
         // insertion gets.
@@ -181,7 +205,7 @@ impl Editor {
     /// attached exactly as it was before anchors existed, whereas an anchor that must be requested
     /// cannot be discovered at all.
     fn admit_image(&mut self, id: u32) {
-        self.chip_order.push(ChipKind::Image);
+        self.chip_order.push(ChipKind::Image(id));
         // Generated text, so it needs no sanitising — but it goes through `insert` for the cursor,
         // history-navigation and persistence bookkeeping every other insertion gets.
         for character in crate::paste_input::image_anchor(id).chars() {
@@ -193,11 +217,11 @@ impl Editor {
     ///
     /// Runs back to front so each byte range still describes the buffer it was measured against —
     /// the same discipline `paste_input::expand` follows, and for the same reason.
-    fn remove_image_anchors(&mut self, id: u32) {
+    fn remove_tag_occurrences(&mut self, kind: crate::paste_input::TagKind, id: u32) {
         let text = self.text();
         let doomed: Vec<std::ops::Range<usize>> = crate::paste_input::find_tags(&text)
             .into_iter()
-            .filter(|found| found.kind == crate::paste_input::TagKind::Image && found.id == id)
+            .filter(|found| found.kind == kind && found.id == id)
             .map(|found| found.byte_range)
             .collect();
         for range in doomed.iter().rev() {
@@ -230,6 +254,57 @@ impl Editor {
         attached
     }
 
+    /// Attach a complete integration-produced context document. The file-input store owns the
+    /// common limits, digest and SQ bytes; the editor contributes only draft ordering.
+    pub fn attach_context(
+        &mut self,
+        kind: ContextKind,
+        display_label: &str,
+        text: String,
+    ) -> Result<&FileAttachment, FileInputError> {
+        let attached = self.files.attach_generated(kind, display_label, text);
+        if attached.is_ok() {
+            self.chip_order.push(ChipKind::File);
+        }
+        attached
+    }
+
+    pub fn attach_context_path(
+        &mut self,
+        kind: ContextKind,
+        workspace: &Path,
+        path: &Path,
+    ) -> Result<&FileAttachment, FileInputError> {
+        let attached = self.files.attach_typed_path(kind, workspace, path);
+        if attached.is_ok() {
+            self.chip_order.push(ChipKind::File);
+        }
+        attached
+    }
+
+    /// Remove one text context chip by its visible one-based index. This is deliberately separate
+    /// from Alt-Backspace's global "newest chip" gesture: `/context delete N` stays stable even
+    /// when image chips are interleaved with text contexts.
+    pub fn remove_context(&mut self, one_based: usize) -> bool {
+        let Some(index) = one_based.checked_sub(1) else {
+            return false;
+        };
+        if self.files.remove(index).is_none() {
+            return false;
+        }
+        if let Some(position) = self
+            .chip_order
+            .iter()
+            .enumerate()
+            .filter(|(_, kind)| **kind == ChipKind::File)
+            .nth(index)
+            .map(|(position, _)| position)
+        {
+            self.chip_order.remove(position);
+        }
+        true
+    }
+
     pub fn attach_image_bytes(
         &mut self,
         display_label: &str,
@@ -248,20 +323,20 @@ impl Editor {
     /// Removing an image chip is the operator saying "this image is not part of my prompt", so its
     /// anchors go with it: an anchor for an image nobody is sending points at nothing, and leaving
     /// it would put "attachment no longer available" into a prompt the operator deliberately tidied.
-    /// This is the opposite direction from deleting the anchor alone, which keeps the image — the
-    /// chip is the authority on *whether*, the anchor only on *where*.
+    /// Deleting either view removes the same attachment: chips and live tags cannot drift apart.
     pub fn remove_last_attachment(&mut self) -> bool {
         match self.chip_order.pop() {
-            Some(ChipKind::Image) => {
-                let Some(removed) = self
+            Some(ChipKind::Image(id)) => {
+                let Some(index) = self
                     .attachments
-                    .len()
-                    .checked_sub(1)
-                    .and_then(|index| self.attachments.remove(index))
+                    .as_slice()
+                    .iter()
+                    .position(|attachment| attachment.id() == id)
                 else {
                     return false;
                 };
-                self.remove_image_anchors(removed.id());
+                self.attachments.remove(index);
+                self.remove_tag_occurrences(crate::paste_input::TagKind::Image, id);
                 true
             }
             Some(ChipKind::File) => self
@@ -270,6 +345,11 @@ impl Editor {
                 .checked_sub(1)
                 .and_then(|index| self.files.remove(index))
                 .is_some(),
+            Some(ChipKind::Paste(id)) => {
+                let removed = self.pastes.remove(id);
+                self.remove_tag_occurrences(crate::paste_input::TagKind::PastedText, id);
+                removed
+            }
             None => false,
         }
     }
@@ -315,6 +395,93 @@ impl Editor {
 
     // ---- deletion --------------------------------------------------------------------------
 
+    /// Expand a text deletion to whole tag boundaries, then reconcile every tag-backed chip.
+    /// No editor gesture is allowed to leave half a tag or a chip whose reference disappeared.
+    fn delete_range_synchronized(&mut self, a: usize, b: usize) {
+        let (mut lo, mut hi) = if a <= b { (a, b) } else { (b, a) };
+        hi = hi.min(self.buf.len());
+        lo = lo.min(hi);
+        if lo == hi {
+            return;
+        }
+        let text = self.text();
+        let tag_ranges = crate::paste_input::find_tags(&text)
+            .into_iter()
+            .filter(|found| match found.kind {
+                crate::paste_input::TagKind::Image => self.attachments.holds_image(found.id),
+                crate::paste_input::TagKind::PastedText => self.pastes.get(found.id).is_some(),
+            })
+            .map(|found| {
+                (
+                    text[..found.byte_range.start].chars().count(),
+                    text[..found.byte_range.end].chars().count(),
+                )
+            })
+            .collect::<Vec<_>>();
+        // Expanding to one tag can make the range touch another; iterate to a fixed point so every
+        // tag the gesture intersects is removed atomically.
+        loop {
+            let before = (lo, hi);
+            for &(start, end) in &tag_ranges {
+                if lo < end && hi > start {
+                    lo = lo.min(start);
+                    hi = hi.max(end);
+                }
+            }
+            if before == (lo, hi) {
+                break;
+            }
+        }
+        self.buf.drain(lo..hi);
+        self.cursor = lo;
+        self.reconcile_tagged_chips();
+        self.leave_navigation();
+        self.mark_persistence_change();
+    }
+
+    /// Bidirectional draft invariant: a tag-backed chip exists iff at least one complete live tag
+    /// still names it. File/context chips are out-of-band and intentionally excluded.
+    fn reconcile_tagged_chips(&mut self) {
+        let tags = crate::paste_input::find_tags(&self.text());
+        let detached_images = self
+            .attachments
+            .as_slice()
+            .iter()
+            .map(ImageAttachment::id)
+            .filter(|id| {
+                !tags
+                    .iter()
+                    .any(|tag| tag.kind == crate::paste_input::TagKind::Image && tag.id == *id)
+            })
+            .collect::<Vec<_>>();
+        for id in detached_images {
+            if let Some(index) = self
+                .attachments
+                .as_slice()
+                .iter()
+                .position(|attachment| attachment.id() == id)
+            {
+                self.attachments.remove(index);
+            }
+            self.chip_order.retain(|kind| *kind != ChipKind::Image(id));
+        }
+        let detached_pastes = self
+            .pastes
+            .as_slice()
+            .iter()
+            .map(crate::paste_input::PastedText::id)
+            .filter(|id| {
+                !tags
+                    .iter()
+                    .any(|tag| tag.kind == crate::paste_input::TagKind::PastedText && tag.id == *id)
+            })
+            .collect::<Vec<_>>();
+        for id in detached_pastes {
+            self.pastes.remove(id);
+            self.chip_order.retain(|kind| *kind != ChipKind::Paste(id));
+        }
+    }
+
     pub fn backspace(&mut self) {
         // A tag or an anchor is one thing on the screen, so it is one thing to erase. Without this,
         // the first backspace eats the closing bracket and turns a live reference into prose that no
@@ -326,48 +493,19 @@ impl Editor {
             &self.pastes,
             &self.attachments,
         ) {
-            self.buf.drain(range.clone());
-            self.cursor = range.start;
-            match kind {
-                // The block is only forgotten when nothing still stands for it: an operator who
-                // duplicated the tag keeps a working second reference instead of a dead one. A
-                // paste with no tag left is unreachable — nothing else on the screen names it.
-                crate::paste_input::TagKind::PastedText => {
-                    if !crate::paste_input::find_tags(&self.text())
-                        .iter()
-                        .any(|found| {
-                            found.kind == crate::paste_input::TagKind::PastedText && found.id == id
-                        })
-                    {
-                        self.pastes.remove(id);
-                    }
-                }
-                // An image is NOT forgotten with its anchor. Its chip is still on the screen with
-                // the file name and size on it, and that chip is the operator's statement that the
-                // image is part of this prompt; silently detaching an attachment they can still see
-                // would make the display lie. What the deletion costs is the position: the image
-                // reverts to being sent after the anchored ones, which is what it did before
-                // anchors existed. Alt+backspace is how an image is taken back.
-                crate::paste_input::TagKind::Image => {}
-            }
-            self.leave_navigation();
-            self.mark_persistence_change();
+            let _ = (id, kind); // identity is reconciled from the post-delete complete tag set.
+            self.delete_range_synchronized(range.start, range.end);
             return;
         }
         if self.cursor > 0 {
-            self.cursor -= 1;
-            self.buf.remove(self.cursor);
-            self.leave_navigation();
-            self.mark_persistence_change();
+            self.delete_range_synchronized(self.cursor - 1, self.cursor);
         }
     }
 
     /// Forward delete (Delete key).
     pub fn delete(&mut self) {
         if self.cursor < self.buf.len() {
-            self.buf.remove(self.cursor);
-            self.leave_navigation();
-            self.mark_persistence_change();
+            self.delete_range_synchronized(self.cursor, self.cursor + 1);
         }
     }
 
@@ -391,39 +529,28 @@ impl Editor {
         if lo == hi {
             return;
         }
-        self.buf.drain(lo..hi);
-        self.cursor = lo;
-        self.leave_navigation();
-        self.mark_persistence_change();
+        self.delete_range_synchronized(lo, hi);
     }
 
     /// Ctrl-W: delete the word before the cursor (skip trailing non-word chars, then a word run).
     pub fn delete_word_before(&mut self) {
         let i = self.word_boundary_left();
         if i != self.cursor {
-            self.buf.drain(i..self.cursor);
-            self.cursor = i;
-            self.leave_navigation();
-            self.mark_persistence_change();
+            self.delete_range_synchronized(i, self.cursor);
         }
     }
 
     /// Ctrl-U: delete from the start of the line to the cursor.
     pub fn kill_to_start(&mut self) {
         if self.cursor != 0 {
-            self.buf.drain(0..self.cursor);
-            self.cursor = 0;
-            self.leave_navigation();
-            self.mark_persistence_change();
+            self.delete_range_synchronized(0, self.cursor);
         }
     }
 
     /// Ctrl-K: delete from the cursor to the end of the line.
     pub fn kill_to_end(&mut self) {
         if self.cursor != self.buf.len() {
-            self.buf.drain(self.cursor..);
-            self.leave_navigation();
-            self.mark_persistence_change();
+            self.delete_range_synchronized(self.cursor, self.buf.len());
         }
     }
 
@@ -570,6 +697,7 @@ impl Editor {
     fn set_text(&mut self, s: &str) {
         self.buf = s.chars().collect();
         self.cursor = self.buf.len();
+        self.reconcile_tagged_chips();
     }
 
     fn clear_current(&mut self) {
@@ -715,18 +843,16 @@ impl Editor {
         }
     }
 
-    /// Replace only composer text after a trusted external-editor round trip. Existing image
-    /// attachments remain ordered on the draft and never cross the editor file boundary.
+    /// Replace composer text after a trusted external-editor round trip. Out-of-band file/context
+    /// chips remain; tag-backed image/paste chips survive only when the returned text still names
+    /// them, under the same invariant as keyboard deletion.
     pub fn replace_text(&mut self, text: &str) {
-        let attachments = std::mem::take(&mut self.attachments);
-        let files = std::mem::take(&mut self.files);
         self.buf.clear();
         self.cursor = 0;
         self.leave_navigation();
         self.buf.extend(sanitize_foreign_text(text).chars());
         self.cursor = self.buf.len();
-        self.attachments = attachments;
-        self.files = files;
+        self.reconcile_tagged_chips();
         self.mark_persistence_change();
     }
 
@@ -951,6 +1077,33 @@ mod tests {
         assert!(editor.files().is_empty());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn context_delete_targets_the_visible_text_chip_index() {
+        let mut editor = ed("inspect");
+        editor
+            .attach_context(ContextKind::Diff, "first", "diff one".into())
+            .unwrap();
+        editor.attach_image_bytes("screen", GIF).unwrap();
+        editor
+            .attach_context(ContextKind::Lsp, "second", "lsp two".into())
+            .unwrap();
+
+        assert!(editor.remove_context(1));
+        assert_eq!(editor.files().len(), 1);
+        assert_eq!(editor.files().as_slice()[0].kind(), ContextKind::Lsp);
+        assert_eq!(editor.attachments().len(), 1);
+        assert!(!editor.remove_context(2));
+        assert!(
+            editor.remove_last_attachment(),
+            "global newest is the LSP chip"
+        );
+        assert!(
+            editor.remove_last_attachment(),
+            "image remains after both text chips"
+        );
+        assert_eq!(editor.chip_count(), 0);
     }
 
     #[test]
@@ -1287,6 +1440,7 @@ mod tests {
             "one backspace erases the reference whole, not its closing bracket"
         );
         assert!(e.pastes().is_empty(), "the block goes with its last tag");
+        assert_eq!(e.chip_count(), 0, "the held-paste chip goes with its tag");
 
         // Ordinary text still deletes one character at a time.
         e.backspace();
@@ -1294,14 +1448,14 @@ mod tests {
     }
 
     #[test]
-    fn backspace_in_the_middle_of_a_tag_is_ordinary_editing() {
+    fn backspace_in_the_middle_of_a_live_tag_removes_the_tag_and_chip_atomically() {
         let mut e = Editor::new();
         e.capture_paste(&big_paste()).expect("a bounded paste");
-        let before = e.text();
         e.left();
         e.backspace();
-        assert_eq!(e.text().len(), before.len() - 1);
-        assert_eq!(e.pastes().len(), 1, "an edited tag is prose, not a removal");
+        assert!(e.text().is_empty());
+        assert!(e.pastes().is_empty());
+        assert_eq!(e.chip_count(), 0);
     }
 
     #[test]
@@ -1379,7 +1533,7 @@ mod tests {
     }
 
     #[test]
-    fn an_anchor_deletes_as_one_unit_and_leaves_the_image_attached() {
+    fn deleting_an_anchor_deletes_its_image_chip_too() {
         let mut e = ed("look at ");
         e.attach_image_bytes("shot.png", GIF)
             .expect("a canonical GIF");
@@ -1391,19 +1545,29 @@ mod tests {
             "look at ",
             "one backspace erases the anchor whole, not its closing bracket"
         );
-        assert_eq!(
-            e.attachments().len(),
-            1,
-            "the chip is the authority on whether the image is sent; the anchor only on where"
+        assert_eq!(e.attachments().len(), 0);
+        assert_eq!(e.chip_count(), 0);
+        assert!(
+            e.has_submission(),
+            "the remaining prose is still a submission"
         );
-        assert!(e.has_submission());
-        // Which is exactly the pre-anchor shape: text, plus an image carried beside it.
         assert_eq!(e.take_submit(), "look at ");
 
         // And ordinary text still deletes one character at a time.
         let mut e = ed("keep");
         e.backspace();
         assert_eq!(e.text(), "kee");
+    }
+
+    #[test]
+    fn a_selection_touching_part_of_an_image_tag_removes_the_whole_tag_and_chip() {
+        let mut e = ed("look at ");
+        e.attach_image_bytes("shot.png", GIF)
+            .expect("a canonical GIF");
+        e.delete_span(10, 12);
+        assert_eq!(e.text(), "look at ");
+        assert!(e.attachments().is_empty());
+        assert_eq!(e.chip_count(), 0);
     }
 
     #[test]

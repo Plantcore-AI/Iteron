@@ -270,7 +270,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         10_000,
         [
             scalar_field!("server_id", true, text_domain!(1, 96, NamespacedId)),
-            scalar_field!("transport", true, finite_enum_domain!("stdio")),
+            scalar_field!("transport", true, finite_enum_domain!("stdio", "http")),
             scalar_field!("tool_name", true, text_domain!(1, 96, NamespacedId)),
             scalar_field!("schema_sha256", true, text_domain!(64, 64, Sha256))
         ],

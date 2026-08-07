@@ -23,6 +23,7 @@ use crate::image_input::{ImageInputErrorKind, SafeDisplayName, read_path_capped}
 use core_protocol::input::{
     FileContent, MAX_FILE_TEXT_BYTES, MAX_INPUT_FILES, MAX_TOTAL_FILE_TEXT_BYTES,
 };
+use sha2::{Digest as _, Sha256};
 use std::fmt;
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
@@ -45,6 +46,46 @@ pub enum FileInputErrorKind {
     FileTooLarge,
     AggregateTooLarge,
     NotText,
+}
+
+/// Provenance class for text carried by a context chip. All four variants become the same bounded
+/// provider-neutral `FileContent` on the SQ, but retaining the class lets the composer state what
+/// the bytes mean instead of flattening a diff or language-server answer into a pretend file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextKind {
+    File,
+    Diff,
+    Ide,
+    Lsp,
+}
+
+impl ContextKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Diff => "diff",
+            Self::Ide => "IDE",
+            Self::Lsp => "LSP",
+        }
+    }
+
+    pub const fn glyph(self) -> &'static str {
+        match self {
+            Self::File => "▤",
+            Self::Diff => "±",
+            Self::Ide => "⌖",
+            Self::Lsp => "λ",
+        }
+    }
+
+    const fn path_component(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Diff => "diff",
+            Self::Ide => "ide",
+            Self::Lsp => "lsp",
+        }
+    }
 }
 
 impl FileInputErrorKind {
@@ -166,11 +207,17 @@ impl Default for FileLoadLimits {
 /// submission will carry.
 #[derive(Clone, PartialEq, Eq)]
 pub struct FileAttachment {
+    kind: ContextKind,
     display_name: SafeDisplayName,
     content: FileContent,
+    digest: String,
 }
 
 impl FileAttachment {
+    pub fn kind(&self) -> ContextKind {
+        self.kind
+    }
+
     pub fn display_name(&self) -> &str {
         self.display_name.as_str()
     }
@@ -184,15 +231,27 @@ impl FileAttachment {
     pub fn text_bytes(&self) -> usize {
         self.content.text.len()
     }
+
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+
+    /// Exact bytes that `to_file_contents` will submit. Callers may render a bounded preview, but
+    /// the digest and byte count always describe this complete string rather than the preview.
+    pub fn text(&self) -> &str {
+        &self.content.text
+    }
 }
 
 impl fmt::Debug for FileAttachment {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("FileAttachment")
+            .field("kind", &self.kind)
             .field("display_name", &self.display_name())
             .field("relative_path", &self.relative_path())
             .field("text_bytes", &self.text_bytes())
+            .field("digest", &self.digest)
             .finish()
     }
 }
@@ -239,6 +298,18 @@ impl FileAttachments {
     /// have no relative form at all.
     pub fn attach_path(
         &mut self,
+        workspace: &Path,
+        requested: &Path,
+    ) -> Result<&FileAttachment, FileInputError> {
+        self.attach_typed_path(ContextKind::File, workspace, requested)
+    }
+
+    /// Snapshot an operator-named text document under an IDE/LSP provenance class. This is the
+    /// filesystem handoff used by editor integrations: Core reads and freezes the document now,
+    /// then submits those exact bytes even if the integration's scratch file changes later.
+    pub fn attach_typed_path(
+        &mut self,
+        kind: ContextKind,
         workspace: &Path,
         requested: &Path,
     ) -> Result<&FileAttachment, FileInputError> {
@@ -302,15 +373,81 @@ impl FileAttachments {
             FileInputError::named(FileInputErrorKind::InvalidReference, name.clone())
         })?;
 
+        self.admit(kind, name, content)
+    }
+
+    /// Attach bytes supplied by a trusted local integration (Git review, IDE selection, or LSP
+    /// result). The synthetic path is content-addressed, terminal-safe provenance; the bytes are
+    /// still admitted through `FileContent` and the same per-item/aggregate limits as real files.
+    pub fn attach_generated(
+        &mut self,
+        kind: ContextKind,
+        display_label: &str,
+        text: String,
+    ) -> Result<&FileAttachment, FileInputError> {
+        if kind == ContextKind::File {
+            return Err(FileInputError::unnamed(
+                FileInputErrorKind::InvalidReference,
+            ));
+        }
+        let name = SafeDisplayName::from_label(display_label);
+        if self.items.len() >= self.limits.max_attachments {
+            return Err(FileInputError::named(
+                FileInputErrorKind::TooManyAttachments,
+                name,
+            ));
+        }
+        if text.len() > self.limits.max_file_bytes {
+            return Err(FileInputError::named(
+                FileInputErrorKind::FileTooLarge,
+                name,
+            ));
+        }
+        if text.len() > self.limits.max_total_bytes.saturating_sub(self.text_bytes) {
+            return Err(FileInputError::named(
+                FileInputErrorKind::AggregateTooLarge,
+                name,
+            ));
+        }
+        if text.contains('\0') {
+            return Err(FileInputError::named(FileInputErrorKind::NotText, name));
+        }
+        let digest = digest_text(&text);
+        let path = format!(".core-context/{}/{}.txt", kind.path_component(), digest);
+        let content = FileContent::new(path, text).map_err(|_| {
+            FileInputError::named(FileInputErrorKind::InvalidReference, name.clone())
+        })?;
+        self.admit(kind, name, content)
+    }
+
+    fn admit(
+        &mut self,
+        kind: ContextKind,
+        name: SafeDisplayName,
+        content: FileContent,
+    ) -> Result<&FileAttachment, FileInputError> {
+        if self
+            .items
+            .iter()
+            .any(|item| item.relative_path() == content.path)
+        {
+            return Err(FileInputError::named(
+                FileInputErrorKind::AlreadyAttached,
+                name,
+            ));
+        }
         self.text_bytes = self
             .text_bytes
             .checked_add(content.text.len())
             .ok_or_else(|| {
                 FileInputError::named(FileInputErrorKind::AggregateTooLarge, name.clone())
             })?;
+        let digest = digest_text(&content.text);
         self.items.push(FileAttachment {
+            kind,
             display_name: name,
             content,
+            digest,
         });
         Ok(self.items.last().expect("an attachment was just appended"))
     }
@@ -332,6 +469,10 @@ impl FileAttachments {
     pub fn to_file_contents(&self) -> Vec<FileContent> {
         self.items.iter().map(|item| item.content.clone()).collect()
     }
+}
+
+fn digest_text(text: &str) -> String {
+    hex::encode(Sha256::digest(text.as_bytes()))
 }
 
 impl Default for FileAttachments {
@@ -558,7 +699,7 @@ const _: () = assert!(
 #[cfg(test)]
 mod tests {
     use super::{
-        FileAttachments, FileInputErrorKind, FileLoadLimits, parse_file_mentions,
+        ContextKind, FileAttachments, FileInputErrorKind, FileLoadLimits, parse_file_mentions,
         render_attached_files,
     };
     use core_protocol::input::{
@@ -891,5 +1032,34 @@ mod tests {
             vec![FileContent::new("a".repeat(1024), "x".repeat(MAX_FILE_TEXT_BYTES)).unwrap()];
         let rendered = render_attached_files("", &largest);
         assert!(rendered.len() <= 1024 + MAX_FILE_TEXT_BYTES + FILE_ATTACHMENT_FRAMING_BYTES);
+    }
+
+    #[test]
+    fn generated_context_retains_type_order_complete_bytes_and_digest() {
+        let mut files = FileAttachments::default();
+        files
+            .attach_generated(ContextKind::Diff, "working tree", "- old\n+ new\n".into())
+            .unwrap();
+        files
+            .attach_generated(ContextKind::Lsp, "definition", "{\"line\":42}\n".into())
+            .unwrap();
+
+        assert_eq!(files.as_slice()[0].kind(), ContextKind::Diff);
+        assert_eq!(files.as_slice()[1].kind(), ContextKind::Lsp);
+        assert_eq!(files.as_slice()[0].text(), "- old\n+ new\n");
+        assert_eq!(files.as_slice()[0].digest().len(), 64);
+        assert!(
+            files.as_slice()[0]
+                .relative_path()
+                .starts_with(".core-context/diff/")
+        );
+        assert_eq!(files.to_file_contents()[1].text, "{\"line\":42}\n");
+
+        assert!(
+            files
+                .attach_generated(ContextKind::Diff, "duplicate", "- old\n+ new\n".into())
+                .is_err(),
+            "content-addressed duplicate context is one chip"
+        );
     }
 }

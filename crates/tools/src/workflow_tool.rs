@@ -1,12 +1,14 @@
 //! The `Workflow` tool — the public surface the model calls to launch an ultracode workflow, mirroring
-//! Claude Code's `Workflow({script?, scriptPath?, args?})`.
+//! Claude Code's `Workflow({name?, script?, scriptPath?, args?})`.
 //!
 //! It is registered ONLY in the writer `Registry::coding_agent` (never in `read_only`), so a
 //! read-only investigator cannot recurse into a fan-out of writer sub-agents — the same gating
 //! discipline as `dispatch_agent` (design §4.1).
 //!
-//! STATUS: in-turn launch is LIVE, and so is detached launch where a session owns runs —
-//! `background`/`collect`/`cancel` are answered by the CLI's `WorkflowSupervisor` through the
+//! STATUS: in-turn launch is LIVE, and so is detached launch where a session owns runs. Legacy
+//! `background`/`collect`/`cancel` inputs remain accepted by the CLI for replay compatibility but
+//! are intentionally absent from the model schema; lifecycle control belongs to `/workflows`.
+//! Detached runs are answered by the CLI's `WorkflowSupervisor` through the
 //! `WorkflowLauncher` seam. A `background` request in a context with no owner runs in-turn and the
 //! tool result says the request was not granted; it is never silently downgraded.
 //! The kernel intercepts this tool by name (like `DISPATCH_AGENT`)
@@ -26,21 +28,25 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     registry.push_tool(
         ToolSpec {
             name: WORKFLOW_TOOL.into(),
-            description: "Launch an ultracode workflow: an ESM script that orchestrates parallel \
+            description: "Launch an ultracode workflow: use the built-in dynamic planner with \
+                          `name: \"ultracode\"`, or provide an ESM script that orchestrates parallel \
                           sub-agents via agent()/parallel()/pipeline()/phase()/log(). Provide the \
                           script inline (`script`) or by path (`scriptPath`), plus optional `args` \
                           exposed to the script as the ambient `args`. The workflow fans out real \
                           sub-agents under a bounded concurrency governor and returns their results. \
                           Use it for wide, structured multi-agent work that a single turn cannot do. \
-                          A run DETACHES by default: you get an immediate receipt, the conversation \
-                          stays usable while it executes, and the result is NOT in the receipt — \
-                          read it with `collect` before you report on it. Pass `background: false` \
-                          only when you cannot continue without the result, which makes this call \
-                          wait for the whole fan-out."
+                          A run launches in the background: you get an immediate task id, the \
+                          conversation stays usable, and the runtime notifies the main thread with \
+                          the bounded result when it settles. Use `/workflows` for live progress, \
+                          stop, and resume."
                 .into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "built-in workflow name; `ultracode` runs planning -> dynamic read-only fan -> reduce inside one engine-owned run"
+                    },
                     "script": {
                         "type": "string",
                         "description": "inline ESM workflow source (first statement `export const meta = {…}`)"
@@ -52,17 +58,9 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                     "args": {
                         "description": "arbitrary JSON exposed to the script as the ambient `args`"
                     },
-                    "background": {
-                        "type": "boolean",
-                        "description": "defaults to TRUE: the run detaches, you get a receipt immediately, and the result is unknown until you call `collect`. Set it to false to wait for the result inside this call. Detaching is granted only where the session owns runs; otherwise the run executes in-turn and the result says so."
-                    },
-                    "collect": {
+                    "resumeFromRunId": {
                         "type": "string",
-                        "description": "run id of an earlier `background` launch: reports RUNNING, or returns that run's full result. Does not launch anything."
-                    },
-                    "cancel": {
-                        "type": "string",
-                        "description": "run id of an earlier `background` launch to stop at its next safe point. Does not launch anything; read the outcome with `collect`."
+                        "description": "same-session run id to resume; completed unchanged agent() calls replay from cache"
                     }
                 }
             }),
@@ -92,6 +90,11 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                         );
                     }
                 }
+                let has_name = call
+                    .input
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|value| !value.trim().is_empty());
                 let has_script = call
                     .input
                     .get("script")
@@ -102,22 +105,55 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                     .get("scriptPath")
                     .and_then(|value| value.as_str())
                     .is_some_and(|value| !value.trim().is_empty());
-                if !has_script && !has_path {
+                let selectors = usize::from(has_name)
+                    .saturating_add(usize::from(has_script))
+                    .saturating_add(usize::from(has_path));
+                if selectors != 1 {
                     return err_result(
                         id,
-                        "Workflow: provide either `script` (inline ESM) or `scriptPath`".into(),
+                        "Workflow: provide exactly one of `name`, `script` (inline ESM), or `scriptPath`"
+                            .into(),
                     );
                 }
                 // Fallback only: on the kernel path this tool is intercepted by name and never
                 // reaches this executor. A non-kernel caller gets an actionable pointer.
                 ok_result(
                     id,
-                    "Workflow received. On the kernel path this launches in-turn; outside it, run \
-                     `core workflow run <script.js> [--args <json>]` to execute it live with \
-                     streaming progress."
+                    "Workflow received. On an interactive kernel path this launches under the \
+                     session owner and detaches by default; outside it, run `core workflow run \
+                     <script.js> [--args <json>]` to execute it live with streaming progress."
                         .into(),
                 )
             })
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_schema_uses_task_notification_lifecycle_not_polling_controls() {
+        let registry = Registry::coding_agent(std::env::temp_dir()).unwrap();
+        let spec = registry
+            .specs()
+            .into_iter()
+            .find(|spec| spec.name == WORKFLOW_TOOL)
+            .expect("writer registry exposes Workflow");
+        let properties = spec.input_schema["properties"]
+            .as_object()
+            .expect("Workflow properties");
+        assert!(properties.contains_key("resumeFromRunId"));
+        for legacy in ["background", "collect", "cancel"] {
+            assert!(
+                !properties.contains_key(legacy),
+                "{legacy} is a hidden replay compatibility input, not model lifecycle guidance"
+            );
+        }
+        assert!(
+            spec.description
+                .contains("runtime notifies the main thread")
+        );
+    }
 }

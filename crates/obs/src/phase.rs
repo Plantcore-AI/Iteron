@@ -21,7 +21,10 @@ impl PhaseSpan {
     }
 
     pub fn elapsed_ms(&self) -> u64 {
-        duration_ms_ceil(self.started.elapsed())
+        // `enter` is itself evidence that the phase ran. Some platform clocks can report an
+        // exact zero for two adjacent reads, so keep an entered phase distinguishable from a
+        // phase that was never observed even at that resolution.
+        duration_ms_ceil(self.started.elapsed()).max(1)
     }
 }
 
@@ -74,6 +77,7 @@ mod tests {
 
     #[test]
     fn duration_conversion_rounds_up_without_wrapping() {
+        assert_eq!(duration_ms_ceil(Duration::ZERO), 0);
         assert_eq!(duration_ms_ceil(Duration::from_nanos(1)), 1);
         assert_eq!(duration_ms_ceil(Duration::from_millis(1)), 1);
         assert_eq!(duration_ms_ceil(Duration::from_nanos(1_000_001)), 2);

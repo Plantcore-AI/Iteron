@@ -18,7 +18,10 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 const CLI_SOURCE: &str = "crates/cli/src/main.rs";
-const EXTERNAL_SUBCOMMAND_SOURCES: &[(&str, &str)] = &[("tunables", "crates/cli/src/tunables.rs")];
+const EXTERNAL_SUBCOMMAND_SOURCES: &[(&str, &str)] = &[
+    ("plugin", "crates/cli/src/plugin.rs"),
+    ("tunables", "crates/cli/src/tunables.rs"),
+];
 const GENERATED_DOC: &str = "docs/reference/cli.md";
 const ROOT_STRUCT: &str = "Cli";
 const MAX_CLI_SOURCE_BYTES: u64 = 1024 * 1024;

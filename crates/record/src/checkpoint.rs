@@ -34,6 +34,14 @@ pub struct Snapshot {
     pub created_at: u64,
 }
 
+/// Bounded path inventory of a checkpoint tree. `complete == false` means more paths exist than
+/// were returned; callers must answer membership outside `paths` as unknown, never absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotInventory {
+    pub paths: Vec<String>,
+    pub complete: bool,
+}
+
 const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 const GIT_EXCLUDE_LIMIT: u64 = 1024 * 1024;
@@ -680,6 +688,20 @@ fn checkpoint_inner(
 /// in the snapshot, so the rewind is a faithful restore rather than an overlay. `.gitignore`d files
 /// are left untouched. External effects are NOT undone by this (ADR-008 §5). Hook-free (ADR-007 §4).
 pub fn rewind_workspace(snap: &Snapshot, workspace: &Path) -> Result<(), RecordError> {
+    rewind_workspace_with_policy(snap, workspace, true)
+}
+
+/// Restore a snapshot while making the treatment of paths absent from it explicit.
+///
+/// `delete_unrecorded = true` produces an exact snapshot tree and may delete work that exists only
+/// in the current workspace. `false` restores every recorded path but leaves later paths in place,
+/// so the result is intentionally an overlay rather than an exact rewind. A caller is expected to
+/// present a change-set preview before choosing either policy.
+pub fn rewind_workspace_with_policy(
+    snap: &Snapshot,
+    workspace: &Path,
+    delete_unrecorded: bool,
+) -> Result<(), RecordError> {
     if !valid_object_id(&snap.tree_ref) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -701,23 +723,56 @@ pub fn rewind_workspace(snap: &Snapshot, workspace: &Path) -> Result<(), RecordE
         .filter(|path| !snap_files.contains(path))
         .collect();
     removals.sort_unstable();
-    for path in &removals {
-        checked_workspace_path(workspace, path)?;
+    if delete_unrecorded {
+        for path in &removals {
+            checked_workspace_path(workspace, path)?;
+        }
     }
 
     // checkout-index can invoke smudge/process filters. Keep it in the same config-isolated Git
     // context as add, so repository-controlled filter commands and hooks are unavailable.
     isolated.run(&["checkout-index", "-a", "-f"])?;
-    for relative in removals {
-        // Re-check after checkout to narrow symlink-swap races across the mutation boundary.
-        let path = checked_workspace_path(workspace, &relative)?;
-        match std::fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+    if delete_unrecorded {
+        for relative in removals {
+            // Re-check after checkout to narrow symlink-swap races across the mutation boundary.
+            let path = checked_workspace_path(workspace, &relative)?;
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
         }
     }
     Ok(())
+}
+
+/// Read a bounded, lossless path inventory from the snapshot tree without touching the operator's
+/// index or working files. `limit` is clamped to 100,000 so a caller cannot opt out of a frontend
+/// memory bound; the underlying Git output remains independently bounded as well.
+pub fn snapshot_inventory(
+    snap: &Snapshot,
+    workspace: &Path,
+    limit: usize,
+) -> Result<SnapshotInventory, RecordError> {
+    if !valid_object_id(&snap.tree_ref) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "checkpoint tree_ref is not a full Git object id",
+        )
+        .into());
+    }
+    let isolated = IsolatedGit::create(&snap.run, snap.at, workspace)?;
+    isolated.run(&["read-tree", &snap.tree_ref])?;
+    let paths = nul_path_set(&isolated.run(&["ls-files", "-z"])?)?;
+    let total = paths.len();
+    let limit = limit.min(100_000);
+    let mut paths: Vec<String> = paths.into_iter().collect();
+    paths.sort_unstable();
+    paths.truncate(limit);
+    Ok(SnapshotInventory {
+        paths,
+        complete: total <= limit,
+    })
 }
 
 #[cfg(test)]
@@ -787,6 +842,52 @@ mod tests {
             !ws.join("c.txt").exists(),
             "a post-snapshot file must be removed by rewind"
         );
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
+    #[test]
+    fn overlay_rewind_restores_recorded_files_and_keeps_later_untracked_work() {
+        if !git_available() {
+            eprintln!("skipping: git not available");
+            return;
+        }
+        let ws = tmp_repo("overlay");
+        test_git(&ws, &["init", "-q"]);
+        std::fs::write(ws.join("tracked.txt"), "before").unwrap();
+        let snap = checkpoint(&RunId("overlay".into()), Seq(1), &ws).unwrap();
+        std::fs::write(ws.join("tracked.txt"), "after").unwrap();
+        std::fs::write(ws.join("later.txt"), "operator work").unwrap();
+
+        rewind_workspace_with_policy(&snap, &ws, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(ws.join("tracked.txt")).unwrap(),
+            "before"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("later.txt")).unwrap(),
+            "operator work"
+        );
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
+    #[test]
+    fn snapshot_inventory_reports_completeness_instead_of_guessing_membership() {
+        if !git_available() {
+            eprintln!("skipping: git not available");
+            return;
+        }
+        let ws = tmp_repo("inventory");
+        test_git(&ws, &["init", "-q"]);
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(ws.join(name), name).unwrap();
+        }
+        let snap = checkpoint(&RunId("inventory".into()), Seq(2), &ws).unwrap();
+        let bounded = snapshot_inventory(&snap, &ws, 2).unwrap();
+        assert_eq!(bounded.paths, vec!["a.txt", "b.txt"]);
+        assert!(!bounded.complete);
+        let complete = snapshot_inventory(&snap, &ws, 10).unwrap();
+        assert_eq!(complete.paths.len(), 3);
+        assert!(complete.complete);
         std::fs::remove_dir_all(&ws).ok();
     }
 

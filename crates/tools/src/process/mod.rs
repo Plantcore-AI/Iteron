@@ -3,7 +3,8 @@
 //! These tools expose an explicitly non-PTY pipe backend. They preserve the shell tool's
 //! Linux bubblewrap workspace confinement and egress-off posture while adding stable job identity
 //! and lifecycle control. macOS and Windows refuse before spawn. Terminal emulation, resize, and a
-//! job-control TUI remain separate capabilities.
+//! job-control clients use the same supervisor handle, so list/attach/write/stop cannot drift from
+//! the model-facing lifecycle.
 
 mod actor;
 mod output;
@@ -43,12 +44,78 @@ const _: () = assert!(
     "queued and in-flight stdin writes must settle before the caller response deadline"
 );
 
-pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
+#[derive(Clone)]
+pub struct ProcessControl {
+    supervisor: Arc<Supervisor>,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{message}")]
+pub struct ProcessControlError {
+    pub message: String,
+    /// True when dispatch crossed an effect boundary but terminal reconciliation was not proven.
+    pub unknown: bool,
+}
+
+impl ProcessControl {
+    pub fn list(&self) -> Result<serde_json::Value, ProcessControlError> {
+        encode_control(self.supervisor.list())
+    }
+
+    pub async fn poll(
+        &self,
+        job_id: &str,
+        stdout_cursor: u64,
+        stderr_cursor: u64,
+        wait_ms: u64,
+    ) -> Result<serde_json::Value, ProcessControlError> {
+        if wait_ms > MAX_POLL_WAIT_MS {
+            return Err(ProcessControlError {
+                message: format!("wait_ms exceeds the fixed {MAX_POLL_WAIT_MS}ms maximum"),
+                unknown: false,
+            });
+        }
+        encode_action(
+            self.supervisor
+                .poll(job_id, stdout_cursor, stderr_cursor, wait_ms)
+                .await,
+        )
+    }
+
+    pub async fn write(
+        &self,
+        job_id: &str,
+        input: String,
+        eof: bool,
+    ) -> Result<serde_json::Value, ProcessControlError> {
+        if input.is_empty() && !eof {
+            return Err(ProcessControlError {
+                message: "input must be non-empty unless eof is true".into(),
+                unknown: false,
+            });
+        }
+        if input.len() > MAX_STDIN_BYTES {
+            return Err(ProcessControlError {
+                message: format!("input exceeds the fixed {MAX_STDIN_BYTES}-byte limit"),
+                unknown: false,
+            });
+        }
+        encode_action(self.supervisor.write(job_id, input.into_bytes(), eof).await)
+    }
+
+    pub async fn stop(&self, job_id: &str) -> Result<serde_json::Value, ProcessControlError> {
+        encode_action(self.supervisor.stop(job_id).await)
+    }
+}
+
+pub(crate) fn register(registry: &mut Registry) -> Result<ProcessControl, ToolError> {
     let supervisor = Arc::new(Supervisor::new().map_err(ToolError::Registration)?);
     register_start(registry, Arc::clone(&supervisor))?;
+    register_list(registry, Arc::clone(&supervisor))?;
     register_poll(registry, Arc::clone(&supervisor))?;
     register_write(registry, Arc::clone(&supervisor))?;
-    register_stop(registry, supervisor)
+    register_stop(registry, Arc::clone(&supervisor))?;
+    Ok(ProcessControl { supervisor })
 }
 
 fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result<(), ToolError> {
@@ -98,6 +165,26 @@ fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
                     .clone();
                 action_result(call.id, supervisor.start(&root, command, names).await)
             })
+        },
+    )
+}
+
+fn register_list(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result<(), ToolError> {
+    registry.register_external_effect(
+        ToolSpec {
+            name: "process_list".into(),
+            description: format!(
+                "List at most {MAX_JOB_RECORDS} retained background jobs with lifecycle state, \
+                 backend, bounded command, and output cursors. The response carries no output \
+                 body; use process_poll to attach at a cursor."
+            ),
+            input_schema: serde_json::json!({"type":"object","properties":{}}),
+            purity: Purity::Effecting,
+            capability: Capability::ReadOnly,
+        },
+        move |call, _root| {
+            let supervisor = Arc::clone(&supervisor);
+            effectfut::box_it(async move { action_result(call.id, Ok(supervisor.list())) })
         },
     )
 }
@@ -282,6 +369,29 @@ fn action_result<T: Serialize>(
             ToolExecution::Unknown(tool_result(tool_use_id, error, true))
         }
     }
+}
+
+fn encode_action<T: Serialize>(
+    result: Result<T, ActionError>,
+) -> Result<serde_json::Value, ProcessControlError> {
+    match result {
+        Ok(value) => encode_control(value),
+        Err(ActionError::Definite(message)) => Err(ProcessControlError {
+            message,
+            unknown: false,
+        }),
+        Err(ActionError::Unknown(message)) => Err(ProcessControlError {
+            message,
+            unknown: true,
+        }),
+    }
+}
+
+fn encode_control<T: Serialize>(value: T) -> Result<serde_json::Value, ProcessControlError> {
+    serde_json::to_value(value).map_err(|error| ProcessControlError {
+        message: format!("serialize process control result: {error}"),
+        unknown: false,
+    })
 }
 
 fn definite_error(tool_use_id: String, error: impl Into<String>) -> ToolExecution {

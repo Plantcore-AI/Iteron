@@ -31,10 +31,10 @@ pub struct AgentTask {
     /// The evidence shape the writer can verify and either adopt or reject.
     #[serde(default)]
     pub deliverable: String,
-    /// Fully-specified compatibility prompt consumed by the current kernel. The structured fields
-    /// above are authoritative; this rendered form keeps older executors useful while they migrate
-    /// to the typed contract. There is no implicit sibling coordination — anything a worker must
-    /// know is stated here (ADR-001).
+    /// Fully-specified compatibility prompt retained for serialized plans. The built-in workflow
+    /// script renders the authoritative structured fields above with the root-task boundary before
+    /// calling `agent()`. There is no implicit sibling coordination — anything a worker must know
+    /// is stated here (ADR-001).
     pub prompt: String,
 }
 
