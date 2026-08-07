@@ -145,8 +145,6 @@ def create_build_info(arguments: argparse.Namespace) -> None:
         "target": target,
         "version": version,
     }
-    if arguments.receipt.resolve() == arguments.output.resolve():
-        raise ReleaseToolError("manifest and receipt outputs must be distinct")
     atomic_write_text(arguments.output, canonical_json(document))
     print(arguments.output)
 
@@ -154,6 +152,8 @@ def create_build_info(arguments: argparse.Namespace) -> None:
 def create_release(arguments: argparse.Namespace) -> None:
     version = validate_version(arguments.version)
     commit = validate_commit(arguments.commit)
+    if arguments.receipt.resolve() == arguments.output.resolve():
+        raise ReleaseToolError("manifest and receipt outputs must be distinct")
     targets = tuple(arguments.targets or SUPPORTED_TARGETS)
     if len(targets) != len(set(targets)):
         raise ReleaseToolError("release target list contains a duplicate")

@@ -65,6 +65,46 @@ class ReleaseToolsTest(unittest.TestCase):
             output_dir=output,
         )
 
+    def test_build_info_does_not_require_a_release_receipt(self) -> None:
+        output = self.root / "BUILD-INFO.json"
+        manifest.create_build_info(
+            argparse.Namespace(
+                version="0.0.2",
+                target="aarch64-apple-darwin",
+                commit="a" * 40,
+                rustc="rustc 1.90.0",
+                cargo="cargo 1.90.0",
+                output=output,
+            )
+        )
+        self.assertEqual(
+            json.loads(output.read_text(encoding="utf-8")),
+            {
+                "cargo": "cargo 1.90.0",
+                "commit": "a" * 40,
+                "product": "Core Code",
+                "rustc": "rustc 1.90.0",
+                "schema_version": 1,
+                "target": "aarch64-apple-darwin",
+                "version": "0.0.2",
+            },
+        )
+
+    def test_release_manifest_requires_distinct_manifest_and_receipt(self) -> None:
+        output = self.root / "release-manifest.json"
+        with self.assertRaisesRegex(ReleaseToolError, "must be distinct"):
+            manifest.create_release(
+                argparse.Namespace(
+                    version="0.0.2",
+                    commit="a" * 40,
+                    dist=self.root,
+                    targets=["aarch64-apple-darwin"],
+                    output=output,
+                    receipt=output,
+                    protocol_source=self.root / "wire.rs",
+                )
+            )
+
     def test_package_is_deterministic_and_exact(self) -> None:
         first_dir = self.root / "first"
         second_dir = self.root / "second"
