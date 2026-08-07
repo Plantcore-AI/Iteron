@@ -19,21 +19,18 @@
 //! module's end-anchored delete rule, and resolved against the draft's image store exactly as
 //! `[Pasted text #N]` is resolved against [`PastedTexts`].
 //!
-//! It is *half* the same answer because an image is two things on the screen, not one:
+//! An image is two synchronized views of one attachment on the screen:
 //!
-//! - the **chip** (`▧ #1 shot.png · 75 B`) is the image's identity and the authority on whether it
-//!   is sent. It carries the file name and byte count, which is the only way an operator tells two
-//!   screenshots apart, and nothing here may take that away.
-//! - the **anchor** (`[Image #1]`) is the authority on *where* in the argument the image belongs,
-//!   and nothing else. It is not expanded into bytes — image payloads travel in their own protocol
+//! - the **chip** (`▧ #1 shot.png · 75 B`) carries the image's visible identity, file name, and
+//!   byte count.
+//! - the **anchor** (`[Image #1]`) records *where* in the argument the image belongs. It is not
+//!   expanded into bytes — image payloads travel in their own protocol
 //!   segments, and [`core_protocol::input::ContentSegments`] is frozen at exactly one text segment
 //!   — so the anchor survives into the submitted text as the marker the segment order answers.
 //!
-//! That split is what decides the two questions an operator will ask. Deleting the *anchor* leaves
-//! the image attached and still sent, appended after the anchored ones, which is precisely the
-//! behaviour images had before anchors existed; the chip still says so on the screen. Deleting the
-//! *chip* (alt+backspace) detaches the image and takes its anchors out of the draft with it,
-//! because an anchor for an image that is not being sent is a reference to nothing.
+//! The views are deliberately inseparable: deleting a live anchor also removes its chip and
+//! payload; deleting the chip (alt+backspace) removes every matching anchor. The same bidirectional
+//! invariant applies to held-paste tags and chips. File/context chips have no in-band tag.
 //!
 //! Four properties are load-bearing.
 //!
@@ -265,6 +262,10 @@ impl PastedTexts {
 
     pub fn get(&self, id: u32) -> Option<&PastedText> {
         self.items.iter().find(|item| item.id == id)
+    }
+
+    pub fn as_slice(&self) -> &[PastedText] {
+        &self.items
     }
 
     /// Admit one pasted block, already sanitised by the caller.

@@ -20,8 +20,33 @@
 //! **Offline is a state, not a silence.** A cached catalogue is still usable when the network is
 //! gone -- refusing to work offline would be its own failure -- but it is reported as stale, with
 //! its age, so "no updates available" cannot be confused with "could not ask".
+//!
+//! # After installation: composition
+//!
+//! Installation admits third-party code one plugin at a time. The moment two of them are installed,
+//! a second question opens that no per-install check can answer: several people who never met have
+//! each contributed a skill, an agent, a hook, a language server, and something must decide what the
+//! runtime actually exposes. [`composition`] holds that decision -- slot-addressed merge,
+//! order-independent conflict resolution, and refusal of a malformed manifest in isolation from its
+//! neighbours -- and states what process-level crash isolation would still require.
 
 use std::collections::BTreeMap;
+
+pub mod composition;
+pub mod composition_model;
+pub mod package;
+
+pub use composition::{
+    Arbitration, Binding, Composition, Contest, Host, Report, Wiring, compose, compose_governed,
+};
+pub use composition_model::{
+    Contribution, Defect, MAX_CONTRIBUTIONS_PER_PLUGIN, MAX_DETAIL_BYTES,
+    MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_REQUIREMENTS, MAX_SLOT_KEY_BYTES, Manifest, PluginScope,
+    Refusal, Requirement, RuntimeScope, Slot, Surface,
+};
+pub use package::{
+    ActivePlugin, ArtifactRef, InstalledPackage, PackageError, PluginStore, RuntimePackages,
+};
 
 /// Longest plugin identifier accepted. Names appear in paths and in the operator's UI.
 pub const MAX_NAME_BYTES: usize = 64;
@@ -50,7 +75,18 @@ pub enum InstallError {
 
 /// A three-part version. Ordering is derived, so comparison is lexicographic over the tuple, which
 /// is exactly semantic-version precedence for the numeric core.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Version(pub u32, pub u32, pub u32);
 
 impl std::fmt::Display for Version {
@@ -118,7 +154,7 @@ impl Freshness {
     }
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= MAX_NAME_BYTES
         && name

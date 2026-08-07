@@ -1449,9 +1449,9 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
 #[test]
 fn status_shape_and_semantic_digest_contract_are_exact() {
     for (status, expected) in [
-        (ImplementationStatus::Full, 28),
-        (ImplementationStatus::Partial, 52),
-        (ImplementationStatus::Missing, 27),
+        (ImplementationStatus::Full, 30),
+        (ImplementationStatus::Partial, 51),
+        (ImplementationStatus::Missing, 26),
         (ImplementationStatus::FixedHidden, 53),
     ] {
         assert_eq!(

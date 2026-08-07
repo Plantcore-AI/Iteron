@@ -449,6 +449,13 @@ const UI_LABEL_MAX: usize = 120;
 /// unfrozen [`ProgressEvent`] rather than a mirrored wire vocabulary, for the reasons above.
 #[derive(Debug, Clone)]
 pub enum WorkflowRunUiEvent {
+    /// Bounded progress from an internal kernel model turn. This shares the TUI-only channel with
+    /// workflow engine progress so the published `UiEvent`/machine-stream schema stays frozen.
+    KernelActivity {
+        kind: KernelActivityKind,
+        output_chars: usize,
+        thinking_chars: usize,
+    },
     /// A run is about to start. `phases` are the script's DECLARED `meta.phases`, so the frontend
     /// lays every phase box out on the first frame instead of growing the tree as execution
     /// reaches them — the same seeding [`new_run_card`] does for the one-shot surface.
@@ -465,6 +472,22 @@ pub enum WorkflowRunUiEvent {
     /// The engine future for this run resolved. `ingest` alone never marks a card finished, so
     /// without this the tree would spin forever.
     Finished { run_id: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelActivityKind {
+    #[allow(dead_code)]
+    Planning,
+    Compaction,
+}
+
+impl KernelActivityKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Planning => "planning",
+            Self::Compaction => "compacting",
+        }
+    }
 }
 
 /// Apply the frontend's display gate to one untrusted line: secret-shaped substrings redacted and
@@ -953,6 +976,9 @@ pub struct RunSettled {
     pub run_id: String,
     /// The operator-facing line. Names the run, its terminal state, and how to read the result.
     pub notice: String,
+    /// Bounded model-facing task notification. The session owner either steers this into a live
+    /// writer or starts one follow-up while idle; it is never reclassified as operator input.
+    pub notification: String,
 }
 
 /// What the session did with the runs it still owned when it ended.
@@ -977,11 +1003,58 @@ impl ShutdownReport {
 /// a `collect` on an evicted run names the durable `result.json` instead of answering "unknown".
 /// A silently forgotten result would be indistinguishable from a run that never happened.
 const MAX_RETAINED_SUMMARY_BYTES: usize = 4 * 1024 * 1024;
+const MAX_TASK_NOTIFICATION_RESULT_BYTES: usize = 48 * 1024;
+
+fn utf8_head(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    &text[..end]
+}
+
+fn workflow_task_notification(
+    name: &str,
+    run_id: &str,
+    status: &str,
+    summary: &str,
+    result_path: Option<&Path>,
+    report: &RunReport,
+) -> String {
+    let truncated = summary.len() > MAX_TASK_NOTIFICATION_RESULT_BYTES;
+    let result = utf8_head(summary, MAX_TASK_NOTIFICATION_RESULT_BYTES);
+    let payload = serde_json::json!({
+        "task_id": run_id,
+        "task_type": "local_workflow",
+        "status": status,
+        "summary": format!("Dynamic workflow \"{name}\" {status}"),
+        "result": result,
+        "result_truncated": truncated,
+        "full_result_path": result_path,
+        "usage": {
+            "agent_count": report.cache_hits.saturating_add(report.cache_misses),
+            "subagent_tokens": report.tokens,
+            "tool_uses": report.tool_calls,
+            "duration_ms": report.elapsed_ms,
+        }
+    });
+    format!(
+        "<task-notification>\n{}\n</task-notification>",
+        serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())
+    )
+}
 
 /// How long a session waits for the runs it cancelled at exit before writing their terminal record
 /// itself. The engine interrupts a sync JS loop at its own safe point; this bounds the wait so
 /// quitting can never hang on a script that ignores it.
 pub const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Most session-owned run rows copied into one operator inventory response. Durable history remains
+/// available through sidecars; this bound keeps one `/workflows` refresh independent of session age.
+const MAX_OPERATOR_INVENTORY_RUNS: usize = 64;
 
 enum SupervisedState {
     Running {
@@ -1007,6 +1080,59 @@ struct SupervisedRun {
     state: SupervisedState,
     /// Monotonic registration order, so eviction drops the oldest settled summary first.
     ordinal: u64,
+}
+
+/// Operator-facing state for one workflow run owned by the current interactive session.
+///
+/// This is deliberately smaller than [`SupervisedState`]: summaries and engine handles never
+/// cross into the frontend. The TUI needs identity, lifecycle and bounded progress counters only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupervisedRunStatus {
+    Running,
+    Cancelling,
+    Settled,
+    Failed,
+}
+
+/// A bounded snapshot of one session-owned workflow run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupervisedRunInfo {
+    pub run_id: String,
+    pub name: String,
+    pub status: SupervisedRunStatus,
+    pub elapsed_ms: u64,
+    pub finished_agents: usize,
+    pub running_agents: usize,
+    pub dropped_results: usize,
+}
+
+fn supervised_run_info(run_id: &str, run: &SupervisedRun) -> SupervisedRunInfo {
+    let partial = run.partial.snapshot();
+    let (status, elapsed_ms) = match &run.state {
+        SupervisedState::Running {
+            started,
+            cancelling,
+            ..
+        } => (
+            if *cancelling {
+                SupervisedRunStatus::Cancelling
+            } else {
+                SupervisedRunStatus::Running
+            },
+            started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+        ),
+        SupervisedState::Settled { .. } => (SupervisedRunStatus::Settled, 0),
+        SupervisedState::Failed { .. } => (SupervisedRunStatus::Failed, 0),
+    };
+    SupervisedRunInfo {
+        run_id: run_id.to_string(),
+        name: run.name.clone(),
+        status,
+        elapsed_ms,
+        finished_agents: partial.finished.len(),
+        running_agents: partial.running,
+        dropped_results: partial.dropped,
+    }
 }
 
 /// The one answer for a settled run whose summary is no longer held in memory.
@@ -1076,6 +1202,61 @@ impl WorkflowSupervisor {
         })
     }
 
+    /// Snapshot the newest session-owned runs in registration order. The response has an explicit
+    /// row ceiling and contains no model-authored result bytes.
+    pub fn inventory(&self) -> Vec<SupervisedRunInfo> {
+        let inner = self.inner.lock().unwrap();
+        let mut runs: Vec<_> = inner
+            .runs
+            .iter()
+            .map(|(run_id, run)| (run.ordinal, run_id.as_str(), run))
+            .collect();
+        runs.sort_by_key(|(ordinal, _, _)| *ordinal);
+        let skip = runs.len().saturating_sub(MAX_OPERATOR_INVENTORY_RUNS);
+        runs.into_iter()
+            .skip(skip)
+            .map(|(_, run_id, run)| supervised_run_info(run_id, run))
+            .collect()
+    }
+
+    /// Whether a persisted run id may be resumed through this owner. A running or already-
+    /// cancelling run must settle first; replacing its handle would orphan its reaper.
+    pub fn may_resume(&self, run_id: &str) -> bool {
+        let inner = self.inner.lock().unwrap();
+        !inner
+            .runs
+            .get(run_id)
+            .is_some_and(|run| matches!(run.state, SupervisedState::Running { .. }))
+    }
+
+    /// Operator kill: trip exactly the selected detached run and return its post-request snapshot.
+    /// This bypasses the model-facing `Workflow({cancel})` surface while sharing the same owner and
+    /// cancellation token.
+    pub fn cancel_for_operator(&self, run_id: &str) -> Result<SupervisedRunInfo, String> {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(run) = inner.runs.get_mut(run_id) else {
+            return Err(format!(
+                "workflow run `{run_id}` is not owned by this session"
+            ));
+        };
+        match &mut run.state {
+            SupervisedState::Running {
+                handle, cancelling, ..
+            } => {
+                run.partial.note_kill();
+                handle.cancel();
+                *cancelling = true;
+                Ok(supervised_run_info(run_id, run))
+            }
+            SupervisedState::Settled { .. } => {
+                Err(format!("workflow run `{run_id}` has already settled"))
+            }
+            SupervisedState::Failed { .. } => {
+                Err(format!("workflow run `{run_id}` has already failed"))
+            }
+        }
+    }
+
     /// Register and start one detached run, spawning the reaper that owns it from here on.
     fn detach(
         &self,
@@ -1104,7 +1285,7 @@ impl WorkflowSupervisor {
             let mut inner = self.inner.lock().unwrap();
             let ordinal = inner.next_ordinal;
             inner.next_ordinal += 1;
-            inner.runs.insert(
+            let replaced = inner.runs.insert(
                 run_id.clone(),
                 SupervisedRun {
                     name: name.clone(),
@@ -1119,6 +1300,16 @@ impl WorkflowSupervisor {
                     ordinal,
                 },
             );
+            if let Some(SupervisedRun {
+                state:
+                    SupervisedState::Settled {
+                        summary: Some(summary),
+                    },
+                ..
+            }) = replaced
+            {
+                inner.retained_bytes = inner.retained_bytes.saturating_sub(summary.len());
+            }
         }
 
         // The reaper. It is the only joiner of this handle (`RunHandle::join` consumes the
@@ -1156,7 +1347,7 @@ impl WorkflowSupervisor {
         };
 
         // Render first, WITHOUT the lock: both summaries are pure and the report can be large.
-        let (report, state, notice) = match outcome {
+        let (report, state, notice, status, model_summary) = match outcome {
             Ok(report) => {
                 // `stopped` is set for exactly the cancellation token this owner trips, so it is
                 // the kill signal. A run that returned on its own a moment before the cancel landed
@@ -1177,15 +1368,22 @@ impl WorkflowSupervisor {
                 } else {
                     "finished in the background"
                 };
+                let status = if report.stopped {
+                    "stopped"
+                } else {
+                    "completed"
+                };
                 (
                     report,
                     SupervisedState::Settled {
-                        summary: Some(summary),
+                        summary: Some(summary.clone()),
                     },
                     format!(
-                        "Workflow `{name}` (run {run_id}) {terminal}; the model can read it with \
-                         Workflow({{\"collect\":\"{run_id}\"}}), and `core workflow list` records it"
+                        "Dynamic workflow `{name}` (run {run_id}) {terminal}; `/workflows` shows its \
+                         result and controls"
                     ),
+                    status,
+                    summary,
                 )
             }
             Err(error) => {
@@ -1196,6 +1394,8 @@ impl WorkflowSupervisor {
                         error: message.clone(),
                     },
                     format!("Workflow `{name}` (run {run_id}) failed in the background: {message}"),
+                    "failed",
+                    message,
                 )
             }
         };
@@ -1223,17 +1423,32 @@ impl WorkflowSupervisor {
             evict_summaries(&mut inner);
         }
 
-        if let Err(error) = persist_result(&workflows_dir, run_id, &report) {
-            // Degrade, never destroy: a sidecar that cannot be written must not cost the operator a
-            // run they already paid for. The summary is still in memory and `collect` still answers.
-            notice.push_str(&format!(
-                " (its result sidecar could not be written: {error})"
-            ));
-        }
+        let result_path = run_dir(&workflows_dir, run_id).join("result.json");
+        let result_persisted = match persist_result(&workflows_dir, run_id, &report) {
+            Ok(()) => true,
+            Err(error) => {
+                // Degrade, never destroy: a sidecar that cannot be written must not cost the
+                // operator a run they already paid for. The bounded notification remains available.
+                notice.push_str(&format!(
+                    " (its result sidecar could not be written: {error})"
+                ));
+                false
+            }
+        };
+
+        let notification = workflow_task_notification(
+            name,
+            run_id,
+            status,
+            &model_summary,
+            result_persisted.then_some(result_path.as_path()),
+            &report,
+        );
 
         let _ = self.settled.send(RunSettled {
             run_id: run_id.to_string(),
             notice,
+            notification,
         });
     }
 
@@ -1836,6 +2051,21 @@ fn now_secs() -> u64 {
 /// `<workflows_dir>/<run_id>/`.
 pub fn run_dir(workflows_dir: &Path, run_id: &str) -> PathBuf {
     workflows_dir.join(run_id)
+}
+
+/// Whether `run_id` is safe to use as one direct child directory name.
+///
+/// Generated ids already satisfy this. Operator controls validate persisted ids again because a
+/// path-bearing resume request must never turn `Path::join` into traversal outside the workflow
+/// store.
+pub fn valid_run_id(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && run_id.len() <= 160
+        && run_id != "."
+        && run_id != ".."
+        && run_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 /// Persist the re-launchable inputs (script source + manifest) BEFORE the run starts, so a crash
@@ -3179,13 +3409,19 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
             panic!("the run must detach to be cancellable out of band");
         };
 
-        let Collected::Running { name, .. } = owner.cancel(&run_id) else {
-            panic!("cancel is a request; the settled result arrives through the reaper");
-        };
-        assert!(name.contains("cancelling"), "{name}");
+        let before = owner.inventory();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].status, SupervisedRunStatus::Running);
+        let stopping = owner
+            .cancel_for_operator(&run_id)
+            .expect("the operator owns this run");
+        assert_eq!(stopping.status, SupervisedRunStatus::Cancelling);
+        assert!(!owner.may_resume(&run_id));
 
         let settled = settled_line(&mut rx).await;
         assert_eq!(settled.run_id, run_id);
+        assert!(owner.may_resume(&run_id));
+        assert_eq!(owner.inventory()[0].status, SupervisedRunStatus::Settled);
         let Collected::Settled { summary } = owner.collect(&run_id) else {
             panic!("a cancelled run still settles with a readable outcome");
         };

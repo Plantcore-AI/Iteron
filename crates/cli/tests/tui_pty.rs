@@ -21,7 +21,6 @@ const LINK_MODEL_ID: &str = "tui-link-model";
 const LINK_TEST_KEY_ENV: &str = "CORE_TUI_LINK_TEST_KEY";
 const LINK_TEST_KEY: &str = "integration-test-placeholder";
 const LINK_TARGET: &str = "https://example.com/core-guide";
-const TERMINAL_BELL: u8 = b'\x07';
 const OSC9_RUN_COMPLETE: &[u8] = b"\x1b]9;Core Code: run complete\x07";
 const CLIENT_PARITY_TASK: &str = include_str!("fixtures/client-parity-task.txt");
 const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
@@ -29,7 +28,7 @@ const KEYBOARD_ENHANCEMENT_PUSH: &[u8] = b"\x1b[>1u";
 const KEYBOARD_ENHANCEMENT_POP: &[u8] = b"\x1b[<1u";
 const OSC11_QUERY: &[u8] = b"\x1b]11;?\x1b\\";
 /// A glyph from the startup banner, i.e. proof that a real frame reached the terminal.
-const FIRST_FRAME_MARKER: &[u8] = "██████╗".as_bytes();
+const FIRST_FRAME_MARKER: &[u8] = "ask about this codebase or describe a task".as_bytes();
 static SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
 
 struct Scratch {
@@ -216,7 +215,7 @@ impl LinkProvider {
         let address = listener.local_addr().expect("read TUI provider address");
         let handle = thread::spawn(move || {
             let mut stream = accept_provider_connection(&listener);
-            read_provider_request(&mut stream);
+            let _ = read_provider_request(&mut stream);
             stream
                 .set_write_timeout(Some(PROVIDER_IO_TIMEOUT))
                 .expect("bound TUI provider write");
@@ -276,7 +275,7 @@ impl BlockingLinkProvider {
         let (release, release_rx) = mpsc::channel();
         let handle = thread::spawn(move || {
             let mut stream = accept_provider_connection(&listener);
-            read_provider_request(&mut stream);
+            let _ = read_provider_request(&mut stream);
             started_tx.send(()).expect("signal admitted provider turn");
             release_rx
                 .recv_timeout(PROVIDER_TIMEOUT)
@@ -287,13 +286,12 @@ impl BlockingLinkProvider {
                 "data: {\"id\":\"chatcmpl-drain\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\n",
                 "data: [DONE]\n\n"
             );
-            write!(
+            let _ = write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
-            )
-            .expect("write drain fixture response");
-            stream.flush().expect("flush drain fixture response");
+            );
+            let _ = stream.flush();
         });
         Self {
             api_root: format!("http://{address}/v1"),
@@ -309,6 +307,84 @@ impl BlockingLinkProvider {
             .expect("drain provider thread exists")
             .join()
             .expect("drain provider completed cleanly");
+    }
+}
+
+/// Two provider turns with an operator-controlled boundary between them. The first request keeps
+/// the TUI active long enough to send Esc + a new prompt through the real PTY; the second request
+/// is captured so the test can prove the queued bytes reached a fresh turn exactly once.
+struct InterruptHandoffProvider {
+    api_root: String,
+    first_started: Receiver<()>,
+    release_first: mpsc::Sender<()>,
+    second_request: Receiver<Vec<u8>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl InterruptHandoffProvider {
+    fn spawn() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind interrupt fixture provider");
+        listener
+            .set_nonblocking(true)
+            .expect("make interrupt fixture accept bounded");
+        let address = listener.local_addr().expect("read provider address");
+        let (first_started_tx, first_started) = mpsc::channel();
+        let (release_first, release_first_rx) = mpsc::channel();
+        let (second_request_tx, second_request) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let mut first = accept_provider_connection(&listener);
+            let _ = read_provider_request(&mut first);
+            first_started_tx
+                .send(())
+                .expect("signal first provider turn");
+            release_first_rx
+                .recv_timeout(PROVIDER_TIMEOUT)
+                .expect("interrupt test releases first provider turn");
+            let first_body = concat!(
+                "data: {\"id\":\"chatcmpl-interrupt-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"First turn reached its boundary.\"},\"finish_reason\":null}],\"usage\":null}\n\n",
+                "data: {\"id\":\"chatcmpl-interrupt-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+                "data: [DONE]\n\n"
+            );
+            let _ = write!(
+                first,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{first_body}",
+                first_body.len()
+            );
+            let _ = first.flush();
+
+            let mut second = accept_provider_connection(&listener);
+            let request = read_provider_request(&mut second);
+            second_request_tx
+                .send(request)
+                .expect("capture the queued next prompt");
+            let second_body = concat!(
+                "data: {\"id\":\"chatcmpl-interrupt-2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Next prompt completed.\"},\"finish_reason\":null}],\"usage\":null}\n\n",
+                "data: {\"id\":\"chatcmpl-interrupt-2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+                "data: [DONE]\n\n"
+            );
+            write!(
+                second,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{second_body}",
+                second_body.len()
+            )
+            .expect("write second provider response");
+            second.flush().expect("flush second provider response");
+        });
+        Self {
+            api_root: format!("http://{address}/v1"),
+            first_started,
+            release_first,
+            second_request,
+            handle: Some(handle),
+        }
+    }
+
+    fn finish(mut self) {
+        self.handle
+            .take()
+            .expect("interrupt provider thread exists")
+            .join()
+            .expect("interrupt provider completed cleanly");
     }
 }
 
@@ -337,7 +413,7 @@ fn accept_provider_connection(listener: &TcpListener) -> TcpStream {
     }
 }
 
-fn read_provider_request(stream: &mut TcpStream) {
+fn read_provider_request(stream: &mut TcpStream) -> Vec<u8> {
     stream
         .set_read_timeout(Some(PROVIDER_IO_TIMEOUT))
         .expect("bound TUI provider read");
@@ -368,7 +444,7 @@ fn read_provider_request(stream: &mut TcpStream) {
             expected = Some(headers_end + 4 + content_length);
         }
         if expected.is_some_and(|expected| request.len() >= expected) {
-            return;
+            return request;
         }
     }
 }
@@ -859,8 +935,8 @@ fn wait_for_ready(pty: &mut PtyHarness) {
         screen.alternate_screen()
             && screen.bracketed_paste()
             && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
-            && text.contains("██████╗")
-            && text.contains("Prompt")
+            && text.contains("▄██")
+            && text.contains("ask about this codebase")
             && text.contains("glm-5.2")
             && text.contains("○ low")
             && !text.contains('�')
@@ -953,8 +1029,7 @@ fn vim_composer_routes_insert_normal_delete_and_return_to_insert() {
 
     pty.send(b"\x05\x15"); // move to end, then readline-clear the whole insert-mode draft.
     pty.wait_until("the empty insert-mode composer", |pty| {
-        pty.screen_text()
-            .contains("describe a task, question, or change")
+        pty.screen_text().contains("ask about this codebase")
     });
     pty.send(b"\x03"); // Ctrl-C exits the empty TUI.
     let status = pty.wait_for_exit();
@@ -1022,6 +1097,46 @@ fn tunables_registry_search_and_detail_are_terminal_real() {
 }
 
 #[test]
+fn experiment_lab_is_terminal_real_read_only_by_default_and_blocks_promotion() {
+    let scratch = Scratch::new("experiment-lab");
+    let mut pty = PtyHarness::spawn(&scratch, 110, 30);
+    wait_for_ready(&mut pty);
+
+    pty.send(b"/lab\r");
+    pty.wait_until("offline experiment lab panel", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("experiment lab")
+            && screen.contains("offline · train-only")
+            && screen.contains("external human authority only")
+            && screen.contains("No runtime setting changes")
+    });
+    assert!(
+        !scratch.repo().join(".core/experiments").exists(),
+        "opening the lab must not create state"
+    );
+    assert_ne!(
+        pty.parser.screen().mouse_protocol_mode(),
+        vt100::MouseProtocolMode::None,
+        "the lab must preserve real mouse capture"
+    );
+
+    pty.send(b"/lab promote\r");
+    pty.wait_until("promotion authority boundary panel", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("experiment lab · promotion boundary")
+            && screen.contains("blocked by design")
+            && screen.contains("unavailable from /lab")
+    });
+
+    pty.send(b"\x03");
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "normal TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+}
+
+#[test]
 fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_real() {
     let scratch = Scratch::new("transcript-viewer");
     let mut pty = PtyHarness::spawn(&scratch, 100, 28);
@@ -1078,7 +1193,8 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
 
     pty.send(b"\x1b");
     pty.wait_until("return from fullscreen viewer", |pty| {
-        pty.screen_text().contains("Prompt") && !pty.screen_text().contains("y copy block")
+        pty.screen_text().contains("ask about this codebase")
+            && !pty.screen_text().contains("y copy block")
     });
     pty.send(b"/transcript needle\r");
     pty.wait_until("fullscreen viewer through slash command", |pty| {
@@ -1087,7 +1203,8 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
     });
     pty.send(b"\r\x1b"); // accept the initial slash query, then close the viewer.
     pty.wait_until("viewer closed after slash entry", |pty| {
-        pty.screen_text().contains("Prompt") && !pty.screen_text().contains("y copy block")
+        pty.screen_text().contains("ask about this codebase")
+            && !pty.screen_text().contains("y copy block")
     });
     let slash_export = scratch.repo().join("core-transcript.md");
     let slash_export_2 = scratch.repo().join("core-transcript-2.md");
@@ -1336,6 +1453,10 @@ fn client_parity_scripted_task_reaches_tui_done_presentation() {
         let screen = pty.screen_text();
         screen.contains("parity reply") && screen.contains("done")
     });
+    assert!(
+        String::from_utf8_lossy(&pty.capture).contains("Core Code · Return exactly: parity reply"),
+        "the first submitted prompt becomes the terminal session title"
+    );
     pty.send(b"\x1b");
     let status = pty.wait_for_exit();
     assert!(status.success(), "normal TUI exit failed: {status}");
@@ -1359,19 +1480,10 @@ fn capable_terminal_receives_one_bounded_osc9_notification_per_run() {
             && sequence_count(&pty.capture, OSC9_RUN_COMPLETE) > 0
     });
     pty.drain_ready();
-    let notifications = pty
-        .capture
-        .iter()
-        .filter(|byte| **byte == TERMINAL_BELL)
-        .count();
-    assert_eq!(
-        notifications, 1,
-        "one streamed run must carry one terminated OSC frame at its authoritative boundary"
-    );
     assert_eq!(
         sequence_count(&pty.capture, OSC9_RUN_COMPLETE),
         1,
-        "the capable production transport must emit exactly one complete OSC 9 frame"
+        "the capable production transport must emit exactly one complete OSC 9 frame; other BEL-terminated terminal controls such as the title are independent"
     );
     let screen = pty.screen_text();
     assert!(
@@ -1409,14 +1521,10 @@ fn missing_usage_completion_uses_the_server_run_boundary_without_double_notifica
     });
     pty.drain_ready();
     assert_eq!(
-        pty.capture
-            .iter()
-            .filter(|byte| **byte == TERMINAL_BELL)
-            .count(),
+        sequence_count(&pty.capture, OSC9_RUN_COMPLETE),
         1,
         "the App Server RunEnded boundary must notify exactly once even without provider usage"
     );
-    assert_eq!(sequence_count(&pty.capture, OSC9_RUN_COMPLETE), 1);
     assert!(
         pty.screen_text()
             .contains("Missing-usage completion still notifies."),
@@ -1446,9 +1554,10 @@ fn default_off_ignores_project_attempt_to_enable_completion_notifications() {
             && pty.screen_text().contains("done")
     });
     pty.drain_ready();
-    assert!(
-        !pty.capture.contains(&TERMINAL_BELL),
-        "repository configuration must not enable terminal control output"
+    assert_eq!(
+        sequence_count(&pty.capture, OSC9_RUN_COMPLETE),
+        0,
+        "repository configuration must not enable the run-complete terminal notification"
     );
     assert!(
         std::str::from_utf8(&pty.capture)
@@ -1492,15 +1601,15 @@ fn active_ctrl_d_drains_to_a_checkpoint_and_idle_ctrl_d_still_exits() {
     pty.send(b"\x04");
     pty.wait_until("active Ctrl-D drain status", |pty| {
         let screen = pty.screen_text();
-        screen.contains("draining") && screen.contains("checkpoint")
+        screen.contains("stopping") && screen.contains("checkpoint")
+    });
+    pty.wait_until("durable drained terminal", |pty| {
+        pty.screen_text().contains("drained")
     });
     provider
         .release
         .send(())
-        .expect("release the admitted provider turn");
-    pty.wait_until("durable drained terminal", |pty| {
-        pty.screen_text().contains("drained")
-    });
+        .expect("release the cancelled provider fixture thread");
 
     // Once idle again, Ctrl-D retains its shell-like exit behavior.
     pty.send(b"\x04");
@@ -1540,6 +1649,63 @@ fn active_ctrl_d_drains_to_a_checkpoint_and_idle_ctrl_d_still_exits() {
         .expect("inspect drain checkpoint tree");
     assert!(tree.status.success());
     assert!(String::from_utf8_lossy(&tree.stdout).contains("state.txt"));
+}
+
+#[test]
+fn esc_interrupt_keeps_real_pty_input_live_dispatches_the_next_prompt_and_then_exits() {
+    const NEXT_PROMPT: &str = "continue with the queued next prompt";
+    let provider = InterruptHandoffProvider::spawn();
+    let scratch = Scratch::new("interrupt-handoff");
+    scratch.configure_link_provider(&provider.api_root);
+    let mut pty = PtyHarness::spawn_link_fixture(&scratch, 96, 26);
+
+    provider
+        .first_started
+        .recv_timeout(PROVIDER_TIMEOUT)
+        .expect("the first turn is awaiting the provider");
+
+    // One physical input burst exercises the actual terminal ordering: Esc asks the current run
+    // to stop, printable bytes immediately continue into the still-focused composer, and Enter
+    // commits them as the next prompt.
+    let mut input = Vec::from(b"\x1b".as_slice());
+    input.extend_from_slice(NEXT_PROMPT.as_bytes());
+    input.push(b'\r');
+    pty.send(&input);
+    pty.wait_until(
+        "the post-interrupt prompt remains visible before the old provider returns",
+        |pty| pty.screen_text().contains(NEXT_PROMPT),
+    );
+
+    provider
+        .release_first
+        .send(())
+        .expect("release the interrupted provider request");
+    let second_request = provider
+        .second_request
+        .recv_timeout(PROVIDER_TIMEOUT)
+        .expect("the next prompt starts a fresh provider request");
+    let second_request = String::from_utf8(second_request).expect("provider request is UTF-8");
+    assert!(
+        second_request.contains(NEXT_PROMPT),
+        "the post-interrupt composer bytes reached the next provider turn; screen:\n{}",
+        pty.screen_text()
+    );
+    pty.wait_until("the queued next turn reaches its terminal event", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("Next prompt completed.") && screen.contains("idle")
+    });
+
+    // The authoritative terminal event has returned the app to idle, so Esc is now a real exit.
+    pty.send(b"\x1b");
+    let status = pty.wait_for_exit();
+    assert!(
+        status.success(),
+        "post-interrupt idle exit failed: {status}"
+    );
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+    provider.finish();
 }
 
 #[test]

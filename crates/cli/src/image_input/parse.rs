@@ -1,5 +1,5 @@
 use super::{ImageInputError, ImageInputErrorKind, ImageMention, ParsedImagePath, SafeDisplayName};
-use crate::image_input::sniff::extension_media_type;
+use crate::image_input::sniff::extension_format;
 use core_protocol::input::MAX_INPUT_IMAGES;
 use core_protocol::task::MAX_TASK_TEXT_BYTES;
 use std::path::PathBuf;
@@ -117,7 +117,7 @@ fn parse_path_candidate(candidate: &str) -> Result<Option<ParsedImagePath>, Imag
         }
         PathBuf::from(candidate)
     };
-    if extension_media_type(&path).is_none() {
+    if extension_format(&path).is_none() {
         return Ok(None);
     }
     Ok(Some(ParsedImagePath {

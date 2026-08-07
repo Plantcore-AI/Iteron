@@ -97,6 +97,23 @@ impl ToolPreference {
             Err(_) => Self::Baseline,
         }
     }
+
+    /// The tools this preference promotes to the front of a child's tool set, in that order.
+    ///
+    /// [`narrow_under`] decides *what* a governed worker may reach; this decides *what it reaches
+    /// for first* once a host has narrowed a real tool set. The two are separate because a host's
+    /// tool registry owns its own ordering and only ever filters by membership, so the governed
+    /// order has to be applied to the registry deliberately rather than inferred from an allowlist.
+    ///
+    /// [`ToolPreference::Baseline`] promotes nothing. That is the load-bearing half: an ungoverned
+    /// run applies an empty promotion, which is the identity, so wiring this into a host cannot
+    /// change a single ordering until a bundle is actually promoted.
+    pub fn promoted_leading(self) -> &'static [&'static str] {
+        match self {
+            Self::Baseline => &[],
+            Self::PreferStructuralSearch => STRUCTURAL_SEARCH_ORDER,
+        }
+    }
 }
 
 /// Apply a filter under a governed preference.

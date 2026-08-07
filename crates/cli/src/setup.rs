@@ -239,7 +239,10 @@ pub(crate) async fn run_setup(
 pub(crate) async fn run_auth_status(provider_id: Option<String>) -> anyhow::Result<u8> {
     let user_file = FileConfig::load_user()?;
     let configured = user_file.providers.clone().unwrap_or_default();
-    let directory = providers::ProviderDirectory::discover(&configured).await?;
+    // Status reports value-free local credential provenance. It does not synchronously probe every
+    // endpoint the machine has ever configured: a black-holed provider must not hang `core auth`,
+    // and absent live evidence is rendered honestly as an unknown account state.
+    let directory = providers::ProviderDirectory::inspect_local(&configured)?;
     // Which provider a run would route to, and which providers this report covers, are two
     // different questions. Deriving `(active)` from the filter argument would mark whatever the
     // operator asked about as active, which is the opposite of what they are asking.

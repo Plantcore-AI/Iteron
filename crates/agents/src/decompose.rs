@@ -9,17 +9,38 @@
 //! The heuristic is coarse by design — a cheap-model classifier is a designed pluggable upgrade
 //! (ADR-011), not built here. It is a pure function of `(task, RepoSignals)` with no I/O, so the
 //! routing decision is reproducible and unit-testable.
+//!
+//! # `core/router` behind the frozen slot seam
+//!
+//! [`Decomposer::route`] *is* the `core/router` decision the spec names ("把任务或子任务路由到哪条
+//! 处理路径", `docs/spec/evolution.md:72`), and until now it was reachable only as an inherent
+//! function, so the pluggable-classifier upgrade ADR-011 promises had nowhere to plug in.
+//! [`RouterStrategy`] puts that same heuristic behind [`core_protocol::slot::StrategySlot`], and
+//! [`RouterStrategy::route_with`] is the narrowing-enforced call every caller uses instead of
+//! `decide` — so a replacement classifier is a slot swap rather than a kernel change.
+//!
+//! Routing is an observation, not an authority: a route may only *narrow* what the caller already
+//! permitted. Concretely, a decision may decline fan-out that was on offer, and may ask for fewer
+//! leaves than the caller's ceiling; it can never turn fan-out on where the caller forbade it, nor
+//! raise the breadth ceiling. Both directions are rejected by
+//! [`RouterRoute::validate_against`], not merely discouraged, because a router that could widen
+//! breadth would be a way to spend a budget the caller had already bounded.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fmt;
+
+use core_protocol::Capability;
+use core_protocol::capability_set::CapabilitySet;
+use core_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
 
 use crate::stage::{AgentTask, Stage, WorkflowPlan};
 
 /// The fan-out ceiling (ADR-004: the fan-out ceiling is cited at the call site). Leaves beyond this
-/// are truncated, and the truncation is recorded on the `WorkflowPlan`. The kernel now runs the fan
-/// bounded-concurrent (owned `tokio::spawn` per worker under a `Governor`), so the breadth ceiling is
-/// raised to 16 and the actual wall-clock concurrency is bounded separately by the permit count
-/// (`min(FAN_CAP, cores-2, admitted_workers)`), never by this cap alone.
+/// are truncated, and the truncation is recorded on the `WorkflowPlan`. `WorkflowEngine` runs the
+/// fan bounded-concurrent (owned `tokio::spawn` per worker under one `Governor`), so the breadth
+/// ceiling is raised to 16 and actual wall-clock concurrency is bounded separately by the permit
+/// count (`min(FAN_CAP, cores-2, admitted_workers)`), never by this cap alone.
 pub const FAN_CAP: usize = 16;
 
 /// Hard limit for one normalized investigation objective, measured in Unicode scalar values rather
@@ -132,28 +153,76 @@ impl Decomposer {
     /// cap drops, duplicates, and invalid inputs are recorded separately — never silently. Empty
     /// normalized leaves return `None` (nothing to fan → single agent).
     pub fn plan(class: TaskClass, leaves: Vec<String>) -> Option<WorkflowPlan> {
+        Self::plan_within(class, leaves, FAN_CAP)
+    }
+
+    /// Instantiate the topology under a breadth ceiling the router chose for this task.
+    ///
+    /// `plan` is this with the crate-wide `FAN_CAP`. The separate entry point exists so a
+    /// `core/router` decision that asks for a *narrower* fan than `FAN_CAP` actually gets one:
+    /// without it the router's breadth choice would be recorded and then ignored, which is the
+    /// failure mode a slot seam is supposed to make impossible. `cap` is clamped to `FAN_CAP`
+    /// rather than trusted, so this cannot become a way to widen the crate ceiling.
+    pub fn plan_within(class: TaskClass, leaves: Vec<String>, cap: usize) -> Option<WorkflowPlan> {
+        Self::plan_within_with(
+            &crate::PlannerStrategy::default(),
+            class,
+            leaves,
+            cap,
+            CapabilitySet::only(Capability::ReadOnly),
+        )
+        .ok()
+        .flatten()
+    }
+
+    /// Instantiate the same topology through the pinned `core/planner` seat. The slot sees only
+    /// normalized objectives and returns positions into that caller-owned list; it can narrow or
+    /// reorder the fan but cannot author prompts or exceed the router's breadth ceiling.
+    pub fn plan_within_with(
+        planner: &dyn StrategySlot,
+        class: TaskClass,
+        leaves: Vec<String>,
+        cap: usize,
+        ceiling: CapabilitySet,
+    ) -> Result<Option<WorkflowPlan>, crate::PlannerError> {
         if !class.fans_out() {
-            return None;
+            return Ok(None);
         }
+        let cap = cap.min(FAN_CAP);
         let normalized = Self::normalize_leaves(leaves);
         let total = normalized.leaves.len();
-        let kept: Vec<String> = normalized.leaves.into_iter().take(FAN_CAP).collect();
+        let proposal = crate::PlannerStrategy::plan_with(
+            planner,
+            &crate::PlannerObservation {
+                version: crate::PLANNER_SLOT_VERSION,
+                class,
+                leaves: normalized.leaves.clone(),
+                max_leaves: cap,
+            },
+            ceiling,
+        )?;
+        let kept: Vec<String> = proposal
+            .plan
+            .selected
+            .into_iter()
+            .map(|index| normalized.leaves[index].clone())
+            .collect();
         if kept.is_empty() {
-            return None;
+            return Ok(None);
         }
-        let truncated = (total > FAN_CAP).then(|| total - FAN_CAP);
+        let truncated = (total > kept.len()).then(|| total - kept.len());
         let tasks: Vec<AgentTask> = kept
             .into_iter()
             .enumerate()
             .map(|(id, objective)| AgentTask::investigator(id, objective))
             .collect();
-        Some(WorkflowPlan {
+        Ok(Some(WorkflowPlan {
             stages: vec![Stage::Fan { tasks }, Stage::Reduce],
             class,
             truncated,
             duplicates_removed: normalized.duplicates_removed,
             invalid_removed: normalized.invalid_removed,
-        })
+        }))
     }
 }
 
@@ -486,6 +555,632 @@ fn contains_line_number_phrase(lower: &str) -> bool {
     let toks: Vec<&str> = lower.split_whitespace().collect();
     toks.windows(2)
         .any(|w| w[0] == "line" && w[1].chars().next().is_some_and(|c| c.is_ascii_digit()))
+}
+
+// --- the `core/router` slot ---------------------------------------------------------------------
+
+/// Wire version of the router observation and decision. A decision this build cannot decode is
+/// [`RouterSlotDecision::Unknown`], which carries no authority and no route.
+pub const ROUTER_SLOT_VERSION: u16 = 1;
+
+/// Upper bound on the task text a routing decision may be shown.
+///
+/// Deliberately the same 64 KiB `core_ctx::context_strategy` bounds its own task query at: the two
+/// slots are handed the *same* submission text by the runtime, so a different bound here would mean
+/// a task that routes but cannot have context selected for it, or the reverse.
+pub const MAX_ROUTER_TASK_BYTES: usize = 64 * 1024;
+
+/// The already-gathered inputs to one routing decision.
+///
+/// The caller owns every field. `repo` is the caller's cheap repo inspection (a router performs no
+/// I/O and cannot go looking), and `fan_out_permitted`/`max_leaves` are ceilings, never requests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouterSlotObservation {
+    pub version: u16,
+    /// The submission being routed.
+    pub task: String,
+    /// Caller-gathered repo signals. A router may not gather its own.
+    pub repo: RepoSignals,
+    /// Whether fan-out is admissible at all for this run. `false` means the only routes on offer
+    /// are non-fanning ones.
+    pub fan_out_permitted: bool,
+    /// The most investigation leaves the caller will fan. Bounded by [`FAN_CAP`]; meaningful only
+    /// when `fan_out_permitted`.
+    pub max_leaves: u16,
+}
+
+impl RouterSlotObservation {
+    /// The conservative baseline: fan-out on offer up to the crate-wide [`FAN_CAP`].
+    pub fn baseline(task: impl Into<String>, repo: RepoSignals) -> Self {
+        Self {
+            version: ROUTER_SLOT_VERSION,
+            task: task.into(),
+            repo,
+            fan_out_permitted: true,
+            max_leaves: FAN_CAP as u16,
+        }
+    }
+
+    /// Withdraw fan-out from the offer without touching any other field.
+    pub fn without_fan_out(mut self) -> Self {
+        self.fan_out_permitted = false;
+        self.max_leaves = 0;
+        self
+    }
+
+    fn validate(&self) -> Result<(), RouterSlotError> {
+        if self.version != ROUTER_SLOT_VERSION {
+            return Err(RouterSlotError::UnsupportedVersion);
+        }
+        if self.task.len() > MAX_ROUTER_TASK_BYTES {
+            return Err(RouterSlotError::InvalidObservation(
+                "router task exceeds its bounded observation",
+            ));
+        }
+        if self.max_leaves as usize > FAN_CAP {
+            return Err(RouterSlotError::InvalidObservation(
+                "router breadth ceiling exceeds the crate fan cap",
+            ));
+        }
+        if self.fan_out_permitted && self.max_leaves == 0 {
+            return Err(RouterSlotError::InvalidObservation(
+                "fan-out was offered with no breadth to fan into",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Which handling path a task takes, and how wide it may be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouterRoute {
+    pub class: TaskClass,
+    /// Leaves this route reserves. Always `0` for a class that does not fan out.
+    pub max_leaves: u16,
+}
+
+impl RouterRoute {
+    /// The single-agent loop: no fan-out, no breadth. Also the fail-closed answer.
+    pub fn direct(class: TaskClass) -> Self {
+        Self {
+            class,
+            max_leaves: 0,
+        }
+    }
+
+    /// Does this route engage the fan-out DAG?
+    ///
+    /// Reserved breadth is the answer, not the class. A class that *could* fan still runs as the
+    /// single-agent loop when the caller withdrew the offer, and the class is kept rather than
+    /// rewritten so the durable record still says what the task actually looked like.
+    pub fn fans_out(self) -> bool {
+        self.max_leaves > 0
+    }
+
+    /// Reject a decision that reached past what the caller offered.
+    ///
+    /// Typed rather than clamped, for the reason the sibling slots give: silently clamping a
+    /// widened route back to the ceiling would let a pinned policy ship a breadth nobody notices
+    /// is being ignored.
+    fn validate_against(&self, observation: &RouterSlotObservation) -> Result<(), RouterSlotError> {
+        if !self.fans_out() {
+            return Ok(());
+        }
+        if !self.class.fans_out() {
+            return Err(RouterSlotError::InvalidDecision(
+                "a non-fanning class must not reserve fan breadth",
+            ));
+        }
+        if !observation.fan_out_permitted {
+            return Err(RouterSlotError::DecisionWidened(
+                "route fans out where the caller permitted no fan-out",
+            ));
+        }
+        if self.max_leaves > observation.max_leaves {
+            return Err(RouterSlotError::DecisionWidened(
+                "route breadth escaped the caller's leaf ceiling",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The version-skew boundary for a router-slot decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RouterSlotDecision {
+    Route {
+        route: RouterRoute,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+/// A route plus the capabilities still eligible after intersection with the caller ceiling.
+/// Eligibility is evidence for a later gate, never authority to run anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RouterProposal {
+    pub route: RouterRoute,
+    pub eligible: CapabilitySet,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouterSlotError {
+    WrongSlot,
+    NotReadOnly,
+    InvalidObservation(&'static str),
+    InvalidDecision(&'static str),
+    DecisionWidened(&'static str),
+    UnsupportedVersion,
+}
+
+impl fmt::Display for RouterSlotError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WrongSlot => formatter.write_str("strategy does not implement core/router"),
+            Self::NotReadOnly => {
+                formatter.write_str("routing was not admitted as a read-only observation")
+            }
+            Self::InvalidObservation(reason)
+            | Self::InvalidDecision(reason)
+            | Self::DecisionWidened(reason) => formatter.write_str(reason),
+            Self::UnsupportedVersion => formatter.write_str("unsupported router slot version"),
+        }
+    }
+}
+
+impl std::error::Error for RouterSlotError {}
+
+/// The slot identity this module implements.
+pub fn router_slot() -> SlotId {
+    SlotId("core/router".into())
+}
+
+/// Hand-written baseline implementation of `core/router`: [`Decomposer::route`] behind the seam.
+#[derive(Debug, Clone)]
+pub struct RouterStrategy {
+    slot: SlotId,
+}
+
+impl Default for RouterStrategy {
+    fn default() -> Self {
+        Self {
+            slot: router_slot(),
+        }
+    }
+}
+
+impl RouterStrategy {
+    /// Typed facade for callers of the built-in baseline.
+    pub fn route(
+        &self,
+        input: &RouterSlotObservation,
+        ceiling: CapabilitySet,
+    ) -> Result<RouterProposal, RouterSlotError> {
+        Self::route_with(self, input, ceiling)
+    }
+
+    /// Decode and revalidate any pinned implementation of the frozen slot trait.
+    ///
+    /// This, not [`StrategySlot::decide`], is what callers use: it is where the slot identity is
+    /// checked, where `decide_narrowed` enforces that a route cannot mint authority, and where a
+    /// widened breadth is refused.
+    pub fn route_with(
+        slot: &dyn StrategySlot,
+        input: &RouterSlotObservation,
+        ceiling: CapabilitySet,
+    ) -> Result<RouterProposal, RouterSlotError> {
+        if slot.slot().as_persisted_str() != "core/router" {
+            return Err(RouterSlotError::WrongSlot);
+        }
+        input.validate()?;
+        let payload = serde_json::to_value(input)
+            .map_err(|_| RouterSlotError::InvalidObservation("router observation is invalid"))?;
+        let observation = SlotObservation {
+            slot: slot.slot().clone(),
+            ceiling,
+            payload,
+        };
+        let outcome = decide_narrowed(slot, &observation);
+        if !outcome.admitted.contains(Capability::ReadOnly) {
+            return Err(RouterSlotError::NotReadOnly);
+        }
+        let decision = serde_json::from_value::<RouterSlotDecision>(outcome.decision)
+            .map_err(|_| RouterSlotError::InvalidDecision("router decision is invalid"))?;
+        let RouterSlotDecision::Route { route } = decision else {
+            return Err(RouterSlotError::UnsupportedVersion);
+        };
+        route.validate_against(input)?;
+        Ok(RouterProposal {
+            route,
+            eligible: outcome.admitted,
+        })
+    }
+
+    /// The baseline route: the existing deterministic heuristic, narrowed to the offer.
+    ///
+    /// A fanning class the caller did not permit becomes a direct route rather than an error —
+    /// "you may not fan out" is an answer the router can honour. The class is preserved, so the
+    /// record still says what the task looked like even when it was not allowed to fan.
+    fn decide_typed(input: &RouterSlotObservation) -> RouterRoute {
+        let class = Decomposer::route(&input.task, &input.repo);
+        if class.fans_out() && input.fan_out_permitted {
+            return RouterRoute {
+                class,
+                max_leaves: input.max_leaves,
+            };
+        }
+        RouterRoute::direct(class)
+    }
+
+    fn unknown_outcome() -> SlotOutcome {
+        SlotOutcome {
+            admitted: CapabilitySet::none(),
+            decision: serde_json::to_value(RouterSlotDecision::Unknown)
+                .expect("unit router decision serializes"),
+        }
+    }
+}
+
+impl StrategySlot for RouterStrategy {
+    fn slot(&self) -> &SlotId {
+        &self.slot
+    }
+
+    fn decide(&self, observation: &SlotObservation) -> SlotOutcome {
+        if observation.slot != self.slot {
+            return Self::unknown_outcome();
+        }
+        let Ok(input) =
+            serde_json::from_value::<RouterSlotObservation>(observation.payload.clone())
+        else {
+            return Self::unknown_outcome();
+        };
+        if input.validate().is_err() {
+            return Self::unknown_outcome();
+        }
+        SlotOutcome {
+            admitted: CapabilitySet::only(Capability::ReadOnly).intersect(observation.ceiling),
+            decision: serde_json::to_value(RouterSlotDecision::Route {
+                route: Self::decide_typed(&input),
+            })
+            .expect("router route serializes"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod router_slot_tests {
+    use super::*;
+
+    fn broad() -> RouterSlotObservation {
+        RouterSlotObservation::baseline(
+            "rename the config field everywhere",
+            RepoSignals {
+                has_test_command: false,
+                file_count: 4_000,
+            },
+        )
+    }
+
+    fn read_only() -> CapabilitySet {
+        CapabilitySet::only(Capability::ReadOnly)
+    }
+
+    #[test]
+    fn the_slot_returns_the_same_class_the_inherent_heuristic_does() {
+        let input = broad();
+        let proposal = RouterStrategy::default()
+            .route(&input, read_only())
+            .unwrap();
+        assert_eq!(
+            proposal.route.class,
+            Decomposer::route(&input.task, &input.repo),
+            "putting route() behind the seam must not change what it decides"
+        );
+        assert_eq!(proposal.route.max_leaves, FAN_CAP as u16);
+        assert!(proposal.eligible.contains(Capability::ReadOnly));
+    }
+
+    #[test]
+    fn a_localized_task_reserves_no_breadth() {
+        let input = RouterSlotObservation::baseline(
+            "fix the panic in crates/cli/src/runtime.rs:42",
+            RepoSignals::default(),
+        );
+        let proposal = RouterStrategy::default()
+            .route(&input, read_only())
+            .unwrap();
+        assert_eq!(proposal.route.class, TaskClass::Localized);
+        assert!(!proposal.route.fans_out());
+        assert_eq!(proposal.route.max_leaves, 0);
+    }
+
+    #[test]
+    fn withdrawing_the_fan_out_offer_forces_the_single_agent_loop() {
+        let input = broad().without_fan_out();
+        let proposal = RouterStrategy::default()
+            .route(&input, read_only())
+            .unwrap();
+        assert!(
+            !proposal.route.fans_out(),
+            "a task that would fan must not fan when the caller offered no fan-out"
+        );
+        assert_eq!(proposal.route.max_leaves, 0);
+        assert_eq!(
+            proposal.route.class,
+            TaskClass::MultiFile,
+            "the class the task actually looked like is preserved for the record"
+        );
+    }
+
+    #[test]
+    fn a_non_fanning_class_may_not_reserve_breadth() {
+        struct Confused(SlotId);
+        impl StrategySlot for Confused {
+            fn slot(&self) -> &SlotId {
+                &self.0
+            }
+            fn decide(&self, _observation: &SlotObservation) -> SlotOutcome {
+                SlotOutcome {
+                    admitted: CapabilitySet::only(Capability::ReadOnly),
+                    decision: serde_json::to_value(RouterSlotDecision::Route {
+                        route: RouterRoute {
+                            class: TaskClass::Localized,
+                            max_leaves: 2,
+                        },
+                    })
+                    .unwrap(),
+                }
+            }
+        }
+
+        assert_eq!(
+            RouterStrategy::route_with(&Confused(router_slot()), &broad(), read_only()),
+            Err(RouterSlotError::InvalidDecision(
+                "a non-fanning class must not reserve fan breadth"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_narrower_leaf_ceiling_is_honoured_not_ignored() {
+        let mut input = broad();
+        input.max_leaves = 3;
+        let proposal = RouterStrategy::default()
+            .route(&input, read_only())
+            .unwrap();
+        assert_eq!(proposal.route.max_leaves, 3);
+
+        let leaves: Vec<String> = (0..9).map(|index| format!("leaf {index}")).collect();
+        let plan = Decomposer::plan_within(
+            proposal.route.class,
+            leaves,
+            proposal.route.max_leaves as usize,
+        )
+        .expect("a fanning route plans");
+        assert_eq!(plan.fan_tasks().len(), 3);
+        assert_eq!(plan.truncated, Some(6));
+    }
+
+    #[test]
+    fn a_route_cannot_fan_where_the_caller_forbade_it() {
+        struct Sneaky(SlotId);
+        impl StrategySlot for Sneaky {
+            fn slot(&self) -> &SlotId {
+                &self.0
+            }
+            fn decide(&self, _observation: &SlotObservation) -> SlotOutcome {
+                SlotOutcome {
+                    admitted: CapabilitySet::only(Capability::ReadOnly),
+                    decision: serde_json::to_value(RouterSlotDecision::Route {
+                        route: RouterRoute {
+                            class: TaskClass::MultiFile,
+                            max_leaves: 1,
+                        },
+                    })
+                    .unwrap(),
+                }
+            }
+        }
+
+        assert_eq!(
+            RouterStrategy::route_with(
+                &Sneaky(router_slot()),
+                &broad().without_fan_out(),
+                read_only(),
+            ),
+            Err(RouterSlotError::DecisionWidened(
+                "route fans out where the caller permitted no fan-out"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_route_cannot_widen_the_leaf_ceiling() {
+        struct Greedy(SlotId);
+        impl StrategySlot for Greedy {
+            fn slot(&self) -> &SlotId {
+                &self.0
+            }
+            fn decide(&self, observation: &SlotObservation) -> SlotOutcome {
+                let input: RouterSlotObservation =
+                    serde_json::from_value(observation.payload.clone()).unwrap();
+                SlotOutcome {
+                    admitted: CapabilitySet::only(Capability::ReadOnly),
+                    decision: serde_json::to_value(RouterSlotDecision::Route {
+                        route: RouterRoute {
+                            class: TaskClass::MultiFile,
+                            max_leaves: input.max_leaves.saturating_add(1),
+                        },
+                    })
+                    .unwrap(),
+                }
+            }
+        }
+
+        let mut input = broad();
+        input.max_leaves = 4;
+        assert_eq!(
+            RouterStrategy::route_with(&Greedy(router_slot()), &input, read_only()),
+            Err(RouterSlotError::DecisionWidened(
+                "route breadth escaped the caller's leaf ceiling"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_route_cannot_mint_authority_it_was_not_shown() {
+        struct Grabby(SlotId);
+        impl StrategySlot for Grabby {
+            fn slot(&self) -> &SlotId {
+                &self.0
+            }
+            fn decide(&self, _observation: &SlotObservation) -> SlotOutcome {
+                SlotOutcome {
+                    admitted: CapabilitySet::from_iter_capabilities([
+                        Capability::ReadOnly,
+                        Capability::CodeExecuting,
+                        Capability::IrreversibleExternal,
+                    ]),
+                    decision: serde_json::to_value(RouterSlotDecision::Route {
+                        route: RouterRoute::direct(TaskClass::Localized),
+                    })
+                    .unwrap(),
+                }
+            }
+        }
+
+        let proposal =
+            RouterStrategy::route_with(&Grabby(router_slot()), &broad(), read_only()).unwrap();
+        assert!(proposal.eligible.contains(Capability::ReadOnly));
+        assert!(!proposal.eligible.contains(Capability::CodeExecuting));
+        assert!(!proposal.eligible.contains(Capability::IrreversibleExternal));
+        assert!(proposal.eligible.is_subset_of(read_only()));
+    }
+
+    #[test]
+    fn a_closed_ceiling_refuses_to_route_at_all() {
+        assert_eq!(
+            RouterStrategy::default().route(&broad(), CapabilitySet::none()),
+            Err(RouterSlotError::NotReadOnly)
+        );
+    }
+
+    #[test]
+    fn an_unknown_wire_version_degrades_without_authority_or_a_route() {
+        let strategy = RouterStrategy::default();
+        let mut input = broad();
+        input.version = ROUTER_SLOT_VERSION + 1;
+        let outcome = strategy.decide(&SlotObservation {
+            slot: strategy.slot().clone(),
+            ceiling: CapabilitySet::from_iter_capabilities([
+                Capability::ReadOnly,
+                Capability::CodeExecuting,
+            ]),
+            payload: serde_json::to_value(&input).unwrap(),
+        });
+        assert!(outcome.admitted.is_empty());
+        assert_eq!(
+            serde_json::from_value::<RouterSlotDecision>(outcome.decision).unwrap(),
+            RouterSlotDecision::Unknown
+        );
+        assert_eq!(
+            strategy.route(&input, read_only()),
+            Err(RouterSlotError::UnsupportedVersion)
+        );
+    }
+
+    #[test]
+    fn an_observation_that_breaks_its_own_bounds_is_refused_before_any_route() {
+        let strategy = RouterStrategy::default();
+
+        let mut over_cap = broad();
+        over_cap.max_leaves = FAN_CAP as u16 + 1;
+        assert_eq!(
+            strategy.route(&over_cap, read_only()),
+            Err(RouterSlotError::InvalidObservation(
+                "router breadth ceiling exceeds the crate fan cap"
+            ))
+        );
+
+        let mut empty_offer = broad();
+        empty_offer.max_leaves = 0;
+        assert_eq!(
+            strategy.route(&empty_offer, read_only()),
+            Err(RouterSlotError::InvalidObservation(
+                "fan-out was offered with no breadth to fan into"
+            ))
+        );
+
+        let mut oversized = broad();
+        oversized.task = "x".repeat(MAX_ROUTER_TASK_BYTES + 1);
+        assert_eq!(
+            strategy.route(&oversized, read_only()),
+            Err(RouterSlotError::InvalidObservation(
+                "router task exceeds its bounded observation"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_strategy_for_another_slot_is_refused_by_identity_not_by_luck() {
+        struct Impostor(SlotId);
+        impl StrategySlot for Impostor {
+            fn slot(&self) -> &SlotId {
+                &self.0
+            }
+            fn decide(&self, _observation: &SlotObservation) -> SlotOutcome {
+                SlotOutcome {
+                    admitted: CapabilitySet::only(Capability::ReadOnly),
+                    decision: serde_json::to_value(RouterSlotDecision::Route {
+                        route: RouterRoute::direct(TaskClass::Localized),
+                    })
+                    .unwrap(),
+                }
+            }
+        }
+
+        assert_eq!(
+            RouterStrategy::route_with(
+                &Impostor(SlotId("core/planner".into())),
+                &broad(),
+                read_only(),
+            ),
+            Err(RouterSlotError::WrongSlot)
+        );
+    }
+
+    #[test]
+    fn the_slot_identity_is_nameable_by_a_policy_bundle() {
+        let slot = router_slot();
+        assert!(slot.validate().is_ok());
+        assert_eq!(slot.as_persisted_str(), "core/router");
+        assert_eq!(
+            serde_json::to_value(&slot).unwrap(),
+            serde_json::json!("core/router")
+        );
+    }
+
+    #[test]
+    fn the_decision_wire_form_is_forward_compatible() {
+        let unknown: RouterSlotDecision =
+            serde_json::from_str(r#"{"kind":"detour","route":{"class":"multi_file"}}"#).unwrap();
+        assert_eq!(unknown, RouterSlotDecision::Unknown);
+        let route: RouterSlotDecision = serde_json::from_str(
+            r#"{"kind":"route","route":{"class":"multi_file","max_leaves":2}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            route,
+            RouterSlotDecision::Route {
+                route: RouterRoute {
+                    class: TaskClass::MultiFile,
+                    max_leaves: 2
+                }
+            }
+        );
+    }
 }
 
 #[cfg(test)]

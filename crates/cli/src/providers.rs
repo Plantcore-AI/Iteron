@@ -1763,6 +1763,20 @@ impl ProviderDirectory {
         Self::discover_entries(Self::compose_entries(user)?, default_catalog_cache_path()).await
     }
 
+    /// Build the operator-visible directory without starting catalog or account network probes.
+    ///
+    /// Credential provenance and presence are local facts. Commands such as `core auth status`
+    /// must remain bounded even when a configured endpoint black-holes DNS or TCP; health remains
+    /// honestly unknown until a launch or explicit setup validation produces evidence.
+    pub fn inspect_local(user: &[ProviderConfig]) -> anyhow::Result<Self> {
+        let entries = Self::compose_entries(user)?;
+        Ok(Self {
+            health: ProviderHealthStore::new(entries.len()),
+            entries: Arc::new(entries),
+            deferred: None,
+        })
+    }
+
     /// Discovery for a launch that already knows where it is routing.
     ///
     /// Only the instances named in `eager` are resolved before the caller can print anything; the

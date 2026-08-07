@@ -36,8 +36,8 @@ Ensure that directory is already on `PATH`.
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/Plantcore-AI/core/releases/download/v0.0.1/install.sh \
-  | sh -s -- --version v0.0.1 --bin-dir "$HOME/bin"
+  https://github.com/Plantcore-AI/core/releases/download/v0.0.2/install.sh \
+  | sh -s -- --version v0.0.2 --bin-dir "$HOME/bin"
 ```
 
 The only mutating options are `--version vX.Y.Z` and `--bin-dir PATH`. Run the
@@ -96,7 +96,7 @@ Download the desired archive and verification material from the
 row in `SHA256SUMS`, then verify the GitHub attestation:
 
 ```sh
-gh attestation verify core-code-v0.0.1-aarch64-apple-darwin.tar.gz \
+gh attestation verify core-code-v0.0.2-aarch64-apple-darwin.tar.gz \
   --repo Plantcore-AI/core
 ```
 

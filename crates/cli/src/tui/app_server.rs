@@ -246,6 +246,44 @@ pub(crate) enum Control {
     Side(SideRequest),
     /// `/resume <run>` — adopt another recorded run into this live session.
     AdoptRun(Box<AdoptRun>),
+    /// `/workflows` fullscreen operator controls. Inventory and cancellation are owned by the
+    /// session-scoped workflow supervisor; resume also asks the resident agent to reconstruct the
+    /// persisted run under the current route and authority.
+    Workflow(WorkflowControl),
+    /// `/jobs` controls the exact supervisor backing the model-facing `process_*` tools.
+    Job(JobControl),
+}
+
+pub(crate) enum JobControl {
+    Inventory,
+    Attach {
+        job_id: String,
+        stdout_cursor: u64,
+        stderr_cursor: u64,
+    },
+    Write {
+        job_id: String,
+        input: String,
+        eof: bool,
+    },
+    Stop {
+        job_id: String,
+    },
+}
+
+/// One operator action from the interactive workflow panel.
+pub(crate) enum WorkflowControl {
+    Inventory,
+    Cancel { run_id: String },
+    Resume { run_id: String },
+}
+
+/// The complete workflow-panel control reply. Returning inventory with every action lets the
+/// frontend render the state the owner actually reached instead of optimistically changing a row.
+#[derive(Debug, Clone)]
+pub(crate) struct WorkflowControlReply {
+    pub(crate) runs: Vec<crate::workflow::SupervisedRunInfo>,
+    pub(crate) notice: Option<String>,
 }
 
 /// The inputs of one in-process session adoption, kept together because the runtime applies them as
@@ -258,6 +296,9 @@ pub(crate) enum Control {
 /// never possible.
 pub(crate) struct AdoptRun {
     pub(crate) rollout: core_record::Rollout,
+    /// Empty operator-created run: record a new genesis and dispatch its first prompt as a fresh
+    /// turn instead of treating it as a resumed transcript.
+    pub(crate) fresh: bool,
     /// The route the adopted session will actually dispatch on — the record's own route when the
     /// client could resolve a provider for it, otherwise the route this process is already using.
     /// Recorded into the adopted journal, so what the session runs on is what its record says.
@@ -329,6 +370,10 @@ pub(crate) enum ControlReply {
         snapshot: Box<SessionSnapshot>,
         blocked: Option<String>,
     },
+    /// `/workflows` inventory or action result.
+    Workflows(Box<WorkflowControlReply>),
+    /// `/jobs` inventory, attached output page, write receipt, or terminal stop snapshot.
+    Jobs(serde_json::Value),
 }
 
 /// One control request and the channel its answer comes back on.
@@ -580,6 +625,7 @@ pub(crate) struct ToolFact {
 pub(crate) struct SessionFacts {
     pub(crate) workspace: std::path::PathBuf,
     pub(crate) memory_workspace: Option<std::path::PathBuf>,
+    pub(crate) memory_strategy: Arc<dyn core_protocol::slot::StrategySlot>,
     pub(crate) rollout_path: std::path::PathBuf,
     pub(crate) compaction_trigger_tokens: usize,
     /// The window of the model selected at startup. Only an initial value: `/model` replaces it,
@@ -591,6 +637,8 @@ pub(crate) struct SessionFacts {
     /// nothing asks would be a lie, and one this project's own truth overlay exists to prevent.
     pub(crate) bypass_permissions: bool,
     pub(crate) registry_tools: Vec<ToolFact>,
+    /// Exact verified dependency skill roots pinned into the runtime at composition time.
+    pub(crate) dependency_skill_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     /// The exact immutable `Arc` the runtime resolves child definitions against. Keeping object
     /// identity across the attach boundary prevents `/agents` from presenting filesystem drift as
     /// executable state while the resident runtime continues using its pinned catalog.
@@ -642,6 +690,7 @@ pub(crate) fn attach(
     let facts = SessionFacts {
         workspace: agent.workspace.clone(),
         memory_workspace: agent.memory_workspace.clone(),
+        memory_strategy: agent.memory_strategy(),
         rollout_path: agent.rollout.path().to_path_buf(),
         compaction_trigger_tokens: agent.compaction.trigger_tokens,
         initial_model_context_window: agent.model_context_window,
@@ -656,6 +705,7 @@ pub(crate) fn attach(
                 capability: spec.capability,
             })
             .collect(),
+        dependency_skill_dirs: agent.dependency_skill_dirs().to_vec(),
         agent_catalog: agent.agent_catalog_snapshot(),
     };
     let initial_state = snapshot_of(&mut agent);
@@ -937,6 +987,9 @@ impl AppServer {
         let (settled_tx, mut settled_rx) = mpsc::unbounded_channel::<crate::workflow::RunSettled>();
         let workflows = crate::workflow::WorkflowSupervisor::new(settled_tx);
         agent.set_workflow_launcher(workflows.clone());
+        // Clone the job control port before a turn borrows `&mut agent`. It owns no second job
+        // table: every operation reaches the supervisor captured by this registry's process tools.
+        let processes = agent.registry.process_control();
 
         // `run` versus `follow_up` was a caller-side boolean the frontend chose. With a resident
         // runtime it is session state and belongs here: the first admitted turn starts the session,
@@ -946,214 +999,257 @@ impl AppServer {
         // The operator's side conversation, if they have opened one. It is server state for the
         // same reason the `Agent` is: it owns a live runtime with an open journal.
         let mut side: Option<crate::runtime::SideConversation> = None;
+        let mut pending_runtime = std::collections::VecDeque::<String>::new();
+
+        enum TurnTrigger {
+            Submission(QueuedSubmission),
+            Runtime(String),
+        }
 
         loop {
-            let queued = tokio::select! {
-                request = control.recv() => {
-                    match request {
-                        Some(request) => { apply_control(&mut agent, &mut side, &mut started, &mut events, request).await; continue }
-                        None => break,
-                    }
-                }
-                // A detached run keeps emitting between turns. Without this arm its tree froze on
-                // the frame the turn ended on and only resumed when the operator typed again —
-                // "the run is invisible while it is the only thing happening", which is precisely
-                // the state detaching would otherwise create.
-                Some(progress) = workflow_rx.recv() => {
-                    let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
-                    continue
-                }
-                Some(settled) = settled_rx.recv() => {
-                    publish_settled(&mut events, settled).await;
-                    continue
-                }
-                queued = submissions.recv() => {
-                    match queued { Some(queued) => queued, None => break }
-                }
-            };
-            let envelope = queued.into_envelope();
-            let version = envelope.protocol_version;
-            let Ok(op) = envelope.into_current() else {
-                let _ = events
-                    .publish(ServerEvent::Notice(format!(
-                        "a submission arrived stamped protocol v{version}; this runtime speaks v{PROTOCOL_VERSION} and discarded it"
-                    )))
-                    .await;
-                continue;
-            };
-            match route(&op) {
-                Routed::Refuse(why) => {
-                    let _ = events.publish(ServerEvent::Notice(why.to_owned())).await;
-                }
-                Routed::ToKernel => {
-                    if to_kernel
-                        .send(SqEnvelope::with_version(version, op))
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Routed::StartTurn(input) => {
-                    // Control requests that arrive mid-turn wait here; see the `select!` arm below.
-                    let mut deferred: Vec<ControlRequest> = Vec::new();
-                    let completion = {
-                        let running = async {
-                            match (&input, started) {
-                                (RunInput::Text(task), false) => agent.run(task).await,
-                                (RunInput::Text(task), true) => agent.follow_up(task).await,
-                                (RunInput::Content(segments), false) => {
-                                    agent.run_content(segments).await
-                                }
-                                (RunInput::Content(segments), true) => {
-                                    agent.follow_up_content(segments).await
-                                }
-                                (
-                                    RunInput::Files {
-                                        text,
-                                        images,
-                                        files,
-                                    },
-                                    false,
-                                ) => agent.run_files(text, images, files).await,
-                                (
-                                    RunInput::Files {
-                                        text,
-                                        images,
-                                        files,
-                                    },
-                                    true,
-                                ) => agent.follow_up_files(text, images, files).await,
-                            }
-                        };
-                        tokio::pin!(running);
-                        loop {
-                            tokio::select! {
-                                // Biased so the event stream is served before the turn is polled
-                                // again: a burst of deltas must reach the frontend while the turn
-                                // is still producing, not in one lump at the end.
-                                biased;
-                                Some(ui) = ui_rx.recv() => {
-                                    if events.publish(ServerEvent::Ui(ui)).await.is_err() {
-                                        // The frontend is gone. Keep the turn running to its own
-                                        // safe point rather than dropping the future mid-effect.
-                                    }
-                                }
-                                Some(progress) = workflow_rx.recv() => {
-                                    // Same policy as the UI stream: a frontend that hung up never
-                                    // aborts a run that is already executing.
-                                    let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
-                                }
-                                Some(settled) = settled_rx.recv() => {
-                                    // A run detached by an EARLIER turn can settle during this one.
-                                    // Its terminal row belongs in the transcript at the moment it
-                                    // happened, not at the end of whatever turn is running.
-                                    publish_settled(&mut events, settled).await;
-                                }
-                                Some(request) = control.recv() => {
-                                    // Configuration DURING a turn is DEFERRED, not applied.
-                                    //
-                                    // The borrow checker says so and it is right: the turn holds
-                                    // `&mut agent` for its whole duration, so there is no instant
-                                    // at which a mutation could be applied without interleaving it
-                                    // into the turn's own state. The old design got this ordering
-                                    // for free — the frontend's `Option<Agent>` was empty while
-                                    // running, so `/model` and `/effort` were structurally
-                                    // unreachable — and lost the reason along with the `Option`.
-                                    //
-                                    // Deferring makes the same guarantee an explicit decision:
-                                    // requests are applied at the turn boundary, in arrival order,
-                                    // and the operator's answer arrives when it is true rather
-                                    // than when it was asked.
-                                    deferred.push(request);
-                                }
-                                Some(queued) = submissions.recv() => {
-                                    let envelope = queued.into_envelope();
-                                    let version = envelope.protocol_version;
-                                    if let Ok(op) = envelope.into_current() {
-                                        match route(&op) {
-                                            // A second turn cannot start while one is running; the
-                                            // frontend queues it. Saying so is better than
-                                            // silently dropping it.
-                                            Routed::StartTurn(_) => {
-                                                let _ = events.publish(ServerEvent::Notice(
-                                                    "a turn is already running; this submission was not admitted".into(),
-                                                )).await;
-                                            }
-                                            Routed::ToKernel => {
-                                                let _ = to_kernel.send(SqEnvelope::with_version(version, op));
-                                            }
-                                            Routed::Refuse(why) => {
-                                                let _ = events.publish(ServerEvent::Notice(why.to_owned())).await;
-                                            }
-                                        }
-                                    }
-                                }
-                                outcome = &mut running => break outcome,
-                            }
+            let trigger = if let Some(notification) = pending_runtime.pop_front() {
+                TurnTrigger::Runtime(notification)
+            } else {
+                tokio::select! {
+                    request = control.recv() => {
+                        match request {
+                            Some(request) => { apply_control(&mut agent, &workflows, processes.as_ref(), &mut side, &mut started, &mut events, request).await; continue }
+                            None => break,
                         }
-                    };
-                    started = true;
-
-                    // The tail. The turn's completion is the synchronisation barrier for the kernel's
-                    // sender, so deltas emitted between the last `select!` poll and the return are
-                    // still queued here. Draining before the terminal event is what keeps the
-                    // transcript ordered.
-                    while let Ok(ui) = ui_rx.try_recv() {
-                        let _ = events.publish(ServerEvent::Ui(ui)).await;
                     }
-                    // The workflow seam drains with it: an in-turn run settles inside the turn, so
-                    // its terminal rows and its `Finished` are queued here exactly like the last
-                    // text deltas, and a tail that skipped them would leave the tree spinning.
-                    while let Ok(progress) = workflow_rx.try_recv() {
+                    // A detached run keeps emitting between turns. Without this arm its tree froze on
+                    // the frame the turn ended on and only resumed when the operator typed again —
+                    // "the run is invisible while it is the only thing happening", which is precisely
+                    // the state detaching would otherwise create.
+                    Some(progress) = workflow_rx.recv() => {
                         let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
+                        continue
                     }
-                    while let Ok(settled) = settled_rx.try_recv() {
-                        publish_settled(&mut events, settled).await;
+                    Some(settled) = settled_rx.recv() => {
+                        TurnTrigger::Runtime(publish_settled(&mut events, settled).await)
                     }
-
-                    // The turn's borrow has ended, so the deferred control plane can run — in
-                    // arrival order, before the snapshot, so the state the frontend receives
-                    // already reflects everything it asked for during the turn.
-                    for request in deferred {
-                        apply_control(&mut agent, &mut side, &mut started, &mut events, request)
-                            .await;
-                    }
-
-                    let snapshot = snapshot_of(&mut agent);
-                    let (outcome, error) = match completion {
-                        Ok(outcome) => (outcome, None),
-                        Err(error) => {
-                            let error = error.public_summary();
-                            (Outcome::HarnessError, Some(error))
-                        }
-                    };
-                    let (memo_hits, memo_misses) = agent.registry.memo_stats();
-                    let kernel_tax = agent
-                        .ledger
-                        .kernel_tax()
-                        .with_failed_run(!matches!(outcome, Outcome::Done | Outcome::Drained));
-                    let summary = TerminalSummary {
-                        outcome,
-                        assistant_text: agent.last_assistant_text().to_owned(),
-                        run_id: agent.rollout.run_id().to_string(),
-                        cost: agent.ledger.cost_state(),
-                        turns: agent.ledger.turns,
-                        kernel_tax,
-                        error,
-                        memo_hits,
-                        memo_misses,
-                    };
-                    if events
-                        .publish(ServerEvent::RunEnded {
-                            snapshot: Box::new(snapshot),
-                            summary: Box::new(summary),
-                        })
-                        .await
-                        .is_err()
-                    {
-                        break;
+                    queued = submissions.recv() => {
+                        match queued { Some(queued) => TurnTrigger::Submission(queued), None => break }
                     }
                 }
+            };
+            let (input, runtime_follow_up) = match trigger {
+                TurnTrigger::Runtime(notification) => (RunInput::Text(notification), true),
+                TurnTrigger::Submission(queued) => {
+                    let envelope = queued.into_envelope();
+                    let version = envelope.protocol_version;
+                    let Ok(op) = envelope.into_current() else {
+                        let _ = events.publish(ServerEvent::Notice(format!(
+                            "a submission arrived stamped protocol v{version}; this runtime speaks v{PROTOCOL_VERSION} and discarded it"
+                        ))).await;
+                        continue;
+                    };
+                    match route(&op) {
+                        Routed::Refuse(why) => {
+                            let _ = events.publish(ServerEvent::Notice(why.to_owned())).await;
+                            continue;
+                        }
+                        Routed::ToKernel => {
+                            if to_kernel
+                                .send(SqEnvelope::with_version(version, op))
+                                .is_err()
+                            {
+                                break;
+                            }
+                            continue;
+                        }
+                        Routed::StartTurn(input) => (input, false),
+                    }
+                }
+            };
+            // Control requests that arrive mid-turn wait here; see the `select!` arm below.
+            let mut deferred: Vec<ControlRequest> = Vec::new();
+            let completion = {
+                let running = async {
+                    if runtime_follow_up {
+                        match &input {
+                            RunInput::Text(notification) => {
+                                agent.follow_up_runtime_notification(notification).await
+                            }
+                            _ => unreachable!("runtime notifications are text"),
+                        }
+                    } else {
+                        match (&input, started) {
+                            (RunInput::Text(task), false) => agent.run(task).await,
+                            (RunInput::Text(task), true) => agent.follow_up(task).await,
+                            (RunInput::Content(segments), false) => {
+                                agent.run_content(segments).await
+                            }
+                            (RunInput::Content(segments), true) => {
+                                agent.follow_up_content(segments).await
+                            }
+                            (
+                                RunInput::Files {
+                                    text,
+                                    images,
+                                    files,
+                                },
+                                false,
+                            ) => agent.run_files(text, images, files).await,
+                            (
+                                RunInput::Files {
+                                    text,
+                                    images,
+                                    files,
+                                },
+                                true,
+                            ) => agent.follow_up_files(text, images, files).await,
+                        }
+                    }
+                };
+                tokio::pin!(running);
+                loop {
+                    tokio::select! {
+                        // Biased so the event stream is served before the turn is polled
+                        // again: a burst of deltas must reach the frontend while the turn
+                        // is still producing, not in one lump at the end.
+                        biased;
+                        Some(ui) = ui_rx.recv() => {
+                            if events.publish(ServerEvent::Ui(ui)).await.is_err() {
+                                // The frontend is gone. Keep the turn running to its own
+                                // safe point rather than dropping the future mid-effect.
+                            }
+                        }
+                        Some(progress) = workflow_rx.recv() => {
+                            // Same policy as the UI stream: a frontend that hung up never
+                            // aborts a run that is already executing.
+                            let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
+                        }
+                        Some(settled) = settled_rx.recv() => {
+                            // A run detached by an EARLIER turn can settle during this one.
+                            // Its terminal row belongs in the transcript at the moment it
+                            // happened, not at the end of whatever turn is running.
+                            let notification = publish_settled(&mut events, settled).await;
+                            let _ = to_kernel.send(SqEnvelope::current(Op::Steer { text: notification }));
+                        }
+                        Some(request) = control.recv() => {
+                            if is_immediate_control(&request.control) {
+                                apply_immediate_control(&workflows, processes.as_ref(), request).await;
+                                continue;
+                            }
+                            // Configuration DURING a turn is DEFERRED, not applied.
+                            //
+                            // The borrow checker says so and it is right: the turn holds
+                            // `&mut agent` for its whole duration, so there is no instant
+                            // at which a mutation could be applied without interleaving it
+                            // into the turn's own state. The old design got this ordering
+                            // for free — the frontend's `Option<Agent>` was empty while
+                            // running, so `/model` and `/effort` were structurally
+                            // unreachable — and lost the reason along with the `Option`.
+                            //
+                            // Deferring makes the same guarantee an explicit decision:
+                            // requests are applied at the turn boundary, in arrival order,
+                            // and the operator's answer arrives when it is true rather
+                            // than when it was asked.
+                            deferred.push(request);
+                        }
+                        Some(queued) = submissions.recv() => {
+                            let envelope = queued.into_envelope();
+                            let version = envelope.protocol_version;
+                            if let Ok(op) = envelope.into_current() {
+                                match route(&op) {
+                                    // A second turn cannot start while one is running; the
+                                    // frontend queues it. Saying so is better than
+                                    // silently dropping it.
+                                    Routed::StartTurn(_) => {
+                                        let _ = events.publish(ServerEvent::Notice(
+                                            "a turn is already running; this submission was not admitted".into(),
+                                        )).await;
+                                    }
+                                    Routed::ToKernel => {
+                                        let _ = to_kernel.send(SqEnvelope::with_version(version, op));
+                                    }
+                                    Routed::Refuse(why) => {
+                                        let _ = events.publish(ServerEvent::Notice(why.to_owned())).await;
+                                    }
+                                }
+                            }
+                        }
+                        outcome = &mut running => break outcome,
+                    }
+                }
+            };
+            started = true;
+
+            // The tail. The turn's completion is the synchronisation barrier for the kernel's
+            // sender, so deltas emitted between the last `select!` poll and the return are
+            // still queued here. Draining before the terminal event is what keeps the
+            // transcript ordered.
+            while let Ok(ui) = ui_rx.try_recv() {
+                let _ = events.publish(ServerEvent::Ui(ui)).await;
+            }
+            // The workflow seam drains with it: an in-turn run settles inside the turn, so
+            // its terminal rows and its `Finished` are queued here exactly like the last
+            // text deltas, and a tail that skipped them would leave the tree spinning.
+            while let Ok(progress) = workflow_rx.try_recv() {
+                let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
+            }
+            while let Ok(settled) = settled_rx.try_recv() {
+                pending_runtime.push_back(publish_settled(&mut events, settled).await);
+            }
+
+            // The turn's borrow has ended, so the deferred control plane can run — in
+            // arrival order, before the snapshot, so the state the frontend receives
+            // already reflects everything it asked for during the turn.
+            for request in deferred {
+                apply_control(
+                    &mut agent,
+                    &workflows,
+                    processes.as_ref(),
+                    &mut side,
+                    &mut started,
+                    &mut events,
+                    request,
+                )
+                .await;
+            }
+
+            let mut snapshot = snapshot_of(&mut agent);
+            snapshot.unadmitted_steers.retain(|text| {
+                if text.starts_with(crate::runtime::RUNTIME_NOTIFICATION_PREFIX) {
+                    pending_runtime.push_back(text.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            let (outcome, error) = match completion {
+                Ok(outcome) => (outcome, None),
+                Err(error) => {
+                    let error = error.public_summary();
+                    (Outcome::HarnessError, Some(error))
+                }
+            };
+            let (memo_hits, memo_misses) = agent.registry.memo_stats();
+            let kernel_tax = agent
+                .ledger
+                .kernel_tax()
+                .with_failed_run(!matches!(outcome, Outcome::Done | Outcome::Drained));
+            let summary = TerminalSummary {
+                outcome,
+                assistant_text: agent.last_assistant_text().to_owned(),
+                run_id: agent.rollout.run_id().to_string(),
+                cost: agent.ledger.cost_state(),
+                turns: agent.ledger.turns,
+                kernel_tax,
+                error,
+                memo_hits,
+                memo_misses,
+            };
+            if events
+                .publish(ServerEvent::RunEnded {
+                    snapshot: Box::new(snapshot),
+                    summary: Box::new(summary),
+                })
+                .await
+                .is_err()
+            {
+                break;
             }
         }
 
@@ -1181,15 +1277,194 @@ impl AppServer {
 /// Both events, always. The card settles on every terminal state for the same reason the in-turn
 /// path settles it on both exits — a run whose tree spins forever is a transcript that is wrong —
 /// and the notice is the operator's copy of an outcome that otherwise only the model can read.
-async fn publish_settled(events: &mut EventPublisher, settled: crate::workflow::RunSettled) {
+async fn publish_settled(
+    events: &mut EventPublisher,
+    settled: crate::workflow::RunSettled,
+) -> String {
+    let run_id = settled.run_id.clone();
+    let notification = format!(
+        "{}\n{}",
+        crate::runtime::RUNTIME_NOTIFICATION_PREFIX,
+        settled.notification,
+    );
     let _ = events
         .publish(ServerEvent::WorkflowRun(
-            crate::workflow::WorkflowRunUiEvent::Finished {
-                run_id: settled.run_id,
-            },
+            crate::workflow::WorkflowRunUiEvent::Finished { run_id },
         ))
         .await;
     let _ = events.publish(ServerEvent::Notice(settled.notice)).await;
+    notification
+}
+
+/// Inventory and kill do not borrow the resident [`Agent`], so they stay reachable while a parent
+/// turn holds that borrow. In particular, `x` must not wait behind the work it is meant to stop.
+fn is_immediate_control(control: &Control) -> bool {
+    matches!(
+        control,
+        Control::Workflow(WorkflowControl::Inventory | WorkflowControl::Cancel { .. })
+            | Control::Job(_)
+    )
+}
+
+fn workflow_inventory_reply(
+    workflows: &crate::workflow::WorkflowSupervisor,
+    notice: Option<String>,
+) -> ControlReply {
+    ControlReply::Workflows(Box::new(WorkflowControlReply {
+        runs: workflows.inventory(),
+        notice,
+    }))
+}
+
+fn apply_immediate_workflow_control(
+    workflows: &crate::workflow::WorkflowSupervisor,
+    request: ControlRequest,
+) {
+    let reply = match request.control {
+        Control::Workflow(WorkflowControl::Inventory) => workflow_inventory_reply(workflows, None),
+        Control::Workflow(WorkflowControl::Cancel { run_id }) => {
+            let notice = match workflows.cancel_for_operator(&run_id) {
+                Ok(_) => format!("stopping workflow `{run_id}` at the engine's next safe point"),
+                Err(error) => error,
+            };
+            workflow_inventory_reply(workflows, Some(notice))
+        }
+        _ => ControlReply::Refused(
+            "this workflow control needs the resident runtime and cannot run mid-turn".into(),
+        ),
+    };
+    let _ = request.reply.send(reply);
+}
+
+async fn apply_job_control(
+    processes: Option<&core_tools::ProcessControl>,
+    control: JobControl,
+) -> ControlReply {
+    let Some(processes) = processes else {
+        return ControlReply::Refused("this runtime has no background-process supervisor".into());
+    };
+    let result = match control {
+        JobControl::Inventory => processes.list(),
+        JobControl::Attach {
+            job_id,
+            stdout_cursor,
+            stderr_cursor,
+        } => {
+            processes
+                .poll(&job_id, stdout_cursor, stderr_cursor, 0)
+                .await
+        }
+        JobControl::Write { job_id, input, eof } => processes.write(&job_id, input, eof).await,
+        JobControl::Stop { job_id } => processes.stop(&job_id).await,
+    };
+    match result {
+        Ok(value) => ControlReply::Jobs(value),
+        Err(error) => ControlReply::Refused(if error.unknown {
+            format!("job control outcome is unknown: {}", error.message)
+        } else {
+            error.message
+        }),
+    }
+}
+
+async fn apply_immediate_control(
+    workflows: &crate::workflow::WorkflowSupervisor,
+    processes: Option<&core_tools::ProcessControl>,
+    request: ControlRequest,
+) {
+    match request.control {
+        Control::Job(control) => {
+            let _ = request
+                .reply
+                .send(apply_job_control(processes, control).await);
+        }
+        control @ Control::Workflow(_) => {
+            apply_immediate_workflow_control(
+                workflows,
+                ControlRequest {
+                    control,
+                    reply: request.reply,
+                },
+            );
+        }
+        _ => {
+            let _ = request.reply.send(ControlReply::Refused(
+                "this control needs the resident runtime and cannot run mid-turn".into(),
+            ));
+        }
+    }
+}
+
+async fn apply_workflow_control(
+    agent: &mut Agent,
+    workflows: &crate::workflow::WorkflowSupervisor,
+    events: &mut EventPublisher,
+    control: WorkflowControl,
+) -> ControlReply {
+    match control {
+        WorkflowControl::Inventory => workflow_inventory_reply(workflows, None),
+        WorkflowControl::Cancel { run_id } => {
+            let notice = match workflows.cancel_for_operator(&run_id) {
+                Ok(_) => format!("stopping workflow `{run_id}` at the engine's next safe point"),
+                Err(error) => error,
+            };
+            workflow_inventory_reply(workflows, Some(notice))
+        }
+        WorkflowControl::Resume { run_id } => {
+            if !workflows.may_resume(&run_id) {
+                return workflow_inventory_reply(
+                    workflows,
+                    Some(format!(
+                        "workflow `{run_id}` is still running or cancelling; wait for it to settle"
+                    )),
+                );
+            }
+            let prepared = match agent.prepare_workflow_resume(&run_id) {
+                Ok(prepared) => prepared,
+                Err(error) => return workflow_inventory_reply(workflows, Some(error)),
+            };
+            let name = prepared.name.clone();
+            let phases = prepared.declared_phases.clone();
+            // Publish the identity before starting the engine. Its first progress tick can then
+            // never overtake `Started` in the frontend's event stream.
+            let _ = events
+                .publish(ServerEvent::WorkflowRun(
+                    crate::workflow::WorkflowRunUiEvent::Started {
+                        run_id: run_id.clone(),
+                        name,
+                        phases,
+                    },
+                ))
+                .await;
+            match crate::workflow::WorkflowLauncher::launch(workflows, prepared) {
+                crate::workflow::Launched::Detached(_) => workflow_inventory_reply(
+                    workflows,
+                    Some(format!("resumed workflow `{run_id}` in this session")),
+                ),
+                crate::workflow::Launched::InTurn(handle) => {
+                    // The App Server always holds the supervisor's live `Arc`, so this is a
+                    // defensive fail-closed branch. Cancel and reap instead of dropping the sole
+                    // join receiver and leaving an unowned engine thread.
+                    handle.cancel();
+                    let failed_id = run_id.clone();
+                    tokio::spawn(async move {
+                        let _ = handle.join().await;
+                    });
+                    let _ = events
+                        .publish(ServerEvent::WorkflowRun(
+                            crate::workflow::WorkflowRunUiEvent::Finished { run_id: failed_id },
+                        ))
+                        .await;
+                    workflow_inventory_reply(
+                        workflows,
+                        Some(format!(
+                            "workflow `{run_id}` could not acquire a session owner"
+                        )),
+                    )
+                }
+            }
+        }
+    }
 }
 
 /// Apply one control request against the resident runtime.
@@ -1201,6 +1476,8 @@ async fn publish_settled(events: &mut EventPublisher, settled: crate::workflow::
 /// which is the one failure a control plane must not have.
 async fn apply_control(
     agent: &mut Agent,
+    workflows: &crate::workflow::WorkflowSupervisor,
+    processes: Option<&core_tools::ProcessControl>,
     side: &mut Option<crate::runtime::SideConversation>,
     started: &mut bool,
     events: &mut EventPublisher,
@@ -1302,14 +1579,18 @@ async fn apply_control(
         },
         Control::Side(request) => apply_side(agent, side, request).await,
         Control::AdoptRun(request) => {
-            let AdoptRun { rollout, route } = *request;
+            let AdoptRun {
+                rollout,
+                route,
+                fresh,
+            } = *request;
             match agent.adopt_run(rollout) {
                 Ok(adopted) => {
                     // The adopted transcript IS this session's transcript now, so the next
                     // submission must continue it. Leaving `started` false would send it down
                     // `Agent::run`, which starts from nothing and would silently discard the
                     // history this adoption just took a writer lock on.
-                    *started = true;
+                    *started = !fresh;
                     // The side conversation writes into its own journal, minted from the run that
                     // opened it. It does not travel to another run; the next `/side` opens a fresh
                     // one under the adopted identity.
@@ -1325,20 +1606,42 @@ async fn apply_control(
                     } = *route;
                     // The journal is already swapped. Whatever happens to the route from here, the
                     // answer reports the adopted identity, because that is where the session is.
-                    let blocked = match agent.record_provider_model_selection(
-                        provider,
-                        provider_id,
-                        model_id,
-                        catalog_digest,
-                        capability_digest,
-                    ) {
-                        Ok(()) => {
-                            agent.model_context_window = context_window_tokens;
-                            agent.model_max_output_tokens = max_output_tokens;
-                            // Usage belongs to the turn that produced it, on the run that produced
-                            // it. Nothing carries across an adoption.
-                            agent.ledger.last_turn_usage = None;
-                            agent.bind_selected_rate_card().err().map(|error| {
+                    let genesis_error = fresh
+                        .then(|| {
+                            let created_at = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|duration| duration.as_secs())
+                                .unwrap_or(0);
+                            agent.record_genesis(
+                                agent.workspace.display().to_string(),
+                                created_at,
+                                "in-process-session-v1".into(),
+                                None,
+                            )
+                        })
+                        .transpose()
+                        .err();
+                    let blocked = if let Some(error) = genesis_error {
+                        Some(format!(
+                            "session {} was created but its genesis could not be recorded: {}",
+                            adopted.run_id,
+                            error.public_summary()
+                        ))
+                    } else {
+                        match agent.record_provider_model_selection(
+                            provider,
+                            provider_id,
+                            model_id,
+                            catalog_digest,
+                            capability_digest,
+                        ) {
+                            Ok(()) => {
+                                agent.model_context_window = context_window_tokens;
+                                agent.model_max_output_tokens = max_output_tokens;
+                                // Usage belongs to the turn that produced it, on the run that produced
+                                // it. Nothing carries across an adoption.
+                                agent.ledger.last_turn_usage = None;
+                                agent.bind_selected_rate_card().err().map(|error| {
                                 format!(
                                     "session {} was adopted but its rate card could not be bound, \
                                      so this process cannot continue it: {}. Restart with `core \
@@ -1348,16 +1651,17 @@ async fn apply_control(
                                     adopted.run_id
                                 )
                             })
-                        }
-                        // The transcript was adopted and the route was not. The kernel refuses
-                        // every provider request in that state rather than dispatching against a
-                        // route the record does not carry, so this says restart rather than
-                        // pretending the session is usable.
-                        Err(error) => Some(format!(
-                            "session {} was adopted but its route could not be recorded, so this \
+                            }
+                            // The transcript was adopted and the route was not. The kernel refuses
+                            // every provider request in that state rather than dispatching against a
+                            // route the record does not carry, so this says restart rather than
+                            // pretending the session is usable.
+                            Err(error) => Some(format!(
+                                "session {} was adopted but its route could not be recorded, so this \
                              process cannot continue it: {error}. Restart with `core --resume {}`.",
-                            adopted.run_id, adopted.run_id
-                        )),
+                                adopted.run_id, adopted.run_id
+                            )),
+                        }
                     };
                     ControlReply::Adopted {
                         adopted: Box::new(adopted),
@@ -1371,6 +1675,10 @@ async fn apply_control(
                 )),
             }
         }
+        Control::Workflow(control) => {
+            apply_workflow_control(agent, workflows, events, control).await
+        }
+        Control::Job(control) => apply_job_control(processes, control).await,
     };
     // A frontend that dropped the receiver has moved on; that is not the server's problem.
     let _ = request.reply.send(reply);
@@ -1459,6 +1767,34 @@ mod tests {
 
     fn envelope(op: Op) -> SqEnvelope {
         SqEnvelope::with_version(PROTOCOL_VERSION, op)
+    }
+
+    #[tokio::test]
+    async fn a_settled_background_run_returns_one_task_notification_without_polling() {
+        let (eq_tx, mut eq_rx) = mpsc::channel(4);
+        let mut events = EventPublisher::new(eq_tx, true);
+        let notification = publish_settled(
+            &mut events,
+            crate::workflow::RunSettled {
+                run_id: "wf_done".into(),
+                notice: "workflow `wf_done` finished".into(),
+                notification: "<task-notification>done</task-notification>".into(),
+            },
+        )
+        .await;
+
+        assert!(notification.starts_with(crate::runtime::RUNTIME_NOTIFICATION_PREFIX));
+        assert!(notification.contains("<task-notification>done</task-notification>"));
+
+        assert!(matches!(
+            eq_rx.recv().await.unwrap().into_current().unwrap(),
+            ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Finished { run_id })
+                if run_id == "wf_done"
+        ));
+        assert!(matches!(
+            eq_rx.recv().await.unwrap().into_current().unwrap(),
+            ServerEvent::Notice(notice) if notice.contains("finished")
+        ));
     }
 
     #[test]
@@ -2022,6 +2358,43 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct BackgroundPlanningProvider {
+        planner_started: tokio::sync::Notify,
+        release_planner: tokio::sync::Notify,
+        planner_released: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl core_provider::Provider for BackgroundPlanningProvider {
+        fn provider_instance_id(&self) -> Option<&str> {
+            Some("provider-a")
+        }
+
+        async fn turn(
+            &self,
+            request: &core_provider::TurnRequest,
+            _on_item: &mut (dyn FnMut(core_provider::StreamItem) + Send),
+        ) -> Result<core_provider::TurnResult, core_provider::ProviderError> {
+            let text = if request.system.starts_with("You plan a READ-ONLY") {
+                self.planner_started.notify_one();
+                self.release_planner.notified().await;
+                self.planner_released
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                "Inspect workflow ownership and completion events"
+            } else if request.system.contains("read-only investigation subagent") {
+                "Finding: the supervisor owns the detached engine run."
+            } else {
+                "The main thread is available while the background investigation continues."
+            };
+            Ok(core_provider::TurnResult {
+                blocks: vec![core_protocol::Block::Text { text: text.into() }],
+                stop_reason: core_protocol::StopReason::EndTurn,
+                usage: core_provider::UsageReport::complete(core_protocol::Usage::default()),
+            })
+        }
+    }
+
     fn agent_in(workspace: &std::path::Path) -> Agent {
         let rollout = core_record::Rollout::open(
             &workspace.join(".core/runs"),
@@ -2146,6 +2519,284 @@ mod tests {
             other => panic!("unexpected reply: {other:?}"),
         }
         drop(agent);
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[tokio::test]
+    async fn workflow_inventory_and_kill_bypass_the_agent_borrow_but_resume_does_not() {
+        assert!(is_immediate_control(&Control::Workflow(
+            WorkflowControl::Inventory
+        )));
+        assert!(is_immediate_control(&Control::Workflow(
+            WorkflowControl::Cancel {
+                run_id: "wf-live".into()
+            }
+        )));
+        assert!(!is_immediate_control(&Control::Workflow(
+            WorkflowControl::Resume {
+                run_id: "wf-stopped".into()
+            }
+        )));
+        assert!(is_immediate_control(&Control::Job(JobControl::Inventory)));
+
+        let (settled_tx, _settled_rx) = tokio::sync::mpsc::unbounded_channel();
+        let owner = crate::workflow::WorkflowSupervisor::new(settled_tx);
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        apply_immediate_workflow_control(
+            &owner,
+            ControlRequest {
+                control: Control::Workflow(WorkflowControl::Inventory),
+                reply: reply_tx,
+            },
+        );
+        let ControlReply::Workflows(reply) = reply_rx.await.expect("every control answers") else {
+            panic!("inventory has a typed workflow reply")
+        };
+        assert!(reply.runs.is_empty());
+        assert!(reply.notice.is_none());
+    }
+
+    #[tokio::test]
+    async fn panel_resume_launches_the_persisted_run_and_orders_started_before_finished() {
+        let workspace = temp_workspace("workflow-panel-resume");
+        let mut agent = agent_in(&workspace);
+        agent
+            .record_model_selection(
+                "provider-a".into(),
+                "m".into(),
+                String::new(),
+                String::new(),
+            )
+            .unwrap();
+        let workflows_dir = workspace.join(".core/runs/subagents/workflows");
+        let run_id = "wf-panel-resume";
+        let script =
+            "export const meta = { name: 'panel resume', phases: ['restore'] }; return 42;";
+        crate::workflow::persist_inputs(
+            &workflows_dir,
+            &crate::workflow::RunManifest {
+                run_id: run_id.into(),
+                name: "panel resume".into(),
+                args: serde_json::Value::Null,
+                provider_id: "provider-a".into(),
+                model: "m".into(),
+                created_at: 1,
+            },
+            script,
+        )
+        .unwrap();
+
+        let Attached {
+            handle,
+            task,
+            facts: _,
+            initial_state: _,
+            interrupt: _,
+            drain: _,
+        } = attach(agent, true, true).unwrap();
+        let AppServerHandle {
+            client,
+            mut events,
+            control,
+        } = handle;
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        control
+            .send(ControlRequest {
+                control: Control::Workflow(WorkflowControl::Resume {
+                    run_id: run_id.into(),
+                }),
+                reply: reply_tx,
+            })
+            .await
+            .unwrap();
+        let ControlReply::Workflows(reply) = reply_rx.await.unwrap() else {
+            panic!("resume answers through the typed workflow surface")
+        };
+        assert!(
+            reply
+                .notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("resumed workflow"))
+        );
+
+        let mut lifecycle = Vec::new();
+        while lifecycle.last().copied() != Some("finished") {
+            let envelope = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                .await
+                .expect("the resumed run settles")
+                .expect("the event channel stays open");
+            match envelope.into_current().unwrap() {
+                ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Started {
+                    run_id: id,
+                    ..
+                }) if id == run_id => lifecycle.push("started"),
+                ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Finished {
+                    run_id: id,
+                }) if id == run_id => lifecycle.push("finished"),
+                _ => {}
+            }
+        }
+        assert_eq!(lifecycle, vec!["started", "finished"]);
+        assert_eq!(
+            crate::workflow::load_result(&workflows_dir, run_id)
+                .expect("the supervisor persists the resumed result")
+                .value,
+            serde_json::json!(42)
+        );
+
+        drop(control);
+        drop(client);
+        drop(events);
+        tokio::time::timeout(std::time::Duration::from_secs(10), task)
+            .await
+            .expect("the server stops after its clients close")
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[tokio::test]
+    async fn ultracode_planning_renders_in_one_detached_run_while_the_main_thread_returns() {
+        let workspace = temp_workspace("ultracode-detached-planning");
+        let rollout = core_record::Rollout::open(
+            &workspace.join(".core/runs"),
+            &core_protocol::RunId("ultracode-detached".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let provider = Arc::new(BackgroundPlanningProvider::default());
+        let mut agent = Agent::new(
+            provider.clone(),
+            core_tools::Registry::coding_agent(&workspace).unwrap(),
+            rollout,
+            "model-a".into(),
+            "system".into(),
+            core_protocol::Budget {
+                max_turns: 20,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        agent.workspace = workspace.clone();
+        agent
+            .configure_initial_runtime_policy(
+                core_protocol::Effort::Ultracode,
+                core_protocol::PermissionMode::default(),
+                core_protocol::PermissionRules::new(),
+            )
+            .unwrap();
+        agent
+            .record_model_selection(
+                "provider-a".into(),
+                "model-a".into(),
+                String::new(),
+                String::new(),
+            )
+            .unwrap();
+
+        let Attached {
+            handle,
+            task,
+            facts: _,
+            initial_state: _,
+            interrupt: _,
+            drain: _,
+        } = attach(agent, true, true).unwrap();
+        let AppServerHandle {
+            client,
+            mut events,
+            control,
+        } = handle;
+        client
+            .submit(Op::UserInput {
+                text: "audit workflow ownership across every module".into(),
+            })
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            provider.planner_started.notified(),
+        )
+        .await
+        .expect("the workflow planning child starts");
+
+        let mut declared_planning = false;
+        let mut rendered_planner = false;
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                .await
+                .expect("the main turn returns while planning is parked")
+                .expect("the event stream stays open")
+                .into_current()
+                .unwrap();
+            match event {
+                ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Started {
+                    phases,
+                    ..
+                }) => declared_planning |= phases.iter().any(|phase| phase == "planning"),
+                ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Progress {
+                    event:
+                        core_workflow::ProgressEvent::AgentStarted {
+                            phase: Some(phase), ..
+                        },
+                    ..
+                }) if phase == "planning" => rendered_planner = true,
+                ServerEvent::RunEnded { .. } => break,
+                _ => {}
+            }
+        }
+        assert!(
+            declared_planning,
+            "planning exists on the first workflow frame"
+        );
+        assert!(
+            rendered_planner,
+            "the planning agent is a live rendered row"
+        );
+        assert!(
+            !provider
+                .planner_released
+                .load(std::sync::atomic::Ordering::SeqCst),
+            "the main writer returns to idle without waiting for planning"
+        );
+
+        provider.release_planner.notify_one();
+        let mut workflow_finished = false;
+        let mut notification_turn_finished = false;
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                .await
+                .expect("the detached run settles after planning is released")
+                .expect("the event stream stays open")
+                .into_current()
+                .unwrap();
+            match event {
+                ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Finished {
+                    ..
+                }) => {
+                    workflow_finished = true;
+                }
+                ServerEvent::RunEnded { summary, .. } if workflow_finished => {
+                    assert!(
+                        summary.assistant_text.contains("main thread is available"),
+                        "the idle main thread consumes the task notification"
+                    );
+                    notification_turn_finished = true;
+                }
+                _ => {}
+            }
+            if workflow_finished && notification_turn_finished {
+                break;
+            }
+        }
+
+        drop(control);
+        drop(client);
+        drop(events);
+        tokio::time::timeout(std::time::Duration::from_secs(10), task)
+            .await
+            .expect("the server stops after its clients close")
+            .unwrap();
         let _ = std::fs::remove_dir_all(&workspace);
     }
 }

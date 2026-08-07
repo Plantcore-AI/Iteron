@@ -43,6 +43,10 @@ impl Default for OutputRing {
 }
 
 impl OutputRing {
+    pub(super) fn end_cursor(&self) -> u64 {
+        self.observed_cursor
+    }
+
     /// Retain a fixed tail and report exactly once when the total-observation ceiling is crossed.
     pub(super) fn push(&mut self, chunk: &[u8]) -> bool {
         self.observed_cursor = self

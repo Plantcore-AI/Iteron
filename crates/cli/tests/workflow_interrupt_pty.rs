@@ -27,9 +27,10 @@ const FIXTURE_PROVIDER_ID: &str = "workflow-interrupt-fixture";
 const FIXTURE_MODEL_ID: &str = "workflow-interrupt-model";
 const FIXTURE_KEY_ENV: &str = "CORE_WORKFLOW_INTERRUPT_TEST_KEY";
 const FIXTURE_KEY: &str = "integration-test-placeholder";
-/// The script's `log()` line, rendered by the live tree's narrator row — proof that a real frame is
-/// on screen and therefore that raw mode is already on and SIGINT already suppressed.
-const LIVE_FRAME_MARKER: &str = "spinning until interrupted";
+/// The default-folded card's affordance — proof that a real live frame is on screen and therefore
+/// that raw mode is already on and SIGINT already suppressed. Narrator logs intentionally remain
+/// hidden until the operator expands the run.
+const LIVE_FRAME_MARKER: &str = "ctrl+o expand";
 const CTRL_C: &[u8] = b"\x03";
 const ENTER_ALTERNATE_SCREEN: &str = "\u{1b}[?1049h";
 const LEAVE_ALTERNATE_SCREEN: &str = "\u{1b}[?1049l";

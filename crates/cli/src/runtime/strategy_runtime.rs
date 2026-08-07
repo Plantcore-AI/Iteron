@@ -16,15 +16,22 @@ pub(crate) struct LiveContext {
     pub governing_trust: Trust,
 }
 
+pub(crate) struct LiveContextRequest<'a> {
+    pub workspace: &'a Path,
+    pub home_dir: Option<&'a Path>,
+    pub dependency_skill_dirs: &'a [(std::path::PathBuf, std::path::PathBuf)],
+    pub turn: TurnId,
+    pub task: &'a str,
+}
+
 pub(crate) fn resolve_live_context(
     strategy: &dyn StrategySlot,
+    memory_strategy: &dyn StrategySlot,
     port: &dyn ContextPort,
-    workspace: &Path,
-    home_dir: Option<&Path>,
-    turn: TurnId,
-    task: &str,
+    request: LiveContextRequest<'_>,
 ) -> Result<LiveContext, String> {
-    let mut observation = ContextSlotObservation::baseline(RequestId(u64::from(turn.0)), task);
+    let mut observation =
+        ContextSlotObservation::baseline(RequestId(u64::from(request.turn.0)), request.task);
     observation.include_outline = false;
     observation.instruction_scopes.clear();
     observation.include_environment = false;
@@ -36,15 +43,17 @@ pub(crate) fn resolve_live_context(
     )
     .map_err(str::to_owned)?;
     let grant = port
-        .resolve(
+        .resolve_with_memory_strategy(
             &plan,
             &ContextPortInput {
-                workspace: workspace.to_path_buf(),
-                home_dir: home_dir.map(Path::to_path_buf),
-                active_dir: workspace.to_path_buf(),
+                workspace: request.workspace.to_path_buf(),
+                home_dir: request.home_dir.map(Path::to_path_buf),
+                active_dir: request.workspace.to_path_buf(),
                 environment: None,
                 transcript: Vec::new(),
+                dependency_skill_dirs: request.dependency_skill_dirs.to_vec(),
             },
+            memory_strategy,
         )
         .map_err(|error| error.to_string())?;
     let governing_trust = grant.governing_trust().unwrap_or(Trust::Trusted);

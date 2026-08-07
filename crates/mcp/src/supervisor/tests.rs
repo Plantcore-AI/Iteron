@@ -405,15 +405,18 @@ mod unix {
         let script = concat!(
             "n=0; test ! -f \"$1\" || n=$(cat \"$1\"); n=$((n+1)); printf '%s' \"$n\" > \"$1\"; ",
             "IFS= read -r init; ",
-            "if test \"$n\" = 1; then exec sleep 60; fi; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
+            "if test \"$n\" = 1; then exec sleep 60; fi; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"read\"}]}}'; exec sleep 60"
         );
+        // Exercise a discovery deadline only after the child has completed its handshake. A
+        // 30 ms handshake deadline made process scheduling under a parallel workspace run part
+        // of the assertion and could also kill the healthy second generation before it started.
         let timeouts = McpTimeouts::new(
-            Duration::from_millis(30),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+            Duration::from_secs(2),
         )
         .unwrap();
         let mut server = supervisor(

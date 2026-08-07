@@ -820,7 +820,16 @@ fn title_from_message(m: &Message) -> String {
             _ => None,
         })
         .unwrap_or("");
-    let first_line = text.lines().next().unwrap_or("").trim();
+    title_from_text(text)
+}
+
+/// The stable first-prompt title projection shared by durable session metadata and live clients.
+pub fn title_from_text(text: &str) -> String {
+    let first_line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     const MAX: usize = 72;
     if first_line.chars().count() <= MAX {
         first_line.to_string()
@@ -1361,6 +1370,69 @@ pub struct PruneReport {
     pub active: Vec<RunId>,
     /// Named by the policy, kept because a retained fork replays through this run's prefix.
     pub ancestors: Vec<RunId>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DeleteSessionError {
+    #[error(transparent)]
+    Record(#[from] RecordError),
+    #[error("session {0:?} does not exist")]
+    NotFound(String),
+    #[error("session {0:?} is active in another process")]
+    Active(String),
+    #[error("session {run:?} is retained by descendant sessions: {descendants}")]
+    HasDescendants { run: String, descendants: String },
+}
+
+/// Delete exactly one inactive session and its rebuildable projection.
+///
+/// The journal lock stays held across unlink, and any retained fork whose logical history names
+/// the target refuses the operation. This is the explicit destructive counterpart to [`prune`]:
+/// callers must name one run rather than broadening a retention policy until it happens to match.
+pub fn delete(runs_dir: &Path, tenant: &TenantId, run: &RunId) -> Result<(), DeleteSessionError> {
+    crate::validate_run_id(run)?;
+    let sessions = list(runs_dir, tenant);
+    if !sessions.iter().any(|meta| meta.run_id == *run) {
+        return Err(DeleteSessionError::NotFound(run.0.clone()));
+    }
+    let mut descendants = sessions
+        .iter()
+        .filter(|meta| meta.run_id != *run)
+        .filter(|meta| {
+            meta.parent
+                .as_ref()
+                .is_some_and(|parent| parent.parent_run == *run)
+                || meta.ancestry.iter().any(|ancestor| ancestor.run_id == *run)
+        })
+        .map(|meta| meta.run_id.0.clone())
+        .collect::<Vec<_>>();
+    descendants.sort();
+    descendants.dedup();
+    if !descendants.is_empty() {
+        return Err(DeleteSessionError::HasDescendants {
+            run: run.0.clone(),
+            descendants: descendants.join(", "),
+        });
+    }
+
+    let rollout = rollout_path(runs_dir, run)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(&rollout)
+        .map_err(RecordError::from)?;
+    file.try_lock()
+        .map_err(|_| DeleteSessionError::Active(run.0.clone()))?;
+    std::fs::remove_file(&rollout).map_err(RecordError::from)?;
+    let sidecar = per_run_meta_path(runs_dir, run)?;
+    if let Err(error) = std::fs::remove_file(sidecar)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        return Err(RecordError::from(error).into());
+    }
+    drop(file);
+    merge_rewrite_index(runs_dir, [])?;
+    Ok(())
 }
 
 /// Apply a retention policy to `runs_dir`, deleting the run journals it names and nothing else.
@@ -4689,6 +4761,42 @@ mod tests {
             "a shared ancestor is named once, not once per fork"
         );
         load_forked(&dir, &sibling).expect("the second survivor still reads too");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explicit_delete_refuses_live_and_ancestor_runs_then_removes_exactly_one_session() {
+        let dir = tmpdir("explicit-delete");
+        let tenant = TenantId::default();
+        let parent = RunId("parent".into());
+        mk_run(&dir, &parent, &tenant, "/repo/delete", "parent task");
+        let child = fork(&dir, &parent, Seq(4), &tenant).unwrap();
+        reindex(&dir).unwrap();
+
+        assert!(matches!(
+            delete(&dir, &tenant, &parent),
+            Err(DeleteSessionError::HasDescendants { .. })
+        ));
+        assert!(rollout_path(&dir, &parent).unwrap().exists());
+
+        let active = Rollout::open_existing(&dir, &child, tenant.clone()).unwrap();
+        assert!(matches!(
+            delete(&dir, &tenant, &child),
+            Err(DeleteSessionError::Active(_))
+        ));
+        drop(active);
+
+        delete(&dir, &tenant, &child).unwrap();
+        assert!(!rollout_path(&dir, &child).unwrap().exists());
+        assert!(!per_run_meta_path(&dir, &child).unwrap().exists());
+        assert_eq!(list(&dir, &tenant).len(), 1);
+
+        delete(&dir, &tenant, &parent).unwrap();
+        assert!(list(&dir, &tenant).is_empty());
+        assert!(matches!(
+            delete(&dir, &tenant, &parent),
+            Err(DeleteSessionError::NotFound(_))
+        ));
         std::fs::remove_dir_all(&dir).ok();
     }
 

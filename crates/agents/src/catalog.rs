@@ -77,6 +77,62 @@ impl AgentCatalog {
         Self::discover_with_user(None, repo)
     }
 
+    /// Discover the ordinary catalog plus exact agent files from verified plugin packages.
+    /// Each tuple is `(package root, file, manifest slot name)`; loading a whole directory would
+    /// accidentally resurrect a plugin contribution that lost composition arbitration.
+    pub fn discover_with_plugin_agents(
+        user: Option<&Path>,
+        repo: &Path,
+        plugin_agents: &[(PathBuf, PathBuf, String)],
+    ) -> Self {
+        let mut catalog = Self::discover_with_user(user, repo);
+        for (root, path, expected_name) in plugin_agents {
+            if !catalog.consume_source_slot() {
+                break;
+            }
+            let source = path.display().to_string();
+            let text =
+                match read_bounded_utf8(root, path, MAX_AGENT_SOURCE_BYTES, SourceScope::User) {
+                    Ok(Some(text)) => text,
+                    Ok(None) => {
+                        catalog.record_error(LoadError {
+                            source,
+                            reason: "verified plugin agent artifact is missing".into(),
+                        });
+                        continue;
+                    }
+                    Err(error) => {
+                        catalog.record_error(LoadError {
+                            source,
+                            reason: error.reason().to_string(),
+                        });
+                        continue;
+                    }
+                };
+            match parse_def(&source, &text, Trust::Trusted) {
+                Ok(def) if def.name != *expected_name => catalog.record_error(LoadError {
+                    source,
+                    reason: format!(
+                        "plugin agent name `{}` differs from manifest slot `{expected_name}`",
+                        def.name
+                    ),
+                }),
+                Ok(def) if catalog.defs.iter().any(|loaded| loaded.name == def.name) => {
+                    catalog.record_error(LoadError {
+                        source,
+                        reason: format!(
+                            "duplicate agent name `{}`; keeping the earlier definition",
+                            def.name
+                        ),
+                    });
+                }
+                Ok(def) => catalog.defs.push(def),
+                Err(error) => catalog.record_error(error),
+            }
+        }
+        catalog
+    }
+
     fn discover_with_user(user: Option<&Path>, repo: &Path) -> Self {
         let mut cat = AgentCatalog {
             defs: Vec::new(),
@@ -86,6 +142,7 @@ impl AgentCatalog {
             errors_truncated: false,
         };
         cat.defs.push(AgentDef::generic());
+        cat.defs.push(AgentDef::ultracode_planner());
 
         // User definitions: read directly (do not scan the whole home tree). Trusted.
         if let Some(user) = user {
@@ -113,7 +170,7 @@ impl AgentCatalog {
     /// A catalog with only the built-ins (no filesystem access) — for tests and headless runs.
     pub fn builtin_only() -> Self {
         AgentCatalog {
-            defs: vec![AgentDef::generic()],
+            defs: vec![AgentDef::generic(), AgentDef::ultracode_planner()],
             errors: Vec::new(),
             sources_seen: 0,
             source_limit_reported: false,
@@ -475,7 +532,12 @@ mod tests {
     fn builtin_generic_always_present() {
         let cat = AgentCatalog::builtin_only();
         assert!(cat.get("generic").is_some());
-        assert_eq!(cat.defs().len(), 1);
+        let planner = cat
+            .get(crate::ULTRACODE_PLANNER_NAME)
+            .expect("dynamic workflow planner is pinned beside the investigator");
+        assert!(planner.tools.narrow().is_empty());
+        assert_eq!(planner.budget.max_turns, 1);
+        assert_eq!(cat.defs().len(), 2);
     }
 
     #[test]
@@ -607,8 +669,8 @@ mod tests {
             .map(|d| d.name.clone())
             .collect();
         assert_eq!(names1, names2, "sorted discovery => reproducible order");
-        // built-in generic first, then sorted a, b, c
-        assert_eq!(names1, vec!["generic", "a", "b", "c"]);
+        // Built-ins first, then sorted workspace definitions.
+        assert_eq!(names1, vec!["generic", "ultracode-planner", "a", "b", "c"]);
         std::fs::remove_dir_all(&user).ok();
         std::fs::remove_dir_all(&repo).ok();
     }

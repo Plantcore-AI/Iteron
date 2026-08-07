@@ -4,8 +4,8 @@
 //! read-only tool loop) via `Agent::run_leaf`, not a single provider completion. This is the
 //! standalone upgrade of the CLI's first-slice `ProviderSpawner` (see `crates/cli/src/workflow.rs`).
 //!
-//! Child construction here mirrors the parent-internal `spawn_subagent`/`prepare_investigator`
-//! paths (fresh read-only `Registry`, a child `Rollout` under `subagents/`, inherited route +
+//! Child construction here is the one workflow-investigator path (fresh read-only `Registry`, a
+//! child `Rollout` under `subagents/`, inherited route +
 //! pricing, bounded delegation depth), but it takes an explicit [`KernelSpawnerContext`] instead of
 //! a live parent `&mut self`. That is the "standalone child constructor" the workflow seam needs:
 //! the existing child setup was only reachable mid-turn from inside a parent `Agent`, because it
@@ -18,6 +18,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 
 use async_trait::async_trait;
@@ -26,7 +27,7 @@ use core_obs::PricingPort;
 use core_protocol::capability_set::CapabilitySet;
 use core_protocol::slot::StrategySlot;
 use core_protocol::{
-    Budget, CostAttribution, Effort, PermissionMode, PermissionRules, RunId, TenantId,
+    Budget, CostAttribution, Effort, Outcome, PermissionMode, PermissionRules, RunId, TenantId,
 };
 use core_provider::Provider;
 use core_record::Rollout;
@@ -37,9 +38,21 @@ use sha2::{Digest, Sha256};
 use super::Agent;
 use super::hooks::Hooks;
 use super::pricing::SharedUsdBudget;
+use core_obs::Ledger;
 
 const MAX_AGENT_REFUSAL_BYTES: usize = 512;
 const AGENT_REFUSAL_TRUNCATED: &str = " [truncated]";
+
+type ChildLedgerCollector = Arc<Mutex<Vec<(u64, Ledger)>>>;
+type ChildOutcomeCollector = Arc<Mutex<Vec<(u64, Result<Outcome, String>)>>>;
+
+/// Harness-owned inputs for the built-in Ultracode planner call. The model may propose only raw
+/// lines; this pinned policy seat turns them into the exact bounded task objects the script may fan.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct UltracodePlanning {
+    pub(super) class: core_agents::TaskClass,
+    pub(super) max_leaves: usize,
+}
 
 mod activity;
 
@@ -119,6 +132,27 @@ pub struct KernelSpawnerContext {
     /// Per-child bounded-loop ceilings. The engine's Governor bounds CONCURRENCY; this bounds each
     /// child's turns/wall/usd. Defaults to `core_agents::subagent_budget_ceiling()`.
     pub budget: Budget,
+    /// Optional declaration-order budget slices for a kernel-built fan. When present, spawn ordinal
+    /// N receives slice N and an ordinal outside the schedule is refused. This is how the built-in
+    /// Ultracode script preserves one aggregate fan ceiling instead of multiplying a per-child
+    /// ceiling by the number of `agent()` calls. General user-authored workflows leave it `None`.
+    pub(super) budget_slices: Option<Vec<Budget>>,
+    /// Optional parent-owned ledger collector. A built-in in-turn fan merges these child ledgers
+    /// back into the writer's shared accounting after the engine joins; standalone workflows have
+    /// no live parent ledger and leave it unset.
+    pub(super) child_ledgers: Option<ChildLedgerCollector>,
+    /// Typed terminal outcomes for the same parent reconciliation path. The workflow engine's JS
+    /// value intentionally collapses every degraded child to `null`; the kernel still needs to
+    /// distinguish operator drain/interrupt from budget, harness and provider failures in its
+    /// durable compatibility record.
+    pub(super) child_outcomes: Option<ChildOutcomeCollector>,
+    /// Present only for the built-in dynamic Ultracode script. A user-authored workflow cannot
+    /// acquire the planner adapter merely by spelling its internal agent type.
+    pub(super) ultracode_planning: Option<UltracodePlanning>,
+    /// Parent drain is orderly quiescence, not workflow cancellation. Sharing this flag lets a
+    /// child checkpoint and return `Outcome::Drained`; the engine cancellation token remains the
+    /// separate immediate-stop surface.
+    pub(super) drain: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub model_context_window: Option<u64>,
     pub model_max_output_tokens: Option<u32>,
     pub sensitive_env_names: Vec<String>,
@@ -126,11 +160,25 @@ pub struct KernelSpawnerContext {
     /// a different policy generation.
     pub context_strategy: Arc<dyn StrategySlot>,
     pub tool_policy: Arc<dyn StrategySlot>,
+    pub memory_strategy: Arc<dyn StrategySlot>,
+    /// `core/router`. A leaf child never orchestrates, so it never asks; it is inherited anyway so
+    /// a child is never constructed against a different policy generation than its parent.
+    pub router: Arc<dyn StrategySlot>,
+    pub planner: Arc<dyn StrategySlot>,
+    pub collaboration: Arc<dyn StrategySlot>,
+    pub scheduler: Arc<dyn StrategySlot>,
+    pub verifier: Arc<dyn StrategySlot>,
+    /// `core/model_router`. The spawner supplies the parent's already-resolved route as evidence;
+    /// the slot may select it or refuse, but cannot invent an unbound provider route.
+    pub model_router: Arc<dyn StrategySlot>,
     pub context_port: Arc<dyn core_ctx::ContextPort>,
     pub context_home_dir: Option<PathBuf>,
+    pub dependency_skill_dirs: Vec<(PathBuf, PathBuf)>,
     /// Exact accepted definitions resolved once by the composition root. Every spawned worker
     /// inherits this same immutable set; it never performs filesystem discovery itself.
     pub agent_catalog: Arc<AgentCatalog>,
+    /// Policy projection pinned for the entire workflow lineage.
+    pub boot_bundle: Arc<core_agents::BootBundle>,
     /// Permission posture for the read-only child. Registry and capability ceilings independently
     /// prevent this from widening authority.
     pub permission_mode: PermissionMode,
@@ -186,14 +234,28 @@ impl KernelSpawnerContext {
             workflow_id,
             default_effort: Effort::default(),
             budget: core_agents::subagent_budget_ceiling(),
+            budget_slices: None,
+            child_ledgers: None,
+            child_outcomes: None,
+            ultracode_planning: None,
+            drain: None,
             model_context_window: None,
             model_max_output_tokens: None,
             sensitive_env_names: Vec::new(),
             context_strategy: Arc::new(core_ctx::ContextStrategy::default()),
             tool_policy: Arc::new(core_tools::ToolPolicy::default()),
+            memory_strategy: Arc::new(core_ctx::MemoryRecallStrategy::default()),
+            router: Arc::new(core_agents::RouterStrategy::default()),
+            planner: Arc::new(core_agents::PlannerStrategy::default()),
+            collaboration: Arc::new(core_workflow::CollaborationStrategy::default()),
+            scheduler: Arc::new(core_sched::SchedulerStrategy::default()),
+            verifier: Arc::new(core_verify::VerifierStrategy::default()),
+            model_router: Arc::new(core_provider::catalog::ModelRouterStrategy::default()),
             context_port: Arc::new(core_ctx::DefaultContextPort),
             context_home_dir: None,
+            dependency_skill_dirs: Vec::new(),
             agent_catalog: Arc::new(AgentCatalog::builtin_only()),
+            boot_bundle: crate::bundle_adapter::resolve_boot_bundle(),
             permission_mode: PermissionMode::default(),
             permission_rules: PermissionRules::new(),
             authority_ceiling: all_capabilities,
@@ -244,8 +306,17 @@ impl KernelSpawner {
         RunId(format!("workflow-{namespace}-n{ordinal:08x}"))
     }
 
-    /// Build the fully-wired, owned child. This is the standalone analogue of the parent-internal
-    /// `prepare_investigator`/`spawn_subagent` child setup:
+    /// The child identity the next declaration-order spawn will mint. The built-in fan records its
+    /// parent-side `SubagentSpawned`/`ChildStarted` evidence before launching the engine, so the id
+    /// calculation is shared rather than duplicated across the boundary.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(super) fn run_id_for_ordinal(&self, ordinal: u64) -> RunId {
+        self.mint_run_id(ordinal)
+    }
+
+    /// Build the fully-wired, owned child. This is the workflow analogue of direct
+    /// `spawn_subagent` child setup:
     ///   * a read-only `Registry` narrowed by the selected immutable `AgentDef`,
     ///   * a child `Rollout` under `runtime_state_dir/subagents/`,
     ///   * inherited route + pricing (public `record_model_selection` / `bind_selected_rate_card`),
@@ -271,33 +342,36 @@ impl KernelSpawner {
             safe_agent_refusal(&format!("pinned agent definition is invalid: {reason}"))
         })?;
 
-        // A definition/call may request a model, but this spawner only owns evidence for the
-        // parent's exact route. Refuse a different model instead of reusing the parent's catalog,
-        // capability, or price digests under a false identity.
-        if let (Some(call_model), Some(definition_model)) =
-            (call.model.as_deref(), agent_def.model.as_deref())
-            && call_model != definition_model
-        {
-            return Err(
-                "agent definition model conflicts with the requested model override".into(),
-            );
-        }
-        let requested_model = agent_def
-            .model
-            .as_deref()
-            .or(call.model.as_deref())
-            .unwrap_or(&cx.model);
-        if requested_model != cx.model {
-            return Err("requested agent model has no separately resolved route evidence".into());
-        }
+        // Which model the child uses is a strategy decision, but its evidence is structural: this
+        // spawner owns only the parent's exact route. `route_with` rejects every answer outside
+        // that set even when a replacement strategy misbehaves.
+        let routed = core_provider::catalog::ModelRouterStrategy::route_with(
+            cx.model_router.as_ref(),
+            &core_provider::catalog::ModelRouterObservation::single_route(
+                cx.model.clone(),
+                agent_def.model.clone(),
+                call.model.clone(),
+            ),
+            cx.authority_ceiling,
+        )
+        .map_err(|error| error.to_string())?;
 
         let mut registry = Registry::read_only(cx.workspace.clone())
             .map_err(|_| "child read-only registry setup failed".to_string())?;
-        let allowed_tools = agent_def.tools.narrow();
-        let _effective_tools = registry.narrow_to(&allowed_tools);
+        let _effective_tools = crate::bundle_adapter::narrow_child_registry(
+            &mut registry,
+            &agent_def.tools,
+            &cx.boot_bundle,
+        );
         registry.set_sensitive_env_names(cx.sensitive_env_names.clone());
 
-        let budget = intersect_budget(&cx.budget, &agent_def.budget)?;
+        let parent_budget = match &cx.budget_slices {
+            Some(slices) => slices
+                .get(ordinal as usize)
+                .ok_or_else(|| "aggregate child budget schedule is exhausted".to_string())?,
+            None => &cx.budget,
+        };
+        let budget = intersect_budget(parent_budget, &agent_def.budget)?;
         if budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) && cx.pricing_port.is_none() {
             return Err(
                 "child has a positive USD ceiling but this exact route has no verified pricing port"
@@ -314,7 +388,7 @@ impl KernelSpawner {
             cx.provider.clone(),
             registry,
             rollout,
-            cx.model.clone(),
+            routed.model,
             agent_def.system.clone(),
             budget.clone(),
         );
@@ -338,11 +412,23 @@ impl KernelSpawner {
         sub.policy_capabilities = cx.policy_capabilities.intersect(read_only);
         sub.context_strategy = cx.context_strategy.clone();
         sub.tool_policy = cx.tool_policy.clone();
+        sub.memory_strategy = cx.memory_strategy.clone();
+        sub.router = cx.router.clone();
+        sub.planner = cx.planner.clone();
+        sub.collaboration = cx.collaboration.clone();
+        sub.scheduler = cx.scheduler.clone();
+        sub.verifier = cx.verifier.clone();
+        sub.model_router = cx.model_router.clone();
         sub.context_port = cx.context_port.clone();
         sub.context_home_dir = cx.context_home_dir.clone();
+        sub.dependency_skill_dirs = cx.dependency_skill_dirs.clone();
         // A workflow child is exactly one level below the operator. The read-only registry has no
         // dispatch/workflow tool; depth remains a second defense if that registry evolves.
         sub.delegation_depth = 1;
+        if let Some(drain) = &cx.drain {
+            sub.drain = drain.clone();
+            sub.owns_drain = false;
+        }
 
         // --- Public-surface inherited context ---
         sub.workspace = cx.workspace.clone();
@@ -354,6 +440,7 @@ impl KernelSpawner {
         sub.bypass_permissions = cx.bypass_permissions;
         sub.agent_catalog = cx.agent_catalog.clone();
         sub.agent_catalog_pinned = true;
+        sub.boot_bundle = cx.boot_bundle.clone();
         // Installs the deny-list on the agent, its hooks, and (already, above) its registry.
         sub.set_sensitive_env_names(cx.sensitive_env_names.clone());
 

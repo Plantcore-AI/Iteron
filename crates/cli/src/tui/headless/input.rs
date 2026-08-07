@@ -1,4 +1,5 @@
 use super::auth::BearerToken;
+use super::control::WireControl;
 use anyhow::{Context, Result, bail};
 use core_protocol::{Op, input::MAX_TOTAL_IMAGE_BASE64_BYTES, task::MAX_TASK_TEXT_BYTES};
 use serde::Deserialize;
@@ -31,6 +32,11 @@ pub(super) enum ClientFrame {
     Submit {
         protocol_version: u32,
         op: Op,
+    },
+    Control {
+        protocol_version: u32,
+        request_id: u64,
+        control: WireControl,
     },
 }
 

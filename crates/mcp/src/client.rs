@@ -4,10 +4,11 @@ use crate::{
     MAX_FRAME_BYTES, McpError, encode_frame,
     evidence::{DispatchClock, McpToolCallEvidence},
     pagination::ToolListLimits,
+    policy::McpServerPolicy,
     request,
     tool_filter::{McpToolFilter, validate_bare_tool_name},
 };
-use core_protocol::ToolSpec;
+use core_protocol::{ToolSpec, capability_set::CapabilitySet};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -19,7 +20,7 @@ mod discovery;
 mod lifecycle;
 mod managed_connect;
 mod transport;
-use content::render_tool_content;
+pub(crate) use content::render_tool_content;
 use lifecycle::OwnedProcess;
 #[cfg(test)]
 use transport::read_frame;
@@ -65,6 +66,7 @@ pub struct McpClient {
     next_id: std::sync::atomic::AtomicU64,
     request_timeout: Duration,
     negotiated_protocol_version: Option<String>,
+    capabilities: crate::McpServerCapabilities,
     pub server_name: String,
 }
 
@@ -79,6 +81,20 @@ impl McpClient {
         self.negotiated_protocol_version
             .as_deref()
             .expect("McpClient is returned only after protocol negotiation")
+    }
+
+    pub fn capabilities(&self) -> crate::McpServerCapabilities {
+        self.capabilities
+    }
+
+    /// Invoke the standard resource/prompt surface under the same correlated response bounds.
+    pub async fn call_extension(&self, method: &str, params: Value) -> Result<Value, McpError> {
+        match method {
+            "resources/list" | "resources/read" if self.capabilities.resources => {}
+            "prompts/list" | "prompts/get" if self.capabilities.prompts => {}
+            _ => return Err(McpError::Protocol("MCP capability is not declared".into())),
+        }
+        self.call(method, params).await
     }
 
     /// Connect while removing the caller's exact credential-variable names from the helper
@@ -218,7 +234,7 @@ impl McpClient {
         Ok(())
     }
 
-    async fn notify_unbounded_by_outer_deadline(
+    pub(crate) async fn notify_unbounded_by_outer_deadline(
         &self,
         method: &str,
         params: Value,
@@ -227,10 +243,16 @@ impl McpClient {
         self.send_line_unbounded_by_outer_deadline(line).await
     }
 
+    /// The per-exchange deadline this client applies. Read by the transport seam so a caller that
+    /// arrives through `McpWire` inherits the same bound as a caller that arrives inherently.
+    pub(crate) fn request_timeout(&self) -> Duration {
+        self.request_timeout
+    }
+
     /// Send a request and read response lines until the matching id arrives (skipping any
     /// interleaved notifications the server may emit). The deadline covers the complete exchange,
     /// including request serialization/write and lock acquisition.
-    async fn call(&self, method: &str, params: Value) -> Result<Value, McpError> {
+    pub(crate) async fn call(&self, method: &str, params: Value) -> Result<Value, McpError> {
         let operation = format!("request `{method}`");
         match self
             .call_with_certainty(method, params, operation.clone())
@@ -342,6 +364,29 @@ impl McpClient {
     ) -> Result<Vec<ToolSpec>, McpError> {
         filter.validate()?;
         discovery::list_tools(self, ToolListLimits::default(), filter.clone()).await
+    }
+
+    /// Discover tools admitted by both the name filter and the authority policy.
+    ///
+    /// `host_ceiling` is the authority the composition root is willing to admit for this server.
+    /// The server's own policy can only narrow it further, so installing a server can never widen
+    /// what the host allows; a tool whose class does not survive is never exposed at all.
+    pub async fn list_tools_governed(
+        &self,
+        filter: &McpToolFilter,
+        policy: &McpServerPolicy,
+        host_ceiling: CapabilitySet,
+    ) -> Result<Vec<ToolSpec>, McpError> {
+        filter.validate()?;
+        policy.validate()?;
+        discovery::list_tools_governed(
+            self,
+            ToolListLimits::default(),
+            filter.clone(),
+            policy.clone(),
+            host_ceiling,
+        )
+        .await
     }
 
     #[cfg(test)]
@@ -642,7 +687,7 @@ mod tests {
             "-c".to_string(),
             concat!(
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-11-25\"}}'; ",
                 "IFS= read -r initialized; printf '%s' \"$initialized\" > \"$1\"; ",
                 "exec sleep 60"
             )

@@ -26,6 +26,7 @@
 //!     loop, flushes the journal, and resolves the run as `stopped`.
 
 mod bindings;
+mod collaboration;
 mod host;
 
 pub mod cachekey;
@@ -38,6 +39,10 @@ pub mod task_dag;
 
 pub use bindings::LIFETIME_CAP;
 pub use cachekey::{agent_id, agent_key};
+pub use collaboration::{
+    COLLABORATION_SLOT_VERSION, CollaborationDecision, CollaborationError,
+    CollaborationObservation, CollaborationProposal, CollaborationStrategy,
+};
 pub use events::{
     NullSink, PREVIEW_MAX, PROGRESS_SINK_PORT_VERSION, ProgressEvent, ProgressSink,
     TOOL_SUMMARY_MAX, WorkflowState, fmt_count, fmt_duration, truncate_preview,

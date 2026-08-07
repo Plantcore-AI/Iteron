@@ -26,6 +26,8 @@ static FILE_READ_GATE: LazyLock<Arc<FileReadGate>> =
 
 #[path = "image_input/decode.rs"]
 mod decode;
+#[path = "image_input/heic.rs"]
+mod heic;
 #[path = "image_input/parse.rs"]
 mod parse;
 #[path = "image_input/sniff.rs"]
@@ -34,7 +36,7 @@ mod sniff;
 mod types;
 
 pub use parse::{parse_explicit_image_path, parse_image_mentions};
-use sniff::{extension_media_type, sniff_image};
+use sniff::{SourceFormat, extension_format, sniff_image};
 pub use types::{ImageInputError, ImageInputErrorKind, SafeDisplayName};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,7 +217,7 @@ impl ImageAttachments {
                 name,
             ));
         }
-        let expected = extension_media_type(path).ok_or_else(|| {
+        let source_format = extension_format(path).ok_or_else(|| {
             ImageInputError::named(ImageInputErrorKind::UnsupportedExtension, name.clone())
         })?;
         let remaining = self
@@ -239,7 +241,41 @@ impl ImageAttachments {
             };
             return Err(ImageInputError::named(kind, name));
         }
-        self.admit_bytes(name, Some(expected), &bytes)
+        match source_format {
+            SourceFormat::Provider(expected) => self.admit_bytes(name, Some(expected), &bytes),
+            SourceFormat::Heic => {
+                let normalized = match heic::transcode_to_jpeg(&bytes) {
+                    Ok(normalized) => normalized,
+                    Err(
+                        ImageInputErrorKind::InvalidImage | ImageInputErrorKind::TruncatedImage,
+                    ) if sniff_image(&bytes).is_ok() => {
+                        return Err(ImageInputError::named(
+                            ImageInputErrorKind::ExtensionMismatch,
+                            name,
+                        ));
+                    }
+                    Err(kind) => return Err(ImageInputError::named(kind, name)),
+                };
+                if normalized.len() > self.limits.max_file_bytes {
+                    return Err(ImageInputError::named(
+                        ImageInputErrorKind::FileTooLarge,
+                        name,
+                    ));
+                }
+                if normalized.len()
+                    > self
+                        .limits
+                        .max_total_file_bytes
+                        .saturating_sub(self.file_bytes)
+                {
+                    return Err(ImageInputError::named(
+                        ImageInputErrorKind::AggregateTooLarge,
+                        name,
+                    ));
+                }
+                self.admit_bytes(name, Some(ImageMediaType::Jpeg), &normalized)
+            }
+        }
     }
 
     /// Attach bytes already obtained from a bounded clipboard or terminal API.

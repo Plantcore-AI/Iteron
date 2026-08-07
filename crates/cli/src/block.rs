@@ -280,7 +280,7 @@ pub struct WorkflowRunCard {
     pub agents: Vec<WorkflowRunAgent>,
     pub logs: Vec<String>,
     pub finished: bool,
-    /// Verbose toggle: false collapses finished agents to a dim `✔ n done` line (design §3.3).
+    /// Expansion toggle: false renders one live run summary; true opens the phase/agent tree.
     pub verbose: bool,
     /// The run clock, for the header's elapsed column.
     pub started: Instant,
@@ -940,12 +940,12 @@ fn render_notice(level: NoticeLevel, text: &str, width: u16, theme: &Theme) -> V
     // dingbat — TUI v3 §2 deleted ✓·!✗). The body is calm
     // fg/muted, red only for an error.
     let color = notice_color(level, theme);
-    let body = match level {
-        NoticeLevel::Info => theme.muted,
-        NoticeLevel::Err => theme.error,
-        _ => theme.fg,
+    let tone = match level {
+        NoticeLevel::Info => crate::semantic_text::Tone::Muted,
+        NoticeLevel::Err => crate::semantic_text::Tone::Error,
+        _ => crate::semantic_text::Tone::Body,
     };
-    let content = vec![Span::styled(text.to_string(), Style::default().fg(body))];
+    let content = crate::semantic_text::spans(text, tone, theme);
     marker_wrap(
         &format!("{} ", primary_marker()),
         Style::default().fg(color),
@@ -1622,14 +1622,25 @@ fn render_phase_box(
         .filter(|a| a.state == WorkflowState::Error)
         .count();
     let complete = total > 0 && agents.iter().all(|a| a.finished());
+    let phase_index = phase.map(|phase| phase.index).unwrap_or(0);
     let (hglyph, hcolor) = if complete {
         if error > 0 {
             ("\u{2718}".to_string(), theme.error) // ✘
         } else {
             ("\u{2714}".to_string(), theme.success) // ✔
         }
+    } else if total == 0 && phase_index == card.current_phase && !card.finished {
+        // A phase is live from the instant its `phase()` event arrives, before its first child is
+        // queued. This is what makes the built-in planning phase visible while the planner streams.
+        (braille_frame(spin).to_string(), theme.accent)
+    } else if total == 0
+        && ((phase_index > 0 && phase_index < card.current_phase)
+            || (card.finished && phase_index == card.current_phase))
+    {
+        // A reached empty phase is complete, including the current phase once the run settles.
+        ("\u{2714}".to_string(), theme.success)
     } else if total == 0 {
-        // A DECLARED phase execution has not reached yet: pending, not spinning.
+        // Declared but not reached.
         ("\u{27f3}".to_string(), theme.faint) // ⟳
     } else {
         (braille_frame(spin).to_string(), theme.muted) // running spinner, uncolored
@@ -1684,6 +1695,16 @@ pub(crate) fn render_workflow_run(
 ) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     let (done, total, errors, tokens, tool_calls) = card.totals();
+    let phase_title = card
+        .phases
+        .iter()
+        .find(|phase| phase.index == card.current_phase)
+        .map(|phase| phase.title.as_str());
+    let status = if card.finished {
+        if errors > 0 { "failed" } else { "done" }
+    } else {
+        phase_title.unwrap_or("starting")
+    };
 
     // Title row: the tree had no header at all, so a run was a set of anonymous boxes with no name,
     // no run id, no run-level progress and no clock.
@@ -1706,7 +1727,7 @@ pub(crate) fn render_workflow_run(
             Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" \u{b7} {done}/{total} agents"),
+            format!(" \u{b7} {status} \u{b7} {done}/{total}"),
             Style::default().fg(theme.muted),
         ),
     ];
@@ -1716,10 +1737,23 @@ pub(crate) fn render_workflow_run(
             Style::default().fg(theme.error),
         ));
     }
-    if width >= 60 {
+    head.push(Span::styled(
+        format!(
+            " \u{b7} {}",
+            events::fmt_duration(card.started.elapsed().as_millis() as u64)
+        ),
+        Style::default().fg(theme.faint),
+    ));
+    if card.verbose && width >= 80 {
         head.push(Span::styled(
             format!(" \u{b7} {}", card.run_id),
             Style::default().fg(theme.faint),
+        ));
+    }
+    if !card.verbose && width >= 48 {
+        head.push(Span::styled(
+            " \u{b7} ctrl+o expand".to_string(),
+            Style::default().fg(theme.faint).add_modifier(Modifier::DIM),
         ));
     }
     // A run name is operator-supplied and unbounded, so the title row is the one row that can be
@@ -1728,6 +1762,9 @@ pub(crate) fn render_workflow_run(
     // hid that until a narrow one cut the row at the pane edge with nothing to say it had. It goes
     // through the same helper the box rows do.
     out.push(Line::from(fit_spans(head, width)));
+    if !card.verbose {
+        return out;
+    }
     out.push(Line::default());
 
     // Narrator: newest log as `❯ <msg>`, up to two prior logs dim below, then a blank margin row.
@@ -1915,18 +1952,66 @@ pub(crate) fn window_workflow_rows(
     out
 }
 
-/// The historical Core startup wordmark. It is intentionally a product wordmark, not a mascot.
-const BANNER: [&str; 6] = [
-    " ██████╗ ██████╗ ██████╗ ███████╗",
-    "██╔════╝██╔═══██╗██╔══██╗██╔════╝",
-    "██║     ██║   ██║██████╔╝█████╗  ",
-    "██║     ██║   ██║██╔══██╗██╔══╝  ",
-    "╚██████╗╚██████╔╝██║  ██║███████╗",
-    " ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝",
-];
+const BRAND_ICON_WIDTH: u16 = 16;
+
+/// One terminal row of the public Plantcore icon: a fixed canvas prefix followed by its layered
+/// planes. Color, rather than texture, distinguishes overlap on normal terminals.
+fn brand_icon_row(width: u16, prefix: &str, parts: &[(&str, Color)]) -> Line<'static> {
+    let mut spans = vec![Span::raw(
+        " ".repeat(width.saturating_sub(BRAND_ICON_WIDTH) as usize / 2),
+    )];
+    spans.push(Span::raw(prefix.to_string()));
+    spans.extend(parts.iter().map(|(shape, color)| {
+        Span::styled(
+            (*shape).to_string(),
+            Style::default().fg(*color).add_modifier(Modifier::BOLD),
+        )
+    }));
+    Line::from(spans)
+}
+
+/// Reproduce the public Plantcore icon's three overlapping planes in a compact 16×5 terminal grid.
+/// This is intentionally a character adaptation, not a raster asset embedded in the binary.
+fn plantcore_icon(width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    vec![
+        brand_icon_row(width, "         ", &[("▄", theme.brand_back)]),
+        brand_icon_row(
+            width,
+            "      ",
+            &[("▄██", theme.brand_mid), ("█████", theme.brand_back)],
+        ),
+        brand_icon_row(
+            width,
+            "    ",
+            &[
+                ("▄██", theme.brand_front),
+                ("███", theme.brand_mid),
+                ("██████", theme.brand_back),
+            ],
+        ),
+        brand_icon_row(
+            width,
+            "  ",
+            &[
+                ("▄█", theme.brand_mid),
+                ("███████", theme.brand_front),
+                ("█████", theme.brand_back),
+            ],
+        ),
+        brand_icon_row(
+            width,
+            "",
+            &[
+                ("██", theme.brand_mid),
+                ("████████", theme.brand_front),
+                ("██████", theme.brand_back),
+            ],
+        ),
+    ]
+}
 
 /// A terminal-native startup signature that scrolls away with the conversation. Wide terminals use
-/// the historical Core wordmark; narrow terminals keep the established transcript marker grammar.
+/// the Plantcore icon adaptation; narrow terminals keep the established transcript marker grammar.
 fn render_welcome(tagline: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     if width == 0 {
         return vec![Line::default()];
@@ -1950,28 +2035,16 @@ fn render_welcome(tagline: &str, width: u16, theme: &Theme) -> Vec<Line<'static>
         ];
     }
 
-    if width >= 36 {
-        let mut out = BANNER
-            .iter()
-            .enumerate()
-            .map(|(index, row)| {
-                let style = Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(if index < 3 {
-                        Modifier::BOLD
-                    } else {
-                        Modifier::empty()
-                    });
-                Line::from(Span::styled((*row).to_string(), style))
-            })
-            .collect::<Vec<_>>();
-        out.extend(wrap_spans(
-            &[
-                Span::raw("  "),
-                Span::styled(tagline.to_string(), Style::default().fg(theme.muted)),
-            ],
-            width,
-        ));
+    if width >= 28 {
+        let mut out = plantcore_icon(width, theme);
+        // `one_line` appends an ellipsis when truncated, so reserve its final cell.
+        let tagline = one_line(tagline, width.saturating_sub(1) as usize);
+        let tagline_width = tagline.chars().count() as u16;
+        let pad = width.saturating_sub(tagline_width) / 2;
+        out.push(Line::from(vec![
+            Span::raw(" ".repeat(pad as usize)),
+            Span::styled(tagline, Style::default().fg(theme.muted)),
+        ]));
         out
     } else {
         let mut out = marker_wrap(
@@ -2023,28 +2096,44 @@ fn render_panel(title: &str, rows: &[PanelRow], width: u16, theme: &Theme) -> Ve
     let row_lines: Vec<Vec<Span<'static>>> = rows
         .iter()
         .map(|r| match r {
-            PanelRow::KeyValue { key, value } => vec![
-                Span::styled(format!("{key:<key_w$}  "), Style::default().fg(theme.muted)),
-                Span::styled(value.clone(), Style::default().fg(theme.fg)),
-            ],
+            PanelRow::KeyValue { key, value } => {
+                let mut spans = vec![Span::styled(
+                    format!("{key:<key_w$}  "),
+                    Style::default().fg(theme.muted),
+                )];
+                spans.extend(crate::semantic_text::spans(
+                    value,
+                    crate::semantic_text::Tone::Body,
+                    theme,
+                ));
+                spans
+            }
             PanelRow::Item { label, hint } => {
                 // NO per-row bullet (findings 4): the row already rides the `  ⎿  ` connector grid, so a
                 // leading `• ` was a second marker that pushed the list edge to col 7 and made panel
                 // lists jump vs markdown lists. The label sits directly on the connector column; identity
                 // is the label (matching this row's own contract — the icon zoo was deleted, §2).
-                let mut sp = vec![Span::styled(label.clone(), Style::default().fg(theme.fg))];
+                let mut sp =
+                    crate::semantic_text::spans(label, crate::semantic_text::Tone::Body, theme);
                 if !hint.is_empty() {
-                    sp.push(Span::styled(
-                        format!("  {hint}"),
-                        Style::default().fg(theme.muted),
+                    sp.push(Span::styled("  ", Style::default().fg(theme.muted)));
+                    sp.extend(crate::semantic_text::spans(
+                        hint,
+                        crate::semantic_text::Tone::Muted,
+                        theme,
                     ));
                 }
                 sp
             }
-            PanelRow::Note(t) => vec![Span::styled(
-                t.clone(),
-                Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
-            )],
+            PanelRow::Note(t) => {
+                crate::semantic_text::spans(t, crate::semantic_text::Tone::Muted, theme)
+                    .into_iter()
+                    .map(|mut span| {
+                        span.style = span.style.add_modifier(Modifier::DIM);
+                        span
+                    })
+                    .collect()
+            }
         })
         .collect();
     out.extend(connector_lines(&row_lines, width, theme));
@@ -2278,10 +2367,13 @@ fn render_tool(card: &ToolCard, width: u16, theme: &Theme, spin: usize) -> Vec<L
         Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
     )];
     if !arg.is_empty() {
-        title_spans.push(Span::styled(
-            format!("({arg})"),
-            Style::default().fg(theme.muted),
+        title_spans.push(Span::styled("(", Style::default().fg(theme.faint)));
+        title_spans.extend(crate::semantic_text::spans(
+            &arg,
+            crate::semantic_text::Tone::Muted,
+            theme,
         ));
+        title_spans.push(Span::styled(")", Style::default().fg(theme.faint)));
     }
     // elapsed shows only for slow tools (≥1s) — a millisecond column on every fast tool is noise CC
     // omits. `muted`, not `faint`, so a real duration stays scannable (findings).
@@ -2310,9 +2402,13 @@ fn render_tool(card: &ToolCard, width: u16, theme: &Theme, spin: usize) -> Vec<L
 
     // The ok result summary is `muted` (not `faint`) — it is the line the eye lands on, so it must be
     // legible, not dimmer than the body preview (findings 2). Errors stay red.
-    let sum_color = if errored { theme.error } else { theme.fg };
+    let summary_tone = if errored {
+        crate::semantic_text::Tone::Error
+    } else {
+        crate::semantic_text::Tone::Body
+    };
     out.extend(connector_lines(
-        &[vec![Span::styled(summary, Style::default().fg(sum_color))]],
+        &[crate::semantic_text::spans(&summary, summary_tone, theme)],
         width,
         theme,
     ));
@@ -2337,16 +2433,17 @@ fn render_tool(card: &ToolCard, width: u16, theme: &Theme, spin: usize) -> Vec<L
             body.get(1..).unwrap_or(&[])
         };
         if !tail.is_empty() {
-            let color = if errored { theme.error } else { theme.muted };
+            let tone = if errored {
+                crate::semantic_text::Tone::Error
+            } else {
+                crate::semantic_text::Tone::Muted
+            };
             let rendered: Vec<Line<'static>> = tail
                 .iter()
                 .flat_map(|line| {
                     indent_wrap(
                         "     ",
-                        &[Span::styled(
-                            (*line).to_string(),
-                            Style::default().fg(color),
-                        )],
+                        &crate::semantic_text::spans(line, tone, theme),
                         width,
                     )
                 })
@@ -2768,7 +2865,7 @@ mod tests {
     }
 
     #[test]
-    fn welcome_historical_core_wordmark_is_responsive_and_cell_bounded() {
+    fn welcome_plantcore_icon_is_responsive_layered_and_cell_bounded() {
         let welcome = Block::new(
             0,
             BlockKind::Welcome {
@@ -2794,29 +2891,37 @@ mod tests {
         }
 
         let theme = Theme::dark();
-        let compact = plain(welcome.render(35, &theme, 0));
+        let compact = plain(welcome.render(20, &theme, 0));
         assert!(compact.contains("core"));
         assert!(!compact.contains("(o)"));
         let wide = welcome.render(80, &theme, 0);
-        assert_eq!(wide.len(), 7);
+        assert_eq!(wide.len(), 6);
         let wide_text = plain(wide.clone());
         assert!(
-            wide_text.contains("██████╗"),
-            "historical Core wordmark: {wide_text:?}"
+            wide_text.contains("▄██"),
+            "Plantcore icon planes: {wide_text:?}"
         );
         assert!(wide_text.contains("shortcuts"));
 
-        for theme in [Theme::dark(), Theme::light(), Theme::mono()] {
-            let rendered = welcome.render(80, &theme, 0);
-            let wordmark = rendered
-                .first()
-                .and_then(|line| line.spans.first())
-                .expect("every theme keeps the historical wordmark");
-            assert!(wordmark.style.add_modifier.contains(Modifier::BOLD));
-            if !theme.mono {
-                assert_eq!(wordmark.style.fg, Some(theme.accent));
-            }
+        let rendered = welcome.render(80, &theme, 0);
+        let icon_spans = rendered
+            .iter()
+            .take(5)
+            .flat_map(|line| line.spans.iter())
+            .collect::<Vec<_>>();
+        for plane in [theme.brand_back, theme.brand_mid, theme.brand_front] {
+            assert!(
+                icon_spans.iter().any(|span| span.style.fg == Some(plane)),
+                "each public Plantcore icon plane keeps its brand token"
+            );
         }
+        assert!(
+            icon_spans
+                .iter()
+                .filter(|span| span.style.fg.is_some())
+                .all(|span| span.style.add_modifier.contains(Modifier::BOLD)),
+            "icon cells remain dense at terminal scale"
+        );
     }
 
     #[test]
@@ -3379,18 +3484,23 @@ mod tests {
             etext.contains("Updated x.rs") && etext.contains("removal"),
             "edit branches to Updated: {etext:?}"
         );
-        // the verb span is bold, the (arg) span is muted+regular (not bold) — the title isn't an all-bold wall.
+        // The verb is bold while the argument is semantic and regular — the title isn't an all-bold
+        // wall, and a path keeps the same role here that it has in panels and notices.
         let rows = edited.render(80, &theme, 0);
         let arg_span = rows[0]
             .spans
             .iter()
-            .find(|s| s.content.starts_with('(') && s.content.contains("x.rs"))
-            .expect("an (arg) span");
+            .find(|s| s.content.contains("x.rs"))
+            .expect("a semantic argument span");
         assert!(
             !arg_span.style.add_modifier.contains(Modifier::BOLD),
-            "(arg) recedes (not bold)"
+            "argument recedes (not bold)"
         );
-        assert_eq!(arg_span.style.fg, Some(theme.muted), "(arg) is muted");
+        assert_eq!(
+            arg_span.style.fg,
+            Some(theme.syn_type),
+            "path arguments use the shared path token"
+        );
         let verb_span = &rows[0]
             .spans
             .iter()
@@ -4140,7 +4250,13 @@ mod tests {
             error: Some("provider timeout".into()),
         });
 
-        let width = 78u16;
+        let width = 100u16;
+        let collapsed = plain(render_workflow_run(&c, width, &theme, 0));
+        assert!(collapsed.contains("audit \u{b7} Synthesize \u{b7} 1/3 \u{b7} 1 failed"));
+        assert!(collapsed.contains("ctrl+o expand"));
+        assert!(!collapsed.contains("scan modules"));
+
+        c.verbose = true;
         let lines = render_workflow_run(&c, width, &theme, 0);
         // Every rendered row fits the width (padded box lines land exactly at the border).
         for line in &lines {
@@ -4153,7 +4269,8 @@ mod tests {
         println!("\n===== workflow-run tree (width {width}) =====\n{text}\n=====");
 
         // Header (name · run-level progress · run id) + run totals line.
-        assert!(text.contains("audit \u{b7} 1/3 agents \u{b7} 1 failed \u{b7} wf_demo"));
+        assert!(text.contains("audit \u{b7} Synthesize \u{b7} 1/3 \u{b7} 1 failed"));
+        assert!(text.contains("wf_demo"));
         assert!(text.contains("1/3 agents \u{b7} 1 failed \u{b7} 2k tok \u{b7} 3 tool calls"));
         // Narrator + phase boxes + rows + collapse + meta + error tail.
         assert!(text.contains("\u{276f} synthesizing findings")); // ❯ newest log
@@ -4163,15 +4280,14 @@ mod tests {
         assert!(text.contains("1/2") && text.contains("0/1"));
         assert!(text.contains("\u{b7} haiku")); // shared model in the Explore header
         assert!(text.contains("1 failed"));
-        assert!(text.contains("\u{2714} 1 done")); // collapsed finished agent
+        assert!(text.contains("✔ scan modules"));
         assert!(text.contains("probe API"));
         assert!(text.contains("merge report"));
         assert!(text.contains("800 tok") && text.contains("5s"));
         assert!(text.contains("\u{2014} provider timeout")); // — <error> tail
         assert!(text.contains("\u{2193}")); // ↓ phase separator
 
-        // Verbose toggle reveals the collapsed done agent as a real row.
-        c.verbose = true;
+        // Expanded tree reveals the finished agent as a real row.
         let verbose = plain(render_workflow_run(&c, width, &theme, 0));
         assert!(verbose.contains("scan modules"));
         assert!(verbose.contains("1.2k tok")); // fmt_count k-suffix
@@ -4393,7 +4509,7 @@ mod tests {
     fn a_finished_agent_renders_an_excerpt_of_what_it_returned() {
         let theme = Theme::dark();
         let width = 78u16;
-        let c = preview_card(Some(
+        let mut c = preview_card(Some(
             "4 modules touch the provider seam: cli, tools, workflow, mcp",
         ));
         assert!(
@@ -4406,6 +4522,12 @@ mod tests {
             "the card must retain the preview, not destructure it away"
         );
 
+        let folded = plain(render_workflow_run(&c, width, &theme, 0));
+        assert!(folded.contains("ctrl+o expand"), "{folded}");
+        assert!(!folded.contains("scan modules"), "{folded}");
+        assert!(!folded.contains('\u{23bf}'), "{folded}");
+
+        c.verbose = true;
         let lines = render_workflow_run(&c, width, &theme, 0);
         for line in &lines {
             assert!(line_width(line) <= width, "row exceeded width: {line:?}");
@@ -4427,7 +4549,6 @@ mod tests {
 
         // A second row makes the first one non-last: its excerpt must keep the tree's vertical
         // continuation, or the branch below it appears to belong to the excerpt.
-        let mut c = c;
         c.ingest(ProgressEvent::AgentFinished {
             index: 1,
             label: "probe API".into(),
@@ -4462,8 +4583,8 @@ mod tests {
             "a result-less agent grew a stray connector:\n{absent}"
         );
         assert!(
-            absent.contains("\u{2714} 1 done"),
-            "a result-less Done row must still collapse:\n{absent}"
+            absent.contains("\u{b7} 1/1 \u{b7}"),
+            "the folded run still reports progress:\n{absent}"
         );
         assert!(!absent.contains("scan modules"), "…and stay collapsed");
 
@@ -4488,7 +4609,7 @@ mod tests {
         // the row it is on, and smuggle a credential out through the transcript.
         let secret = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let hostile = format!("done\u{1b}[2J\u{1b}[1;1H gotcha\r bell\u{7} key={secret} tail");
-        let c = preview_card(Some(&hostile));
+        let mut c = preview_card(Some(&hostile));
 
         // Neutralised ON INGEST, so retained card state can never hold an executable escape —
         // not merely masked at draw time, where one renderer forgetting the call re-opens it.
@@ -4513,6 +4634,7 @@ mod tests {
             "the benign text must survive intact: {stored:?}"
         );
 
+        c.verbose = true;
         let lines = render_workflow_run(&c, width, &theme, 0);
         for line in &lines {
             for span in &line.spans {
@@ -4546,6 +4668,7 @@ mod tests {
         // column short of the pane rather than flush with it.
         let title = "追踪一个非常长的工作流标题".repeat(6);
         let mut c = WorkflowRunCard::new("wf_a_very_long_run_identifier", title.clone());
+        c.verbose = true;
         c.ingest(ProgressEvent::Phase {
             index: 1,
             title: "Explore".into(),
@@ -4635,7 +4758,8 @@ mod tests {
     fn a_long_result_preview_is_truncated_to_the_available_width() {
         let theme = Theme::dark();
         let long = "x".repeat(core_workflow::events::PREVIEW_MAX);
-        let c = preview_card(Some(&long));
+        let mut c = preview_card(Some(&long));
+        c.verbose = true;
 
         // From "comfortably wide" down to "a phone in portrait", the phase box stays rectangular:
         // the preview is budgeted against the width its own sub-line will actually be fit to.
@@ -4729,6 +4853,7 @@ mod tests {
         let width = 78u16;
         let mut c = WorkflowRunCard::new("wf_fan", "audit");
         c.declare_phases(["Explore", "Synthesize", "Write"]);
+        c.verbose = true;
 
         // Every declared phase is a box on the very first frame, before any agent exists.
         let empty = plain(render_workflow_run(&c, width, &theme, 0));
@@ -4738,7 +4863,7 @@ mod tests {
                 "declared phase `{title}` is invisible"
             );
         }
-        assert!(empty.contains("0/0 agents"));
+        assert!(empty.contains("0/0"));
 
         // The whole fan is declared up front (AgentQueued precedes the permit).
         for index in 1..=20 {

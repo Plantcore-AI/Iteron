@@ -1,9 +1,11 @@
 //! Bounded loopback transport for headless App Server clients.
 //!
 //! The runtime and its SQ/EQ semantics remain in `tui::app_server`; this module is only a framed
-//! transport adapter. A client must complete the version handshake before it can submit an op.
+//! transport adapter. A client must complete the version handshake before it can submit an op or
+//! make a control request.
 
 mod auth;
+mod control;
 mod framing;
 mod input;
 
@@ -15,7 +17,7 @@ use self::framing::{
 use self::input::{
     ClientFrame, FrameBytes, FrameReader, MAX_CLIENT_FRAME_BYTES, MAX_PENDING_CLIENT_BYTES,
 };
-use super::app_server::{AppServerClient, Attached, ServerEvent, TerminalSummary};
+use super::app_server::{AppServerClient, Attached, ControlRequest, ServerEvent, TerminalSummary};
 use crate::output;
 use crate::runtime::UiEvent;
 use anyhow::{Context, Result, bail};
@@ -28,7 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::AsyncWrite;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, Semaphore, broadcast};
+use tokio::sync::{Mutex, Semaphore, broadcast, mpsc};
 use tokio::task::JoinSet;
 
 const MAX_CONNECTIONS: usize = 32;
@@ -63,6 +65,7 @@ pub(super) fn capture_terminal_result_frame(
 
 struct Shared {
     client: AppServerClient,
+    control: mpsc::WeakSender<ControlRequest>,
     auth_token: BearerToken,
     ring: Mutex<ReplayRing>,
     live: broadcast::Sender<u64>,
@@ -190,6 +193,7 @@ pub(crate) async fn serve(attached: Attached, listen: SocketAddr) -> Result<()> 
     let (live, _) = broadcast::channel(LIVE_CAPACITY);
     let shared = Arc::new(Shared {
         client: handle.client,
+        control: handle.control.downgrade(),
         auth_token,
         ring: Mutex::new(ReplayRing::production()),
         live,
@@ -353,7 +357,7 @@ async fn serve_connection(
             protocol_version,
             resume_from,
         } if shared.auth_token.authorizes(&bearer_token) => (protocol_version, resume_from),
-        ClientFrame::Hello { .. } | ClientFrame::Submit { .. } => {
+        ClientFrame::Hello { .. } | ClientFrame::Submit { .. } | ClientFrame::Control { .. } => {
             // Do not expose even the negotiated protocol version until the capability check has
             // succeeded. Missing/malformed tokens fail during bounded parsing on the same path.
             bail!("headless client authorization failed");
@@ -484,12 +488,13 @@ async fn serve_connection(
     }
 
     let mut idle_deadline = tokio::time::Instant::now() + AUTHENTICATED_IDLE_TIMEOUT;
+    let mut pending_control: Option<control::Pending> = None;
     loop {
         tokio::select! {
             inbound = tokio::time::timeout_at(
                 idle_deadline,
                 reader.next_frame_with_partial_timeout(PARTIAL_FRAME_TIMEOUT),
-            ) => {
+            ), if pending_control.is_none() => {
                 let Some(bytes) = inbound
                     .context("authenticated headless client idle timeout")??
                 else {
@@ -547,7 +552,54 @@ async fn serve_connection(
                             ).await?;
                         }
                     }
+                    ClientFrame::Control {
+                        protocol_version,
+                        request_id,
+                        control,
+                    } => {
+                        if protocol_version != PROTOCOL_VERSION {
+                            drop(control);
+                            drop(input_guard);
+                            send_frame(
+                                &mut writer,
+                                &shared.outbound_budget,
+                                &shared.frame_preparers,
+                                &shared.fragment_encoders,
+                                error_frame(
+                                    "protocol_version_mismatch",
+                                    &format!(
+                                        "control request uses protocol version {protocol_version}; expected {PROTOCOL_VERSION}"
+                                    ),
+                                ),
+                            )
+                            .await?;
+                            continue;
+                        }
+                        drop(input_guard);
+                        let sender = shared
+                            .control
+                            .upgrade()
+                            .context("headless App Server control channel closed")?;
+                        pending_control = Some(control::dispatch(sender, request_id, control));
+                    }
                 }
+            }
+            reply = control::receive(&mut pending_control), if pending_control.is_some() => {
+                let (request_id, reply) = reply?;
+                pending_control = None;
+                send_frame(
+                    &mut writer,
+                    &shared.outbound_budget,
+                    &shared.frame_preparers,
+                    &shared.fragment_encoders,
+                    ServerFrame::ControlReply {
+                        protocol_version: PROTOCOL_VERSION,
+                        request_id,
+                        reply: control::reply_value(reply),
+                    },
+                )
+                .await?;
+                idle_deadline = tokio::time::Instant::now() + AUTHENTICATED_IDLE_TIMEOUT;
             }
             outbound = live.recv() => {
                 match outbound {

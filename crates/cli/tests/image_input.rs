@@ -186,6 +186,39 @@ fn loads_all_supported_magic_and_builds_neutral_segments() {
     assert_eq!(consumed.images().count(), fixtures.len());
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn heic_path_is_locally_normalized_to_provider_safe_jpeg() {
+    let temp = TempTree::new("heic-normalize");
+    let source = temp.write("source.png", &png());
+    let heic = temp.0.join("iPhone Photo.heic");
+    let status = std::process::Command::new("/usr/bin/sips")
+        .args(["-s", "format", "heic", "-o"])
+        .arg(&heic)
+        .arg(&source)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("macOS sips is available");
+    assert!(
+        status.success(),
+        "create a real HEIC fixture through ImageIO"
+    );
+
+    let mut attachments = ImageAttachments::default();
+    let attachment = attachments
+        .attach_path(&heic)
+        .expect("HEIC is normalized at the local input boundary");
+    assert_eq!(attachment.display_name(), "iPhone Photo.heic");
+    assert_eq!(attachment.media_type(), ImageMediaType::Jpeg);
+    let transmitted = base64::engine::general_purpose::STANDARD
+        .decode(attachment.encoded())
+        .expect("canonical base64");
+    assert!(transmitted.starts_with(&[0xff, 0xd8]));
+    assert!(transmitted.ends_with(&[0xff, 0xd9]));
+    assert_ne!(transmitted, fs::read(&heic).unwrap());
+}
+
 #[test]
 fn spoofed_non_image_and_truncated_files_are_rejected_without_mutation() {
     let temp = TempTree::new("reject");
@@ -461,6 +494,17 @@ fn explicit_path_parser_accepts_only_a_whole_local_image_reference() {
     );
     assert!(parse_explicit_image_path("photo.png").unwrap().is_some());
     assert!(parse_explicit_image_path("./photo.png").unwrap().is_some());
+    assert!(
+        parse_explicit_image_path("iPhone Photo.heic")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        parse_explicit_image_path("iPhone\\ Photo.heic")
+            .unwrap()
+            .is_some()
+    );
+    assert!(parse_explicit_image_path("photo.HEIF").unwrap().is_some());
 
     for prose in [
         "please inspect /tmp/photo.png",

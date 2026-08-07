@@ -30,6 +30,7 @@ pub enum SlashCommand {
     Sessions,
     Side,
     Workflows,
+    Jobs,
     Fork,
     Rewind,
     Resume,
@@ -42,6 +43,7 @@ pub enum SlashCommand {
     Hooks,
     Config,
     Tunables,
+    Lab,
     Login,
     Theme,
     Init,
@@ -88,6 +90,7 @@ impl SlashCommand {
             | Self::Memory
             | Self::Sessions
             | Self::Workflows
+            | Self::Jobs
             | Self::Fork
             | Self::Rewind
             | Self::Resume
@@ -100,6 +103,7 @@ impl SlashCommand {
             | Self::Hooks
             | Self::Config
             | Self::Tunables
+            | Self::Lab
             | Self::Login
             | Self::Theme
             | Self::Init
@@ -140,8 +144,8 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd {
         command: SlashCommand::Context,
         name: "context",
-        args: "",
-        help: "context token estimate + cache hit",
+        args: "[stats|list|add|preview|delete]",
+        help: "token usage and typed file/diff/IDE/LSP context chips",
     },
     Cmd {
         command: SlashCommand::Cost,
@@ -194,8 +198,8 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd {
         command: SlashCommand::Diff,
         name: "diff",
-        args: "",
-        help: "show the working-tree diff (--stat)",
+        args: "[stat]",
+        help: "review staged, unstaged, untracked, rename, binary, and conflict state",
     },
     Cmd {
         command: SlashCommand::Memory,
@@ -206,8 +210,8 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd {
         command: SlashCommand::Sessions,
         name: "sessions",
-        args: "",
-        help: "list recorded sessions in this repo",
+        args: "[new|switch|preview|rename|pin|unpin|archive|unarchive|delete]",
+        help: "browse and manage recorded sessions in this repo",
     },
     Cmd {
         command: SlashCommand::Side,
@@ -222,6 +226,12 @@ pub const COMMANDS: &[Cmd] = &[
         help: "show ultracode workflow and investigator progress",
     },
     Cmd {
+        command: SlashCommand::Jobs,
+        name: "jobs",
+        args: "[list|attach|refresh|detach|write|eof|stop]",
+        help: "inspect and control background process jobs",
+    },
+    Cmd {
         command: SlashCommand::Fork,
         name: "fork",
         args: "",
@@ -230,8 +240,8 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd {
         command: SlashCommand::Rewind,
         name: "rewind",
-        args: "",
-        help: "rewind: branch the conversation to redo from here",
+        args: "[seq] [all|code|conversation] [keep|delete] [apply]",
+        help: "preview or apply a checkpointed code/conversation rewind",
     },
     Cmd {
         command: SlashCommand::Resume,
@@ -292,6 +302,12 @@ pub const COMMANDS: &[Cmd] = &[
         name: "tunables",
         args: "[query|load <file>]",
         help: "browse all 160 families or load a frozen-request simulation",
+    },
+    Cmd {
+        command: SlashCommand::Lab,
+        name: "lab",
+        args: "[list|request <family> <json>|compare <bundle> <trusted-key>|promote]",
+        help: "offline experiment requests and signed evidence comparison",
     },
     Cmd {
         command: SlashCommand::Login,

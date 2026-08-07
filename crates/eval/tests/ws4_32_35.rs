@@ -7,12 +7,13 @@ use core_eval::runner::score_candidate_diff;
 use core_eval::types::EVAL_SCHEMA_VERSION;
 use core_eval::{
     CandidateOutput, CapturedHarnessCandidate, CellResult, CorpusManifest, CorpusTask, CostStatus,
-    EvaluationManifest, EvaluationPurpose, EvidenceIdentityPolicy, EvidenceProjectionError,
-    InsufficientPowerReason, OracleStatus, ParallelEvalOptions, Partition,
-    PromotionInvariantClaims, ReferenceHarnessAdapter, ReferenceHarnessSpec, RunStatus,
-    SamplingControl, StatisticalConclusion, TrainedBundleDescriptor, TrainedEvaluationError,
-    attach_cross_model_transfer, measure_kernel_tax, run_evaluation_parallel,
-    sign_held_out_evidence, trained_vs_untrained_report,
+    EvaluationManifest, EvaluationPurpose, EvidenceBundleInput, EvidenceIdentityPolicy,
+    EvidenceProjectionError, EvidenceSigner, InsufficientPowerReason, OracleStatus,
+    ParallelEvalOptions, Partition, PromotionInvariantClaims, ReferenceHarnessAdapter,
+    ReferenceHarnessSpec, RunAttestation, RunStatus, SamplingControl, StatisticalConclusion,
+    TrainedBundleDescriptor, TrainedEvaluationError, attach_cross_model_transfer,
+    compile_evidence_bundle, measure_kernel_tax, run_evaluation_parallel, sign_held_out_evidence,
+    trained_vs_untrained_report, verify_evidence_bundle,
 };
 use core_evolve::{
     ArtifactKind, BaseModelId, EvolutionMethod, IndependentEvaluator, PolicyRef,
@@ -424,6 +425,19 @@ fn uncapped_core(root: &TempRoot) -> PathBuf {
     path
 }
 
+fn flaky_core(root: &TempRoot) -> PathBuf {
+    let path = root.join("flaky-core");
+    let counter = root.join("flaky-core-count");
+    executable(
+        &path,
+        &format!(
+            "#!/bin/sh\nset -eu\nworkspace=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -C) shift; workspace=$1 ;;\n  esac\n  shift\ndone\ncount=0\ntest ! -f '{counter}' || count=$(cat '{counter}')\ncount=$((count + 1))\nprintf '%s\\n' \"$count\" > '{counter}'\nif [ \"$count\" = 1 ]; then\n  printf '%s\\n' '{{not-json}}'\n  exit 1\nfi\nprintf 'good\\n' > \"$workspace/status.txt\"\nprintf '%s\\n' '{{\"schema_version\":4,\"type\":\"result\",\"outcome\":\"done\",\"reason\":null,\"success\":true,\"assistant_text\":\"done\",\"run_id\":\"retry-fixture\",\"cost_usd\":0.25,\"cost_status\":\"known\",\"cost_reason\":null,\"turns\":2,\"exit_code\":0,\"error\":null}}'\n",
+            counter = counter.display()
+        ),
+    );
+    path
+}
+
 fn eval_options(
     root: &TempRoot,
     corpus_path: PathBuf,
@@ -450,6 +464,7 @@ fn eval_options(
         workers,
         max_turns: 250,
         uncapped: false,
+        max_attempts: 1,
     }
 }
 
@@ -515,6 +530,91 @@ async fn explicit_uncapped_mode_omits_the_core_turn_flag_and_is_recorded() {
             .cells
             .iter()
             .all(|cell| cell.run_status == RunStatus::Completed)
+    );
+}
+
+#[tokio::test]
+async fn physical_retry_uses_fresh_workspaces_and_emits_verifiable_sidecars() {
+    let root = TempRoot::new("physical-retry");
+    let (url, commit) = fixture_repo(&root);
+    let corpus = write_corpus(&root, oracle_task(url, commit));
+    let mut options = eval_options(&root, corpus, flaky_core(&root), 1, "physical-retry");
+    options.seeds = 1;
+    options.minimum_seeds = 1;
+    options.max_attempts = 2;
+    let manifest = run_evaluation_parallel(&options)
+        .await
+        .expect("the retryable harness fault settles on a fresh second attempt");
+    assert_eq!(manifest.cells.len(), 2);
+    assert!(
+        manifest
+            .cells
+            .iter()
+            .all(|cell| cell.run_status == RunStatus::Completed)
+    );
+
+    let attempt_path = core_eval::attempts::sidecar_path(&options.output_path);
+    let ledger = core_eval::AttemptLedger::open(&attempt_path).expect("verify attempt hash chain");
+    assert_eq!(
+        ledger.record_count(),
+        9,
+        "two attempts plus one normal cell"
+    );
+    let attestation_path = core_eval::attestation::sidecar_path(&options.output_path);
+    let attestation: RunAttestation =
+        serde_json::from_slice(&std::fs::read(&attestation_path).expect("read run attestation"))
+            .expect("strict run attestation JSON");
+    assert_eq!(attestation.attempt_ledger_head, ledger.head_hash());
+    assert_eq!(attestation.attempt_record_count, ledger.record_count());
+    attestation
+        .verify_artifacts(
+            options.core_bin.as_deref().expect("core path"),
+            &options.corpus_path,
+            &options.output_path,
+            &attempt_path,
+        )
+        .expect("all attested bytes still match");
+
+    let signer = EvidenceSigner::from_seed([7_u8; 32]);
+    let bundle_path = root.join("signed-evidence");
+    let bundle = compile_evidence_bundle(
+        EvidenceBundleInput {
+            destination: &bundle_path,
+            baseline_result: &options.output_path,
+            baseline_attestation: &attestation_path,
+            baseline_arm: "verify_OFF",
+            baseline_id: "baseline",
+            candidate_result: &options.output_path,
+            candidate_attestation: &attestation_path,
+            candidate_arm: "verify_ON",
+            candidate_id: "candidate",
+            minimum_pairs: 1,
+        },
+        &signer,
+    )
+    .expect("compile a signed self-contained evidence bundle");
+    assert_eq!(bundle.index.files.len(), 6);
+    assert_eq!(bundle.paired.comparison.matched_pairs, 1);
+    assert!(!bundle.pareto.frontier.is_empty());
+    verify_evidence_bundle(&bundle_path, &signer.public_key_hex())
+        .expect("offline verification needs only the trusted public key");
+    std::fs::write(bundle_path.join("candidate.json"), b"tampered\n").expect("tamper fixture");
+    assert!(verify_evidence_bundle(&bundle_path, &signer.public_key_hex()).is_err());
+
+    let run_dirs = std::fs::read_dir(&options.work_root)
+        .expect("work root")
+        .next()
+        .expect("run root")
+        .expect("run entry")
+        .path();
+    let attempt_dirs = std::fs::read_dir(run_dirs)
+        .expect("attempt directories")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().contains("-attempt-"))
+        .count();
+    assert!(
+        attempt_dirs >= 3,
+        "every physical execution gets a fresh checkout"
     );
 }
 

@@ -1,7 +1,7 @@
 use crate::{MAX_FRAME_BYTES, McpError};
 use serde_json::Value;
 
-pub(super) fn render_tool_content(result: &Value) -> Result<String, McpError> {
+pub(crate) fn render_tool_content(result: &Value) -> Result<String, McpError> {
     render_tool_content_with_limit(result, MAX_FRAME_BYTES)
 }
 

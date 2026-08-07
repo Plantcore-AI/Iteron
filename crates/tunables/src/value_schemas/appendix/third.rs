@@ -128,7 +128,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
     scalar_schema!(
         "mcp_transport_selection",
         Enum,
-        finite_enum_domain!("stdio"),
+        finite_enum_domain!("stdio", "http"),
         [external_rule!("$", OperatorAuthority)]
     ),
     scalar_schema!(

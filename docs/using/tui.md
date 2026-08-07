@@ -55,8 +55,18 @@ required. A pipeline should use [one-shot mode](one-shot.md) instead.
   `/tunables load <workspace-relative-request.json>` only to inspect an explicit
   frozen-request simulation; every value preview is redacted and the surface never
   claims to represent or modify the live runtime.
+- Use `/lab` to inspect the local offline experiment queue and signed evidence.
+  `/lab request <family> <json-value>` writes a content-addressed, train-only
+  request without changing the active policy. `/lab compare <bundle-id>
+  <trusted-public-key>` verifies the bundle signature and exact inputs, then
+  recomputes its paired statistics and Pareto frontier before rendering them.
+  `/lab promote` only shows the authority boundary: the TUI has no promotion key,
+  activation credential, or rollback authority.
 - Use `/diff`, `/status`, `/context`, `/cost`, and `/workflows` to inspect the
-  evidence Core Code currently exposes.
+  evidence Core Code currently exposes. `/workflows` opens the run inspector:
+  ++tab++ switches runs, arrows move through phases and agents, ++x++ stops the
+  selected live run, ++r++ resumes an eligible persisted run, and ++n++ returns
+  to a fresh prompt.
 - Leave with `/quit`, ++esc++, or ++ctrl+d++.
 
 The transcript distinguishes user input, assistant output, thinking, tool
@@ -67,7 +77,29 @@ nested and task lists, ordered continuations, labeled fences, and width-neutral
 links. Streaming and resize paths converge on the same terminal-cell rendering
 as the completed document.
 
-The composer accepts at most eight sniffed PNG/JPEG/GIF/WebP attachments, with
+## Visual grammar
+
+The interface uses semantic color, not per-widget decoration. Ordinary prose
+stays at the primary foreground; commands and active controls use the accent;
+paths, counters, warnings, failures, and successful states retain stable roles
+across the transcript, composer, status row, workflow inspector, notices, and
+tool summaries. Structural connectors and ` · ` separators recede independently
+so a long row remains scannable.
+
+Unified diffs render additions and deletions as green/red sign gutters with
+restrained full-row tints. The source text keeps its language syntax colors, so
+change state does not flatten keywords, strings, comments, types, functions, or
+numbers into one red or green foreground. Markdown fences use the same stateful
+lexer, with a conservative generic fallback for unknown languages.
+
+`NO_COLOR` preserves the same words, signs, gutters, spacing, bold/dim hierarchy,
+and selection state without relying on hue. RGB palettes are projected once to
+the detected 256- or 16-color terminal depth, so the semantic roles do not leak
+unsupported color escapes.
+
+The composer accepts at most eight sniffed PNG/JPEG/GIF/WebP attachments. On macOS, dropped or
+mentioned HEIC/HEIF photos are privately resized when needed and normalized to JPEG before they
+reach the provider. All formats retain
 the same 6 MiB per-file and 24 MiB aggregate raw-byte ceilings as one-shot mode.
 Images travel beside the prompt as neutral SQ content segments; the kernel does
 not parse media. When the selected provider is text-only, the TUI shows one
@@ -98,5 +130,12 @@ until a runtime binding can prove which registry-declared families are safe to
 persist and can record the admitted value at run genesis. Frozen-request loading uses
 a retained, no-follow capability chain on Linux; platforms without equivalent
 workspace confinement refuse `load` while retaining catalog browsing.
+
+The experiment lab is similarly evidence-only. Opening it creates no files. New
+requests are bounded, private workspace artifacts restricted to tuning on the
+train partition. A comparison is shown only after verification against the
+operator-supplied trusted public key, exact bundle file set, attested inputs,
+paired report, and Pareto report. Promotion remains a separate human-authorized
+operation even when the candidate wins the displayed comparison.
 
 See [context, usage, and cost](../concepts/context-usage-cost.md).

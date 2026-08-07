@@ -100,6 +100,19 @@ pub(super) struct ProcessSnapshot {
     pub(super) stderr: OutputFrame,
 }
 
+/// Output-free inventory row. Listing jobs must stay cheap even when every retained output ring is
+/// full; cursors disclose how much output exists without copying any of it into the list response.
+#[derive(Debug, Serialize)]
+pub(super) struct ProcessSummary {
+    pub(super) schema_version: u8,
+    pub(super) job_id: String,
+    pub(super) backend: &'static str,
+    pub(super) command: String,
+    pub(super) state: JobState,
+    pub(super) stdout_cursor: u64,
+    pub(super) stderr_cursor: u64,
+}
+
 impl ProcessSnapshot {
     pub(super) fn should_wait(&self) -> bool {
         matches!(self.state, JobState::Running)

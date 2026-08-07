@@ -13,10 +13,15 @@
 #[cfg(target_os = "linux")]
 mod capability_fs;
 mod clipboard;
+mod context_chips;
+mod experiment_lab;
 pub(crate) mod hyperlink;
+mod jobs;
 mod keyboard_enhancement;
 mod mouse_capture;
 mod notification;
+mod session_management;
+mod status_line;
 mod terminal_input;
 pub(crate) mod transcript_effect;
 mod transcript_export;
@@ -24,6 +29,7 @@ mod transcript_viewer;
 mod tunables_view;
 mod workflow_region;
 mod workflow_rehydrate;
+mod workflows_panel;
 
 pub(crate) mod app_server;
 pub(crate) mod headless;
@@ -67,6 +73,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt as _;
+
+/// One interactive frontend owns the process terminal. The bit lets panic/signal/normal cleanup
+/// pop the title exactly once without popping a stack frame that this process never pushed.
+static TITLE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// A pending capability approval the operator must answer (mode produced an `Ask` verdict).
 struct Pending {
@@ -137,6 +147,10 @@ impl Session {
         self.facts.memory_workspace.as_deref()
     }
 
+    pub(crate) fn memory_strategy(&self) -> &dyn core_protocol::slot::StrategySlot {
+        self.facts.memory_strategy.as_ref()
+    }
+
     pub(crate) fn rollout_path(&self) -> &std::path::Path {
         &self.facts.rollout_path
     }
@@ -202,11 +216,13 @@ impl Session {
             facts: app_server::SessionFacts {
                 workspace: std::path::PathBuf::new(),
                 memory_workspace: None,
+                memory_strategy: Arc::new(core_ctx::MemoryRecallStrategy::default()),
                 rollout_path: std::path::PathBuf::new(),
                 compaction_trigger_tokens: 0,
                 bypass_permissions: false,
                 initial_model_context_window: None,
                 registry_tools: Vec::new(),
+                dependency_skill_dirs: Vec::new(),
                 agent_catalog: Arc::new(core_agents::AgentCatalog::builtin_only()),
             },
         }
@@ -214,6 +230,10 @@ impl Session {
 
     pub(crate) fn registry_tools(&self) -> &[app_server::ToolFact] {
         &self.facts.registry_tools
+    }
+
+    pub(crate) fn dependency_skill_dirs(&self) -> &[(std::path::PathBuf, std::path::PathBuf)] {
+        &self.facts.dependency_skill_dirs
     }
 
     /// The execution catalog captured by the App Server at attach time. This is deliberately not
@@ -836,10 +856,18 @@ fn slash_command_body(text: &str) -> Option<&str> {
     commands::slash_command_body(text, &path_exists_on_disk)
 }
 
-fn input_destination(running: bool, text: &str) -> InputDestination {
+fn input_destination(running: bool, interrupting: bool, text: &str) -> InputDestination {
     if !running {
         InputDestination::StartTurn
-    } else if slash_command_body(text).is_some() || text.trim_start().starts_with('!') {
+    } else if interrupting
+        || slash_command_body(text).is_some()
+        || text.trim_start().starts_with('!')
+    {
+        // Once an interrupt is requested, the current turn is closing. Sending new prose as a
+        // steer at that point races the kernel's last admission boundary; the same bytes can be
+        // reported unadmitted, admitted just before the stop, or refused by a saturated SQ. The
+        // frontend already owns an ordered after-turn lane, so Enter becomes an unambiguous "next
+        // prompt" while the operator keeps the same focused composer.
         // `!` keeps the bare-prefix test: it is unambiguous local-shell intent, and a dropped
         // absolute path never starts with it (a drop that did would still be shell input, which is
         // what `!` promises).
@@ -947,6 +975,9 @@ impl FirstTokenStall {
 
 /// TUI state.
 struct App {
+    /// Stable operator-facing identity of the current rollout. This follows session adoption and
+    /// rename, and is reused by footer, fullscreen panels, and the physical terminal tab title.
+    session_name: String,
     /// The structured semantic transcript (ADR-015): typed self-rendering blocks, not a flat log.
     transcript: Vec<Arc<block::Block>>,
     /// Fullscreen, presentation-only inspection state. Its bounded index reconciles against the
@@ -972,11 +1003,16 @@ struct App {
     /// `workflow_run_ui_event` (ADR-0001 step 1). The transcript card remains the authority the
     /// renderer reads; see `workflow_region` for what this store deliberately does not copy.
     workflow_monitor: workflow_region::WorkflowMonitor,
+    /// Fullscreen workflow inspection/control state. The run tree itself stays in transcript
+    /// cards; this owns only selection, action feedback and the latest supervisor inventory.
+    workflows_panel: workflows_panel::View,
     /// `<runtime_state_dir>/subagents/workflows` — the directory `core workflow list` enumerates,
     /// derived the same way the kernel derives it (the rollout file's parent). It is what lets the
     /// monitor rebuild prior runs after a restart; `None` for a session with no rollout parent,
     /// which simply restores nothing.
     workflows_dir: Option<std::path::PathBuf>,
+    /// Local output cursor for `/jobs attach`; the process remains owned by the runtime supervisor.
+    attached_job: Option<jobs::AttachedJob>,
     /// The active color theme (ADR-015 §4).
     theme: theme::Theme,
     /// Captured once at startup; runtime `/theme` previews are projected to the same terminal depth.
@@ -1137,6 +1173,7 @@ impl App {
             },
         );
         App {
+            session_name: "New session".into(),
             transcript: vec![Arc::new(welcome)],
             transcript_viewer: transcript_viewer::Viewer::default(),
             transcript_revision: 0,
@@ -1145,7 +1182,9 @@ impl App {
             pending_tools: VecDeque::new(),
             workflow_index: std::collections::HashMap::new(),
             workflow_monitor: workflow_region::WorkflowMonitor::default(),
+            workflows_panel: workflows_panel::View::default(),
             workflows_dir: None,
+            attached_job: None,
             theme,
             color_depth,
             theme_epoch: 0,
@@ -1965,6 +2004,34 @@ impl App {
     /// match is total: a new seam variant does not compile until it is rendered.
     fn workflow_run_ui_event(&mut self, event: crate::workflow::WorkflowRunUiEvent) {
         match event {
+            crate::workflow::WorkflowRunUiEvent::KernelActivity {
+                kind,
+                output_chars,
+                thinking_chars,
+            } => {
+                if output_chars > 0 || thinking_chars > 0 {
+                    self.awaiting_first_token_since = None;
+                }
+                self.status = match (output_chars, thinking_chars) {
+                    (0, 0) => kind.label().to_string(),
+                    (output, 0) => format!(
+                        "{} · {} chars",
+                        kind.label(),
+                        fmt_token_count(output as u64)
+                    ),
+                    (0, thinking) => format!(
+                        "{} · {} reasoning chars",
+                        kind.label(),
+                        fmt_token_count(thinking as u64)
+                    ),
+                    (output, thinking) => format!(
+                        "{} · {} chars · {} reasoning",
+                        kind.label(),
+                        fmt_token_count(output as u64),
+                        fmt_token_count(thinking as u64)
+                    ),
+                };
+            }
             crate::workflow::WorkflowRunUiEvent::Started {
                 run_id,
                 name,
@@ -2139,7 +2206,7 @@ impl App {
                     true
                 }
                 block::BlockKind::WorkflowRun(c) => {
-                    // The verbose toggle (design §3.3): reveal every finished agent, or collapse them.
+                    // Open the full phase/agent tree, or return to the one-line run summary.
                     c.verbose = workflow_run_verbose.unwrap_or(!c.verbose);
                     true
                 }
@@ -2437,6 +2504,46 @@ impl App {
         // Route the synthetic cancellation through picker_key so theme live-preview restoration
         // remains identical to a separately reported Esc.
         self.close_picker_restore_theme();
+        self.editor.insert(ch);
+        self.refresh_completion(repo);
+        true
+    }
+
+    /// Recover legacy `Esc` + printable input while a standard-mode run is active.
+    ///
+    /// Without keyboard disambiguation those two physical keys arrive as one Alt+char event, so
+    /// waiting for an `Esc` event first can never work. Unbound Alt+char has no meaning in the
+    /// standard composer; in this live-run context it therefore means "interrupt, then type".
+    /// Registered operator bindings and Alt-B/Alt-F word movement keep their normal meaning.
+    fn recover_running_escape_prefixed_char(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        repo: &Path,
+        standard_mode: bool,
+        unbound: bool,
+    ) -> bool {
+        if !standard_mode
+            || !unbound
+            || !self.running
+            || self.interrupting
+            || self.pending.is_some()
+            || self.picker.is_some()
+            || !modifiers.contains(KeyModifiers::ALT)
+            || modifiers.contains(KeyModifiers::CONTROL)
+        {
+            return false;
+        }
+        let KeyCode::Char(ch) = code else {
+            return false;
+        };
+        if ch.is_control() {
+            return false;
+        }
+        if matches!(ch.to_ascii_lowercase(), 'b' | 'f') {
+            return false;
+        }
+        self.interrupting = true;
         self.editor.insert(ch);
         self.refresh_completion(repo);
         true
@@ -3082,6 +3189,7 @@ fn restore_terminal(keyboard: &keyboard_enhancement::Restorer) {
 }
 
 fn restore_terminal_modes(stdout: &mut impl Write) {
+    restore_terminal_title_to(stdout, &TITLE_ACTIVE);
     let _ = terminal::disable_raw_mode();
     let _ = execute!(stdout, DisableBracketedPaste);
     let _ = mouse_capture::release(stdout);
@@ -3092,6 +3200,55 @@ fn restore_terminal_modes(stdout: &mut impl Write) {
     );
     let _ = execute!(stdout, crossterm::style::ResetColor);
     let _ = execute!(stdout, terminal::LeaveAlternateScreen);
+}
+
+fn set_terminal_title_to(
+    writer: &mut impl Write,
+    capabilities: core_statusline::Capabilities,
+    title: &str,
+    active: &AtomicBool,
+) -> std::io::Result<bool> {
+    if !capabilities.title_stack_restores() {
+        return Ok(false);
+    }
+    let title = match core_statusline::set_title(title) {
+        Ok(title) => title,
+        Err(_) => return Ok(false),
+    };
+    writer.write_all(core_statusline::title_stack_push().as_bytes())?;
+    if let Err(error) = writer.write_all(title.as_bytes()) {
+        let _ = writer.write_all(core_statusline::restore_title().as_bytes());
+        let _ = writer.flush();
+        return Err(error);
+    }
+    writer.flush()?;
+    active.store(true, Ordering::Release);
+    Ok(true)
+}
+
+fn replace_terminal_title_to(
+    writer: &mut impl Write,
+    capabilities: core_statusline::Capabilities,
+    title: &str,
+    active: &AtomicBool,
+) -> std::io::Result<bool> {
+    if !active.load(Ordering::Acquire) || !capabilities.title_stack_restores() {
+        return Ok(false);
+    }
+    let title = match core_statusline::set_title(title) {
+        Ok(title) => title,
+        Err(_) => return Ok(false),
+    };
+    writer.write_all(title.as_bytes())?;
+    writer.flush()?;
+    Ok(true)
+}
+
+fn restore_terminal_title_to(writer: &mut impl Write, active: &AtomicBool) {
+    if active.swap(false, Ordering::AcqRel) {
+        let _ = writer.write_all(core_statusline::restore_title().as_bytes());
+        let _ = writer.flush();
+    }
 }
 
 /// Panic hooks run before unwinding releases a writer/state guard. If keyboard negotiation itself
@@ -3166,6 +3323,22 @@ impl TermGuard {
 
     fn keyboard_restorer(&self) -> keyboard_enhancement::Restorer {
         self.keyboard.restorer()
+    }
+
+    fn set_title(
+        &self,
+        capabilities: core_statusline::Capabilities,
+        title: &str,
+    ) -> std::io::Result<bool> {
+        set_terminal_title_to(&mut std::io::stdout(), capabilities, title, &TITLE_ACTIVE)
+    }
+
+    fn replace_title(
+        &self,
+        capabilities: core_statusline::Capabilities,
+        title: &str,
+    ) -> std::io::Result<bool> {
+        replace_terminal_title_to(&mut std::io::stdout(), capabilities, title, &TITLE_ACTIVE)
     }
 
     fn negotiate_keyboard(
@@ -3563,8 +3736,16 @@ pub async fn run(
     // Drain promises a real workspace checkpoint. Probe once before raw mode so a non-Git
     // workspace can reject that verb explicitly without blocking or breaking the terminal.
     let drain_available = core_record::checkpoint_supported(&facts.workspace);
+    let terminal_capabilities = core_statusline::Capabilities::detect(|name| {
+        std::env::var(name).ok().filter(|value| value.len() <= 128)
+    });
+    let initial_session_name = session_display_name(&facts.rollout_path);
     // RAII: the terminal is restored on ANY exit path (error/panic/normal).
     let mut guard = TermGuard::new()?;
+    let _ = guard.set_title(
+        terminal_capabilities,
+        &format!("Core Code · {initial_session_name}"),
+    );
     // Catchable termination signals restore the terminal immediately, then wake the owned event
     // loop. The loop reaps any transcript helper before it performs the final process exit.
     let (termination_tx, mut termination_rx) = tokio::sync::mpsc::channel::<i32>(1);
@@ -3603,6 +3784,24 @@ pub async fn run(
 
     let repo = facts.workspace.clone();
     let mut app = App::new_with_detected_theme(detected_theme);
+    app.session_name = initial_session_name;
+    if terminal_capabilities.presentation == core_statusline::Presentation::Semantic {
+        // Screen-reader mode keeps the same keyboard-complete interaction model, but removes the
+        // raster logo and colour-only distinctions from the initial surface. Later blocks already
+        // carry role/status words in addition to glyphs, so monochrome preserves their semantics.
+        app.set_theme(theme::Theme::mono());
+        app.transcript.clear();
+        app.transcript.push(Arc::new(block::Block::new(
+            0,
+            block::BlockKind::Notice {
+                level: block::NoticeLevel::Info,
+                text: "Core Code. Ready. Screen-reader semantic presentation is active.".into(),
+            },
+        )));
+        app.mark_transcript_changed();
+    } else if !terminal_capabilities.may_use_color() {
+        app.set_theme(theme::Theme::mono());
+    }
     if let Some(state) = history_state {
         app.editor.restore_persisted(state.history, state.draft);
     }
@@ -3688,6 +3887,7 @@ pub async fn run(
     let mut persisted_history_len = app.editor.history_len();
     let mut transcript_effects = transcript_effect::Supervisor::default();
     let mut termination_exit = None;
+    let mut terminal_session_name = app.session_name.clone();
 
     // All interactive-loop exits, including draw/input/editor/dispatch errors, flow through this
     // result boundary. Cleanup below therefore awaits the effect supervisor before the function can
@@ -3782,24 +3982,14 @@ pub async fn run(
                 // order. A slash command or `!bash` cannot carry attachments, so this branch owns
                 // the whole classification for them.
                 if item.has_attachments() {
-                    let text = item.text.trim().to_owned();
-                    // Anchors resolve against the chips this item was queued with — the same store
-                    // the operator was looking at when they wrote them.
-                    let anchor_order = paste_input::anchored_image_ids(&text, &item.images);
-                    submit_staged_input(
-                        &mut app,
-                        &session,
-                        &mut notifier,
-                        text,
-                        item.images,
-                        item.files,
-                        anchor_order,
-                        false,
-                    );
+                    if let Err(item) =
+                        submit_queued_model_input(&mut app, &session, &mut notifier, item)
+                    {
+                        app.queued.push_front(*item);
+                    }
                     break; // a run started; remaining items dispatch after it finishes
                 }
-                let q = item.text;
-                let q = q.trim().to_string();
+                let q = item.text.trim().to_string();
                 if q.is_empty() {
                     continue;
                 } else if let Some(cmd) = slash_command_body(&q) {
@@ -3832,8 +4022,11 @@ pub async fn run(
                     )
                     .await;
                 } else {
-                    app.push_user(q.clone());
-                    submit_turn(&mut app, &session, &mut notifier, q);
+                    if let Err(item) =
+                        submit_queued_model_input(&mut app, &session, &mut notifier, item)
+                    {
+                        app.queued.push_front(*item);
+                    }
                     break; // a run started; remaining items dispatch after it finishes
                 }
             }
@@ -3861,6 +4054,13 @@ pub async fn run(
         // within FRAME_COALESCE of that frame folds into the next one. A streamed burst therefore
         // costs one frame instead of one frame per delta batch.
         if redraw && now >= next_frame_at {
+            if terminal_session_name != app.session_name {
+                let _ = guard.replace_title(
+                    terminal_capabilities,
+                    &format!("Core Code · {}", app.session_name),
+                );
+                terminal_session_name.clone_from(&app.session_name);
+            }
             term.draw(|f| draw(f, &mut app))?;
             redraw = false;
             next_frame_at = now + FRAME_COALESCE;
@@ -3937,6 +4137,10 @@ pub async fn run(
                         app.transcript_revision,
                     );
                 }
+                CEvent::Paste(_) if app.workflows_panel.is_open() => {
+                    app.workflows_panel
+                        .finish_action("paste is disabled in the workflow panel; press n for a new prompt");
+                }
                 // A modal picker owns bracketed paste as well as physical keys. Consume a bounded,
                 // sanitized query here before the generic composer/image path can mutate draft
                 // text, cursor, or attachments.
@@ -3951,6 +4155,7 @@ pub async fn run(
                     MouseEventKind::ScrollDown => app.transcript_viewer.scroll_down(3),
                     _ => {}
                 },
+                CEvent::Mouse(_) if app.workflows_panel.is_open() => {}
                 // Mouse: wheel/trackpad scroll moves the CHAT transcript (prompt history stays on ↑/↓);
                 // a left-click on a card row folds/unfolds it.
                 CEvent::Mouse(m) if app.mouse_capture.is_captured() => match m.kind {
@@ -4016,11 +4221,28 @@ pub async fn run(
                     // inspection. In particular, a queued approval cannot have its first key
                     // swallowed before the next draw closes the viewer, and Ctrl-C/Ctrl-D still
                     // reach the kernel/teardown paths below.
-                    if app.pending.is_some() && app.transcript_viewer.is_open() {
-                        app.transcript_viewer.close();
+                    if app.pending.is_some() {
+                        if app.transcript_viewer.is_open() {
+                            app.transcript_viewer.close();
+                        }
+                        if app.workflows_panel.is_open() {
+                            app.workflows_panel.close();
+                        }
                     }
                     let lifecycle_key =
                         ctrl && matches!(k.code, KeyCode::Char('c') | KeyCode::Char('d'));
+                    if app.workflows_panel.is_open() && !lifecycle_key {
+                        let runs = workflow_panel_runs(&app);
+                        if let Some(action) =
+                            app.workflows_panel.key(k.code, k.modifiers, &runs)
+                        {
+                            apply_workflows_panel_action(&mut app, &mut session, action).await;
+                        }
+                        continue;
+                    }
+                    if lifecycle_key && app.workflows_panel.is_open() {
+                        app.workflows_panel.close();
+                    }
                     if app.transcript_viewer.is_open() && !lifecycle_key {
                         if let Some(effect) =
                             app.transcript_viewer
@@ -4074,7 +4296,7 @@ pub async fn run(
                                     Ok((id, name, media_type, file_bytes)) => app.note(
                                         block::NoticeLevel::Ok,
                                         format!(
-                                            "attached {name} ({}, {file_bytes} bytes) as [Image #{id}] at the cursor — backspace removes the anchor, alt+backspace the chip",
+                                            "attached {name} ({}, {file_bytes} bytes) as [Image #{id}] at the cursor — deleting the tag removes its chip; alt+backspace removes the last chip",
                                             media_type.as_str()
                                         ),
                                     ),
@@ -4093,8 +4315,8 @@ pub async fn run(
                         continue;
                     }
 
-                    // Ctrl-D while active is the graceful drain verb: stop admitting turns,
-                    // checkpoint at the next safe point, and return a resumable Drained outcome.
+                    // Ctrl-D while active stops in-flight work immediately, checkpoints, and
+                    // returns a resumable Drained outcome.
                     // Idle Ctrl-D retains shell-like quit/delete behavior below.
                     if k.code == KeyCode::Char('d') && ctrl && app.running {
                         request_drain(&mut app, &session, &drain, drain_available);
@@ -4105,6 +4327,20 @@ pub async fn run(
                     // followed by the next command's first printable byte arrives as Alt+char.
                     // Recover it before the modal's keyboard-ownership branch consumes the byte.
                     if app.recover_picker_escape_prefixed_char(k.code, k.modifiers, &repo) {
+                        continue;
+                    }
+                    if app.recover_running_escape_prefixed_char(
+                        k.code,
+                        k.modifiers,
+                        &repo,
+                        active_keymap.mode() == keymap::Mode::Standard,
+                        mapped_action.is_none(),
+                    ) {
+                        interrupt.store(true, Ordering::Relaxed);
+                        app.push(
+                            bold(Color::Yellow),
+                            "interrupting now…",
+                        );
                         continue;
                     }
 
@@ -4269,27 +4505,16 @@ pub async fn run(
                                     // resident now, so there is nothing to kill: escalate to
                                     // `Drain`, which the kernel honours at its next safe point, and
                                     // the session survives.
-                                    let _ = session.submit(Op::Drain);
-                                    app.running = false;
-                                    app.interrupting = false;
-                                    app.draining = false;
-                                    app.flush_text();
-                                    app.pending = None;
-                                    app.steer_previews.clear();
-                                    app.active_tools.clear();
-                                    app.run_started = None;
-                                    interrupt.store(false, Ordering::Relaxed);
-                                    app.push_block(block::BlockKind::Error {
-                                        title: "interrupt escalated to drain".into(),
-                                        detail: "the cooperative interrupt did not land; the runtime will stop at its next safe point."
-                                            .into(),
-                                        open: true,
-                                    });
-                                    app.status = "draining…".into();
+                                    escalate_interrupt_to_drain(
+                                        &mut app,
+                                        &session,
+                                        &drain,
+                                        drain_available,
+                                    );
                                 } else {
                                     interrupt.store(true, Ordering::Relaxed);
                                     app.interrupting = true;
-                                    app.push(bold(Color::Yellow), "interrupting at the next safe point… (Ctrl-C again to hard-abort)");
+                                    app.push(bold(Color::Yellow), "interrupting now… (Ctrl-C again to drain + checkpoint)");
                                 }
                             } else if app.editor.has_submission() {
                                 app.editor.clear_recoverable();
@@ -4538,7 +4763,7 @@ pub async fn run(
                                 queue_draft_with_chips(&mut app);
                             } else {
                             let text = app.editor.take_submit();
-                            match input_destination(app.running, &text) {
+                            match input_destination(app.running, app.interrupting, &text) {
                                 InputDestination::AfterTurn => {
                                     if let Err(text) = app.queue_after_turn(text) {
                                         app.editor.insert_str(&text);
@@ -4588,7 +4813,7 @@ pub async fn run(
                         KeyCode::Esc if app.running && !app.interrupting => {
                             interrupt.store(true, Ordering::Relaxed);
                             app.interrupting = true;
-                            app.push(bold(Color::Yellow), "interrupting at the next safe point…");
+                            app.push(bold(Color::Yellow), "interrupting now…");
                         }
                         KeyCode::Char('?')
                             if !app.running && !app.editor.has_submission() && !menu_open =>
@@ -4934,19 +5159,42 @@ fn request_drain(
         return;
     }
     // The queue event is the durable ordering source; the shared flag lets an already-admitted
-    // child observe the request at its own next turn boundary while the parent awaits it.
+    // child and provider observe it within the bounded cancellation poll interval.
     drain.store(true, Ordering::Relaxed);
     app.draining = true;
-    app.status = "draining at the next checkpoint".into();
+    app.status = "stopping now · checkpointing".into();
     if app.pending.take().is_some() {
         app.note(
             block::NoticeLevel::Warn,
-            "drain requested · pending approval denied · checkpointing at the next safe point",
+            "drain requested · stopping active work now · checkpointing",
         );
     } else {
         app.push(
             bold(Color::Yellow),
-            "draining at the next safe point · the session will remain resumable",
+            "stopping active work now · checkpointing · the session will remain resumable",
+        );
+    }
+}
+
+/// Escalate an interrupt without inventing an early turn boundary.
+///
+/// `RunEnded` is the sole authority that can return the frontend to idle. Clearing `running` here
+/// used to make the queue driver submit its next prompt while the App Server still owned the old
+/// turn; the server correctly refused that second start, and the frontend had already popped it.
+fn escalate_interrupt_to_drain(
+    app: &mut App,
+    session: &Session,
+    drain: &Arc<AtomicBool>,
+    checkpoint_supported: bool,
+) {
+    if !app.running || !app.interrupting || app.draining {
+        return;
+    }
+    request_drain(app, session, drain, checkpoint_supported);
+    if app.draining {
+        app.note(
+            block::NoticeLevel::Warn,
+            "interrupt escalated to drain; waiting for the runtime's terminal event",
         );
     }
 }
@@ -4964,9 +5212,57 @@ fn submit_turn(
     session: &Session,
     notifier: &mut notification::TerminalNotifier,
     task: String,
-) {
-    let _ = submit_operation(app, session, notifier, Op::UserInput { text: task.clone() });
-    app.retryable_task = Some(task);
+) -> bool {
+    if submit_operation(app, session, notifier, Op::UserInput { text: task.clone() }) {
+        app.retryable_task = Some(task);
+        true
+    } else {
+        false
+    }
+}
+
+/// Dispatch one model-bound queue item without consuming it on SQ refusal.
+///
+/// Slash commands and shell lines are classified by the queue driver before reaching this helper.
+/// The caller gets the exact pending item back when the bounded runtime queue did not accept it,
+/// and the transcript gains a user row only after acceptance, so neither queue state nor visible
+/// conversation can claim a prompt landed when it did not.
+fn submit_queued_model_input(
+    app: &mut App,
+    session: &Session,
+    notifier: &mut notification::TerminalNotifier,
+    item: PendingInput,
+) -> Result<(), Box<PendingInput>> {
+    let retry = item.clone();
+    if item.has_attachments() {
+        let text = item.text.trim().to_owned();
+        let anchor_order = paste_input::anchored_image_ids(&text, &item.images);
+        if submit_staged_input(
+            app,
+            session,
+            notifier,
+            text,
+            item.images,
+            item.files,
+            anchor_order,
+            false,
+        ) {
+            Ok(())
+        } else {
+            Err(Box::new(retry))
+        }
+    } else {
+        let text = item.text.trim().to_owned();
+        debug_assert!(!text.is_empty());
+        debug_assert!(slash_command_body(&text).is_none());
+        debug_assert!(!text.starts_with('!'));
+        if submit_turn(app, session, notifier, text.clone()) {
+            app.push_user(text);
+            Ok(())
+        } else {
+            Err(Box::new(retry))
+        }
+    }
 }
 
 fn submit_operation(
@@ -4975,8 +5271,21 @@ fn submit_operation(
     notifier: &mut notification::TerminalNotifier,
     op: Op,
 ) -> bool {
+    let first_prompt_title = match &op {
+        Op::UserInput { text } => Some(core_record::session::title_from_text(text)),
+        Op::UserInputV2 { segments } => {
+            Some(core_record::session::title_from_text(segments.text()))
+        }
+        Op::UserInputV3 { text, .. } => Some(core_record::session::title_from_text(text)),
+        _ => None,
+    };
     match session.submit(op) {
         Ok(()) => {
+            if app.session_name == "New session"
+                && let Some(title) = first_prompt_title.filter(|title| !title.is_empty())
+            {
+                app.session_name = title;
+            }
             notifier.begin_run();
             app.running = true;
             app.interrupting = false;
@@ -5093,7 +5402,7 @@ fn handle_composer_paste(app: &mut App, workspace: &Path, pasted: &str) {
                     block::NoticeLevel::Ok,
                     format!(
                         "attached {} ({}, {} bytes) as [Image #{id}] at the cursor \
-                         — backspace removes the anchor, alt+backspace the chip",
+                         — deleting the tag removes its chip; alt+backspace removes the last chip",
                         name,
                         media_type.as_str(),
                         file_bytes
@@ -5151,7 +5460,7 @@ fn handle_composer_paste(app: &mut App, workspace: &Path, pasted: &str) {
                         Ok(capture) => app.note(
                             block::NoticeLevel::Ok,
                             format!(
-                                "held paste #{} aside ({} line{}, {} bytes) — backspace removes the tag",
+                                "held paste #{} aside ({} line{}, {} bytes) — deleting the tag removes its chip",
                                 capture.id,
                                 capture.lines + 1,
                                 if capture.lines == 0 { "" } else { "s" },
@@ -5939,6 +6248,7 @@ fn apply_server_event<T: notification::NotificationTransport + ?Sized>(
             app.cost = snapshot.cost.clone();
             app.last_turn_usage = snapshot.last_turn_usage;
             session.adopt(*snapshot);
+            app.session_name = session_display_name(session.rollout_path());
 
             let result = summary.result_v5();
             let canonical_outcome = result
@@ -5988,6 +6298,48 @@ fn apply_server_event<T: notification::NotificationTransport + ?Sized>(
                 notifier.emit_transport(writer, trigger);
             }
         }
+    }
+}
+
+async fn apply_workflows_panel_action(
+    app: &mut App,
+    session: &mut Session,
+    action: workflows_panel::Action,
+) {
+    let control = match action {
+        workflows_panel::Action::Cancel(run_id) => {
+            app.workflows_panel
+                .begin_action(format!("stopping {run_id}"));
+            app_server::WorkflowControl::Cancel { run_id }
+        }
+        workflows_panel::Action::Resume(run_id) => {
+            app.workflows_panel
+                .begin_action(format!("resuming {run_id}"));
+            app_server::WorkflowControl::Resume { run_id }
+        }
+        workflows_panel::Action::NewPrompt => {
+            app.status = "ready · compose a new prompt".into();
+            return;
+        }
+    };
+    match session
+        .control(app_server::Control::Workflow(control))
+        .await
+    {
+        Some(app_server::ControlReply::Workflows(reply)) => {
+            app.workflows_panel.update_inventory(reply.runs);
+            app.workflows_panel.finish_action(
+                reply
+                    .notice
+                    .unwrap_or_else(|| "workflow owner state refreshed".into()),
+            );
+        }
+        Some(app_server::ControlReply::Refused(reason)) => {
+            app.workflows_panel.finish_action(reason)
+        }
+        _ => app
+            .workflows_panel
+            .finish_action("the workflow owner is no longer reachable"),
     }
 }
 
@@ -6624,37 +6976,289 @@ fn permission_picker_items(rules: &PermissionRules, bypass: bool) -> Vec<PickIte
     items
 }
 
-/// `/workflows` rows backed by prior-process sidecars. Kept pure so the same projection can be
-/// terminal-rendered in the rehydration tests without constructing a runtime session.
-fn restored_workflow_rows(monitor: &workflow_region::WorkflowMonitor) -> Vec<block::PanelRow> {
-    let restored: Vec<_> = monitor
-        .restored_runs()
-        .map(|run| block::PanelRow::Item {
-            label: format!(
-                "{} · {}",
-                crate::workflow::ui_safe_label(&run.name),
-                run.status
-            ),
-            hint: format!(
-                "{} · {} agents{}",
-                ui_safe_text(&run.run_id),
-                run.agents,
-                if run.model.is_empty() {
-                    String::new()
-                } else {
-                    format!(" · {}", ui_safe_text(&run.model))
-                }
-            ),
-        })
-        .collect();
-    if restored.is_empty() {
-        return restored;
+fn workflow_panel_agent_state(
+    state: core_workflow::events::WorkflowState,
+) -> workflows_panel::AgentState {
+    use core_workflow::events::WorkflowState;
+    match state {
+        WorkflowState::Queued => workflows_panel::AgentState::Queued,
+        WorkflowState::Running => workflows_panel::AgentState::Running,
+        WorkflowState::Done => workflows_panel::AgentState::Done,
+        WorkflowState::Error => workflows_panel::AgentState::Failed,
+        WorkflowState::Skipped => workflows_panel::AgentState::Skipped,
     }
-    let mut rows = vec![block::PanelRow::Note(
-        "earlier sessions · resume with `core workflow resume <run-id>`".into(),
-    )];
-    rows.extend(restored);
-    rows
+}
+
+fn legacy_workflow_agent_state(status: block::WorkflowTaskStatus) -> workflows_panel::AgentState {
+    match status {
+        block::WorkflowTaskStatus::Queued | block::WorkflowTaskStatus::NotStarted => {
+            workflows_panel::AgentState::Queued
+        }
+        block::WorkflowTaskStatus::Running => workflows_panel::AgentState::Running,
+        block::WorkflowTaskStatus::Done => workflows_panel::AgentState::Done,
+        block::WorkflowTaskStatus::Failed
+        | block::WorkflowTaskStatus::Interrupted
+        | block::WorkflowTaskStatus::Unknown => workflows_panel::AgentState::Failed,
+        block::WorkflowTaskStatus::SkippedBudget => workflows_panel::AgentState::Skipped,
+    }
+}
+
+fn workflow_panel_runs(app: &App) -> Vec<workflows_panel::Run> {
+    use std::collections::HashSet;
+
+    let mut runs = Vec::new();
+    let mut seen = HashSet::new();
+
+    // Newest transcript runs become the leftmost tabs. The WorkflowEngine card wins over the
+    // temporary native compatibility card when both describe the same migrated built-in run.
+    for entry in app.transcript.iter().rev() {
+        let block::BlockKind::WorkflowRun(card) = &entry.kind else {
+            continue;
+        };
+        if !seen.insert(card.run_id.clone()) || runs.len() >= workflows_panel::MAX_RUNS {
+            continue;
+        }
+        let owned = app.workflows_panel.owned(&card.run_id);
+        let failed = card
+            .agents
+            .iter()
+            .any(|agent| agent.state == core_workflow::events::WorkflowState::Error);
+        let state = if card.finished {
+            if failed {
+                workflows_panel::RunState::Failed
+            } else {
+                workflows_panel::RunState::Done
+            }
+        } else {
+            owned.map_or(
+                workflows_panel::RunState::Running,
+                workflows_panel::owned_state,
+            )
+        };
+        let model = card
+            .agents
+            .iter()
+            .find_map(|agent| agent.model.clone())
+            .unwrap_or_default();
+        let mut phases = Vec::new();
+        for phase in &card.phases {
+            let agents = card
+                .agents
+                .iter()
+                .filter(|agent| agent.phase_index == phase.index)
+                .map(|agent| {
+                    let mut facts = Vec::new();
+                    if let Some(kind) = &agent.agent_type {
+                        facts.push(kind.clone());
+                    }
+                    if let Some(model) = &agent.model {
+                        facts.push(model.clone());
+                    }
+                    if agent.tokens > 0 {
+                        facts.push(format!("{} tok", agent.tokens));
+                    }
+                    if agent.tool_calls > 0 {
+                        facts.push(format!("{} tools", agent.tool_calls));
+                    }
+                    workflows_panel::Agent {
+                        label: agent.label.clone(),
+                        state: workflow_panel_agent_state(agent.state),
+                        meta: facts.join(" · "),
+                        activity: agent
+                            .last_tool_summary
+                            .clone()
+                            .or_else(|| agent.error.clone())
+                            .or_else(|| agent.result_preview.clone()),
+                    }
+                })
+                .collect();
+            phases.push(workflows_panel::Phase {
+                title: phase.title.clone(),
+                agents,
+            });
+        }
+        let ungrouped: Vec<_> = card
+            .agents
+            .iter()
+            .filter(|agent| agent.phase_index == 0)
+            .map(|agent| workflows_panel::Agent {
+                label: agent.label.clone(),
+                state: workflow_panel_agent_state(agent.state),
+                meta: agent.model.clone().unwrap_or_default(),
+                activity: agent
+                    .last_tool_summary
+                    .clone()
+                    .or_else(|| agent.error.clone())
+                    .or_else(|| agent.result_preview.clone()),
+            })
+            .collect();
+        if !ungrouped.is_empty() || phases.is_empty() {
+            phases.push(workflows_panel::Phase {
+                title: "workflow".into(),
+                agents: ungrouped,
+            });
+        }
+        runs.push(workflows_panel::Run {
+            run_id: card.run_id.clone(),
+            name: card.name.clone(),
+            model,
+            state,
+            elapsed_ms: card
+                .started
+                .elapsed()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX),
+            phases,
+            can_kill: !card.finished
+                && owned
+                    .is_some_and(|run| run.status == crate::workflow::SupervisedRunStatus::Running),
+            can_resume: card.finished,
+        });
+    }
+
+    for entry in app.transcript.iter().rev() {
+        let block::BlockKind::Workflow(card) = &entry.kind else {
+            continue;
+        };
+        if !seen.insert(card.run_id.clone()) || runs.len() >= workflows_panel::MAX_RUNS {
+            continue;
+        }
+        let state = match card.status {
+            block::WorkflowStatus::Planning
+            | block::WorkflowStatus::Exploring
+            | block::WorkflowStatus::Synthesizing
+            | block::WorkflowStatus::Writing
+            | block::WorkflowStatus::Direct => workflows_panel::RunState::Running,
+            block::WorkflowStatus::Done | block::WorkflowStatus::Degraded => {
+                workflows_panel::RunState::Done
+            }
+            block::WorkflowStatus::Stopped | block::WorkflowStatus::BudgetExhausted => {
+                workflows_panel::RunState::Stopped
+            }
+            block::WorkflowStatus::Stuck | block::WorkflowStatus::Failed => {
+                workflows_panel::RunState::Failed
+            }
+        };
+        let agents = card
+            .tasks
+            .iter()
+            .map(|task| workflows_panel::Agent {
+                label: task.label.clone(),
+                state: legacy_workflow_agent_state(task.status),
+                meta: format!("{} tok · {} tools", task.tokens, task.tool_calls),
+                activity: task
+                    .activity
+                    .clone()
+                    .or_else(|| task.error_preview.clone())
+                    .or_else(|| task.summary_preview.clone()),
+            })
+            .collect();
+        let terminal = card.status.is_terminal();
+        let owned = app.workflows_panel.owned(&card.run_id);
+        runs.push(workflows_panel::Run {
+            run_id: card.run_id.clone(),
+            name: card.name.clone(),
+            model: String::new(),
+            state,
+            elapsed_ms: card
+                .elapsed
+                .unwrap_or_else(|| card.started.elapsed())
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX),
+            phases: vec![workflows_panel::Phase {
+                title: card.class.clone(),
+                agents,
+            }],
+            can_kill: !terminal
+                && owned
+                    .is_some_and(|run| run.status == crate::workflow::SupervisedRunStatus::Running),
+            can_resume: terminal,
+        });
+    }
+
+    // The supervisor can know a run a frame before its first progress event creates a card.
+    for owned in app.workflows_panel.owned_runs() {
+        if !seen.insert(owned.run_id.clone()) || runs.len() >= workflows_panel::MAX_RUNS {
+            continue;
+        }
+        let mut agents = Vec::new();
+        if owned.running_agents > 0 {
+            agents.push(workflows_panel::Agent {
+                label: format!("{} agent(s) in flight", owned.running_agents),
+                state: workflows_panel::AgentState::Running,
+                meta: String::new(),
+                activity: None,
+            });
+        }
+        if owned.finished_agents > 0 {
+            agents.push(workflows_panel::Agent {
+                label: format!("{} result(s) retained", owned.finished_agents),
+                state: workflows_panel::AgentState::Done,
+                meta: String::new(),
+                activity: None,
+            });
+        }
+        let state = workflows_panel::owned_state(owned);
+        runs.push(workflows_panel::Run {
+            run_id: owned.run_id.clone(),
+            name: ui_safe_text(&owned.name),
+            model: String::new(),
+            state,
+            elapsed_ms: owned.elapsed_ms,
+            phases: vec![workflows_panel::Phase {
+                title: "session owner".into(),
+                agents,
+            }],
+            can_kill: state == workflows_panel::RunState::Running,
+            can_resume: matches!(
+                state,
+                workflows_panel::RunState::Done | workflows_panel::RunState::Failed
+            ),
+        });
+    }
+
+    for restored in app.workflow_monitor.restored_runs() {
+        if !seen.insert(restored.run_id.clone()) || runs.len() >= workflows_panel::MAX_RUNS {
+            continue;
+        }
+        let state = match restored.status {
+            "done" => workflows_panel::RunState::Done,
+            "failed" => workflows_panel::RunState::Failed,
+            "stopped" => workflows_panel::RunState::Stopped,
+            "running" => workflows_panel::RunState::Running,
+            _ => workflows_panel::RunState::Pending,
+        };
+        let agents = (restored.agents > 0)
+            .then(|| workflows_panel::Agent {
+                label: format!("{} recorded agent result(s)", restored.agents),
+                state: if matches!(state, workflows_panel::RunState::Failed) {
+                    workflows_panel::AgentState::Failed
+                } else {
+                    workflows_panel::AgentState::Done
+                },
+                meta: "durable journal".into(),
+                activity: None,
+            })
+            .into_iter()
+            .collect();
+        runs.push(workflows_panel::Run {
+            run_id: restored.run_id.clone(),
+            name: crate::workflow::ui_safe_label(&restored.name),
+            model: ui_safe_text(&restored.model),
+            state,
+            elapsed_ms: 0,
+            phases: vec![workflows_panel::Phase {
+                title: "durable history".into(),
+                agents,
+            }],
+            can_kill: false,
+            can_resume: !matches!(state, workflows_panel::RunState::Running),
+        });
+    }
+
+    runs
 }
 
 fn format_resume_command(run_id: &str) -> String {
@@ -6836,6 +7440,7 @@ fn clear_transcript_for_adoption(app: &mut App) {
     app.pending_tools.clear();
     app.workflow_index.clear();
     app.workflow_monitor.reset();
+    app.workflows_panel.reset();
     app.active_tools.clear();
     app.render_cache.clear();
     app.cur_text.clear();
@@ -7002,6 +7607,7 @@ async fn adopt_session(
         .control(app_server::Control::AdoptRun(Box::new(
             app_server::AdoptRun {
                 rollout,
+                fresh: false,
                 route: Box::new(app_server::ModelSelection {
                     provider,
                     provider_id: selection.provider_id.clone(),
@@ -7054,6 +7660,7 @@ async fn adopt_session(
     }
 
     session.adopt_run(adopted.rollout_path.clone(), (*state).clone());
+    app.session_name = session_display_name(&adopted.rollout_path);
     app.mode = state.mode;
     app.effort = state.effort;
     app.model = state.model.clone();
@@ -7121,11 +7728,21 @@ async fn adopt_session(
 fn session_picker_items(
     mut sessions: Vec<core_record::SessionMeta>,
     current_run: &str,
+    runs: &Path,
 ) -> Vec<PickItem> {
-    sessions.sort_by(|left, right| {
-        right
-            .updated_at
-            .cmp(&left.updated_at)
+    let mut decorated = sessions
+        .drain(..)
+        .map(|session| {
+            let view = session_management::load(runs, &session.run_id.0).unwrap_or_default();
+            (session, view)
+        })
+        .collect::<Vec<_>>();
+    decorated.sort_by(|(left, left_view), (right, right_view)| {
+        right_view
+            .pinned
+            .cmp(&left_view.pinned)
+            .then_with(|| left_view.archived.cmp(&right_view.archived))
+            .then_with(|| right.updated_at.cmp(&left.updated_at))
             .then_with(|| {
                 right
                     .updated_at_subsec_nanos
@@ -7134,9 +7751,9 @@ fn session_picker_items(
             .then_with(|| right.created_at.cmp(&left.created_at))
             .then_with(|| left.run_id.0.cmp(&right.run_id.0))
     });
-    sessions
+    decorated
         .into_iter()
-        .map(|session| {
+        .map(|(session, view)| {
             let cost = session
                 .cost_usd()
                 .map(|value| format!("${value:.4}"))
@@ -7151,16 +7768,58 @@ fn session_picker_items(
                 (true, true) => "route unknown".into(),
             };
             let run_id = session.run_id.0;
+            let mut flags = Vec::new();
+            if view.pinned {
+                flags.push("pinned");
+            }
+            if view.archived {
+                flags.push("archived");
+            }
+            let flags = if flags.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", flags.join(" · "))
+            };
             PickItem::flat(
-                session.title,
+                view.title.unwrap_or(session.title),
                 format!(
-                    "run {run_id} · {} · {cost} · {route}",
+                    "run {run_id} · {} · {cost} · {route}{flags}",
                     block::plural(session.turns as usize, "turn")
                 ),
                 run_id == current_run,
                 PickAction::AdoptRun(run_id),
             )
         })
+        .collect()
+}
+
+fn session_display_name(rollout_path: &Path) -> String {
+    let Some(runs) = rollout_path.parent() else {
+        return "New session".into();
+    };
+    let Some(run) = rollout_path.file_stem().and_then(|stem| stem.to_str()) else {
+        return "New session".into();
+    };
+    let renamed = session_management::load(runs, run)
+        .ok()
+        .and_then(|presentation| presentation.title)
+        .filter(|title| !title.trim().is_empty());
+    let recorded = || {
+        core_record::list(runs, &core_protocol::TenantId::default())
+            .into_iter()
+            .find(|metadata| metadata.run_id.0 == run)
+            .map(|metadata| metadata.title)
+            .filter(|title| !title.trim().is_empty())
+    };
+    let title = renamed
+        .or_else(recorded)
+        .unwrap_or_else(|| "New session".into());
+    title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(80)
         .collect()
 }
 
@@ -7185,6 +7844,7 @@ fn open_session_picker(app: &mut App, session: &Session) {
     let items = session_picker_items(
         core_record::list(&runs, &core_protocol::TenantId::default()),
         current_run,
+        &runs,
     );
     if items.is_empty() {
         app.note(block::NoticeLevel::Info, "no sessions recorded yet");
@@ -7198,6 +7858,266 @@ fn open_session_picker(app: &mut App, session: &Session) {
         query: String::new(),
         saved_theme: None,
     });
+}
+
+async fn handle_sessions_command(
+    app: &mut App,
+    session: &mut Session,
+    directory: &ProviderDirectory,
+    argument: &str,
+) {
+    let argument = argument.trim();
+    if argument.is_empty() {
+        open_session_picker(app, session);
+        return;
+    }
+    if app.running || app.pending.is_some() {
+        app.note(
+            block::NoticeLevel::Warn,
+            "finish the current turn before managing sessions",
+        );
+        return;
+    }
+    let runs = session
+        .rollout_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let current = session
+        .rollout_path()
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    let mut words = argument.splitn(3, char::is_whitespace);
+    let action = words.next().unwrap_or_default();
+    let run = words.next().unwrap_or_default();
+    let tail = words.next().unwrap_or_default().trim();
+    match action {
+        "new" => create_fresh_session(app, session, directory).await,
+        "switch" | "resume" if !run.is_empty() => {
+            adopt_session(app, session, directory, run).await
+        }
+        "preview" if !run.is_empty() => {
+            let identity = core_protocol::RunId(run.to_owned());
+            let metadata = core_record::list(&runs, &core_protocol::TenantId::default())
+                .into_iter()
+                .find(|metadata| metadata.run_id == identity);
+            match (metadata, core_record::load_forked(&runs, &identity)) {
+                (Some(metadata), Ok(events)) => {
+                    let presentation = session_management::load(&runs, run).unwrap_or_default();
+                    let mut rows = vec![
+                        kv("run", run),
+                        kv(
+                            "title",
+                            presentation.title.as_deref().unwrap_or(&metadata.title),
+                        ),
+                        kv("turns", &metadata.turns.to_string()),
+                        kv(
+                            "state",
+                            if presentation.archived {
+                                "archived"
+                            } else if presentation.pinned {
+                                "pinned"
+                            } else {
+                                "active"
+                            },
+                        ),
+                    ];
+                    let (blocks, total) = adopted_transcript_blocks(&events);
+                    rows.push(kv("transcript", &block::plural(total, "visible block")));
+                    for block in blocks.iter().rev().take(6).rev() {
+                        let text = block::Block::new(0, block.clone()).to_text();
+                        rows.push(block::PanelRow::Note(one_line_preview(
+                            &text, 160,
+                        )));
+                    }
+                    app.panel("◫", "session preview", rows);
+                }
+                (None, _) => app.note(
+                    block::NoticeLevel::Err,
+                    format!("no recorded session `{}`", ui_safe_text(run)),
+                ),
+                (_, Err(error)) => app.note(
+                    block::NoticeLevel::Err,
+                    format!("cannot preview session: {error}"),
+                ),
+            }
+        }
+        "rename" if !run.is_empty() && !tail.is_empty() => match session_management::update(
+            &runs,
+            run,
+            session_management::Mutation::Rename(tail.to_owned()),
+        ) {
+            Ok(()) => {
+                if run == current {
+                    app.session_name = tail.split_whitespace().collect::<Vec<_>>().join(" ");
+                }
+                app.note(block::NoticeLevel::Ok, format!("renamed session {run}"));
+            }
+            Err(error) => app.note(block::NoticeLevel::Err, format!("rename refused: {error}")),
+        },
+        "pin" | "unpin" if !run.is_empty() => {
+            let value = action == "pin";
+            match session_management::update(
+                &runs,
+                run,
+                session_management::Mutation::Pin(value),
+            ) {
+                Ok(()) => app.note(
+                    block::NoticeLevel::Ok,
+                    format!("session {run} {}", if value { "pinned" } else { "unpinned" }),
+                ),
+                Err(error) => app.note(block::NoticeLevel::Err, format!("pin refused: {error}")),
+            }
+        }
+        "archive" | "unarchive" if !run.is_empty() => {
+            let value = action == "archive";
+            match session_management::update(
+                &runs,
+                run,
+                session_management::Mutation::Archive(value),
+            ) {
+                Ok(()) => app.note(
+                    block::NoticeLevel::Ok,
+                    format!(
+                        "session {run} {}",
+                        if value { "archived" } else { "restored" }
+                    ),
+                ),
+                Err(error) => app.note(
+                    block::NoticeLevel::Err,
+                    format!("archive refused: {error}"),
+                ),
+            }
+        }
+        "delete" if !run.is_empty() => {
+            if run == current {
+                app.note(
+                    block::NoticeLevel::Err,
+                    "cannot delete the live session; switch away first",
+                );
+                return;
+            }
+            match core_record::delete(
+                &runs,
+                &core_protocol::TenantId::default(),
+                &core_protocol::RunId(run.to_owned()),
+            ) {
+                Ok(()) => {
+                    let _ = session_management::remove(&runs, run);
+                    app.note(block::NoticeLevel::Ok, format!("deleted session {run}"));
+                }
+                Err(error) => app.note(
+                    block::NoticeLevel::Err,
+                    format!("session delete refused: {error}"),
+                ),
+            }
+        }
+        _ => app.note(
+            block::NoticeLevel::Err,
+            "usage: /sessions [new|switch RUN|preview RUN|rename RUN TITLE|pin RUN|unpin RUN|archive RUN|unarchive RUN|delete RUN]",
+        ),
+    }
+}
+
+async fn create_fresh_session(app: &mut App, session: &mut Session, directory: &ProviderDirectory) {
+    if !app.queued.is_empty() || !app.steer_previews.is_empty() {
+        app.note(
+            block::NoticeLevel::Warn,
+            "send or clear pending submissions before creating another session",
+        );
+        return;
+    }
+    let selection = ModelSelection {
+        provider_id: app.route.provider_id.clone(),
+        model_id: session.model().to_owned(),
+    };
+    let provider = match directory.build(&selection) {
+        Ok(provider) => provider,
+        Err(error) => {
+            app.note(
+                block::NoticeLevel::Err,
+                format!("cannot create a session on the current route: {error}"),
+            );
+            return;
+        }
+    };
+    let runs = session
+        .rollout_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let run = core_protocol::RunId(format!("run-{}-{nanos}", std::process::id()));
+    let rollout = match core_record::Rollout::open(&runs, &run, core_protocol::TenantId::default())
+    {
+        Ok(rollout) => rollout,
+        Err(error) => {
+            app.note(
+                block::NoticeLevel::Err,
+                format!("cannot create session: {error}"),
+            );
+            return;
+        }
+    };
+    let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
+    let capabilities = directory.selection_capabilities(&selection);
+    let reply = session
+        .control(app_server::Control::AdoptRun(Box::new(
+            app_server::AdoptRun {
+                rollout,
+                fresh: true,
+                route: Box::new(app_server::ModelSelection {
+                    provider,
+                    provider_id: selection.provider_id.clone(),
+                    model_id: selection.model_id.clone(),
+                    catalog_digest,
+                    capability_digest,
+                    context_window_tokens: capabilities.context_window_tokens,
+                    max_output_tokens: capabilities.max_output_tokens,
+                }),
+            },
+        )))
+        .await;
+    match reply {
+        Some(app_server::ControlReply::Adopted {
+            adopted,
+            snapshot,
+            blocked,
+        }) => {
+            clear_transcript_for_adoption(app);
+            session.adopt_run(adopted.rollout_path.clone(), (*snapshot).clone());
+            app.session_name = "New session".into();
+            app.mode = snapshot.mode;
+            app.effort = snapshot.effort;
+            app.model = snapshot.model.clone();
+            app.cost = snapshot.cost.clone();
+            app.turns = 0;
+            app.model_context_window = capabilities.context_window_tokens;
+            app.status = "ready".into();
+            app.note(
+                block::NoticeLevel::Ok,
+                format!(
+                    "new session {} · left {}",
+                    adopted.run_id, adopted.previous_run_id
+                ),
+            );
+            if let Some(reason) = blocked {
+                app.note(block::NoticeLevel::Err, reason);
+            }
+        }
+        Some(app_server::ControlReply::Refused(reason)) => {
+            app.note(block::NoticeLevel::Err, reason)
+        }
+        _ => app.note(
+            block::NoticeLevel::Err,
+            "the runtime is no longer reachable",
+        ),
+    }
 }
 
 fn open_tunables_picker(app: &mut App, session: &Session, argument: &str) {
@@ -7814,112 +8734,7 @@ async fn handle_registered_command(
             }
         }
         SlashCommand::Context => {
-            let mut rows = Vec::new();
-            if let Some(context) = app.last_context {
-                rows.extend([
-                    kv(
-                        "request estimate",
-                        &format!("≈{} tokens", fmt_token_count(context.total_tokens as u64)),
-                    ),
-                    kv(
-                        "  system / tools",
-                        &format!(
-                            "≈{} / ≈{}",
-                            fmt_token_count(context.system_tokens as u64),
-                            fmt_token_count(context.tool_tokens as u64)
-                        ),
-                    ),
-                    kv(
-                        "  transcript / framing",
-                        &format!(
-                            "≈{} / ≈{}",
-                            fmt_token_count(context.transcript_tokens as u64),
-                            fmt_token_count(context.framing_tokens as u64)
-                        ),
-                    ),
-                    block::PanelRow::Note(
-                        "estimate: deterministic UTF-8 bytes/3.5 plus wire framing".into(),
-                    ),
-                ]);
-            } else {
-                rows.push(block::PanelRow::Note(
-                    "no provider request has completed in this UI session yet".into(),
-                ));
-            }
-            if let Some(usage) = app.last_turn_usage {
-                let reported_input = request_input_tokens(usage);
-                rows.extend([
-                    kv(
-                        "provider-reported input",
-                        &format!("{} tokens", fmt_token_count(reported_input)),
-                    ),
-                    kv(
-                        "  uncached / cache read / write",
-                        &format!(
-                            "{} / {} / {}",
-                            fmt_token_count(usage.input),
-                            fmt_token_count(usage.cache_read),
-                            fmt_token_count(usage.cache_creation)
-                        ),
-                    ),
-                    kv(
-                        "output / thinking",
-                        &format!(
-                            "{} / {}",
-                            fmt_token_count(usage.output),
-                            fmt_token_count(usage.thinking)
-                        ),
-                    ),
-                    kv(
-                        "last-turn cache hit",
-                        &format!("{:.0}%", usage.cache_hit_ratio() * 100.0),
-                    ),
-                ]);
-            }
-            match app.model_context_window.filter(|window| *window > 0) {
-                Some(window) => {
-                    let estimated_input = app
-                        .last_context
-                        .map(|context| context.total_tokens as u64)
-                        .unwrap_or(0);
-                    let reserve = u64::from(app.reserved_output_tokens.unwrap_or_default());
-                    let admitted = estimated_input.saturating_add(reserve);
-                    let remaining = window.saturating_sub(admitted);
-                    let pct_left = remaining as f64 / window as f64 * 100.0;
-                    rows.push(kv(
-                        "model context window",
-                        &format!(
-                            "{} · {} admission headroom ({pct_left:.0}%)",
-                            fmt_token_count(window),
-                            fmt_token_count(remaining)
-                        ),
-                    ));
-                    if app.last_context.is_some() {
-                        rows.push(kv(
-                            "reserved output",
-                            &format!("{} tokens", fmt_token_count(reserve)),
-                        ));
-                    }
-                }
-                None => rows.push(kv(
-                    "model context window",
-                    "unknown (not proven for this exact route)",
-                )),
-            }
-            rows.push(kv(
-                "compaction trigger",
-                &format!(
-                    "{} tokens (policy threshold, not the model window)",
-                    fmt_token_count(session.compaction_trigger_tokens() as u64)
-                ),
-            ));
-            if let Some(application) = app.effort_application {
-                rows.push(kv(
-                    "effort applied",
-                    &effort_application_detail(application),
-                ));
-            }
-            app.panel("◔", "context — last provider turn", rows);
+            context_chips::handle(app, session, arg).await;
         }
         SlashCommand::Mode => {
             if arg.is_empty() {
@@ -8027,12 +8842,44 @@ async fn handle_registered_command(
                     if text.is_empty() {
                         app.push(fg(Color::Red), "usage: /memory add <fact>");
                     } else {
-                        match store.add(&text) {
-                            Ok(id) => app.push(
-                                fg(Color::Green),
-                                format!("remembered ({id}) — applies next turn"),
+                        let admitted = core_ctx::MemoryRecallStrategy::authorize_project_write_with(
+                            session.memory_strategy(),
+                            &text,
+                            core_protocol::capability_set::CapabilitySet::only(
+                                Capability::TrustMutating,
                             ),
-                            Err(e) => app.push(fg(Color::Red), format!("memory add failed: {e}")),
+                        );
+                        match admitted {
+                            Ok(proposal) => match store.add(&proposal.text) {
+                                Ok(id) => {
+                                    let fact = core_protocol::text::head(&proposal.text, 16 * 1024);
+                                    let notification = format!(
+                                        "{}\nMemory `{id}` was added explicitly by the operator \
+                                         and is available in this session. Exact fact:\n{fact}\n\n\
+                                         Use this fact when relevant. `read_memory` can retrieve it \
+                                         by id; the stable REC-INJECT prefix remains unchanged.",
+                                        crate::runtime::MEMORY_ADDED_NOTIFICATION_PREFIX,
+                                    );
+                                    match session.submit(Op::Steer { text: notification }) {
+                                        Ok(()) => app.push(
+                                            fg(Color::Green),
+                                            format!("remembered ({id}) — available in this session"),
+                                        ),
+                                        Err(error) => app.push(
+                                            fg(Color::Yellow),
+                                            format!(
+                                                "remembered ({id}), but current-session refresh failed: {error}"
+                                            ),
+                                        ),
+                                    }
+                                }
+                                Err(error) => {
+                                    app.push(fg(Color::Red), format!("memory add failed: {error}"))
+                                }
+                            },
+                            Err(error) => {
+                                app.push(fg(Color::Red), format!("memory policy refused: {error}"))
+                            }
                         }
                     }
                 }
@@ -8072,115 +8919,71 @@ async fn handle_registered_command(
             }
         }
         SlashCommand::Diff => {
-            // Reuse the same absolute-executable, filter-disabled, process-group-bounded runner as
-            // the registry tool. This operator command is still awaiting the universal effect WAL.
             let stat = arg.trim() == "stat";
-            match core_tools::git_diff_observation(session.workspace(), stat, None).await {
-                Ok(output) => {
-                    // Scrub before semantic parsing/rendering; newlines are preserved.
-                    let text = core_record::redact::scrub(&output);
-                    if text.trim().is_empty() || text.trim() == "(no uncommitted changes)" {
-                        app.note(
-                            block::NoticeLevel::Info,
-                            "no uncommitted changes (try /diff stat for a summary)",
-                        );
-                    } else if stat {
-                        // --stat is a SUMMARY, not a unified diff — render as a Panel, not a Diff card.
-                        let rows = text
-                            .lines()
-                            .take(120)
-                            .map(|l| block::PanelRow::Note(l.to_string()))
-                            .collect();
-                        app.panel("±", "diff --stat", rows);
-                    } else {
-                        let diffs = core_protocol::FileDiff::from_unified(&text);
-                        if diffs.is_empty() {
-                            app.note(block::NoticeLevel::Info, "no parseable diff");
-                        } else {
-                            for d in diffs {
-                                app.push_block(block::BlockKind::Diff(d));
+            match crate::workspace_review::observe(session.workspace()).await {
+                Ok(review) if review.is_empty() => {
+                    app.note(block::NoticeLevel::Info, "no uncommitted changes");
+                }
+                Ok(review) => {
+                    let mut rows = review
+                        .summary()
+                        .into_iter()
+                        .take(120)
+                        .map(block::PanelRow::Note)
+                        .collect::<Vec<_>>();
+                    let blind = review.changes.invisible_to_bare_diff().len();
+                    rows.push(block::PanelRow::Note(format!(
+                        "{} path(s) total · {blind} invisible to bare git diff",
+                        review.changes.entries.len()
+                    )));
+                    app.panel("±", "complete change set", rows);
+                    if !stat {
+                        match review.verified_diffs() {
+                            Ok(documents) => {
+                                for document in documents {
+                                    let text = core_record::redact::scrub(document);
+                                    for diff in core_protocol::FileDiff::from_unified(&text) {
+                                        app.push_block(block::BlockKind::Diff(diff));
+                                    }
+                                }
                             }
+                            Err(error) => app.note(block::NoticeLevel::Err, error),
                         }
                     }
                 }
                 Err(error) => app.push(
                     fg(Color::Red),
-                    format!("could not read bounded Git diff: {error}"),
+                    format!("could not read complete bounded change set: {error}"),
                 ),
             }
         }
         SlashCommand::Sessions => {
-            open_session_picker(app, session);
+            handle_sessions_command(app, session, directory, arg).await;
         }
         SlashCommand::Workflows => {
-            let mut rows = Vec::new();
-            for card in app.transcript.iter().rev().filter_map(|entry| {
-                if let block::BlockKind::Workflow(card) = &entry.kind {
-                    Some(card)
-                } else {
-                    None
+            match session
+                .control(app_server::Control::Workflow(
+                    app_server::WorkflowControl::Inventory,
+                ))
+                .await
+            {
+                Some(app_server::ControlReply::Workflows(reply)) => {
+                    app.workflows_panel.update_inventory(reply.runs);
+                    if let Some(notice) = reply.notice {
+                        app.workflows_panel.finish_action(notice);
+                    }
+                    app.workflows_panel.open();
                 }
-            }) {
-                let settled = card
-                    .tasks
-                    .iter()
-                    .filter(|task| {
-                        matches!(
-                            task.status,
-                            block::WorkflowTaskStatus::Done
-                                | block::WorkflowTaskStatus::Failed
-                                | block::WorkflowTaskStatus::Interrupted
-                                | block::WorkflowTaskStatus::SkippedBudget
-                                | block::WorkflowTaskStatus::NotStarted
-                                | block::WorkflowTaskStatus::Unknown
-                        )
-                    })
-                    .count();
-                let progress = if card.tasks.is_empty() {
-                    card.class.clone()
-                } else {
-                    format!("{settled}/{} investigators", card.tasks.len())
-                };
-                rows.push(block::PanelRow::Item {
-                    label: format!(
-                        "{} · {}",
-                        card.name,
-                        block::workflow_status_label(card.status)
-                    ),
-                    hint: format!("{} · {}", card.run_id, progress),
-                });
-            }
-            // QuickJS `core-workflow` phase→agent trees (design §3.3), newest first.
-            for card in app.transcript.iter().rev().filter_map(|entry| {
-                if let block::BlockKind::WorkflowRun(card) = &entry.kind {
-                    Some(card)
-                } else {
-                    None
+                Some(app_server::ControlReply::Refused(reason)) => {
+                    app.note(block::NoticeLevel::Err, reason)
                 }
-            }) {
-                let done = card
-                    .agents
-                    .iter()
-                    .filter(|a| a.state == core_workflow::events::WorkflowState::Done)
-                    .count();
-                let status = if card.finished { "finished" } else { "running" };
-                rows.push(block::PanelRow::Item {
-                    label: format!("{} · {status}", card.name),
-                    hint: format!("{} · {done}/{} agents", card.run_id, card.agents.len()),
-                });
+                _ => app.note(
+                    block::NoticeLevel::Err,
+                    "the workflow owner is no longer reachable",
+                ),
             }
-            // Runs from EARLIER processes, rebuilt from their sidecars (see `workflow_rehydrate`).
-            // They are listed apart from, and after, this transcript's own runs because they are a
-            // different claim: this session is not driving them and has no tree for them, so what
-            // is on offer is the run id — the argument `core workflow resume` wants.
-            rows.extend(restored_workflow_rows(&app.workflow_monitor));
-            if rows.is_empty() {
-                rows.push(block::PanelRow::Note(
-                    "no workflow has run in this transcript".into(),
-                ));
-            }
-            app.panel("", "workflows", rows);
         }
+        SlashCommand::Jobs => jobs::handle(app, session, arg).await,
         SlashCommand::Fork => {
             // Fork the CURRENT session at its tail into a new branch (shared past, divergent future).
             let path = session.rollout_path().to_path_buf();
@@ -8199,10 +9002,13 @@ async fn handle_registered_command(
                         at,
                         &core_protocol::TenantId::default(),
                     ) {
-                        Ok(child) => app.push(
-                            fg(Color::Green),
-                            format!("forked -> {child} (resume with: core --resume {child})"),
-                        ),
+                        Ok(child) => {
+                            app.note(
+                                block::NoticeLevel::Ok,
+                                format!("forked {child} · adopting the divergent branch"),
+                            );
+                            adopt_session(app, session, directory, &child.0).await;
+                        }
                         Err(e) => app.push(fg(Color::Red), format!("fork failed: {e}")),
                     }
                 }
@@ -8214,10 +9020,12 @@ async fn handle_registered_command(
             show_agent_catalog(app, session);
         }
         SlashCommand::Skills => {
-            let cat = match core_ctx::skills::user_skills_dir() {
-                Some(user) => core_ctx::skills::SkillCatalog::discover(&user, session.workspace()),
-                None => core_ctx::skills::SkillCatalog::discover_without_user(session.workspace()),
-            };
+            let user = core_ctx::skills::user_skills_dir();
+            let cat = core_ctx::skills::SkillCatalog::discover_with_dependencies(
+                user.as_deref(),
+                session.workspace(),
+                session.dependency_skill_dirs(),
+            );
             let mut rows: Vec<block::PanelRow> = cat
                 .defs()
                 .iter()
@@ -8259,6 +9067,9 @@ async fn handle_registered_command(
         }
         SlashCommand::Tunables => {
             open_tunables_picker(app, session, arg);
+        }
+        SlashCommand::Lab => {
+            experiment_lab::handle(app, session, arg);
         }
         SlashCommand::Login => {
             // The credential half of the setup state machine deliberately does NOT run here. A
@@ -8412,9 +9223,6 @@ async fn handle_registered_command(
             }
         }
         SlashCommand::Rewind => {
-            // Conversation rewind: branch at an EARLIER seq (shared past, divergent future). With no
-            // arg it lists the turn boundaries; `/rewind <seq>` forks at that point. (Workspace-file
-            // rewind needs recorded checkpoints, which normal runs don't yet emit — honest gap.)
             let path = session.rollout_path().to_path_buf();
             let runs = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
             let stem = path
@@ -8422,36 +9230,233 @@ async fn handle_registered_command(
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_string();
-            match core_record::replay(&path) {
-                Ok(events) if !events.is_empty() => {
-                    let tail = events.last().map(|e| e.seq.0).unwrap();
-                    if let Ok(seq) = arg.trim().parse::<u64>() {
-                        let at = core_protocol::Seq(seq.min(tail));
-                        match core_record::fork(&runs, &core_protocol::RunId(stem), at, &core_protocol::TenantId::default()) {
-                            Ok(child) => app.push(fg(Color::Green), format!("rewound to seq {} -> {child} (resume with: core --resume {child})", at.0)),
-                            Err(e) => app.push(fg(Color::Red), format!("rewind failed: {e}")),
-                        }
+            let events = match core_record::replay(&path) {
+                Ok(events) if !events.is_empty() => events,
+                Ok(_) => {
+                    app.push(fg(Color::Red), "nothing to rewind yet");
+                    return;
+                }
+                Err(error) => {
+                    app.push(fg(Color::Red), format!("cannot read this session: {error}"));
+                    return;
+                }
+            };
+            let tail = events.last().map(|event| event.seq.0).unwrap_or_default();
+            let request = match crate::workspace_review::parse_rewind_request(arg) {
+                Ok(Some(request)) => request,
+                Ok(None) => {
+                    let mut rows = vec![block::PanelRow::Note(format!(
+                        "preview: /rewind <seq> [all|code|conversation] [keep|delete] · add `apply` only after review (0..{tail})"
+                    ))];
+                    for event in events
+                        .iter()
+                        .rev()
+                        .filter(|event| {
+                            matches!(
+                                event.kind,
+                                core_protocol::EventKind::Checkpoint { .. }
+                                    | core_protocol::EventKind::TurnStart
+                            )
+                        })
+                        .take(30)
+                    {
+                        let kind =
+                            if matches!(event.kind, core_protocol::EventKind::Checkpoint { .. }) {
+                                "files + conversation"
+                            } else {
+                                "conversation"
+                            };
+                        rows.push(item(
+                            "•",
+                            &format!("seq {}", event.seq.0),
+                            &format!("turn {} · {kind}", event.turn.0),
+                        ));
+                    }
+                    app.panel("↩", "rewind points", rows);
+                    return;
+                }
+                Err(error) => {
+                    app.note(block::NoticeLevel::Err, error);
+                    return;
+                }
+            };
+            if request.at.0 > tail {
+                app.note(
+                    block::NoticeLevel::Err,
+                    format!("rewind seq {} is past this run's tail {tail}", request.at.0),
+                );
+                return;
+            }
+            let run = core_protocol::RunId(stem);
+            let snapshot =
+                crate::workspace_review::checkpoint_at_or_before(&events, &run, request.at);
+            let mut file_preview = None;
+            if request.scope.touches_files() {
+                let Some(snapshot) = snapshot.as_ref() else {
+                    app.note(
+                        block::NoticeLevel::Err,
+                        "no workspace checkpoint exists at or before that sequence",
+                    );
+                    return;
+                };
+                let review = match crate::workspace_review::observe(session.workspace()).await {
+                    Ok(review) => review,
+                    Err(error) => {
+                        app.note(block::NoticeLevel::Err, error);
+                        return;
+                    }
+                };
+                let preview = match crate::workspace_review::preview_restore(
+                    &review,
+                    snapshot,
+                    session.workspace(),
+                    request.scope,
+                    request.unrecorded,
+                ) {
+                    Ok(preview) => preview,
+                    Err(error) => {
+                        app.note(block::NoticeLevel::Err, error);
+                        return;
+                    }
+                };
+                let mut rows = vec![block::PanelRow::Note(preview.describe())];
+                rows.push(kv("checkpoint", &format!("seq {}", snapshot.at.0)));
+                rows.push(kv(
+                    "result",
+                    if preview.inexact { "overlay" } else { "exact" },
+                ));
+                rows.push(kv(
+                    "evidence",
+                    if preview.is_conclusive() {
+                        "complete"
                     } else {
-                        let mut rows = vec![block::PanelRow::Note(format!(
-                            "usage: /rewind <seq>  (0..{tail})"
-                        ))];
-                        for e in events
-                            .iter()
-                            .filter(|e| matches!(e.kind, core_protocol::EventKind::TurnStart))
-                            .rev()
-                            .take(20)
-                        {
-                            rows.push(item(
-                                "•",
-                                &format!("seq {}", e.seq.0),
-                                &format!("turn {}", e.turn.0),
-                            ));
+                        "incomplete — destructive apply refused"
+                    },
+                ));
+                for entry in preview.irrecoverable().iter().take(20) {
+                    rows.push(item("−", &entry.path, "would be deleted"));
+                }
+                app.panel("↩", "rewind preview", rows);
+                file_preview = Some(preview);
+            } else {
+                app.panel(
+                    "↩",
+                    "rewind preview",
+                    vec![block::PanelRow::Note(format!(
+                        "conversation branches at seq {}; no file is touched",
+                        request.at.0
+                    ))],
+                );
+            }
+            if request.disposition == crate::workspace_review::RewindDisposition::Preview {
+                app.note(
+                    block::NoticeLevel::Info,
+                    format!(
+                        "preview only · repeat `/rewind {} {} {} apply` to proceed",
+                        request.at.0,
+                        match request.scope {
+                            core_changeset::Scope::CodeAndConversation => "all",
+                            core_changeset::Scope::CodeOnly => "code",
+                            core_changeset::Scope::ConversationOnly => "conversation",
+                        },
+                        match request.unrecorded {
+                            core_changeset::Unrecorded::Keep => "keep",
+                            core_changeset::Unrecorded::Delete => "delete",
                         }
-                        app.panel("↩", "rewind — turn boundaries", rows);
+                    ),
+                );
+                return;
+            }
+            if request.unrecorded == core_changeset::Unrecorded::Delete
+                && file_preview
+                    .as_ref()
+                    .is_some_and(|preview| !preview.is_conclusive())
+            {
+                app.note(
+                    block::NoticeLevel::Err,
+                    "destructive rewind refused because the preview was incomplete",
+                );
+                return;
+            }
+
+            // Before overwriting even one tracked path, retain an exact local safety snapshot. It
+            // is a Git object/ref, not a remote backup, and is described only as rollback material.
+            let safety = if request.scope.touches_files() {
+                let safety_run = core_protocol::RunId(format!("rewind-safety-{}", run.0));
+                match core_record::checkpoint_excluding_runtime_state(
+                    &safety_run,
+                    core_protocol::Seq(tail.saturating_add(1)),
+                    session.workspace(),
+                    &runs,
+                ) {
+                    Ok(snapshot) => Some(snapshot),
+                    Err(error) => {
+                        app.note(
+                            block::NoticeLevel::Err,
+                            format!("could not create pre-rewind safety checkpoint: {error}"),
+                        );
+                        return;
                     }
                 }
-                Ok(_) => app.push(fg(Color::Red), "nothing to rewind yet"),
-                Err(e) => app.push(fg(Color::Red), format!("cannot read this session: {e}")),
+            } else {
+                None
+            };
+            if let Some(target) = snapshot.as_ref()
+                && let Err(error) = core_record::rewind_workspace_with_policy(
+                    target,
+                    session.workspace(),
+                    request.unrecorded == core_changeset::Unrecorded::Delete,
+                )
+            {
+                let rollback = safety.as_ref().map(|safety| {
+                    core_record::rewind_workspace_with_policy(safety, session.workspace(), true)
+                });
+                app.note(
+                    block::NoticeLevel::Err,
+                    format!("workspace rewind failed: {error}; safety rollback: {rollback:?}"),
+                );
+                return;
+            }
+
+            if request.scope.touches_conversation() {
+                match core_record::fork(
+                    &runs,
+                    &run,
+                    request.at,
+                    &core_protocol::TenantId::default(),
+                ) {
+                    Ok(child) => {
+                        app.note(
+                            block::NoticeLevel::Ok,
+                            format!("rewound to seq {} · adopting {child}", request.at.0),
+                        );
+                        adopt_session(app, session, directory, &child.0).await;
+                    }
+                    Err(error) => {
+                        if let Some(safety) = safety.as_ref() {
+                            let _ = core_record::rewind_workspace_with_policy(
+                                safety,
+                                session.workspace(),
+                                true,
+                            );
+                        }
+                        app.note(
+                            block::NoticeLevel::Err,
+                            format!("conversation rewind failed: {error}"),
+                        );
+                    }
+                }
+            } else {
+                app.note(
+                    block::NoticeLevel::Ok,
+                    format!(
+                        "workspace restored to checkpoint seq {} · conversation kept",
+                        snapshot
+                            .as_ref()
+                            .map(|snapshot| snapshot.at.0)
+                            .unwrap_or_default()
+                    ),
+                );
             }
         }
         SlashCommand::Resume => {
@@ -8931,6 +9936,28 @@ fn spans_width(spans: &[Span<'_>]) -> u16 {
         .fold(0u16, u16::saturating_add)
 }
 
+fn clip_spans(spans: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
+    let mut remaining = width;
+    let mut clipped = Vec::new();
+    for span in spans {
+        if remaining == 0 {
+            break;
+        }
+        let span_width = text_width(span.content.as_ref());
+        if span_width <= remaining {
+            remaining = remaining.saturating_sub(span_width);
+            clipped.push(span);
+            continue;
+        }
+        clipped.push(Span::styled(
+            clip_text(span.content.as_ref(), remaining),
+            span.style,
+        ));
+        break;
+    }
+    clipped
+}
+
 pub(crate) fn clip_text(text: &str, width: u16) -> String {
     if text_width(text) <= width {
         return text.to_string();
@@ -8976,12 +10003,31 @@ fn render_lr_line(f: &mut Frame, area: Rect, left: Vec<Span<'static>>, right: Ve
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn status_right_bits(app: &App, density: surface::Density) -> Vec<String> {
+fn effort_status_accent(app: &App) -> status_line::Accent {
+    match app.effort_application {
+        Some(EffortApplication::Mapped { requested, sent }) if requested != sent => {
+            status_line::Accent::Warning
+        }
+        Some(
+            EffortApplication::BudgetBased { .. }
+            | EffortApplication::ToggleOnly { .. }
+            | EffortApplication::Unsupported { .. },
+        ) => status_line::Accent::Warning,
+        _ => status_line::Accent::Model,
+    }
+}
+
+fn status_right_groups(app: &App, density: surface::Density) -> Vec<status_line::Group> {
+    use status_line::{Accent, Group};
+
     // Mouse ownership is persistent user-facing state, but yields first when a narrow status row
     // needs its safety/liveness text. The hint row independently keeps the Ctrl-T action visible.
-    let mut bits = vec![app.mouse_capture.status_label().to_string()];
+    let mut groups = vec![Group::single(
+        app.mouse_capture.status_label(),
+        Accent::Metadata,
+    )];
     if app.keymap_status != "keys:standard" {
-        bits.push(app.keymap_status.clone());
+        groups.push(Group::single(app.keymap_status.clone(), Accent::Mode));
     }
     // A live QuickJS workflow run announces itself only through its transcript card, and a
     // terminal too short for that card — the workflow region negotiates down to zero rows before
@@ -8996,25 +10042,38 @@ fn status_right_bits(app: &App, density: surface::Density) -> Vec<String> {
     // the pending count, and the route/effort identity, which have no second place to be read.
     let live_runs = app.workflow_monitor.live_count();
     if live_runs > 0 {
-        bits.push(format!(
-            "\u{27f3} {live_runs} run{}", // ⟳
-            if live_runs == 1 { "" } else { "s" }
+        groups.push(Group::single(
+            format!(
+                "\u{27f3} {live_runs} run{}", // ⟳
+                if live_runs == 1 { "" } else { "s" }
+            ),
+            Accent::Progress,
         ));
     }
+    groups.push(Group::single(
+        format!("◫ {}", app.session_name),
+        Accent::Metadata,
+    ));
     // Economics is drill-down information and the first metadata dropped under pressure. Keep it
     // off the standard surface; `/cost` remains the authoritative full-run view.
     if density == surface::Density::Wide
         && let Some(cost_usd) = app.cost.usd().filter(|value| *value > 0.0)
     {
-        bits.push(format!("${cost_usd:.2}"));
+        groups.push(Group::single(format!("${cost_usd:.2}"), Accent::Usage));
     }
     if density == surface::Density::Wide && app.turns > 0 {
-        bits.push(format!("turn {}", app.turns));
+        groups.push(Group::single(
+            format!("turn {}", app.turns),
+            Accent::Metadata,
+        ));
     }
     if density != surface::Density::Compact
         && let Some(usage) = app.last_turn_usage
     {
-        bits.push(format!("cache {:.0}%", usage.cache_hit_ratio() * 100.0));
+        groups.push(Group::single(
+            format!("cache {:.0}%", usage.cache_hit_ratio() * 100.0),
+            Accent::Usage,
+        ));
         let used = app
             .last_context
             .map(|context| context.total_tokens as u64)
@@ -9023,17 +10082,30 @@ fn status_right_bits(app: &App, density: surface::Density) -> Vec<String> {
             let admitted =
                 used.saturating_add(u64::from(app.reserved_output_tokens.unwrap_or_default()));
             let left = window.saturating_sub(admitted) as f64 / window as f64 * 100.0;
-            bits.push(format!("context {left:.0}% left"));
+            groups.push(Group::single(
+                format!("ctx {left:.0}% left"),
+                if left <= 20.0 {
+                    Accent::Warning
+                } else {
+                    Accent::Usage
+                },
+            ));
         } else {
-            bits.push(format!("context {} used", fmt_token_count(used)));
+            groups.push(Group::single(
+                format!("ctx {} used", fmt_token_count(used)),
+                Accent::Usage,
+            ));
         }
     }
     if app.mode != PermissionMode::Default {
-        bits.push(app.mode.label().to_string());
+        groups.push(Group::single(app.mode.label(), Accent::Mode));
     }
     let pending = app.steer_previews.len().saturating_add(app.queued.len());
     if pending > 0 {
-        bits.push(format!("{pending} pending"));
+        groups.push(Group::single(
+            format!("{pending} pending"),
+            Accent::Progress,
+        ));
     }
     // Route and effective effort are one high-priority identity unit. Keeping them last means the
     // progressive truncation loop drops economics/context first and never leaves a naked model with
@@ -9041,11 +10113,24 @@ fn status_right_bits(app: &App, density: surface::Density) -> Vec<String> {
     let route = route_label(app);
     let effort = effort_status_label(app);
     if route.is_empty() {
-        bits.push(effort);
+        groups.push(Group::single(effort, effort_status_accent(app)));
     } else {
-        bits.push(format!("{route} │ {effort}"));
+        groups.push(Group::pair(
+            route,
+            Accent::Model,
+            effort,
+            effort_status_accent(app),
+        ));
     }
-    bits
+    groups
+}
+
+#[cfg(test)]
+fn status_right_bits(app: &App, density: surface::Density) -> Vec<String> {
+    status_right_groups(app, density)
+        .iter()
+        .map(status_line::Group::text)
+        .collect()
 }
 
 fn render_status(f: &mut Frame, area: Rect, density: surface::Density, app: &App) {
@@ -9055,22 +10140,24 @@ fn render_status(f: &mut Frame, area: Rect, density: surface::Density, app: &App
     let th = &app.theme;
     let muted = Style::default().fg(th.muted);
     let accent = Style::default().fg(th.accent).add_modifier(Modifier::BOLD);
+    let success = Style::default().fg(th.success).add_modifier(Modifier::BOLD);
     let warn = Style::default().fg(th.warn).add_modifier(Modifier::BOLD);
+    let error = Style::default().fg(th.error).add_modifier(Modifier::BOLD);
 
     let mut left = if app.draining {
         vec![
-            Span::styled("! ", warn),
-            Span::styled("draining · checkpointing at a safe point", warn),
+            Span::styled("◆ ", warn),
+            Span::styled("stopping now · checkpointing", warn),
         ]
     } else if app.pending.is_some() {
         vec![
-            Span::styled("! ", warn),
+            Span::styled("◆ ", warn),
             Span::styled("approval required", warn),
         ]
     } else if app.interrupting {
         vec![
-            Span::styled("! ", warn),
-            Span::styled("interrupt requested · stopping at a safe point", warn),
+            Span::styled("◆ ", warn),
+            Span::styled("interrupt requested · stopping now", warn),
         ]
     } else if !app.follow_tail {
         let unread = if app.unread_updates == 0 {
@@ -9121,19 +10208,30 @@ fn render_status(f: &mut Frame, area: Rect, density: surface::Density, app: &App
         }
         spans
     } else {
-        vec![Span::styled(
-            if app.status.trim().is_empty() || app.status.trim() == "idle" {
-                "ready".to_string()
-            } else {
-                app.status.clone()
-            },
-            muted,
-        )]
+        let label = if app.status.trim().is_empty() || app.status.trim() == "idle" {
+            "ready".to_string()
+        } else {
+            app.status.clone()
+        };
+        let normalized = label.to_ascii_lowercase();
+        let beacon = if normalized.contains("failed")
+            || normalized.contains("error")
+            || normalized.contains("stuck")
+        {
+            error
+        } else if normalized.contains("budget") || normalized.contains("interrupt") {
+            warn
+        } else if label == "ready" || normalized.contains("success") {
+            success
+        } else {
+            accent
+        };
+        vec![Span::styled("◆ ", beacon), Span::styled(label, muted)]
     };
     // Right-side metadata is progressively disclosed. When it does not fit, low-priority economics
     // disappear first; the route/pending state at the end survives and is clipped explicitly.
-    let mut bits = status_right_bits(app, density);
-    let left_budget = if bits.is_empty() {
+    let mut groups = status_right_groups(app, density);
+    let left_budget = if groups.is_empty() {
         area.width
     } else {
         area.width.saturating_mul(2) / 3
@@ -9147,15 +10245,10 @@ fn render_status(f: &mut Frame, area: Rect, density: surface::Density, app: &App
     }
     let left_w = spans_width(&left);
     let available = area.width.saturating_sub(left_w.saturating_add(2));
-    while bits.len() > 1 && text_width(&bits.join(" │ ")) > available {
-        bits.remove(0);
+    while groups.len() > 1 && status_line::width(&groups) > available {
+        groups.remove(0);
     }
-    let right_text = clip_text(&bits.join(" │ "), available);
-    let right = if right_text.is_empty() {
-        Vec::new()
-    } else {
-        vec![Span::styled(right_text, muted)]
-    };
+    let right = clip_spans(status_line::spans(&groups, th), available);
     render_lr_line(f, area, left, right);
 }
 
@@ -9315,9 +10408,7 @@ fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
     let text = app.editor.text();
-    let image_count = app.editor.attachments().len();
-    let file_count = app.editor.files().len();
-    let attachment_count = image_count + file_count;
+    let attachment_count = app.editor.chip_count();
     let is_bash = text.starts_with('!');
     let line_color = if app.pending.is_some() {
         app.theme.warn
@@ -9326,52 +10417,55 @@ fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         app.theme.border
     };
-    let mut title = if app.pending.is_some() {
-        "Permission required"
-    } else if app.running {
-        match input_destination(true, &text) {
-            InputDestination::AfterTurn => "Queue after this turn",
-            InputDestination::SteerCurrentRun => "Steer current run",
-            InputDestination::StartTurn => unreachable!("running destination"),
-        }
-    } else if app.is_resume_handoff_draft() {
-        "Restart handoff — copy to a new terminal"
-    } else if app.mode == PermissionMode::Plan {
-        "Plan request"
-    } else if is_bash {
-        "Local shell"
-    } else {
-        "Prompt"
-    }
-    .to_owned();
-    if app.pending.is_none() && image_count > 0 {
-        title.push_str(&format!(
-            " · {image_count} image{}",
-            if image_count == 1 { "" } else { "s" }
-        ));
-    }
-    if app.pending.is_none() && file_count > 0 {
-        title.push_str(&format!(
-            " · {file_count} file{}",
-            if file_count == 1 { "" } else { "s" }
-        ));
-    }
-    // One frame owns the complete input/approval surface. Tiny terminals cannot spare two border
-    // rows, so they deliberately fall back to the unframed fail-closed control above/below.
-    let body = if area.width >= 3 && area.height >= 3 {
-        let composer = Block::default()
+    // Blocking security decisions retain a complete, titled frame. Ordinary composition uses one
+    // low-contrast input surface, one semantic left rail, and no redundant title or perimeter.
+    let body = if app.pending.is_some() && area.width >= 3 && area.height >= 3 {
+        let approval = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(line_color))
             .title(format!(
                 " {} ",
-                clip_text(&title, area.width.saturating_sub(4))
+                clip_text("Permission required", area.width.saturating_sub(4))
             ));
-        let inner = composer.inner(area);
-        f.render_widget(composer, area);
+        let inner = approval.inner(area);
+        f.render_widget(approval, area);
         inner
-    } else {
+    } else if app.pending.is_some() {
         area
+    } else {
+        let surface_style = if app.theme.mono {
+            Style::default()
+        } else {
+            Style::default().fg(app.theme.user_fg).bg(app.theme.user_bg)
+        };
+        f.render_widget(Block::default().style(surface_style), area);
+
+        let rail_glyph = if app.theme.mono { "┃" } else { "▌" };
+        let rail_style = Style::default()
+            .fg(line_color)
+            .bg(if app.theme.mono {
+                Color::Reset
+            } else {
+                app.theme.user_bg
+            })
+            .add_modifier(Modifier::BOLD);
+        let rail = (0..area.height)
+            .map(|_| Line::from(Span::styled(rail_glyph, rail_style)))
+            .collect::<Vec<_>>();
+        f.render_widget(
+            Paragraph::new(rail),
+            Rect::new(area.x, area.y, area.width.min(1), area.height),
+        );
+
+        let left = u16::from(area.width >= 2) + u16::from(area.width >= 3);
+        let vertical = u16::from(area.height >= 3);
+        Rect::new(
+            area.x.saturating_add(left),
+            area.y.saturating_add(vertical),
+            area.width.saturating_sub(left).saturating_sub(1),
+            area.height.saturating_sub(vertical.saturating_mul(2)),
+        )
     };
     if body.height == 0 {
         return;
@@ -9403,13 +10497,23 @@ fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
                 operation_style,
             )));
         }
-        let workspace_line = Line::from(Span::styled(
-            clip_text(&format!("workspace {}", pending.workspace), body.width),
+        let mut workspace_spans = vec![Span::styled(
+            "workspace ",
             Style::default().fg(app.theme.muted),
+        )];
+        workspace_spans.extend(crate::semantic_text::spans(
+            &pending.workspace,
+            crate::semantic_text::Tone::Muted,
+            &app.theme,
         ));
-        let reason_line = Line::from(Span::styled(
-            clip_text(&pending.reason, body.width),
-            Style::default().fg(app.theme.muted),
+        let workspace_line = Line::from(clip_spans(workspace_spans, body.width));
+        let reason_line = Line::from(clip_spans(
+            crate::semantic_text::spans(
+                &pending.reason,
+                crate::semantic_text::Tone::Muted,
+                &app.theme,
+            ),
+            body.width,
         ));
         let choice_line = approval_action_line(app, pending, body.width);
         // Security action is the last thing allowed to disappear. The exact operation outranks
@@ -9448,54 +10552,57 @@ fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let input_body = if attachment_count > 0 && body.height > 0 {
-        let chip_area = Rect::new(body.x, body.y, body.width, 1);
-        let mut chips = String::new();
-        for (index, attachment) in app.editor.attachments().as_slice().iter().enumerate() {
-            if index > 0 {
-                chips.push_str("  ");
-            }
-            // The `#N` is the same id the in-line `[Image #N]` anchor names. Without it the two
-            // halves of one image are two unrelated things on the screen and the operator cannot
-            // tell which anchor moved which screenshot; with it, the name and size the chip has
-            // always carried are the answer to a question the sentence can now ask.
-            chips.push_str("▧ #");
-            chips.push_str(&attachment.id().to_string());
-            chips.push(' ');
-            chips.push_str(attachment.display_name());
-            chips.push_str(" · ");
-            chips.push_str(&format_attachment_size(attachment.file_bytes()));
-        }
-        // File chips share the row and the glyph grammar: a different mark, the same sanitised
-        // label and the same honest byte count. Nothing here prints file text.
-        for (index, attachment) in app.editor.files().as_slice().iter().enumerate() {
-            if index > 0 || image_count > 0 {
-                chips.push_str("  ");
-            }
-            chips.push_str("▤ ");
-            chips.push_str(attachment.display_name());
-            chips.push_str(" · ");
-            chips.push_str(&format_attachment_size(attachment.text_bytes()));
-        }
-        let suffix = if body.width >= 36 {
-            "  alt+backspace removes last"
-        } else {
-            ""
-        };
-        chips.push_str(suffix);
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                clip_text(&chips, chip_area.width),
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            ))),
-            chip_area,
-        );
+        let chips = app.editor.chips();
+        let chip_height = u16::try_from(chips.len())
+            .unwrap_or(u16::MAX)
+            .min(body.height);
+        let chip_area = Rect::new(body.x, body.y, body.width, chip_height);
+        let chip_lines = chips
+            .iter()
+            .enumerate()
+            .map(|(index, chip)| {
+                let mut text = match chip {
+                    crate::editor::DraftChip::Image(attachment) => format!(
+                        "▧ #{} {} · {}",
+                        attachment.id(),
+                        attachment.display_name(),
+                        format_attachment_size(attachment.file_bytes())
+                    ),
+                    crate::editor::DraftChip::File(attachment) => format!(
+                        "{} [{}] {} · {} · {}",
+                        attachment.kind().glyph(),
+                        attachment.kind().label(),
+                        attachment.display_name(),
+                        format_attachment_size(attachment.text_bytes()),
+                        attachment.digest().get(..8).unwrap_or(attachment.digest())
+                    ),
+                    crate::editor::DraftChip::Paste(paste) => format!(
+                        "▥ #{} held paste · {} line{} · {}",
+                        paste.id(),
+                        paste.lines() + 1,
+                        if paste.lines() == 0 { "" } else { "s" },
+                        format_attachment_size(paste.bytes())
+                    ),
+                };
+                if index + 1 == chips.len() && body.width >= 36 {
+                    text.push_str(" · alt+backspace removes last");
+                }
+                Line::from(clip_spans(
+                    crate::semantic_text::spans(
+                        &text,
+                        crate::semantic_text::Tone::Muted,
+                        &app.theme,
+                    ),
+                    chip_area.width,
+                ))
+            })
+            .collect::<Vec<_>>();
+        f.render_widget(Paragraph::new(chip_lines), chip_area);
         Rect::new(
             body.x,
-            body.y.saturating_add(1),
+            body.y.saturating_add(chip_height),
             body.width,
-            body.height.saturating_sub(1),
+            body.height.saturating_sub(chip_height),
         )
     } else {
         body
@@ -9545,9 +10652,9 @@ fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
 
     if text.is_empty() {
         let placeholder = if app.running {
-            "add direction while the agent works"
+            "steer the current run"
         } else {
-            "describe a task, question, or change"
+            "ask about this codebase or describe a task"
         };
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -9651,9 +10758,10 @@ fn footer_spans(text: &str, theme: &theme::Theme) -> Vec<Span<'static>> {
                 ));
             }
         } else {
-            spans.push(Span::styled(
-                item.to_string(),
-                Style::default().fg(theme.muted),
+            spans.extend(crate::semantic_text::spans(
+                item,
+                crate::semantic_text::Tone::Muted,
+                theme,
             ));
         }
     }
@@ -9682,7 +10790,8 @@ fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, app: &App) 
     } else if app.is_resume_handoff_draft() {
         "copy to a new terminal · enter keeps draft · esc clear"
     } else if app.running && !text.is_empty() {
-        let queues_after_turn = input_destination(true, &text) == InputDestination::AfterTurn;
+        let queues_after_turn =
+            input_destination(true, app.interrupting, &text) == InputDestination::AfterTurn;
         if density == surface::Density::Compact && queues_after_turn {
             "enter queue · ctrl+j newline · esc stop"
         } else if queues_after_turn {
@@ -9805,8 +10914,25 @@ fn draw(f: &mut Frame, app: &mut App) {
     app.workflow_monitor.rehydrate(app.workflows_dir.as_deref());
     // A newly arrived capability decision outranks optional inspection chrome. The viewer cannot
     // hide a fail-closed approval surface while the runtime is blocked on it.
-    if app.pending.is_some() && app.transcript_viewer.is_open() {
-        app.transcript_viewer.close();
+    if app.pending.is_some() {
+        if app.transcript_viewer.is_open() {
+            app.transcript_viewer.close();
+        }
+        if app.workflows_panel.is_open() {
+            app.workflows_panel.close();
+        }
+    }
+    if app.workflows_panel.is_open() {
+        let runs = workflow_panel_runs(app);
+        workflows_panel::render(
+            f,
+            &mut app.workflows_panel,
+            &runs,
+            &app.session_name,
+            &app.theme,
+            app.spin,
+        );
+        return;
     }
     if app.transcript_viewer.is_open() {
         transcript_viewer::render(f, &mut app.transcript_viewer, &app.theme);
@@ -9815,8 +10941,7 @@ fn draw(f: &mut Frame, app: &mut App) {
     // The dock grows for multiline input, bounded to six editable rows. A blocking approval asks
     // for the full six-row decision surface; short terminals degrade through Surface::resolve.
     let n_input_rows = (app.editor.text().split('\n').count().clamp(1, 6) as u16)
-        .saturating_add(u16::from(app.editor.chip_count() > 0))
-        .min(6);
+        .saturating_add(u16::try_from(app.editor.chip_count()).unwrap_or(u16::MAX));
     let lane_rows = if app.pending.is_some() {
         0
     } else {
@@ -9835,18 +10960,35 @@ fn draw(f: &mut Frame, app: &mut App) {
     let requested_workflow_rows = u16::try_from(workflow_rows.len())
         .unwrap_or(u16::MAX)
         .min(workflow_region_cap(f.area().height));
-    let surface = surface::Surface::resolve(
-        f.area(),
-        if app.pending.is_some() {
-            6
-        } else {
-            n_input_rows
-        },
-        lane_rows,
-        requested_workflow_rows,
-        show_status,
-        app.pending.is_some(),
-    );
+    let fresh_landing = !app.running
+        && app.pending.is_none()
+        && app.transcript.len() == 1
+        && matches!(
+            app.transcript.first().map(|block| &block.kind),
+            Some(block::BlockKind::Welcome { .. })
+        );
+    let surface = if fresh_landing {
+        let landing_width = f.area().width.min(surface::LANDING_MAX_WIDTH);
+        let welcome_rows = match landing_width {
+            0..=15 => 1,
+            16..=27 => 2,
+            _ => 6,
+        };
+        surface::Surface::resolve_landing(f.area(), n_input_rows, welcome_rows, show_status)
+    } else {
+        surface::Surface::resolve(
+            f.area(),
+            if app.pending.is_some() {
+                6
+            } else {
+                n_input_rows
+            },
+            lane_rows,
+            requested_workflow_rows,
+            show_status,
+            app.pending.is_some(),
+        )
+    };
 
     // Which block the transcript must NOT draw, because the region is drawing it. Decided from the
     // GRANTED height rather than the request: a frame too small to spare the region even one row
@@ -10895,6 +12037,7 @@ mod tests {
                 session_meta("middle", "Middle task", 20, "anthropic", "sonnet", 4),
             ],
             "",
+            Path::new("/nonexistent/session-picker-test"),
         );
         assert_eq!(items[0].label, "Newest task");
         assert!(matches!(&items[0].action, PickAction::AdoptRun(id) if id == "newer"));
@@ -10922,6 +12065,7 @@ mod tests {
                     3,
                 )],
                 "",
+                Path::new("/nonexistent/session-picker-test"),
             ),
             sel: 0,
             query: String::new(),
@@ -10941,7 +12085,6 @@ mod tests {
         assert_eq!(app.editor.text(), "core --resume run-42");
         assert!(app.is_resume_handoff_draft());
         let screen = render_text(&mut app, 100, 18);
-        assert!(screen.contains("Restart handoff"));
         assert!(screen.contains("core --resume run-42"));
         assert!(
             app.transcript
@@ -11869,7 +13012,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     const PRODUCT_SIZES: [(u16, u16); 4] = [(40, 12), (80, 24), (120, 32), (200, 40)];
 
     #[test]
-    fn composer_is_an_unmistakable_terminal_prompt() {
+    fn composer_is_a_quiet_semantic_input_surface() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -11884,18 +13027,18 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             for x in 0..40 {
                 assert_eq!(
                     buf[(x, y)].bg,
-                    Color::Reset,
-                    "the terminal-native composer must not paint a card at ({x},{y})"
+                    app.theme.user_bg,
+                    "the composer owns one neutral input surface at ({x},{y})"
                 );
             }
         }
         let screen = buffer_text(&terminal);
-        assert!(screen.contains("Prompt"));
+        assert!(!screen.contains("Prompt"));
         assert!(screen.contains('›'));
-        assert_eq!(buf[(0, 0)].symbol(), "╭");
-        assert_eq!(buf[(39, 0)].symbol(), "╮");
-        assert_eq!(buf[(0, 2)].symbol(), "╰");
-        assert_eq!(buf[(39, 2)].symbol(), "╯");
+        assert_eq!(buf[(0, 0)].symbol(), "▌");
+        assert_eq!(buf[(0, 1)].symbol(), "▌");
+        assert_eq!(buf[(0, 2)].symbol(), "▌");
+        assert!(!screen.contains('╭') && !screen.contains('╯'));
     }
 
     #[test]
@@ -11910,7 +13053,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .unwrap();
 
         let screen = render_text(&mut app, 80, 14);
-        assert!(screen.contains("1 image"));
+        assert!(screen.contains("▧ #1"));
         assert!(screen.contains("clipboard.png"));
         assert!(screen.contains("alt+backspace"));
         assert!(screen.contains("inspect"));
@@ -11918,7 +13061,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn composer_renders_a_file_chip_beside_an_image_chip_and_never_its_contents() {
+    fn composer_renders_image_file_and_paste_chips_on_separate_rows() {
         let root = std::env::temp_dir().join(format!("core-tui-file-chip-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("test workspace");
@@ -11936,19 +13079,63 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.editor
             .attach_file_path(&root, Path::new("notes.md"))
             .expect("a plain workspace file");
+        let pasted = (0..12)
+            .map(|index| format!("diagnostic line {index}: {}", "x".repeat(80)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.editor.capture_paste(&pasted).expect("a held paste");
 
-        let screen = render_text(&mut app, 100, 14);
-        assert!(screen.contains("1 image"), "{screen}");
-        assert!(screen.contains("1 file"), "{screen}");
+        let screen = render_text(&mut app, 100, 18);
+        assert!(screen.contains("▧ #1"), "{screen}");
+        assert!(screen.contains("▤ [file] notes.md"), "{screen}");
+        assert!(screen.contains("▥ #1 held paste"), "{screen}");
+        assert!(
+            screen.contains("04bade72"),
+            "complete file digest is represented on the chip"
+        );
         assert!(screen.contains("clipboard.png"), "{screen}");
         assert!(screen.contains("notes.md"), "{screen}");
         assert!(screen.contains("inspect"), "{screen}");
+        let rows = screen.lines().collect::<Vec<_>>();
+        let image_row = rows.iter().position(|row| row.contains("▧ #1")).unwrap();
+        let file_row = rows
+            .iter()
+            .position(|row| row.contains("▤ [file] notes.md"))
+            .unwrap();
+        let paste_row = rows
+            .iter()
+            .position(|row| row.contains("▥ #1 held paste"))
+            .unwrap();
+        assert_eq!(file_row, image_row + 1, "each chip owns exactly one row");
+        assert_eq!(paste_row, file_row + 1, "each chip owns exactly one row");
         assert!(
             !screen.contains(secret),
             "a chip is a reference; the composer never prints the file it stands for"
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn composer_renders_typed_context_provenance_size_and_digest() {
+        let mut app = App::new();
+        app.editor
+            .attach_context(
+                crate::file_input::ContextKind::Diff,
+                "working tree",
+                "- before\n+ after\n".into(),
+            )
+            .unwrap();
+
+        let screen = render_text(&mut app, 100, 14);
+        let digest = app.editor.files().as_slice()[0].digest().get(..8).unwrap();
+        assert!(screen.contains("± [diff] working tree"), "{screen}");
+        assert!(screen.contains("17 B"), "{screen}");
+        assert!(screen.contains(digest), "{screen}");
+        assert!(
+            !screen.contains("before"),
+            "chip preview never leaks into composer"
+        );
     }
 
     #[test]
@@ -12002,6 +13189,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.route.model_id = "glm-5.2".into();
         app.model = "glm-5.2".into();
         app.effort = Effort::High;
+        app.push_user("active sessions use the full terminal grid");
         let expected = surface::Surface::resolve(Rect::new(0, 0, 80, 12), 1, 0, 0, true, false);
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -12014,8 +13202,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             expected.composer.bottom() + expected.hint.height
         );
         assert_eq!(expected.status.bottom(), 12);
-        assert_eq!(buffer[(0, expected.composer.y)].symbol(), "╭");
-        assert_eq!(buffer[(79, expected.composer.y)].symbol(), "╮");
+        assert_eq!(buffer[(0, expected.composer.y)].symbol(), "▌");
+        assert_ne!(buffer[(79, expected.composer.y)].symbol(), "▐");
         let bottom: String = (0..80)
             .map(|x| buffer[(x, expected.status.y)].symbol())
             .collect();
@@ -12026,6 +13214,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(
             bottom.contains("● high"),
             "effort stays in bottom row: {bottom:?}"
+        );
+        assert!(
+            bottom.contains(" · ") && !bottom.contains(" │ "),
+            "status metadata uses the compact Codex separator: {bottom:?}"
         );
     }
 
@@ -12174,20 +13366,17 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.route.provider_id = "anthropic".into();
             app.route.model_id = "claude-sonnet-4-5".into();
             let screen = render_text(&mut app, width, height);
-            assert!(
-                screen.contains("██████╗"),
-                "historical Core wordmark at {width}x{height}"
-            );
+            assert!(screen.contains("▄██"), "Plantcore icon at {width}x{height}");
             assert!(screen.contains('›'), "composer at {width}x{height}");
             assert!(
                 screen.contains("commands"),
                 "discoverability at {width}x{height}"
             );
             assert!(
-                !screen.contains('┃'),
-                "no permanent rail at {width}x{height}"
+                screen.contains('▌'),
+                "quiet composer rail at {width}x{height}"
             );
-            assert!(screen.contains('╭') && screen.contains('╯'));
+            assert!(!screen.contains('╭') && !screen.contains('╯'));
             assert!(!screen.contains('�'), "valid unicode at {width}x{height}");
         }
     }
@@ -12471,7 +13660,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             assert!(screen.contains("I found the route and its tests."));
             assert!(!screen.contains("YOU ›"));
             assert!(!screen.contains("CORE  I found"));
-            assert!(screen.contains("Prompt"));
+            assert!(
+                screen.contains('▌') || screen.contains('┃'),
+                "color and mono themes keep the same semantic left rail"
+            );
+            assert!(!screen.contains("Prompt"));
             assert!(!screen.contains('�'));
         }
     }
@@ -12482,34 +13675,99 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.running = true;
         app.editor.insert_str("/model");
         let command = render_text(&mut app, 80, 16);
-        assert!(command.contains("Queue after this turn"));
+        assert!(command.contains("/model"));
         assert!(command.contains("enter queues after this turn"));
-        assert!(!command.contains("Steer current run"));
 
         app.editor.clear();
         app.editor.insert_str("also inspect the tests");
         let prose = render_text(&mut app, 80, 16);
-        assert!(prose.contains("Steer current run"));
+        assert!(prose.contains("also inspect the tests"));
         assert!(prose.contains("enter steer"));
+
+        app.interrupting = true;
+        let next_prompt = render_text(&mut app, 80, 16);
+        assert!(next_prompt.contains("also inspect the tests"));
+        assert!(next_prompt.contains("enter queues after this turn"));
+        assert!(!next_prompt.contains("enter steer"));
     }
 
     #[test]
     fn one_input_destination_reducer_drives_enter_routing() {
         assert_eq!(
-            input_destination(false, "/model"),
+            input_destination(false, false, "/model"),
             InputDestination::StartTurn
         );
         assert_eq!(
-            input_destination(true, "  /model"),
+            input_destination(true, false, "  /model"),
             InputDestination::AfterTurn
         );
         assert_eq!(
-            input_destination(true, "!cargo test"),
+            input_destination(true, false, "!cargo test"),
             InputDestination::AfterTurn
         );
         assert_eq!(
-            input_destination(true, "please inspect the failure"),
+            input_destination(true, false, "please inspect the failure"),
             InputDestination::SteerCurrentRun
+        );
+        assert_eq!(
+            input_destination(true, true, "start the next task"),
+            InputDestination::AfterTurn,
+            "new prose after interrupt is the next prompt, never a last-moment steer"
+        );
+    }
+
+    #[test]
+    fn interrupt_keeps_the_composer_focused_and_enter_queues_the_next_prompt() {
+        let mut app = App::new();
+        app.running = true;
+        app.interrupting = true;
+        app.editor.insert_str("start the next task immediately");
+
+        assert_eq!(
+            input_destination(app.running, app.interrupting, &app.editor.text()),
+            InputDestination::AfterTurn
+        );
+        let text = app.editor.take_submit();
+        app.queue_after_turn(text).expect("next prompt is admitted");
+
+        assert!(app.running, "only RunEnded may declare the old turn idle");
+        assert!(app.interrupting);
+        assert!(app.editor.is_empty(), "the focused composer accepted Enter");
+        assert_eq!(app.queued.len(), 1);
+        assert_eq!(
+            app.queued.front().unwrap().text,
+            "start the next task immediately"
+        );
+    }
+
+    #[test]
+    fn fused_interrupt_escape_and_first_character_interrupts_and_preserves_that_character() {
+        let repo = std::env::temp_dir();
+        let mut app = App::new();
+        app.running = true;
+
+        assert!(app.recover_running_escape_prefixed_char(
+            KeyCode::Char('c'),
+            KeyModifiers::ALT,
+            &repo,
+            true,
+            true,
+        ));
+        assert!(app.interrupting);
+        assert_eq!(app.editor.text(), "c");
+
+        app.interrupting = false;
+        assert!(!app.recover_running_escape_prefixed_char(
+            KeyCode::Char('b'),
+            KeyModifiers::ALT,
+            &repo,
+            true,
+            true,
+        ));
+        assert_eq!(
+            app.editor.text(),
+            "c",
+            "a later deliberate Alt binding is not turned into text"
         );
     }
 
@@ -12532,20 +13790,20 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         ];
         for drop in drops {
             assert_eq!(
-                input_destination(true, drop),
+                input_destination(true, false, drop),
                 InputDestination::SteerCurrentRun,
                 "{drop:?} was routed to the command queue"
             );
         }
         for command in ["/model", "/compact", "/?", "/perms", "/helpp", "/"] {
             assert_eq!(
-                input_destination(true, command),
+                input_destination(true, false, command),
                 InputDestination::AfterTurn,
                 "{command:?} stopped queueing as a command"
             );
         }
         assert_eq!(
-            input_destination(true, "!cargo test"),
+            input_destination(true, false, "!cargo test"),
             InputDestination::AfterTurn,
         );
     }
@@ -12958,16 +14216,26 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
+        let painted = buffer
+            .content()
+            .iter()
+            .filter(|cell| cell.bg == app.theme.user_bg)
+            .count();
         assert!(
-            buffer.content().iter().all(|cell| cell.bg == Color::Reset),
-            "idle surface uses the terminal background end to end"
+            painted > 0 && painted <= usize::from(surface::LANDING_MAX_WIDTH) * 3,
+            "only the bounded composer paints its neutral input surface: {painted} cells"
+        );
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .all(|cell| cell.bg == Color::Reset || cell.bg == app.theme.user_bg),
+            "the terminal stage and brand entrance remain unpainted"
         );
         let screen = buffer_text(&terminal);
-        assert!(
-            screen.contains("██████╗"),
-            "historical CORE wordmark is visible"
-        );
-        assert!(screen.contains("Prompt"));
+        assert!(screen.contains("▄██"), "Plantcore icon is visible");
+        assert!(!screen.contains("Prompt"));
+        assert!(screen.contains('▌'));
         assert!(screen.contains('›'));
     }
 
@@ -12985,7 +14253,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "empty composer shows the › prompt marker"
         );
         assert!(
-            screen.contains("describe a task"),
+            screen.contains("ask about this codebase"),
             "empty composer shows a quiet task placeholder"
         );
         // A `!shell` buffer flips the marker to `!` (bash mode) and hides the placeholder.
@@ -13006,7 +14274,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut term3 = Terminal::new(TestBackend::new(100, 12)).unwrap();
         term3.draw(|f| draw(f, &mut app)).unwrap();
         let s3 = buffer_text(&term3);
-        assert!(s3.contains("Steer current run"));
+        assert!(s3.contains("steer the current run"));
         assert!(s3.contains("also cover narrow terminals"));
         assert!(s3.contains("steer"));
         assert!(s3.contains("tab queue"));
@@ -13265,6 +14533,66 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
     }
 
+    #[test]
+    fn interrupted_run_ended_releases_input_and_preserves_the_next_prompt_for_dispatch() {
+        let mut app = App::new();
+        app.running = true;
+        app.interrupting = true;
+        app.draining = true;
+        app.queue_after_turn("continue with the next task".into())
+            .unwrap();
+        let queued = app.queued.front().cloned().unwrap();
+        let (sq, _rx) = tokio::sync::mpsc::channel(1);
+        let mut session = Session::for_test(sq);
+        let event = app_server::ServerEvent::RunEnded {
+            snapshot: Box::new(app_server::SessionSnapshot {
+                mode: PermissionMode::default(),
+                effort: Effort::default(),
+                model: "test-model".into(),
+                cost: CostState::default(),
+                last_turn_usage: None,
+                unadmitted_steers: Vec::new(),
+                permission_rules: PermissionRules::new(),
+                ledger_summary: String::new(),
+                rate_limit: None,
+            }),
+            summary: Box::new(app_server::TerminalSummary {
+                outcome: core_protocol::Outcome::Interrupted,
+                assistant_text: String::new(),
+                run_id: "run-interrupt-handoff".into(),
+                cost: CostState::default(),
+                turns: 1,
+                kernel_tax: core_obs::KernelTax::default(),
+                error: None,
+                memo_hits: 0,
+                memo_misses: 0,
+            }),
+        };
+        let mut notifier = notification::TerminalNotifier::new(false);
+        notifier.begin_run();
+        let mut notification_bytes = Vec::new();
+        let interrupt = Arc::new(AtomicBool::new(true));
+        let drain = Arc::new(AtomicBool::new(true));
+
+        apply_server_event(
+            &mut app,
+            &mut session,
+            event,
+            &mut notifier,
+            &mut notification_bytes,
+            &interrupt,
+            &drain,
+        );
+
+        assert!(!app.running, "RunEnded returns the composer to idle");
+        assert!(!app.interrupting);
+        assert!(!app.draining);
+        assert!(!interrupt.load(Ordering::Relaxed));
+        assert!(!drain.load(Ordering::Relaxed));
+        assert_eq!(app.queued.front(), Some(&queued));
+        assert_eq!(app.status, "idle · last: interrupted");
+    }
+
     /// A budget stop is not an error, so it produced no block at all: the operator saw
     /// `idle · last: budget_exhausted` and nothing about the session turn ceiling being raisable
     /// in place. The terminal boundary has to say what clears the ceiling it just hit.
@@ -13328,7 +14656,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn welcome_is_a_responsive_core_wordmark_in_the_transcript() {
+    fn welcome_is_a_responsive_plantcore_icon_in_the_transcript() {
         let app = App::new();
         let wide: String = app.transcript[0]
             .render(80, &app.theme, 0)
@@ -13336,7 +14664,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.to_string())
             .collect();
-        assert!(wide.contains("██████╗"), "wordmark present: {wide:?}");
+        assert!(wide.contains("▄██"), "Plantcore icon present: {wide:?}");
         assert!(
             wide.contains("Build, explain, and verify"),
             "tagline present: {wide:?}"
@@ -13357,7 +14685,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn welcome_wordmark_is_one_startup_block_and_scrolls_away() {
+    fn welcome_icon_is_one_startup_block_and_scrolls_away() {
         let mut app = App::new();
         assert_eq!(
             app.transcript
@@ -13367,14 +14695,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             1
         );
         let first = render_text(&mut app, 40, 12);
-        assert!(first.contains("██████╗"));
+        assert!(first.contains("▄██"));
         for index in 0..32 {
             app.push_user(format!(
                 "later task {index}: keep the active transcript at the tail"
             ));
         }
         let tail = render_text(&mut app, 40, 12);
-        assert!(!tail.contains("██████╗"), "the pet is entrance, not chrome");
+        assert!(!tail.contains("▄██"), "the brand is entrance, not chrome");
         assert_eq!(
             app.transcript
                 .iter()
@@ -13832,6 +15160,27 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
+    fn kernel_activity_updates_status_without_leaking_internal_draft_text() {
+        let mut app = App::new();
+        app.cur_text = "visible answer".into();
+        app.cur_think = "visible reasoning".into();
+        app.awaiting_first_token_since = Some(Instant::now());
+        let transcript_len = app.transcript.len();
+
+        app.workflow_run_ui_event(crate::workflow::WorkflowRunUiEvent::KernelActivity {
+            kind: crate::workflow::KernelActivityKind::Planning,
+            output_chars: 1_240,
+            thinking_chars: 320,
+        });
+
+        assert_eq!(app.status, "planning · 1.2k chars · 320 reasoning");
+        assert!(app.awaiting_first_token_since.is_none());
+        assert_eq!(app.cur_text, "visible answer");
+        assert_eq!(app.cur_think, "visible reasoning");
+        assert_eq!(app.transcript.len(), transcript_len);
+    }
+
+    #[test]
     fn quickjs_workflow_run_events_upsert_one_live_tree() {
         use core_workflow::events::{ProgressEvent, WorkflowState};
 
@@ -13912,7 +15261,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // It renders through the transcript draw path.
         let screen = render_text(&mut app, 80, 20);
         assert!(screen.contains("Explore"));
-        assert!(screen.contains("scanning"));
+        assert!(screen.contains("ctrl+o expand"));
+        assert!(
+            !screen.contains("scanning"),
+            "the live tree is folded by default"
+        );
 
         // Terminal transition flips `finished` and drops the live index.
         app.workflow_run_finished(run_id);
@@ -14067,6 +15420,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
         assert!(!card.finished, "the run has not settled yet");
 
+        let folded = render_text(&mut app, 100, 30);
+        assert!(folded.contains("ctrl+o expand"), "{folded}");
+        assert!(!folded.contains("Report"), "{folded}");
+        assert!(!folded.contains("scan modules"), "{folded}");
+        app.toggle_last_fold();
         let live = render_text(&mut app, 100, 30);
         assert!(live.contains("Explore"), "{live}");
         assert!(live.contains("Report"), "{live}");
@@ -14128,6 +15486,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .expect("the run minted its card");
         assert_eq!(app.workflow_monitor.region_block(), Some(block_id));
 
+        let folded = render_text(&mut app, 100, 30);
+        assert!(folded.contains("region audit"), "{folded}");
+        assert!(!folded.contains("scan modules"), "{folded}");
+        app.toggle_last_fold();
         let live = render_text(&mut app, 100, 30);
         assert!(
             live.contains("region audit"),
@@ -14260,8 +15622,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the settled binding is dropped, not left pointing at a block that was just removed"
         );
 
+        let folded = render_text(&mut app, 100, 30);
+        assert!(folded.contains("running audit"), "{folded}");
+        assert!(folded.contains("ctrl+o expand"), "{folded}");
+        assert!(!folded.contains("still scanning"), "{folded}");
+        app.toggle_last_fold();
         let screen = render_text(&mut app, 100, 30);
-        assert!(screen.contains("running audit"), "{screen}");
         assert!(screen.contains("still scanning"), "{screen}");
         assert!(screen.contains("transcript cleared"), "{screen}");
         assert!(!screen.contains("conversation marker"), "{screen}");
@@ -14415,6 +15781,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             );
         }
 
+        app.toggle_last_fold();
         let screen = render_text(&mut app, 100, 30);
         assert!(
             conversation_height - app.view_h <= workflow_region_cap(30),
@@ -14716,14 +16083,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut accepted_app = App::new();
         let mut accepted_notifier = notification::TerminalNotifier::new(true);
 
-        submit_turn(
+        assert!(submit_turn(
             &mut accepted_app,
             &accepted_session,
             &mut accepted_notifier,
             "accepted".into(),
-        );
+        ));
 
         assert!(accepted_app.running);
+        assert_eq!(accepted_app.session_name, "accepted");
         assert!(matches!(
             accepted_rx
                 .try_recv()
@@ -14745,20 +16113,69 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut busy_app = App::new();
         let mut busy_notifier = notification::TerminalNotifier::new(true);
 
-        submit_turn(
+        assert!(!submit_turn(
             &mut busy_app,
             &busy_session,
             &mut busy_notifier,
             "refused".into(),
-        );
+        ));
 
         assert!(!busy_app.running);
+        assert_eq!(busy_app.session_name, "New session");
+        assert_eq!(busy_app.retryable_task, None);
         assert_eq!(busy_notifier.run_completed(), None);
         assert!(
             busy_app
                 .transcript
                 .iter()
                 .any(|block| block.to_text().contains("submission was not accepted"))
+        );
+    }
+
+    #[test]
+    fn a_refused_queue_dispatch_returns_the_exact_prompt_and_never_draws_a_ghost_user_row() {
+        let mut app = App::new();
+        app.queue_after_turn("preserve me exactly".into()).unwrap();
+        let item = app.queued.pop_front().unwrap();
+
+        let (busy_tx, _busy_rx) = tokio::sync::mpsc::channel(1);
+        busy_tx
+            .try_send(core_protocol::SqEnvelope::current(Op::Interrupt))
+            .expect("fixture fills the bounded SQ");
+        let busy_session = Session::for_test(busy_tx);
+        let mut notifier = notification::TerminalNotifier::new(false);
+
+        let returned =
+            submit_queued_model_input(&mut app, &busy_session, &mut notifier, item.clone())
+                .expect_err("a saturated SQ cannot consume the queue item");
+        assert_eq!(*returned, item);
+        assert!(!app.running);
+        assert!(
+            app.transcript
+                .iter()
+                .all(|block| !matches!(&block.kind, block::BlockKind::User(_))),
+            "a refused prompt must not appear as admitted conversation"
+        );
+
+        let (accepted_tx, mut accepted_rx) = tokio::sync::mpsc::channel(1);
+        let accepted_session = Session::for_test(accepted_tx);
+        submit_queued_model_input(&mut app, &accepted_session, &mut notifier, *returned)
+            .expect("the preserved item is accepted exactly once when capacity returns");
+        assert!(app.running);
+        assert!(matches!(
+            accepted_rx
+                .try_recv()
+                .expect("one model submission")
+                .into_current()
+                .expect("current protocol envelope"),
+            Op::UserInput { text } if text == "preserve me exactly"
+        ));
+        assert_eq!(
+            app.transcript
+                .iter()
+                .filter(|block| matches!(&block.kind, block::BlockKind::User(_)))
+                .count(),
+            1
         );
     }
 
@@ -15080,6 +16497,47 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_dropped_iphone_heic_becomes_a_provider_safe_jpeg_chip() {
+        let dir = std::env::temp_dir().join(format!(
+            "core-heic-drop-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("a scratch dir");
+        let source = dir.join("source.png");
+        let heic = dir.join("iPhone Photo.heic");
+        std::fs::write(&source, png_1x1()).expect("a canonical source PNG");
+        let status = std::process::Command::new("/usr/bin/sips")
+            .args(["-s", "format", "heic", "-o"])
+            .arg(&heic)
+            .arg(&source)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("macOS sips is available");
+        assert!(
+            status.success(),
+            "create a real HEIC fixture through ImageIO"
+        );
+
+        let mut app = App::new();
+        let token = heic.to_string_lossy().replace(' ', "\\ ");
+        handle_composer_paste(&mut app, &dir, &token);
+
+        assert_eq!(app.editor.chip_count(), 1);
+        assert_eq!(app.editor.text(), "[Image #1]");
+        let attachment = &app.editor.attachments().as_slice()[0];
+        assert_eq!(attachment.display_name(), "iPhone Photo.heic");
+        assert_eq!(
+            attachment.media_type(),
+            core_protocol::ImageMediaType::Jpeg,
+            "the provider never receives HEIC bytes"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     /// The same drop on the terminals that replay it as keystrokes, converted by the same scan the
     /// event loop runs once the draft holds a readable path.
     #[test]
@@ -15290,11 +16748,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn an_image_with_no_anchor_still_submits_exactly_as_it_did_before_anchors() {
+    fn deleting_image_tags_removes_their_chips_and_payloads_too() {
         let (first, second) = distinct_gifs();
-        let encode =
-            |bytes| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes);
-
         let mut app = App::new();
         app.editor.insert_str("describe these");
         app.editor
@@ -15303,18 +16758,26 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.editor
             .attach_image_bytes("right.png", second)
             .expect("a second canonical GIF");
-        // One backspace per anchor: the operator who does not want position pays one keystroke and
-        // gets the old shape back — the images are still attached, still sent, still in attach
-        // order, and the text is the text they typed.
+        // Each live tag and its chip/payload are one object in both directions. Backspace inside a
+        // tag removes the complete tag and the corresponding attachment.
         app.editor.backspace();
         app.editor.backspace();
         assert_eq!(app.editor.text(), "describe these");
-        assert_eq!(app.editor.chip_count(), 2);
+        assert_eq!(app.editor.chip_count(), 0);
 
-        let segments = submitted_segments(&mut app);
-        assert_eq!(segments.text(), "describe these");
-        let payload: Vec<&str> = segments.images().map(|image| image.data.as_str()).collect();
-        assert_eq!(payload, vec![encode(first), encode(second)]);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let session = Session::for_test(tx);
+        let mut notifier = notification::TerminalNotifier::new(false);
+        submit_composer(&mut app, &session, &mut notifier);
+        let op = rx
+            .try_recv()
+            .expect("the text-only draft submits")
+            .into_current()
+            .expect("current protocol envelope");
+        let Op::UserInput { text } = op else {
+            panic!("no deleted image payload may survive on the wire");
+        };
+        assert_eq!(text, "describe these");
     }
 
     #[test]
@@ -15785,11 +17248,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let screen = buffer_text(&term);
         assert!(screen.contains("cache 70%"), "cache is the last-turn ratio");
         assert!(
-            screen.contains("context 100 used"),
+            screen.contains("ctx 100 used"),
             "unknown window reports only provider-observed input"
         );
         assert!(
-            !screen.contains("context 120.0k") && !screen.contains("% left"),
+            !screen.contains("ctx 120.0k") && !screen.contains("% left"),
             "the compaction trigger must never masquerade as a model window"
         );
         assert!(
@@ -15845,7 +17308,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.status = "verifying".into();
         let screen = render_text(&mut app, 80, 16);
         assert!(screen.contains("interrupt requested"));
-        assert!(screen.contains("safe point"));
+        assert!(screen.contains("stopping now"));
         assert!(!screen.contains("✢ verifying"));
     }
 
@@ -15862,7 +17325,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         assert!(app.draining);
         assert!(drain.load(Ordering::Relaxed));
-        assert!(app.status.contains("draining"));
+        assert!(app.status.contains("stopping now"));
         assert!(matches!(
             rx.try_recv()
                 .expect("Ctrl-D submits one control envelope")
@@ -15875,7 +17338,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "repeated Ctrl-D must not spam drain submissions"
         );
         let screen = render_text(&mut app, 80, 16);
-        assert!(screen.contains("draining"));
+        assert!(screen.contains("stopping now"));
         assert!(screen.contains("checkpoint"));
     }
 
@@ -15894,6 +17357,35 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(rx.try_recv().is_err());
         let screen = render_text(&mut app, 90, 16);
         assert!(screen.contains("requires a Git worktree"));
+    }
+
+    #[test]
+    fn a_second_interrupt_requests_drain_without_faking_idle_or_consuming_the_queue() {
+        let mut app = App::new();
+        app.running = true;
+        app.interrupting = true;
+        app.queue_after_turn("the next prompt".into()).unwrap();
+        let queued = app.queued.front().cloned().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let session = Session::for_test(tx);
+        let drain = Arc::new(AtomicBool::new(false));
+
+        escalate_interrupt_to_drain(&mut app, &session, &drain, true);
+        escalate_interrupt_to_drain(&mut app, &session, &drain, true);
+
+        assert!(app.running, "RunEnded remains the only idle boundary");
+        assert!(app.interrupting);
+        assert!(app.draining);
+        assert!(drain.load(Ordering::Relaxed));
+        assert_eq!(app.queued.front(), Some(&queued));
+        assert!(matches!(
+            rx.try_recv()
+                .expect("the escalation submits one drain")
+                .into_current()
+                .expect("current protocol envelope"),
+            Op::Drain
+        ));
+        assert!(rx.try_recv().is_err(), "repeated escalation is idempotent");
     }
 
     #[cfg(target_os = "linux")]
@@ -16060,4 +17552,53 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
         effects.shutdown().await;
     }
+}
+#[test]
+fn window_title_is_capability_gated_and_restored_exactly_once() {
+    let capabilities = core_statusline::Capabilities::detect(|name| match name {
+        "TERM" => Some("xterm-256color".into()),
+        _ => None,
+    });
+    let active = AtomicBool::new(false);
+    let mut bytes = Vec::new();
+    assert!(set_terminal_title_to(&mut bytes, capabilities, "Core Code · repo", &active).unwrap());
+    assert!(bytes.starts_with(core_statusline::title_stack_push().as_bytes()));
+    assert!(bytes.windows(4).any(|window| window == b"]2;C"));
+    assert!(
+        replace_terminal_title_to(
+            &mut bytes,
+            capabilities,
+            "Core Code · session name",
+            &active,
+        )
+        .unwrap()
+    );
+    let push = core_statusline::title_stack_push().as_bytes();
+    assert_eq!(
+        bytes
+            .windows(push.len())
+            .filter(|window| *window == push)
+            .count(),
+        1,
+        "renaming a tab replaces the owned title without nesting another restore frame"
+    );
+    restore_terminal_title_to(&mut bytes, &active);
+    let after_first = bytes.len();
+    assert!(bytes.ends_with(core_statusline::restore_title().as_bytes()));
+    restore_terminal_title_to(&mut bytes, &active);
+    assert_eq!(
+        bytes.len(),
+        after_first,
+        "cleanup may pop only the frame it owns"
+    );
+
+    let multiplexed = core_statusline::Capabilities::detect(|name| match name {
+        "TERM" => Some("screen-256color".into()),
+        "TMUX" => Some("session".into()),
+        _ => None,
+    });
+    let active = AtomicBool::new(false);
+    let mut bytes = Vec::new();
+    assert!(!set_terminal_title_to(&mut bytes, multiplexed, "core", &active).unwrap());
+    assert!(bytes.is_empty());
 }

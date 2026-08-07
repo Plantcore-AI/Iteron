@@ -503,6 +503,7 @@
       "reviewers": [],
       "paths": [
         { "kind": "file", "path": "crates/agents/src/decompose.rs" },
+        { "kind": "file", "path": "crates/agents/src/planner.rs" },
         { "kind": "file", "path": "crates/agents/src/policy.rs" },
         { "kind": "file", "path": "crates/agents/src/policy_tests.rs" },
         { "kind": "file", "path": "crates/agents/src/reduce.rs" },
@@ -554,6 +555,7 @@
         { "kind": "file", "path": "crates/tools/src/fs_tools.rs" },
         { "kind": "file", "path": "crates/tools/src/fs_tools_tests.rs" },
         { "kind": "file", "path": "crates/tools/src/git.rs" },
+        { "kind": "file", "path": "crates/tools/src/git_changes.rs" },
         { "kind": "file", "path": "crates/tools/src/git_filters.rs" },
         { "kind": "file", "path": "crates/tools/src/git_harness.rs" },
         { "kind": "file", "path": "crates/tools/src/git_observe.rs" },
@@ -701,7 +703,10 @@
         { "kind": "file", "path": "crates/cli/src/image_input.rs" },
         { "kind": "tree", "path": "crates/cli/src/image_input" },
         { "kind": "file", "path": "crates/cli/src/main.rs" },
+        { "kind": "file", "path": "crates/cli/src/maintenance.rs" },
         { "kind": "file", "path": "crates/cli/src/mcp.rs" },
+        { "kind": "file", "path": "crates/cli/src/plugin.rs" },
+        { "kind": "file", "path": "crates/cli/src/plugin_runtime.rs" },
         { "kind": "file", "path": "crates/cli/src/pricing.rs" },
         { "kind": "file", "path": "crates/cli/src/providers.rs" },
         { "kind": "file", "path": "crates/cli/src/route.rs" },
@@ -713,7 +718,8 @@
         { "kind": "file", "path": "crates/cli/src/setup.rs" },
         { "kind": "file", "path": "crates/cli/src/startup.rs" },
         { "kind": "file", "path": "crates/cli/src/tunables.rs" },
-        { "kind": "file", "path": "crates/cli/src/workflow.rs" }
+        { "kind": "file", "path": "crates/cli/src/workflow.rs" },
+        { "kind": "file", "path": "crates/cli/src/workspace_review.rs" }
       ],
       "contracts": [
         "trusted-config-precedence",
@@ -760,6 +766,7 @@
         { "kind": "file", "path": "crates/cli/src/highlight.rs" },
         { "kind": "file", "path": "crates/cli/src/markdown.rs" },
         { "kind": "file", "path": "crates/cli/src/render.rs" },
+        { "kind": "file", "path": "crates/cli/src/semantic_text.rs" },
         { "kind": "file", "path": "crates/cli/src/theme.rs" },
         { "kind": "tree", "path": "crates/cli/src/theme" }
       ],
@@ -966,6 +973,7 @@
         { "kind": "file", "path": "crates/cli/src/render.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime.rs" },
         { "kind": "tree", "path": "crates/cli/src/runtime" },
+        { "kind": "file", "path": "crates/cli/src/semantic_text.rs" },
         { "kind": "file", "path": "crates/cli/src/surface.rs" },
         { "kind": "file", "path": "crates/cli/src/theme.rs" },
         { "kind": "file", "path": "crates/cli/src/tui.rs" }
@@ -1027,6 +1035,7 @@
         { "kind": "file", "path": "crates/cli/src/output.rs" },
         { "kind": "file", "path": "crates/cli/src/prompt_history.rs" },
         { "kind": "file", "path": "crates/cli/src/render.rs" },
+        { "kind": "file", "path": "crates/cli/src/semantic_text.rs" },
         { "kind": "file", "path": "crates/cli/src/surface.rs" },
         { "kind": "file", "path": "crates/cli/src/theme.rs" },
         { "kind": "file", "path": "crates/cli/src/tui.rs" }
@@ -1067,6 +1076,8 @@
         { "kind": "tree", "path": "crates/tunables" },
         { "kind": "tree", "path": "crates/verify" },
         { "kind": "tree", "path": "crates/obs" },
+        { "kind": "tree", "path": "crates/cli/src/tui/experiment_lab" },
+        { "kind": "file", "path": "crates/cli/src/tui/experiment_lab.rs" },
         { "kind": "file", "path": ".github/workflows/ci.yml" }
       ]
     },
@@ -1082,6 +1093,8 @@
         { "kind": "tree", "path": "crates/eval" },
         { "kind": "tree", "path": "crates/tunables" },
         { "kind": "tree", "path": "crates/verify" },
+        { "kind": "tree", "path": "crates/cli/src/tui/experiment_lab" },
+        { "kind": "file", "path": "crates/cli/src/tui/experiment_lab.rs" },
         { "kind": "file", "path": "crates/protocol/src/event.rs" },
         { "kind": "file", "path": "crates/kernel/src/lib.rs" },
         { "kind": "file", "path": "crates/cli/src/runtime.rs" }
@@ -1165,9 +1178,12 @@
       "core-cli": {
         "normal": [
           "core-agents",
+          "core-changeset",
           "core-ctx",
+          "core-eval",
           "core-evolve",
           "core-kernel",
+          "core-marketplace",
           "core-mcp",
           "core-obs",
           "core-protocol",
@@ -1175,6 +1191,8 @@
           "core-record",
           "core-sandbox",
           "core-sched",
+          "core-statusline",
+          "core-support",
           "core-tools",
           "core-tunables",
           "core-verify",
@@ -1189,7 +1207,7 @@
         "build": []
       },
       "core-eval": {
-        "normal": ["core-evolve", "core-sandbox", "core-verify"],
+        "normal": ["core-evolve", "core-sandbox", "core-tunables", "core-verify"],
         "dev": [],
         "build": []
       },
@@ -1228,7 +1246,7 @@
         "build": []
       },
       "core-marketplace": {
-        "normal": [],
+        "normal": ["core-protocol"],
         "dev": [],
         "build": []
       },

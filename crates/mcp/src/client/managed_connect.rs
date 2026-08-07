@@ -60,6 +60,7 @@ pub(super) async fn connect(
         next_id: std::sync::atomic::AtomicU64::new(1),
         request_timeout,
         negotiated_protocol_version: None,
+        capabilities: crate::McpServerCapabilities::default(),
         server_name: name.to_string(),
     };
 
@@ -72,11 +73,19 @@ pub(super) async fn connect(
                 json!({
                     "protocolVersion": REQUESTED_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "core", "version": "0.0.1"}
+                    "clientInfo": {"name": "core", "version": env!("CARGO_PKG_VERSION")}
                 }),
             )
             .await?;
         client.negotiated_protocol_version = Some(negotiate_initialize_result(&initialize_result)?);
+        let capabilities = initialize_result
+            .get("capabilities")
+            .and_then(serde_json::Value::as_object);
+        client.capabilities = crate::McpServerCapabilities {
+            tools: capabilities.is_some_and(|value| value.contains_key("tools")),
+            resources: capabilities.is_some_and(|value| value.contains_key("resources")),
+            prompts: capabilities.is_some_and(|value| value.contains_key("prompts")),
+        };
         client
             .notify_unbounded_by_outer_deadline("notifications/initialized", json!({}))
             .await

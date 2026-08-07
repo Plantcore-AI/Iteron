@@ -1,5 +1,5 @@
 //! The workflow region's store: which QuickJS `core-workflow` runs this TUI is watching, which one
-//! the operator's attention is pointed at, and whether a run's finished agents are collapsed.
+//! the operator's attention is pointed at, and whether a run's full tree is collapsed.
 //!
 //! # What lives here, and what deliberately does not
 //!
@@ -54,7 +54,7 @@ struct WorkflowRun {
     block_id: Option<u64>,
     /// The engine future resolved. The card stays in the transcript; the live binding does not.
     settled: bool,
-    /// Finished agent rows collapse to one dim summary line. `true` is the card's own default
+    /// The whole phase/agent tree collapses to one live summary line. `true` is the card's default
     /// (`WorkflowRunCard::verbose == false`), so a fresh entry and a fresh card agree by
     /// construction.
     collapsed: bool,
@@ -268,7 +268,7 @@ impl WorkflowMonitor {
 
     /// How many runs are still live.
     ///
-    /// Read by the status row's compact liveness bit (`crate::tui::status_right_bits`), which is
+    /// Read by the status row's compact liveness group (`crate::tui::status_right_groups`), which is
     /// the only indication a run is still going on a terminal too short to draw the region.
     /// The test-only marker S5 carried is gone because that bit is a real caller.
     pub(crate) fn live_count(&self) -> usize {

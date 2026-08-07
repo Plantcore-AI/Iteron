@@ -12,6 +12,7 @@ use std::time::Instant;
 mod edit;
 mod fs_tools;
 mod git;
+mod git_changes;
 mod git_filters;
 mod git_harness;
 mod git_observe;
@@ -34,8 +35,10 @@ mod workflow_tool;
 mod write_file;
 
 pub use edit::apply_unique_edit;
+pub use lsp::LanguageServerRoute;
 pub use mcp_timing::{McpDispatchClock, McpEffectAttribution};
 use memo::{Lookup, Memo};
+pub use process::{ProcessControl, ProcessControlError};
 pub use tool_policy::{
     RegisteredToolPolicy, TOOL_POLICY_SLOT_VERSION, ToolPolicy, ToolPolicyDecision,
     ToolPolicyError, ToolPolicyObservation, ToolPolicyProposal,
@@ -52,10 +55,27 @@ pub async fn git_diff_observation(
     git::run_git_diff(root, stat, requested_path).await
 }
 
+/// The staged half of the same bounded Git observation. Keeping it distinct prevents a review
+/// caller from accidentally presenting bare `git diff` as the complete change set.
+pub async fn git_index_diff_observation(
+    root: &Path,
+    stat: bool,
+    requested_path: Option<&str>,
+) -> Result<String, String> {
+    git::run_git_index_diff(root, stat, requested_path).await
+}
+
 /// Bounded, hook/filter/config-neutralized branch and status-count snapshot for a trusted frontend
 /// to record as environment context. No repository path or commit text is returned.
 pub async fn git_environment_observation(root: &Path) -> Result<String, String> {
     git_observe::run_git_environment(root).await
+}
+
+/// Exact, NUL-delimited `git status --porcelain=v1 -z` bytes for the operator review and rewind
+/// surfaces. The result is refused rather than truncated, so the typed parser never receives a
+/// partial record or mistakes a bounded prefix for the complete workspace.
+pub async fn git_status_porcelain_observation(root: &Path) -> Result<Vec<u8>, String> {
+    git_changes::run_git_status_porcelain(root).await
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -159,11 +179,20 @@ pub struct Registry {
     /// Shared exactly like `sensitive_env_names`, so it can be answered after the specs are built
     /// without rebuilding them and invalidating prompt-cache identity.
     confine_execution: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    process_control: Option<ProcessControl>,
 }
 
 impl Registry {
     /// Build the default coding-agent tool set rooted at `root` (the repo the agent works in).
     pub fn coding_agent(root: impl Into<PathBuf>) -> Result<Self, ToolError> {
+        Self::coding_agent_with_lsp_routes(root, Vec::new())
+    }
+
+    /// Build the coding-agent registry with exact operator-admitted language-server overrides.
+    pub fn coding_agent_with_lsp_routes(
+        root: impl Into<PathBuf>,
+        lsp_routes: Vec<LanguageServerRoute>,
+    ) -> Result<Self, ToolError> {
         let root = root.into();
         let mut r = Registry {
             tools: Vec::new(),
@@ -171,6 +200,7 @@ impl Registry {
             memo: Default::default(),
             sensitive_env_names: Default::default(),
             confine_execution: Default::default(),
+            process_control: None,
         };
         fs_tools::register(&mut r)?;
         git::register(&mut r)?;
@@ -180,8 +210,8 @@ impl Registry {
         multi_file_patch::register(&mut r)?;
         write_file::register(&mut r)?;
         shell::register(&mut r)?;
-        process::register(&mut r)?;
-        lsp::register(&mut r)?;
+        r.process_control = Some(process::register(&mut r)?);
+        lsp::register(&mut r, lsp_routes)?;
         // Web egress (web_fetch/web_search): Effecting/IrreversibleExternal, so the capability gate
         // never auto-approves them (ADR-007 §3) and they are absent from the read_only subagent set.
         web::register(&mut r)?;
@@ -203,6 +233,7 @@ impl Registry {
             memo: Default::default(),
             sensitive_env_names: Default::default(),
             confine_execution: Default::default(),
+            process_control: None,
         };
         fs_tools::register(&mut r)?; // read_file, list_dir, grep, repo_map only
         git::register(&mut r)?; // confined Git observations (Effecting/ReadOnly)
@@ -242,6 +273,11 @@ impl Registry {
         self.tools.iter().map(|t| t.spec.clone()).collect()
     }
 
+    /// Session-owned job-control view over the exact supervisor backing the process tools.
+    pub fn process_control(&self) -> Option<ProcessControl> {
+        self.process_control.clone()
+    }
+
     /// Retain only the named tools and return the canonical names that remain.
     ///
     /// This is the executable-agent narrowing seam. It can only remove existing registrations:
@@ -251,6 +287,25 @@ impl Registry {
     pub fn narrow_to(&mut self, allowed: &[String]) -> Vec<String> {
         self.tools
             .retain(|tool| allowed.iter().any(|name| name == &tool.spec.name));
+        self.tools
+            .iter()
+            .map(|tool| tool.spec.name.clone())
+            .collect()
+    }
+
+    /// Narrow to `allowed`, then stably promote the named tools. Promotion can reorder an
+    /// admitted set but can never add a tool that the registry or the caller refused.
+    pub fn narrow_to_promoting(&mut self, allowed: &[String], leading: &[&str]) -> Vec<String> {
+        self.narrow_to(allowed);
+        if !leading.is_empty() {
+            let rank = |tool: &Tool| {
+                leading
+                    .iter()
+                    .position(|name| *name == tool.spec.name)
+                    .unwrap_or(leading.len())
+            };
+            self.tools.sort_by_key(rank);
+        }
         self.tools
             .iter()
             .map(|tool| tool.spec.name.clone())
@@ -426,6 +481,13 @@ impl Registry {
     /// Memo hit/miss counts (for obs telemetry).
     pub fn memo_stats(&self) -> (u64, u64) {
         self.memo.stats()
+    }
+
+    /// Invalidate pure observations after an explicit ambient-state mutation that happened outside
+    /// the registry's executor boundary. Callers must carry their own authoritative mutation
+    /// signal; the registry never guesses from mtimes or unrelated filesystem drift.
+    pub fn invalidate_pure_cache(&self) {
+        self.memo.invalidate();
     }
 
     /// Hand back an owned, `'static` future for a tool call — so the scheduler can
@@ -754,6 +816,7 @@ mod tests {
             memo: Default::default(),
             sensitive_env_names: Default::default(),
             confine_execution: Default::default(),
+            process_control: None,
         };
         let bad = ToolSpec {
             name: "leaky".into(),

@@ -79,6 +79,11 @@ struct Cli {
     /// Turn cap supplied to Core. Zero is the explicit uncapped mode.
     #[arg(long, default_value_t = 250)]
     max_turns: u32,
+
+    /// Fresh physical executions allowed for a harness error or timeout. Model outcomes are not
+    /// retried. Every attempt is written to a hash-chained sidecar ledger.
+    #[arg(long, default_value_t = 1)]
+    max_attempts: u8,
 }
 
 #[tokio::main]
@@ -102,6 +107,7 @@ async fn main() -> std::process::ExitCode {
         checkout_timeout: Duration::from_secs(cli.checkout_timeout_secs),
         oracle_timeout: Duration::from_secs(cli.oracle_timeout_secs),
         max_turns: cli.max_turns,
+        max_attempts: cli.max_attempts,
     };
     match run_evaluation(&options).await {
         Ok(manifest) => {
@@ -169,6 +175,11 @@ fn print_summary(manifest: &core_eval::types::EvaluationManifest) {
     println!("{}", kernel_tax_line(manifest.kernel_tax));
     println!("artifact={}", manifest.result_path.display());
     println!(
+        "attempts={} | attestation={}",
+        core_eval::attempts::sidecar_path(&manifest.result_path).display(),
+        core_eval::attestation::sidecar_path(&manifest.result_path).display()
+    );
+    println!(
         "failed_runs={} (errored+timed_out); exit_code={}",
         manifest.failed_runs(),
         manifest.exit_code()
@@ -228,6 +239,7 @@ mod tests {
         assert_eq!(cli.seeds, 3);
         assert_eq!(cli.minimum_seeds, 3);
         assert_eq!(cli.max_turns, 250);
+        assert_eq!(cli.max_attempts, 1);
     }
 
     #[test]

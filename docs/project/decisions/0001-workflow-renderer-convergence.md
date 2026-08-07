@@ -2,6 +2,8 @@
 
 - Status: accepted
 - Date: 2026-08-03
+- Implementation: migration steps 1–2 complete; native-card retirement and the compatibility
+  cleanup in steps 3–4 remain.
 - Supersedes: nothing
 - Applies to: `crates/cli/src/block.rs`, `crates/cli/src/runtime.rs`,
   `crates/cli/src/workflow.rs`, `crates/workflow`

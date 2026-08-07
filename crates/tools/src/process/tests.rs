@@ -190,7 +190,7 @@ fn cleanup_unknown_is_terminal_for_the_caller_but_quarantines_a_capacity_slot() 
 }
 
 #[test]
-fn coding_registry_has_four_typed_process_tools_and_read_only_registry_has_none() {
+fn coding_registry_has_five_typed_process_tools_one_control_port_and_read_only_has_none() {
     let root = temp_root("registry");
     let coding = Registry::coding_agent(&root).unwrap();
     let read_only = Registry::read_only(&root).unwrap();
@@ -203,6 +203,7 @@ fn coding_registry_has_four_typed_process_tools_and_read_only_registry_has_none(
 
     for name in [
         "process_start",
+        "process_list",
         "process_poll",
         "process_write",
         "process_stop",
@@ -215,9 +216,25 @@ fn coding_registry_has_four_typed_process_tools_and_read_only_registry_has_none(
         coding.capability_of("process_poll"),
         Some(Capability::ReadOnly)
     );
+    assert_eq!(
+        coding.capability_of("process_list"),
+        Some(Capability::ReadOnly)
+    );
     for name in ["process_start", "process_write", "process_stop"] {
         assert_eq!(coding.capability_of(name), Some(Capability::CodeExecuting));
     }
+    assert_eq!(
+        coding
+            .process_control()
+            .unwrap()
+            .list()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert!(read_only.process_control().is_none());
     cleanup(&root);
 }
 

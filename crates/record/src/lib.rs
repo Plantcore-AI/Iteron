@@ -25,12 +25,13 @@ pub mod session;
 mod cache_io;
 
 pub use checkpoint::{
-    Snapshot, checkpoint, checkpoint_excluding_runtime_state, checkpoint_supported,
-    rewind_workspace,
+    Snapshot, SnapshotInventory, checkpoint, checkpoint_excluding_runtime_state,
+    checkpoint_supported, rewind_workspace, rewind_workspace_with_policy, snapshot_inventory,
 };
 pub use session::{
-    Provenance, ScopedEvent, SessionAncestryReceipt, SessionMeta, fork, list, load_forked,
-    load_forked_scoped, meta, meta_with_pricing, most_recent, reindex, replay_run_timed,
+    DeleteSessionError, Provenance, ScopedEvent, SessionAncestryReceipt, SessionMeta, delete, fork,
+    list, load_forked, load_forked_scoped, meta, meta_with_pricing, most_recent, reindex,
+    replay_run_timed,
 };
 
 /// Explicit policy for admitting records created before immutable tunables snapshots.

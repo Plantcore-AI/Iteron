@@ -360,6 +360,15 @@ fn hello(token: &str, protocol_version: u32, resume_from: u64) -> Value {
     })
 }
 
+fn control(request_id: u64, protocol_version: u32, control: Value) -> Value {
+    json!({
+        "type": "control",
+        "protocol_version": protocol_version,
+        "request_id": request_id,
+        "control": control,
+    })
+}
+
 fn assert_closed_without_frame(stream: TcpStream) {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -544,6 +553,69 @@ fn connection_limit_drops_rejects_without_tasks_and_completed_connections_are_re
         let mut reader = BufReader::new(connection);
         assert_eq!(receive(&mut reader)["type"], "hello");
     }
+
+    let stderr = String::from_utf8(stop(child)).unwrap();
+    assert!(!stderr.contains(&token));
+}
+
+#[test]
+fn background_job_inventory_and_attach_control_survive_client_restart() {
+    let scratch = Scratch::new("http://127.0.0.1:9/v1");
+    let (child, token, address) = spawn_core(&scratch);
+
+    let mut first = connect(address);
+    send(&mut first, hello(&token, PROTOCOL_VERSION, 0));
+    let mut first_reader = BufReader::new(first.try_clone().unwrap());
+    assert_eq!(receive(&mut first_reader)["type"], "hello");
+    send(
+        &mut first,
+        control(70, PROTOCOL_VERSION, json!({"type":"jobs_list"})),
+    );
+    let inventory = receive(&mut first_reader);
+    assert_eq!(inventory["type"], "control_reply");
+    assert_eq!(inventory["request_id"], 70);
+    assert_eq!(inventory["reply"]["type"], "jobs");
+    assert_eq!(inventory["reply"]["value"], json!([]));
+    drop(first_reader);
+    drop(first);
+
+    // A new presentation client reaches the same resident supervisor. An unknown job is a typed
+    // refusal, not a disconnected control channel or an invented stale process record.
+    let mut restarted = connect(address);
+    send(&mut restarted, hello(&token, PROTOCOL_VERSION, 0));
+    let mut restarted_reader = BufReader::new(restarted.try_clone().unwrap());
+    assert_eq!(receive(&mut restarted_reader)["type"], "hello");
+    send(
+        &mut restarted,
+        control(
+            71,
+            PROTOCOL_VERSION,
+            json!({
+                "type":"jobs_attach",
+                "job_id":"job-0123456789abcdef-00000001",
+                "stdout_cursor":0,
+                "stderr_cursor":0
+            }),
+        ),
+    );
+    let refused = receive(&mut restarted_reader);
+    assert_eq!(refused["type"], "control_reply");
+    assert_eq!(refused["request_id"], 71);
+    assert_eq!(refused["reply"]["type"], "refused");
+    assert!(
+        refused["reply"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("job_id")),
+        "unexpected typed refusal: {refused}"
+    );
+
+    send(
+        &mut restarted,
+        control(72, PROTOCOL_VERSION, json!({"type":"jobs_list"})),
+    );
+    let reattached_inventory = receive(&mut restarted_reader);
+    assert_eq!(reattached_inventory["request_id"], 72);
+    assert_eq!(reattached_inventory["reply"]["value"], json!([]));
 
     let stderr = String::from_utf8(stop(child)).unwrap();
     assert!(!stderr.contains(&token));

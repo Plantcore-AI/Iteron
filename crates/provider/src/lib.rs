@@ -1250,12 +1250,24 @@ pub async fn turn_cancellable(
     cancel: Option<&std::sync::atomic::AtomicBool>,
     poll_interval: Duration,
 ) -> Result<TurnResult, ProviderError> {
+    let cancels: Vec<&std::sync::atomic::AtomicBool> = cancel.into_iter().collect();
+    turn_cancellable_any(provider, request, on_item, &cancels, poll_interval).await
+}
+
+/// Cancel a provider turn when any session-owned stop surface becomes true.
+pub async fn turn_cancellable_any(
+    provider: &dyn Provider,
+    request: &TurnRequest,
+    on_item: &mut (dyn FnMut(StreamItem) + Send),
+    cancels: &[&std::sync::atomic::AtomicBool],
+    poll_interval: Duration,
+) -> Result<TurnResult, ProviderError> {
     use std::sync::atomic::Ordering;
-    let Some(cancel) = cancel else {
+    if cancels.is_empty() {
         return provider.turn(request, on_item).await;
-    };
+    }
     // An interrupt that is already pending must not even open the stream.
-    if cancel.load(Ordering::Relaxed) {
+    if cancels.iter().any(|cancel| cancel.load(Ordering::Relaxed)) {
         return Err(ProviderError::Interrupted);
     }
     // `async_trait` returns a `Pin<Box<dyn Future + Send>>`, which is `Unpin`, so `&mut turn` is
@@ -1266,7 +1278,7 @@ pub async fn turn_cancellable(
             biased;
             result = &mut turn => return result,
             () = tokio::time::sleep(poll_interval) => {
-                if cancel.load(Ordering::Relaxed) {
+                if cancels.iter().any(|cancel| cancel.load(Ordering::Relaxed)) {
                     // Returning drops `turn`, cancelling the in-flight provider stream: the
                     // transport future is dropped and the connection is closed.
                     return Err(ProviderError::Interrupted);

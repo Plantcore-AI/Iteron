@@ -121,15 +121,25 @@ mod tests {
         let bytes = sink.0.clone();
         let mut controller = Controller::capture(sink).unwrap();
 
+        assert_eq!(controller.state(), State::Captured);
+        assert_eq!(controller.state().status_label(), "mouse:on");
+        let mut enable = Vec::new();
+        State::Captured.write_to(&mut enable).unwrap();
+        assert!(bytes.lock().unwrap().ends_with(&enable));
+
         assert_eq!(controller.toggle().unwrap(), State::Released);
         assert_eq!(State::Released.status_label(), "selection:on");
+        let mut disable = Vec::new();
+        State::Released.write_to(&mut disable).unwrap();
+        assert!(bytes.lock().unwrap().ends_with(&disable));
+
         assert_eq!(controller.toggle().unwrap(), State::Captured);
+        assert_eq!(controller.state().status_label(), "mouse:on");
         assert_eq!(State::Captured.hint(), "ctrl+t select");
+        assert!(bytes.lock().unwrap().ends_with(&enable));
 
         drop(controller);
         let output = bytes.lock().unwrap().clone();
-        let mut disable = Vec::new();
-        State::Released.write_to(&mut disable).unwrap();
         assert!(
             output.ends_with(&disable),
             "drop must release mouse capture"

@@ -1,10 +1,18 @@
 use crate::McpError;
 use serde_json::Value;
 
-/// The newest (and currently only) MCP protocol version this client implements.
-pub(crate) const REQUESTED_PROTOCOL_VERSION: &str = "2024-11-05";
+/// The newest MCP protocol version this client implements.
+///
+/// Keep older final revisions in [`SUPPORTED_PROTOCOL_VERSIONS`]: negotiation is allowed to
+/// select one of them, but the initialize request must lead with the newest implementation.
+pub(crate) const REQUESTED_PROTOCOL_VERSION: &str = "2025-11-25";
 
-const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[REQUESTED_PROTOCOL_VERSION];
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
+    REQUESTED_PROTOCOL_VERSION,
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+];
 const MAX_PROTOCOL_VERSION_BYTES: usize = 64;
 
 /// Validate the version selected by the server before the initialized notification is sent.

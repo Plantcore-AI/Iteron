@@ -21,6 +21,7 @@ use core_protocol::{Capability, Purity, ToolResult, ToolSpec, ToolUse, Trust};
 use input::SourceDocument;
 use serde_json::{Value, json};
 use session::Launcher;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use supervisor::run_query;
@@ -165,7 +166,17 @@ impl QueryKind {
     }
 }
 
-pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
+/// One exact language-id to direct argv override admitted by plugin composition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanguageServerRoute {
+    pub language: String,
+    pub command: Vec<String>,
+}
+
+pub(crate) fn register(
+    registry: &mut Registry,
+    configured: Vec<LanguageServerRoute>,
+) -> Result<(), ToolError> {
     // A tool that is guaranteed to refuse is prompt pollution, not a capability. Linux remains
     // the only platform with the required persistent confinement backend.
     if !cfg!(target_os = "linux") {
@@ -174,6 +185,7 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     let launcher = Arc::new(Launcher::new().map_err(|error| {
         ToolError::Registration(format!("cannot initialize LSP launcher: {error}"))
     })?);
+    let routes = Arc::new(validate_routes(configured)?);
     let sensitive_env_names = registry.sensitive_env_names_handle();
     registry.register_external_effect(
         ToolSpec {
@@ -190,12 +202,13 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
         move |call, root| {
             let launcher = Arc::clone(&launcher);
             let sensitive_env_names = Arc::clone(&sensitive_env_names);
+            let routes = Arc::clone(&routes);
             effectfut::box_it(async move {
                 let names = sensitive_env_names
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone();
-                match execute(call.clone(), root, &launcher, names).await {
+                match execute(call.clone(), root, &launcher, names, &routes).await {
                     Ok(content) => ToolExecution::Definite(success(call.id, content)),
                     Err((error, unknown)) => {
                         let result = crate::err_result(call.id, error.to_string());
@@ -217,12 +230,13 @@ async fn execute(
     root: PathBuf,
     launcher: &Launcher,
     sensitive_env_names: Vec<String>,
+    routes: &BTreeMap<String, String>,
 ) -> Result<String, (LspToolError, bool)> {
     if !cfg!(target_os = "linux") {
         return Err((LspToolError::SandboxUnavailable, false));
     }
     let deadlines = LspDeadlines::from_start(tokio::time::Instant::now());
-    execute_inner(call, root, launcher, sensitive_env_names, deadlines).await
+    execute_inner(call, root, launcher, sensitive_env_names, routes, deadlines).await
 }
 
 async fn execute_inner(
@@ -230,6 +244,7 @@ async fn execute_inner(
     root: PathBuf,
     launcher: &Launcher,
     sensitive_env_names: Vec<String>,
+    routes: &BTreeMap<String, String>,
     deadlines: LspDeadlines,
 ) -> Result<String, (LspToolError, bool)> {
     let query_name = call
@@ -245,10 +260,11 @@ async fn execute_inner(
         .ok_or((LspToolError::InvalidArguments, false))?;
     let line = bounded_u32(&call.input, "line")?;
     let character = bounded_u32(&call.input, "character")?;
-    let document = tokio::time::timeout_at(deadlines.active, SourceDocument::load(&root, path))
-        .await
-        .map_err(|_| (LspToolError::OperationTimeout, false))?
-        .map_err(|error| (error, false))?;
+    let document =
+        tokio::time::timeout_at(deadlines.active, SourceDocument::load(&root, path, routes))
+            .await
+            .map_err(|_| (LspToolError::OperationTimeout, false))?
+            .map_err(|error| (error, false))?;
     let document = Arc::new(document);
     let position = document
         .position(line, character)
@@ -291,7 +307,7 @@ async fn execute_inner(
     let output = json!({
         "schema_version": 1,
         "query": query.label(),
-        "server": document.adapter().server_label(),
+        "server": document.server_label(),
         "server_epoch": live.server_epoch,
         "backend": live.backend,
         "document_sha256": document.digest(),
@@ -314,6 +330,45 @@ async fn execute_inner(
         return Err((LspToolError::OperationTimeout, false));
     }
     Ok(rendered)
+}
+
+fn validate_routes(
+    routes: Vec<LanguageServerRoute>,
+) -> Result<BTreeMap<String, String>, ToolError> {
+    let mut validated = BTreeMap::new();
+    for route in routes {
+        if ![
+            "rust",
+            "typescript",
+            "typescriptreact",
+            "javascript",
+            "javascriptreact",
+            "python",
+        ]
+        .contains(&route.language.as_str())
+            || route.command.is_empty()
+            || route.command.len() > 128
+            || route.command.iter().any(|part| {
+                part.is_empty() || part.len() > 4096 || part.chars().any(char::is_control)
+            })
+            || validated.contains_key(&route.language)
+        {
+            return Err(ToolError::Registration(format!(
+                "invalid language-server route for {:?}",
+                route.language
+            )));
+        }
+        // The sandbox's persistent API accepts one shell command. Single-quote every argv part;
+        // the resulting shell sees the exact vector and no metacharacter from a manifest.
+        let command = route
+            .command
+            .iter()
+            .map(|part| format!("'{}'", part.replace('\'', "'\\''")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        validated.insert(route.language, command);
+    }
+    Ok(validated)
 }
 
 fn normalize(
