@@ -154,6 +154,14 @@ class ReleaseToolsTest(unittest.TestCase):
             package.MAX_UNPACKED_TAR_BYTES,
         )
 
+    def test_content_verifier_extracts_the_packaged_native_command(self) -> None:
+        target = "aarch64-apple-darwin"
+        archive = package.build_archive(self.package_arguments(self.root / "native", target))
+        root = "core-code-v0.0.1-aarch64-apple-darwin"
+        destination = self.root / "native-extract" / root / "core"
+        verify_release.extract_tar(archive, root, target, destination)
+        self.assertEqual(destination.read_bytes(), (self.root / "core").read_bytes())
+
     def test_windows_zip_is_deterministic_exact_and_contains_core_exe(self) -> None:
         target = "x86_64-pc-windows-msvc"
         first = package.build_archive(

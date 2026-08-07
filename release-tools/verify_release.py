@@ -165,6 +165,8 @@ def copy_bounded(source, destination: Path, expected_size: int) -> None:
 
 def extract_tar(archive_path: Path, root: str, target: str, destination: Path) -> None:
     expected = expected_members(root, target)
+    expected.remove(f"{root}/")
+    expected.add(root)
     with tarfile.open(archive_path, mode="r:gz") as archive:
         members = archive.getmembers()
         if len(members) != len(expected) or {member.name for member in members} != expected:
@@ -175,7 +177,7 @@ def extract_tar(archive_path: Path, root: str, target: str, destination: Path) -
         command = None
         command_name = f"{root}/{binary_filename(target)}"
         for member in members:
-            if member.name == f"{root}/":
+            if member.name == root:
                 if not member.isdir():
                     raise ReleaseToolError("release archive root is not a directory")
                 continue
