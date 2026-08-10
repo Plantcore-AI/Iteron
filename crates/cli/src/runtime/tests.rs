@@ -3285,7 +3285,10 @@ mod gate_integration_tests {
             await_signal(&started, "the provider's first turn").await;
             interrupt.store(true, Ordering::SeqCst);
         };
-        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+        // The executor future is `pending`, so without cancellation this never returns: the
+        // bound proves the interrupt lands, it does not measure latency. One second was tight
+        // enough that a loaded machine failed it while the feature worked.
+        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(5), async {
             tokio::join!(agent.run("run the pending effect"), request_interrupt)
         })
         .await
@@ -3348,7 +3351,10 @@ mod gate_integration_tests {
             await_signal(&started, "the provider's first turn").await;
             interrupt.store(true, Ordering::SeqCst);
         };
-        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+        // The executor future is `pending`, so without cancellation this never returns: the
+        // bound proves the interrupt lands, it does not measure latency. One second was tight
+        // enough that a loaded machine failed it while the feature worked.
+        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(5), async {
             tokio::join!(agent.run("read until interrupted"), request_interrupt)
         })
         .await
@@ -3420,7 +3426,10 @@ mod gate_integration_tests {
             barrier.wait().await;
             interrupt.store(true, Ordering::SeqCst);
         };
-        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+        // The executor future is `pending`, so without cancellation this never returns: the
+        // bound proves the interrupt lands, it does not measure latency. One second was tight
+        // enough that a loaded machine failed it while the feature worked.
+        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(5), async {
             tokio::join!(agent.run("run concurrent effects"), request_interrupt)
         })
         .await
@@ -6245,9 +6254,19 @@ ant-api03-SuperSecretModelToken12345"
             .ledger
             .attributed_phase_ms()
             .expect("live timing is complete");
+        // Two clocks measuring the same phases: the ledger's own counters, and the gaps between
+        // the emitted transition timestamps. They disagree by whatever scheduling slack lands
+        // between a transition being timestamped and the next counter starting, which is per
+        // transition and grows with machine load. A single fixed budget therefore failed on a busy
+        // machine while the accounting was correct. Allow the floor plus a per-transition slice;
+        // a genuine attribution bug is proportional to the phase durations themselves, which are
+        // seconds here, so this still catches it.
+        let reconciliation_tolerance_ms = PHASE_EVENT_TOLERANCE_MS.saturating_add(
+            PHASE_EVENT_TOLERANCE_MS.saturating_mul(transitions.len().saturating_sub(1) as u64),
+        );
         assert!(
-            attributed_phase_ms.abs_diff(event_phase_total_ms) <= PHASE_EVENT_TOLERANCE_MS,
-            "ledger phase total {}ms must reconcile with phase-event spans {event_phase_total_ms}ms within the fixed {PHASE_EVENT_TOLERANCE_MS}ms tolerance",
+            attributed_phase_ms.abs_diff(event_phase_total_ms) <= reconciliation_tolerance_ms,
+            "ledger phase total {}ms must reconcile with phase-event spans {event_phase_total_ms}ms within {reconciliation_tolerance_ms}ms",
             attributed_phase_ms,
         );
 
