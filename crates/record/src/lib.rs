@@ -2751,15 +2751,42 @@ ant-api03-SuperSecretTokenValue12345 in config";
             .unwrap();
         }
         let path = dir.join("t5.jsonl");
-        let raw = std::fs::read_to_string(&path).unwrap();
+        // Content fields are externalized into the content store, so the rollout line holds a
+        // digest marker rather than the text. Reading only the `.jsonl` would therefore report
+        // success while the plaintext sat in a sibling file: check every byte the run wrote, and
+        // check the mask on the hydrated event that replay actually reconstructs.
+        assert_no_plaintext_under(&dir, "SuperSecretTokenValue");
+        let replayed = replay(&path).unwrap();
+        assert_eq!(replayed.len(), 1);
+        let EventKind::Message { message } = &replayed[0].kind else {
+            panic!("expected the appended message event back");
+        };
+        let Block::ToolResult(result) = &message.content[0] else {
+            panic!("expected the appended tool result back");
+        };
         assert!(
-            !raw.contains("SuperSecretTokenValue"),
-            "the secret must not be in the durable record"
+            result.content.contains("[REDACTED"),
+            "the secret must be masked, got {}",
+            result.content
         );
-        assert!(raw.contains("[REDACTED"), "the secret must be masked");
-        // and the chain still verifies (replay works over the redacted content)
-        assert_eq!(replay(&path).unwrap().len(), 1);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Every byte the run wrote, not just the rollout line. Externalized content lives beside the
+    /// `.jsonl`, so a needle search restricted to that one file proves nothing about secrecy.
+    fn assert_no_plaintext_under(dir: &std::path::Path, needle: &str) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                assert_no_plaintext_under(&path, needle);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                assert!(
+                    !bytes.windows(needle.len()).any(|w| w == needle.as_bytes()),
+                    "`{needle}` leaked as plaintext into {}",
+                    path.display()
+                );
+            }
+        }
     }
 
     #[test]
@@ -2781,12 +2808,7 @@ ant-api03-SuperSecretTokenValue12345 in config";
         }
 
         let path = dir.join("notice-redact.jsonl");
-        let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            !raw.contains(secret),
-            "notice leaked into the durable record"
-        );
-        assert!(raw.contains("[REDACTED"), "notice secret must be masked");
+        assert_no_plaintext_under(&dir, secret);
         let replayed = replay(&path).unwrap();
         assert!(matches!(
             &replayed[0].kind,

@@ -981,6 +981,7 @@ mod tests {
             process_control: None,
             lsp_control: None,
             deferred_tool_catalog: None,
+            workspace_boundary: false,
         };
         let bad = ToolSpec {
             name: "leaky".into(),

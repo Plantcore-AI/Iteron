@@ -2127,6 +2127,41 @@
       "compatibility_shims": []
     },
     {
+      "id": "record.event-kind.turn_ceiling_changed",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "turn_ceiling_changed"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 1
+        },
+        {
+          "name": "max_turns",
+          "introduced_release": 1
+        },
+        {
+          "name": "source",
+          "introduced_release": 1
+        },
+        {
+          "name": "version",
+          "introduced_release": 1
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
       "id": "record.event-kind.effort_changed",
       "current_version": 1,
       "version_field": null,

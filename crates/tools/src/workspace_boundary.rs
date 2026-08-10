@@ -109,21 +109,39 @@ fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf, &'static str> {
 mod tests {
     use super::*;
 
+    /// The workspace has no `tempfile` dependency, so temp roots follow the in-tree idiom: a
+    /// pid-and-nanos name, because two of these tests once collided on a shared fixed path.
+    fn temp_root(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "core-boundary-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn boundary_rejects_absolute_parent_and_git_paths() {
-        let root = tempfile::tempdir().unwrap();
+        let root = temp_root("reject");
         for path in ["/tmp/out", "../out", ".git/config", "nested/.GIT/config"] {
-            assert!(validate_path(root.path(), path).is_err(), "{path}");
+            assert!(validate_path(&root, path).is_err(), "{path}");
         }
-        assert!(validate_path(root.path(), "src/new.rs").is_ok());
+        assert!(validate_path(&root, "src/new.rs").is_ok());
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[cfg(unix)]
     #[test]
     fn boundary_rejects_a_symlink_escape() {
-        let root = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(outside.path(), root.path().join("escape")).unwrap();
-        assert!(validate_path(root.path(), "escape/file").is_err());
+        let root = temp_root("symlink-root");
+        let outside = temp_root("symlink-outside");
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+        assert!(validate_path(&root, "escape/file").is_err());
+        std::fs::remove_dir_all(root).ok();
+        std::fs::remove_dir_all(outside).ok();
     }
 }

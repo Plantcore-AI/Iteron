@@ -22,7 +22,7 @@ const MAX_CONTRACT_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_OBJECTS: usize = 4096;
 
-const WRITABLE_EVENT_TAGS: [&str; 37] = [
+const WRITABLE_EVENT_TAGS: [&str; 38] = [
     "approval",
     "artifact_produced",
     "checkpoint",
@@ -55,6 +55,7 @@ const WRITABLE_EVENT_TAGS: [&str; 37] = [
     "tool_ready",
     "tunables_snapshot",
     "tunables_snapshot_v2",
+    "turn_ceiling_changed",
     "turn_end",
     "turn_start",
     "usd_ceiling_changed",
@@ -882,6 +883,11 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             source: _,
             max_microusd: _,
         } => "usd_ceiling_changed",
+        EventKind::TurnCeilingChanged {
+            version: _,
+            source: _,
+            max_turns: _,
+        } => "turn_ceiling_changed",
         EventKind::EffortChanged {
             version: _,
             source: _,

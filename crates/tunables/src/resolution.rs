@@ -21,16 +21,20 @@ use source_merge::{Selected, select_explicit};
     reason = "the public contract returns the complete atomic failure report by value"
 )]
 pub fn resolve(input: ResolutionInput) -> Result<ResolvedTunableSet, ResolutionFailureReport> {
-    let prepared = crate::resolution_prepare::prepare(input).map_err(|_| invalid_input())?;
+    let prepared = crate::resolution_prepare::prepare(input).map_err(invalid_input)?;
     let entries = families()
         .iter()
         .map(|family| resolve_family(family, &prepared))
         .collect::<Vec<_>>();
     if entries.len() != crate::EXPECTED_FAMILY_COUNT {
-        return Err(invalid_input());
+        return Err(invalid_input(format!(
+            "resolved {} entries, registry declares {}",
+            entries.len(),
+            crate::EXPECTED_FAMILY_COUNT
+        )));
     }
     let effective_digest_sha256 =
-        crate::resolution_digest::effective_digest(&entries).map_err(|_| invalid_input())?;
+        crate::resolution_digest::effective_digest(&entries).map_err(invalid_input)?;
     let mut report = ResolutionReport {
         schema_version: RESOLUTION_SCHEMA_VERSION,
         registry_id: crate::REGISTRY_ID,
@@ -43,7 +47,7 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedTunableSet, ResolutionF
         entries,
     };
     report.resolution_digest_sha256 =
-        crate::resolution_digest::resolution_digest(&report).map_err(|_| invalid_input())?;
+        crate::resolution_digest::resolution_digest(&report).map_err(invalid_input)?;
 
     let failures = report
         .entries
@@ -69,9 +73,13 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedTunableSet, ResolutionF
 )]
 pub fn resolve_json(bytes: &[u8]) -> Result<ResolvedTunableSet, ResolutionFailureReport> {
     if bytes.len() > RESOLUTION_INPUT_MAX_BYTES {
-        return Err(invalid_input());
+        return Err(invalid_input(format!(
+            "resolution input is {} bytes, the bound is {RESOLUTION_INPUT_MAX_BYTES}",
+            bytes.len()
+        )));
     }
-    let input = serde_json::from_slice(bytes).map_err(|_| invalid_input())?;
+    let input = serde_json::from_slice(bytes)
+        .map_err(|error| invalid_input(format!("resolution input is not valid JSON: {error}")))?;
     resolve(input)
 }
 
@@ -359,11 +367,13 @@ fn family_failure(entry: &ResolvedEntry) -> Option<FamilyFailure> {
     })
 }
 
-fn invalid_input() -> ResolutionFailureReport {
+/// A fail-closed validation that reports nothing is undebuggable: every caller below already holds
+/// the reason, so it is carried into `detail` rather than collapsed into one fixed sentence.
+fn invalid_input(detail: impl Into<String>) -> ResolutionFailureReport {
     ResolutionFailureReport {
         schema_version: RESOLUTION_SCHEMA_VERSION,
         code: FailureCode::InvalidInput,
-        detail: "resolution input failed closed validation".into(),
+        detail: detail.into(),
         failures: Vec::new(),
         report: None,
     }

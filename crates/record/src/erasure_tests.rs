@@ -15,6 +15,18 @@ fn scope() -> ErasureScopeId {
     ErasureScopeId::new("default").unwrap()
 }
 
+/// The request as `execute_erasure` would durably have recorded it.
+///
+/// Authorization is proven locally, not accepted from the wire: `execute_erasure` overwrites
+/// `authority_id` with the effective OS principal before it evaluates request identity, so that a
+/// caller cannot mint destructive authority by choosing a string. A crash-boundary fixture that
+/// persists the wire value therefore models a receipt the product can never write, and recovery
+/// correctly refuses it as a `ReceiptConflict`.
+fn as_persisted(runs_dir: &Path, mut request: ErasureRequest) -> ErasureRequest {
+    request.authority_id = authorize_local_erasure(runs_dir).unwrap().id;
+    request
+}
+
 fn request(operation: &str, target: ErasureTarget) -> ErasureRequest {
     ErasureRequest {
         operation_id: ErasureOperationId::new(operation).unwrap(),
@@ -101,7 +113,8 @@ fn exact_session_recovery_resumes_after_unlink_before_tombstone_receipt() {
     let request = exact("erase-recover", "run-recover");
     ensure_layout(&dir).unwrap();
 
-    let mut interrupted = ErasureReceipt::requested(request.clone(), now_unix_ms()).unwrap();
+    let mut interrupted =
+        ErasureReceipt::requested(as_persisted(&dir, request.clone()), now_unix_ms()).unwrap();
     interrupted
         .advance(ErasureState::Quiescing, now_unix_ms())
         .unwrap();
@@ -200,7 +213,8 @@ fn retention_recovery_removes_a_stale_index_after_the_last_unlink() {
         },
     );
     ensure_layout(&dir).unwrap();
-    let mut interrupted = ErasureReceipt::requested(request.clone(), now_unix_ms()).unwrap();
+    let mut interrupted =
+        ErasureReceipt::requested(as_persisted(&dir, request.clone()), now_unix_ms()).unwrap();
     interrupted
         .advance(ErasureState::Quiescing, now_unix_ms())
         .unwrap();

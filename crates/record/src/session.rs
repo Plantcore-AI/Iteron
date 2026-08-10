@@ -2447,6 +2447,37 @@ mod tests {
         .unwrap();
     }
 
+    /// A same-length, in-place forgery of a middle record.
+    ///
+    /// These tests used to rewrite the task text directly in the rollout. Content fields are now
+    /// externalized into the content store, so the line carries a `core-private-ref:` digest
+    /// instead of the prompt, and the old rewrite silently matched nothing and produced a file
+    /// identical to the original. Flipping one hex digit of the message record's own reference is
+    /// the same edit it always meant: same byte length, same middle line, and it still breaks that
+    /// record's hash.
+    fn forge_middle_record(original: &str) -> String {
+        const MARKER: &str = "core-private-ref:v1:text:sha256:";
+        // Occurrence 0 is the `run_start` cwd reference; occurrence 1 is the message record.
+        let offset = original
+            .match_indices(MARKER)
+            .nth(1)
+            .expect("the message record must carry its own content reference")
+            .0
+            + MARKER.len();
+        let mut forged = original.to_owned();
+        forged.replace_range(
+            offset..offset + 1,
+            if original.as_bytes()[offset] == b'0' {
+                "1"
+            } else {
+                "0"
+            },
+        );
+        assert_eq!(forged.len(), original.len());
+        assert_ne!(forged, original);
+        forged
+    }
+
     fn complete_one_turn(runs_dir: &Path, run: &RunId, tenant: &TenantId, task: &str) {
         let mut rollout = Rollout::open(runs_dir, run, tenant.clone()).unwrap();
         rollout
@@ -3073,9 +3104,7 @@ mod tests {
         let original_parent = std::fs::read_to_string(&parent_path).unwrap();
         let original_parent_tail = read_tail_receipt(&parent_path).unwrap();
         let parent_receipt = &persisted.ancestry[0];
-        let corrupted_parent = original_parent.replacen("parent task", "forged task", 1);
-        assert_eq!(corrupted_parent.len(), original_parent.len());
-        assert_ne!(corrupted_parent, original_parent);
+        let corrupted_parent = forge_middle_record(&original_parent);
         std::fs::write(&parent_path, corrupted_parent).unwrap();
         std::fs::OpenOptions::new()
             .write(true)
@@ -3220,7 +3249,7 @@ mod tests {
             .unwrap();
         let root_path = rollout_path(&dir, &root).unwrap();
         let original_root = std::fs::read_to_string(&root_path).unwrap();
-        let corrupted_root = original_root.replacen("root task", "evil task", 1);
+        let corrupted_root = forge_middle_record(&original_root);
         assert_eq!(corrupted_root.len(), original_root.len());
         std::fs::write(&root_path, corrupted_root).unwrap();
         std::fs::OpenOptions::new()
@@ -3247,28 +3276,38 @@ mod tests {
     #[test]
     fn d9_01_tail_receipt_io_is_independent_of_the_rollout_prefix() {
         let dir = tmpdir("d9-01-tail-receipt-bound");
-        let tenant = TenantId::default();
         let run = RunId("long-tail-receipt".into());
-        {
-            let mut rollout = Rollout::open(&dir, &run, tenant).unwrap();
+        // Content fields are externalized into the content store, so a handful of large payloads
+        // no longer produce a large rollout: each line is a digest marker. Grow the prefix by line
+        // count until it genuinely exceeds the scan window, or this test asserts nothing.
+        let appended = {
+            let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
             rollout.append(&genesis_event("/repo/long-tail")).unwrap();
-            for position in 0..40 {
+            let path = rollout_path(&dir, &run).unwrap();
+            let mut appended = 0u64;
+            while std::fs::metadata(&path).unwrap().len() <= (RECEIPT_SCAN_CHUNK_BYTES * 4) as u64 {
                 rollout
                     .append(&Event {
                         seq: Seq::ZERO,
                         turn: TurnId(0),
                         kind: EventKind::Notice {
-                            text: format!("{}-{position}", "x".repeat(4_096)),
+                            text: format!("{}-{appended}", "x".repeat(4_096)),
                         },
                     })
                     .unwrap();
+                appended += 1;
+                assert!(
+                    appended < 100_000,
+                    "the rollout prefix never grew past the scan window"
+                );
             }
-        }
+            appended
+        };
         let path = rollout_path(&dir, &run).unwrap();
         assert!(std::fs::metadata(&path).unwrap().len() > (RECEIPT_SCAN_CHUNK_BYTES * 4) as u64);
         RECEIPT_BYTES_READ.with(|bytes| bytes.set(0));
         let (_, seq, _, _) = read_tail_receipt(&path).unwrap();
-        assert_eq!(seq, 40);
+        assert_eq!(seq, appended);
         assert!(
             RECEIPT_BYTES_READ.with(std::cell::Cell::get) <= RECEIPT_SCAN_CHUNK_BYTES as u64 + 1,
             "tail validation must read at most one fixed chunk for a short final line"
@@ -3314,9 +3353,7 @@ mod tests {
         let path = rollout_path(&dir, &run).unwrap();
         let original_tail = read_tail_receipt(&path).unwrap();
         let original = std::fs::read_to_string(&path).unwrap();
-        let corrupted = original.replacen("truth", "false", 1);
-        assert_eq!(corrupted.len(), original.len());
-        assert_ne!(corrupted, original);
+        let corrupted = forge_middle_record(&original);
         std::fs::write(&path, corrupted).unwrap();
         std::fs::OpenOptions::new()
             .write(true)

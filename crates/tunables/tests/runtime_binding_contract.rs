@@ -126,7 +126,8 @@ fn complete_activation_inventory_still_returns_only_an_atomic_set_or_failure() {
 #[test]
 fn registry_inventory_is_bounded_deterministic_and_copies_no_ambient_state() {
     let activations = runtime_activation_requirements();
-    assert_eq!(activations.len(), 53);
+    // One per `RuntimeDerived` family in the registry; the rest are `Always` or `Configured`.
+    assert_eq!(activations.len(), 47);
     assert!(activations.windows(2).all(|pair| pair[0] < pair[1]));
     assert_eq!(
         activations

@@ -237,8 +237,19 @@ fn sample_schema(schema: ValueSchema, ordinal: u16) -> ResolutionValue {
     for rule in schema.rules {
         match *rule {
             CrossFieldRule::LessOrEqual { left, right } => {
-                if let (Some(replacement), Some(_)) =
-                    (value_at(&value, left).cloned(), value_at(&value, right))
+                // Repair only an actual violation. Copying `left` over `right` unconditionally
+                // would undo a `SumLessOrEqual` that already raised `right`, which makes the
+                // generated sample depend on the order the rules happen to be declared in.
+                let violated = match (value_at(&value, left), value_at(&value, right)) {
+                    (
+                        Some(ResolutionValue::Integer { value: left_value }),
+                        Some(ResolutionValue::Integer { value: right_value }),
+                    ) => left_value > right_value,
+                    (Some(_), Some(_)) => true,
+                    _ => false,
+                };
+                if violated
+                    && let Some(replacement) = value_at(&value, left).cloned()
                 {
                     replace_at(&mut value, right, replacement);
                 }
@@ -1631,12 +1642,21 @@ fn selectors_cover_canonical_semantic_and_every_alias_without_ambiguity() {
 }
 
 #[test]
-fn unavailable_158_and_human_json_reason_codes_are_identical() {
+fn unavailable_and_inactive_human_json_reason_codes_are_identical() {
     let mut report = synthetic_report();
-    assert_code_parity(
-        &report,
-        "prompt_cache_ttl_breakpoint_strategy",
-        "unavailable.not_implemented",
+
+    // `EntryOutcome::Unavailable` is structurally valid only on a family the registry declares
+    // `Missing` with an `Unavailable` activation, so it cannot be synthesised onto an implemented
+    // family: the report validator rejects that, correctly. The registry currently declares no
+    // `Missing` family, which makes the outcome unreachable rather than merely unused. Assert that
+    // precondition instead of faking coverage, so restoring a `Missing` family turns this red and
+    // its parity case has to come back with it.
+    assert!(
+        !families()
+            .iter()
+            .any(|family| family.implementation_status
+                == core_tunables::ImplementationStatus::Missing),
+        "a Missing family exists again: restore the `unavailable.not_implemented` parity case"
     );
 
     let inactive = families()
@@ -2363,10 +2383,21 @@ fn resolve_failure_is_atomic_deterministic_and_still_reports_all_160_families() 
         .report
         .expect("active failure retains the bounded audit report");
     assert_eq!(report.entries.len(), 160);
-    assert!(matches!(
-        report.entries[157].outcome,
-        EntryOutcome::Unavailable
-    ));
+    // `Unavailable` is reported for exactly the families the registry declares `Missing`, and for
+    // no others. Stated as a correspondence rather than as one pinned ordinal, this keeps holding
+    // when families gain or lose a production seam.
+    let unavailable: Vec<_> = report
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.outcome, EntryOutcome::Unavailable))
+        .map(|entry| entry.family_id)
+        .collect();
+    let missing: Vec<_> = families()
+        .iter()
+        .filter(|family| family.implementation_status == core_tunables::ImplementationStatus::Missing)
+        .map(|family| family.id)
+        .collect();
+    assert_eq!(unavailable, missing);
     assert!(
         report
             .entries

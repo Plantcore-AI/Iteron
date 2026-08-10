@@ -96,11 +96,16 @@ fn d9_11_g2_large_rollout_open_and_replay_do_not_slurp_the_file() {
             // NUL is encoded as six JSON bytes. The decoded event set is intentionally much
             // smaller than the physical rollout, making an accidental whole-file read directly
             // visible in the allocator high-water mark.
+            //
+            // The payload rides on `Done.outcome` rather than on a notice: content-bearing fields
+            // are externalized into the content store, so a notice would leave a fixed-size digest
+            // marker on the line and the rollout would never get large enough to tell streaming
+            // apart from slurping. `done` carries no externalized field, so it stays inline.
             let event = Event {
                 seq: Seq::ZERO,
                 turn: TurnId(turn as u32),
-                kind: EventKind::Notice {
-                    text: "\0".repeat(DECODED_PAYLOAD_BYTES),
+                kind: EventKind::Done {
+                    outcome: "\0".repeat(DECODED_PAYLOAD_BYTES),
                 },
             };
             rollout.append(&event).unwrap();
@@ -129,7 +134,7 @@ fn d9_11_g2_large_rollout_open_and_replay_do_not_slurp_the_file() {
     assert!(events.iter().all(|event| {
         matches!(
             &event.kind,
-            EventKind::Notice { text } if text.len() == DECODED_PAYLOAD_BYTES
+            EventKind::Done { outcome } if outcome.len() == DECODED_PAYLOAD_BYTES
         )
     }));
     assert!(

@@ -200,8 +200,19 @@ fn sample_schema(schema: ValueSchema, ordinal: u16) -> ResolutionValue {
     for rule in schema.rules {
         match *rule {
             CrossFieldRule::LessOrEqual { left, right } => {
-                if let (Some(replacement), Some(_)) =
-                    (value_at(&value, left).cloned(), value_at(&value, right))
+                // Repair only an actual violation. Copying `left` over `right` unconditionally
+                // would undo a `SumLessOrEqual` that already raised `right`, which makes the
+                // generated sample depend on the order the rules happen to be declared in.
+                let violated = match (value_at(&value, left), value_at(&value, right)) {
+                    (
+                        Some(ResolutionValue::Integer { value: left_value }),
+                        Some(ResolutionValue::Integer { value: right_value }),
+                    ) => left_value > right_value,
+                    (Some(_), Some(_)) => true,
+                    _ => false,
+                };
+                if violated
+                    && let Some(replacement) = value_at(&value, left).cloned()
                 {
                     replace_at(&mut value, right, replacement);
                 }

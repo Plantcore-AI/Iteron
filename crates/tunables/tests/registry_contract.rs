@@ -966,18 +966,28 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     assert!(!prompt_cache_schema.contains("breakpoint"));
 
     let prompt_cache_strategy = family("prompt_cache_ttl_breakpoint_strategy");
+    // The runtime-binding work gave this family a real provider-side seam, so it is no longer
+    // `Missing`, and `Unavailable` is reserved for `Missing` entries.
     assert_eq!(
         prompt_cache_strategy.implementation_status,
-        ImplementationStatus::Missing
+        ImplementationStatus::Partial
     );
     assert!(matches!(
         prompt_cache_strategy.activation.predicate,
-        ActivationPredicate::Unavailable
+        ActivationPredicate::RuntimeDerived {
+            seam: "crates/provider/src/controls.rs"
+        }
     ));
-    assert_eq!(prompt_cache_strategy.source.bindings.len(), 1);
+    // It stopped being registry-only: an operator source now exists, bounded above by a
+    // provider-attested ceiling rather than by the operator's own claim.
+    assert_eq!(prompt_cache_strategy.source.bindings.len(), 2);
     assert_eq!(
         prompt_cache_strategy.source.bindings[0].kind,
-        SourceKind::Registry
+        SourceKind::UserConfig
+    );
+    assert_eq!(
+        prompt_cache_strategy.source.bindings[1].kind,
+        SourceKind::ExternalProvider
     );
     assert_eq!(prompt_cache_strategy.default.kind, DefaultKind::Dynamic);
     assert_eq!(
@@ -1038,10 +1048,20 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
         family("oauth_auth_lifecycle_policy").default.resolver,
         DefaultResolver::Transport { .. }
     ));
+    // This family used to be forbidden from claiming provider attestation, because it had no
+    // implementation to attest anything. `crates/provider/src/controls.rs` now validates a
+    // requested TTL/breakpoint against a capability set that a real adapter populates
+    // (`crates/provider/src/anthropic.rs` attests the 300s and 3600s tiers), so the claim is
+    // grounded. What must hold instead is the shape that makes it safe: the operator may ask,
+    // and a provider-attested binding bounds what the operator may receive.
+    let prompt_cache_bindings = &family("prompt_cache_ttl_breakpoint_strategy").source.bindings;
     assert!(
-        !family("prompt_cache_ttl_breakpoint_strategy")
-            .source
-            .bindings
+        prompt_cache_bindings
+            .iter()
+            .any(|binding| binding.trust == SourceTrust::Operator)
+    );
+    assert!(
+        prompt_cache_bindings
             .iter()
             .any(|binding| binding.trust == SourceTrust::ProviderAttested)
     );
@@ -1562,11 +1582,13 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
 
 #[test]
 fn status_shape_and_semantic_digest_contract_are_exact() {
+    // Revision 7 is what the runtime-binding work bought: every family that previously had no
+    // production seam now has one, so `Missing` is empty and 27 families moved up into `Full`.
     for (status, expected) in [
-        (ImplementationStatus::Full, 30),
-        (ImplementationStatus::Partial, 53),
-        (ImplementationStatus::Missing, 24),
-        (ImplementationStatus::FixedHidden, 53),
+        (ImplementationStatus::Full, 57),
+        (ImplementationStatus::Partial, 47),
+        (ImplementationStatus::Missing, 0),
+        (ImplementationStatus::FixedHidden, 56),
     ] {
         assert_eq!(
             families()

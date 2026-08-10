@@ -348,9 +348,12 @@ fn execute_retention(
             evaluation_secs,
         )?;
         if !preflight.active.is_empty() {
-            return Err(ErasureError::ActiveWriters {
-                count: u32::try_from(preflight.active.len()).unwrap_or(u32::MAX),
-            });
+            // An active writer found before anything was destroyed is an ordinary refusal, not a
+            // transport failure: record it the way the exact-session path and the derivative case
+            // beside it already do, so the operator gets one durable, idempotent receipt instead
+            // of an error that leaves no trace of the attempt. The post-destructive check below
+            // stays an error, because that one is a race, not a decision.
+            return fail(runs_dir, receipt, ErasureFailureCode::ActiveWriter);
         }
         if !preflight.derivatives.is_empty() {
             return fail(runs_dir, receipt, ErasureFailureCode::RetainedByDerivatives);
