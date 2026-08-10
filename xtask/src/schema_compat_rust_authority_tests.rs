@@ -127,11 +127,11 @@ fn managed_module_declarations_reject_cfg_path_inline_and_decoys() {
 fn managed_package_metadata_rejects_build_autobin_and_target_redirects() {
     let base: toml::Value = toml::from_str(
         r#"[package]
-name = "core-protocol"
+name = "iteron-protocol"
 "#,
     )
     .unwrap();
-    validate_package_metadata(&base, "Cargo.toml", "core-protocol").unwrap();
+    validate_package_metadata(&base, "Cargo.toml", "iteron-protocol").unwrap();
     for addition in [
         "build = \"evil.rs\"",
         "autobins = false",
@@ -139,19 +139,19 @@ name = "core-protocol"
         "default-run = \"evil\"",
         "workspace = \"../evil\"",
     ] {
-        let source = format!("[package]\nname = \"core-protocol\"\n{addition}\n");
+        let source = format!("[package]\nname = \"iteron-protocol\"\n{addition}\n");
         let value: toml::Value = toml::from_str(&source).unwrap();
-        assert!(validate_package_metadata(&value, "Cargo.toml", "core-protocol").is_err());
+        assert!(validate_package_metadata(&value, "Cargo.toml", "iteron-protocol").is_err());
     }
     let redirected: toml::Value = toml::from_str(
         r#"[package]
-name = "core-protocol"
+name = "iteron-protocol"
 [lib]
 path = "evil.rs"
 "#,
     )
     .unwrap();
-    assert!(validate_package_metadata(&redirected, "Cargo.toml", "core-protocol").is_err());
+    assert!(validate_package_metadata(&redirected, "Cargo.toml", "iteron-protocol").is_err());
 }
 
 #[test]

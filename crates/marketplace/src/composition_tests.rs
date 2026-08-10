@@ -5,7 +5,7 @@ use super::*;
 use crate::composition_model::{
     Contribution, MAX_CONTRIBUTIONS_PER_PLUGIN, MAX_DETAIL_BYTES, PluginScope, RuntimeScope,
 };
-use core_protocol::{Capability, capability_set::CapabilitySet};
+use iteron_protocol::{Capability, capability_set::CapabilitySet};
 
 fn skill(name: &str, description: &str) -> Contribution {
     Contribution::Skill {

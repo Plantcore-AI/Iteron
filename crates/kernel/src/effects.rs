@@ -11,9 +11,9 @@
 //! strategy slot.
 
 use crate::effect_admission::{EffectAdmissionError, EffectAdmissions};
-use core_protocol::effect::EffectProposal;
-use core_protocol::intent::ToolIntent;
-use core_protocol::{Capability, EffectId, Event, EventKind, Seq, ToolResult, ToolUse, TurnId};
+use iteron_protocol::effect::EffectProposal;
+use iteron_protocol::intent::ToolIntent;
+use iteron_protocol::{Capability, EffectId, Event, EventKind, Seq, ToolResult, ToolUse, TurnId};
 use std::collections::BTreeSet;
 use std::future::Future;
 
@@ -89,8 +89,8 @@ impl ToolCallAdmission {
         // The id is asked the question the record path will answer. A structural correlation id
         // survives redaction verbatim, so admitting it cannot desynchronise the two sides; a
         // credential-shaped one would still be masked, so it stays refused (#74).
-        if core_record::redact::scrub_correlation_identifier(&tool.id) != tool.id
-            || core_record::redact::scrub(&tool.name) != tool.name
+        if iteron_record::redact::scrub_correlation_identifier(&tool.id) != tool.id
+            || iteron_record::redact::scrub(&tool.name) != tool.name
         {
             return Err(ToolCallContractError::SecretShapedIdentity);
         }
@@ -154,7 +154,7 @@ impl ArtifactAdmission {
     /// the ref's locator; the caller owns that check because only it knows the store.
     pub fn admit(
         &mut self,
-        artifact: &core_protocol::artifact::ArtifactRef,
+        artifact: &iteron_protocol::artifact::ArtifactRef,
         durable: impl FnOnce(&str) -> bool,
     ) -> Result<(), ArtifactContractError> {
         artifact
@@ -208,11 +208,11 @@ pub struct AdmittedRegistryTool {
 }
 
 pub trait DurableEffectLog {
-    fn append_effect(&mut self, event: &Event) -> Result<Seq, core_record::RecordError>;
+    fn append_effect(&mut self, event: &Event) -> Result<Seq, iteron_record::RecordError>;
 }
 
-impl DurableEffectLog for core_record::Rollout {
-    fn append_effect(&mut self, event: &Event) -> Result<Seq, core_record::RecordError> {
+impl DurableEffectLog for iteron_record::Rollout {
+    fn append_effect(&mut self, event: &Event) -> Result<Seq, iteron_record::RecordError> {
         self.append(event)
     }
 }
@@ -268,7 +268,7 @@ impl BrokeredEffect {
 #[derive(Debug, thiserror::Error)]
 pub enum BrokerError {
     #[error(transparent)]
-    Record(#[from] core_record::RecordError),
+    Record(#[from] iteron_record::RecordError),
     #[error(transparent)]
     Admission(#[from] EffectAdmissionError),
     #[error("effect proposal refused before the write-ahead append: {0}")]
@@ -388,7 +388,7 @@ impl EffectTicket {
 ///
 /// Rounding up keeps a real sub-millisecond effect observable instead of indistinguishable from one
 /// that never ran, and saturation means observational accounting can never wrap and report a fast
-/// effect where a pathologically slow one happened. This mirrors `core_obs`'s phase conversion
+/// effect where a pathologically slow one happened. This mirrors `iteron_obs`'s phase conversion
 /// deliberately: two different roundings would make the ledger and the record disagree by a
 /// millisecond and cost somebody an afternoon.
 fn duration_ms_ceil(duration: std::time::Duration) -> u64 {
@@ -600,7 +600,7 @@ pub use crate::effect_journal::{EffectJournal, EffectJournalError, PendingEffect
 mod tests {
     use super::*;
     use crate::effect_class::{EffectClass, effect_id};
-    use core_protocol::{Capability, Seq, ToolResult, Trust};
+    use iteron_protocol::{Capability, Seq, ToolResult, Trust};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -641,8 +641,8 @@ mod tests {
     /// entropy rule masks any 32+ character mixed-case-with-digit run. Admission refused every
     /// such call, so tool use was unusable on any provider minting ids of this shape while an
     /// otherwise identical call with a shorter id succeeded.
-    fn artifact(hash_seed: u8) -> core_protocol::artifact::ArtifactRef {
-        use core_protocol::artifact::{ArtifactRef, ArtifactSchema, Producer, Provenance};
+    fn artifact(hash_seed: u8) -> iteron_protocol::artifact::ArtifactRef {
+        use iteron_protocol::artifact::{ArtifactRef, ArtifactSchema, Producer, Provenance};
         ArtifactRef {
             hash: format!("{:064x}", hash_seed),
             schema: ArtifactSchema::FileDiff,
@@ -650,13 +650,13 @@ mod tests {
                 tool: "edit".into(),
             },
             provenance: Provenance {
-                run_id: core_protocol::RunId("run-1".into()),
+                run_id: iteron_protocol::RunId("run-1".into()),
                 parent_hashes: Vec::new(),
                 effect_id: None,
             },
             // Read is deny-by-default: an artifact requiring no capability would be readable
             // by anyone, and `validate` refuses it.
-            permissions: core_protocol::capability_set::CapabilitySet::only(Capability::ReadOnly),
+            permissions: iteron_protocol::capability_set::CapabilitySet::only(Capability::ReadOnly),
             locator: "reports/summary.md".into(),
         }
     }
@@ -830,7 +830,7 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
     }
 
     impl DurableEffectLog for FakeLog {
-        fn append_effect(&mut self, event: &Event) -> Result<Seq, core_record::RecordError> {
+        fn append_effect(&mut self, event: &Event) -> Result<Seq, iteron_record::RecordError> {
             if self.fail_on_append == Some(self.events.len()) {
                 return Err(std::io::Error::other("injected append failure").into());
             }
@@ -841,17 +841,17 @@ proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
 
     fn admitted() -> AdmittedRegistryTool {
         let mut intent = ToolIntent::denied(
-            core_protocol::slot::SlotId("core/tool_policy".into()),
+            iteron_protocol::slot::SlotId("iteron/tool_policy".into()),
             ToolUse {
                 id: "provider-call".into(),
                 name: "edit".into(),
                 input: serde_json::json!({"path":"f"}),
             },
-            core_protocol::Purity::Effecting,
+            iteron_protocol::Purity::Effecting,
             Trust::Workspace,
         );
         intent.admitted =
-            core_protocol::capability_set::CapabilitySet::only(Capability::ReversibleLocal);
+            iteron_protocol::capability_set::CapabilitySet::only(Capability::ReversibleLocal);
         AdmittedRegistryTool {
             turn: TurnId(7),
             effect_id: effect_id(TurnId(7), EffectClass::RegistryTool, 2),

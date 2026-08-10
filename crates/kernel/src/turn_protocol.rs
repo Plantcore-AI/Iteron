@@ -1,8 +1,8 @@
 //! The closed vocabulary the pure reducer reasons in.
 //!
-//! # Why the reducer does not speak `core_provider`
+//! # Why the reducer does not speak `iteron_provider`
 //!
-//! The obvious shape for `Command::ProviderCompleted` is to carry a `core_provider::StopReason`
+//! The obvious shape for `Command::ProviderCompleted` is to carry a `iteron_provider::StopReason`
 //! straight through. Issue #15 bans exactly that, and the ban is not stylistic: the moment the
 //! reducer names a world type, the reducer's meaning is pinned to that world module's release
 //! cadence, and "the kernel depends only on the frozen ABI" stops being checkable. So the states a

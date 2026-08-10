@@ -4,7 +4,7 @@
 //!
 //! An in-crate test module compiles at crate-private visibility. It can reach privately imported
 //! names, private modules, and `pub(crate)` items that no outside implementor can touch, so it would
-//! prove only that `core-evolve` itself can satisfy these seams. An integration test links this
+//! prove only that `iteron-evolve` itself can satisfy these seams. An integration test links this
 //! crate exactly as an external consumer does, independently of the bounded in-crate
 //! implementations.
 //!
@@ -17,16 +17,16 @@
 //!
 //! # ONE DEPENDENCY, AND THAT IS THE POINT
 //!
-//! Everything below is reached through `core_evolve::` and nothing else. That is the property under
-//! test: a crate that depends on `core-evolve` alone must be able to implement these seams. A test
-//! under `crates/evolve/tests/` inherits the crate's own `[dependencies]`, so `core_protocol` would
+//! Everything below is reached through `iteron_evolve::` and nothing else. That is the property under
+//! test: a crate that depends on `iteron-evolve` alone must be able to implement these seams. A test
+//! under `crates/evolve/tests/` inherits the crate's own `[dependencies]`, so `iteron_protocol` would
 //! compile here even though an outside implementor may not have it — which means position alone
-//! cannot prove this. `core-xtask boundaries check` therefore asserts mechanically that this file
+//! cannot prove this. `iteron-xtask boundaries check` therefore asserts mechanically that this file
 //! names no other internal crate. **Do not add an import here to make something compile.** If a type
-//! in a seam signature is not reachable through `core_evolve::`, that is the seam being wrong, not
+//! in a seam signature is not reachable through `iteron_evolve::`, that is the seam being wrong, not
 //! this test.
 
-use core_evolve::{
+use iteron_evolve::{
     BaseModelId, ContractError, DataClass, DataGovernance, EVOLUTION_SCHEMA_VERSION,
     HeldOutEvaluation, HeldOutEvidenceBridge, IndependentEvaluator, Interval, PolicyBundle,
     PolicyRef, PromotionAuthorityKey, PromotionEvidence, RewardVector, RunId,
@@ -49,7 +49,7 @@ fn real_base_model() -> BaseModelId {
 /// A fully populated envelope, built by struct literal from outside the crate.
 ///
 /// This is the assertion that matters. Every type named here has to be publicly reachable through
-/// `core_evolve::`, and an empty answer would have exercised none of them.
+/// `iteron_evolve::`, and an empty answer would have exercised none of them.
 fn a_real_trajectory() -> TrajectoryEnvelope {
     TrajectoryEnvelope {
         schema_version: EVOLUTION_SCHEMA_VERSION,
@@ -62,7 +62,7 @@ fn a_real_trajectory() -> TrajectoryEnvelope {
             bundle_id: "acme-2026-07".into(),
             digest: digest('d'),
             policies: vec![PolicyRef {
-                slot: StrategySlot::new("core/router").expect("a valid slot"),
+                slot: StrategySlot::new("iteron/router").expect("a valid slot"),
                 policy_id: "acme.router".into(),
                 version: "1.4.0".into(),
                 digest: digest('e'),
@@ -157,7 +157,7 @@ impl HeldOutEvidenceBridge for UnreachableEvidence {
 ///
 /// Minting one here is not a hole in the separation of duties, but the reason is narrower than it
 /// first looks. `pub(crate)` blocks a struct literal; it does NOT block `serde_json::from_value`,
-/// because the derived `Deserialize` is generated inside `core-evolve` — a review reconstituted one
+/// because the derived `Deserialize` is generated inside `iteron-evolve` — a review reconstituted one
 /// from outside with an attacker-chosen evaluator id and signature. This double goes through the
 /// key-holder path because that is what an honest evaluator crate does, and what it proves is that
 /// the public surface is sufficient for one. It proves nothing about authenticity, which only
@@ -169,7 +169,7 @@ struct RealEvidence;
 impl RealEvidence {
     fn sign(base_model: &BaseModelId) -> SignedHeldOutEvaluation {
         let candidate = PolicyRef {
-            slot: StrategySlot::new("core/router").expect("a valid slot"),
+            slot: StrategySlot::new("iteron/router").expect("a valid slot"),
             policy_id: "acme.router".into(),
             version: "2.0.0".into(),
             digest: digest('e'),
@@ -252,7 +252,7 @@ impl HeldOutEvidenceBridge for SentinelRefusingEvidence {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn a_crate_holding_only_core_evolve_can_implement_every_seam() {
+fn a_crate_holding_only_iteron_evolve_can_implement_every_seam() {
     // Generic dispatch.
     fn ingest<P: TrajectoryProjection>(projection: &P) -> Option<TrajectoryEnvelope> {
         projection.project(&digest('a')).expect("projection ok")

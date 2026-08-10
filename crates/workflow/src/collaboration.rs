@@ -1,8 +1,8 @@
 //! Bounded `core/collaboration` strategy for fan execution width.
 
-use core_protocol::Capability;
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
+use iteron_protocol::Capability;
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -63,7 +63,7 @@ pub struct CollaborationStrategy {
 impl Default for CollaborationStrategy {
     fn default() -> Self {
         Self {
-            slot: SlotId("core/collaboration".into()),
+            slot: SlotId("iteron/collaboration".into()),
         }
     }
 }
@@ -74,7 +74,7 @@ impl CollaborationStrategy {
         input: &CollaborationObservation,
         ceiling: CapabilitySet,
     ) -> Result<CollaborationProposal, CollaborationError> {
-        if slot.slot().as_persisted_str() != "core/collaboration" {
+        if slot.slot().as_persisted_str() != "iteron/collaboration" {
             return Err(CollaborationError::WrongSlot);
         }
         validate_observation(input)?;
@@ -188,7 +188,7 @@ mod tests {
         }
         assert_eq!(
             CollaborationStrategy::select_with(
-                &Fixed(SlotId("core/collaboration".into())),
+                &Fixed(SlotId("iteron/collaboration".into())),
                 &CollaborationObservation {
                     version: COLLABORATION_SLOT_VERSION,
                     active_workers: 8,

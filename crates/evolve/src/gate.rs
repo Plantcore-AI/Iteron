@@ -29,8 +29,8 @@ use std::path::{Path, PathBuf};
 
 pub const EVOLUTION_GATE_SCHEMA_VERSION: u16 = 1;
 
-const GATE_DOMAIN: &str = "core-evolve/evolution-proven/v1";
-const DEMO_GATE_KEY: &[u8] = b"core-evolve-public-gate-key-v1";
+const GATE_DOMAIN: &str = "iteron-evolve/evolution-proven/v1";
+const DEMO_GATE_KEY: &[u8] = b"iteron-evolve-public-gate-key-v1";
 const MAX_GATE_SUMMARY_BYTES: usize = 256 * 1024;
 const MAX_TRANSCRIPT_READ_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -575,8 +575,8 @@ fn verify_separation_of_duties(scratch: &Path) -> Result<SeparationProof, GateEr
 /// `PolicyCheckpoint` needs; the point is that the operators run and their outputs validate, not
 /// that they reproduce the dedicated unit tests, which the gate job also runs.
 fn exercise_algebra() -> Result<Vec<OperatorProof>, GateError> {
-    let slot = StrategySlot("core/tool_policy".to_owned());
-    let other = StrategySlot("core/context".to_owned());
+    let slot = StrategySlot("iteron/tool_policy".to_owned());
+    let other = StrategySlot("iteron/context".to_owned());
     let baseline = checkpoint(
         "baseline",
         None,

@@ -6,22 +6,22 @@ impl Agent {
     pub(super) fn workflow_phase(
         &mut self,
         run_id: &str,
-        phase: core_protocol::WorkflowPhase,
+        phase: iteron_protocol::WorkflowPhase,
     ) -> Result<(), KernelError> {
         self.emit_durable(
             TurnId(self.seq_turn),
             EventKind::WorkflowV2 {
-                version: core_protocol::WorkflowEventVersion::V2,
+                version: iteron_protocol::WorkflowEventVersion::V2,
                 workflow_id: run_id.to_string(),
-                event: core_protocol::WorkflowEvent::PhaseChanged { phase },
+                event: iteron_protocol::WorkflowEvent::PhaseChanged { phase },
             },
         )?;
         let ui_phase = match phase {
-            core_protocol::WorkflowPhase::Planning => WorkflowPhaseUi::Planning,
-            core_protocol::WorkflowPhase::Exploring => WorkflowPhaseUi::Exploring,
-            core_protocol::WorkflowPhase::Reducing => WorkflowPhaseUi::Synthesizing,
-            core_protocol::WorkflowPhase::Writing => WorkflowPhaseUi::Writing,
-            core_protocol::WorkflowPhase::Direct => WorkflowPhaseUi::Direct,
+            iteron_protocol::WorkflowPhase::Planning => WorkflowPhaseUi::Planning,
+            iteron_protocol::WorkflowPhase::Exploring => WorkflowPhaseUi::Exploring,
+            iteron_protocol::WorkflowPhase::Reducing => WorkflowPhaseUi::Synthesizing,
+            iteron_protocol::WorkflowPhase::Writing => WorkflowPhaseUi::Writing,
+            iteron_protocol::WorkflowPhase::Direct => WorkflowPhaseUi::Direct,
         };
         self.ui(UiEvent::Workflow(WorkflowUiEvent::PhaseChanged {
             run_id: run_id.to_string(),
@@ -45,10 +45,10 @@ impl Agent {
         self.emit_durable(
             TurnId(self.seq_turn),
             EventKind::WorkflowV2 {
-                version: core_protocol::WorkflowEventVersion::V2,
+                version: iteron_protocol::WorkflowEventVersion::V2,
                 workflow_id: run_id.to_string(),
-                event: core_protocol::WorkflowEvent::Planned {
-                    mode: core_protocol::WorkflowExecutionMode::Direct,
+                event: iteron_protocol::WorkflowEvent::Planned {
+                    mode: iteron_protocol::WorkflowExecutionMode::Direct,
                     tasks: Vec::new(),
                     dropped: omitted as u32,
                     duplicates_removed: 0,
@@ -72,7 +72,7 @@ impl Agent {
             fan_wall_secs: 0,
             writer_wall_reserve_secs: remaining_wall,
         }));
-        self.workflow_phase(run_id, core_protocol::WorkflowPhase::Direct)
+        self.workflow_phase(run_id, iteron_protocol::WorkflowPhase::Direct)
     }
 
     /// Ultracode entry. Route once, then launch the complete planning→dynamic fan→reduce graph as
@@ -83,12 +83,12 @@ impl Agent {
     pub(super) async fn run_orchestrated(
         &mut self,
         task: &str,
-        input_images: &[core_protocol::ImageContent],
+        input_images: &[iteron_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
         self.orchestrating = true;
         let input_images = self.admit_input_images(input_images)?;
         let mut messages = self.admit_submission(task)?;
-        let signals = core_agents::RepoSignals {
+        let signals = iteron_agents::RepoSignals {
             has_test_command: self.verify_command.is_some(),
             file_count: self.workspace_file_count().await,
         };
@@ -207,11 +207,12 @@ impl Agent {
     pub(super) fn route_submission(
         &mut self,
         task: &str,
-        signals: core_agents::RepoSignals,
-    ) -> core_agents::RouterRoute {
-        let observation = core_agents::RouterSlotObservation::baseline(task, signals);
+        signals: iteron_agents::RepoSignals,
+    ) -> iteron_agents::RouterRoute {
+        let observation = iteron_agents::RouterSlotObservation::baseline(task, signals);
         let ceiling = CapabilitySet::only(Capability::ReadOnly).intersect(self.authority_ceiling);
-        match core_agents::RouterStrategy::route_with(self.router.as_ref(), &observation, ceiling) {
+        match iteron_agents::RouterStrategy::route_with(self.router.as_ref(), &observation, ceiling)
+        {
             Ok(proposal) => proposal.route,
             Err(error) => {
                 self.emit(
@@ -222,7 +223,7 @@ impl Agent {
                         ),
                     },
                 );
-                core_agents::RouterRoute::direct(core_agents::TaskClass::Localized)
+                iteron_agents::RouterRoute::direct(iteron_agents::TaskClass::Localized)
             }
         }
     }
@@ -234,13 +235,13 @@ impl Agent {
         let max_concurrency = u32::try_from(self.max_tool_concurrency)
             .unwrap_or(u32::MAX)
             .max(1);
-        let Ok(observation) = core_sched::SchedulerSlotObservation::baseline(
-            core_sched::BackoffPolicy::default(),
+        let Ok(observation) = iteron_sched::SchedulerSlotObservation::baseline(
+            iteron_sched::BackoffPolicy::default(),
             max_concurrency,
         ) else {
             return 1;
         };
-        core_sched::SchedulerStrategy::plan_with(
+        iteron_sched::SchedulerStrategy::plan_with(
             self.scheduler.as_ref(),
             &observation,
             CapabilitySet::only(Capability::ReadOnly).intersect(self.authority_ceiling),

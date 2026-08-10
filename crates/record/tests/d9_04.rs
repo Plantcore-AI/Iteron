@@ -7,8 +7,8 @@
 //! shape and no lone-token split, so it reaches the durable record verbatim; the fix masks the
 //! userinfo password before the token scanner runs.
 
-use core_protocol::{Event, EventKind, Seq, TurnId};
-use core_record::redact::redact_event;
+use iteron_protocol::{Event, EventKind, Seq, TurnId};
+use iteron_record::redact::redact_event;
 
 fn notice(text: String) -> Event {
     Event {

@@ -1,6 +1,6 @@
 # Project status
 
-Core Code is public, Apache-2.0 licensed, and **pre-alpha**. The current `main`
+Iteron is public, Apache-2.0 licensed, and **pre-alpha**. The current `main`
 branch is the only development line; there is no stable compatibility or support
 promise.
 
@@ -26,7 +26,7 @@ The repository currently contains:
 
 ## Not accepted as complete
 
-Core Code does not yet claim:
+Iteron does not yet claim:
 
 - production readiness or unattended safety on sensitive repositories;
 - conformance to the target microkernel architecture;

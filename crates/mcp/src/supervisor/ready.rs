@@ -99,7 +99,7 @@ impl McpSupervisor {
             }
 
             enum DiscoveryResult {
-                Completed(Result<Vec<core_protocol::ToolSpec>, McpError>),
+                Completed(Result<Vec<iteron_protocol::ToolSpec>, McpError>),
                 TimedOut,
                 OperationTimedOut,
                 Cancelled,

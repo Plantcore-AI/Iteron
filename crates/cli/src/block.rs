@@ -17,8 +17,8 @@ use crate::markdown::{MarkdownDoc, render_doc, render_doc_with_hyperlinks};
 use crate::render::{RenderedLines, line_width, wrap_spans};
 use crate::theme::Theme;
 use crate::tui::hyperlink::Policy as HyperlinkPolicy;
-use core_protocol::{DiffTag, FileDiff};
-use core_workflow::events::{self, ProgressEvent, WorkflowState};
+use iteron_protocol::{DiffTag, FileDiff};
+use iteron_workflow::events::{self, ProgressEvent, WorkflowState};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::{Duration, Instant};
@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 pub const SPINNER: [&str; 6] = ["·", "✢", "✳", "✶", "✻", "✽"];
 
 /// Claude Code's braille-dot activity spinner (WORKFLOW-REPLICATION-DESIGN.md §3.3), advanced every
-/// ~80ms. Drives the live phase→agent tree's running indicators (the QuickJS `core-workflow` runtime,
+/// ~80ms. Drives the live phase→agent tree's running indicators (the QuickJS `iteron-workflow` runtime,
 /// distinct from the native ultracode `SPINNER` above). Every frame is a guaranteed width-1 glyph.
 pub const BRAILLE_SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -233,7 +233,7 @@ pub enum BlockKind {
     Tool(ToolCard),
     /// A live, id-correlated workflow/agent tree (ultracode today; generic workflow vocabulary).
     Workflow(WorkflowCard),
-    /// The live QuickJS `core-workflow` phase→agent tree (design §3.3), fed by `ProgressEvent`s.
+    /// The live QuickJS `iteron-workflow` phase→agent tree (design §3.3), fed by `ProgressEvent`s.
     /// Interactive `WorkflowRunUiEvent`s drive it: `App::workflow_run_started` pushes the card,
     /// then progress and finished events mutate it in place.
     WorkflowRun(WorkflowRunCard),
@@ -2145,7 +2145,7 @@ mod tests {
             ),
             Block::new(
                 9,
-                BlockKind::Diff(core_protocol::FileDiff::from_replacement(
+                BlockKind::Diff(iteron_protocol::FileDiff::from_replacement(
                     "src/a/very/long/path.rs",
                     "let x = 1;",
                     "let x = 2;\nlet y = 3;",
@@ -2186,7 +2186,7 @@ mod tests {
         // Findings R1 (a line-number gutter — the biggest missing diff cue) and R2 (single-encode:
         // add/del carried by the sign + row tint, code text SYNTAX-highlighted, never a flat fg).
         let theme = Theme::dark();
-        let d = core_protocol::FileDiff::from_replacement(
+        let d = iteron_protocol::FileDiff::from_replacement(
             "src/a.rs",
             "let x = 1;",
             "let y = 2;\nlet z = 3;",
@@ -2368,7 +2368,7 @@ mod tests {
     fn diff_gutter_has_bar_and_default_theme_colors_the_sign() {
         // §5: the twin line-number columns read as old│new (a faint bar), not an ambiguous `12 12`.
         let dark = Theme::dark();
-        let d = core_protocol::FileDiff::from_replacement("a.rs", "let x = 1;", "let x = 2;");
+        let d = iteron_protocol::FileDiff::from_replacement("a.rs", "let x = 1;", "let x = 2;");
         let rows = Block::new(1, BlockKind::Diff(d)).render(80, &dark, 0);
         assert!(
             rows.iter()
@@ -2379,7 +2379,7 @@ mod tests {
         // In the DEFAULT terminal theme (added_bg/removed_bg = Reset, no visible tint) the sign cell
         // must fall back to green/red so the diff isn't two identical grey blocks (findings 7/8).
         let term = Theme::terminal();
-        let d2 = core_protocol::FileDiff::from_replacement("a.rs", "let x = 1;", "let x = 2;");
+        let d2 = iteron_protocol::FileDiff::from_replacement("a.rs", "let x = 1;", "let x = 2;");
         let rows2 = Block::new(1, BlockKind::Diff(d2)).render(80, &term, 0);
         // (wrap_spans merges the adjacent same-style number+sign, so match on `contains`, not `starts_with`.)
         let add_sign_colored = rows2
@@ -3256,7 +3256,7 @@ mod tests {
     /// Prints the captured ASCII (run with `--nocapture` to see the actual look).
     #[test]
     fn workflow_run_tree_renders_phase_boxes() {
-        use core_workflow::events::WorkflowState;
+        use iteron_workflow::events::WorkflowState;
 
         let theme = Theme::dark();
         let mut c = WorkflowRunCard::new("wf_demo", "audit");
@@ -3543,7 +3543,7 @@ mod tests {
 
     // ---- result_preview: what an individual agent actually RETURNED -------------------------
     //
-    // `core_workflow::bindings::emit_finished` builds a ≤400-char excerpt of every agent's
+    // `iteron_workflow::bindings::emit_finished` builds a ≤400-char excerpt of every agent's
     // text/structured outcome and puts it on `AgentFinished.result_preview`. The card used to
     // destructure it as `result_preview: _`, so a finished run reported tokens, tools and a
     // duration but never one word of what any agent came back with.
@@ -3732,7 +3732,7 @@ mod tests {
     /// double-width title — at a column that is inside a glyph rather than between two.
     #[test]
     fn the_run_title_and_totals_rows_are_ellipsised_at_every_width() {
-        use core_workflow::events::WorkflowState;
+        use iteron_workflow::events::WorkflowState;
 
         let theme = Theme::dark();
         // Wide (2-column) glyphs, so a cut that lands mid-glyph is observable as a row that is one
@@ -3828,7 +3828,7 @@ mod tests {
     #[test]
     fn a_long_result_preview_is_truncated_to_the_available_width() {
         let theme = Theme::dark();
-        let long = "x".repeat(core_workflow::events::PREVIEW_MAX);
+        let long = "x".repeat(iteron_workflow::events::PREVIEW_MAX);
         let mut c = preview_card(Some(&long));
         c.verbose = true;
 
@@ -3896,7 +3896,7 @@ mod tests {
             tokens: 0,
             tool_calls: 0,
             duration_ms: 10,
-            result_preview: Some("y".repeat(core_workflow::events::PREVIEW_MAX)),
+            result_preview: Some("y".repeat(iteron_workflow::events::PREVIEW_MAX)),
             last_tool_summary: None,
             error: None,
         });
@@ -3918,7 +3918,7 @@ mod tests {
     /// declared `meta.phases` lay every box out in advance, empty ones included.
     #[test]
     fn workflow_run_tree_seeds_declared_phases_and_pins_the_denominator() {
-        use core_workflow::events::WorkflowState;
+        use iteron_workflow::events::WorkflowState;
 
         let theme = Theme::dark();
         let width = 78u16;

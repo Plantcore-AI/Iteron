@@ -6,8 +6,8 @@
 
 use super::hooks::journal::HookEffectJournal;
 use super::hooks::{HookDecision, Hooks, LifecycleHookReport};
-use core_obs::lifecycle::{LifecycleCorrelation, LifecycleEmitter};
-use core_protocol::{HookCapability, LifecycleEventEnvelope, LifecyclePayload};
+use iteron_obs::lifecycle::{LifecycleCorrelation, LifecycleEmitter};
+use iteron_protocol::{HookCapability, LifecycleEventEnvelope, LifecyclePayload};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -132,7 +132,7 @@ impl LifecycleHookDispatcher {
     pub fn dispatch(&self, event: LifecycleEventEnvelope) {
         let id = event.event_id.as_str();
         if !self.subscribed.contains(id)
-            || core_protocol::lifecycle::event_spec(id)
+            || iteron_protocol::lifecycle::event_spec(id)
                 .is_some_and(|spec| spec.hook_capability == HookCapability::Gate)
         {
             return;
@@ -404,7 +404,7 @@ fn correlation_of(event: &LifecycleEventEnvelope) -> LifecycleCorrelation {
         workflow_id: event.workflow_id.clone(),
         subagent_id: event.subagent_id.clone(),
         job_id: event.job_id.clone(),
-        parent_event: Some(core_protocol::LifecycleEventRef {
+        parent_event: Some(iteron_protocol::LifecycleEventRef {
             event_id: event.event_id.clone(),
             ordinal: event.ordinal,
         }),

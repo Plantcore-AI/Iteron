@@ -2,11 +2,11 @@
 //! started and the caller interrupts it.
 
 use async_trait::async_trait;
-use core_protocol::{ReasoningEffort, StopReason};
-use core_provider::{
+use iteron_protocol::{ReasoningEffort, StopReason};
+use iteron_provider::{
     Provider, ProviderError, StreamItem, TurnRequest, TurnResult, UsageReport, turn_cancellable,
 };
-use core_sched::{BackoffPolicy, Clock, RetryProvider};
+use iteron_sched::{BackoffPolicy, Clock, RetryProvider};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;

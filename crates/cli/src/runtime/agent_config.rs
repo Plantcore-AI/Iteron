@@ -50,11 +50,11 @@ impl Agent {
             environment_context: None,
             compaction: CompactionPolicy::default(),
             compacted_in_run: false,
-            context_estimator: core_ctx::RequestEstimator::new(),
+            context_estimator: iteron_ctx::RequestEstimator::new(),
             context_source_evidence: Vec::new(),
             input_file_evidence: None,
-            context_ledgers: core_ctx::ContextLedgerStore::default(),
-            memory_traces: core_ctx::MemoryTraceStore::default(),
+            context_ledgers: iteron_ctx::ContextLedgerStore::default(),
+            memory_traces: iteron_ctx::MemoryTraceStore::default(),
             session_memory_visibility: std::collections::VecDeque::new(),
             lifecycle_emitter: None,
             lifecycle_telemetry: None,
@@ -86,23 +86,23 @@ impl Agent {
             ui_tx: None,
             workflow_progress_tx: None,
             workflow_launcher: None,
-            effort: core_protocol::Effort::default(),
+            effort: iteron_protocol::Effort::default(),
             memory_workspace: None,
-            context_strategy: std::sync::Arc::new(core_ctx::ContextStrategy::default()),
-            tool_policy: std::sync::Arc::new(core_tools::ToolPolicy::default()),
-            memory_strategy: std::sync::Arc::new(core_ctx::MemoryRecallStrategy::default()),
-            router: std::sync::Arc::new(core_agents::RouterStrategy::default()),
-            planner: std::sync::Arc::new(core_agents::PlannerStrategy::default()),
-            collaboration: std::sync::Arc::new(core_workflow::CollaborationStrategy::default()),
-            scheduler: std::sync::Arc::new(core_sched::SchedulerStrategy::default()),
-            verifier: std::sync::Arc::new(core_verify::VerifierStrategy::default()),
+            context_strategy: std::sync::Arc::new(iteron_ctx::ContextStrategy::default()),
+            tool_policy: std::sync::Arc::new(iteron_tools::ToolPolicy::default()),
+            memory_strategy: std::sync::Arc::new(iteron_ctx::MemoryRecallStrategy::default()),
+            router: std::sync::Arc::new(iteron_agents::RouterStrategy::default()),
+            planner: std::sync::Arc::new(iteron_agents::PlannerStrategy::default()),
+            collaboration: std::sync::Arc::new(iteron_workflow::CollaborationStrategy::default()),
+            scheduler: std::sync::Arc::new(iteron_sched::SchedulerStrategy::default()),
+            verifier: std::sync::Arc::new(iteron_verify::VerifierStrategy::default()),
             model_router: std::sync::Arc::new(
-                core_provider::catalog::ModelRouterStrategy::default(),
+                iteron_provider::catalog::ModelRouterStrategy::default(),
             ),
-            context_port: std::sync::Arc::new(core_ctx::DefaultContextPort),
+            context_port: std::sync::Arc::new(iteron_ctx::DefaultContextPort),
             context_home_dir: None,
             dependency_skill_dirs: Vec::new(),
-            agent_catalog: std::sync::Arc::new(core_agents::AgentCatalog::builtin_only()),
+            agent_catalog: std::sync::Arc::new(iteron_agents::AgentCatalog::builtin_only()),
             agent_catalog_pinned: false,
             boot_bundle: crate::bundle_adapter::resolve_boot_bundle(),
             injected: None,
@@ -149,7 +149,7 @@ impl Agent {
     /// immutable execution inputs before doing new work.
     pub fn pin_agent_catalog(
         &mut self,
-        catalog: core_agents::AgentCatalog,
+        catalog: iteron_agents::AgentCatalog,
     ) -> Result<(), KernelError> {
         if self.agent_catalog_pinned {
             return Err(KernelError::AgentCatalogAlreadyResolved);
@@ -173,14 +173,14 @@ impl Agent {
     /// Clone the exact immutable catalog pinned for this runtime. Frontends receive this once at
     /// attach time; they must never rediscover definitions from a filesystem that may have changed
     /// after execution inputs were resolved.
-    pub(crate) fn agent_catalog_snapshot(&self) -> std::sync::Arc<core_agents::AgentCatalog> {
+    pub(crate) fn agent_catalog_snapshot(&self) -> std::sync::Arc<iteron_agents::AgentCatalog> {
         self.agent_catalog.clone()
     }
 
     /// The quota the provider last published on its response headers, or `None` when this route
     /// publishes none. Read before the first token of the answer, so a frontend can show a
     /// shrinking budget before the rejection rather than after it (I-53).
-    pub fn last_rate_limit(&self) -> Option<core_provider::RateLimitSnapshot> {
+    pub fn last_rate_limit(&self) -> Option<iteron_provider::RateLimitSnapshot> {
         self.last_rate_limit
     }
 
@@ -191,11 +191,11 @@ impl Agent {
     /// Plan is included because Plan is a hard denial of everything above read-only, and a posture
     /// that quietly relaxed one of its conjuncts would be the exact "quiet lie" the permission
     /// surface is built to avoid.
-    pub(super) fn operator_authority(&self) -> core_kernel::admission::OperatorAuthority {
+    pub(super) fn operator_authority(&self) -> iteron_kernel::admission::OperatorAuthority {
         if self.bypass_permissions && self.permission_mode != PermissionMode::Plan {
-            core_kernel::admission::OperatorAuthority::Operator
+            iteron_kernel::admission::OperatorAuthority::Operator
         } else {
-            core_kernel::admission::OperatorAuthority::Constrained
+            iteron_kernel::admission::OperatorAuthority::Constrained
         }
     }
 

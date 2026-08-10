@@ -1,7 +1,7 @@
 //! Deterministic aggregation for fixed-model component-toggle evaluations.
 
 use crate::types::{CellResult, CostStatus, RunStatus};
-use core_verify::{Candidate, OracleStrength};
+use iteron_verify::{Candidate, OracleStrength};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -312,7 +312,7 @@ pub fn selection_summaries(cells: &[CellResult]) -> Vec<SelectionSummary> {
                     is_correct_oracle: cell.resolved,
                 })
                 .collect();
-            let selection = core_verify::select::select(candidates);
+            let selection = iteron_verify::select::select(candidates);
             SelectionSummary {
                 task: task.to_owned(),
                 candidates: selection.deduped.len() as u64,

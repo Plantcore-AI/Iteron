@@ -8,7 +8,7 @@ use crate::{
     TrainingAdmissionPolicy, TrainingConsent, TrainingEligibilityError, TrajectoryEnvelope,
     VerifierError,
 };
-use core_protocol::{RunId, TenantId};
+use iteron_protocol::{RunId, TenantId};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 

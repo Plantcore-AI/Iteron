@@ -8,7 +8,7 @@
 //! The fixture was produced from a scratch repository holding five real changes. A bare `git diff`
 //! in that repository lists exactly **one** file. That ratio is the defect this crate exists for.
 
-use core_changeset::{Presence, Status, parse_default};
+use iteron_changeset::{Presence, Status, parse_default};
 
 const CAPTURE: &[u8] = include_bytes!("fixtures/status-mixed-v1z.bin");
 

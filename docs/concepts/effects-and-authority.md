@@ -1,6 +1,6 @@
 # Effects and authority
 
-Core Code separates what a tool proposes from what the runtime is allowed to do.
+Iteron separates what a tool proposes from what the runtime is allowed to do.
 The core types express both purity and capability so scheduling and permission
 decisions do not depend only on command text.
 
@@ -29,7 +29,7 @@ hooks.
 ## Effect identity and unknown outcomes
 
 Externally visible effects need durable identities and a terminal state. If
-Core Code observes dispatch but cannot prove completion, it records an unknown outcome
+Iteron observes dispatch but cannot prove completion, it records an unknown outcome
 instead of automatically repeating a potentially duplicated operation.
 
 The repository contains an initial durable effect-journal path, but not every

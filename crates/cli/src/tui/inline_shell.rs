@@ -1,7 +1,7 @@
 //! Bounded operator `!command` execution.
 
 use crate::semantic_text::ui_safe_text;
-use core_protocol::{Capability, PermissionMode, PermissionRules, Verdict};
+use iteron_protocol::{Capability, PermissionMode, PermissionRules, Verdict};
 use std::collections::VecDeque;
 use std::path::Path;
 use std::time::Duration;
@@ -115,7 +115,7 @@ pub(super) async fn run_bash_inline(
     if cmd.is_empty() {
         return failed(cmd, "empty shell command".into());
     }
-    if core_protocol::gate(mode, rules, "bash", Capability::CodeExecuting) == Verdict::Deny {
+    if iteron_protocol::gate(mode, rules, "bash", Capability::CodeExecuting) == Verdict::Deny {
         return failed(
             cmd,
             ui_safe_text(&format!(
@@ -152,11 +152,11 @@ pub(super) async fn run_bash_inline(
         }
     };
     let Some(mut stdout) = child.stdout.take() else {
-        core_sandbox::terminate_process_group_and_reap(&mut child).await;
+        iteron_sandbox::terminate_process_group_and_reap(&mut child).await;
         return failed(cmd, "shell stdout pipe was unavailable".into());
     };
     let Some(mut stderr) = child.stderr.take() else {
-        core_sandbox::terminate_process_group_and_reap(&mut child).await;
+        iteron_sandbox::terminate_process_group_and_reap(&mut child).await;
         return failed(cmd, "shell stderr pipe was unavailable".into());
     };
 
@@ -183,7 +183,7 @@ pub(super) async fn run_bash_inline(
         }
     };
     if completed.is_none() {
-        core_sandbox::terminate_process_group_and_reap(&mut child).await;
+        iteron_sandbox::terminate_process_group_and_reap(&mut child).await;
         let _ = tokio::time::timeout(Duration::from_secs(1), async {
             let _ = tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err));
         })
@@ -196,7 +196,7 @@ pub(super) async fn run_bash_inline(
             return failed(cmd, ui_safe_text(&format!("shell output failed: {error}")));
         }
         Some(Err(_)) => {
-            core_sandbox::terminate_process_group_and_reap(&mut child).await;
+            iteron_sandbox::terminate_process_group_and_reap(&mut child).await;
             let status = child.try_wait().ok().flatten();
             let _ = tokio::time::timeout(Duration::from_secs(1), async {
                 let _ = tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err),);

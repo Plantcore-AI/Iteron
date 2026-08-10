@@ -1,7 +1,7 @@
 //! Offline experiment request and signed-evidence TUI surface.
 
 use super::*;
-use core_eval::VerifiedEvidenceBundle;
+use iteron_eval::VerifiedEvidenceBundle;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -112,8 +112,9 @@ fn compare(app: &mut App, workspace: &Path, input: &str) -> Result<(), LabError>
     if words.next().is_some() || !safe_component(bundle_id) {
         return Err(LabError::Usage);
     }
-    let evidence_root = secure_subdir(workspace, &[".core", "experiments", "evidence"], false)?
-        .ok_or_else(|| LabError::Evidence("no local evidence directory exists".into()))?;
+    let evidence_root =
+        secure_subdir(workspace, &[".iteron", "experiments", "evidence"], false)?
+            .ok_or_else(|| LabError::Evidence("no local evidence directory exists".into()))?;
     let bundle = evidence_root.join(bundle_id);
     let metadata = std::fs::symlink_metadata(&bundle)
         .map_err(|error| LabError::Evidence(error.to_string()))?;
@@ -130,21 +131,21 @@ fn compare(app: &mut App, workspace: &Path, input: &str) -> Result<(), LabError>
             "evidence bundle escapes the experiment root".into(),
         ));
     }
-    let verified = core_eval::verify_evidence_bundle(&canonical, trusted_key)
+    let verified = iteron_eval::verify_evidence_bundle(&canonical, trusted_key)
         .map_err(|error| LabError::Evidence(error.to_string()))?;
     render_comparison(app, bundle_id, &verified);
     Ok(())
 }
 
 fn list(app: &mut App, workspace: &Path) -> Result<(), LabError> {
-    let Some(root) = secure_subdir(workspace, &[".core", "experiments"], false)? else {
+    let Some(root) = secure_subdir(workspace, &[".iteron", "experiments"], false)? else {
         app.panel(
             "◇",
             "experiment lab",
             vec![
                 kv("status", "ready · no local experiments"),
                 kv("scope", "offline · train-only"),
-                kv("registry", core_tunables::REGISTRY_DIGEST_SHA256),
+                kv("registry", iteron_tunables::REGISTRY_DIGEST_SHA256),
                 kv("promotion", "external human authority only"),
                 block::PanelRow::Note(
                     "Start with `/lab request <family> <json-value>`. No runtime setting changes when a request is created.".into(),
@@ -157,7 +158,7 @@ fn list(app: &mut App, workspace: &Path) -> Result<(), LabError> {
     let bundles = list_bundles(&root.join("evidence"))?;
     let mut rows = vec![
         kv("status", "offline · evidence-gated"),
-        kv("registry", core_tunables::REGISTRY_DIGEST_SHA256),
+        kv("registry", iteron_tunables::REGISTRY_DIGEST_SHA256),
         kv("requests", &requests.len().to_string()),
         kv("signed bundles", &bundles.len().to_string()),
     ];
@@ -195,16 +196,16 @@ fn create_request(
     if raw_value.len() > MAX_VALUE_BYTES {
         return Err(LabError::InvalidRequest("value exceeds 32 KiB".into()));
     }
-    let family = core_tunables::families()
+    let family = iteron_tunables::families()
         .iter()
         .find(|family| family.id == family_id)
         .ok_or_else(|| LabError::InvalidRequest(format!("unknown family `{family_id}`")))?;
-    if family.optimization.class == core_tunables::OptimizationClass::Pin {
+    if family.optimization.class == iteron_tunables::OptimizationClass::Pin {
         return Err(LabError::InvalidRequest(format!(
             "`{family_id}` is a security/durability pin, not a search choice"
         )));
     }
-    if family.implementation_status != core_tunables::ImplementationStatus::Full {
+    if family.implementation_status != iteron_tunables::ImplementationStatus::Full {
         return Err(LabError::InvalidRequest(format!(
             "`{family_id}` has no complete production binding"
         )));
@@ -218,7 +219,7 @@ fn create_request(
     }
     let candidate = CandidateRequest {
         family: family.id.into(),
-        family_semantic_digest: core_tunables::family_semantic_digest(family)
+        family_semantic_digest: iteron_tunables::family_semantic_digest(family)
             .map_err(|error| LabError::InvalidRequest(error.to_string()))?
             .value,
         value,
@@ -234,7 +235,7 @@ fn create_request(
         status: "requested".into(),
         evaluation_purpose: "tune".into(),
         allowed_partition: "train".into(),
-        tunables_registry_digest: core_tunables::REGISTRY_DIGEST_SHA256.into(),
+        tunables_registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256.into(),
         candidate,
         promotion: PromotionBoundary {
             mode: "external_human_authority_only".into(),
@@ -242,7 +243,7 @@ fn create_request(
             runtime_activation: false,
         },
     };
-    let directory = secure_subdir(workspace, &[".core", "experiments", "requests"], true)?
+    let directory = secure_subdir(workspace, &[".iteron", "experiments", "requests"], true)?
         .expect("create=true always returns a directory");
     let destination = directory.join(format!("{request_id}.json"));
     let mut bytes = serde_json::to_vec_pretty(&request)
@@ -259,7 +260,7 @@ fn create_request(
     }
     Ok(RequestReceipt {
         request,
-        relative_path: PathBuf::from(".core/experiments/requests")
+        relative_path: PathBuf::from(".iteron/experiments/requests")
             .join(format!("{request_id}.json")),
         reused,
     })
@@ -380,7 +381,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "core-cli-lab-{label}-{}-{nonce:x}",
+            "iteron-cli-lab-{label}-{}-{nonce:x}",
             std::process::id()
         ));
         std::fs::create_dir(&path).unwrap();
@@ -388,11 +389,11 @@ mod tests {
     }
 
     fn full_search_family() -> &'static str {
-        core_tunables::families()
+        iteron_tunables::families()
             .iter()
             .find(|family| {
-                family.implementation_status == core_tunables::ImplementationStatus::Full
-                    && family.optimization.class != core_tunables::OptimizationClass::Pin
+                family.implementation_status == iteron_tunables::ImplementationStatus::Full
+                    && family.optimization.class != iteron_tunables::OptimizationClass::Pin
             })
             .unwrap()
             .id
@@ -427,14 +428,14 @@ mod tests {
     #[test]
     fn pin_and_symlinked_lab_root_are_refused() {
         let workspace = temp_workspace("refusal");
-        let pinned = core_tunables::families()
+        let pinned = iteron_tunables::families()
             .iter()
-            .find(|family| family.optimization.class == core_tunables::OptimizationClass::Pin)
+            .find(|family| family.optimization.class == iteron_tunables::OptimizationClass::Pin)
             .unwrap();
         assert!(create_request(&workspace, pinned.id, "true").is_err());
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(std::env::temp_dir(), workspace.join(".core")).unwrap();
+            std::os::unix::fs::symlink(std::env::temp_dir(), workspace.join(".iteron")).unwrap();
             assert!(create_request(&workspace, full_search_family(), "true").is_err());
         }
         let _ = std::fs::remove_dir_all(workspace);

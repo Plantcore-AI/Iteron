@@ -12,7 +12,7 @@ mod tests {
             "core-tui-agent-snapshot-{}-{nonce}",
             std::process::id()
         ));
-        let definitions = workspace.join(".core/agents");
+        let definitions = workspace.join(".iteron/agents");
         std::fs::create_dir_all(&definitions).unwrap();
         let pinned_path = definitions.join("pinned.md");
         std::fs::write(
@@ -27,7 +27,7 @@ mod tests {
         )
         .unwrap();
 
-        let pinned = core_agents::AgentCatalog::discover_without_user(&workspace);
+        let pinned = iteron_agents::AgentCatalog::discover_without_user(&workspace);
         let pinned_digest = pinned.execution_digest();
         assert!(pinned.get("pinned-reviewer").is_some());
         assert!(
@@ -49,7 +49,7 @@ mod tests {
             "---\nname: late-reviewer\ndescription: Added after attach.\n---\nReview later.\n",
         )
         .unwrap();
-        let live = core_agents::AgentCatalog::discover_without_user(&workspace);
+        let live = iteron_agents::AgentCatalog::discover_without_user(&workspace);
         assert!(live.get("pinned-reviewer").is_none());
         assert!(live.get("late-reviewer").is_some());
 
@@ -174,13 +174,13 @@ mod tests {
                 transcript_tokens: total / 2,
                 framing_tokens: 0,
                 total_tokens: total,
-                provenance: core_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+                provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
             },
             model_context_window: None,
             reserved_output_tokens: 8_192,
             compaction_trigger_tokens: 120_000,
             effort: EffortApplication::Exact {
-                requested: core_protocol::ReasoningEffort::Medium,
+                requested: iteron_protocol::ReasoningEffort::Medium,
             },
         }
     }
@@ -264,12 +264,12 @@ mod tests {
         provider_id: &str,
         model: &str,
         turns: u32,
-    ) -> core_record::SessionMeta {
-        core_record::SessionMeta {
+    ) -> iteron_record::SessionMeta {
+        iteron_record::SessionMeta {
             pricing_schema_version: 2,
             projection_schema_version: 1,
-            run_id: core_protocol::RunId(run_id.into()),
-            tenant: core_protocol::TenantId::default(),
+            run_id: iteron_protocol::RunId(run_id.into()),
+            tenant: iteron_protocol::TenantId::default(),
             cwd: std::path::PathBuf::from("/tmp/project"),
             provider_id: provider_id.into(),
             model: model.into(),
@@ -432,7 +432,7 @@ mod tests {
 
         open_tunables_picker(&mut app, &session, "route_selection");
         let picker = app.picker.as_ref().expect("tunables picker opens");
-        assert_eq!(picker.items.len(), core_tunables::EXPECTED_FAMILY_COUNT);
+        assert_eq!(picker.items.len(), iteron_tunables::EXPECTED_FAMILY_COUNT);
         assert_eq!(picker.query, "route_selection");
         assert_eq!(picker.visible_indices(), vec![0]);
         let l0 = render_text(&mut app, 110, 26);
@@ -487,7 +487,7 @@ mod tests {
             record_path: std::path::PathBuf::from("/tmp/runs/side/side-1.jsonl"),
             asks,
             turns: 2,
-            cost: core_obs::CostState::Known {
+            cost: iteron_obs::CostState::Known {
                 amount_microusd: 12_300,
                 rate_card_digest: "digest".into(),
             },
@@ -504,7 +504,7 @@ mod tests {
             &mut app,
             &crate::runtime::SideAnswer {
                 text: "read crates/cli/src/tui.rs:1 for the composer".into(),
-                outcome: core_protocol::Outcome::Done,
+                outcome: iteron_protocol::Outcome::Done,
                 status: side_status_fixture("side-run-1", 1),
             },
         );
@@ -545,29 +545,29 @@ mod tests {
         assert!(screen.contains("$0.0123"), "{screen}");
     }
 
-    fn adopted_event(seq: u64, kind: core_protocol::EventKind) -> core_protocol::Event {
-        core_protocol::Event {
-            seq: core_protocol::Seq(seq),
-            turn: core_protocol::TurnId(1),
+    fn adopted_event(seq: u64, kind: iteron_protocol::EventKind) -> iteron_protocol::Event {
+        iteron_protocol::Event {
+            seq: iteron_protocol::Seq(seq),
+            turn: iteron_protocol::TurnId(1),
             kind,
         }
     }
 
     fn adopted_message(
-        role: core_protocol::Role,
-        content: Vec<core_protocol::Block>,
-    ) -> core_protocol::Message {
-        core_protocol::Message { role, content }
+        role: iteron_protocol::Role,
+        content: Vec<iteron_protocol::Block>,
+    ) -> iteron_protocol::Message {
+        iteron_protocol::Message { role, content }
     }
 
     #[test]
     fn an_adopted_record_renders_its_conversation_and_its_recorded_tool_results() {
-        use core_protocol::{Block as MessageBlock, EventKind, Role};
+        use iteron_protocol::{Block as MessageBlock, EventKind, Role};
         let events = vec![
             adopted_event(
                 1,
                 EventKind::Message {
-                    message: core_protocol::Message::user_text("find the parser bug"),
+                    message: iteron_protocol::Message::user_text("find the parser bug"),
                 },
             ),
             adopted_event(
@@ -579,12 +579,12 @@ mod tests {
                             MessageBlock::Text {
                                 text: "reading the parser".into(),
                             },
-                            MessageBlock::ToolUse(core_protocol::ToolUse {
+                            MessageBlock::ToolUse(iteron_protocol::ToolUse {
                                 id: "call-1".into(),
                                 name: "read_file".into(),
                                 input: serde_json::json!({ "path": "src/parse.rs" }),
                             }),
-                            MessageBlock::ToolUse(core_protocol::ToolUse {
+                            MessageBlock::ToolUse(iteron_protocol::ToolUse {
                                 id: "call-2".into(),
                                 name: "bash".into(),
                                 input: serde_json::json!({ "command": "cargo test" }),
@@ -598,11 +598,11 @@ mod tests {
                 EventKind::Message {
                     message: adopted_message(
                         Role::User,
-                        vec![MessageBlock::ToolResult(core_protocol::ToolResult {
+                        vec![MessageBlock::ToolResult(iteron_protocol::ToolResult {
                             tool_use_id: "call-1".into(),
                             content: "fn parse() {}".into(),
                             is_error: false,
-                            trust: core_protocol::Trust::Workspace,
+                            trust: iteron_protocol::Trust::Workspace,
                             latency_ms: 12,
                         })],
                     ),
@@ -635,13 +635,13 @@ mod tests {
 
     #[test]
     fn an_adopted_transcript_is_bounded_on_screen_and_reports_what_it_left_out() {
-        use core_protocol::EventKind;
-        let events: Vec<core_protocol::Event> = (0..MAX_ADOPTED_BLOCKS as u64 + 40)
+        use iteron_protocol::EventKind;
+        let events: Vec<iteron_protocol::Event> = (0..MAX_ADOPTED_BLOCKS as u64 + 40)
             .map(|index| {
                 adopted_event(
                     index,
                     EventKind::Message {
-                        message: core_protocol::Message::user_text(format!("message {index}")),
+                        message: iteron_protocol::Message::user_text(format!("message {index}")),
                     },
                 )
             })
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn the_route_to_bind_comes_from_the_records_last_durable_selection() {
-        use core_protocol::EventKind;
+        use iteron_protocol::EventKind;
         let selection = |provider: &str, model: &str| EventKind::ModelSelected {
             provider_id: provider.into(),
             model_id: model.into(),
@@ -2036,7 +2036,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.status = "verifying".into();
             app.run_started = Some(Instant::now());
             app.active_tools
-                .push_back(("tool-1".into(), "Bash(cargo test -p core-cli)".into()));
+                .push_back(("tool-1".into(), "Bash(cargo test -p iteron-cli)".into()));
             app.track_steer("also cover narrow terminals".into());
             app.queue_after_turn("then update the design record".into())
                 .unwrap();
@@ -3000,7 +3000,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // Every result-v5 field remains untouched and participates in raw Value equality.
         let (protocol_version, seq, headless) =
             headless::capture_terminal_result_frame(41, summary);
-        assert_eq!(protocol_version, core_protocol::PROTOCOL_VERSION);
+        assert_eq!(protocol_version, iteron_protocol::PROTOCOL_VERSION);
         assert_eq!(seq, 41);
         let (tui, tui_status) = tui_terminal_result(summary);
         ClientParityCapture {
@@ -3014,28 +3014,28 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn three_client_production_paths_are_pairwise_identical_for_every_terminal_outcome() {
         let cases = [
-            (core_protocol::Outcome::Done, "done", 0_u64),
-            (core_protocol::Outcome::Drained, "drained", 0),
+            (iteron_protocol::Outcome::Done, "done", 0_u64),
+            (iteron_protocol::Outcome::Drained, "drained", 0),
             (
-                core_protocol::Outcome::BudgetExhausted("max_turns"),
+                iteron_protocol::Outcome::BudgetExhausted("max_turns"),
                 "budget_exhausted",
                 3,
             ),
-            (core_protocol::Outcome::Interrupted, "interrupted", 130),
-            (core_protocol::Outcome::Stuck, "stuck", 4),
-            (core_protocol::Outcome::HarnessError, "harness_error", 2),
+            (iteron_protocol::Outcome::Interrupted, "interrupted", 130),
+            (iteron_protocol::Outcome::Stuck, "stuck", 4),
+            (iteron_protocol::Outcome::HarnessError, "harness_error", 2),
         ];
 
         for (outcome, expected_outcome, expected_exit_code) in cases {
             let summary = app_server::TerminalSummary {
-                error: matches!(&outcome, core_protocol::Outcome::HarnessError)
+                error: matches!(&outcome, iteron_protocol::Outcome::HarnessError)
                     .then(|| "synthetic harness failure".into()),
                 outcome,
                 assistant_text: "parity reply".into(),
                 run_id: "run-client-parity".into(),
                 cost: CostState::default(),
                 turns: 1,
-                kernel_tax: core_obs::KernelTax::default(),
+                kernel_tax: iteron_obs::KernelTax::default(),
                 memo_hits: 0,
                 memo_misses: 0,
             };
@@ -3094,12 +3094,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let (sq, _rx) = tokio::sync::mpsc::channel(1);
         let mut session = Session::for_test(sq);
         let summary = app_server::TerminalSummary {
-            outcome: core_protocol::Outcome::Done,
+            outcome: iteron_protocol::Outcome::Done,
             assistant_text: "the typed answer".into(),
             run_id: "run-tui-parity".into(),
             cost: CostState::default(),
             turns: 3,
-            kernel_tax: core_obs::KernelTax::default(),
+            kernel_tax: iteron_obs::KernelTax::default(),
             error: None,
             memo_hits: 0,
             memo_misses: 0,
@@ -3175,12 +3175,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 rate_limit: None,
             }),
             summary: Box::new(app_server::TerminalSummary {
-                outcome: core_protocol::Outcome::Interrupted,
+                outcome: iteron_protocol::Outcome::Interrupted,
                 assistant_text: String::new(),
                 run_id: "run-interrupt-handoff".into(),
                 cost: CostState::default(),
                 turns: 1,
-                kernel_tax: core_obs::KernelTax::default(),
+                kernel_tax: iteron_obs::KernelTax::default(),
                 error: None,
                 memo_hits: 0,
                 memo_misses: 0,
@@ -3233,12 +3233,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 rate_limit: None,
             }),
             summary: Box::new(app_server::TerminalSummary {
-                outcome: core_protocol::Outcome::BudgetExhausted("max_turns"),
+                outcome: iteron_protocol::Outcome::BudgetExhausted("max_turns"),
                 assistant_text: String::new(),
                 run_id: "run-budget-remedy".into(),
                 cost: CostState::default(),
                 turns: 40,
-                kernel_tax: core_obs::KernelTax::default(),
+                kernel_tax: iteron_obs::KernelTax::default(),
                 error: None,
                 memo_hits: 0,
                 memo_misses: 0,
@@ -3706,7 +3706,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             true,
             None,
             "updated".into(),
-            Some(core_protocol::FileDiff::from_replacement(
+            Some(iteron_protocol::FileDiff::from_replacement(
                 "src/lib.rs",
                 "old",
                 "new",
@@ -3800,7 +3800,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
     #[test]
     fn quickjs_workflow_run_events_upsert_one_live_tree() {
-        use core_workflow::events::{ProgressEvent, WorkflowState};
+        use iteron_workflow::events::{ProgressEvent, WorkflowState};
 
         let mut app = App::new();
         app.theme = theme::Theme::dark();
@@ -3906,7 +3906,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     /// exactly the drift a parallel store must not introduce.
     #[test]
     fn folding_a_run_tree_moves_the_store_and_the_card_together() {
-        use core_workflow::events::ProgressEvent;
+        use iteron_workflow::events::ProgressEvent;
 
         let mut app = App::new();
         app.theme = theme::Theme::dark();
@@ -3950,7 +3950,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     /// what the kernel installs, `workflow_run_ui_event` is what the frontend dispatches to.
     #[test]
     fn a_workflow_launched_in_the_tui_renders_a_live_progress_tree() {
-        use core_workflow::events::{ProgressEvent, ProgressSink, WorkflowState};
+        use iteron_workflow::events::{ProgressEvent, ProgressSink, WorkflowState};
 
         let mut app = App::new();
         app.theme = theme::Theme::dark();
@@ -4076,7 +4076,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     /// the tree and not even the blank line that would normally precede its block.
     #[test]
     fn a_live_run_is_watched_in_the_region_and_recorded_in_the_transcript_when_it_settles() {
-        use core_workflow::events::ProgressEvent;
+        use iteron_workflow::events::ProgressEvent;
 
         let mut app = App::new();
         app.theme = theme::Theme::dark();
@@ -4189,7 +4189,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     /// its record, exactly like every other block of the cleared conversation.
     #[test]
     fn clearing_the_conversation_keeps_a_running_workflow_and_drops_a_finished_one() {
-        use core_workflow::events::ProgressEvent;
+        use iteron_workflow::events::ProgressEvent;
 
         let mut app = App::new();
         app.theme = theme::Theme::dark();
@@ -4258,7 +4258,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     /// the card's mirror together, exactly as the transcript fold does.
     #[test]
     fn ctrl_o_folds_the_run_the_region_is_drawing() {
-        use core_workflow::events::ProgressEvent;
+        use iteron_workflow::events::ProgressEvent;
 
         let mut app = App::new();
         app.theme = theme::Theme::dark();
@@ -4337,7 +4337,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     /// the region is where a live run is watched, but "nowhere" is never an option.
     #[test]
     fn a_frame_too_small_for_the_region_keeps_the_run_in_the_conversation() {
-        use core_workflow::events::ProgressEvent;
+        use iteron_workflow::events::ProgressEvent;
 
         let mut app = App::new();
         app.theme = theme::Theme::dark();
@@ -4377,7 +4377,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     /// conversation, and the window states what it hid instead of clipping the tree in silence.
     #[test]
     fn a_tree_taller_than_the_terminal_windows_instead_of_eating_the_conversation() {
-        use core_workflow::events::ProgressEvent;
+        use iteron_workflow::events::ProgressEvent;
 
         let mut app = App::new();
         app.theme = theme::Theme::dark();
@@ -4420,7 +4420,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     /// nothing hostile in a label or a narrator line survives the trip.
     #[test]
     fn a_hostile_workflow_script_cannot_write_control_sequences_into_the_transcript() {
-        use core_workflow::events::{ProgressEvent, ProgressSink};
+        use iteron_workflow::events::{ProgressEvent, ProgressSink};
 
         let mut app = App::new();
         app.theme = theme::Theme::dark();
@@ -4726,7 +4726,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let (busy_tx, _busy_rx) = tokio::sync::mpsc::channel(1);
         busy_tx
-            .try_send(core_protocol::SqEnvelope::current(Op::Interrupt))
+            .try_send(iteron_protocol::SqEnvelope::current(Op::Interrupt))
             .expect("fixture fills the bounded SQ");
         let busy_session = Session::for_test(busy_tx);
         let mut busy_app = App::new();
@@ -4759,7 +4759,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let (busy_tx, _busy_rx) = tokio::sync::mpsc::channel(1);
         busy_tx
-            .try_send(core_protocol::SqEnvelope::current(Op::Interrupt))
+            .try_send(iteron_protocol::SqEnvelope::current(Op::Interrupt))
             .expect("fixture fills the bounded SQ");
         let busy_session = Session::for_test(busy_tx);
         let mut notifier = notification::TerminalNotifier::new(false);
@@ -4841,7 +4841,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut session,
             app_server::ServerEvent::Submission {
                 id: submission_id,
-                state: core_protocol::SubmissionLifecycleState::Received,
+                state: iteron_protocol::SubmissionLifecycleState::Received,
                 reason_code: None,
             },
             &mut notifier,
@@ -4898,7 +4898,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut session,
             app_server::ServerEvent::Submission {
                 id: submission_id,
-                state: core_protocol::SubmissionLifecycleState::Received,
+                state: iteron_protocol::SubmissionLifecycleState::Received,
                 reason_code: None,
             },
             &mut notifier,
@@ -4934,13 +4934,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(segments.text(), "describe this [Image #1]");
         let images = segments.images().collect::<Vec<_>>();
         assert_eq!(images.len(), 1);
-        assert_eq!(images[0].media_type, core_protocol::ImageMediaType::Gif);
+        assert_eq!(images[0].media_type, iteron_protocol::ImageMediaType::Gif);
         apply_server_event(
             &mut app,
             &mut session,
             app_server::ServerEvent::Submission {
                 id: submission_id,
-                state: core_protocol::SubmissionLifecycleState::Applied,
+                state: iteron_protocol::SubmissionLifecycleState::Applied,
                 reason_code: None,
             },
             &mut notifier,
@@ -4998,7 +4998,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut session,
             app_server::ServerEvent::Submission {
                 id: submission_id,
-                state: core_protocol::SubmissionLifecycleState::Received,
+                state: iteron_protocol::SubmissionLifecycleState::Received,
                 reason_code: None,
             },
             &mut notifier,
@@ -5259,7 +5259,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(attachment.display_name(), "iPhone Photo.heic");
         assert_eq!(
             attachment.media_type(),
-            core_protocol::ImageMediaType::Jpeg,
+            iteron_protocol::ImageMediaType::Jpeg,
             "the provider never receives HEIC bytes"
         );
         std::fs::remove_dir_all(dir).ok();
@@ -5425,7 +5425,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         )
     }
 
-    fn submitted_segments(app: &mut App) -> core_protocol::input::ContentSegments {
+    fn submitted_segments(app: &mut App) -> iteron_protocol::input::ContentSegments {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let session = Session::for_test(tx);
         let mut notifier = notification::TerminalNotifier::new(false);
@@ -5613,7 +5613,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         for forbidden in [
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
-            "CORE_RELEASE_SMOKE_KEY",
+            "ITERON_RELEASE_SMOKE_KEY",
             "HTTPS_PROXY",
             "HTTP_PROXY",
             "HOME",
@@ -5641,7 +5641,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn a_stalled_provider_is_described_differently_from_a_slow_one_before_the_deadline() {
         let mut app = App::new();
         app.running = true;
-        apply_event(&mut app, UiEvent::Phase(core_protocol::Phase::Model));
+        apply_event(&mut app, UiEvent::Phase(iteron_protocol::Phase::Model));
 
         // An ordinary wait says nothing at all; the phase label already covers it.
         assert!(app.first_token_stall().is_none());
@@ -5679,9 +5679,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(app.first_token_stall().is_none());
 
         // Leaving the model phase stops the clock: only a provider request can be waiting on one.
-        apply_event(&mut app, UiEvent::Phase(core_protocol::Phase::Model));
+        apply_event(&mut app, UiEvent::Phase(iteron_protocol::Phase::Model));
         app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
-        apply_event(&mut app, UiEvent::Phase(core_protocol::Phase::Tools));
+        apply_event(&mut app, UiEvent::Phase(iteron_protocol::Phase::Tools));
         assert!(app.first_token_stall().is_none());
     }
 
@@ -5797,7 +5797,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
         apply_live_event(
             &mut app,
-            UiEvent::Phase(core_protocol::Phase::Model),
+            UiEvent::Phase(iteron_protocol::Phase::Model),
             &mut notifier,
             &mut output,
         );
@@ -5858,7 +5858,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         apply_live_event(
             &mut app,
-            UiEvent::Phase(core_protocol::Phase::Model),
+            UiEvent::Phase(iteron_protocol::Phase::Model),
             &mut notifier,
             &mut output,
         );
@@ -5911,20 +5911,20 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             transcript_tokens: 3,
             framing_tokens: 4,
             total_tokens: 10,
-            provenance: core_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+            provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
         });
         app.model_context_window = Some(200_000);
         app.effort_application = Some(EffortApplication::Unsupported {
-            requested: core_protocol::ReasoningEffort::High,
+            requested: iteron_protocol::ReasoningEffort::High,
         });
         // The runtime clears the ledger's last-turn usage on a model change (see
         // `app_server::apply_control`) and reports the result on the snapshot; the frontend adopts
         // whatever the snapshot says rather than deciding for itself.
         let state = app_server::SessionSnapshot {
-            mode: core_protocol::PermissionMode::default(),
-            effort: core_protocol::Effort::default(),
+            mode: iteron_protocol::PermissionMode::default(),
+            effort: iteron_protocol::Effort::default(),
             model: "claude-opus-5".into(),
-            cost: core_obs::CostState::default(),
+            cost: iteron_obs::CostState::default(),
             last_turn_usage: None,
             unadmitted_steers: Vec::new(),
             permission_rules: PermissionRules::new(),
@@ -5964,7 +5964,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         } = &mut event
         {
             *effort = EffortApplication::Unsupported {
-                requested: core_protocol::ReasoningEffort::High,
+                requested: iteron_protocol::ReasoningEffort::High,
             };
             *model_context_window = None;
         }
@@ -6189,9 +6189,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             std::env::temp_dir().join(format!("core-init-outside-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
-        std::os::unix::fs::symlink(&outside, root.join(".core")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(".iteron")).unwrap();
 
-        assert!(ensure_real_workspace_dir(&root, ".core").is_err());
+        assert!(ensure_real_workspace_dir(&root, ".iteron").is_err());
         assert!(!outside.join("config.json").exists());
 
         std::fs::remove_dir_all(root).ok();
@@ -6280,25 +6280,25 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 }
 #[test]
 fn window_title_is_capability_gated_and_restored_exactly_once() {
-    let capabilities = core_statusline::Capabilities::detect(|name| match name {
+    let capabilities = iteron_statusline::Capabilities::detect(|name| match name {
         "TERM" => Some("xterm-256color".into()),
         _ => None,
     });
     let active = AtomicBool::new(false);
     let mut bytes = Vec::new();
-    assert!(set_terminal_title_to(&mut bytes, capabilities, "Core Code · repo", &active).unwrap());
-    assert!(bytes.starts_with(core_statusline::title_stack_push().as_bytes()));
+    assert!(set_terminal_title_to(&mut bytes, capabilities, "Iteron · repo", &active).unwrap());
+    assert!(bytes.starts_with(iteron_statusline::title_stack_push().as_bytes()));
     assert!(bytes.windows(4).any(|window| window == b"]2;C"));
     assert!(
         replace_terminal_title_to(
             &mut bytes,
             capabilities,
-            "Core Code · session name",
+            "Iteron · session name",
             &active,
         )
         .unwrap()
     );
-    let push = core_statusline::title_stack_push().as_bytes();
+    let push = iteron_statusline::title_stack_push().as_bytes();
     assert_eq!(
         bytes
             .windows(push.len())
@@ -6309,7 +6309,7 @@ fn window_title_is_capability_gated_and_restored_exactly_once() {
     );
     restore_terminal_title_to(&mut bytes, &active);
     let after_first = bytes.len();
-    assert!(bytes.ends_with(core_statusline::restore_title().as_bytes()));
+    assert!(bytes.ends_with(iteron_statusline::restore_title().as_bytes()));
     restore_terminal_title_to(&mut bytes, &active);
     assert_eq!(
         bytes.len(),
@@ -6317,7 +6317,7 @@ fn window_title_is_capability_gated_and_restored_exactly_once() {
         "cleanup may pop only the frame it owns"
     );
 
-    let multiplexed = core_statusline::Capabilities::detect(|name| match name {
+    let multiplexed = iteron_statusline::Capabilities::detect(|name| match name {
         "TERM" => Some("screen-256color".into()),
         "TMUX" => Some("session".into()),
         _ => None,

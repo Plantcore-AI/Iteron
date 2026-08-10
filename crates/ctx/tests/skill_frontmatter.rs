@@ -1,9 +1,9 @@
-use core_ctx::skills::SkillCatalog;
+use iteron_ctx::skills::SkillCatalog;
 use std::path::{Path, PathBuf};
 
 fn temporary_repo(tag: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "core-ctx-skill-frontmatter-{tag}-{}",
+        "iteron-ctx-skill-frontmatter-{tag}-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&path).unwrap();
@@ -11,7 +11,7 @@ fn temporary_repo(tag: &str) -> PathBuf {
 }
 
 fn write_skill(repo: &Path, directory: &str, source: &str) {
-    let path = repo.join(".core/skills").join(directory);
+    let path = repo.join(".iteron/skills").join(directory);
     std::fs::create_dir_all(&path).unwrap();
     std::fs::write(path.join("SKILL.md"), source).unwrap();
 }

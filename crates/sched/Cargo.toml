@@ -1,13 +1,13 @@
 [package]
-name = "core-sched"
+name = "iteron-sched"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
-core-protocol = { path = "../protocol" }
-core-provider = { path = "../provider" }
+iteron-protocol = { path = "../protocol" }
+iteron-provider = { path = "../provider" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

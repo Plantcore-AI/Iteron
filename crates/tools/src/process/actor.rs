@@ -4,7 +4,7 @@ use super::{
     CONTROL_QUEUE_CAPACITY, MAX_JOB_RUNTIME_SECS, OUTPUT_DRAIN_SECS, ProcessLifecycleKind,
     ProcessLifecycleNotice, ProcessLifecycleObserver, STDIN_WRITE_SECS, STOP_QUEUE_CAPACITY,
 };
-use core_sandbox::{ConfinedProcess, ConfinedProcessControl};
+use iteron_sandbox::{ConfinedProcess, ConfinedProcessControl};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};

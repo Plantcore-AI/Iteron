@@ -1,6 +1,6 @@
 use super::LspToolError;
-use core_lsp::MAX_HOVER_BYTES;
-use core_lsp::intel::{parse_hover_text, parse_locations};
+use iteron_lsp::MAX_HOVER_BYTES;
+use iteron_lsp::intel::{parse_hover_text, parse_locations};
 use serde_json::{Value, json};
 use std::path::Path;
 

@@ -48,7 +48,7 @@ fn main() -> Result<()> {
         }
         [group, command] if group == "tunables" && command == "check" => {
             tunables::check(&root)?;
-            println!("core-tunables registry and generated artifacts are canonical");
+            println!("iteron-tunables registry and generated artifacts are canonical");
             return Ok(());
         }
         [group, command] if group == "tunables" && command == "generate" => {
@@ -148,7 +148,7 @@ fn main() -> Result<()> {
         }
         _ => {
             bail!(
-                "usage: core-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
+                "usage: iteron-xtask [--repo PATH] boundaries <check|generate|list [--open]|readiness|explain PATH|affected --base REV|check-base --base REV|check-pr --base REV|check-reviews --base REV> | conformance <check|kernel> | docs <check|generate> | lifecycle check | tunables <check|generate> | schema-compat <check-bootstrap|check-base --base REV|check-release --base REV>"
             )
         }
     }

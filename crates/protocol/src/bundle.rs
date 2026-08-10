@@ -1,15 +1,15 @@
 //! The read-only, boot-time view of the policy bundle in force, and the port that hands it over.
 //!
-//! # Why this lives in `core-protocol` and not in `core-evolve`
+//! # Why this lives in `iteron-protocol` and not in `iteron-evolve`
 //!
-//! The producing side of this seam is `core-evolve`, the offline promotion crate. The consuming
+//! The producing side of this seam is `iteron-evolve`, the offline promotion crate. The consuming
 //! side is `crates/agents`, inside the runtime. The invariant that governs the whole arrangement is
 //! that **the runtime never depends on the evolution crate** — evolution is deliberately outside the
 //! trusted computing base, and a dependency edge pointing from `agents` or `kernel` into
-//! `core-evolve` would drag an offline governance crate into the boot path of every run.
+//! `iteron-evolve` would drag an offline governance crate into the boot path of every run.
 //!
-//! A first cut declared this port in `core-evolve` over `core_evolve::PolicyBundle` and
-//! `core_evolve::StrategySlot`. That reads as harmless until someone tries to implement it: naming
+//! A first cut declared this port in `iteron-evolve` over `iteron_evolve::PolicyBundle` and
+//! `iteron_evolve::StrategySlot`. That reads as harmless until someone tries to implement it: naming
 //! the trait, binding its return value, or even matching on it all require the consumer to name
 //! external types, and Rust cannot name a type from a crate that is not in its dependency graph. So
 //! the first real consumer's first line would have been the dependency the invariant forbids. The
@@ -17,10 +17,10 @@
 //! was measuring an absence, not preserving an invariant.
 //!
 //! Declaring the seam here fixes that by construction. `crates/evolve` already depends on
-//! `core-protocol`; `crates/agents` already depends on `core-protocol`. Both sides can name every
+//! `iteron-protocol`; `crates/agents` already depends on `iteron-protocol`. Both sides can name every
 //! type in every signature, and **neither side gains a dependency**. The evolve side supplies the
 //! projection from its own `PolicyBundle` into [`ResolvedBundle`]; the agents side never learns that
-//! `core-evolve` exists.
+//! `iteron-evolve` exists.
 //!
 //! # Why the view is not the bundle
 //!
@@ -244,18 +244,18 @@ mod tests {
 
     #[test]
     fn governs_answers_from_the_snapshot_and_cannot_disagree_with_it() {
-        let resolved = bundle(vec![policy("core/router")]);
-        assert!(resolved.governs(&SlotId("core/router".into())));
-        assert!(!resolved.governs(&SlotId("core/verifier".into())));
+        let resolved = bundle(vec![policy("iteron/router")]);
+        assert!(resolved.governs(&SlotId("iteron/router".into())));
+        assert!(!resolved.governs(&SlotId("iteron/verifier".into())));
         assert_eq!(
             resolved
-                .policy_for(&SlotId("core/router".into()))
+                .policy_for(&SlotId("iteron/router".into()))
                 .map(|p| p.policy_id.as_str()),
             Some("acme.router")
         );
         assert!(
             resolved
-                .policy_for(&SlotId("core/verifier".into()))
+                .policy_for(&SlotId("iteron/verifier".into()))
                 .is_none()
         );
     }
@@ -265,7 +265,7 @@ mod tests {
         // Distinct from "no bundle at all", which the resolver signals with `Ok(None)`.
         let resolved = bundle(Vec::new());
         assert!(resolved.validate().is_ok());
-        assert!(!resolved.governs(&SlotId("core/router".into())));
+        assert!(!resolved.governs(&SlotId("iteron/router".into())));
     }
 
     #[test]
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn the_same_slot_twice_is_ambiguous_and_refused() {
-        let resolved = bundle(vec![policy("core/router"), policy("core/router")]);
+        let resolved = bundle(vec![policy("iteron/router"), policy("iteron/router")]);
         assert_eq!(
             resolved.validate(),
             Err(BundleResolutionError::DuplicateSlot)
@@ -291,14 +291,14 @@ mod tests {
 
     #[test]
     fn a_digest_that_is_not_64_lowercase_hex_is_refused() {
-        let mut resolved = bundle(vec![policy("core/router")]);
+        let mut resolved = bundle(vec![policy("iteron/router")]);
         resolved.digest = "z".repeat(64);
         assert!(matches!(
             resolved.validate(),
             Err(BundleResolutionError::Malformed(_))
         ));
 
-        let mut short = bundle(vec![policy("core/router")]);
+        let mut short = bundle(vec![policy("iteron/router")]);
         short.policies[0].digest = "abc".into();
         assert!(matches!(
             short.validate(),
@@ -308,14 +308,14 @@ mod tests {
 
     #[test]
     fn identity_fields_are_bounded_and_non_empty() {
-        let mut empty = bundle(vec![policy("core/router")]);
+        let mut empty = bundle(vec![policy("iteron/router")]);
         empty.bundle_id = "   ".into();
         assert!(matches!(
             empty.validate(),
             Err(BundleResolutionError::Malformed(_))
         ));
 
-        let mut over = bundle(vec![policy("core/router")]);
+        let mut over = bundle(vec![policy("iteron/router")]);
         over.policies[0].version = "9".repeat(MAX_RESOLVED_BUNDLE_FIELD_BYTES + 1);
         assert!(matches!(
             over.validate(),
@@ -340,7 +340,7 @@ mod tests {
         struct Governed;
         impl PolicyBundleResolver for Governed {
             fn active_bundle(&self) -> Result<Option<ResolvedBundle>, BundleResolutionError> {
-                Ok(Some(bundle(vec![policy("core/router")])))
+                Ok(Some(bundle(vec![policy("iteron/router")])))
             }
         }
 
@@ -352,13 +352,13 @@ mod tests {
             .active_bundle()
             .expect("resolver ok")
             .expect("a bundle");
-        assert!(governed.governs(&SlotId("core/router".into())));
+        assert!(governed.governs(&SlotId("iteron/router".into())));
         assert!(governed.validate().is_ok());
     }
 
     #[test]
     fn the_view_round_trips_through_json_without_moving() {
-        let resolved = bundle(vec![policy("core/router")]);
+        let resolved = bundle(vec![policy("iteron/router")]);
         let encoded = serde_json::to_string(&resolved).expect("serialize");
         let decoded: ResolvedBundle = serde_json::from_str(&encoded).expect("deserialize");
         assert_eq!(resolved, decoded);

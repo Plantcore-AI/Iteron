@@ -1,5 +1,5 @@
 use super::*;
-use core_protocol::{Event, EventKind, Seq, TurnId};
+use iteron_protocol::{Event, EventKind, Seq, TurnId};
 
 struct Runs(std::path::PathBuf);
 
@@ -23,7 +23,7 @@ fn runs_dir(label: &str) -> Runs {
 }
 
 fn write_run(dir: &std::path::Path, run: &RunId, texts: &[&str]) {
-    let mut rollout = core_record::Rollout::open(dir, run, TenantId::default()).unwrap();
+    let mut rollout = iteron_record::Rollout::open(dir, run, TenantId::default()).unwrap();
     for (index, text) in texts.iter().enumerate() {
         rollout
             .append(&Event {
@@ -38,7 +38,7 @@ fn write_run(dir: &std::path::Path, run: &RunId, texts: &[&str]) {
 }
 
 fn write_tagged_run(dir: &std::path::Path, run: &RunId, tag: Option<&str>, texts: &[&str]) {
-    let mut rollout = core_record::Rollout::open(dir, run, TenantId::default()).unwrap();
+    let mut rollout = iteron_record::Rollout::open(dir, run, TenantId::default()).unwrap();
     rollout
         .append(&Event {
             seq: Seq::ZERO,
@@ -46,7 +46,7 @@ fn write_tagged_run(dir: &std::path::Path, run: &RunId, tag: Option<&str>, texts
             kind: EventKind::RunStart {
                 cwd: "/repo".into(),
                 model: "model".into(),
-                effort: core_protocol::Effort::Medium,
+                effort: iteron_protocol::Effort::Medium,
                 created_at: 1,
                 environment: None,
                 parent_run: None,
@@ -71,7 +71,7 @@ fn write_tagged_run(dir: &std::path::Path, run: &RunId, tag: Option<&str>, texts
     }
 }
 
-/// A client must be able to read a conversation without opening anything under `.core/runs`.
+/// A client must be able to read a conversation without opening anything under `.iteron/runs`.
 #[test]
 fn a_transcript_is_readable_through_the_contract() {
     let runs = runs_dir("read");
@@ -187,7 +187,7 @@ fn transcript_pages_walk_the_tail_without_gaps_or_cross_run_reuse() {
     write_run(&runs.0, &run, &["first", "second", "third"]);
     let other = RunId("different".into());
     write_run(&runs.0, &other, &["other"]);
-    let events = core_record::load_forked(&runs.0, &run).unwrap();
+    let events = iteron_record::load_forked(&runs.0, &run).unwrap();
     let one_event_bound = events
         .iter()
         .map(|event| serde_json::to_vec(&redact_event(event)).unwrap().len() + 1)

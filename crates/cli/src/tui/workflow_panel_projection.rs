@@ -1,9 +1,9 @@
 use super::*;
 
 pub(super) fn workflow_panel_agent_state(
-    state: core_workflow::events::WorkflowState,
+    state: iteron_workflow::events::WorkflowState,
 ) -> workflows_panel::AgentState {
-    use core_workflow::events::WorkflowState;
+    use iteron_workflow::events::WorkflowState;
     match state {
         WorkflowState::Queued => workflows_panel::AgentState::Queued,
         WorkflowState::Running => workflows_panel::AgentState::Running,
@@ -48,7 +48,7 @@ pub(super) fn workflow_panel_runs(app: &App) -> Vec<workflows_panel::Run> {
         let failed = card
             .agents
             .iter()
-            .any(|agent| agent.state == core_workflow::events::WorkflowState::Error);
+            .any(|agent| agent.state == iteron_workflow::events::WorkflowState::Error);
         let state = if card.finished {
             if failed {
                 workflows_panel::RunState::Failed

@@ -1,6 +1,6 @@
 # Contributing
 
-Core Code welcomes focused bug fixes, tests, provider evidence, terminal
+Iteron welcomes focused bug fixes, tests, provider evidence, terminal
 compatibility work, documentation, and design discussion. Human contributors
 remain accountable for changes produced with or without coding agents.
 
@@ -15,8 +15,8 @@ remain accountable for changes produced with or without coding agents.
   does not require becoming a maintainer.
 
 Read the complete
-[CONTRIBUTING.md](https://github.com/Plantcore-AI/core/blob/main/CONTRIBUTING.md)
-and [Code of Conduct](https://github.com/Plantcore-AI/core/blob/main/CODE_OF_CONDUCT.md)
+[CONTRIBUTING.md](https://github.com/Plantcore-AI/Iteron/blob/main/CONTRIBUTING.md)
+and [Code of Conduct](https://github.com/Plantcore-AI/Iteron/blob/main/CODE_OF_CONDUCT.md)
 before opening a pull request.
 
 ## Local start
@@ -24,7 +24,7 @@ before opening a pull request.
 ```sh
 git clone https://github.com/YOUR-ACCOUNT/core.git
 cd core
-cargo build --locked -p core-cli
+cargo build --locked -p iteron-cli
 cargo test --workspace --all-targets --locked
 ```
 
@@ -35,7 +35,7 @@ usable bubblewrap so the live confinement test runs.
 
 ```sh
 cargo fmt --all -- --check
-cargo run --locked -p core-xtask -- boundaries check
+cargo run --locked -p iteron-xtask -- boundaries check
 cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked

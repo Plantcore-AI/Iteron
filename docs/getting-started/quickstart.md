@@ -1,14 +1,14 @@
 # Quickstart
 
-Use a disposable Git repository for the first run. Core Code is pre-alpha and code
+Use a disposable Git repository for the first run. Iteron is pre-alpha and code
 execution is intentionally disabled by default.
 
 ## 1. Build the executable
 
-From the Core Code source tree:
+From the Iteron source tree:
 
 ```sh
-cargo build --release --locked -p core-cli
+cargo build --release --locked -p iteron-cli
 ```
 
 The examples below use `/path/to/core/target/release/core`. Replace it with `core`
@@ -17,7 +17,7 @@ if you installed the binary on `PATH`.
 ## 2. Provide a credential to the process
 
 The built-in default provider is `glm`. Its credential environment variable is
-`GLM_API_KEY`; Core Code never expects the credential value in repository
+`GLM_API_KEY`; Iteron never expects the credential value in repository
 configuration. Make the variable available through your shell or secret manager
 without committing it.
 

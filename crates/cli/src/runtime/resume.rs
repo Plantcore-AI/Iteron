@@ -184,7 +184,7 @@ impl Agent {
                     let mut pricing_replay = self
                         .pricing_port
                         .as_ref()
-                        .map(|pricing| core_obs::PricingReplay::trusted(pricing.clone()))
+                        .map(|pricing| iteron_obs::PricingReplay::trusted(pricing.clone()))
                         .unwrap_or_default();
                     for scoped in &scoped_events {
                         pricing_replay.observe(
@@ -352,7 +352,7 @@ impl Agent {
             validate_route_identifier(
                 "agent_definition_tag",
                 tag,
-                core_protocol::MAX_AGENT_DEFINITION_TAG_BYTES,
+                iteron_protocol::MAX_AGENT_DEFINITION_TAG_BYTES,
                 false,
             )?;
         }

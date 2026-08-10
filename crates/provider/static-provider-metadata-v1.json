@@ -13,7 +13,7 @@
       "version": "anthropic-effort-beta@2025-11-24+sha256:5e6597a69f9ed3cf5d646deaa4690d9e09b95285f119a3ea73a1ddb788607fb1"
     }
   },
-  "bundle_revision": "core-provider-static-metadata@2026-08-03+sha256:7ecb92aa59e8fae1f9e589eacb2c3eac2468ac8d3dfc89b525f39c676f01c36f",
+  "bundle_revision": "iteron-provider-static-metadata@2026-08-03+sha256:7ecb92aa59e8fae1f9e589eacb2c3eac2468ac8d3dfc89b525f39c676f01c36f",
   "glm_standard_chat": {
     "api_root": "https://open.bigmodel.cn/api/paas/v4",
     "capabilities": {

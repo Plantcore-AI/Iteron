@@ -9,7 +9,7 @@ pub fn verify_evidence_bundle(
     let index_path = directory.join("bundle.index.json");
     let index: EvidenceBundleIndex = decode(&read_regular(&index_path, MAX_INDEX_BYTES)?)?;
     if index.schema_version != 1
-        || index.bundle_type != "core-eval-signed-evidence"
+        || index.bundle_type != "iteron-eval-signed-evidence"
         || index.public_key != trusted_public_key
         || index.files.is_empty()
         || index.files.len() > MAX_BUNDLE_FILES

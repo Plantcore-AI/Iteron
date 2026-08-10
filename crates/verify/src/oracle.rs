@@ -1,6 +1,6 @@
 //! Oracles, ranked by strength. A weak oracle never vetoes (ADR-005 R6).
 
-use core_sandbox::{Confinement, Sandbox};
+use iteron_sandbox::{Confinement, Sandbox};
 use std::path::PathBuf;
 
 /// How much authority an oracle's verdict carries. The ranking is a type, not a convention.
@@ -198,7 +198,7 @@ impl Oracle for TestOracle {
                 // Keep the tail (test failures print last), UTF-8-safe (code review CRITICAL:
                 // a raw byte slice panics on a multibyte char at the cut).
                 let combined = format!("{}\n{}", out.stdout, out.stderr);
-                detail.push_str(&core_protocol::text::tail(&combined, 4000));
+                detail.push_str(&iteron_protocol::text::tail(&combined, 4000));
                 Verdict::new(OracleStrength::Strong, outcome, detail)
             }
             Err(e) => Verdict::new(
@@ -224,9 +224,9 @@ mod tests {
             &self,
             _command: &str,
             conf: &Confinement,
-        ) -> Result<core_sandbox::RunOutput, core_sandbox::SandboxError> {
+        ) -> Result<iteron_sandbox::RunOutput, iteron_sandbox::SandboxError> {
             *self.sensitive_env_names.lock().unwrap() = conf.sensitive_env_names.clone();
-            Ok(core_sandbox::RunOutput {
+            Ok(iteron_sandbox::RunOutput {
                 exit_code: 0,
                 stdout: String::new(),
                 stderr: String::new(),
@@ -274,7 +274,7 @@ mod tests {
         );
     }
 
-    struct FixedOutputSandbox(core_sandbox::RunOutput);
+    struct FixedOutputSandbox(iteron_sandbox::RunOutput);
 
     #[async_trait::async_trait]
     impl Sandbox for FixedOutputSandbox {
@@ -282,7 +282,7 @@ mod tests {
             &self,
             _command: &str,
             _conf: &Confinement,
-        ) -> Result<core_sandbox::RunOutput, core_sandbox::SandboxError> {
+        ) -> Result<iteron_sandbox::RunOutput, iteron_sandbox::SandboxError> {
             Ok(self.0.clone())
         }
     }
@@ -290,7 +290,7 @@ mod tests {
     #[tokio::test]
     async fn test_oracle_preserves_truncation_evidence_across_utf8_safe_tail() {
         let oracle = TestOracle::new(
-            Box::new(FixedOutputSandbox(core_sandbox::RunOutput {
+            Box::new(FixedOutputSandbox(iteron_sandbox::RunOutput {
                 exit_code: 1,
                 stdout: "写".repeat(2_000),
                 stderr: "尾".repeat(2_000),
@@ -316,7 +316,7 @@ mod tests {
     #[tokio::test]
     async fn test_oracle_timeout_is_typed_and_bounded_evidence() {
         let oracle = TestOracle::new(
-            Box::new(FixedOutputSandbox(core_sandbox::RunOutput {
+            Box::new(FixedOutputSandbox(iteron_sandbox::RunOutput {
                 exit_code: -1,
                 stdout: "partial verification output".into(),
                 stderr: String::new(),
@@ -335,7 +335,7 @@ mod tests {
         assert!(verdict.detail.contains("partial verification output"));
     }
 
-    struct ErrorSandbox(core_sandbox::SandboxError);
+    struct ErrorSandbox(iteron_sandbox::SandboxError);
 
     #[async_trait::async_trait]
     impl Sandbox for ErrorSandbox {
@@ -343,14 +343,16 @@ mod tests {
             &self,
             _command: &str,
             _conf: &Confinement,
-        ) -> Result<core_sandbox::RunOutput, core_sandbox::SandboxError> {
+        ) -> Result<iteron_sandbox::RunOutput, iteron_sandbox::SandboxError> {
             Err(match &self.0 {
-                core_sandbox::SandboxError::Unsupported => core_sandbox::SandboxError::Unsupported,
-                core_sandbox::SandboxError::Spawn(detail) => {
-                    core_sandbox::SandboxError::Spawn(detail.clone())
+                iteron_sandbox::SandboxError::Unsupported => {
+                    iteron_sandbox::SandboxError::Unsupported
                 }
-                core_sandbox::SandboxError::Profile(detail) => {
-                    core_sandbox::SandboxError::Profile(detail.clone())
+                iteron_sandbox::SandboxError::Spawn(detail) => {
+                    iteron_sandbox::SandboxError::Spawn(detail.clone())
+                }
+                iteron_sandbox::SandboxError::Profile(detail) => {
+                    iteron_sandbox::SandboxError::Profile(detail.clone())
                 }
             })
         }
@@ -359,7 +361,7 @@ mod tests {
     #[tokio::test]
     async fn sandbox_refusal_is_infrastructure_failure_not_test_failure() {
         let oracle = TestOracle::new(
-            Box::new(ErrorSandbox(core_sandbox::SandboxError::Unsupported)),
+            Box::new(ErrorSandbox(iteron_sandbox::SandboxError::Unsupported)),
             std::env::temp_dir(),
             "test".into(),
         );
@@ -372,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn missing_verification_command_is_infrastructure_failure() {
         let oracle = TestOracle::new(
-            Box::new(FixedOutputSandbox(core_sandbox::RunOutput {
+            Box::new(FixedOutputSandbox(iteron_sandbox::RunOutput {
                 exit_code: 127,
                 stdout: String::new(),
                 stderr: "missing-check: command not found".into(),
@@ -406,7 +408,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn test_oracle_runs_the_command_and_reports_exit() {
-        use core_sandbox::platform_sandbox;
+        use iteron_sandbox::platform_sandbox;
         let dir = std::env::temp_dir();
         let o = TestOracle::new(platform_sandbox(), dir, "exit 0".into());
         assert!(o.evaluate().await.passed());

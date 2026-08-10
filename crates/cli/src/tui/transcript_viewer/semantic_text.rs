@@ -4,8 +4,8 @@ mod markdown;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use core_protocol::DiffTag;
-use core_workflow::events::{self, WorkflowState};
+use iteron_protocol::DiffTag;
+use iteron_workflow::events::{self, WorkflowState};
 
 use crate::block;
 use crate::markdown::MarkdownDoc;

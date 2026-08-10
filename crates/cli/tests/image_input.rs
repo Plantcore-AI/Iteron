@@ -2,11 +2,11 @@
 mod image_input;
 
 use base64::Engine as _;
-use core_protocol::input::ImageMediaType;
 use image_input::{
     ImageAttachments, ImageInputErrorKind, ImageLoadLimits, parse_explicit_image_path,
     parse_image_mentions,
 };
+use iteron_protocol::input::ImageMediaType;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -602,7 +602,7 @@ fn image_mentions_are_explicit_bounded_and_do_not_match_email_or_prose() {
             .is_empty()
     );
     assert_eq!(
-        parse_image_mentions(&"x".repeat(core_protocol::task::MAX_TASK_TEXT_BYTES + 1))
+        parse_image_mentions(&"x".repeat(iteron_protocol::task::MAX_TASK_TEXT_BYTES + 1))
             .unwrap_err()
             .kind(),
         ImageInputErrorKind::InvalidReference

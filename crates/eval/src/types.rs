@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 pub const EVAL_SCHEMA_VERSION: u32 = 3;
 
-/// Stable process exit codes for the `core-eval` binary.
+/// Stable process exit codes for the `iteron-eval` binary.
 ///
 /// The evaluation artifact is always persisted, but the process exit status must not silently
 /// discard the run outcome: a completed-with-failures run and a clean run cannot both report

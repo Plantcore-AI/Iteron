@@ -1,8 +1,8 @@
 # Supported platforms
 
-Core Code is currently developed and tested on macOS and Linux. There is no
+Iteron is currently developed and tested on macOS and Linux. There is no
 supported Windows runtime today: the release matrix carries a bounded Windows
-x86-64 `core.exe` one-shot artifact, and that artifact is the whole Windows
+x86-64 `iteron.exe` one-shot artifact, and that artifact is the whole Windows
 claim.
 
 | Platform | Build | Interactive TUI | Code-execution sandbox |
@@ -17,7 +17,7 @@ claim.
 
 Windows support is exactly one artifact wide, and nothing beyond it has been
 delivered. Read a closed Windows tracking issue as closed, not as shipped: the
-released `core.exe` is a one-shot CLI, and it does not claim interactive TUI,
+released `iteron.exe` is a one-shot CLI, and it does not claim interactive TUI,
 resident-server, or sandbox support. The lifecycle paths still assume a POSIX
 shell.
 
@@ -54,7 +54,7 @@ keyboard input. Core never assumes escape-sequence support merely because the
 operating system is Windows.
 
 The Windows release artifact is a deterministic
-`core-code-vVERSION-x86_64-pc-windows-msvc.zip` archive containing `core.exe`,
+`iteron-vVERSION-x86_64-pc-windows-msvc.zip` archive containing `iteron.exe`,
 licenses, notices, SBOM, and build metadata. Verify it against `SHA256SUMS` and
 its GitHub build/SBOM attestations before extraction. The POSIX `install.sh`
 does not install Windows archives.

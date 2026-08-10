@@ -142,7 +142,7 @@ mod tests {
     use serde_json::{Value, json};
 
     fn slot() -> SlotId {
-        SlotId("core/tool_policy".into())
+        SlotId("iteron/tool_policy".into())
     }
 
     fn call() -> ToolUse {

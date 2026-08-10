@@ -7,15 +7,15 @@
 //! large skill library costs a few tokens per skill until one is actually used).
 //!
 //! Trust-by-origin (ADR-007, the same posture as memory/agent definitions): a skill under the
-//! user roots (`~/.core/skills`, `~/.agents/skills`, and Codex skill roots) are Trusted; under the
-//! project (`<repo>/.core/skills` or `<repo>/.agents/skills`) it is Workspace; anything discovered
+//! user roots (`~/.iteron/skills`, `~/.agents/skills`, and Codex skill roots) are Trusted; under the
+//! project (`<repo>/.iteron/skills` or `<repo>/.agents/skills`) it is Workspace; anything discovered
 //! under a vendored/cloned dependency path is Untrusted and STRIPPED
 //! (never injected) — the recon-injection incident this repo's own Errors.md records. Every skill's
 //! frontmatter and body is bidi/invisible-Unicode scanned; a suspicious skill is rejected, not run.
 
 use crate::instructions::suspicious_unicode;
 use crate::source::{SourceEntryKind, SourceScope, list_directory_bounded, read_bounded_utf8};
-use core_protocol::Trust;
+use iteron_protocol::Trust;
 use std::path::{Path, PathBuf};
 
 #[path = "skills_metadata.rs"]
@@ -107,8 +107,8 @@ impl SkillCatalog {
         let mut cat = SkillCatalog::default();
         if let Some(home) = operator_home {
             cat.scan(
-                &home.join(".core/skills"),
-                &home.join(".core/skills"),
+                &home.join(".iteron/skills"),
+                &home.join(".iteron/skills"),
                 SkillTier::User,
             );
             cat.scan(
@@ -121,7 +121,7 @@ impl SkillCatalog {
             let codex_system = codex_skills.join(".system");
             cat.scan(&codex_system, &codex_system, SkillTier::User);
         }
-        let core_project = core_protocol::home::path(repo, "skills");
+        let core_project = iteron_protocol::home::path(repo, "skills");
         cat.scan(repo, &core_project, SkillTier::Project);
         let agents_project = repo.join(".agents/skills");
         cat.scan(repo, &agents_project, SkillTier::Project);
@@ -174,12 +174,12 @@ impl SkillCatalog {
 
     fn discover_with_user(user_skills_dir: Option<&Path>, repo: &Path) -> Self {
         let mut cat = SkillCatalog::default();
-        // User tier: the supplied `.core/skills` directory only.
+        // User tier: the supplied `.iteron/skills` directory only.
         if let Some(user_skills_dir) = user_skills_dir {
             cat.scan(user_skills_dir, user_skills_dir, SkillTier::User);
         }
-        // Project tier: the repo's `.core/skills` directory only.
-        let project_dir = core_protocol::home::path(repo, "skills");
+        // Project tier: the repo's `.iteron/skills` directory only.
+        let project_dir = iteron_protocol::home::path(repo, "skills");
         cat.scan(repo, &project_dir, SkillTier::Project);
         cat.sort_and_dedup();
         cat
@@ -492,9 +492,9 @@ fn one_line(s: &str, max: usize) -> String {
     out
 }
 
-/// The user skills dir `~/.core/skills`, if an absolute operator home is available.
+/// The user skills dir `~/.iteron/skills`, if an absolute operator home is available.
 pub fn user_skills_dir() -> Option<PathBuf> {
-    core_protocol::home::operator().map(|home| core_protocol::home::path(&home, "skills"))
+    iteron_protocol::home::operator().map(|home| iteron_protocol::home::path(&home, "skills"))
 }
 
 #[cfg(test)]
@@ -508,7 +508,7 @@ mod tests {
     }
 
     fn write_skill(root: &Path, name: &str, front_body: &str) {
-        let dir = root.join(".core").join("skills").join(name);
+        let dir = root.join(".iteron").join("skills").join(name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), front_body).unwrap();
     }
@@ -531,7 +531,7 @@ mod tests {
         let home = base.join("home");
         let repo = base.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        write_skill_in(&home, ".core/skills", "native");
+        write_skill_in(&home, ".iteron/skills", "native");
         write_skill_in(&home, ".agents/skills", "portable");
         let legacy = write_skill_in(&home, ".codex/skills", "legacy");
         let system = write_skill_in(&home, ".codex/skills/.system", "system");
@@ -721,7 +721,7 @@ mod tests {
     #[test]
     fn rejects_an_oversized_project_skill() {
         let repo = tmp("oversized");
-        let dir = repo.join(".core/skills/large");
+        let dir = repo.join(".iteron/skills/large");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), vec![b'x'; MAX_SKILL_SOURCE_BYTES + 1]).unwrap();
         let cat = SkillCatalog::discover(Path::new("/nonexistent"), &repo);
@@ -743,7 +743,7 @@ mod tests {
         let repo = base.join("repo");
         let outside = base.join("outside");
         let user = base.join("user-skills");
-        std::fs::create_dir_all(repo.join(".core/skills")).unwrap();
+        std::fs::create_dir_all(repo.join(".iteron/skills")).unwrap();
         std::fs::create_dir_all(&user).unwrap();
         std::fs::create_dir_all(outside.join("external")).unwrap();
         std::fs::write(
@@ -751,8 +751,11 @@ mod tests {
             "---\nname: linked\ndescription: linked user skill\n---\nbody\n",
         )
         .unwrap();
-        std::os::unix::fs::symlink(outside.join("external"), repo.join(".core/skills/escaped"))
-            .unwrap();
+        std::os::unix::fs::symlink(
+            outside.join("external"),
+            repo.join(".iteron/skills/escaped"),
+        )
+        .unwrap();
         std::os::unix::fs::symlink(outside.join("external"), user.join("linked")).unwrap();
 
         let cat = SkillCatalog::discover(&user, &repo);

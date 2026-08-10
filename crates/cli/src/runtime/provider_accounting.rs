@@ -13,21 +13,21 @@ pub(super) fn elapsed_us(started: Instant) -> u64 {
 
 pub(super) fn bounded_provider_notice(
     label: &str,
-    notice: &core_provider::ProviderNotice,
+    notice: &iteron_provider::ProviderNotice,
 ) -> String {
     let raw = format!("{label} [{}]: {}", notice.code, notice.message);
-    core_protocol::text::head(&core_record::redact::scrub(&raw), 512)
+    iteron_protocol::text::head(&iteron_record::redact::scrub(&raw), 512)
 }
 
 pub(super) fn bounded_provider_run_notice(
-    notice: &core_provider::ProviderNotice,
+    notice: &iteron_provider::ProviderNotice,
     key: &str,
 ) -> String {
     let raw = format!(
         "{PROVIDER_RUN_NOTICE_LABEL} [key={key}; code={}]: {}",
         notice.code, notice.message
     );
-    core_protocol::text::head(&core_record::redact::scrub(&raw), 512)
+    iteron_protocol::text::head(&iteron_record::redact::scrub(&raw), 512)
 }
 
 pub(super) fn provider_run_notice_key_from_text(text: &str) -> Option<String> {
@@ -55,7 +55,7 @@ impl Agent {
     pub(super) fn complete_provider_turn(
         &mut self,
         turn: TurnId,
-        usage: core_protocol::Usage,
+        usage: iteron_protocol::Usage,
         model_ms: u64,
         projected_at_unix_secs: u64,
         stream: StreamTiming,
@@ -181,7 +181,7 @@ impl Agent {
         model_ms: u64,
         projected_at_unix_secs: u64,
         stream: StreamTiming,
-    ) -> Result<Option<core_protocol::Usage>, KernelError> {
+    ) -> Result<Option<iteron_protocol::Usage>, KernelError> {
         match report {
             UsageReport::Complete(usage) | UsageReport::CacheCreationUnreported(usage) => {
                 self.complete_provider_turn(

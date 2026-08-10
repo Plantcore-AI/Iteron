@@ -1,12 +1,12 @@
 [package]
-name = "core-provider"
+name = "iteron-provider"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
-core-protocol = { path = "../protocol" }
+iteron-protocol = { path = "../protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }

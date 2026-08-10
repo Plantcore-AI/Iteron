@@ -130,7 +130,7 @@ impl McpLaunchConfig {
     }
 
     fn compute_binding(&self) -> Arc<[u8]> {
-        let mut binding = b"core-mcp-server-binding-v1\0".to_vec();
+        let mut binding = b"iteron-mcp-server-binding-v1\0".to_vec();
         append_field(&mut binding, self.server_name.as_bytes());
         append_field(&mut binding, self.command.as_bytes());
         append_fields(&mut binding, &self.args);

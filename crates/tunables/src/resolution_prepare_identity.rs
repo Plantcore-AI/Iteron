@@ -63,7 +63,7 @@ pub(crate) fn catalog_content_digest(catalog: &CatalogSnapshot) -> Result<String
         values: &'a BTreeSet<String>,
     }
     super::sha256_json(&Payload {
-        canonicalization: "core-tunables-catalog-snapshot-json-v1",
+        canonicalization: "iteron-tunables-catalog-snapshot-json-v1",
         catalog_id: &catalog.catalog_id,
         value_count: catalog.values.len(),
         values: &catalog.values,

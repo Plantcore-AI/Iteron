@@ -58,14 +58,14 @@ struct ResolutionFailureDocument<'a> {
     runtime_bound: bool,
     status: &'static str,
     exit_code: u8,
-    failure: &'a core_tunables::ResolutionFailureReport,
+    failure: &'a iteron_tunables::ResolutionFailureReport,
 }
 
 #[derive(Serialize)]
 struct FailureSummary<'a> {
-    code: core_tunables::FailureCode,
+    code: iteron_tunables::FailureCode,
     detail: &'a str,
-    failures: &'a [core_tunables::FamilyFailure],
+    failures: &'a [iteron_tunables::FamilyFailure],
 }
 
 #[derive(Serialize)]
@@ -118,7 +118,7 @@ fn explain(request: &Path, family: Option<&str>, format: ExplainFormat) -> anyho
 }
 
 fn render_resolve(bytes: &[u8]) -> anyhow::Result<RenderedOutput> {
-    match core_tunables::resolve_json(bytes) {
+    match iteron_tunables::resolve_json(bytes) {
         Ok(resolved) => json_output(
             &SimulationDocument {
                 schema_version: 1,
@@ -136,16 +136,16 @@ fn render_resolve(bytes: &[u8]) -> anyhow::Result<RenderedOutput> {
 }
 
 fn render_resolution_failure(
-    failure: &core_tunables::ResolutionFailureReport,
+    failure: &iteron_tunables::ResolutionFailureReport,
 ) -> anyhow::Result<RenderedOutput> {
-    if failure.code == core_tunables::FailureCode::ActiveResolutionFailed
+    if failure.code == iteron_tunables::FailureCode::ActiveResolutionFailed
         && failure.report.is_none()
     {
         anyhow::bail!("tunables active-resolution failure omitted its audit report")
     }
     let status = match failure.code {
-        core_tunables::FailureCode::InvalidInput => "invalid_input",
-        core_tunables::FailureCode::ActiveResolutionFailed => "active_resolution_failed",
+        iteron_tunables::FailureCode::InvalidInput => "invalid_input",
+        iteron_tunables::FailureCode::ActiveResolutionFailed => "active_resolution_failed",
     };
     json_output(
         &ResolutionFailureDocument {
@@ -167,9 +167,9 @@ fn render_explain(
     format: ExplainFormat,
 ) -> anyhow::Result<RenderedOutput> {
     validate_explain_request(family, format)?;
-    match core_tunables::resolve_json(bytes) {
+    match iteron_tunables::resolve_json(bytes) {
         Ok(resolved) => render_explain_report(resolved.report(), None, family, format),
-        Err(failure) if failure.code == core_tunables::FailureCode::ActiveResolutionFailed => {
+        Err(failure) if failure.code == iteron_tunables::FailureCode::ActiveResolutionFailed => {
             let report = failure.report.as_ref().ok_or_else(|| {
                 anyhow::anyhow!("active-resolution failure omitted its audit report")
             })?;
@@ -180,10 +180,10 @@ fn render_explain(
 }
 
 fn render_invalid_explain(
-    failure: &core_tunables::ResolutionFailureReport,
+    failure: &iteron_tunables::ResolutionFailureReport,
     format: ExplainFormat,
 ) -> anyhow::Result<RenderedOutput> {
-    if failure.code != core_tunables::FailureCode::InvalidInput || failure.report.is_some() {
+    if failure.code != iteron_tunables::FailureCode::InvalidInput || failure.report.is_some() {
         anyhow::bail!("tunables invalid-input failure violated its report contract")
     }
     match format {
@@ -222,15 +222,15 @@ fn validate_explain_request(family: Option<&str>, format: ExplainFormat) -> anyh
 }
 
 fn render_explain_report(
-    report: &core_tunables::ResolutionReport,
-    failure: Option<&core_tunables::ResolutionFailureReport>,
+    report: &iteron_tunables::ResolutionReport,
+    failure: Option<&iteron_tunables::ResolutionFailureReport>,
     family: Option<&str>,
     format: ExplainFormat,
 ) -> anyhow::Result<RenderedOutput> {
     let exit_code = failure.map_or(crate::output::EXIT_SUCCESS, |_| crate::output::EXIT_HARNESS);
     match (format, family) {
         (ExplainFormat::Text, None) => {
-            let explanation = core_tunables::explain_text(report)?;
+            let explanation = iteron_tunables::explain_text(report)?;
             let status = if failure.is_some() {
                 "active_resolution_failed"
             } else {
@@ -245,7 +245,7 @@ fn render_explain_report(
             )
         }
         (ExplainFormat::Json, Some(selector)) => {
-            let entry = core_tunables::explain_entry_json(report, selector)?;
+            let entry = iteron_tunables::explain_entry_json(report, selector)?;
             let entry: serde_json::Value = serde_json::from_str(&entry)?;
             if let Some(failure) = failure {
                 json_output(
@@ -296,7 +296,7 @@ fn read_request(path: &Path) -> anyhow::Result<Vec<u8>> {
 }
 
 fn read_bounded(mut reader: impl std::io::Read) -> anyhow::Result<Vec<u8>> {
-    let limit = u64::try_from(core_tunables::RESOLUTION_INPUT_MAX_BYTES)
+    let limit = u64::try_from(iteron_tunables::RESOLUTION_INPUT_MAX_BYTES)
         .map_err(|_| anyhow::anyhow!("tunables request bound exceeds the platform read limit"))?;
     let mut bytes = Vec::new();
     reader
@@ -351,20 +351,20 @@ mod tests {
 
     fn unresolved_request_json() -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
-            "schema_version": core_tunables::RESOLUTION_SCHEMA_VERSION,
-            "registry_id": core_tunables::REGISTRY_ID,
-            "registry_revision": core_tunables::REGISTRY_REVISION,
-            "registry_digest": core_tunables::REGISTRY_DIGEST_SHA256,
+            "schema_version": iteron_tunables::RESOLUTION_SCHEMA_VERSION,
+            "registry_id": iteron_tunables::REGISTRY_ID,
+            "registry_revision": iteron_tunables::REGISTRY_REVISION,
+            "registry_digest": iteron_tunables::REGISTRY_DIGEST_SHA256,
         }))
         .unwrap()
     }
 
     #[test]
     fn request_reader_preserves_one_extra_byte_for_typed_core_rejection() {
-        let exact = vec![b' '; core_tunables::RESOLUTION_INPUT_MAX_BYTES];
+        let exact = vec![b' '; iteron_tunables::RESOLUTION_INPUT_MAX_BYTES];
         assert_eq!(read_bounded(exact.as_slice()).unwrap().len(), exact.len());
 
-        let oversized = vec![b' '; core_tunables::RESOLUTION_INPUT_MAX_BYTES + 1];
+        let oversized = vec![b' '; iteron_tunables::RESOLUTION_INPUT_MAX_BYTES + 1];
         assert_eq!(
             read_bounded(oversized.as_slice()).unwrap().len(),
             oversized.len()
@@ -395,7 +395,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            core_tunables::EXPECTED_FAMILY_COUNT
+            iteron_tunables::EXPECTED_FAMILY_COUNT
         );
     }
 

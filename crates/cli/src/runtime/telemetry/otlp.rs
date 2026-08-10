@@ -1,4 +1,4 @@
-use core_obs::otel::Export;
+use iteron_obs::otel::Export;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -12,7 +12,7 @@ pub(super) struct Batch {
 pub(super) fn encode(endpoint: &str, export: &Export) -> Result<Vec<Batch>, ()> {
     let resource = json!({
         "attributes": [
-            attribute("service.name", "core-code"),
+            attribute("service.name", "iteron"),
             attribute("service.namespace", "plantcore"),
             attribute("core.run.id", &export.run_id),
         ]

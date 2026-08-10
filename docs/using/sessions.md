@@ -1,7 +1,7 @@
 # Sessions, resume, and fork
 
 Each run writes an append-only, hash-chained local record beneath the configured
-runs directory. The default is `.core/runs` in the target repository.
+runs directory. The default is `.iteron/runs` in the target repository.
 
 ## List and continue
 
@@ -65,8 +65,8 @@ operations.
 - It is not encryption, a remote backup, or proof that an external side effect did
   not occur.
 - If a process ended after dispatching an external effect but before recording an
-  authoritative terminal result, Core Code records the outcome as unknown and
+  authoritative terminal result, Iteron records the outcome as unknown and
   does not automatically retry it.
 
 Run records can contain prompts, model output, paths, diffs, and tool evidence.
-Keep `.core/` private and never publish a real session as a bug fixture.
+Keep `.iteron/` private and never publish a real session as a bug fixture.

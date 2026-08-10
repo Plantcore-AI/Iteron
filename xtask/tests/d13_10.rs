@@ -7,7 +7,7 @@
 //! bootstrap mode. Before the fix, `boundaries check-reviews` returned a blanket non-enforcing
 //! success for *every* bootstrap change, so an unrelated contributor could rewrite the registry.
 //!
-//! `core-xtask` is a managed binary crate with no library target (the repo's own conformance
+//! `iteron-xtask` is a managed binary crate with no library target (the repo's own conformance
 //! rule forbids one), so this exercises the behavior end to end through the built CLI against a
 //! throwaway fixture repository seeded from the current tree.
 
@@ -18,7 +18,7 @@ use std::process::{Command, Stdio};
 const OWNER_LOGIN: &str = "fr0m-scratch";
 
 fn xtask_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_core-xtask")
+    env!("CARGO_BIN_EXE_iteron-xtask")
 }
 
 fn source_repo() -> PathBuf {
@@ -156,7 +156,7 @@ impl Fixture {
         }
     }
 
-    /// Invoke `core-xtask boundaries check-reviews` for the given PR author with empty reviews.
+    /// Invoke `iteron-xtask boundaries check-reviews` for the given PR author with empty reviews.
     fn check_reviews(&self, author: &str) -> std::process::Output {
         Command::new(xtask_bin())
             .args(["--repo"])
@@ -165,7 +165,7 @@ impl Fixture {
             .env("PR_AUTHOR", author)
             .env("REVIEWS_FILE", &self.reviews)
             .output()
-            .expect("run core-xtask boundaries check-reviews")
+            .expect("run iteron-xtask boundaries check-reviews")
     }
 }
 

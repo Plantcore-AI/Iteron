@@ -10,7 +10,7 @@ pub fn check_generated(root: &Path, registry: &Registry) -> Result<()> {
     // by the generator from the protected base. Land the exact next format in
     // this allowlist first; only a later pull request may switch the writer.
     let ownership_current = ownership_markdown(registry);
-    let ownership_next = ownership_markdown_core_code(registry);
+    let ownership_next = ownership_markdown_iteron(registry);
     check_one_of(
         &root.join(&registry.generated.ownership),
         &[&ownership_current, &ownership_next],
@@ -25,7 +25,7 @@ pub fn check_generated(root: &Path, registry: &Registry) -> Result<()> {
 pub fn write_generated(root: &Path, registry: &Registry) -> Result<()> {
     write_atomic(
         &root.join(&registry.generated.ownership),
-        &ownership_markdown_core_code(registry),
+        &ownership_markdown_iteron(registry),
     )?;
     write_atomic(
         &root.join(&registry.generated.codeowners),
@@ -39,7 +39,7 @@ fn check_one(path: &Path, expected: &str) -> Result<()> {
         .with_context(|| format!("missing generated file {}", path.display()))?;
     if actual != expected {
         bail!(
-            "generated file {} drifted; run `cargo run --locked -p core-xtask -- boundaries generate`",
+            "generated file {} drifted; run `cargo run --locked -p iteron-xtask -- boundaries generate`",
             path.display()
         );
     }
@@ -51,7 +51,7 @@ fn check_one_of(path: &Path, expected: &[&str]) -> Result<()> {
         .with_context(|| format!("missing generated file {}", path.display()))?;
     if !expected.contains(&actual.as_str()) {
         bail!(
-            "generated file {} drifted; run `cargo run --locked -p core-xtask -- boundaries generate`",
+            "generated file {} drifted; run `cargo run --locked -p iteron-xtask -- boundaries generate`",
             path.display()
         );
     }
@@ -92,8 +92,8 @@ fn ownership_markdown(registry: &Registry) -> String {
     ownership_markdown_with_brand(registry, "Core", "Core")
 }
 
-fn ownership_markdown_core_code(registry: &Registry) -> String {
-    ownership_markdown_with_brand(registry, "Core Code", "Core Code")
+fn ownership_markdown_iteron(registry: &Registry) -> String {
+    ownership_markdown_with_brand(registry, "Iteron", "Iteron")
 }
 
 fn ownership_markdown_with_brand(registry: &Registry, title: &str, subject: &str) -> String {
@@ -201,7 +201,7 @@ fn ownership_markdown_with_brand(registry: &Registry, title: &str, subject: &str
     writeln!(output, "## Claiming or changing ownership\n").unwrap();
     writeln!(
         output,
-        "1. Open an ownership-claim issue naming the boundary, proposed human primary, reviewer or backup, adjacent contracts, and handoff plan.\n2. The Owner confirms the appointment. An agent cannot claim, approve, inherit, or exercise a human boundary.\n3. Update `governance/boundaries.json`, run `cargo run --locked -p core-xtask -- boundaries generate`, and submit both generated files.\n4. Run `cargo run --locked -p core-xtask -- boundaries check`. Active enforcement requires every critical boundary and independent overlay to be assigned; critical primaries and affected primaries cannot self-review.\n5. A person may claim several coherent boundaries. Maintainer count is never encoded as a quota."
+        "1. Open an ownership-claim issue naming the boundary, proposed human primary, reviewer or backup, adjacent contracts, and handoff plan.\n2. The Owner confirms the appointment. An agent cannot claim, approve, inherit, or exercise a human boundary.\n3. Update `governance/boundaries.json`, run `cargo run --locked -p iteron-xtask -- boundaries generate`, and submit both generated files.\n4. Run `cargo run --locked -p iteron-xtask -- boundaries check`. Active enforcement requires every critical boundary and independent overlay to be assigned; critical primaries and affected primaries cannot self-review.\n5. A person may claim several coherent boundaries. Maintainer count is never encoded as a quota."
     )
     .unwrap();
     output
@@ -459,15 +459,15 @@ mod tests {
         let registry: Registry =
             serde_json::from_str(include_str!("../../governance/boundaries.json")).unwrap();
         let current = ownership_markdown(&registry);
-        let next = ownership_markdown_core_code(&registry);
+        let next = ownership_markdown_iteron(&registry);
 
         assert!(current.starts_with("# Core ownership registry\n"));
-        assert!(next.starts_with("# Core Code ownership registry\n"));
+        assert!(next.starts_with("# Iteron ownership registry\n"));
         assert_ne!(current, next);
         assert_eq!(
-            current.replacen("# Core", "# Core Code", 1).replacen(
+            current.replacen("# Core", "# Iteron", 1).replacen(
                 "Core has one human",
-                "Core Code has one human",
+                "Iteron has one human",
                 1
             ),
             next

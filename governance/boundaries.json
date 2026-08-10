@@ -28,7 +28,7 @@
         { "kind": "tree", "path": "governance" }
       ],
       "contracts": ["owner-override", "one-human-one-agent", "dynamic-boundary-registry", "open-source-license"],
-      "checks": ["core-xtask boundaries check"]
+      "checks": ["iteron-xtask boundaries check"]
     },
     {
       "id": "community-entry",
@@ -47,7 +47,7 @@
         { "kind": "file", "path": "SUPPORT.md" }
       ],
       "contracts": ["issue-to-boundary-to-pr", "human-accountability"],
-      "checks": ["core-xtask boundaries check"]
+      "checks": ["iteron-xtask boundaries check"]
     },
     {
       "id": "security-policy",
@@ -61,7 +61,7 @@
         { "kind": "file", "path": "SECURITY.md" }
       ],
       "contracts": ["responsible-disclosure", "security-support-boundary"],
-      "checks": ["core-xtask boundaries check"]
+      "checks": ["iteron-xtask boundaries check"]
     },
     {
       "id": "architecture-roadmap",
@@ -78,7 +78,7 @@
         { "kind": "tree", "path": "docs/spec" }
       ],
       "contracts": ["current-implementation-truth", "microkernel-roadmap"],
-      "checks": ["core-xtask boundaries check"]
+      "checks": ["iteron-xtask boundaries check"]
     },
     {
       "id": "documentation-site",
@@ -111,7 +111,7 @@
       "checks": [
         "python -m pip install --require-hashes -r requirements-docs.lock",
         "mkdocs build --strict --clean",
-        "core-xtask boundaries check"
+        "iteron-xtask boundaries check"
       ]
     },
     {
@@ -142,7 +142,7 @@
         "verified-release-supply-chain",
         "atomic-no-sudo-install"
       ],
-      "checks": ["cargo fmt --all -- --check", "core-xtask boundaries check", "release-tools/validate.sh"]
+      "checks": ["cargo fmt --all -- --check", "iteron-xtask boundaries check", "release-tools/validate.sh"]
     },
     {
       "id": "protocol-compat",
@@ -157,9 +157,9 @@
       ],
       "contracts": ["runtime-protocol", "durable-event-schema", "permission-schema", "sqeq-version-lockstep"],
       "checks": [
-        "cargo test -p core-protocol --locked",
-        "core-xtask boundaries check-base --base <rev>",
-        "core-xtask boundaries check-pr --base <rev>"
+        "cargo test -p iteron-protocol --locked",
+        "iteron-xtask boundaries check-base --base <rev>",
+        "iteron-xtask boundaries check-pr --base <rev>"
       ]
     },
     {
@@ -182,8 +182,8 @@
       ],
       "contracts": ["pure-reduction", "bounded-queues"],
       "checks": [
-        "cargo test -p core-kernel reducer --locked",
-        "cargo test -p core-kernel driver --locked"
+        "cargo test -p iteron-kernel reducer --locked",
+        "cargo test -p iteron-kernel driver --locked"
       ]
     },
     {
@@ -202,7 +202,7 @@
         { "kind": "file", "path": "crates/kernel/src/ports.rs" }
       ],
       "contracts": ["turn-state-machine", "bounded-run", "single-writer"],
-      "checks": ["cargo test -p core-kernel --locked"]
+      "checks": ["cargo test -p iteron-kernel --locked"]
     },
     {
       "id": "kernel-effects",
@@ -221,7 +221,7 @@
       ],
       "contracts": ["intent-execute-terminal", "unknown-effect-block"],
       "checks": [
-        "cargo test -p core-kernel effect --locked"
+        "cargo test -p iteron-kernel effect --locked"
       ]
     },
     {
@@ -237,7 +237,7 @@
         { "kind": "tree", "path": "crates/cli/src/runtime/telemetry" }
       ],
       "contracts": ["trusted-hook-origin", "bounded-hook-process"],
-      "checks": ["cargo test -p core-cli telemetry --locked"]
+      "checks": ["cargo test -p iteron-cli telemetry --locked"]
     },
     {
       "id": "kernel-hooks",
@@ -252,7 +252,7 @@
         { "kind": "tree", "path": "crates/cli/src/runtime/hooks" }
       ],
       "contracts": ["trusted-hook-origin", "bounded-hook-process"],
-      "checks": ["cargo test -p core-cli hooks --locked"]
+      "checks": ["cargo test -p iteron-cli hooks --locked"]
     },
     {
       "id": "record-core",
@@ -273,7 +273,7 @@
         { "kind": "tree", "path": "crates/record/tests" }
       ],
       "contracts": ["append-only-record", "hash-chain", "torn-tail-recovery", "secret-redaction"],
-      "checks": ["cargo test -p core-record --locked"]
+      "checks": ["cargo test -p iteron-record --locked"]
     },
     {
       "id": "record-sessions",
@@ -288,7 +288,7 @@
         { "kind": "file", "path": "crates/record/src/session.rs" }
       ],
       "contracts": ["fork-aware-replay", "tenant-scoped-session"],
-      "checks": ["cargo test -p core-record session --locked"]
+      "checks": ["cargo test -p iteron-record session --locked"]
     },
     {
       "id": "observability",
@@ -302,7 +302,7 @@
         { "kind": "tree", "path": "crates/obs" }
       ],
       "contracts": ["cost-state", "usage-ledger", "no-invented-price"],
-      "checks": ["cargo test -p core-obs --locked"]
+      "checks": ["cargo test -p iteron-obs --locked"]
     },
     {
       "id": "scheduler",
@@ -316,7 +316,7 @@
         { "kind": "tree", "path": "crates/sched" }
       ],
       "contracts": ["bounded-retry", "bounded-concurrency", "pre-stream-retry-only"],
-      "checks": ["cargo test -p core-sched --locked"]
+      "checks": ["cargo test -p iteron-sched --locked"]
     },
     {
       "id": "provider-core",
@@ -337,7 +337,7 @@
         { "kind": "file", "path": "crates/provider/src/usage.rs" }
       ],
       "contracts": ["provider-port", "catalog-truth", "typed-provider-error"],
-      "checks": ["cargo test -p core-provider --locked"]
+      "checks": ["cargo test -p iteron-provider --locked"]
     },
     {
       "id": "provider-adapters",
@@ -353,7 +353,7 @@
         { "kind": "file", "path": "crates/provider/src/responses.rs" }
       ],
       "contracts": ["stream-to-turn-result", "native-state-scope", "effort-application"],
-      "checks": ["cargo test -p core-provider --locked"]
+      "checks": ["cargo test -p iteron-provider --locked"]
     },
     {
       "id": "mcp-interop",
@@ -367,7 +367,7 @@
         { "kind": "tree", "path": "crates/mcp" }
       ],
       "contracts": ["mcp-framing", "bounded-mcp-lifecycle", "unknown-external-effect"],
-      "checks": ["cargo test -p core-mcp --locked"]
+      "checks": ["cargo test -p iteron-mcp --locked"]
     },
     {
       "id": "language-server-lifecycle",
@@ -381,7 +381,7 @@
         { "kind": "tree", "path": "crates/lsp" }
       ],
       "contracts": ["bounded-lsp-framing", "versioned-diagnostics"],
-      "checks": ["cargo test -p core-lsp --locked"]
+      "checks": ["cargo test -p iteron-lsp --locked"]
     },
     {
       "id": "workspace-change-set",
@@ -395,7 +395,7 @@
         { "kind": "tree", "path": "crates/changeset" }
       ],
       "contracts": ["complete-change-truth"],
-      "checks": ["cargo test -p core-changeset --locked"]
+      "checks": ["cargo test -p iteron-changeset --locked"]
     },
     {
       "id": "status-surface",
@@ -409,7 +409,7 @@
         { "kind": "tree", "path": "crates/statusline" }
       ],
       "contracts": ["no-control-sequence-injection", "unknown-is-not-zero"],
-      "checks": ["cargo test -p core-statusline --locked"]
+      "checks": ["cargo test -p iteron-statusline --locked"]
     },
     {
       "id": "support-bundle",
@@ -423,7 +423,7 @@
         { "kind": "tree", "path": "crates/support" }
       ],
       "contracts": ["allowlisted-environment-capture", "deterministic-redacted-bundle"],
-      "checks": ["cargo test -p core-support --locked"]
+      "checks": ["cargo test -p iteron-support --locked"]
     },
     {
       "id": "plugin-marketplace",
@@ -437,7 +437,7 @@
         { "kind": "tree", "path": "crates/marketplace" }
       ],
       "contracts": ["fail-closed-signature-gate", "no-silent-downgrade"],
-      "checks": ["cargo test -p core-marketplace --locked"]
+      "checks": ["cargo test -p iteron-marketplace --locked"]
     },
     {
       "id": "context-core",
@@ -461,7 +461,7 @@
         { "kind": "file", "path": "crates/ctx/src/source.rs" }
       ],
       "contracts": ["untrusted-instruction-framing", "bounded-context", "compaction-policy"],
-      "checks": ["cargo test -p core-ctx --locked"]
+      "checks": ["cargo test -p iteron-ctx --locked"]
     },
     {
       "id": "context-knowledge",
@@ -479,7 +479,7 @@
         { "kind": "file", "path": "crates/ctx/tests/skill_frontmatter.rs" }
       ],
       "contracts": ["memory-provenance", "bounded-recall", "skill-progressive-disclosure"],
-      "checks": ["cargo test -p core-ctx --locked"]
+      "checks": ["cargo test -p iteron-ctx --locked"]
     },
     {
       "id": "agent-catalog",
@@ -496,7 +496,7 @@
         { "kind": "file", "path": "crates/agents/src/lib.rs" }
       ],
       "contracts": ["read-only-agent-authority", "agent-definition-trust"],
-      "checks": ["cargo test -p core-agents --locked"]
+      "checks": ["cargo test -p iteron-agents --locked"]
     },
     {
       "id": "agent-orchestration",
@@ -516,7 +516,7 @@
         { "kind": "tree", "path": "crates/agents/tests" }
       ],
       "contracts": ["single-writer-fan-reduce", "declaration-order-reduction"],
-      "checks": ["cargo test -p core-agents --locked"]
+      "checks": ["cargo test -p iteron-agents --locked"]
     },
     {
       "id": "evolution-control",
@@ -530,7 +530,7 @@
         { "kind": "tree", "path": "crates/evolve" }
       ],
       "contracts": ["no-runtime-activation", "immutable-policy-reference", "governed-promotion"],
-      "checks": ["cargo test -p core-evolve --locked"]
+      "checks": ["cargo test -p iteron-evolve --locked"]
     },
     {
       "id": "sandbox",
@@ -544,7 +544,7 @@
         { "kind": "tree", "path": "crates/sandbox" }
       ],
       "contracts": ["selectable-workspace-confinement", "operator-selected-egress", "bounded-child-process"],
-      "checks": ["cargo test -p core-sandbox --locked"]
+      "checks": ["cargo test -p iteron-sandbox --locked"]
     },
     {
       "id": "tools-core",
@@ -583,7 +583,7 @@
         { "kind": "file", "path": "crates/tools/src/write_file_tests.rs" }
       ],
       "contracts": ["tool-abi", "host-path-authority", "purity-capability-coupling"],
-      "checks": ["cargo test -p core-tools --locked"]
+      "checks": ["cargo test -p iteron-tools --locked"]
     },
     {
       "id": "tools-execution",
@@ -601,7 +601,7 @@
         { "kind": "file", "path": "crates/tools/src/workflow_tool.rs" }
       ],
       "contracts": ["selectable-code-confinement", "ssrf-boundary", "external-effect-classification"],
-      "checks": ["cargo test -p core-tools --locked"]
+      "checks": ["cargo test -p iteron-tools --locked"]
     },
     {
       "id": "tools-context",
@@ -616,7 +616,7 @@
         { "kind": "file", "path": "crates/tools/src/skill.rs" }
       ],
       "contracts": ["memory-tool-trust", "skill-tool-read-only"],
-      "checks": ["cargo test -p core-tools --locked"]
+      "checks": ["cargo test -p iteron-tools --locked"]
     },
     {
       "id": "verification",
@@ -630,7 +630,7 @@
         { "kind": "tree", "path": "crates/verify" }
       ],
       "contracts": ["oracle-strength", "strong-veto", "deterministic-selection"],
-      "checks": ["cargo test -p core-verify --locked"]
+      "checks": ["cargo test -p iteron-verify --locked"]
     },
     {
       "id": "workflow-engine",
@@ -644,7 +644,7 @@
         { "kind": "tree", "path": "crates/workflow" }
       ],
       "contracts": ["bounded-agent-fanout", "deterministic-replay", "journal-durability"],
-      "checks": ["cargo test -p core-workflow --locked"]
+      "checks": ["cargo test -p iteron-workflow --locked"]
     },
     {
       "id": "evaluation",
@@ -658,7 +658,7 @@
         { "kind": "tree", "path": "crates/eval" }
       ],
       "contracts": ["fixed-model-comparison", "ground-truth-check", "honest-quality-claim"],
-      "checks": ["cargo check -p core-eval --all-targets --locked"]
+      "checks": ["cargo check -p iteron-eval --all-targets --locked"]
     },
     {
       "id": "tunability-registry",
@@ -685,8 +685,8 @@
         "fixed-invariant-nontrainability"
       ],
       "checks": [
-        "cargo test -p core-tunables --locked",
-        "cargo run --locked -p core-xtask -- tunables check"
+        "cargo test -p iteron-tunables --locked",
+        "cargo run --locked -p iteron-xtask -- tunables check"
       ]
     },
     {
@@ -769,7 +769,7 @@
         "provider-free-tunables-simulation",
         "stable-bounded-simulation-output"
       ],
-      "checks": ["cargo test -p core-cli --locked"]
+      "checks": ["cargo test -p iteron-cli --locked"]
     },
     {
       "id": "cli-tui",
@@ -791,7 +791,7 @@
         { "kind": "tree", "path": "crates/cli/tests" }
       ],
       "contracts": ["single-enter-input", "terminal-restoration", "permission-decision-surface", "semantic-transcript", "streaming-redaction"],
-      "checks": ["cargo test -p core-cli tui --locked", "cargo test -p core-cli --test tui_pty --locked"]
+      "checks": ["cargo test -p iteron-cli tui --locked", "cargo test -p iteron-cli --test tui_pty --locked"]
     },
     {
       "id": "cli-render",
@@ -812,7 +812,7 @@
         { "kind": "tree", "path": "crates/cli/src/theme" }
       ],
       "contracts": ["terminal-cell-bounds", "semantic-transcript", "accessible-theme"],
-      "checks": ["cargo test -p core-cli --locked"]
+      "checks": ["cargo test -p iteron-cli --locked"]
     },
     {
       "id": "cli-output",
@@ -832,7 +832,7 @@
         { "kind": "file", "path": "crates/cli/src/session_view_tests.rs" }
       ],
       "contracts": ["machine-output-schema", "stable-exit-code", "streaming-redaction"],
-      "checks": ["cargo test -p core-cli output --locked"]
+      "checks": ["cargo test -p iteron-cli output --locked"]
     }
   ],
   "overlays": [
@@ -1211,143 +1211,143 @@
   "cargo_policy": {
     "mode": "exact",
     "packages": {
-      "core-agents": {
-        "normal": ["core-ctx", "core-protocol"],
+      "iteron-agents": {
+        "normal": ["iteron-ctx", "iteron-protocol"],
         "dev": [],
         "build": []
       },
-      "core-cli": {
+      "iteron-cli": {
         "normal": [
-          "core-agents",
-          "core-changeset",
-          "core-ctx",
-          "core-eval",
-          "core-evolve",
-          "core-kernel",
-          "core-marketplace",
-          "core-mcp",
-          "core-obs",
-          "core-protocol",
-          "core-provider",
-          "core-record",
-          "core-sandbox",
-          "core-sched",
-          "core-statusline",
-          "core-support",
-          "core-tools",
-          "core-tunables",
-          "core-verify",
-          "core-workflow"
+          "iteron-agents",
+          "iteron-changeset",
+          "iteron-ctx",
+          "iteron-eval",
+          "iteron-evolve",
+          "iteron-kernel",
+          "iteron-marketplace",
+          "iteron-mcp",
+          "iteron-obs",
+          "iteron-protocol",
+          "iteron-provider",
+          "iteron-record",
+          "iteron-sandbox",
+          "iteron-sched",
+          "iteron-statusline",
+          "iteron-support",
+          "iteron-tools",
+          "iteron-tunables",
+          "iteron-verify",
+          "iteron-workflow"
         ],
         "dev": [],
         "build": []
       },
-      "core-ctx": {
-        "normal": ["core-protocol"],
+      "iteron-ctx": {
+        "normal": ["iteron-protocol"],
         "dev": [],
         "build": []
       },
-      "core-eval": {
-        "normal": ["core-evolve", "core-sandbox", "core-tunables", "core-verify"],
+      "iteron-eval": {
+        "normal": ["iteron-evolve", "iteron-sandbox", "iteron-tunables", "iteron-verify"],
         "dev": [],
         "build": []
       },
-      "core-evolve": {
-        "normal": ["core-protocol"],
+      "iteron-evolve": {
+        "normal": ["iteron-protocol"],
         "dev": [],
         "build": []
       },
-      "core-kernel": {
+      "iteron-kernel": {
         "normal": [
-          "core-obs",
-          "core-protocol",
-          "core-record"
+          "iteron-obs",
+          "iteron-protocol",
+          "iteron-record"
         ],
         "dev": [],
         "build": []
       },
-      "core-lsp": {
+      "iteron-lsp": {
         "normal": [],
         "dev": [],
         "build": []
       },
-      "core-mcp": {
-        "normal": ["core-protocol", "core-sandbox"],
+      "iteron-mcp": {
+        "normal": ["iteron-protocol", "iteron-sandbox"],
         "dev": [],
         "build": []
       },
-      "core-obs": {
-        "normal": ["core-protocol"],
+      "iteron-obs": {
+        "normal": ["iteron-protocol"],
         "dev": [],
         "build": []
       },
-      "core-changeset": {
+      "iteron-changeset": {
         "normal": [],
         "dev": [],
         "build": []
       },
-      "core-marketplace": {
-        "normal": ["core-protocol"],
+      "iteron-marketplace": {
+        "normal": ["iteron-protocol"],
         "dev": [],
         "build": []
       },
-      "core-statusline": {
+      "iteron-statusline": {
         "normal": [],
         "dev": [],
         "build": []
       },
-      "core-support": {
-        "normal": ["core-record"],
+      "iteron-support": {
+        "normal": ["iteron-record"],
         "dev": [],
         "build": []
       },
-      "core-protocol": {
+      "iteron-protocol": {
         "normal": [],
         "dev": [],
         "build": []
       },
-      "core-provider": {
-        "normal": ["core-protocol"],
+      "iteron-provider": {
+        "normal": ["iteron-protocol"],
         "dev": [],
         "build": []
       },
-      "core-record": {
-        "normal": ["core-obs", "core-protocol", "core-tunables"],
+      "iteron-record": {
+        "normal": ["iteron-obs", "iteron-protocol", "iteron-tunables"],
         "dev": [],
         "build": []
       },
-      "core-sandbox": {
+      "iteron-sandbox": {
         "normal": [],
         "dev": [],
         "build": []
       },
-      "core-sched": {
-        "normal": ["core-protocol", "core-provider"],
+      "iteron-sched": {
+        "normal": ["iteron-protocol", "iteron-provider"],
         "dev": [],
         "build": []
       },
-      "core-tools": {
-        "normal": ["core-ctx", "core-lsp", "core-protocol", "core-sandbox"],
+      "iteron-tools": {
+        "normal": ["iteron-ctx", "iteron-lsp", "iteron-protocol", "iteron-sandbox"],
         "dev": [],
         "build": []
       },
-      "core-tunables": {
+      "iteron-tunables": {
         "normal": [],
         "dev": [],
         "build": []
       },
-      "core-verify": {
-        "normal": ["core-protocol", "core-sandbox"],
+      "iteron-verify": {
+        "normal": ["iteron-protocol", "iteron-sandbox"],
         "dev": [],
         "build": []
       },
-      "core-workflow": {
-        "normal": ["core-protocol", "core-sched"],
+      "iteron-workflow": {
+        "normal": ["iteron-protocol", "iteron-sched"],
         "dev": [],
         "build": []
       },
-      "core-xtask": {
-        "normal": ["core-agents", "core-ctx", "core-protocol", "core-tools", "core-tunables"],
+      "iteron-xtask": {
+        "normal": ["iteron-agents", "iteron-ctx", "iteron-protocol", "iteron-tools", "iteron-tunables"],
         "dev": [],
         "build": []
       }

@@ -53,7 +53,7 @@ TASKS = {
         ),
         "test_command": (
             "python3 -c 'import json,os,pytest,sys; "
-            'tests=json.loads(os.environ["CORE_EVAL_TEST_IDS_JSON"]); '
+            'tests=json.loads(os.environ["ITERON_EVAL_TEST_IDS_JSON"]); '
             'sys.exit(pytest.main(["-q","--tb=short",*tests]))\''
         ),
     },
@@ -67,7 +67,7 @@ TASKS = {
         ),
         "test_command": (
             "python3 -c 'import json,os,pytest,sys; "
-            'tests=json.loads(os.environ["CORE_EVAL_TEST_IDS_JSON"]); '
+            'tests=json.loads(os.environ["ITERON_EVAL_TEST_IDS_JSON"]); '
             'sys.exit(pytest.main(["-q","--tb=short",*tests]))\''
         ),
     },
@@ -77,7 +77,7 @@ TASKS = {
         "verify_command": "go test -timeout=5m -v -run '^(TestHA)$' ./lib/srv/db",
         "test_command": (
             "python3 -c 'import json,os,re,subprocess,sys; "
-            'tests=json.loads(os.environ["CORE_EVAL_TEST_IDS_JSON"]); '
+            'tests=json.loads(os.environ["ITERON_EVAL_TEST_IDS_JSON"]); '
             'pattern="^("+"|".join(re.escape(test) for test in tests)+")$"; '
             'sys.exit(subprocess.run(["go","test","-timeout=5m","-v",'
             '"-run",pattern,"./lib/srv/db"]).returncode)\''
@@ -110,7 +110,7 @@ def parse_args() -> argparse.Namespace:
 def download() -> bytes:
     request = urllib.request.Request(
         SOURCE_URL,
-        headers={"User-Agent": "Plantcore-core-eval-corpus-importer/1"},
+        headers={"User-Agent": "Plantcore-iteron-eval-corpus-importer/1"},
     )
     with urllib.request.urlopen(request, timeout=120) as response:
         source = response.read(MAX_SOURCE_BYTES + 1)

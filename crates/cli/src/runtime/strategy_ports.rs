@@ -7,7 +7,7 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_context_port(
         &mut self,
-        port: std::sync::Arc<dyn core_ctx::ContextPort>,
+        port: std::sync::Arc<dyn iteron_ctx::ContextPort>,
     ) -> Result<(), KernelError> {
         if self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
@@ -24,12 +24,12 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_context_strategy(
         &mut self,
-        strategy: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        strategy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if strategy.slot().as_persisted_str() != "core/context" {
+        if strategy.slot().as_persisted_str() != "iteron/context" {
             return Err(KernelError::ContextResolution(
                 "context strategy has the wrong slot identity".into(),
             ));
@@ -46,12 +46,12 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_tool_policy(
         &mut self,
-        policy: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        policy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if policy.slot().as_persisted_str() != "core/tool_policy" {
+        if policy.slot().as_persisted_str() != "iteron/tool_policy" {
             return Err(KernelError::ContextResolution(
                 "tool policy has the wrong slot identity".into(),
             ));
@@ -64,12 +64,12 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_memory_strategy(
         &mut self,
-        strategy: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        strategy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if strategy.slot().as_persisted_str() != "core/memory" {
+        if strategy.slot().as_persisted_str() != "iteron/memory" {
             return Err(KernelError::ContextResolution(
                 "memory strategy has the wrong slot identity".into(),
             ));
@@ -84,14 +84,14 @@ impl Agent {
         &self,
     ) -> Option<(
         std::path::PathBuf,
-        std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
-        core_protocol::TurnId,
+        std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
+        iteron_protocol::TurnId,
     )> {
         self.memory_workspace.clone().map(|workspace| {
             (
                 workspace,
                 self.memory_strategy.clone(),
-                core_protocol::TurnId(self.seq_turn),
+                iteron_protocol::TurnId(self.seq_turn),
             )
         })
     }
@@ -104,12 +104,12 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_router(
         &mut self,
-        router: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        router: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if router.slot().as_persisted_str() != "core/router" {
+        if router.slot().as_persisted_str() != "iteron/router" {
             return Err(KernelError::ContextResolution(
                 "router has the wrong slot identity".into(),
             ));
@@ -122,12 +122,12 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_planner(
         &mut self,
-        planner: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        planner: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if planner.slot().as_persisted_str() != "core/planner" {
+        if planner.slot().as_persisted_str() != "iteron/planner" {
             return Err(KernelError::ContextResolution(
                 "planner has the wrong slot identity".into(),
             ));
@@ -140,12 +140,12 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_collaboration(
         &mut self,
-        collaboration: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        collaboration: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if collaboration.slot().as_persisted_str() != "core/collaboration" {
+        if collaboration.slot().as_persisted_str() != "iteron/collaboration" {
             return Err(KernelError::ContextResolution(
                 "collaboration strategy has the wrong slot identity".into(),
             ));
@@ -158,12 +158,12 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_scheduler(
         &mut self,
-        scheduler: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        scheduler: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if scheduler.slot().as_persisted_str() != "core/scheduler" {
+        if scheduler.slot().as_persisted_str() != "iteron/scheduler" {
             return Err(KernelError::ContextResolution(
                 "scheduler has the wrong slot identity".into(),
             ));
@@ -176,12 +176,12 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_verifier(
         &mut self,
-        verifier: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        verifier: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if verifier.slot().as_persisted_str() != "core/verifier" {
+        if verifier.slot().as_persisted_str() != "iteron/verifier" {
             return Err(KernelError::ContextResolution(
                 "verifier has the wrong slot identity".into(),
             ));
@@ -194,12 +194,12 @@ impl Agent {
     #[allow(dead_code)]
     pub fn set_model_router(
         &mut self,
-        router: std::sync::Arc<dyn core_protocol::slot::StrategySlot>,
+        router: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
         }
-        if router.slot().as_persisted_str() != "core/model_router" {
+        if router.slot().as_persisted_str() != "iteron/model_router" {
             return Err(KernelError::ContextResolution(
                 "model router has the wrong slot identity".into(),
             ));
@@ -239,7 +239,7 @@ impl Agent {
     /// Install the operator-selected active bundle before any child registry is constructed.
     pub fn set_boot_bundle(
         &mut self,
-        bundle: std::sync::Arc<core_agents::BootBundle>,
+        bundle: std::sync::Arc<iteron_agents::BootBundle>,
     ) -> Result<(), KernelError> {
         if self.seq_turn != 0 || self.injected.is_some() {
             return Err(KernelError::ContextAlreadyResolved);
@@ -261,14 +261,14 @@ impl Agent {
         if self.injected.is_some() {
             return Err(KernelError::InstructionContextAlreadyResolved);
         }
-        let max = core_ctx::MAX_MERGED_INSTRUCTION_BYTES;
+        let max = iteron_ctx::MAX_MERGED_INSTRUCTION_BYTES;
         if text.len() > max {
             return Err(KernelError::InstructionContextTooLarge {
                 bytes: text.len(),
                 max,
             });
         }
-        let text = core_record::redact::scrub(&text);
+        let text = iteron_record::redact::scrub(&text);
         if text.len() > max {
             return Err(KernelError::InstructionContextTooLarge {
                 bytes: text.len(),
@@ -309,7 +309,7 @@ impl Agent {
                 max,
             });
         }
-        let text = core_record::redact::scrub(&text);
+        let text = iteron_record::redact::scrub(&text);
         if text.len() > max {
             return Err(KernelError::EnvironmentContextTooLarge {
                 bytes: text.len(),

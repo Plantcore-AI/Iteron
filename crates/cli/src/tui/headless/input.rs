@@ -1,7 +1,7 @@
 use super::auth::BearerToken;
 use super::control::WireControl;
 use anyhow::{Context, Result, bail};
-use core_protocol::{Op, input::MAX_TOTAL_IMAGE_BASE64_BYTES, task::MAX_TASK_TEXT_BYTES};
+use iteron_protocol::{Op, input::MAX_TOTAL_IMAGE_BASE64_BYTES, task::MAX_TASK_TEXT_BYTES};
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;

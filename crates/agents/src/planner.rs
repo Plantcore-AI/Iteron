@@ -1,8 +1,8 @@
 //! Bounded `core/planner` strategy for selecting already-normalized investigation leaves.
 
-use core_protocol::Capability;
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
+use iteron_protocol::Capability;
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -71,7 +71,7 @@ pub struct PlannerStrategy {
 impl Default for PlannerStrategy {
     fn default() -> Self {
         Self {
-            slot: SlotId("core/planner".into()),
+            slot: SlotId("iteron/planner".into()),
         }
     }
 }
@@ -82,7 +82,7 @@ impl PlannerStrategy {
         input: &PlannerObservation,
         ceiling: CapabilitySet,
     ) -> Result<PlannerProposal, PlannerError> {
-        if slot.slot().as_persisted_str() != "core/planner" {
+        if slot.slot().as_persisted_str() != "iteron/planner" {
             return Err(PlannerError::WrongSlot);
         }
         validate_observation(input)?;
@@ -247,7 +247,7 @@ mod tests {
         for selected in [vec![1], vec![0, 0]] {
             assert!(
                 PlannerStrategy::plan_with(
-                    &Fixed(selected, SlotId("core/planner".into())),
+                    &Fixed(selected, SlotId("iteron/planner".into())),
                     &input,
                     CapabilitySet::only(Capability::ReadOnly),
                 )

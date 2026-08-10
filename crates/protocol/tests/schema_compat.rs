@@ -1,4 +1,4 @@
-use core_protocol::{EqEnvelope, Op, SqEnvelope};
+use iteron_protocol::{EqEnvelope, Op, SqEnvelope};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

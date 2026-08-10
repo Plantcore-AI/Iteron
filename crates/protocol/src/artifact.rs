@@ -643,7 +643,7 @@ mod tests {
         let spec = json!({
             "hash": "3b1f8e2c4a6d0b9f1e3c5a7d9b1f3e5c7a9d1b3f5e7c9a1d3b5f7e9c1a3d5b7f",
             "schema": "file_diff",
-            "producer": { "kind": "slot", "slot": "core/tool_policy" },
+            "producer": { "kind": "slot", "slot": "iteron/tool_policy" },
             "provenance": { "run_id": "run-9", "parent_hashes": [], "effect_id": "eff-7" },
             "permissions": ["reversible_local"],
             "locator": "diff://run-9/eff-7"
@@ -662,7 +662,7 @@ mod tests {
         let handle = ArtifactRef {
             schema: ArtifactSchema::PolicyManifest,
             producer: Producer::Slot {
-                slot: SlotId("core/tool_policy".into()),
+                slot: SlotId("iteron/tool_policy".into()),
             },
             provenance: Provenance {
                 run_id: RunId("run-1".into()),
@@ -676,7 +676,7 @@ mod tests {
         let wire = serde_json::to_value(&handle).expect("serialises");
         assert_eq!(
             wire["producer"],
-            json!({ "kind": "slot", "slot": "core/tool_policy" }),
+            json!({ "kind": "slot", "slot": "iteron/tool_policy" }),
             "the slot identity must stay a bare string so it matches the evolve-side persisted form"
         );
         assert_eq!(

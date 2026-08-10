@@ -8,12 +8,12 @@ fn repository_root() -> std::path::PathBuf {
 }
 
 /// This is the gate the item asks for: a new flag with no doc entry fails the build. It runs in
-/// `cargo test -p core-xtask`, and `core-xtask docs check` is the same comparison from CI.
+/// `cargo test -p iteron-xtask`, and `iteron-xtask docs check` is the same comparison from CI.
 #[test]
 fn the_published_reference_matches_the_argument_parser() {
     check(&repository_root()).expect(
         "docs/reference/cli.md drifted from crates/cli/src/main.rs; run \
-         `cargo run --locked -p core-xtask -- docs generate`",
+         `cargo run --locked -p iteron-xtask -- docs generate`",
     );
 }
 

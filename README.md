@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="docs/assets/brand/core-code-logo.svg" width="720" alt="Core Code">
+  <img src="docs/assets/brand/iteron-logo.svg" width="720" alt="Iteron">
 </h1>
 
 <p align="center">
@@ -9,15 +9,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Plantcore-AI/core/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Plantcore-AI/core/ci.yml?branch=main&amp;label=CI&amp;style=flat-square"></a>
-  <a href="https://github.com/Plantcore-AI/core/actions/workflows/docs.yml"><img alt="Documentation" src="https://img.shields.io/github/actions/workflow/status/Plantcore-AI/core/docs.yml?branch=main&amp;label=docs&amp;style=flat-square"></a>
-  <a href="https://github.com/Plantcore-AI/core/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Plantcore-AI/core?display_name=tag&amp;sort=semver&amp;style=flat-square"></a>
+  <a href="https://github.com/Plantcore-AI/Iteron/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Plantcore-AI/Iteron/ci.yml?branch=main&amp;label=CI&amp;style=flat-square"></a>
+  <a href="https://github.com/Plantcore-AI/Iteron/actions/workflows/docs.yml"><img alt="Documentation" src="https://img.shields.io/github/actions/workflow/status/Plantcore-AI/Iteron/docs.yml?branch=main&amp;label=docs&amp;style=flat-square"></a>
+  <a href="https://github.com/Plantcore-AI/Iteron/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Plantcore-AI/Iteron?display_name=tag&amp;sort=semver&amp;style=flat-square"></a>
   <a href="https://www.rust-lang.org/"><img alt="Rust 1.90+" src="https://img.shields.io/badge/rust-1.90%2B-93450a?style=flat-square&amp;logo=rust"></a>
-  <a href="LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/github/license/Plantcore-AI/core?style=flat-square"></a>
+  <a href="LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/github/license/Plantcore-AI/Iteron?style=flat-square"></a>
 </p>
 
 <p align="center">
-  <a href="https://plantcore-ai.github.io/core/">Documentation</a>
+  <a href="https://plantcore-ai.github.io/Iteron/">Documentation</a>
   · <a href="#install">Install</a>
   · <a href="#quickstart">Quickstart</a>
   · <a href="docs/architecture.md">Architecture</a>
@@ -26,7 +26,7 @@
 </p>
 
 > [!WARNING]
-> **Public pre-alpha, and unconfined by default.** Core Code is ready for
+> **Public pre-alpha, and unconfined by default.** Iteron is ready for
 > development and evaluation, not unattended use on sensitive repositories.
 > Interfaces may change before the first compatibility-stable release.
 >
@@ -40,7 +40,7 @@
 > `--confine` puts executed code back inside the Seatbelt/bubblewrap sandbox. Run
 > an untrusted repository with both, or with `--mode plan`, or not at all.
 
-Core Code combines a focused coding-agent experience with a reusable agent
+Iteron combines a focused coding-agent experience with a reusable agent
 runtime substrate. The `core` command provides a full-screen TUI and bounded
 one-shot automation. Underneath it, small Rust crates separate protocol,
 authority, provider routing, context, tools, sandboxing, durable records,
@@ -48,14 +48,14 @@ observability, evaluation, and future evolution strategies.
 
 ## Install
 
-Core Code does not currently publish an accepted binary release. Build the
+Iteron does not currently publish an accepted binary release. Build the
 current source with Rust 1.90 or newer:
 
 ```sh
-git clone https://github.com/Plantcore-AI/core.git
+git clone https://github.com/Plantcore-AI/Iteron.git
 cd core
 cargo install --locked --path crates/cli
-core --version
+iteron --version
 ```
 
 The repository includes an installer and native release pipeline, but neither
@@ -67,7 +67,7 @@ target matrix and verification contract.
 
 ## Quickstart
 
-Core Code defaults to the GLM provider and the source-versioned GLM 5.2 catalog
+Iteron defaults to the GLM provider and the source-versioned GLM 5.2 catalog
 default. Make `GLM_API_KEY` available through your shell or secret manager, then
 open a repository:
 
@@ -116,7 +116,7 @@ Continue with the [five-minute quickstart](docs/getting-started/quickstart.md),
 [provider setup](docs/getting-started/providers.md), and
 [permissions and sandbox guide](docs/using/permissions-and-sandbox.md).
 
-## Why Core Code
+## Why Iteron
 
 | | Contract |
 | --- | --- |
@@ -145,11 +145,11 @@ Continue with the [five-minute quickstart](docs/getting-started/quickstart.md),
 
 ## Architecture
 
-Core Code is a modular Rust workspace today. The runtime is still a modular
+Iteron is a modular Rust workspace today. The runtime is still a modular
 monolith; it does **not** claim complete microkernel conformance yet.
 
 <p align="center">
-  <img src="docs/assets/architecture/core-code-self-evolving-harness.png" width="960" alt="Core Code target architecture: an offline evolution control plane outside a fixed microkernel and modular harness boundary">
+  <img src="docs/assets/architecture/iteron-self-evolving-harness.png" width="960" alt="Iteron target architecture: an offline evolution control plane outside a fixed microkernel and modular harness boundary">
 </p>
 
 <p align="center">
@@ -200,13 +200,13 @@ Read the [architecture](docs/architecture.md),
 
 The [roadmap](docs/roadmap.md) uses integration evidence rather than dates or
 feature counts. It deliberately separates delivered foundations from unaccepted
-milestones. Core Code does not claim parity with Codex, Claude Code, or another
+milestones. Iteron does not claim parity with Codex, Claude Code, or another
 production coding agent.
 
 ## Documentation
 
 The complete documentation lives at
-**[plantcore-ai.github.io/core](https://plantcore-ai.github.io/core/)**.
+**[plantcore-ai.github.io/Iteron](https://plantcore-ai.github.io/Iteron/)**.
 
 | Start | Use | Build and govern |
 | --- | --- | --- |
@@ -222,11 +222,11 @@ Focused bug fixes, tests, documentation, provider adapters, evaluation fixtures,
 and carefully scoped features are welcome. Start with
 [CONTRIBUTING.md](CONTRIBUTING.md), follow the
 [Code of Conduct](CODE_OF_CONDUCT.md), and browse
-[good first issues](https://github.com/Plantcore-AI/core/labels/good%20first%20issue).
+[good first issues](https://github.com/Plantcore-AI/Iteron/labels/good%20first%20issue).
 Questions and design discussions belong in
-[GitHub Discussions](https://github.com/Plantcore-AI/core/discussions).
+[GitHub Discussions](https://github.com/Plantcore-AI/Iteron/discussions).
 
-Core Code uses human-owned module and invariant boundaries rather than a fixed
+Iteron uses human-owned module and invariant boundaries rather than a fixed
 maintainer count. Contributors do not need a maintainership title, and coding
 agents never hold review, merge, release, or governance authority.
 
@@ -260,7 +260,7 @@ exploit material in public channels.
 
 ## License
 
-Core Code is licensed under the [Apache License, Version 2.0](LICENSE). Unless a
+Iteron is licensed under the [Apache License, Version 2.0](LICENSE). Unless a
 contributor explicitly states otherwise, intentionally submitted contributions
 are licensed under the same terms as described in Section 5 of the license. No
 CLA is required.

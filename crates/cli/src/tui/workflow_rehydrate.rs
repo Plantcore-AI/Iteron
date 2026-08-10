@@ -70,7 +70,7 @@ mod tests {
         fn new(tag: &str) -> Self {
             let serial = NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed);
             let dir = std::env::temp_dir().join(format!(
-                "core-workflow-rehydrate-{tag}-{}-{serial}",
+                "iteron-workflow-rehydrate-{tag}-{}-{serial}",
                 std::process::id()
             ));
             let _ = std::fs::remove_dir_all(&dir);
@@ -141,8 +141,8 @@ mod tests {
         crate::workflow::persist_result(
             dir,
             run_id,
-            &core_workflow::RunReport {
-                run_id: core_workflow::RunId::new(run_id),
+            &iteron_workflow::RunReport {
+                run_id: iteron_workflow::RunId::new(run_id),
                 value: serde_json::json!("done"),
                 stopped: false,
                 cache_hits: 0,

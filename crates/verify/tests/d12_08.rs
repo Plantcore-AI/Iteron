@@ -5,8 +5,8 @@
 //! RED before the fix: `Selection::resolve_vs_ceiling_gap` and `ResolveCeilingMetric` do not
 //! exist on the base branch, so this file fails to compile there. GREEN after the fix.
 
-use core_verify::OracleStrength::{self, Strong, Weak};
-use core_verify::select::{Candidate, ResolveCeilingMetric, select};
+use iteron_verify::OracleStrength::{self, Strong, Weak};
+use iteron_verify::select::{Candidate, ResolveCeilingMetric, select};
 
 fn cand(content: &str, verdicts: Vec<(OracleStrength, bool)>, correct: Option<bool>) -> Candidate {
     Candidate {

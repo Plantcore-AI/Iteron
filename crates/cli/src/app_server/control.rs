@@ -41,7 +41,7 @@ pub(super) fn apply_immediate_workflow_control(
 }
 
 async fn apply_job_control(
-    processes: Option<&core_tools::ProcessControl>,
+    processes: Option<&iteron_tools::ProcessControl>,
     events: &EventPublisher,
     control: JobControl,
 ) -> ControlReply {
@@ -118,10 +118,10 @@ async fn apply_memory_control(agent: &mut Agent, control: MemoryControl) -> Cont
             if let crate::runtime::hooks::HookDecision::Deny(reason) = report.decision {
                 return ControlReply::Refused(reason);
             }
-            let proposal = match core_ctx::MemoryRecallStrategy::authorize_project_write_with(
+            let proposal = match iteron_ctx::MemoryRecallStrategy::authorize_project_write_with(
                 memory_strategy.as_ref(),
                 &text,
-                core_protocol::capability_set::CapabilitySet::only(Capability::TrustMutating),
+                iteron_protocol::capability_set::CapabilitySet::only(Capability::TrustMutating),
             ) {
                 Ok(proposal) => proposal,
                 Err(error) => {
@@ -136,7 +136,7 @@ async fn apply_memory_control(agent: &mut Agent, control: MemoryControl) -> Cont
                     return ControlReply::Refused(format!("memory policy refused: {error}"));
                 }
             };
-            match core_ctx::MemoryStore::at(&workspace).add(&proposal.text) {
+            match iteron_ctx::MemoryStore::at(&workspace).add(&proposal.text) {
                 Ok(id) => {
                     agent.lifecycle_event(
                         "memory.fact.added",
@@ -190,7 +190,7 @@ async fn apply_memory_control(agent: &mut Agent, control: MemoryControl) -> Cont
             if let crate::runtime::hooks::HookDecision::Deny(reason) = report.decision {
                 return ControlReply::Refused(reason);
             }
-            if core_ctx::MemoryStore::at(&workspace).remove(&id) {
+            if iteron_ctx::MemoryStore::at(&workspace).remove(&id) {
                 agent.lifecycle_event(
                     "memory.fact.deleted",
                     Some(turn),
@@ -206,7 +206,7 @@ async fn apply_memory_control(agent: &mut Agent, control: MemoryControl) -> Cont
 
 pub(super) async fn apply_immediate_control(
     workflows: &crate::workflow::WorkflowSupervisor,
-    processes: Option<&core_tools::ProcessControl>,
+    processes: Option<&iteron_tools::ProcessControl>,
     events: &EventPublisher,
     request: ControlRequest,
 ) {
@@ -318,7 +318,7 @@ async fn apply_workflow_control(
 pub(super) async fn apply_control(
     agent: &mut Agent,
     workflows: &crate::workflow::WorkflowSupervisor,
-    processes: Option<&core_tools::ProcessControl>,
+    processes: Option<&iteron_tools::ProcessControl>,
     side: &mut Option<crate::runtime::SideConversation>,
     started: &mut bool,
     events: &mut EventPublisher,
@@ -326,14 +326,14 @@ pub(super) async fn apply_control(
 ) {
     let reply = match request.control {
         Control::SetEffort(next) => {
-            match agent.transition_effort(next, core_protocol::RuntimePolicySource::Operator) {
+            match agent.transition_effort(next, iteron_protocol::RuntimePolicySource::Operator) {
                 Ok(_) => ControlReply::State(Box::new(snapshot_of(agent))),
                 Err(error) => ControlReply::Refused(error.public_summary()),
             }
         }
         Control::SetPermissionMode(next) => {
             match agent
-                .transition_permission_mode(next, core_protocol::RuntimePolicySource::Operator)
+                .transition_permission_mode(next, iteron_protocol::RuntimePolicySource::Operator)
             {
                 Ok(_) => ControlReply::State(Box::new(snapshot_of(agent))),
                 Err(error) => ControlReply::Refused(error.public_summary()),
@@ -345,7 +345,7 @@ pub(super) async fn apply_control(
         } => match agent.transition_permission_capability_rule(
             capability,
             verdict,
-            core_protocol::RuntimePolicySource::Operator,
+            iteron_protocol::RuntimePolicySource::Operator,
         ) {
             Ok(_) => ControlReply::State(Box::new(snapshot_of(agent))),
             Err(error) => ControlReply::Refused(error.public_summary()),
@@ -435,7 +435,7 @@ pub(super) async fn apply_control(
             } = *request;
             match agent.adopt_run(rollout) {
                 Ok(adopted) => {
-                    events.run_id = Some(core_protocol::RunId(adopted.run_id.clone()));
+                    events.run_id = Some(iteron_protocol::RunId(adopted.run_id.clone()));
                     events.record_lifecycle(
                         "session.resumed",
                         None,
@@ -605,6 +605,6 @@ pub(super) fn snapshot_of(agent: &mut Agent) -> SessionSnapshot {
         rate_limit: agent
             .last_rate_limit()
             .as_ref()
-            .and_then(core_provider::RateLimitSnapshot::summary),
+            .and_then(iteron_provider::RateLimitSnapshot::summary),
     }
 }

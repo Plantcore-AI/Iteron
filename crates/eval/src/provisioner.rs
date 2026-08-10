@@ -2,7 +2,7 @@
 //!
 //! Image acquisition is an operator-side preparation step and may require registry egress. Test
 //! execution never does: Docker receives `--network none`, while the no-daemon path runs through
-//! the repository's existing [`core_sandbox::Confinement::egress_off`] backend. A Docker daemon is
+//! the repository's existing [`iteron_sandbox::Confinement::egress_off`] backend. A Docker daemon is
 //! an explicit host trust boundary, so this module does not punch its control socket through the
 //! filesystem sandbox and pretend that the resulting process is workspace-confined.
 //!
@@ -16,7 +16,7 @@
 use crate::corpus::CorpusTask;
 use crate::process::{ProcessSpec, run_process};
 use crate::types::OracleStatus;
-use core_sandbox::Confinement;
+use iteron_sandbox::Confinement;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -100,7 +100,7 @@ struct PreparedImage {
 
 impl Default for Provisioner {
     fn default() -> Self {
-        let docker_platform = std::env::var("CORE_EVAL_DOCKER_PLATFORM")
+        let docker_platform = std::env::var("ITERON_EVAL_DOCKER_PLATFORM")
             .ok()
             .filter(|platform| !platform.trim().is_empty())
             .or_else(|| {
@@ -329,10 +329,10 @@ impl Provisioner {
         }
         args.extend([
             "--env".into(),
-            format!("CORE_EVAL_TEST_SET={}", test_set.label()).into(),
+            format!("ITERON_EVAL_TEST_SET={}", test_set.label()).into(),
             "--env".into(),
             format!(
-                "CORE_EVAL_TEST_IDS_JSON={}",
+                "ITERON_EVAL_TEST_IDS_JSON={}",
                 serde_json::to_string(tests).unwrap_or_else(|_| "[]".into())
             )
             .into(),
@@ -373,7 +373,7 @@ impl Provisioner {
     ) -> TestCommandReceipt {
         let ids = serde_json::to_string(tests).unwrap_or_else(|_| "[]".into());
         let wrapped = format!(
-            "export CORE_EVAL_TEST_SET={}; export CORE_EVAL_TEST_IDS_JSON={}; {}",
+            "export ITERON_EVAL_TEST_SET={}; export ITERON_EVAL_TEST_IDS_JSON={}; {}",
             shell_quote(test_set.label()),
             shell_quote(&ids),
             command
@@ -381,7 +381,7 @@ impl Provisioner {
         let mut confinement = Confinement::egress_off(workspace);
         confinement.timeout_secs = timeout.as_secs().max(1);
         confinement.max_output_bytes = PROVISION_OUTPUT_LIMIT;
-        let output = core_sandbox::platform_sandbox()
+        let output = iteron_sandbox::platform_sandbox()
             .run(&wrapped, &confinement)
             .await;
         let (status, exit_code, timed_out, detail) = match output {
@@ -554,7 +554,7 @@ mod tests {
 
     fn workspace(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "core-eval-provisioner-{label}-{}-{}",
+            "iteron-eval-provisioner-{label}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -661,8 +661,8 @@ mod tests {
         let mut task = task("unused");
         task.test_cmd = BTreeMap::from([(
             "go".into(),
-            "test \"$CORE_EVAL_TEST_SET\" = fail_to_pass; \
-             test \"$CORE_EVAL_TEST_IDS_JSON\" = '[\"fixture::f2p\"]'; \
+            "test \"$ITERON_EVAL_TEST_SET\" = fail_to_pass; \
+             test \"$ITERON_EVAL_TEST_IDS_JSON\" = '[\"fixture::f2p\"]'; \
              printf go-command-ran > go-command.txt"
                 .into(),
         )]);
@@ -712,7 +712,7 @@ mod tests {
     }
 
     /// Gated acceptance witness for #32. Run on DGX Spark with:
-    /// `cargo test -p core-eval real_pro_image_denies_network_and_writes_workspace -- --ignored`
+    /// `cargo test -p iteron-eval real_pro_image_denies_network_and_writes_workspace -- --ignored`
     #[tokio::test]
     #[ignore = "requires Docker plus the official SWE-bench Pro image"]
     async fn real_pro_image_denies_network_and_writes_workspace() {

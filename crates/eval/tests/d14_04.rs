@@ -1,5 +1,5 @@
 //! D14-04 oracle: an "unknown" provider cost is NEVER silently converted to `$0` anywhere in the
-//! `core-eval` measurement pipeline — not when the Core CLI final result is decoded, not when a
+//! `iteron-eval` measurement pipeline — not when the Core CLI final result is decoded, not when a
 //! configuration's cells are aggregated, and not when two arms are compared.
 //!
 //! The gap under closure is "Unknown cost silently converted to $0". A dollar figure that cannot be
@@ -23,8 +23,8 @@
 //!      of the PRICED cells only (an unknown coerced to `0.0` would halve it), and disable the
 //!      cross-arm cost delta with an explicit reason rather than emit a fabricated dollar figure.
 
-use core_eval::report::{aggregate, compare};
-use core_eval::{
+use iteron_eval::report::{aggregate, compare};
+use iteron_eval::{
     CellResult, ContractError, CostStatus, OracleStatus, Partition, RunStatus, SamplingControl,
     parse_final_result,
 };
@@ -74,7 +74,7 @@ fn cell(config: &str, seed: u64, cost_status: CostStatus, cost_usd: Option<f64>)
 }
 
 #[test]
-fn core_cli_unknown_cost_is_never_coerced_to_zero_dollars() {
+fn iteron_cli_unknown_cost_is_never_coerced_to_zero_dollars() {
     // A verified `known` cost decodes to exactly its stated amount.
     let known = parse_final_result(&final_result_json("known", "0.125000", "null"), 0)
         .expect("a well-formed known-cost result parses")

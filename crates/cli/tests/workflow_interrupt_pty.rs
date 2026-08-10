@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 const FIXTURE_PROVIDER_ID: &str = "workflow-interrupt-fixture";
 const FIXTURE_MODEL_ID: &str = "workflow-interrupt-model";
-const FIXTURE_KEY_ENV: &str = "CORE_WORKFLOW_INTERRUPT_TEST_KEY";
+const FIXTURE_KEY_ENV: &str = "ITERON_WORKFLOW_INTERRUPT_TEST_KEY";
 const FIXTURE_KEY: &str = "integration-test-placeholder";
 /// The default-folded card's affordance — proof that a real live frame is on screen and therefore
 /// that raw mode is already on and SIGINT already suppressed. Narrator logs intentionally remain
@@ -70,7 +70,7 @@ struct Scratch {
 impl Scratch {
     fn new(label: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
-            "core-workflow-interrupt-{label}-{}-{}",
+            "iteron-workflow-interrupt-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -97,7 +97,7 @@ impl Scratch {
     /// A provider entry that RESOLVES but is never contacted: the fixture script calls no agents,
     /// and the api_root is a port nothing listens on.
     fn configure_offline_provider(&self) {
-        let config_dir = self.home().join(".core");
+        let config_dir = self.home().join(".iteron");
         std::fs::create_dir_all(&config_dir).expect("create isolated Core config directory");
         let config = json!({
             "provider": FIXTURE_PROVIDER_ID,
@@ -184,7 +184,7 @@ impl WorkflowPty {
             .expect("open deterministic PTY");
         let baseline_termios = raw_mode_termios_state(pair.master.as_ref());
 
-        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_core"));
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_iteron"));
         // A direct binary launch with a cleared environment: no credential-loading launcher and no
         // inherited real provider key can enter this process tree.
         command.env_clear();
@@ -192,7 +192,7 @@ impl WorkflowPty {
         command.env("PATH", "/usr/bin:/bin");
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
-        command.env("CORE_THEME", "terminal");
+        command.env("ITERON_THEME", "terminal");
         command.env("LANG", "C.UTF-8");
         command.env(FIXTURE_KEY_ENV, FIXTURE_KEY);
         command.cwd(scratch.repo());

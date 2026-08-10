@@ -12,7 +12,7 @@ from mkdocs.structure.pages import Page
 
 
 _ROOT_LINKS = {
-    "../OWNERSHIP.md": "https://github.com/Plantcore-AI/core/blob/main/OWNERSHIP.md",
+    "../OWNERSHIP.md": "https://github.com/Plantcore-AI/Iteron/blob/main/OWNERSHIP.md",
 }
 
 

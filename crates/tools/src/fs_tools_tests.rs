@@ -1,5 +1,5 @@
 use super::*;
-use core_protocol::ToolUse;
+use iteron_protocol::ToolUse;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -11,7 +11,7 @@ impl TestRoot {
     fn new(label: &str) -> Self {
         let id = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "core-tools-read-file-{label}-{}-{id}",
+            "iteron-tools-read-file-{label}-{}-{id}",
             std::process::id()
         ));
         std::fs::create_dir(&path).expect("create isolated read_file test root");

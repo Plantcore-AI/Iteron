@@ -1,6 +1,6 @@
 //! Bounded projection from workflow-engine events into frontend-retained state.
 
-use core_workflow::events::{PREVIEW_MAX, ProgressEvent, TOOL_SUMMARY_MAX, truncate_preview};
+use iteron_workflow::events::{PREVIEW_MAX, ProgressEvent, TOOL_SUMMARY_MAX, truncate_preview};
 
 pub(super) const UI_LABEL_MAX: usize = 120;
 

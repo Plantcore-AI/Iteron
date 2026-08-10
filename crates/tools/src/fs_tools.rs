@@ -2,7 +2,7 @@
 //! dispatch early (at content_block_stop) because they have no observable effect.
 
 use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
-use core_protocol::{Capability, Purity, ToolSpec};
+use iteron_protocol::{Capability, Purity, ToolSpec};
 use std::path::Path;
 use tokio::io::AsyncReadExt;
 use walkdir::WalkDir;
@@ -481,7 +481,7 @@ pub(crate) fn register_outline(r: &mut Registry) -> Result<(), ToolError> {
                     .get("query")
                     .and_then(|value| value.as_str())
                     .unwrap_or("");
-                let map = core_ctx::repo_outline_for_task(&root, 6_000, query);
+                let map = iteron_ctx::repo_outline_for_task(&root, 6_000, query);
                 ok_result(id, map)
             })
         },

@@ -12,7 +12,7 @@ use crate::{
     PolicyManifest, TrainingAdmissionPolicy, TrainingEligibilityError, TrajectoryEnvelope,
     validate_nonempty_string,
 };
-use core_protocol::TenantId;
+use iteron_protocol::TenantId;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 

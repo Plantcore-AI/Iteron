@@ -30,9 +30,11 @@ pub(super) const MAX_ADOPTED_TOOL_OUTPUT_BYTES: usize = 4 * 1024;
 /// Same rule the `--resume` startup path applies: the last durable `ModelSelected` is authoritative;
 /// a legacy journal that predates provider identity offers only `RunStart.model`, and its model is
 /// never used to guess a provider.
-pub(super) fn recorded_route(events: &[core_protocol::Event]) -> Option<(Option<String>, String)> {
+pub(super) fn recorded_route(
+    events: &[iteron_protocol::Event],
+) -> Option<(Option<String>, String)> {
     if let Some(route) = events.iter().rev().find_map(|event| match &event.kind {
-        core_protocol::EventKind::ModelSelected {
+        iteron_protocol::EventKind::ModelSelected {
             provider_id,
             model_id,
             ..
@@ -42,7 +44,7 @@ pub(super) fn recorded_route(events: &[core_protocol::Event]) -> Option<(Option<
         return Some(route);
     }
     events.iter().find_map(|event| match &event.kind {
-        core_protocol::EventKind::RunStart { model, .. } if !model.is_empty() => {
+        iteron_protocol::EventKind::RunStart { model, .. } if !model.is_empty() => {
             Some((None, model.clone()))
         }
         _ => None,
@@ -62,9 +64,9 @@ pub(super) struct AdoptedTool {
 /// nothing here can start a turn. Returns `(rendered, total)` so the caller can state the bound it
 /// applied instead of quietly showing a shorter conversation.
 pub(super) fn adopted_transcript_blocks(
-    events: &[core_protocol::Event],
+    events: &[iteron_protocol::Event],
 ) -> (Vec<block::BlockKind>, usize) {
-    use core_protocol::{Block as MessageBlock, EventKind, Role};
+    use iteron_protocol::{Block as MessageBlock, EventKind, Role};
 
     let mut results: std::collections::HashMap<String, AdoptedTool> =
         std::collections::HashMap::new();
@@ -255,11 +257,11 @@ pub(super) async fn adopt_session(
         );
         return;
     }
-    let run = core_protocol::RunId(run_id.to_owned());
-    let tenant = core_protocol::TenantId::default();
+    let run = iteron_protocol::RunId(run_id.to_owned());
+    let tenant = iteron_protocol::TenantId::default();
 
     // One read of the record serves both halves: the route to bind and the history to render.
-    let events = match core_record::load_forked(&runs, &run) {
+    let events = match iteron_record::load_forked(&runs, &run) {
         Ok(events) => events,
         Err(error) => {
             app.note(
@@ -326,7 +328,7 @@ pub(super) async fn adopt_session(
 
     // Takes the target run's exclusive writer lock. The live run keeps its own until the runtime
     // swaps them, so a refusal here costs the operator nothing.
-    let rollout = match core_record::Rollout::open_existing(&runs, &run, tenant) {
+    let rollout = match iteron_record::Rollout::open_existing(&runs, &run, tenant) {
         Ok(rollout) => rollout,
         Err(error) => {
             app.note(

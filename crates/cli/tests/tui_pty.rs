@@ -18,10 +18,10 @@ const MAX_CAPTURE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PROVIDER_REQUEST_BYTES: usize = 1024 * 1024;
 const LINK_PROVIDER_ID: &str = "tui-link-fixture";
 const LINK_MODEL_ID: &str = "tui-link-model";
-const LINK_TEST_KEY_ENV: &str = "CORE_TUI_LINK_TEST_KEY";
+const LINK_TEST_KEY_ENV: &str = "ITERON_TUI_LINK_TEST_KEY";
 const LINK_TEST_KEY: &str = "integration-test-placeholder";
 const LINK_TARGET: &str = "https://example.com/core-guide";
-const OSC9_RUN_COMPLETE: &[u8] = b"\x1b]9;Core Code: run complete\x07";
+const OSC9_RUN_COMPLETE: &[u8] = b"\x1b]9;Iteron: run complete\x07";
 const CLIENT_PARITY_TASK: &str = include_str!("fixtures/client-parity-task.txt");
 const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
 const KEYBOARD_ENHANCEMENT_PUSH: &[u8] = b"\x1b[>1u";
@@ -84,7 +84,7 @@ impl Scratch {
         api_root: &str,
         completion_notifications: Option<bool>,
     ) {
-        let config_dir = self.home().join(".core");
+        let config_dir = self.home().join(".iteron");
         std::fs::create_dir_all(&config_dir).expect("create isolated Core config directory");
         let mut config = json!({
             "provider": LINK_PROVIDER_ID,
@@ -115,7 +115,7 @@ impl Scratch {
     }
 
     fn configure_project_notifications(&self, enabled: bool) {
-        let config_dir = self.repo().join(".core");
+        let config_dir = self.repo().join(".iteron");
         std::fs::create_dir_all(&config_dir).expect("create isolated project config directory");
         let config = json!({
             "schema_version": 2,
@@ -129,7 +129,7 @@ impl Scratch {
     }
 
     fn configure_external_editor(&self) {
-        let config_dir = self.home().join(".core");
+        let config_dir = self.home().join(".iteron");
         std::fs::create_dir_all(&config_dir).expect("create isolated Core config directory");
         let config = json!({
             "schema_version": 2,
@@ -152,7 +152,7 @@ impl Scratch {
     }
 
     fn configure_vim_keymap(&self) {
-        let config_dir = self.home().join(".core");
+        let config_dir = self.home().join(".iteron");
         std::fs::create_dir_all(&config_dir).expect("create isolated Core config directory");
         let config = json!({
             "schema_version": 2,
@@ -173,7 +173,7 @@ impl Scratch {
             }
         });
         std::fs::write(
-            self.home().join(".core/config.json"),
+            self.home().join(".iteron/config.json"),
             serde_json::to_vec(&config).expect("encode invalid hot-reload fixture"),
         )
         .expect("write invalid hot-reload fixture");
@@ -682,7 +682,7 @@ impl PtyHarness {
             .expect("open deterministic PTY");
         let baseline_termios = raw_mode_termios_state(pair.master.as_ref());
 
-        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_core"));
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_iteron"));
         // This is deliberately a direct binary launch. No credential-loading launcher ever
         // enter this process tree, and env_clear means no real provider credential can be inherited.
         command.env_clear();
@@ -692,7 +692,7 @@ impl PtyHarness {
             ThemeFixture::TerminalOverride => {
                 command.env("TERM", "xterm-256color");
                 command.env("COLORTERM", "truecolor");
-                command.env("CORE_THEME", "terminal");
+                command.env("ITERON_THEME", "terminal");
             }
             ThemeFixture::Osc11Auto => {
                 command.env("TERM", "xterm-direct");
@@ -705,7 +705,7 @@ impl PtyHarness {
             }
             ThemeFixture::Ansi16Dark => {
                 command.env("TERM", "xterm");
-                command.env("CORE_THEME", "dark");
+                command.env("ITERON_THEME", "dark");
             }
         }
         if matches!(keyboard_fixture, KeyboardFixture::Kitty) {
@@ -738,8 +738,8 @@ impl PtyHarness {
             command.env(LINK_TEST_KEY_ENV, LINK_TEST_KEY);
             command.arg(CLIENT_PARITY_TASK.trim());
         } else {
-            command.env("CORE_PROVIDER", "glm");
-            command.env("CORE_MODEL", "glm-5.2");
+            command.env("ITERON_PROVIDER", "glm");
+            command.env("ITERON_MODEL", "glm-5.2");
         }
 
         let child = pair
@@ -881,7 +881,7 @@ impl PtyHarness {
                 && pty.parser.screen().size() == (rows, cols)
                 && (pty.screen_text().contains("请检查")
                     || pty.screen_text().contains("Transcript")
-                    || pty.screen_text().contains("Core Code")
+                    || pty.screen_text().contains("Iteron")
                     || pty.screen_text().contains("ready"))
                 && !pty.screen_text().contains('�')
         });
@@ -1078,7 +1078,7 @@ fn custom_external_editor_round_trip_restores_tui_and_preserves_terminal_cleanup
             && pty.parser.screen().bracketed_paste()
             && pty.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
     });
-    let tmp = scratch.home().join(".core/tmp");
+    let tmp = scratch.home().join(".iteron/tmp");
     assert_eq!(
         std::fs::read_dir(tmp)
             .expect("private temp directory exists")
@@ -1233,7 +1233,7 @@ fn experiment_lab_is_terminal_real_read_only_by_default_and_blocks_promotion() {
             && screen.contains("No runtime setting changes")
     });
     assert!(
-        !scratch.repo().join(".core/experiments").exists(),
+        !scratch.repo().join(".iteron/experiments").exists(),
         "opening the lab must not create state"
     );
     assert_ne!(
@@ -1308,7 +1308,7 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
         });
         let filtered = std::fs::read_to_string(scratch.repo().join("core-transcript-filtered.md"))
             .expect("filtered viewer export is durable in the workspace");
-        assert!(filtered.starts_with("# Core Code transcript\n\n"));
+        assert!(filtered.starts_with("# Iteron transcript\n\n"));
         assert!(filtered.contains("needle 你好 😀"));
     }
     #[cfg(not(target_os = "linux"))]
@@ -1581,7 +1581,7 @@ fn client_parity_scripted_task_reaches_tui_done_presentation() {
         screen.contains("parity reply") && screen.contains("done")
     });
     assert!(
-        String::from_utf8_lossy(&pty.capture).contains("Core Code · Return exactly: parity reply"),
+        String::from_utf8_lossy(&pty.capture).contains("Iteron · Return exactly: parity reply"),
         "the first submitted prompt becomes the terminal session title"
     );
     pty.send(b"\x1b");
@@ -1756,18 +1756,18 @@ fn active_ctrl_d_drains_to_a_checkpoint_and_idle_ctrl_d_still_exits() {
                 .is_some_and(|extension| extension == "jsonl")
         })
         .expect("drain rollout exists");
-    let events = core_record::replay(&rollout_path).expect("drain rollout replays");
+    let events = iteron_record::replay(&rollout_path).expect("drain rollout replays");
     let checkpoints = events
         .iter()
         .filter_map(|event| match &event.kind {
-            core_protocol::EventKind::Checkpoint { tree_ref, .. } => Some(tree_ref),
+            iteron_protocol::EventKind::Checkpoint { tree_ref, .. } => Some(tree_ref),
             _ => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(checkpoints.len(), 1, "active Ctrl-D makes one checkpoint");
     assert!(events.iter().any(|event| matches!(
         &event.kind,
-        core_protocol::EventKind::Done { outcome } if outcome == "Drained"
+        iteron_protocol::EventKind::Done { outcome } if outcome == "Drained"
     )));
     let tree = std::process::Command::new("git")
         .args(["ls-tree", "-r", "--name-only", checkpoints[0]])

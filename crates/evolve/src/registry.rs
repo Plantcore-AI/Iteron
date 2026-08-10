@@ -8,7 +8,7 @@ use crate::{
     EvidenceRecordError, EvidenceRecorder, MAX_POLICIES_PER_BUNDLE, MAX_TRAJECTORY_JSON_BYTES,
     PolicyRef, TrajectoryEnvelope,
 };
-use core_protocol::RunId;
+use iteron_protocol::RunId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions, TryLockError};

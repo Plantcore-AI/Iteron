@@ -1,6 +1,6 @@
 # Permissions and sandbox
 
-Core Code classifies tools by capability, then applies a permission mode plus
+Iteron classifies tools by capability, then applies a permission mode plus
 session rules. The model cannot grant itself a capability.
 
 ## Capability classes
@@ -70,8 +70,8 @@ startup, the `mode` row in `/status`, and the first row of `/permissions`.
 
 `bash`, builds, tests, and `--verify` are enabled by default. `--allow-code` is
 retained and still grants the `code_executing` capability explicitly; an operator
-removes the grant with `"allow_code": false` in `~/.core/config.json`, with the
-same key in a project `.core/config.json`, or with `--mode plan`.
+removes the grant with `"allow_code": false` in `~/.iteron/config.json`, with the
+same key in a project `.iteron/config.json`, or with `--mode plan`.
 
 ## Sandbox contract
 

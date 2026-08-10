@@ -525,13 +525,13 @@ mod tests {
     #[test]
     fn type_only_churn_no_frozen_token_can_name_is_admitted() {
         let base: syn::File = syn::parse_quote! {
-            use core_protocol::Phase;
+            use iteron_protocol::Phase;
             mod pricing;
             pub enum Frozen { Step(Phase) }
         };
         let current: syn::File = syn::parse_quote! {
-            use core_protocol::Phase;
-            use core_ctx::ContextPort;
+            use iteron_protocol::Phase;
+            use iteron_ctx::ContextPort;
             mod pricing;
             mod strategy_runtime;
             pub enum Frozen { Step(Phase) }
@@ -669,7 +669,7 @@ mod tests {
     #[test]
     fn redirecting_a_binding_a_frozen_item_names_is_still_rejected() {
         let base: syn::File = syn::parse_quote! {
-            use core_protocol::Phase;
+            use iteron_protocol::Phase;
             pub enum Frozen { Step(Phase) }
         };
         let redirected: syn::File = syn::parse_quote! {
@@ -714,7 +714,7 @@ mod tests {
     #[test]
     fn a_glob_import_can_never_be_shown_irrelevant() {
         let base: syn::File = syn::parse_quote! {
-            use core_protocol::*;
+            use iteron_protocol::*;
             pub struct Frozen(Unrelated);
         };
         let current: syn::File = syn::parse_quote! {

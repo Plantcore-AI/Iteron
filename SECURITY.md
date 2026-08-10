@@ -2,10 +2,10 @@
 
 ## Current support level
 
-Core Code is pre-alpha. Only the current `main` branch receives security fixes. There
+Iteron is pre-alpha. Only the current `main` branch receives security fixes. There
 are no supported stable releases yet.
 
-Do not run Core Code unattended on sensitive repositories or treat its sandbox as a
+Do not run Iteron unattended on sensitive repositories or treat its sandbox as a
 confidentiality boundary.
 
 Since 2026-08-05 the shipped default is **unconfined and ungated**: the capability

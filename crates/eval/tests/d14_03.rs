@@ -1,5 +1,5 @@
 #![cfg(unix)]
-//! D14-03 oracle: `core-eval` classifies every cell from the CLI's versioned JSON *evidence
+//! D14-03 oracle: `iteron-eval` classifies every cell from the CLI's versioned JSON *evidence
 //! contract* on stdout plus the OS exit code — NEVER from the CLI's human-readable stderr chrome.
 //!
 //! The gap under closure is "eval consumes the CLI's human stderr chrome, not the versioned JSON
@@ -11,7 +11,7 @@
 //! the stderr text is diagnostic prose that a future build may reword freely. A harness that scraped
 //! that prose for the run's outcome, turn count, or cost would silently mismeasure the model.
 //!
-//! This oracle drives the ACTUAL compiled `core-eval` binary against a `file://` corpus with a
+//! This oracle drives the ACTUAL compiled `iteron-eval` binary against a `file://` corpus with a
 //! stand-in Core whose two streams tell DELIBERATELY CONTRADICTORY stories, and pins that the
 //! recorded cells follow the stdout contract, not the stderr chrome. Both contrasts stop at a
 //! non-`Completed` run status, so no cell reaches the egress-off sandbox / ground-truth oracle — the
@@ -29,15 +29,17 @@
 //!      a typed `errored` harness failure with no terminal outcome, turns, or resolution scavenged
 //!      from the stderr text.
 
-use core_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
-use core_eval::{CorpusManifest, CorpusTask, CostStatus, EvaluationManifest, Partition, RunStatus};
+use iteron_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
+use iteron_eval::{
+    CorpusManifest, CorpusTask, CostStatus, EvaluationManifest, Partition, RunStatus,
+};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// The compiled `core-eval` binary under test — the exact measurement machinery an operator runs.
-const CORE_EVAL_BIN: &str = env!("CARGO_BIN_EXE_core-eval");
+/// The compiled `iteron-eval` binary under test — the exact measurement machinery an operator runs.
+const ITERON_EVAL_BIN: &str = env!("CARGO_BIN_EXE_iteron-eval");
 
 struct TempRoot(PathBuf);
 
@@ -48,7 +50,7 @@ impl TempRoot {
             .expect("system clock must be after the Unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "core-eval-d14-03-{label}-{}-{nonce:x}",
+            "iteron-eval-d14-03-{label}-{}-{nonce:x}",
             std::process::id()
         ));
         std::fs::create_dir(&path).expect("create isolated D14-03 root");
@@ -94,9 +96,9 @@ fn create_repository(root: &TempRoot) -> (String, String) {
         &repo,
         &[
             "-c",
-            "user.name=core-eval",
+            "user.name=iteron-eval",
             "-c",
-            "user.email=core-eval@example.invalid",
+            "user.email=iteron-eval@example.invalid",
             "commit",
             "--quiet",
             "-m",
@@ -170,7 +172,7 @@ fn run_eval(root: &TempRoot, fake_core: &Path) -> (std::process::Output, Evaluat
     );
     let corpus_path = write_corpus(root, &repo_url, &commit);
     let artifact = root.join("out/evaluation.json");
-    let output = Command::new(CORE_EVAL_BIN)
+    let output = Command::new(ITERON_EVAL_BIN)
         .arg("--corpus")
         .arg(&corpus_path)
         .arg("--model")
@@ -187,7 +189,7 @@ fn run_eval(root: &TempRoot, fake_core: &Path) -> (std::process::Output, Evaluat
         .arg("--output")
         .arg(&artifact)
         .output()
-        .expect("run core-eval binary");
+        .expect("run iteron-eval binary");
     let bytes =
         std::fs::read(&artifact).expect("the evaluation artifact must be persisted to disk");
     let manifest: EvaluationManifest =
@@ -308,7 +310,7 @@ fn a_valid_result_on_stderr_is_not_scraped_and_leaves_a_hard_contract_error() {
         );
         assert_eq!(
             cell.failure_phase.as_deref(),
-            Some("core_contract"),
+            Some("iteron_contract"),
             "the failure must be attributed to the missing stdout JSON contract"
         );
         assert_eq!(

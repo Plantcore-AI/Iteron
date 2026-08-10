@@ -1,4 +1,4 @@
-//! `KernelSpawner` — the production [`core_workflow::AgentSpawner`].
+//! `KernelSpawner` — the production [`iteron_workflow::AgentSpawner`].
 //!
 //! Every workflow `agent('...')` call runs a GENUINE child [`Agent`] (its own context, its own
 //! read-only tool loop) via `Agent::run_leaf`, not a single provider completion. This is the
@@ -22,24 +22,24 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 
 use async_trait::async_trait;
-use core_agents::AgentCatalog;
-use core_obs::PricingPort;
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::slot::StrategySlot;
-use core_protocol::{
+use iteron_agents::AgentCatalog;
+use iteron_obs::PricingPort;
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::slot::StrategySlot;
+use iteron_protocol::{
     Budget, CostAttribution, Effort, Outcome, PermissionMode, PermissionRules, RunId, TenantId,
 };
-use core_provider::Provider;
-use core_record::Rollout;
-use core_tools::Registry;
-use core_workflow::{AgentActivityReporter, AgentCall, AgentOutcome, AgentSpawner};
+use iteron_provider::Provider;
+use iteron_record::Rollout;
+use iteron_tools::Registry;
+use iteron_workflow::{AgentActivityReporter, AgentCall, AgentOutcome, AgentSpawner};
 use sha2::{Digest, Sha256};
 
 use super::Agent;
 use super::hooks::Hooks;
 use super::hooks::journal::HookEffectJournal;
 use super::pricing::SharedUsdBudget;
-use core_obs::Ledger;
+use iteron_obs::Ledger;
 
 const MAX_AGENT_REFUSAL_BYTES: usize = 512;
 const AGENT_REFUSAL_TRUNCATED: &str = " [truncated]";
@@ -51,7 +51,7 @@ type ChildOutcomeCollector = Arc<Mutex<Vec<(u64, Result<Outcome, String>)>>>;
 /// lines; this pinned policy seat turns them into the exact bounded task objects the script may fan.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct UltracodePlanning {
-    pub(super) class: core_agents::TaskClass,
+    pub(super) class: iteron_agents::TaskClass,
     pub(super) max_leaves: usize,
 }
 
@@ -62,7 +62,7 @@ mod activity;
 /// most 512 UTF-8 bytes. Request metadata is never deliberately interpolated by this module, but
 /// this defense also covers OS/library diagnostics returned by later setup stages.
 pub(crate) fn safe_agent_refusal(reason: &str) -> String {
-    let scrubbed = core_record::redact::scrub(reason);
+    let scrubbed = iteron_record::redact::scrub(reason);
     let content_limit = MAX_AGENT_REFUSAL_BYTES.saturating_sub(AGENT_REFUSAL_TRUNCATED.len());
     let mut safe = String::with_capacity(scrubbed.len().min(MAX_AGENT_REFUSAL_BYTES));
     let mut truncated = false;
@@ -131,7 +131,7 @@ pub struct KernelSpawnerContext {
     /// Effort default; `Ultracode` is mapped to `Max` for a leaf child (a leaf never orchestrates).
     pub default_effort: Effort,
     /// Per-child bounded-loop ceilings. The engine's Governor bounds CONCURRENCY; this bounds each
-    /// child's turns/wall/usd. Defaults to `core_agents::subagent_budget_ceiling()`.
+    /// child's turns/wall/usd. Defaults to `iteron_agents::subagent_budget_ceiling()`.
     pub budget: Budget,
     /// Optional declaration-order budget slices for a kernel-built fan. When present, spawn ordinal
     /// N receives slice N and an ordinal outside the schedule is refused. This is how the built-in
@@ -172,14 +172,14 @@ pub struct KernelSpawnerContext {
     /// `core/model_router`. The spawner supplies the parent's already-resolved route as evidence;
     /// the slot may select it or refuse, but cannot invent an unbound provider route.
     pub model_router: Arc<dyn StrategySlot>,
-    pub context_port: Arc<dyn core_ctx::ContextPort>,
+    pub context_port: Arc<dyn iteron_ctx::ContextPort>,
     pub context_home_dir: Option<PathBuf>,
     pub dependency_skill_dirs: Vec<(PathBuf, PathBuf)>,
     /// Exact accepted definitions resolved once by the composition root. Every spawned worker
     /// inherits this same immutable set; it never performs filesystem discovery itself.
     pub agent_catalog: Arc<AgentCatalog>,
     /// Policy projection pinned for the entire workflow lineage.
-    pub boot_bundle: Arc<core_agents::BootBundle>,
+    pub boot_bundle: Arc<iteron_agents::BootBundle>,
     /// Permission posture for the read-only child. Registry and capability ceilings independently
     /// prevent this from widening authority.
     pub permission_mode: PermissionMode,
@@ -195,8 +195,8 @@ pub struct KernelSpawnerContext {
     pub bypass_permissions: bool,
     /// Parent-owned, bounded lifecycle projections. These carry correlation and operator-owned
     /// observation policy into children without widening the child's tool registry or authority.
-    pub(super) lifecycle_emitter: Option<core_obs::lifecycle::LifecycleEmitter>,
-    pub(super) lifecycle_telemetry: Option<core_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
+    pub(super) lifecycle_emitter: Option<iteron_obs::lifecycle::LifecycleEmitter>,
+    pub(super) lifecycle_telemetry: Option<iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
     pub(super) lifecycle_hooks: Option<super::lifecycle_hooks::LifecycleHookDispatcher>,
     /// Trusted operator Hook policy and its session-owned external-effect journal. A read-only
     /// child cannot run model-requested code, but operator Hooks remain host policy and therefore
@@ -224,11 +224,11 @@ impl KernelSpawnerContext {
         workflow_id: String,
     ) -> Self {
         let all_capabilities = CapabilitySet::from_iter_capabilities([
-            core_protocol::Capability::ReadOnly,
-            core_protocol::Capability::ReversibleLocal,
-            core_protocol::Capability::CodeExecuting,
-            core_protocol::Capability::TrustMutating,
-            core_protocol::Capability::IrreversibleExternal,
+            iteron_protocol::Capability::ReadOnly,
+            iteron_protocol::Capability::ReversibleLocal,
+            iteron_protocol::Capability::CodeExecuting,
+            iteron_protocol::Capability::TrustMutating,
+            iteron_protocol::Capability::IrreversibleExternal,
         ]);
         KernelSpawnerContext {
             provider,
@@ -244,7 +244,7 @@ impl KernelSpawnerContext {
             parent_run_id,
             workflow_id,
             default_effort: Effort::default(),
-            budget: core_agents::subagent_budget_ceiling(),
+            budget: iteron_agents::subagent_budget_ceiling(),
             budget_slices: None,
             child_ledgers: None,
             child_outcomes: None,
@@ -253,16 +253,16 @@ impl KernelSpawnerContext {
             model_context_window: None,
             model_max_output_tokens: None,
             sensitive_env_names: Vec::new(),
-            context_strategy: Arc::new(core_ctx::ContextStrategy::default()),
-            tool_policy: Arc::new(core_tools::ToolPolicy::default()),
-            memory_strategy: Arc::new(core_ctx::MemoryRecallStrategy::default()),
-            router: Arc::new(core_agents::RouterStrategy::default()),
-            planner: Arc::new(core_agents::PlannerStrategy::default()),
-            collaboration: Arc::new(core_workflow::CollaborationStrategy::default()),
-            scheduler: Arc::new(core_sched::SchedulerStrategy::default()),
-            verifier: Arc::new(core_verify::VerifierStrategy::default()),
-            model_router: Arc::new(core_provider::catalog::ModelRouterStrategy::default()),
-            context_port: Arc::new(core_ctx::DefaultContextPort),
+            context_strategy: Arc::new(iteron_ctx::ContextStrategy::default()),
+            tool_policy: Arc::new(iteron_tools::ToolPolicy::default()),
+            memory_strategy: Arc::new(iteron_ctx::MemoryRecallStrategy::default()),
+            router: Arc::new(iteron_agents::RouterStrategy::default()),
+            planner: Arc::new(iteron_agents::PlannerStrategy::default()),
+            collaboration: Arc::new(iteron_workflow::CollaborationStrategy::default()),
+            scheduler: Arc::new(iteron_sched::SchedulerStrategy::default()),
+            verifier: Arc::new(iteron_verify::VerifierStrategy::default()),
+            model_router: Arc::new(iteron_provider::catalog::ModelRouterStrategy::default()),
+            context_port: Arc::new(iteron_ctx::DefaultContextPort),
             context_home_dir: None,
             dependency_skill_dirs: Vec::new(),
             agent_catalog: Arc::new(AgentCatalog::builtin_only()),
@@ -361,9 +361,9 @@ impl KernelSpawner {
         // Which model the child uses is a strategy decision, but its evidence is structural: this
         // spawner owns only the parent's exact route. `route_with` rejects every answer outside
         // that set even when a replacement strategy misbehaves.
-        let routed = core_provider::catalog::ModelRouterStrategy::route_with(
+        let routed = iteron_provider::catalog::ModelRouterStrategy::route_with(
             cx.model_router.as_ref(),
-            &core_provider::catalog::ModelRouterObservation::single_route(
+            &iteron_provider::catalog::ModelRouterObservation::single_route(
                 cx.model.clone(),
                 agent_def.model.clone(),
                 call.model.clone(),
@@ -426,7 +426,7 @@ impl KernelSpawner {
             sub.usd_budget = cx.usd_budget.clone();
         }
         let read_only =
-            CapabilitySet::from_iter_capabilities([core_protocol::Capability::ReadOnly]);
+            CapabilitySet::from_iter_capabilities([iteron_protocol::Capability::ReadOnly]);
         sub.authority_ceiling = cx.authority_ceiling.intersect(read_only);
         sub.policy_capabilities = cx.policy_capabilities.intersect(read_only);
         sub.context_strategy = cx.context_strategy.clone();
@@ -582,9 +582,9 @@ impl AgentSpawner for KernelSpawner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{Capability, EventKind};
-    use core_provider::{ProviderError, StreamItem, TurnRequest, TurnResult};
-    use core_workflow::{
+    use iteron_protocol::{Capability, EventKind};
+    use iteron_provider::{ProviderError, StreamItem, TurnRequest, TurnResult};
+    use iteron_workflow::{
         ProgressEvent, ProgressSink, RunId, RunSpec, WorkflowEngine, WorkflowState,
     };
     use std::sync::Mutex;
@@ -630,10 +630,10 @@ mod tests {
     fn discovered_catalog(root: &std::path::Path) -> AgentCatalog {
         let home = root.join("home");
         let repo = root.join("repo");
-        std::fs::create_dir_all(home.join(".core/agents")).unwrap();
+        std::fs::create_dir_all(home.join(".iteron/agents")).unwrap();
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::write(
-            home.join(".core/agents/reviewer.md"),
+            home.join(".iteron/agents/reviewer.md"),
             "---\nname: reviewer\ndescription: Narrow reviewer\ntools: [read_file]\n\
              maxTurns: 2\nmaxTokens: 41\nmaxWallSecs: 7\nmaxConsecutiveToolErrors: 1\n---\n\
              Review exactly one file and report evidence.\n",
@@ -762,7 +762,7 @@ mod tests {
             "a child of a gated session is gated"
         );
 
-        let events = core_record::replay(child.rollout.path()).unwrap();
+        let events = iteron_record::replay(child.rollout.path()).unwrap();
         let tag = events.iter().find_map(|event| match &event.kind {
             EventKind::RunStart {
                 agent_definition_tag,
@@ -782,8 +782,8 @@ mod tests {
         let catalog = discovered_catalog(&root);
         let spawner = KernelSpawner::new(context(&root, catalog));
         let secret = "ghp_AbCdEf1234567890AbCdEf1234567890";
-        let oversized_name = "n".repeat(core_workflow::spawner::MAX_AGENT_TYPE_BYTES + 1);
-        let oversized_model = "m".repeat(core_workflow::spawner::MAX_AGENT_MODEL_BYTES + 1);
+        let oversized_name = "n".repeat(iteron_workflow::spawner::MAX_AGENT_TYPE_BYTES + 1);
+        let oversized_model = "m".repeat(iteron_workflow::spawner::MAX_AGENT_MODEL_BYTES + 1);
         let controlled_name = format!("reviewer\n{secret}\u{1b}[2J");
         let controlled_model = format!("model\r{secret}\u{202e}");
 
@@ -823,8 +823,8 @@ mod tests {
         let spawner = Arc::new(KernelSpawner::new(context(&root, catalog)));
         let sink = Arc::new(RecordingSink::default());
         let secret = "ghp_AbCdEf1234567890AbCdEf1234567890";
-        let oversized_name = "n".repeat(core_workflow::spawner::MAX_AGENT_TYPE_BYTES + 1);
-        let oversized_model = "m".repeat(core_workflow::spawner::MAX_AGENT_MODEL_BYTES + 1);
+        let oversized_name = "n".repeat(iteron_workflow::spawner::MAX_AGENT_TYPE_BYTES + 1);
+        let oversized_model = "m".repeat(iteron_workflow::spawner::MAX_AGENT_MODEL_BYTES + 1);
         let requests = serde_json::json!([
             {"agentType": "reviewer/child"},
             {"agentType": oversized_name.clone()},

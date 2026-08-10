@@ -5,7 +5,7 @@
 //! mention parsed here.
 
 use base64::Engine as _;
-use core_protocol::input::{
+use iteron_protocol::input::{
     ContentSegment, ContentSegments, ImageContent, ImageMediaType, MAX_IMAGE_BASE64_BYTES,
     MAX_INPUT_IMAGES, MAX_TOTAL_IMAGE_BASE64_BYTES,
 };

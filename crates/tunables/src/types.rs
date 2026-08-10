@@ -295,23 +295,23 @@ pub struct RequirementSpec {
 /// The nine formal core StrategySlot bindings. Every family binds one or more of these exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum CoreStrategySlot {
-    #[serde(rename = "core/router")]
+    #[serde(rename = "iteron/router")]
     Router,
-    #[serde(rename = "core/planner")]
+    #[serde(rename = "iteron/planner")]
     Planner,
-    #[serde(rename = "core/context")]
+    #[serde(rename = "iteron/context")]
     Context,
-    #[serde(rename = "core/memory")]
+    #[serde(rename = "iteron/memory")]
     Memory,
-    #[serde(rename = "core/scheduler")]
+    #[serde(rename = "iteron/scheduler")]
     Scheduler,
-    #[serde(rename = "core/tool_policy")]
+    #[serde(rename = "iteron/tool_policy")]
     ToolPolicy,
-    #[serde(rename = "core/verifier")]
+    #[serde(rename = "iteron/verifier")]
     Verifier,
-    #[serde(rename = "core/model_router")]
+    #[serde(rename = "iteron/model_router")]
     ModelRouter,
-    #[serde(rename = "core/collaboration")]
+    #[serde(rename = "iteron/collaboration")]
     Collaboration,
 }
 

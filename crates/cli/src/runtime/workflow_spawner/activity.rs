@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use core_protocol::Phase;
-use core_workflow::{AgentActivityReporter, AgentCall, AgentOutcome};
+use iteron_protocol::Phase;
+use iteron_workflow::{AgentActivityReporter, AgentCall, AgentOutcome};
 
 use super::{KernelSpawner, safe_agent_refusal};
 use crate::runtime::{UiEvent, usage_tokens, workflow_child_activity};
@@ -14,7 +14,7 @@ impl KernelSpawner {
         activity: Option<AgentActivityReporter>,
     ) -> AgentOutcome {
         let ultracode_planner =
-            call.agent_type.as_deref() == Some(core_agents::ULTRACODE_PLANNER_NAME);
+            call.agent_type.as_deref() == Some(iteron_agents::ULTRACODE_PLANNER_NAME);
         let ordinal = self.next_ordinal.fetch_add(1, Ordering::Relaxed);
         let mut child = match self.build_child(&call, ordinal) {
             Ok(child) => child,
@@ -76,7 +76,7 @@ impl KernelSpawner {
             // Any terminal with a non-empty final report becomes the JS string value (real model
             // output). This mirrors the kernel's own investigator distillation, which treats every
             // `Ok(_)` outcome as carrying a report and only degrades on an empty one.
-            Ok(core_protocol::Outcome::Done) => {
+            Ok(iteron_protocol::Outcome::Done) => {
                 let text = child.last_assistant_text().trim().to_string();
                 if text.is_empty() {
                     AgentOutcome::Null {
@@ -91,19 +91,19 @@ impl KernelSpawner {
                     }
                 }
             }
-            Ok(core_protocol::Outcome::Drained) => AgentOutcome::Null {
+            Ok(iteron_protocol::Outcome::Drained) => AgentOutcome::Null {
                 reason: Some("subagent drained after a durable checkpoint".into()),
             },
-            Ok(core_protocol::Outcome::Interrupted) => AgentOutcome::Null {
+            Ok(iteron_protocol::Outcome::Interrupted) => AgentOutcome::Null {
                 reason: Some("subagent interrupted at a safe point".into()),
             },
-            Ok(core_protocol::Outcome::BudgetExhausted(_)) => AgentOutcome::Null {
+            Ok(iteron_protocol::Outcome::BudgetExhausted(_)) => AgentOutcome::Null {
                 reason: Some("subagent exhausted its bounded budget".into()),
             },
-            Ok(core_protocol::Outcome::Stuck) => AgentOutcome::Null {
+            Ok(iteron_protocol::Outcome::Stuck) => AgentOutcome::Null {
                 reason: Some("subagent reached the tool-error limit".into()),
             },
-            Ok(core_protocol::Outcome::HarnessError) => AgentOutcome::Null {
+            Ok(iteron_protocol::Outcome::HarnessError) => AgentOutcome::Null {
                 reason: Some("subagent stopped on a harness error".into()),
             },
             // A harness/provider/budget error resolves to JS `null` (never a thrown rejection) so a
@@ -144,13 +144,15 @@ impl KernelSpawner {
             return outcome;
         };
         let leaves = text.lines().map(str::to_owned).collect::<Vec<_>>();
-        let planned = match core_agents::Decomposer::plan_within_with(
+        let planned = match iteron_agents::Decomposer::plan_within_with(
             self.cx.planner.as_ref(),
             config.class,
             leaves,
             config.max_leaves,
-            core_protocol::capability_set::CapabilitySet::only(core_protocol::Capability::ReadOnly)
-                .intersect(self.cx.authority_ceiling),
+            iteron_protocol::capability_set::CapabilitySet::only(
+                iteron_protocol::Capability::ReadOnly,
+            )
+            .intersect(self.cx.authority_ceiling),
         ) {
             Ok(planned) => planned,
             Err(error) => {
@@ -253,12 +255,12 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use core_agents::AgentCatalog;
-    use core_protocol::{Block, StopReason, TenantId, ToolUse, Usage};
-    use core_provider::{
+    use iteron_agents::AgentCatalog;
+    use iteron_protocol::{Block, StopReason, TenantId, ToolUse, Usage};
+    use iteron_provider::{
         Provider, ProviderError, StreamItem, TurnRequest, TurnResult, UsageReport,
     };
-    use core_workflow::{
+    use iteron_workflow::{
         AgentSpawner, ProgressEvent, ProgressSink, RunId, RunSpec, WorkflowEngine,
     };
 
@@ -372,7 +374,7 @@ mod tests {
     fn scratch(label: &str) -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir().join(format!(
-            "core-workflow-activity-{label}-{}-{}",
+            "iteron-workflow-activity-{label}-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))
@@ -381,10 +383,10 @@ mod tests {
     fn activity_catalog(root: &std::path::Path) -> AgentCatalog {
         let home = root.join("home");
         let repo = root.join("repo");
-        std::fs::create_dir_all(home.join(".core/agents")).unwrap();
+        std::fs::create_dir_all(home.join(".iteron/agents")).unwrap();
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::write(
-            home.join(".core/agents/reviewer.md"),
+            home.join(".iteron/agents/reviewer.md"),
             "---\nname: reviewer\ndescription: Activity reviewer\ntools: [read_file]\n\
              maxTurns: 4\nmaxTokens: 100\nmaxWallSecs: 10\nmaxConsecutiveToolErrors: 1\n---\n\
              Read evidence and report it.\n",

@@ -274,7 +274,7 @@ mod tests {
 
     fn test_dir() -> PathBuf {
         std::env::temp_dir().join(format!(
-            "core-record-atomic-cache-{}-{}",
+            "iteron-record-atomic-cache-{}-{}",
             std::process::id(),
             NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
         ))

@@ -1,4 +1,4 @@
-//! The workflow region's store: which QuickJS `core-workflow` runs this TUI is watching, which one
+//! The workflow region's store: which QuickJS `iteron-workflow` runs this TUI is watching, which one
 //! the operator's attention is pointed at, and whether a run's full tree is collapsed.
 //!
 //! # What lives here, and what deliberately does not

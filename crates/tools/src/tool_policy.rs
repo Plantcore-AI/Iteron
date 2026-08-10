@@ -1,9 +1,9 @@
 //! The pure `core/tool_policy` strategy behind the frozen `StrategySlot` seam.
 
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::intent::ToolIntent;
-use core_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
-use core_protocol::{Capability, Purity, ToolUse, Trust};
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::intent::ToolIntent;
+use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
+use iteron_protocol::{Capability, Purity, ToolUse, Trust};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -89,7 +89,7 @@ pub struct ToolPolicy {
 impl Default for ToolPolicy {
     fn default() -> Self {
         Self {
-            slot: SlotId("core/tool_policy".into()),
+            slot: SlotId("iteron/tool_policy".into()),
         }
     }
 }
@@ -209,7 +209,7 @@ impl StrategySlot for ToolPolicy {
 mod tests {
     use super::*;
     use crate::{Registry, boxfut};
-    use core_protocol::{ToolResult, ToolSpec};
+    use iteron_protocol::{ToolResult, ToolSpec};
     use serde_json::json;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -371,7 +371,7 @@ mod tests {
             argument_trust: Trust::Workspace,
         };
         let result = ToolPolicy::propose_with(
-            &Liar(SlotId("core/tool_policy".into())),
+            &Liar(SlotId("iteron/tool_policy".into())),
             &input,
             CapabilitySet::only(Capability::TrustMutating),
         );

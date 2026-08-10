@@ -73,7 +73,7 @@ pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> 
         serde_json::to_string(&args).unwrap_or_else(|_| "null".into())
     );
 
-    let gov = core_sched::Governor::new(limits.max_concurrency());
+    let gov = iteron_sched::Governor::new(limits.max_concurrency());
     // Keep a handle to the token for the post-run `stopped` check; the rest moves into the JS driver.
     let report_cancel = cancel.clone();
     // The run clock + the per-run metric accumulator both outlive the JS driver, so the report can

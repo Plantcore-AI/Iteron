@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "baseline": {
-    "slot": "core/tool_policy",
+    "slot": "iteron/tool_policy",
     "policy_id": "baseline-tool-policy",
     "version": "1.0.0",
     "digest": "1111111111111111111111111111111111111111111111111111111111111111"
   },
   "candidate": {
-    "slot": "core/tool_policy",
+    "slot": "iteron/tool_policy",
     "policy_id": "candidate-tool-policy",
     "version": "1.0.0",
     "digest": "2222222222222222222222222222222222222222222222222222222222222222"

@@ -12,7 +12,7 @@ fn repo_root() -> PathBuf {
 
 fn scratch(tag: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "core-evolve-gate-{tag}-{}-{}",
+        "iteron-evolve-gate-{tag}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

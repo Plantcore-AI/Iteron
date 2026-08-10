@@ -104,18 +104,18 @@ pub struct RequestId(pub u64);
 
 /// Which instruction files a request is asking for.
 ///
-/// The three scopes are the three tiers `core_ctx::instructions::discover_hierarchy` actually
-/// walks, in its own precedence order: the operator's `~/.core/instructions.md`, then the
+/// The three scopes are the three tiers `iteron_ctx::instructions::discover_hierarchy` actually
+/// walks, in its own precedence order: the operator's `~/.iteron/instructions.md`, then the
 /// repository-root candidates, then each directory from the root down to the active one. Naming a
 /// scope selects a tier of that walk; it never grants authority, because every discovered
 /// instruction file is data — `crates/ctx/src/instructions.rs` frames all of them as untrusted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstructionScope {
-    /// `~/.core/instructions.md`. Authored by the operator, which is why `MemTier::User` is the
-    /// one tier `core_ctx` treats as first-party without a separate approval.
+    /// `~/.iteron/instructions.md`. Authored by the operator, which is why `MemTier::User` is the
+    /// one tier `iteron_ctx` treats as first-party without a separate approval.
     User,
-    /// The repository root's `AGENTS.md` / `CLAUDE.md` / `.core/instructions.md`.
+    /// The repository root's `AGENTS.md` / `CLAUDE.md` / `.iteron/instructions.md`.
     Project,
     /// The directory chain below the repository root, refining the project scope.
     Directory,
@@ -134,7 +134,7 @@ pub enum InstructionScope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ContextSelector {
-    /// A structural outline of a subtree, to `depth` levels. `core_ctx::outline` is the seed.
+    /// A structural outline of a subtree, to `depth` levels. `iteron_ctx::outline` is the seed.
     RepoOutline { root: String, depth: u8 },
     /// Instruction files at one tier of the discovery hierarchy.
     Instructions { scope: InstructionScope },
@@ -161,9 +161,9 @@ pub enum ContextSelector {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextSource {
-    /// Discovered instruction files (`core_ctx::instructions`).
+    /// Discovered instruction files (`iteron_ctx::instructions`).
     Instructions,
-    /// The memory slot's recalled segment (`core_ctx::memory`).
+    /// The memory slot's recalled segment (`iteron_ctx::memory`).
     Memory,
     /// The skill name/description index. No selector names this today: the kernel appends it
     /// unconditionally in `resolve_injection`, and the grant reports it rather than pretending it
@@ -186,10 +186,10 @@ pub struct ContextRequest {
     /// Correlates this request with its grant.
     pub request_id: RequestId,
     /// Who is asking. In this codebase the name `StrategySlot` belongs both to the trait the
-    /// kernel calls and to a separate `core_evolve` newtype, so the identity that crosses between
+    /// kernel calls and to a separate `iteron_evolve` newtype, so the identity that crosses between
     /// them is [`SlotId`] — see `crates/protocol/src/slot.rs`, which froze that distinction
     /// deliberately, and `docs/spec/abi.md` §4.2.2, which types this field as `SlotId` and fixes
-    /// the subset direction against `core_evolve::StrategySlot`.
+    /// the subset direction against `iteron_evolve::StrategySlot`.
     pub slot: SlotId,
     /// What is being asked for. Bounded by [`MAX_SELECTORS`].
     pub selectors: Vec<ContextSelector>,
@@ -347,7 +347,7 @@ mod tests {
     fn request() -> ContextRequest {
         ContextRequest {
             request_id: RequestId(11),
-            slot: SlotId("core/context".into()),
+            slot: SlotId("iteron/context".into()),
             selectors: vec![
                 ContextSelector::RepoOutline {
                     root: "crates/parser".into(),
@@ -369,7 +369,7 @@ mod tests {
         // edited, the ABI moved and the spec is now wrong about what a module sends.
         let spec = json!({
             "request_id": 11,
-            "slot": "core/context",
+            "slot": "iteron/context",
             "selectors": [
                 { "kind": "repo_outline", "root": "crates/parser", "depth": 2 },
                 { "kind": "instructions", "scope": "project" },
@@ -393,7 +393,7 @@ mod tests {
         let marker = "opaque-payload-must-not-survive-selector-decoding";
         let decoded: ContextRequest = serde_json::from_value(json!({
             "request_id": 11,
-            "slot": "core/context",
+            "slot": "iteron/context",
             "selectors": [
                 { "kind": "embedding_search", "query": marker, "nested": { "key": marker } }
             ],
@@ -526,7 +526,7 @@ mod tests {
 
     #[test]
     fn a_request_is_deny_by_default_and_bounded() {
-        let fresh = ContextRequest::new(RequestId(1), SlotId("core/context".into()), 1_024);
+        let fresh = ContextRequest::new(RequestId(1), SlotId("iteron/context".into()), 1_024);
         assert_eq!(fresh.trust_ceiling, Trust::Untrusted);
         assert!(fresh.selectors.is_empty());
         assert!(fresh.validate().is_ok());

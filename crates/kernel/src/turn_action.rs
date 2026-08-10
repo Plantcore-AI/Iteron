@@ -5,12 +5,12 @@
 //! allocates a connection, or touches a file. That separation is what lets the same command stream
 //! be replayed offline against no world at all and still produce the identical sequence.
 
-use core_protocol::Outcome;
+use iteron_protocol::Outcome;
 use serde::{Deserialize, Serialize};
 
 /// One operation the reducer wants performed, in the order it wants them.
 ///
-/// `Serialize` only, deliberately. `core_protocol::Outcome::BudgetExhausted` carries a
+/// `Serialize` only, deliberately. `iteron_protocol::Outcome::BudgetExhausted` carries a
 /// `&'static str`, which cannot be deserialised into an owned value, and the replay invariant is
 /// stated one-way anyway: the recorded stream is *written* and compared, never read back into a
 /// live action. Deriving `Deserialize` here would mean either widening the frozen `Outcome` or
@@ -23,7 +23,7 @@ pub enum ActionRequest {
     /// This is the seam W3's port inversion consumes: today the driver hands it to whatever
     /// `ContextPort` is injected, and the reducer neither knows nor can discover which selector,
     /// which files, or how many tokens came back. Declaring it as an action request rather than
-    /// calling `core_ctx` inline is the entire reason the reducer can be replayed.
+    /// calling `iteron_ctx` inline is the entire reason the reducer can be replayed.
     SelectContext,
     /// Sample the budget ceilings and report back with `Command::BudgetSampled`.
     SampleBudget,

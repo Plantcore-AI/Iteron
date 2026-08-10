@@ -1,8 +1,8 @@
-//! `core-eval` — fixed-model, component-toggle evaluation over pinned real repositories.
+//! `iteron-eval` — fixed-model, component-toggle evaluation over pinned real repositories.
 
 use clap::{Parser, ValueEnum};
-use core_eval::runner::{EvalOptions, run_evaluation};
-use core_eval::types::EvaluationPurpose;
+use iteron_eval::runner::{EvalOptions, run_evaluation};
+use iteron_eval::types::EvaluationPurpose;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -23,7 +23,7 @@ impl From<PurposeArg> for EvaluationPurpose {
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "core-eval",
+    name = "iteron-eval",
     about = "Run a fixed-model component-toggle evaluation over a versioned corpus"
 )]
 struct Cli {
@@ -32,7 +32,7 @@ struct Cli {
     corpus: PathBuf,
 
     /// Machine-readable result artifact.
-    #[arg(long, default_value = "core-eval-result.json")]
+    #[arg(long, default_value = "iteron-eval-result.json")]
     output: PathBuf,
 
     /// Isolated checkout root. Defaults to an OS temporary directory, not the invoking cwd.
@@ -91,7 +91,7 @@ async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     let work_root = cli
         .work_root
-        .unwrap_or_else(|| std::env::temp_dir().join("core-eval-work"));
+        .unwrap_or_else(|| std::env::temp_dir().join("iteron-eval-work"));
     let options = EvalOptions {
         corpus_path: cli.corpus,
         output_path: cli.output,
@@ -115,15 +115,15 @@ async fn main() -> std::process::ExitCode {
             std::process::ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("core-eval: {error}");
+            eprintln!("iteron-eval: {error}");
             std::process::ExitCode::from(2)
         }
     }
 }
 
-fn print_summary(manifest: &core_eval::types::EvaluationManifest) {
+fn print_summary(manifest: &iteron_eval::types::EvaluationManifest) {
     println!(
-        "core-eval {} | corpus={} | model={} | cells={}",
+        "iteron-eval {} | corpus={} | model={} | cells={}",
         manifest.run_id,
         manifest.corpus_version,
         manifest.model,
@@ -176,8 +176,8 @@ fn print_summary(manifest: &core_eval::types::EvaluationManifest) {
     println!("artifact={}", manifest.result_path.display());
     println!(
         "attempts={} | attestation={}",
-        core_eval::attempts::sidecar_path(&manifest.result_path).display(),
-        core_eval::attestation::sidecar_path(&manifest.result_path).display()
+        iteron_eval::attempts::sidecar_path(&manifest.result_path).display(),
+        iteron_eval::attestation::sidecar_path(&manifest.result_path).display()
     );
     println!(
         "failed_runs={} (errored+timed_out); exit_code={}",
@@ -191,7 +191,7 @@ fn print_summary(manifest: &core_eval::types::EvaluationManifest) {
     std::process::exit(i32::from(manifest.exit_code()));
 }
 
-fn kernel_tax_line(tax: core_eval::types::KernelTaxObservation) -> String {
+fn kernel_tax_line(tax: iteron_eval::types::KernelTaxObservation) -> String {
     format!(
         "kernel-tax: admission_us={} broker_us={} record_fsync_us={} estimated_tokens={} failed_runs={}",
         tax.admission_latency_us,
@@ -208,7 +208,7 @@ mod kernel_tax_tests {
 
     #[test]
     fn kernel_tax_is_a_real_separate_eval_output_line() {
-        let line = kernel_tax_line(core_eval::types::KernelTaxObservation {
+        let line = kernel_tax_line(iteron_eval::types::KernelTaxObservation {
             admission_latency_us: 11,
             broker_latency_us: 13,
             record_fsync_latency_us: 17,
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn d14_07_cli_defaults_are_powered_and_250_turns() {
         let cli = Cli::try_parse_from([
-            "core-eval",
+            "iteron-eval",
             "--corpus",
             "fixture.json",
             "--model",
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn zero_turn_cap_is_an_explicit_uncapped_request() {
         let cli = Cli::try_parse_from([
-            "core-eval",
+            "iteron-eval",
             "--corpus",
             "fixture.json",
             "--model",

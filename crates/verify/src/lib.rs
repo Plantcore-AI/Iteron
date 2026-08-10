@@ -1,4 +1,4 @@
-//! core-verify — the verification layer (the crown, as a HYPOTHESIS pending our own
+//! iteron-verify — the verification layer (the crown, as a HYPOTHESIS pending our own
 //! V/C/S ablation — ADR-005 amendment).
 //!
 //! Two things, both from the recon:

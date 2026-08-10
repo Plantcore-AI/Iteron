@@ -79,10 +79,10 @@ def normalize(document: dict, version: str, target: str, epoch: int, binary_dige
     cli_packages = [
         package
         for package in packages
-        if package.get("name") == "core-cli" and package.get("versionInfo") == version
+        if package.get("name") == "iteron-cli" and package.get("versionInfo") == version
     ]
     if len(roots) != 1 or len(cli_packages) != 1:
-        raise ReleaseToolError("SBOM root digest or core-cli version is not uniquely bound")
+        raise ReleaseToolError("SBOM root digest or iteron-cli version is not uniquely bound")
 
     relationships = document.get("relationships")
     if not isinstance(relationships, list) or not all(
@@ -110,13 +110,13 @@ def normalize(document: dict, version: str, target: str, epoch: int, binary_dige
         and relationship.get("relatedSpdxElement") == cli_id
         for relationship in relationships
     ):
-        raise ReleaseToolError("SBOM binary root does not contain the core-cli package")
+        raise ReleaseToolError("SBOM binary root does not contain the iteron-cli package")
     if epoch < 0:
         raise ReleaseToolError("SOURCE_DATE_EPOCH must be non-negative")
 
-    document["name"] = f"Core-Code-{version}-{target}"
+    document["name"] = f"Iteron-{version}-{target}"
     document["documentNamespace"] = (
-        f"https://github.com/Plantcore-AI/core/releases/download/v{version}/sbom/{target}"
+        f"https://github.com/Plantcore-AI/Iteron/releases/download/v{version}/sbom/{target}"
     )
     creation = document.get("creationInfo")
     if not isinstance(creation, dict):

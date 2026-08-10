@@ -59,7 +59,7 @@ jobs:
           - runner: windows-2022
             host: windows-x86_64
             target: x86_64-pc-windows-msvc
-            binary: core.exe
+            binary: iteron.exe
             python: python
     defaults:
       run:
@@ -67,7 +67,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: 0
       CARGO_TARGET_DIR: ${{ github.workspace }}/target/runtime-receipt
-      CORE_RUNTIME_WORKSPACE: ${{ github.workspace }}
+      ITERON_RUNTIME_WORKSPACE: ${{ github.workspace }}
       PYTHONNOUSERSITE: 1
     steps:
       - name: Check out the tested client source
@@ -92,7 +92,7 @@ jobs:
           TESTED_TREE: ${{ inputs.tested-tree }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REPOSITORY" = Plantcore-AI/core
+          test "$GITHUB_REPOSITORY" = Plantcore-AI/Iteron
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           test "$GITHUB_REF" = refs/heads/main
           test "$EXPECTED_REPOSITORY_ID" = "$GITHUB_REPOSITORY_ID"
@@ -103,8 +103,8 @@ jobs:
           test "$GITHUB_SHA" = "$TESTED_COMMIT"
           test "$BUILDER_WORKFLOW_COMMIT" != "$TESTED_COMMIT"
 
-          candidate=$CORE_RUNTIME_WORKSPACE/candidate
-          builder=$CORE_RUNTIME_WORKSPACE/builder
+          candidate=$ITERON_RUNTIME_WORKSPACE/candidate
+          builder=$ITERON_RUNTIME_WORKSPACE/builder
           test "$(git -C "$candidate" rev-parse 'HEAD^{commit}')" = "$TESTED_COMMIT"
           test "$(git -C "$candidate" rev-parse 'HEAD^{tree}')" = "$TESTED_TREE"
           git -C "$candidate" merge-base --is-ancestor "$BUILDER_WORKFLOW_COMMIT" "$TESTED_COMMIT"
@@ -133,7 +133,7 @@ jobs:
           set -euo pipefail
           workspace=$(cygpath -m "$GITHUB_WORKSPACE")
           {
-            echo "CORE_RUNTIME_WORKSPACE=$workspace"
+            echo "ITERON_RUNTIME_WORKSPACE=$workspace"
             echo "CARGO_TARGET_DIR=$workspace/target/runtime-receipt"
           } >> "$GITHUB_ENV"
       - name: Install Linux build and sandbox dependencies
@@ -187,7 +187,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$RUNNER_OS" == Windows ]]; then
-            cargo +"$RUST_VERSION" test --locked -p core-cli \
+            cargo +"$RUST_VERSION" test --locked -p iteron-cli \
               --target "${{ matrix.target }}"
           else
             cargo +"$RUST_VERSION" test --workspace --all-targets --locked \
@@ -199,7 +199,7 @@ jobs:
         shell: bash
         run: >-
           cargo +"$RUST_VERSION" auditable build
-          --release --locked -p core-cli
+          --release --locked -p iteron-cli
           --target "${{ matrix.target }}"
       - name: Verify architecture, linkage, and executable smoke tests
         id: native-binary
@@ -211,7 +211,7 @@ jobs:
           set -euo pipefail
           target=${{ matrix.target }}
           binary="$CARGO_TARGET_DIR/$target/release/${{ matrix.binary }}"
-          builder=$CORE_RUNTIME_WORKSPACE/builder
+          builder=$ITERON_RUNTIME_WORKSPACE/builder
           test -f "$binary"
           test ! -L "$binary"
 
@@ -349,22 +349,22 @@ jobs:
           }
 
           run_exact tui \
-            cargo +"$RUST_VERSION" test --locked -p core-cli --bin core \
+            cargo +"$RUST_VERSION" test --locked -p iteron-cli --bin core \
               --target "$target" \
               tui::app_server::tests::version_skew_is_refused_up_front -- --exact
           run_exact one-shot \
-            cargo +"$RUST_VERSION" test --locked -p core-cli \
+            cargo +"$RUST_VERSION" test --locked -p iteron-cli \
               --test one_shot_output --target "$target" \
               one_shot_refuses_app_server_version_skew_before_provider_dispatch \
               -- --exact
           run_exact headless \
-            cargo +"$RUST_VERSION" test --locked -p core-cli \
+            cargo +"$RUST_VERSION" test --locked -p iteron-cli \
               --test headless_serve --target "$target" \
               no_tty_skew_reconnect_and_result_v5_share_one_headless_server \
               -- --exact
           if [[ "$target" == x86_64-pc-windows-msvc ]]; then
             run_exact conpty \
-              cargo +"$RUST_VERSION" test --locked -p core-cli \
+              cargo +"$RUST_VERSION" test --locked -p iteron-cli \
                 --test windows_conpty --target "$target" \
                 native_conpty_rejects_version_skew_before_terminal_takeover \
                 -- --exact
@@ -378,8 +378,8 @@ jobs:
           TESTED_TREE: ${{ inputs.tested-tree }}
         run: |
           set -euo pipefail
-          candidate=$CORE_RUNTIME_WORKSPACE/candidate
-          builder=$CORE_RUNTIME_WORKSPACE/builder
+          candidate=$ITERON_RUNTIME_WORKSPACE/candidate
+          builder=$ITERON_RUNTIME_WORKSPACE/builder
           test "$(git -C "$candidate" rev-parse 'HEAD^{commit}')" = "$TESTED_COMMIT"
           test "$(git -C "$candidate" rev-parse 'HEAD^{tree}')" = "$TESTED_TREE"
           test "$(git -C "$builder" rev-parse 'HEAD^{commit}')" = \
@@ -424,7 +424,7 @@ jobs:
           TESTED_TREE: ${{ inputs.tested-tree }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REPOSITORY" = Plantcore-AI/core
+          test "$GITHUB_REPOSITORY" = Plantcore-AI/Iteron
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           test "$GITHUB_REF" = refs/heads/main
           test "$GITHUB_SHA" = "$TESTED_COMMIT"
@@ -458,7 +458,7 @@ jobs:
         run: |
           set -euo pipefail
           api_version=2026-03-10
-          evidence_dir=$RUNNER_TEMP/core-client-runtime-receipt
+          evidence_dir=$RUNNER_TEMP/iteron-client-runtime-receipt
           run_json=$evidence_dir/run.json
           jobs_json=$evidence_dir/jobs.json
           receipt=$evidence_dir/runtime-receipt-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}.json
@@ -470,7 +470,7 @@ jobs:
             output=$2
             maximum=$3
             transfer=$output.transfer
-            sentinel=CORE_RUNTIME_API_TRANSFER_COMPLETE
+            sentinel=ITERON_RUNTIME_API_TRANSFER_COMPLETE
             test ! -e "$output"
             test ! -e "$transfer"
             set +e
@@ -509,8 +509,8 @@ jobs:
             "$jobs_json" \
             4194304
 
-          expected_workflow_path="Plantcore-AI/core/.github/workflows/runtime-receipt.yml@$BUILDER_WORKFLOW_COMMIT"
-          workflow_prefix=Plantcore-AI/core/.github/workflows/runtime-receipt.yml@
+          expected_workflow_path="Plantcore-AI/Iteron/.github/workflows/runtime-receipt.yml@$BUILDER_WORKFLOW_COMMIT"
+          workflow_prefix=Plantcore-AI/Iteron/.github/workflows/runtime-receipt.yml@
           jq -e \
             --arg builder "$BUILDER_WORKFLOW_COMMIT" \
             --arg expected_path "$expected_workflow_path" \
@@ -527,7 +527,7 @@ jobs:
               and .head_branch == "main"
               and .head_sha == $tested
               and .repository.id == $repository_id
-              and .repository.full_name == "Plantcore-AI/core"
+              and .repository.full_name == "Plantcore-AI/Iteron"
               and (.referenced_workflows | type == "array")
               and (.referenced_workflows | length >= 1 and length <= 16)
               and (
@@ -598,7 +598,7 @@ jobs:
       - name: Upload the offline runtime receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: core-client-runtime-receipt-attempt-${{ github.run_attempt }}
+          name: iteron-client-runtime-receipt-attempt-${{ github.run_attempt }}
           path: |
             ${{ steps.collect.outputs.directory }}/runtime-receipt-${{ github.run_id }}-attempt-${{ github.run_attempt }}.json
             ${{ steps.collect.outputs.directory }}/runtime-receipt-${{ github.run_id }}-attempt-${{ github.run_attempt }}.sigstore.json

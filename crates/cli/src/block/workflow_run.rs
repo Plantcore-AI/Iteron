@@ -2,9 +2,9 @@
 
 use super::*;
 
-// QuickJS `core-workflow` live tree (WORKFLOW-REPLICATION-DESIGN.md §3.3)
+// QuickJS `iteron-workflow` live tree (WORKFLOW-REPLICATION-DESIGN.md §3.3)
 //
-// This consumes the `core_workflow::events::ProgressEvent` stream
+// This consumes the `iteron_workflow::events::ProgressEvent` stream
 // (`agent()`/`parallel()`/`phase()`/`log()` runtime) and renders the phase-box tree. Per
 // ADR-0001 (docs/project/decisions/0001-workflow-renderer-convergence.md) this is the SURVIVING
 // workflow renderer: new progress capability lands here, and the native-ultracode `WorkflowCard`
@@ -33,7 +33,7 @@ pub struct WorkflowRunAgent {
     /// The live tool line for a running child (`last_tool_summary`, ≤60 chars at the emitter).
     pub last_tool_summary: Option<String>,
     /// A bounded excerpt of what this agent RETURNED (`result_preview`, ≤400 chars at the emitter —
-    /// `core_workflow::bindings::emit_finished` builds it from the `Record`'s text/structured
+    /// `iteron_workflow::bindings::emit_finished` builds it from the `Record`'s text/structured
     /// outcome). Untrusted model output, so it is sanitized on ingest, never at draw time. `None`
     /// for a row that returned nothing (a null/unknown outcome, or a preview that sanitized away):
     /// such a row renders exactly as it did before this field existed.
@@ -669,7 +669,7 @@ fn render_phase_box(
     phase_box(header, rows, width, theme.border)
 }
 
-/// The live QuickJS `core-workflow` phase→agent tree (design §3.3). Consumes the accumulated
+/// The live QuickJS `iteron-workflow` phase→agent tree (design §3.3). Consumes the accumulated
 /// `ProgressEvent`s already folded into `card` and renders Claude Code's look: a narrator line,
 /// per-phase single-border boxes (or a flat list when no phase indices exist), branch rows with
 /// state glyphs + dim meta, collapsed finished agents, and dim `↓` separators.

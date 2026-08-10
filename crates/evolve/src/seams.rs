@@ -12,15 +12,15 @@
 //! implementation and a registry-only removal.
 //!
 //! `crates/evolve/tests/seam_satisfiability.rs` remains an integration test so it also proves an
-//! external crate holding only `core-evolve` can implement the contracts. Its doubles return
+//! external crate holding only `iteron-evolve` can implement the contracts. Its doubles return
 //! non-empty payloads, which verifies that every type in these signatures is publicly nameable.
 //!
 //! # Where the third seam went
 //!
 //! Bundle resolution used to be declared here, over this crate's own `PolicyBundle` and
 //! `StrategySlot`. That made it unimplementable by its only intended consumer: naming the trait
-//! would have forced `crates/agents` to depend on `core-evolve`, which is the one dependency edge
-//! the runtime must never grow. It now lives in `core_protocol::bundle`, the crate both sides
+//! would have forced `crates/agents` to depend on `iteron-evolve`, which is the one dependency edge
+//! the runtime must never grow. It now lives in `iteron_protocol::bundle`, the crate both sides
 //! already depend on, and `PolicyBundle::resolve` is the producing half.
 
 use crate::{BaseModelId, ContractError, SignedHeldOutEvaluation, TrajectoryEnvelope};
@@ -31,8 +31,8 @@ use crate::{BaseModelId, ContractError, SignedHeldOutEvaluation, TrajectoryEnvel
 /// the second gets the first.
 ///
 /// Implementing this means constructing a [`TrajectoryEnvelope`], whose `run_id` and `tenant_id`
-/// are `core-protocol` types. They are re-exported from this crate ([`crate::RunId`],
-/// [`crate::TenantId`]) so an implementor needs no dependency beyond `core-evolve`. An earlier shape
+/// are `iteron-protocol` types. They are re-exported from this crate ([`crate::RunId`],
+/// [`crate::TenantId`]) so an implementor needs no dependency beyond `iteron-evolve`. An earlier shape
 /// did not re-export them, and the seam was in fact unimplementable from outside.
 ///
 /// Deliberately absent: any notion of *which* runs are eligible. Selection is a policy decision
@@ -54,7 +54,7 @@ pub trait TrajectoryProjection {
 ///
 /// Note the precise claim, because the loose version of it was wrong: **anyone can mint one.**
 /// `PromotionAuthorityKey::new` and `IndependentEvaluator::new` are public, so a crate holding only
-/// `core-evolve` can produce a well-formed `SignedHeldOutEvaluation` with a key of its own choosing —
+/// `iteron-evolve` can produce a well-formed `SignedHeldOutEvaluation` with a key of its own choosing —
 /// a review did exactly that. What only a key-holder can produce is an attestation whose HMAC
 /// *verifies against an anchor the authority configured*. The distinction is the whole guarantee.
 ///

@@ -16,10 +16,10 @@ use crate::{
     AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderError, TurnRequest,
     TurnResult, UsageReport,
 };
-use core_protocol::{
+use futures_util::StreamExt;
+use iteron_protocol::{
     Block, ProviderState, ReasoningEffort, Role, StopReason, StopReasonCode, ToolUse, Usage,
 };
-use futures_util::StreamExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -370,10 +370,10 @@ fn preserves_reasoning_content(error_profile: ErrorProfile) -> bool {
 /// One core message -> one or more OpenAI messages. Tool results become `role:"tool"` messages;
 /// an assistant message with tool_use becomes an assistant message with `tool_calls`.
 fn msg_to_openai(
-    m: &core_protocol::Message,
+    m: &iteron_protocol::Message,
     error_profile: ErrorProfile,
     route_scope: &str,
-    input_images: &[core_protocol::ImageContent],
+    input_images: &[iteron_protocol::ImageContent],
 ) -> Result<Vec<serde_json::Value>, ProviderError> {
     validate_chat_route_scope(route_scope)?;
     match m.role {
@@ -454,8 +454,8 @@ fn msg_to_openai(
 }
 
 fn image_target(
-    messages: &[core_protocol::Message],
-    input_images: &[core_protocol::ImageContent],
+    messages: &[iteron_protocol::Message],
+    input_images: &[iteron_protocol::ImageContent],
 ) -> Result<Option<usize>, ProviderError> {
     if input_images.is_empty() {
         return Ok(None);
@@ -479,7 +479,7 @@ fn image_target(
 }
 
 fn matching_reasoning_content(
-    message: &core_protocol::Message,
+    message: &iteron_protocol::Message,
     route_scope: &str,
 ) -> Result<Option<String>, ProviderError> {
     let mut matching = None;
@@ -1180,7 +1180,7 @@ impl Provider for OpenAiCompat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{ImageContent, ImageMediaType, Message};
+    use iteron_protocol::{ImageContent, ImageMediaType, Message};
 
     const TEST_SCOPE: &str = "test-openai-chat";
 
@@ -1204,11 +1204,11 @@ mod tests {
     fn tool_result_maps_to_role_tool() {
         let m = Message {
             role: Role::User,
-            content: vec![Block::ToolResult(core_protocol::ToolResult {
+            content: vec![Block::ToolResult(iteron_protocol::ToolResult {
                 tool_use_id: "c1".into(),
                 content: "fn main(){}".into(),
                 is_error: false,
-                trust: core_protocol::Trust::Workspace,
+                trust: iteron_protocol::Trust::Workspace,
                 latency_ms: 0,
             })],
         };

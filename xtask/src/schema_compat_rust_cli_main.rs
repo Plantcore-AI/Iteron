@@ -70,7 +70,7 @@ fn validate_entrypoint(file: &syn::File) -> Result<()> {
             match run_cli().await {
                 Ok(code) => std::process::ExitCode::from(code),
                 Err(error) => {
-                    let error = core_record::redact::scrub(&format!("{error:#}"));
+                    let error = iteron_record::redact::scrub(&format!("{error:#}"));
                     eprintln!("error: {error}");
                     std::process::ExitCode::from(output::EXIT_HARNESS)
                 }

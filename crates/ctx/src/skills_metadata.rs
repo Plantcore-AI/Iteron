@@ -36,9 +36,9 @@ const MAX_SKILL_TOOLS: usize = 64;
 
 /// Tool names a skill may never name.
 ///
-/// This list is duplicated from `core-agents`, which owns the authoritative vocabulary, because
-/// `core-agents` depends on `core-ctx` and the reverse edge would be a cycle. The duplication is
-/// held honest from the other side: a test in `core-agents` asserts this list covers every name it
+/// This list is duplicated from `iteron-agents`, which owns the authoritative vocabulary, because
+/// `iteron-agents` depends on `iteron-ctx` and the reverse edge would be a cycle. The duplication is
+/// held honest from the other side: a test in `iteron-agents` asserts this list covers every name it
 /// refuses, so the two cannot drift apart quietly.
 pub const SKILL_REFUSED_TOOLS: &[&str] = &[
     "edit",

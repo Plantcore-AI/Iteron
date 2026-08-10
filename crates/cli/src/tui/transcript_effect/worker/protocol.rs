@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use super::super::super::transcript_export;
 
-pub(super) const WORKER_ENV: &str = "CORE_INTERNAL_TRANSCRIPT_EXPORT_V1";
+pub(super) const WORKER_ENV: &str = "ITERON_INTERNAL_TRANSCRIPT_EXPORT_V1";
 #[cfg(target_os = "linux")]
 const WORKER_MAGIC: &[u8; 8] = b"COREXP01";
 #[cfg(target_os = "linux")]

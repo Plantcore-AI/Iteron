@@ -5,8 +5,8 @@
 //! and [`crate::RetryProvider`] remain caller-side mechanisms that may apply the returned plan.
 
 use crate::BackoffPolicy;
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -182,7 +182,7 @@ pub struct SchedulerStrategy {
 impl Default for SchedulerStrategy {
     fn default() -> Self {
         Self {
-            slot: SlotId("core/scheduler".into()),
+            slot: SlotId("iteron/scheduler".into()),
         }
     }
 }
@@ -202,7 +202,7 @@ impl SchedulerStrategy {
         input: &SchedulerSlotObservation,
         ceiling: CapabilitySet,
     ) -> Result<SchedulerProposal, SchedulerSlotError> {
-        if slot.slot().as_persisted_str() != "core/scheduler" {
+        if slot.slot().as_persisted_str() != "iteron/scheduler" {
             return Err(SchedulerSlotError::WrongSlot);
         }
         input.validate()?;
@@ -270,7 +270,7 @@ impl StrategySlot for SchedulerStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{Capability, slot::StrategySlot};
+    use iteron_protocol::{Capability, slot::StrategySlot};
 
     fn observation() -> SchedulerSlotObservation {
         SchedulerSlotObservation::baseline(BackoffPolicy::default(), 8).unwrap()
@@ -353,7 +353,7 @@ mod tests {
         }
 
         let result = SchedulerStrategy::plan_with(
-            &Widening(SlotId("core/scheduler".into())),
+            &Widening(SlotId("iteron/scheduler".into())),
             &observation(),
             CapabilitySet::only(Capability::ReadOnly),
         );
@@ -393,7 +393,7 @@ mod tests {
         }
 
         let proposal = SchedulerStrategy::plan_with(
-            &Greedy(SlotId("core/scheduler".into())),
+            &Greedy(SlotId("iteron/scheduler".into())),
             &observation(),
             CapabilitySet::only(Capability::ReadOnly),
         )
@@ -428,7 +428,7 @@ mod tests {
             }
         }
 
-        let slot = Narrowing(SlotId("core/scheduler".into()));
+        let slot = Narrowing(SlotId("iteron/scheduler".into()));
         let input = observation();
         let first =
             SchedulerStrategy::plan_with(&slot, &input, CapabilitySet::only(Capability::ReadOnly))
@@ -456,7 +456,7 @@ mod tests {
 
         assert_eq!(
             SchedulerStrategy::plan_with(
-                &Other(SlotId("core/context".into())),
+                &Other(SlotId("iteron/context".into())),
                 &observation(),
                 CapabilitySet::none(),
             ),

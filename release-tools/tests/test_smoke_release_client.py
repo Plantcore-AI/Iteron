@@ -24,7 +24,7 @@ import urllib.request
 from pathlib import Path
 
 home = Path(os.environ["HOME"])
-config = json.loads((home / ".core" / "config.json").read_text(encoding="utf-8"))
+config = json.loads((home / ".iteron" / "config.json").read_text(encoding="utf-8"))
 provider = config["providers"][0]
 task = "return the deterministic release smoke response"
 body = json.dumps(
@@ -40,7 +40,7 @@ request = urllib.request.Request(
     provider["api_root"] + "/chat/completions",
     data=body,
     headers={
-        "Authorization": "Bearer " + os.environ["CORE_RELEASE_SMOKE_KEY"],
+        "Authorization": "Bearer " + os.environ["ITERON_RELEASE_SMOKE_KEY"],
         "Content-Type": "application/json",
     },
     method="POST",

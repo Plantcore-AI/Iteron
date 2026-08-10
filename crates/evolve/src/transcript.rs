@@ -17,13 +17,13 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-const TRANSCRIPT_DOMAIN: &str = "core-evolve/offline-transcript/v1";
+const TRANSCRIPT_DOMAIN: &str = "iteron-evolve/offline-transcript/v1";
 const TRANSCRIPT_SCHEMA_VERSION: u16 = 1;
 const ZERO_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 const MAX_TRANSCRIPT_RECORDS: usize = 256;
 const MAX_TRANSCRIPT_LINE_BYTES: usize = 256 * 1024;
 const MAX_TRANSCRIPT_BYTES: u64 = 16 * 1024 * 1024;
-const DEMO_TRANSCRIPT_KEY: &[u8] = b"core-evolve-public-demo-key-v1";
+const DEMO_TRANSCRIPT_KEY: &[u8] = b"iteron-evolve-public-demo-key-v1";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

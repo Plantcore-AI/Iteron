@@ -1,13 +1,13 @@
 //! Data and conflict detection for auto-approved deferred tool batches.
 
-use core_protocol::{Capability, ToolUse};
+use iteron_protocol::{Capability, ToolUse};
 
 /// One deferred call admitted by the capability gate for concurrent execution.
 pub(super) struct AutoApprovedCall {
     /// Index in model tool order; also the durable effect ordinal.
     pub(super) index: usize,
     pub(super) call: ToolUse,
-    pub(super) intent: core_protocol::intent::ToolIntent,
+    pub(super) intent: iteron_protocol::intent::ToolIntent,
     pub(super) capability: Capability,
     pub(super) action_signature: String,
     pub(super) audit_arguments: serde_json::Value,

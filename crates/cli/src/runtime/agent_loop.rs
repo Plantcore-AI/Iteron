@@ -6,7 +6,7 @@
 //! events remain the sole observability authority.
 
 use super::KernelError;
-use core_protocol::{AgentLoopState, LifecycleState, TurnId};
+use iteron_protocol::{AgentLoopState, LifecycleState, TurnId};
 
 pub(super) struct AgentLoopGuard {
     turn: TurnId,

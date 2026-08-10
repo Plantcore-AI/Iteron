@@ -34,8 +34,8 @@ use crate::events::{
 use crate::journal::{Journal, Outcome, Record};
 use crate::schema::{self, SchemaValidator};
 use crate::spawner::{AgentActivityReporter, AgentCall, AgentOutcome, AgentSpawner};
-use core_sched::Governor;
-use core_sched::backoff::{BackoffPolicy, Jitter, full_jitter};
+use iteron_sched::Governor;
+use iteron_sched::backoff::{BackoffPolicy, Jitter, full_jitter};
 
 /// Backward-compatible default aggregate ceiling. A kernel-minted [`crate::RunLimits`] may narrow
 /// it, and schema retries consume it one real spawn at a time.
@@ -489,7 +489,10 @@ async fn run_agent(env: Arc<AgentEnv>, idx: usize, arg: String) -> String {
         label: Some(label.clone()),
         phase: raw.phase.clone(),
         model: raw.model.clone(),
-        effort: raw.effort.as_deref().and_then(core_protocol::Effort::parse),
+        effort: raw
+            .effort
+            .as_deref()
+            .and_then(iteron_protocol::Effort::parse),
         agent_type: raw.agent_type.clone(),
         schema: raw.schema.clone(),
         cancel: env.cancel.clone(),

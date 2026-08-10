@@ -1,8 +1,8 @@
 # Executable agent definitions
 
 Core discovers agent definitions once when a run or standalone workflow starts. The accepted set
-is immutable for that runtime. User definitions live in `~/.core/agents/*.md`; repository
-definitions live under `.core/agents/*.md`. Definitions below dependency/vendor directories are
+is immutable for that runtime. User definitions live in `~/.iteron/agents/*.md`; repository
+definitions live under `.iteron/agents/*.md`. Definitions below dependency/vendor directories are
 reported and stripped.
 
 The TUI's `/agents` view renders that exact runtime snapshot; it does not rescan either directory.
@@ -55,6 +55,6 @@ at most 512 bytes and never quote the caller's raw agent or model metadata. Each
 records a SHA-256 content identity covering its
 name, system prompt, tool filter, model policy, budget, and trust tier in session genesis.
 
-The diagnostic `CORE_WORKFLOW_SPAWNER=provider` fallback does not interpret this catalog. It
+The diagnostic `ITERON_WORKFLOW_SPAWNER=provider` fallback does not interpret this catalog. It
 supports only the built-in `generic` agent on the exact parent model; named definitions and model
 overrides to another route resolve to `null` before a provider request.

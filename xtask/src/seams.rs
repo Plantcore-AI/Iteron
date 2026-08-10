@@ -24,7 +24,7 @@
 //! The fourth reviewer named the root cause, and it was not any of those thirteen: *a byte scanner
 //! was being asked a question about Rust semantics, and each round patched the spelling the previous
 //! reviewer happened to use. Patching these will produce a fourteenth.* So this now parses with
-//! `syn`, which `core-xtask` already depends on and which `xtask/src/rust_source*.rs` already uses
+//! `syn`, which `iteron-xtask` already depends on and which `xtask/src/rust_source*.rs` already uses
 //! for exactly this kind of work. Every one of the thirteen becomes a non-question: `syn` knows what
 //! an `impl` header is, what a comment is, what a string is, and what balanced generics are.
 //!
@@ -50,7 +50,7 @@
 //! - **Anything rooted outside `crates/`.** [`collect_sources`] starts only from paths under
 //!   `crates/`, so a workspace member elsewhere — `xtask/`, `release-tools/` — is never a starting
 //!   point. It reaches OUT of `crates/` through `include!`, but never IN. Nothing outside `crates/`
-//!   depends on `core-evolve` today; that is an assumption, recorded so it can be rechecked rather
+//!   depends on `iteron-evolve` today; that is an assumption, recorded so it can be rechecked rather
 //!   than assumed. This is NOT covered by the `#[path]` bullet below: those crates have owning
 //!   boundaries, so `validate_path_coverage` is satisfied by them and never fires.
 //!
@@ -78,7 +78,7 @@
 //! separate governance change.
 //!
 //! Issue #28 has nothing to delete: bundle resolution is not policed here, because the port lives in
-//! `core_protocol::bundle` where both sides of the seam already depend on it.
+//! `iteron_protocol::bundle` where both sides of the seam already depend on it.
 
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeSet;
@@ -95,7 +95,7 @@ use source::{
 
 /// The traits that must remain declared and unimplemented.
 ///
-/// `PolicyBundleResolver` is deliberately absent: it lives in `core-protocol`, is declared over
+/// `PolicyBundleResolver` is deliberately absent: it lives in `iteron-protocol`, is declared over
 /// `ResolvedBundle`, and both sides of its seam already depend on that crate, so naming it costs
 /// nobody a dependency and there is nothing to police.
 const SEAMS: &[&str] = &[];
@@ -107,8 +107,8 @@ const OWNING_CRATE: &str = "crates/evolve/";
 const SATISFIABILITY_TEST: &str = "crates/evolve/tests/seam_satisfiability.rs";
 
 /// Internal crates whose appearance in [`SATISFIABILITY_TEST`] would void the proof it exists to
-/// make. An integration test inherits its crate's `[dependencies]`, so `core_protocol` compiles
-/// there even though an outside implementor may hold only `core-evolve` — position alone proves
+/// make. An integration test inherits its crate's `[dependencies]`, so `iteron_protocol` compiles
+/// there even though an outside implementor may hold only `iteron-evolve` — position alone proves
 /// nothing, and this is what makes the single-dependency claim mechanical.
 const INTERNAL_CRATE_PREFIX: &str = "core_";
 
@@ -203,7 +203,7 @@ fn validate_sources(
             }
         }
 
-        // Applied to the proof AND to everything it includes: a review moved a `core_protocol`
+        // Applied to the proof AND to everything it includes: a review moved a `iteron_protocol`
         // import into a sibling `.inc` the test pulled in, and the check — keyed on the file's own
         // path — never saw it. Content a proof includes is part of the proof.
         if roots.contains(SATISFIABILITY_TEST) {
@@ -219,7 +219,7 @@ fn validate_sources(
         bail!(
             "`{SATISFIABILITY_TEST}` is missing.\n\
              It is the only proof that the declared seams can be implemented by a crate that holds \
-             `core-evolve` and nothing else. Without it the seams are unverified declarations."
+             `iteron-evolve` and nothing else. Without it the seams are unverified declarations."
         );
     }
     Ok(())

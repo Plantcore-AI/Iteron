@@ -63,11 +63,11 @@ macro_rules! unavailable {
 
 #[rustfmt::skip]
 pub(super) const SOURCES: [SourceSpec; crate::EXPECTED_FAMILY_COUNT] = [
-    source!([(Cli, Operator, "crates/cli/src/main.rs"), (Environment, Operator, "CORE_PROVIDER"), (UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/cli/src/main.rs")]), // 1 provider
-    source!([(Cli, Operator, "crates/cli/src/main.rs"), (Environment, Operator, "CORE_MODEL"), (UserConfig, Operator, "crates/cli/src/config.rs"), (ProjectConfig, Repository, ".core/config.json"), (Builtin, Builtin, "crates/provider/src/static_metadata.rs")]), // 2 model
-    source!([(Cli, Operator, "crates/cli/src/main.rs"), (Environment, Operator, "CORE_BASE_URL"), (UserConfig, Operator, "crates/cli/src/config.rs")]), // 3 base_url
-    source!([(Cli, Operator, "crates/cli/src/main.rs"), (Environment, Operator, "CORE_EFFORT"), (UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/protocol/src/lib.rs")]), // 4 effort
-    source!([(Cli, Operator, "crates/cli/src/main.rs"), (UserConfig, Operator, "crates/cli/src/config.rs"), (ProjectConfig, Repository, ".core/config.json"), (Builtin, Builtin, "crates/protocol/src/lib.rs")]), // 5 max_turns
+    source!([(Cli, Operator, "crates/cli/src/main.rs"), (Environment, Operator, "ITERON_PROVIDER"), (UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/cli/src/main.rs")]), // 1 provider
+    source!([(Cli, Operator, "crates/cli/src/main.rs"), (Environment, Operator, "ITERON_MODEL"), (UserConfig, Operator, "crates/cli/src/config.rs"), (ProjectConfig, Repository, ".iteron/config.json"), (Builtin, Builtin, "crates/provider/src/static_metadata.rs")]), // 2 model
+    source!([(Cli, Operator, "crates/cli/src/main.rs"), (Environment, Operator, "ITERON_BASE_URL"), (UserConfig, Operator, "crates/cli/src/config.rs")]), // 3 base_url
+    source!([(Cli, Operator, "crates/cli/src/main.rs"), (Environment, Operator, "ITERON_EFFORT"), (UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/protocol/src/lib.rs")]), // 4 effort
+    source!([(Cli, Operator, "crates/cli/src/main.rs"), (UserConfig, Operator, "crates/cli/src/config.rs"), (ProjectConfig, Repository, ".iteron/config.json"), (Builtin, Builtin, "crates/protocol/src/lib.rs")]), // 5 max_turns
     source!(UserConfig, Operator, "crates/cli/src/config.rs"), // 6 max_usd
     source!(Cli, Operator, "crates/cli/src/main.rs"), // 7 max_tokens
     source!(UserConfig, Operator, "crates/cli/src/config.rs"), // 8 max_wall_secs
@@ -77,15 +77,15 @@ pub(super) const SOURCES: [SourceSpec; crate::EXPECTED_FAMILY_COUNT] = [
     source!(Cli, Operator, "crates/cli/src/main.rs"), // 12 bypass_permissions
     source!(UserConfig, Operator, "crates/cli/src/config.rs"), // 13 compaction_trigger
     source!(UserConfig, Operator, "crates/cli/src/config.rs"), // 14 verify_command
-    source!([(Environment, Operator, "CORE_RETRY_BASE_MS"), (UserConfig, Operator, "retry.base_ms"), (Builtin, Builtin, "core_sched::BackoffPolicy::default")]), // 15 retry_backoff_base
-    source!([(Environment, Operator, "CORE_RETRY_CAP_MS"), (UserConfig, Operator, "retry.cap_ms"), (Builtin, Builtin, "core_sched::BackoffPolicy::default")]), // 16 retry_backoff_cap
-    source!([(Environment, Operator, "CORE_RETRY_MAX_ATTEMPTS"), (UserConfig, Operator, "retry.max_attempts"), (Builtin, Builtin, "core_sched::BackoffPolicy::default")]), // 17 retry_max_attempts
+    source!([(Environment, Operator, "ITERON_RETRY_BASE_MS"), (UserConfig, Operator, "retry.base_ms"), (Builtin, Builtin, "iteron_sched::BackoffPolicy::default")]), // 15 retry_backoff_base
+    source!([(Environment, Operator, "ITERON_RETRY_CAP_MS"), (UserConfig, Operator, "retry.cap_ms"), (Builtin, Builtin, "iteron_sched::BackoffPolicy::default")]), // 16 retry_backoff_cap
+    source!([(Environment, Operator, "ITERON_RETRY_MAX_ATTEMPTS"), (UserConfig, Operator, "retry.max_attempts"), (Builtin, Builtin, "iteron_sched::BackoffPolicy::default")]), // 17 retry_max_attempts
     source!(ProjectConfig, Repository, "crates/cli/src/config.rs"), // 18 egress_allow
     source!([(ExternalProvider, ProviderAttested, "fresh model metadata"), (Catalog, Repository, "crates/provider/src/static_metadata.rs"), (RuntimeObservation, RuntimeObservation, "validated provider cache"), (UserConfig, Operator, "operator-declared model metadata")]), // 19 request_output_cap
     source!(Builtin, Builtin, "crates/cli/src/providers.rs"), // 20 effort_reasoning_map
     source!(Builtin, Builtin, "crates/cli/src/providers.rs"), // 21 thinking_map
     source!(Builtin, Builtin, "crates/cli/src/runtime.rs"), // 22 orchestration_map
-    source!([(RustBuilder, Operator, "core_provider::ProviderInstance::with_prompt_cache"), (Builtin, Builtin, "core_provider::ProviderInstance::new")]), // 23 prompt_cache
+    source!([(RustBuilder, Operator, "iteron_provider::ProviderInstance::with_prompt_cache"), (Builtin, Builtin, "iteron_provider::ProviderInstance::new")]), // 23 prompt_cache
     source!(DerivedPolicy, Builtin, "crates/ctx/src/compact.rs"), // 24 compaction_adaptive
     source!(Builtin, Builtin, "crates/ctx/src/compact.rs"), // 25 compaction_keep_recent
     source!(Builtin, Builtin, "crates/ctx/src/lib.rs"), // 26 token_estimator
@@ -133,7 +133,7 @@ pub(super) const SOURCES: [SourceSpec; crate::EXPECTED_FAMILY_COUNT] = [
     source!(Builtin, Builtin, "crates/cli/src/image_input.rs"), // 68 multimodal_input_admission_decode_envelope
     source!(Builtin, Builtin, "crates/cli/src/app_server.rs"), // 69 app_server_sq_eq_backpressure
     source!(Builtin, Builtin, "crates/cli/src/providers.rs"), // 70 provider_discovery_account_probe_cache_policy
-    source!(OperatorInput, Operator, "core_protocol::Op"), // 71 operator_prompt_stream
+    source!(OperatorInput, Operator, "iteron_protocol::Op"), // 71 operator_prompt_stream
     source!(Catalog, Repository, "crates/cli/src/main.rs"), // 72 builtin_prompt_corpus
     source!(ProjectConfig, Repository, "crates/ctx/src/instructions.rs"), // 73 instruction_bundle
     source!(Catalog, Repository, "crates/ctx/src/memory.rs"), // 74 memory_corpus

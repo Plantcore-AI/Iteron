@@ -28,7 +28,7 @@ from smoke_release_process import (  # noqa: E402
 TASK = "return the deterministic release smoke response"
 PROVIDER_ID = "release-smoke"
 MODEL_ID = "release-smoke-model"
-KEY_ENV = "CORE_RELEASE_SMOKE_KEY"
+KEY_ENV = "ITERON_RELEASE_SMOKE_KEY"
 PLACEHOLDER_KEY = "release-smoke-placeholder"
 EXPECTED_ASSISTANT_TEXT = "release smoke reply"
 REPOSITORY_ROOT = TOOLS.parent
@@ -693,7 +693,7 @@ def isolated_environment(
 
 
 def _write_config(home: Path, api_root: str) -> None:
-    core_home = home / ".core"
+    core_home = home / ".iteron"
     core_home.mkdir(parents=True)
     config = {
         "schema_version": 2,

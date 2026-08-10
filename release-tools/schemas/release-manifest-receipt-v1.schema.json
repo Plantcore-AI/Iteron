@@ -1,5 +1,5 @@
 {
-  "$id": "https://github.com/Plantcore-AI/core/release-tools/schemas/release-manifest-receipt-v1.schema.json",
+  "$id": "https://github.com/Plantcore-AI/Iteron/release-tools/schemas/release-manifest-receipt-v1.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
@@ -22,6 +22,6 @@
     "type": { "const": "release_manifest_receipt" }
   },
   "required": ["commit", "manifest", "schema_version", "tag", "type"],
-  "title": "Core Code release manifest receipt v1",
+  "title": "Iteron release manifest receipt v1",
   "type": "object"
 }

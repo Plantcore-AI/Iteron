@@ -14,7 +14,7 @@
 //! rewindable — a tree restore cannot undo them (ADR-008 §5); only the working tree is restored here.
 
 use crate::RecordError;
-use core_protocol::{RunId, Seq};
+use iteron_protocol::{RunId, Seq};
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::io::{self, Read};
@@ -932,23 +932,25 @@ mod tests {
         let ws = tmp_repo("runtime-state-exclude");
         test_git(&ws, &["init", "-q"]);
         std::fs::write(ws.join("kept.txt"), "kept").unwrap();
-        std::fs::create_dir_all(ws.join(".core/runs")).unwrap();
-        std::fs::write(ws.join(".core/config.json"), "{}\n").unwrap();
-        std::fs::write(ws.join(".core/runs/live.jsonl"), "authoritative\n").unwrap();
-        std::fs::write(ws.join(".core/runs/sessions.index"), "mutable\n").unwrap();
+        std::fs::create_dir_all(ws.join(".iteron/runs")).unwrap();
+        std::fs::write(ws.join(".iteron/config.json"), "{}\n").unwrap();
+        std::fs::write(ws.join(".iteron/runs/live.jsonl"), "authoritative\n").unwrap();
+        std::fs::write(ws.join(".iteron/runs/sessions.index"), "mutable\n").unwrap();
 
         let snapshot = checkpoint_excluding_runtime_state(
             &RunId("runtime-state".into()),
             Seq(2),
             &ws,
-            &ws.join(".core/runs"),
+            &ws.join(".iteron/runs"),
         )
         .unwrap();
         let listing = test_git(&ws, &["ls-tree", "-r", "--name-only", &snapshot.tree_ref]);
         assert!(listing.lines().any(|path| path == "kept.txt"));
-        assert!(listing.lines().any(|path| path == ".core/config.json"));
+        assert!(listing.lines().any(|path| path == ".iteron/config.json"));
         assert!(
-            !listing.lines().any(|path| path.starts_with(".core/runs/")),
+            !listing
+                .lines()
+                .any(|path| path.starts_with(".iteron/runs/")),
             "runtime journals and projections must never enter a workspace checkpoint"
         );
         std::fs::remove_dir_all(&ws).ok();
@@ -956,8 +958,8 @@ mod tests {
 
     /// I-45. Creating the state directory now writes a `.git/info/exclude` entry for it, and the
     /// isolated checkpoint Git reads that same file as its `core.excludesFile`. The natural
-    /// `/.core/` spelling would make the runtime-state directory an *ignored entry*, and
-    /// `add -A -- . :(top,literal,exclude).core/runs` names it exactly — which `git add` rejects
+    /// `/.iteron/` spelling would make the runtime-state directory an *ignored entry*, and
+    /// `add -A -- . :(top,literal,exclude).iteron/runs` names it exactly — which `git add` rejects
     /// as a fatal error rather than skipping. Excluding a workspace's own state directory must
     /// never make that workspace unable to checkpoint.
     #[test]
@@ -971,25 +973,25 @@ mod tests {
         std::fs::write(ws.join("kept.txt"), "kept").unwrap();
 
         // Go through the real writer, so the exclusion is the one production writes.
-        let runs = ws.join(".core").join("runs");
+        let runs = ws.join(".iteron").join("runs");
         let rollout = crate::Rollout::open(
             &runs,
             &RunId("excluded".into()),
-            core_protocol::TenantId::default(),
+            iteron_protocol::TenantId::default(),
         )
         .expect("the first rollout claims the state directory");
         drop(rollout);
         assert!(
             std::fs::read_to_string(ws.join(".git/info/exclude"))
                 .unwrap()
-                .contains(".core"),
+                .contains(".iteron"),
             "the exclusion under test was actually written"
         );
 
         // Nothing under the state directory is stageable any more...
         let untracked = test_git(&ws, &["status", "--porcelain"]);
         assert!(
-            !untracked.contains(".core"),
+            !untracked.contains(".iteron"),
             "the state directory is excluded from the user's repository: {untracked}"
         );
 
@@ -1000,7 +1002,7 @@ mod tests {
         let listing = test_git(&ws, &["ls-tree", "-r", "--name-only", &snapshot.tree_ref]);
         assert!(listing.lines().any(|path| path == "kept.txt"));
         assert!(
-            !listing.lines().any(|path| path.starts_with(".core/")),
+            !listing.lines().any(|path| path.starts_with(".iteron/")),
             "an excluded state directory stays out of the snapshot: {listing}"
         );
         std::fs::remove_dir_all(&ws).ok();

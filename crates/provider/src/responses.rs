@@ -10,10 +10,10 @@ use crate::{
     AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderError, TurnRequest,
     TurnResult, UsageReport,
 };
-use core_protocol::{
+use futures_util::StreamExt;
+use iteron_protocol::{
     Block, Message, ProviderState, ReasoningEffort, Role, StopReason, ToolUse, Usage,
 };
-use futures_util::StreamExt;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -206,7 +206,7 @@ fn is_openai_reasoning_family(model_id: &str) -> bool {
 fn transcript_to_input(
     messages: &[Message],
     route_scope: &str,
-    input_images: &[core_protocol::ImageContent],
+    input_images: &[iteron_protocol::ImageContent],
 ) -> Result<Vec<serde_json::Value>, ProviderError> {
     validate_route_scope(route_scope)?;
     let image_target = if input_images.is_empty() {
@@ -1496,7 +1496,7 @@ fn remaining_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{
+    use iteron_protocol::{
         Capability, ImageContent, ImageMediaType, Purity, ToolResult, ToolSpec, Trust,
     };
 

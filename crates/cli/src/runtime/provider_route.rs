@@ -124,10 +124,10 @@ impl Agent {
         let projected_at_unix_secs = self.pricing_now();
         if let Some(rate_card) = &self.pricing {
             if projected_at_unix_secs < rate_card.rate_card.issued_at_unix_secs {
-                return Err(core_obs::PricingError::RateCardNotYetValid.into());
+                return Err(iteron_obs::PricingError::RateCardNotYetValid.into());
             }
             if projected_at_unix_secs >= rate_card.rate_card.expires_at_unix_secs {
-                return Err(core_obs::PricingError::RateCardExpired.into());
+                return Err(iteron_obs::PricingError::RateCardExpired.into());
             }
         }
         self.validate_provider_request_route(request)?;
@@ -177,7 +177,7 @@ impl Agent {
         let deadline = self.run_deadline?;
         if deadline.saturating_duration_since(Instant::now()).is_zero() {
             return Some(KernelError::Provider(
-                core_provider::ProviderError::DeadlineExceeded,
+                iteron_provider::ProviderError::DeadlineExceeded,
             ));
         }
         let interrupted = self.drain.load(std::sync::atomic::Ordering::Relaxed)
@@ -186,7 +186,7 @@ impl Agent {
                 .as_ref()
                 .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
         interrupted.then_some(KernelError::Provider(
-            core_provider::ProviderError::Interrupted,
+            iteron_provider::ProviderError::Interrupted,
         ))
     }
 
@@ -213,7 +213,7 @@ impl Agent {
         turn: TurnId,
         request: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
-    ) -> Result<core_provider::TurnResult, KernelError> {
+    ) -> Result<iteron_provider::TurnResult, KernelError> {
         if let Some(refusal) = self.provider_dispatch_refusal() {
             return Err(refusal);
         }
@@ -246,7 +246,7 @@ impl Agent {
         &self,
         request: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
-    ) -> Result<core_provider::TurnResult, KernelError> {
+    ) -> Result<iteron_provider::TurnResult, KernelError> {
         // Defense in depth for future callers that fail to use `admit_provider_effect`.
         self.validate_provider_request_route(request)?;
         if self.provider.attempt_semantics() != ProviderAttemptSemantics::Single {
@@ -259,7 +259,7 @@ impl Agent {
         });
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(core_provider::ProviderError::DeadlineExceeded.into());
+            return Err(iteron_provider::ProviderError::DeadlineExceeded.into());
         }
         // A cooperative interrupt (Ctrl-C) must be able to abort a stream that is already in
         // flight, not just at the between-turn safe points. Race the turn against the interrupt
@@ -271,7 +271,7 @@ impl Agent {
         if let Some(interrupt) = self.interrupt.as_deref() {
             cancels.push(interrupt);
         }
-        let turn = core_provider::turn_cancellable_any(
+        let turn = iteron_provider::turn_cancellable_any(
             self.provider.as_ref(),
             request,
             on_item,
@@ -280,7 +280,7 @@ impl Agent {
         );
         tokio::time::timeout(remaining, turn)
             .await
-            .map_err(|_| KernelError::Provider(core_provider::ProviderError::DeadlineExceeded))?
+            .map_err(|_| KernelError::Provider(iteron_provider::ProviderError::DeadlineExceeded))?
             .map_err(KernelError::Provider)
     }
 }

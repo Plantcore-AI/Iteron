@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible Core Code defect
+description: Report a reproducible Iteron defect
 title: "bug: "
 labels: ["bug", "needs-triage"]
 body:
@@ -9,7 +9,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: Core Code version or commit
+      label: Iteron version or commit
     validations:
       required: true
   - type: textarea

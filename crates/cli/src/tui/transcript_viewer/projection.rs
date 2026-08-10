@@ -261,7 +261,7 @@ pub(super) fn append_query(query: &mut String, addition: &str) {
         }
         query.push(character);
     }
-    let scrubbed = core_record::redact::scrub(query);
+    let scrubbed = iteron_record::redact::scrub(query);
     if scrubbed != *query {
         query.clear();
         for character in scrubbed.chars() {
@@ -315,7 +315,7 @@ fn bounded_safe_cancelled(
     }
     // `text` has already crossed the bounded semantic builder, so redaction can never scan or
     // allocate more than the caller's fixed projection cap.
-    let scrubbed = core_record::redact::scrub(text);
+    let scrubbed = iteron_record::redact::scrub(text);
     if cancelled.load(Ordering::Relaxed) {
         return None;
     }
@@ -339,7 +339,7 @@ fn bounded_safe_cancelled(
 }
 
 pub(super) fn bounded_safe(text: &str, max_bytes: usize) -> (String, bool) {
-    let scrubbed = core_record::redact::scrub(text);
+    let scrubbed = iteron_record::redact::scrub(text);
     let mut safe = String::with_capacity(scrubbed.len().min(max_bytes));
     let mut truncated = false;
     for character in scrubbed.chars() {

@@ -3,8 +3,8 @@
 use crate::{
     Registry, ToolError, boxfut, edit::suspicious_unicode, err_result, ok_result, resolve_in_root,
 };
-use core_protocol::{Capability, Purity, ToolSpec};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use iteron_protocol::{Capability, Purity, ToolSpec};
 use regex::{Regex, RegexBuilder};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -316,11 +316,11 @@ fn search(root: &Path, base: &Path, matcher: &Matcher) -> Result<SearchResult, S
         // wrong answer dressed as a bounded one. Such a file is operator-owned content, which is
         // exactly what `User` scope is for.
         let scope = if path.starts_with(&root) {
-            core_ctx::source::SourceScope::Repository
+            iteron_ctx::source::SourceScope::Repository
         } else {
-            core_ctx::source::SourceScope::User
+            iteron_ctx::source::SourceScope::User
         };
-        let content = match core_ctx::source::read_bounded_utf8(
+        let content = match iteron_ctx::source::read_bounded_utf8(
             &root,
             &path,
             remaining.min(MAX_GREP_FILE_BYTES),
@@ -346,7 +346,7 @@ fn search(root: &Path, base: &Path, matcher: &Matcher) -> Result<SearchResult, S
             if !matcher.is_match(line) {
                 continue;
             }
-            let snippet = core_protocol::text::head(line.trim(), MAX_GREP_SNIPPET_BYTES);
+            let snippet = iteron_protocol::text::head(line.trim(), MAX_GREP_SNIPPET_BYTES);
             let hit = format!("{}:{}: {snippet}", relative, line_index + 1);
             if !result.push_hit(hit) {
                 break 'files;
@@ -372,11 +372,11 @@ fn load_ignore(
             "grep: .gitignore sources exceed the {MAX_GITIGNORE_TOTAL_BYTES}-byte total limit"
         ));
     }
-    let content = match core_ctx::source::read_bounded_utf8(
+    let content = match iteron_ctx::source::read_bounded_utf8(
         workspace_root,
         path,
         remaining.min(MAX_GITIGNORE_FILE_BYTES),
-        core_ctx::source::SourceScope::Repository,
+        iteron_ctx::source::SourceScope::Repository,
     ) {
         Ok(Some(content)) => content,
         Ok(None) => return Ok(None),
@@ -430,7 +430,7 @@ fn is_default_ignored(name: &str) -> bool {
             | "dist"
             | "build"
             | "__pycache__"
-            | ".core"
+            | ".iteron"
     )
 }
 

@@ -23,7 +23,7 @@
 //!   byte count.
 //! - the **anchor** (`[Image #1]`) records *where* in the argument the image belongs. It is not
 //!   expanded into bytes — image payloads travel in their own protocol
-//!   segments, and [`core_protocol::input::ContentSegments`] is frozen at exactly one text segment
+//!   segments, and [`iteron_protocol::input::ContentSegments`] is frozen at exactly one text segment
 //!   — so the anchor survives into the submitted text as the marker the segment order answers.
 //!
 //! The views are deliberately inseparable: deleting a live anchor also removes its chip and
@@ -55,15 +55,15 @@
 use std::fmt;
 use std::ops::Range;
 
-/// Per-paste ceiling, mirroring [`core_protocol::input::MAX_FILE_TEXT_BYTES`]: one pasted block is
+/// Per-paste ceiling, mirroring [`iteron_protocol::input::MAX_FILE_TEXT_BYTES`]: one pasted block is
 /// bounded exactly like one attached file, because it is the same kind of thing to a turn.
-pub const MAX_PASTED_TEXT_BYTES: usize = core_protocol::input::MAX_FILE_TEXT_BYTES;
+pub const MAX_PASTED_TEXT_BYTES: usize = iteron_protocol::input::MAX_FILE_TEXT_BYTES;
 
 /// Aggregate ceiling over every live paste on one draft, mirroring
-/// [`core_protocol::input::MAX_TOTAL_FILE_TEXT_BYTES`]. It is deliberately below
-/// [`core_protocol::task::MAX_TASK_TEXT_BYTES`], so pastes alone can never build a submission the
+/// [`iteron_protocol::input::MAX_TOTAL_FILE_TEXT_BYTES`]. It is deliberately below
+/// [`iteron_protocol::task::MAX_TASK_TEXT_BYTES`], so pastes alone can never build a submission the
 /// task contract must reject.
-pub const MAX_TOTAL_PASTED_TEXT_BYTES: usize = core_protocol::input::MAX_TOTAL_FILE_TEXT_BYTES;
+pub const MAX_TOTAL_PASTED_TEXT_BYTES: usize = iteron_protocol::input::MAX_TOTAL_FILE_TEXT_BYTES;
 
 /// How many distinct pasted blocks one draft may hold.
 pub const MAX_PASTED_TEXTS: usize = 16;

@@ -5,29 +5,29 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
 const MEMBERS: &[(&str, &str)] = &[
-    ("crates/agents", "core-agents"),
-    ("crates/changeset", "core-changeset"),
-    ("crates/cli", "core-cli"),
-    ("crates/ctx", "core-ctx"),
-    ("crates/eval", "core-eval"),
-    ("crates/evolve", "core-evolve"),
-    ("crates/kernel", "core-kernel"),
-    ("crates/lsp", "core-lsp"),
-    ("crates/marketplace", "core-marketplace"),
-    ("crates/mcp", "core-mcp"),
-    ("crates/obs", "core-obs"),
-    ("crates/protocol", "core-protocol"),
-    ("crates/provider", "core-provider"),
-    ("crates/record", "core-record"),
-    ("crates/sandbox", "core-sandbox"),
-    ("crates/sched", "core-sched"),
-    ("crates/statusline", "core-statusline"),
-    ("crates/support", "core-support"),
-    ("crates/tools", "core-tools"),
-    ("crates/tunables", "core-tunables"),
-    ("crates/verify", "core-verify"),
-    ("crates/workflow", "core-workflow"),
-    ("xtask", "core-xtask"),
+    ("crates/agents", "iteron-agents"),
+    ("crates/changeset", "iteron-changeset"),
+    ("crates/cli", "iteron-cli"),
+    ("crates/ctx", "iteron-ctx"),
+    ("crates/eval", "iteron-eval"),
+    ("crates/evolve", "iteron-evolve"),
+    ("crates/kernel", "iteron-kernel"),
+    ("crates/lsp", "iteron-lsp"),
+    ("crates/marketplace", "iteron-marketplace"),
+    ("crates/mcp", "iteron-mcp"),
+    ("crates/obs", "iteron-obs"),
+    ("crates/protocol", "iteron-protocol"),
+    ("crates/provider", "iteron-provider"),
+    ("crates/record", "iteron-record"),
+    ("crates/sandbox", "iteron-sandbox"),
+    ("crates/sched", "iteron-sched"),
+    ("crates/statusline", "iteron-statusline"),
+    ("crates/support", "iteron-support"),
+    ("crates/tools", "iteron-tools"),
+    ("crates/tunables", "iteron-tunables"),
+    ("crates/verify", "iteron-verify"),
+    ("crates/workflow", "iteron-workflow"),
+    ("xtask", "iteron-xtask"),
 ];
 
 pub(super) fn validate(root: &Path) -> Result<()> {
@@ -347,7 +347,7 @@ fn validate_targets_and_internal_paths(root: &Path) -> Result<()> {
         validate_member_target(root, &member, &package_name)?;
     }
     validate_bin_target(root, "crates/cli/Cargo.toml", "core", "src/main.rs")?;
-    validate_bin_target(root, "crates/eval/Cargo.toml", "core-eval", "src/main.rs")?;
+    validate_bin_target(root, "crates/eval/Cargo.toml", "iteron-eval", "src/main.rs")?;
     validate_optional_bin_target(
         root,
         "crates/evolve/Cargo.toml",
@@ -394,10 +394,10 @@ fn reject_implicit_targets(
     package_name: &str,
     manifest: &toml::Value,
 ) -> Result<()> {
-    let has_lib = !matches!(package_name, "core-cli" | "core-xtask");
+    let has_lib = !matches!(package_name, "iteron-cli" | "iteron-xtask");
     let explicit_bin = manifest.get("bin");
-    let has_bin = matches!(package_name, "core-cli" | "core-eval" | "core-xtask")
-        || (package_name == "core-evolve" && explicit_bin.is_some());
+    let has_bin = matches!(package_name, "iteron-cli" | "iteron-eval" | "iteron-xtask")
+        || (package_name == "iteron-evolve" && explicit_bin.is_some());
     if has_lib {
         let source = format!("{member}/src/lib.rs");
         let _ = read_bounded(root, &source, MAX_SOURCE_BYTES)?;
@@ -415,11 +415,11 @@ fn reject_implicit_targets(
             bail!("managed package '{member}' gains implicit Cargo target '{relative}'");
         }
     }
-    if matches!(package_name, "core-cli" | "core-eval") {
+    if matches!(package_name, "iteron-cli" | "iteron-eval") {
         if explicit_bin.is_none() {
             bail!("managed package '{member}' loses its explicit canonical binary target");
         }
-    } else if package_name != "core-evolve" && explicit_bin.is_some() {
+    } else if package_name != "iteron-evolve" && explicit_bin.is_some() {
         bail!("managed package '{member}' gains an alternate binary target");
     }
     Ok(())
@@ -430,7 +430,7 @@ fn validate_bin_target(root: &Path, manifest: &str, name: &str, path: &str) -> R
     validate_bin_declaration(&value, manifest, name, path)
 }
 
-/// Admit the transcript driver only if it is declared as the one canonical `core-evolve` binary.
+/// Admit the transcript driver only if it is declared as the one canonical `iteron-evolve` binary.
 ///
 /// Absence remains valid so this governance prerequisite can land before the implementation. Once
 /// a candidate adds any `[[bin]]` entry, the exact target name and source path become mandatory.

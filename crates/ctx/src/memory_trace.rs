@@ -1,6 +1,6 @@
 //! Content-free evidence for memory retrieval, admission, mutation and same-session visibility.
 
-use core_protocol::{Trust, TurnId};
+use iteron_protocol::{Trust, TurnId};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_MEMORY_TRACE_STORES: usize = 16;

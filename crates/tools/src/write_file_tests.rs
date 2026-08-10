@@ -1,6 +1,6 @@
 use super::*;
 use crate::{Memo, Registry};
-use core_protocol::{Capability, Purity, ToolUse};
+use iteron_protocol::{Capability, Purity, ToolUse};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(0);

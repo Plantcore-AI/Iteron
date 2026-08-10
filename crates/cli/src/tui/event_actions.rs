@@ -24,7 +24,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             state,
             reason_code,
         } => {
-            if state == core_protocol::SubmissionLifecycleState::Received
+            if state == iteron_protocol::SubmissionLifecycleState::Received
                 && let Some(pending) = app.pending_turn_receipt.as_ref()
                 && pending.id == id
                 && pending.clear_composer
@@ -38,7 +38,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                     );
                 }
             }
-            if state == core_protocol::SubmissionLifecycleState::Applied
+            if state == iteron_protocol::SubmissionLifecycleState::Applied
                 && app
                     .pending_turn_receipt
                     .as_ref()
@@ -49,8 +49,8 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             }
             if matches!(
                 state,
-                core_protocol::SubmissionLifecycleState::Rejected
-                    | core_protocol::SubmissionLifecycleState::Expired
+                iteron_protocol::SubmissionLifecycleState::Rejected
+                    | iteron_protocol::SubmissionLifecycleState::Expired
             ) {
                 if app
                     .pending_turn_receipt
@@ -69,7 +69,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                         "submission {} {}{}",
                         id.0,
                         match state {
-                            core_protocol::SubmissionLifecycleState::Rejected => "rejected",
+                            iteron_protocol::SubmissionLifecycleState::Rejected => "rejected",
                             _ => "expired",
                         },
                         reason_code

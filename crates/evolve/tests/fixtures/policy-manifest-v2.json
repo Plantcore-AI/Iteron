@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "policy": {
-    "slot": "core/planner",
+    "slot": "iteron/planner",
     "policy_id": "legacy-planner",
     "version": "1.0.0",
     "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

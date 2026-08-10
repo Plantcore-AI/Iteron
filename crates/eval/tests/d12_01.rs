@@ -1,5 +1,5 @@
 #![cfg(unix)]
-//! D12-01 oracle: `core-eval` performs REAL-repository evaluation.
+//! D12-01 oracle: `iteron-eval` performs REAL-repository evaluation.
 //!
 //! The gap under closure is "eval runs only synthetic micro-repos; no real-repository
 //! evaluation". This test drives the public [`run_evaluation`] pipeline end to end against a
@@ -17,8 +17,8 @@
 //! so the egress-off oracle is never entered), so it runs deterministically on the Linux merge
 //! gate rather than only on a developer's macOS box.
 
-use core_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
-use core_eval::{
+use iteron_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
+use iteron_eval::{
     CellResult, CorpusManifest, CorpusTask, EvalOptions, EvaluationManifest, EvaluationPurpose,
     Partition, RunStatus, run_evaluation,
 };
@@ -36,7 +36,7 @@ impl TempRoot {
             .expect("system clock must be after the Unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "core-eval-d12-01-{label}-{}-{nonce:x}",
+            "iteron-eval-d12-01-{label}-{}-{nonce:x}",
             std::process::id()
         ));
         std::fs::create_dir(&path).expect("create isolated D12-01 root");
@@ -84,9 +84,9 @@ fn create_real_repository(root: &TempRoot) -> (String, String) {
         &repo,
         &[
             "-c",
-            "user.name=core-eval",
+            "user.name=iteron-eval",
             "-c",
-            "user.email=core-eval@example.invalid",
+            "user.email=iteron-eval@example.invalid",
             "commit",
             "--quiet",
             "-m",

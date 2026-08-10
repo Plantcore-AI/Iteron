@@ -17,11 +17,11 @@
 //! These are exercised through the real public router+planner path (`route` -> `plan` ->
 //! `with_aggregate`), not by hand-constructing internal structs.
 
-use core_agents::{
+use iteron_agents::{
     BudgetedWorkflowPlan, Decomposer, FAN_CAP, INVESTIGATOR_SCOPE, RepoSignals, Stage, TaskClass,
     WorkflowPlan,
 };
-use core_protocol::Budget;
+use iteron_protocol::Budget;
 
 /// Build a real, *unbudgeted* plan by driving the deterministic router and planner — the same
 /// path the executor uses. A broad cross-file ask on a large tree routes to `MultiFile`, which
@@ -126,7 +126,7 @@ fn budget_only_materializes_at_the_validated_finalization_boundary() {
 fn finalization_surface_is_wired_end_to_end_not_dead_code() {
     // Drive the whole public path: route -> plan (unbudgeted) -> with_aggregate -> budgeted. If
     // this surface were the dead, allow(dead_code)-hidden API the pre-fix crate shipped, it could
-    // not be exercised through `core_agents`' public exports at all.
+    // not be exercised through `iteron_agents`' public exports at all.
     let plan = real_unbudgeted_plan();
 
     // The unbudgeted plan already exposes the ordered fan leaves and the fixed Fan -> Reduce shape.

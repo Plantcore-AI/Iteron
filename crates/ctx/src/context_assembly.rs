@@ -1,6 +1,6 @@
 //! Pure assembly of recorded context and the stable system prefix.
 
-use core_protocol::{DurableInstructionContext, Trust};
+use iteron_protocol::{DurableInstructionContext, Trust};
 
 /// Assemble the durable frontend prefix with the context grant bytes recorded beside it.
 ///
@@ -47,7 +47,7 @@ pub fn assemble_system_prompt(base: &str, injection: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::DurableEnvironmentContext;
+    use iteron_protocol::DurableEnvironmentContext;
 
     #[test]
     fn preserves_order_and_least_trust() {

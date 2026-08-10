@@ -1,4 +1,4 @@
-use core_protocol::{
+use iteron_protocol::{
     Block, Budget, CostAttribution, CostProjection, CostProjectionIdentity,
     DurableEnvironmentContext, DurableInstructionContext, Event, EventKind, FileContent,
     ImageContent, Message, Op, PermissionRules, PricingRoute, ProviderState, RateCard,
@@ -6,7 +6,7 @@ use core_protocol::{
     SignedRateCard, TokenRateCard, ToolResult, ToolUse, Usage, WorkflowCostEvidence, WorkflowEvent,
     WorkflowMetrics, WorkflowTaskEvidence,
 };
-use core_record::replay;
+use iteron_record::replay;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -542,10 +542,10 @@ fn assert_named_surface_corpus(
                 typed_named_fixture_wires::<ProviderState>(root, surface)
             }
             "record.named.artifact-ref" => {
-                typed_named_fixture_wires::<core_protocol::artifact::ArtifactRef>(root, surface)
+                typed_named_fixture_wires::<iteron_protocol::artifact::ArtifactRef>(root, surface)
             }
             "record.named.provenance" => {
-                typed_named_fixture_wires::<core_protocol::artifact::Provenance>(root, surface)
+                typed_named_fixture_wires::<iteron_protocol::artifact::Provenance>(root, surface)
             }
             "record.named.tool-use" => typed_named_fixture_wires::<ToolUse>(root, surface),
             "record.named.tool-result" => typed_named_fixture_wires::<ToolResult>(root, surface),

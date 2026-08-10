@@ -12,14 +12,14 @@
 //! `WorkflowLauncher` seam. A `background` request in a context with no owner runs in-turn and the
 //! tool result says the request was not granted; it is never silently downgraded.
 //! The kernel intercepts this tool by name (like `DISPATCH_AGENT`)
-//! and drives `core_workflow::WorkflowEngine::launch` with a `KernelSpawner` built from the running
+//! and drives `iteron_workflow::WorkflowEngine::launch` with a `KernelSpawner` built from the running
 //! agent's route (see `crates/kernel` `launch_workflow`). This registered executor therefore never
 //! runs on the kernel path; its body is only a fallback message for a non-kernel caller (e.g. a
 //! direct `Registry::run_effect` in a test). The CLI `core workflow run/list/resume/watch` remains
 //! the standalone, streaming entry point.
 
 use crate::{Registry, ToolError, boxfut, err_result, ok_result};
-use core_protocol::{Capability, Purity, ToolSpec};
+use iteron_protocol::{Capability, Purity, ToolSpec};
 
 /// The tool name the kernel will intercept once in-turn launch lands (parallels [`crate::DISPATCH_AGENT`]).
 pub const WORKFLOW_TOOL: &str = "Workflow";

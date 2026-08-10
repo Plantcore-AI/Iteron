@@ -9,7 +9,7 @@ from pathlib import Path
 
 from common import ReleaseToolError, atomic_write_text, require_regular_file, run_main, validate_version
 
-MARKER = "@CORE_CODE_VERSION@"
+MARKER = "@ITERON_CODE_VERSION@"
 
 
 def parser() -> argparse.ArgumentParser:

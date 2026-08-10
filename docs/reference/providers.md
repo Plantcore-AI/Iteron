@@ -16,7 +16,7 @@ documented by a provider.
 ## Default selection
 
 The built-in provider default is `glm`. Its exact standard root has a source-
-versioned model enum whose documented default is `glm-5.2`. Core Code selects it
+versioned model enum whose documented default is `glm-5.2`. Iteron selects it
 only when the provider entry is usable; missing credentials keep the leaves
 disabled.
 

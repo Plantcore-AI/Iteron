@@ -1,4 +1,4 @@
-use core_tunables::{
+use iteron_tunables::{
     ActivationPredicate, CausalPath, ConstraintProjection, ConstraintRelation, ConstraintViolation,
     CoreStrategySlot, CrossFieldRule, DefaultKind, DefaultResolver, DefaultValueRequirement,
     EXPECTED_FAMILY_COUNT, ExternalCeiling, ImplementationStatus, InactiveReason,
@@ -691,7 +691,7 @@ const EXPECTED_PROVIDER_REQUIREMENTS: [ProviderRequirement; EXPECTED_FAMILY_COUN
     ProviderRequirement::None,             // 160 replay_divergence_detection_policy
 ];
 
-fn family(id: &str) -> &'static core_tunables::Family {
+fn family(id: &str) -> &'static iteron_tunables::Family {
     families()
         .iter()
         .find(|family| family.id == id)
@@ -839,9 +839,9 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     assert_eq!(integer_default("max_turns"), 40);
     assert_eq!(integer_default("max_wall_secs"), 1_800);
     for (id, expected, environment) in [
-        ("retry_backoff_base", 500, "CORE_RETRY_BASE_MS"),
-        ("retry_backoff_cap", 30_000, "CORE_RETRY_CAP_MS"),
-        ("retry_max_attempts", 6, "CORE_RETRY_MAX_ATTEMPTS"),
+        ("retry_backoff_base", 500, "ITERON_RETRY_BASE_MS"),
+        ("retry_backoff_cap", 30_000, "ITERON_RETRY_CAP_MS"),
+        ("retry_max_attempts", 6, "ITERON_RETRY_MAX_ATTEMPTS"),
     ] {
         let family = family(id);
         assert_eq!(family.default.kind, DefaultKind::Literal);
@@ -928,7 +928,7 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     );
     assert_eq!(
         prompt_cache.source.bindings[0].locator,
-        "core_provider::ProviderInstance::with_prompt_cache"
+        "iteron_provider::ProviderInstance::with_prompt_cache"
     );
     assert_eq!(
         prompt_cache.semantic_key,

@@ -2,7 +2,7 @@
 //!
 //! The TUI deliberately never derives a live runtime configuration here. A registry view is only
 //! metadata; a loaded request is only an explicit frozen simulation. Resolution values are exposed
-//! exclusively through `core_tunables::explain_entry_json`, whose contract redacts every value.
+//! exclusively through `iteron_tunables::explain_entry_json`, whose contract redacts every value.
 
 mod format;
 mod model;
@@ -14,8 +14,8 @@ use self::format::{
 pub(super) use self::model::Detail;
 use self::model::{Catalog, LoadError};
 #[cfg(target_os = "linux")]
-use core_tunables::RESOLUTION_INPUT_MAX_BYTES;
-use core_tunables::{Family, ResolutionFailureReport, ResolutionReport};
+use iteron_tunables::RESOLUTION_INPUT_MAX_BYTES;
+use iteron_tunables::{Family, ResolutionFailureReport, ResolutionReport};
 use serde_json::Value;
 #[cfg(target_os = "linux")]
 use std::io::Read as _;
@@ -29,9 +29,9 @@ pub(super) fn registry_catalog() -> Catalog {
     Catalog::new(
         format_args!(
             "tunables · catalog · {} families · simulation only",
-            core_tunables::families().len()
+            iteron_tunables::families().len()
         ),
-        core_tunables::families()
+        iteron_tunables::families()
             .iter()
             .map(catalog_detail)
             .collect(),
@@ -136,7 +136,7 @@ fn read_workspace_request(_workspace: &Path, requested_path: &str) -> Result<Vec
 }
 
 fn catalog_from_bytes(bytes: &[u8]) -> Result<Catalog, LoadError> {
-    match core_tunables::resolve_json(bytes) {
+    match iteron_tunables::resolve_json(bytes) {
         Ok(resolved) => report_catalog(resolved.report(), "resolved", 0),
         Err(failure) => failed_report_catalog(&failure),
     }
@@ -156,7 +156,7 @@ fn report_catalog(
     atomic_status: &str,
     failure_count: usize,
 ) -> Result<Catalog, LoadError> {
-    let entries = core_tunables::families()
+    let entries = iteron_tunables::families()
         .iter()
         .map(|family| report_detail(report, family, atomic_status))
         .collect::<Result<Vec<_>, _>>()?;
@@ -198,7 +198,7 @@ fn report_detail(
 ) -> Result<Detail, LoadError> {
     // This is the only resolution-value ingress. The R2 explain contract validates the complete
     // report and replaces values, evidence ids, routes, subjects, and input digests with previews.
-    let encoded = core_tunables::explain_entry_json(report, family.id)
+    let encoded = iteron_tunables::explain_entry_json(report, family.id)
         .map_err(|_| LoadError("resolver explain refused the simulation report"))?;
     let document: Value = serde_json::from_str(&encoded)
         .map_err(|_| LoadError("resolver explain returned an unreadable document"))?;

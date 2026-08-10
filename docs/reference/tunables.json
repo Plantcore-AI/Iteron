@@ -5,9 +5,9 @@
   },
   "payload": {
     "schema_version": 3,
-    "registry_id": "core-tunables",
+    "registry_id": "iteron-tunables",
     "registry_revision": 4,
-    "canonicalization": "core-tunables-json-v3",
+    "canonicalization": "iteron-tunables-json-v3",
     "family_count": 160,
     "scalar_catalogs": [
       {
@@ -120,7 +120,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "literal",
@@ -143,7 +143,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_PROVIDER"
+              "locator": "ITERON_PROVIDER"
             },
             {
               "kind": "user_config",
@@ -227,7 +227,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "dynamic",
@@ -251,7 +251,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_MODEL"
+              "locator": "ITERON_MODEL"
             },
             {
               "kind": "user_config",
@@ -261,7 +261,7 @@
             {
               "kind": "project_config",
               "trust": "repository",
-              "locator": ".core/config.json"
+              "locator": ".iteron/config.json"
             },
             {
               "kind": "builtin",
@@ -338,7 +338,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "derived",
@@ -359,7 +359,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_BASE_URL"
+              "locator": "ITERON_BASE_URL"
             },
             {
               "kind": "user_config",
@@ -438,8 +438,8 @@
           ]
         },
         "strategy_slots": [
-          "core/planner",
-          "core/model_router"
+          "iteron/planner",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "literal",
@@ -462,7 +462,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_EFFORT"
+              "locator": "ITERON_EFFORT"
             },
             {
               "kind": "user_config",
@@ -551,7 +551,7 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler"
+          "iteron/scheduler"
         ],
         "default": {
           "kind": "literal",
@@ -579,7 +579,7 @@
             {
               "kind": "project_config",
               "trust": "repository",
-              "locator": ".core/config.json"
+              "locator": ".iteron/config.json"
             },
             {
               "kind": "builtin",
@@ -659,7 +659,7 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler"
+          "iteron/scheduler"
         ],
         "default": {
           "kind": "dynamic",
@@ -757,7 +757,7 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler"
+          "iteron/scheduler"
         ],
         "default": {
           "kind": "dynamic",
@@ -847,7 +847,7 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler"
+          "iteron/scheduler"
         ],
         "default": {
           "kind": "literal",
@@ -937,7 +937,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -1024,7 +1024,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -1118,7 +1118,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -1220,7 +1220,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -1308,7 +1308,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -1455,7 +1455,7 @@
           ]
         },
         "strategy_slots": [
-          "core/verifier"
+          "iteron/verifier"
         ],
         "default": {
           "kind": "dynamic",
@@ -1554,8 +1554,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/model_router"
+          "iteron/scheduler",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "literal",
@@ -1573,7 +1573,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_RETRY_BASE_MS"
+              "locator": "ITERON_RETRY_BASE_MS"
             },
             {
               "kind": "user_config",
@@ -1583,7 +1583,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "core_sched::BackoffPolicy::default"
+              "locator": "iteron_sched::BackoffPolicy::default"
             }
           ]
         },
@@ -1656,8 +1656,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/model_router"
+          "iteron/scheduler",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "literal",
@@ -1675,7 +1675,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_RETRY_CAP_MS"
+              "locator": "ITERON_RETRY_CAP_MS"
             },
             {
               "kind": "user_config",
@@ -1685,7 +1685,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "core_sched::BackoffPolicy::default"
+              "locator": "iteron_sched::BackoffPolicy::default"
             }
           ]
         },
@@ -1758,8 +1758,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/model_router"
+          "iteron/scheduler",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "literal",
@@ -1777,7 +1777,7 @@
             {
               "kind": "environment",
               "trust": "operator",
-              "locator": "CORE_RETRY_MAX_ATTEMPTS"
+              "locator": "ITERON_RETRY_MAX_ATTEMPTS"
             },
             {
               "kind": "user_config",
@@ -1787,7 +1787,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "core_sched::BackoffPolicy::default"
+              "locator": "iteron_sched::BackoffPolicy::default"
             }
           ]
         },
@@ -1859,7 +1859,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -1952,8 +1952,8 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router",
-          "core/context"
+          "iteron/model_router",
+          "iteron/context"
         ],
         "default": {
           "kind": "dynamic",
@@ -2070,8 +2070,8 @@
           ]
         },
         "strategy_slots": [
-          "core/planner",
-          "core/model_router"
+          "iteron/planner",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "derived",
@@ -2176,8 +2176,8 @@
           ]
         },
         "strategy_slots": [
-          "core/planner",
-          "core/model_router"
+          "iteron/planner",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "derived",
@@ -2293,8 +2293,8 @@
           ]
         },
         "strategy_slots": [
-          "core/planner",
-          "core/collaboration"
+          "iteron/planner",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -2401,8 +2401,8 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router",
-          "core/context"
+          "iteron/model_router",
+          "iteron/context"
         ],
         "default": {
           "kind": "literal",
@@ -2420,12 +2420,12 @@
             {
               "kind": "rust_builder",
               "trust": "operator",
-              "locator": "core_provider::ProviderInstance::with_prompt_cache"
+              "locator": "iteron_provider::ProviderInstance::with_prompt_cache"
             },
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "core_provider::ProviderInstance::new"
+              "locator": "iteron_provider::ProviderInstance::new"
             }
           ]
         },
@@ -2495,7 +2495,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -2626,7 +2626,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -2714,8 +2714,8 @@
           ]
         },
         "strategy_slots": [
-          "core/context",
-          "core/model_router"
+          "iteron/context",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "derived",
@@ -2823,8 +2823,8 @@
           ]
         },
         "strategy_slots": [
-          "core/context",
-          "core/model_router"
+          "iteron/context",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "derived",
@@ -2962,7 +2962,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -3054,7 +3054,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -3196,8 +3196,8 @@
           ]
         },
         "strategy_slots": [
-          "core/memory",
-          "core/context"
+          "iteron/memory",
+          "iteron/context"
         ],
         "default": {
           "kind": "literal",
@@ -3285,8 +3285,8 @@
           ]
         },
         "strategy_slots": [
-          "core/memory",
-          "core/context"
+          "iteron/memory",
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -3432,7 +3432,7 @@
           ]
         },
         "strategy_slots": [
-          "core/memory"
+          "iteron/memory"
         ],
         "default": {
           "kind": "derived",
@@ -3530,8 +3530,8 @@
           ]
         },
         "strategy_slots": [
-          "core/context",
-          "core/tool_policy"
+          "iteron/context",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -3619,8 +3619,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/tool_policy"
+          "iteron/scheduler",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -3708,8 +3708,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/tool_policy"
+          "iteron/scheduler",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -3794,8 +3794,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/tool_policy"
+          "iteron/scheduler",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -3883,7 +3883,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -4006,7 +4006,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -4130,7 +4130,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -4299,8 +4299,8 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy",
-          "core/context"
+          "iteron/tool_policy",
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -4430,8 +4430,8 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy",
-          "core/context"
+          "iteron/tool_policy",
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -4556,8 +4556,8 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy",
-          "core/context"
+          "iteron/tool_policy",
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -4682,8 +4682,8 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy",
-          "core/context"
+          "iteron/tool_policy",
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -4813,8 +4813,8 @@
           ]
         },
         "strategy_slots": [
-          "core/context",
-          "core/tool_policy"
+          "iteron/context",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -4939,8 +4939,8 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy",
-          "core/context"
+          "iteron/tool_policy",
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -5088,8 +5088,8 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy",
-          "core/context"
+          "iteron/tool_policy",
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -5236,8 +5236,8 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy",
-          "core/context"
+          "iteron/tool_policy",
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -5325,8 +5325,8 @@
           ]
         },
         "strategy_slots": [
-          "core/verifier",
-          "core/scheduler"
+          "iteron/verifier",
+          "iteron/scheduler"
         ],
         "default": {
           "kind": "derived",
@@ -5415,8 +5415,8 @@
           ]
         },
         "strategy_slots": [
-          "core/verifier",
-          "core/context"
+          "iteron/verifier",
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -5548,8 +5548,8 @@
           ]
         },
         "strategy_slots": [
-          "core/verifier",
-          "core/scheduler"
+          "iteron/verifier",
+          "iteron/scheduler"
         ],
         "default": {
           "kind": "derived",
@@ -5637,8 +5637,8 @@
           ]
         },
         "strategy_slots": [
-          "core/router",
-          "core/collaboration"
+          "iteron/router",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -5729,8 +5729,8 @@
           ]
         },
         "strategy_slots": [
-          "core/planner",
-          "core/collaboration"
+          "iteron/planner",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -5871,8 +5871,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/collaboration"
+          "iteron/scheduler",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -5960,8 +5960,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/collaboration"
+          "iteron/scheduler",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -6092,8 +6092,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/collaboration"
+          "iteron/scheduler",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -6188,8 +6188,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/collaboration"
+          "iteron/scheduler",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -6277,8 +6277,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/collaboration"
+          "iteron/scheduler",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -6373,8 +6373,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/collaboration"
+          "iteron/scheduler",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -6469,8 +6469,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/collaboration"
+          "iteron/scheduler",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -6558,8 +6558,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/collaboration"
+          "iteron/scheduler",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -6720,8 +6720,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/collaboration"
+          "iteron/scheduler",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -6866,9 +6866,9 @@
           ]
         },
         "strategy_slots": [
-          "core/planner",
-          "core/model_router",
-          "core/collaboration"
+          "iteron/planner",
+          "iteron/model_router",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -6963,8 +6963,8 @@
           ]
         },
         "strategy_slots": [
-          "core/context",
-          "core/collaboration"
+          "iteron/context",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -7052,7 +7052,7 @@
           ]
         },
         "strategy_slots": [
-          "core/collaboration"
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -7178,8 +7178,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/collaboration"
+          "iteron/scheduler",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -7337,8 +7337,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/model_router"
+          "iteron/scheduler",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "derived",
@@ -7470,7 +7470,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "literal",
@@ -7561,8 +7561,8 @@
           ]
         },
         "strategy_slots": [
-          "core/context",
-          "core/model_router"
+          "iteron/context",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "literal",
@@ -7767,8 +7767,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/router"
+          "iteron/scheduler",
+          "iteron/router"
         ],
         "default": {
           "kind": "literal",
@@ -7971,7 +7971,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "literal",
@@ -8147,8 +8147,8 @@
           ]
         },
         "strategy_slots": [
-          "core/context",
-          "core/planner"
+          "iteron/context",
+          "iteron/planner"
         ],
         "default": {
           "kind": "dynamic",
@@ -8164,7 +8164,7 @@
             {
               "kind": "operator_input",
               "trust": "operator",
-              "locator": "core_protocol::Op"
+              "locator": "iteron_protocol::Op"
             }
           ]
         },
@@ -8246,8 +8246,8 @@
           ]
         },
         "strategy_slots": [
-          "core/planner",
-          "core/context"
+          "iteron/planner",
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -8386,7 +8386,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -8527,7 +8527,7 @@
           ]
         },
         "strategy_slots": [
-          "core/memory"
+          "iteron/memory"
         ],
         "default": {
           "kind": "derived",
@@ -8679,8 +8679,8 @@
           ]
         },
         "strategy_slots": [
-          "core/context",
-          "core/tool_policy"
+          "iteron/context",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -8825,9 +8825,9 @@
           ]
         },
         "strategy_slots": [
-          "core/collaboration",
-          "core/model_router",
-          "core/tool_policy"
+          "iteron/collaboration",
+          "iteron/model_router",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -8969,7 +8969,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "derived",
@@ -9144,7 +9144,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -9288,7 +9288,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -9428,8 +9428,8 @@
           ]
         },
         "strategy_slots": [
-          "core/planner",
-          "core/collaboration"
+          "iteron/planner",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -9567,7 +9567,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -9710,8 +9710,8 @@
           ]
         },
         "strategy_slots": [
-          "core/router",
-          "core/model_router"
+          "iteron/router",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "derived",
@@ -9855,8 +9855,8 @@
           ]
         },
         "strategy_slots": [
-          "core/router",
-          "core/planner"
+          "iteron/router",
+          "iteron/planner"
         ],
         "default": {
           "kind": "derived",
@@ -10002,7 +10002,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -10104,8 +10104,8 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy",
-          "core/router"
+          "iteron/tool_policy",
+          "iteron/router"
         ],
         "default": {
           "kind": "derived",
@@ -10254,7 +10254,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "literal",
@@ -10348,7 +10348,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "literal",
@@ -10524,8 +10524,8 @@
           ]
         },
         "strategy_slots": [
-          "core/router",
-          "core/model_router"
+          "iteron/router",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "derived",
@@ -10625,7 +10625,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "derived",
@@ -10772,7 +10772,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "literal",
@@ -10953,7 +10953,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "dynamic",
@@ -11052,8 +11052,8 @@
           ]
         },
         "strategy_slots": [
-          "core/planner",
-          "core/model_router"
+          "iteron/planner",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "dynamic",
@@ -11157,8 +11157,8 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router",
-          "core/collaboration"
+          "iteron/model_router",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -11268,7 +11268,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "derived",
@@ -11361,7 +11361,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "literal",
@@ -11453,7 +11453,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "dynamic",
@@ -11615,7 +11615,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -11704,7 +11704,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -11793,7 +11793,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -11883,7 +11883,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "dynamic",
@@ -11982,7 +11982,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "literal",
@@ -12070,7 +12070,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "derived",
@@ -12214,7 +12214,7 @@
           ]
         },
         "strategy_slots": [
-          "core/context"
+          "iteron/context"
         ],
         "default": {
           "kind": "literal",
@@ -12308,8 +12308,8 @@
           ]
         },
         "strategy_slots": [
-          "core/context",
-          "core/verifier"
+          "iteron/context",
+          "iteron/verifier"
         ],
         "default": {
           "kind": "literal",
@@ -12398,8 +12398,8 @@
           ]
         },
         "strategy_slots": [
-          "core/memory",
-          "core/context"
+          "iteron/memory",
+          "iteron/context"
         ],
         "default": {
           "kind": "literal",
@@ -12511,7 +12511,7 @@
           ]
         },
         "strategy_slots": [
-          "core/memory"
+          "iteron/memory"
         ],
         "default": {
           "kind": "literal",
@@ -12613,8 +12613,8 @@
           ]
         },
         "strategy_slots": [
-          "core/context",
-          "core/memory"
+          "iteron/context",
+          "iteron/memory"
         ],
         "default": {
           "kind": "derived",
@@ -12709,7 +12709,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -12812,8 +12812,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/tool_policy"
+          "iteron/scheduler",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -12903,7 +12903,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -12991,7 +12991,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "dynamic",
@@ -13117,7 +13117,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -13209,7 +13209,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -13358,7 +13358,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -13538,8 +13538,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/tool_policy"
+          "iteron/scheduler",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -13639,7 +13639,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -13789,7 +13789,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -13933,8 +13933,8 @@
           ]
         },
         "strategy_slots": [
-          "core/router",
-          "core/tool_policy"
+          "iteron/router",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "dynamic",
@@ -14082,7 +14082,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "dynamic",
@@ -14224,7 +14224,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -14367,8 +14367,8 @@
           ]
         },
         "strategy_slots": [
-          "core/context",
-          "core/tool_policy"
+          "iteron/context",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -14457,7 +14457,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -14545,7 +14545,7 @@
           ]
         },
         "strategy_slots": [
-          "core/verifier"
+          "iteron/verifier"
         ],
         "default": {
           "kind": "derived",
@@ -14687,7 +14687,7 @@
           ]
         },
         "strategy_slots": [
-          "core/verifier"
+          "iteron/verifier"
         ],
         "default": {
           "kind": "derived",
@@ -14779,7 +14779,7 @@
           ]
         },
         "strategy_slots": [
-          "core/verifier"
+          "iteron/verifier"
         ],
         "default": {
           "kind": "literal",
@@ -14949,7 +14949,7 @@
           ]
         },
         "strategy_slots": [
-          "core/verifier"
+          "iteron/verifier"
         ],
         "default": {
           "kind": "derived",
@@ -15090,8 +15090,8 @@
           ]
         },
         "strategy_slots": [
-          "core/verifier",
-          "core/planner"
+          "iteron/verifier",
+          "iteron/planner"
         ],
         "default": {
           "kind": "derived",
@@ -15230,7 +15230,7 @@
           ]
         },
         "strategy_slots": [
-          "core/verifier"
+          "iteron/verifier"
         ],
         "default": {
           "kind": "literal",
@@ -15325,8 +15325,8 @@
           ]
         },
         "strategy_slots": [
-          "core/verifier",
-          "core/tool_policy"
+          "iteron/verifier",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -15487,7 +15487,7 @@
           ]
         },
         "strategy_slots": [
-          "core/verifier"
+          "iteron/verifier"
         ],
         "default": {
           "kind": "literal",
@@ -15632,8 +15632,8 @@
           ]
         },
         "strategy_slots": [
-          "core/verifier",
-          "core/collaboration"
+          "iteron/verifier",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "literal",
@@ -15783,8 +15783,8 @@
           ]
         },
         "strategy_slots": [
-          "core/planner",
-          "core/verifier"
+          "iteron/planner",
+          "iteron/verifier"
         ],
         "default": {
           "kind": "literal",
@@ -15878,8 +15878,8 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router",
-          "core/collaboration"
+          "iteron/model_router",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -15978,8 +15978,8 @@
           ]
         },
         "strategy_slots": [
-          "core/planner",
-          "core/collaboration"
+          "iteron/planner",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -16085,8 +16085,8 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy",
-          "core/collaboration"
+          "iteron/tool_policy",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -16190,8 +16190,8 @@
           ]
         },
         "strategy_slots": [
-          "core/memory",
-          "core/collaboration"
+          "iteron/memory",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "literal",
@@ -16334,8 +16334,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/collaboration"
+          "iteron/scheduler",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "literal",
@@ -16426,7 +16426,7 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler"
+          "iteron/scheduler"
         ],
         "default": {
           "kind": "derived",
@@ -16515,7 +16515,7 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler"
+          "iteron/scheduler"
         ],
         "default": {
           "kind": "literal",
@@ -16662,7 +16662,7 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler"
+          "iteron/scheduler"
         ],
         "default": {
           "kind": "literal",
@@ -16762,7 +16762,7 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler"
+          "iteron/scheduler"
         ],
         "default": {
           "kind": "derived",
@@ -16907,8 +16907,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/collaboration"
+          "iteron/scheduler",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "literal",
@@ -17053,8 +17053,8 @@
           ]
         },
         "strategy_slots": [
-          "core/collaboration",
-          "core/tool_policy"
+          "iteron/collaboration",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -17141,8 +17141,8 @@
           ]
         },
         "strategy_slots": [
-          "core/collaboration",
-          "core/verifier"
+          "iteron/collaboration",
+          "iteron/verifier"
         ],
         "default": {
           "kind": "derived",
@@ -17278,7 +17278,7 @@
           ]
         },
         "strategy_slots": [
-          "core/collaboration"
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "literal",
@@ -17381,8 +17381,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/collaboration"
+          "iteron/scheduler",
+          "iteron/collaboration"
         ],
         "default": {
           "kind": "derived",
@@ -17519,7 +17519,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -17618,8 +17618,8 @@
           ]
         },
         "strategy_slots": [
-          "core/context",
-          "core/tool_policy"
+          "iteron/context",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -17709,7 +17709,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -17840,7 +17840,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -17930,7 +17930,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "derived",
@@ -18020,8 +18020,8 @@
           ]
         },
         "strategy_slots": [
-          "core/context",
-          "core/tool_policy"
+          "iteron/context",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -18197,7 +18197,7 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy"
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "dynamic",
@@ -18338,8 +18338,8 @@
           ]
         },
         "strategy_slots": [
-          "core/tool_policy",
-          "core/context"
+          "iteron/tool_policy",
+          "iteron/context"
         ],
         "default": {
           "kind": "literal",
@@ -18536,7 +18536,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "dynamic",
@@ -18628,7 +18628,7 @@
           ]
         },
         "strategy_slots": [
-          "core/model_router"
+          "iteron/model_router"
         ],
         "default": {
           "kind": "literal",
@@ -18774,8 +18774,8 @@
           ]
         },
         "strategy_slots": [
-          "core/scheduler",
-          "core/model_router"
+          "iteron/scheduler",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "dynamic",
@@ -18958,8 +18958,8 @@
           ]
         },
         "strategy_slots": [
-          "core/context",
-          "core/model_router"
+          "iteron/context",
+          "iteron/model_router"
         ],
         "default": {
           "kind": "dynamic",
@@ -19111,8 +19111,8 @@
           ]
         },
         "strategy_slots": [
-          "core/collaboration",
-          "core/tool_policy"
+          "iteron/collaboration",
+          "iteron/tool_policy"
         ],
         "default": {
           "kind": "literal",
@@ -19216,8 +19216,8 @@
           ]
         },
         "strategy_slots": [
-          "core/collaboration",
-          "core/verifier"
+          "iteron/collaboration",
+          "iteron/verifier"
         ],
         "default": {
           "kind": "literal",

@@ -20,7 +20,7 @@ impl InputFileEvidence {
         Self {
             count: u32::try_from(count).unwrap_or(u32::MAX),
             bytes: u64::try_from(rendered.len()).unwrap_or(u64::MAX),
-            estimated_tokens: u64::try_from(core_ctx::estimate_tokens(rendered))
+            estimated_tokens: u64::try_from(iteron_ctx::estimate_tokens(rendered))
                 .unwrap_or(u64::MAX),
             digest_sha256: Sha256::digest(rendered.as_bytes()).into(),
         }
@@ -35,10 +35,10 @@ impl Agent {
     pub async fn run_files(
         &mut self,
         text: &str,
-        images: &[core_protocol::ImageContent],
-        files: &[core_protocol::FileContent],
+        images: &[iteron_protocol::ImageContent],
+        files: &[iteron_protocol::FileContent],
     ) -> Result<Outcome, KernelError> {
-        core_protocol::input::validate_file_submission(text, images, files)
+        iteron_protocol::input::validate_file_submission(text, images, files)
             .map_err(KernelError::InvalidSubmission)?;
         let mut task = crate::file_input::render_attached_files("", files);
         let evidence =
@@ -52,11 +52,11 @@ impl Agent {
     pub async fn follow_up_files(
         &mut self,
         text: &str,
-        images: &[core_protocol::ImageContent],
-        files: &[core_protocol::FileContent],
+        images: &[iteron_protocol::ImageContent],
+        files: &[iteron_protocol::FileContent],
     ) -> Result<Outcome, KernelError> {
         // Refusal happens before transcript staging, leaving the resident session unchanged.
-        core_protocol::input::validate_file_submission(text, images, files)
+        iteron_protocol::input::validate_file_submission(text, images, files)
             .map_err(KernelError::InvalidSubmission)?;
         self.stage_follow_up_transcript()?;
         self.verify_attempts = 0;

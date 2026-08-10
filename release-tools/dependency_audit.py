@@ -24,7 +24,7 @@ AUDIT_TIMEOUT_SECS = 120
 VERSION_TIMEOUT_SECS = 10
 RUSTSEC_ID_RE = re.compile(r"^RUSTSEC-[0-9]{4}-[0-9]{4}$")
 TRACKING_RE = re.compile(
-    r"^https://github\.com/Plantcore-AI/core/issues/[1-9][0-9]*$"
+    r"^https://github\.com/Plantcore-AI/Iteron/issues/[1-9][0-9]*$"
 )
 
 

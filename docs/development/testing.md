@@ -1,6 +1,6 @@
 # Testing
 
-Core Code uses layered tests so local iteration stays fast while merge gates cover
+Iteron uses layered tests so local iteration stays fast while merge gates cover
 the complete workspace and platform boundaries.
 
 ## Focused iteration
@@ -8,9 +8,9 @@ the complete workspace and platform boundaries.
 Run the smallest crate or named test that demonstrates the changed contract:
 
 ```sh
-cargo test -p core-provider catalog --locked
-cargo test -p core-cli tui::tests::picker --locked
-cargo test -p core-sandbox --all-targets --locked
+cargo test -p iteron-provider catalog --locked
+cargo test -p iteron-cli tui::tests::picker --locked
+cargo test -p iteron-sandbox --all-targets --locked
 ```
 
 Tests should prove both the successful outcome and the bounded failure path.
@@ -20,7 +20,7 @@ Regression tests should fail for the original reason before the production fix.
 
 ```sh
 cargo fmt --all -- --check
-cargo run --locked -p core-xtask -- boundaries check
+cargo run --locked -p iteron-xtask -- boundaries check
 cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked
@@ -51,10 +51,10 @@ network-denial test must execute rather than skip. macOS runs live Seatbelt
 confinement tests.
 
 The native `windows-2022` job runs format plus all-target check, clippy, and tests
-for `core-cli`, including the real ConPTY Unicode/resize oracle, one-shot
+for `iteron-cli`, including the real ConPTY Unicode/resize oracle, one-shot
 completion, and the loopback `core serve` version-skew/reconnect/result-v5
 oracle. It also performs the explicit
-`cargo build --target x86_64-pc-windows-msvc -p core-cli` acceptance build.
+`cargo build --target x86_64-pc-windows-msvc -p iteron-cli` acceptance build.
 Unavailable Windows confinement operations remain fall-closed.
 
 Do not treat a local macOS or DGX Linux pass as native Windows evidence, or any

@@ -1,5 +1,5 @@
 use super::super::is_unsafe_display_char;
-use core_tunables::{ConstraintViolation, CrossFieldRule};
+use iteron_tunables::{ConstraintViolation, CrossFieldRule};
 use serde::Serialize;
 use std::fmt::{self, Display, Write as _};
 use std::io;

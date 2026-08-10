@@ -11,13 +11,13 @@ use serde_json::Value;
 ///
 /// Keep the current version last. The schema-compatibility corpus test below binds this list to
 /// every retained machine-output fixture, so a producer bump cannot silently strand evaluation.
-pub const SUPPORTED_CORE_CLI_SCHEMA_VERSIONS: &[u32] = &[3, 4, 5];
+pub const SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS: &[u32] = &[3, 4, 5];
 /// Version currently emitted by `core --output-format json`.
-pub const CORE_CLI_SCHEMA_VERSION: u32 = 5;
+pub const ITERON_CLI_SCHEMA_VERSION: u32 = 5;
 const MAX_CLI_INPUT_ATTACHMENTS: u8 = 8;
 const MAX_CLI_IMAGE_BASE64_BYTES: u64 = 8 * 1024 * 1024;
 /// Exact machine-record/version pairs admitted by the real evaluation consumer.
-pub const SUPPORTED_CORE_CLI_TYPE_VERSIONS: &[(&str, u32)] = &[
+pub const SUPPORTED_ITERON_CLI_TYPE_VERSIONS: &[(&str, u32)] = &[
     ("approval_request", 4),
     ("approval_request", 5),
     ("assistant_text", 3),
@@ -520,13 +520,13 @@ pub enum ContractError {
 }
 
 fn admit_type_version(kind: &str, actual: u32) -> Result<(), ContractError> {
-    if !SUPPORTED_CORE_CLI_SCHEMA_VERSIONS.contains(&actual) {
+    if !SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS.contains(&actual) {
         return Err(ContractError::SchemaVersion {
             actual,
-            expected: CORE_CLI_SCHEMA_VERSION,
+            expected: ITERON_CLI_SCHEMA_VERSION,
         });
     }
-    if !SUPPORTED_CORE_CLI_TYPE_VERSIONS.contains(&(kind, actual)) {
+    if !SUPPORTED_ITERON_CLI_TYPE_VERSIONS.contains(&(kind, actual)) {
         return Err(ContractError::TypeVersion {
             kind: kind.to_owned(),
             actual,
@@ -774,7 +774,7 @@ mod tests {
         }) {
             let surface_id = surface["id"].as_str().expect("surface id is a string");
             assert_eq!(
-                surface["current_version"], CORE_CLI_SCHEMA_VERSION,
+                surface["current_version"], ITERON_CLI_SCHEMA_VERSION,
                 "the eval consumer must track the current {surface_id} producer"
             );
             let selector = surface["selector"].as_object().expect("CLI selector");
@@ -792,11 +792,12 @@ mod tests {
                     .and_then(|version| u32::try_from(version).ok())
                     .expect("fixture schema version fits u32");
                 assert!(
-                    SUPPORTED_CORE_CLI_SCHEMA_VERSIONS.contains(&expected_version),
+                    SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS.contains(&expected_version),
                     "frozen fixture {relative} has no real eval consumer"
                 );
                 assert!(
-                    SUPPORTED_CORE_CLI_TYPE_VERSIONS.contains(&(selector_value, expected_version)),
+                    SUPPORTED_ITERON_CLI_TYPE_VERSIONS
+                        .contains(&(selector_value, expected_version)),
                     "frozen fixture {relative} has no `{selector_value}` schema {expected_version} consumer"
                 );
                 observed_versions.insert(expected_version);
@@ -876,7 +877,7 @@ mod tests {
             }
         }
 
-        let supported_versions = SUPPORTED_CORE_CLI_SCHEMA_VERSIONS
+        let supported_versions = SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
@@ -884,17 +885,17 @@ mod tests {
             observed_versions, supported_versions,
             "the consumer set and all retained fixture versions must agree"
         );
-        let supported_type_versions = SUPPORTED_CORE_CLI_TYPE_VERSIONS
+        let supported_type_versions = SUPPORTED_ITERON_CLI_TYPE_VERSIONS
             .iter()
             .map(|(kind, version)| ((*kind).to_owned(), *version))
             .collect::<BTreeSet<_>>();
         assert_eq!(
             supported_type_versions.len(),
-            SUPPORTED_CORE_CLI_TYPE_VERSIONS.len(),
+            SUPPORTED_ITERON_CLI_TYPE_VERSIONS.len(),
             "the admitted `(type, schema_version)` matrix cannot contain duplicates"
         );
         assert!(
-            SUPPORTED_CORE_CLI_TYPE_VERSIONS
+            SUPPORTED_ITERON_CLI_TYPE_VERSIONS
                 .windows(2)
                 .all(|pair| pair[0] < pair[1]),
             "the admitted `(type, schema_version)` matrix must remain strictly sorted"
@@ -903,7 +904,7 @@ mod tests {
             observed_type_versions, supported_type_versions,
             "eval admission must equal the exact frozen `(type, schema_version)` matrix"
         );
-        let supported_diff_versions = SUPPORTED_CORE_CLI_TYPE_VERSIONS
+        let supported_diff_versions = SUPPORTED_ITERON_CLI_TYPE_VERSIONS
             .iter()
             .filter_map(|(kind, version)| (*kind == "tool_end").then_some(*version))
             .collect::<BTreeSet<_>>();
@@ -929,8 +930,8 @@ mod tests {
             );
         }
         assert_eq!(
-            SUPPORTED_CORE_CLI_SCHEMA_VERSIONS.last(),
-            Some(&CORE_CLI_SCHEMA_VERSION),
+            SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS.last(),
+            Some(&ITERON_CLI_SCHEMA_VERSION),
             "the current producer must be the newest admitted consumer version"
         );
         assert_eq!(

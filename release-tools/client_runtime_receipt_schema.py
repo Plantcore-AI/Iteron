@@ -6,7 +6,7 @@ from typing import NamedTuple
 
 from common import COMMIT_RE, SHA256_RE, ReleaseToolError
 
-REPOSITORY = "Plantcore-AI/core"
+REPOSITORY = "Plantcore-AI/Iteron"
 RELEASE_WORKFLOW = ".github/workflows/release.yml"
 BUILDER_WORKFLOW = ".github/workflows/runtime-receipt.yml"
 RUNTIME_ROOT = ("governance", "client-conformance", "runtime")

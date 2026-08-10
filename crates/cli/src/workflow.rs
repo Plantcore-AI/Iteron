@@ -1,19 +1,19 @@
 //! CLI-side workflow wiring: a real provider-backed [`AgentSpawner`] and the non-TTY stdout progress
 //! renderer (design §3.5). The `core workflow run` subcommand (in `main.rs`) composes these with
-//! `core_workflow::WorkflowEngine`.
+//! `iteron_workflow::WorkflowEngine`.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use core_protocol::{Effort, Message};
-use core_provider::{Provider, StreamItem, TurnRequest};
-use core_workflow::events::{
+use iteron_protocol::{Effort, Message};
+use iteron_provider::{Provider, StreamItem, TurnRequest};
+use iteron_workflow::events::{
     PREVIEW_MAX, PROGRESS_SINK_PORT_VERSION, ProgressEvent, ProgressSink, WorkflowState, fmt_count,
     fmt_duration, truncate_preview,
 };
-use core_workflow::{
+use iteron_workflow::{
     AgentCall, AgentOutcome, AgentSpawner, RunHandle, RunReport, RunSpec, WorkflowEngine,
 };
 use serde::{Deserialize, Serialize};
@@ -35,7 +35,7 @@ pub use projection::{
 
 /// The system prompt every workflow sub-agent runs under. Kept terse: a workflow `agent()` call is a
 /// bounded, single-shot query, not a full coding session.
-const SUBAGENT_SYSTEM: &str = "You are a focused sub-agent inside a Core Code workflow. Answer the \
+const SUBAGENT_SYSTEM: &str = "You are a focused sub-agent inside a Iteron workflow. Answer the \
 given task directly and concisely in plain text. Do not ask clarifying questions; produce exactly \
 the requested output and nothing else.";
 
@@ -44,7 +44,7 @@ the requested output and nothing else.";
 /// This is NOT the default. `core workflow run|resume|watch` builds a
 /// [`crate::runtime::KernelSpawner`] — an owned child `Agent` with a read-only `Registry`, its own
 /// child `Rollout`, and the parent's inherited route/pricing. This single-turn spawner is reached
-/// only through `CORE_WORKFLOW_SPAWNER=provider`, where it is useful precisely because it has no
+/// only through `ITERON_WORKFLOW_SPAWNER=provider`, where it is useful precisely because it has no
 /// tools and no child `Agent` loop: it isolates provider behavior from harness behavior. The trait
 /// boundary is the same for both, so nothing above this line depends on which one is installed.
 /// This fallback supports only the built-in `generic` agent and the exact model resolved by the
@@ -795,7 +795,7 @@ pub fn killed_run_summary(
 /// the engine failed before it could aggregate any. They are not a claim that the run was free.
 pub fn unreported_run(run_id: &str, message: &str) -> RunReport {
     RunReport {
-        run_id: core_workflow::RunId::new(run_id.to_string()),
+        run_id: iteron_workflow::RunId::new(run_id.to_string()),
         value: serde_json::json!({ "error": message }),
         stopped: true,
         cache_hits: 0,
@@ -1818,9 +1818,9 @@ pub fn final_status_line(run_id: &str, report: &RunReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{Block, StopReason, Usage};
-    use core_provider::{ProviderError, TurnResult, UsageReport};
-    use core_workflow::{RunId, RunReport};
+    use iteron_protocol::{Block, StopReason, Usage};
+    use iteron_provider::{ProviderError, TurnResult, UsageReport};
+    use iteron_workflow::{RunId, RunReport};
     use std::collections::BTreeSet;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1880,7 +1880,7 @@ mod tests {
 
     fn scratch_dir(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "core-cli-workflow-{tag}-{}-{}",
+            "iteron-cli-workflow-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2400,7 +2400,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
     /// clearing control sequence and a credential-shaped token.
     ///
     /// The credential is delimited from what precedes it because `crate::semantic_text::ui_safe_text` defers
-    /// to `core_record::redact::scrub`, which matches credential-shaped TOKENS. What this pins is
+    /// to `iteron_record::redact::scrub`, which matches credential-shaped TOKENS. What this pins is
     /// that the seam ROUTES untrusted strings through the frontend's one gate — not a second,
     /// private redaction implementation, which is exactly the drift that would let the two
     /// disagree about what a secret looks like.

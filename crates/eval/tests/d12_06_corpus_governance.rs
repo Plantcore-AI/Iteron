@@ -1,4 +1,4 @@
-use core_eval::{CorpusError, CorpusManifest, EvaluationPurpose, Partition};
+use iteron_eval::{CorpusError, CorpusManifest, EvaluationPurpose, Partition};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 

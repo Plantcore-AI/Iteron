@@ -511,7 +511,7 @@ Tasks:
 Acceptance:
 
 - registry, CLI help, config schema, runtime getter and run snapshot agree byte-for-byte;
-- `core-xtask tunables check` proves there are no orphan live knobs;
+- `iteron-xtask tunables check` proves there are no orphan live knobs;
 - fixed security/effect fields cannot appear in training search spaces;
 - replay uses the run snapshot rather than current machine defaults.
 
@@ -748,21 +748,21 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked
-cargo run --locked -p core-xtask -- boundaries check
-cargo run --locked -p core-xtask -- tunables check
+cargo run --locked -p iteron-xtask -- boundaries check
+cargo run --locked -p iteron-xtask -- tunables check
 ```
 
 Additional boundary-specific checks:
 
-- `cargo test -p core-protocol --locked`
-- `cargo test -p core-kernel --locked`
-- `cargo test -p core-tools process --locked`
-- `cargo test -p core-cli tui --locked`
-- `cargo test -p core-cli --test tui_pty --locked`
-- `cargo test -p core-ctx --locked`
-- `cargo test -p core-record --locked`
-- `cargo check -p core-eval --all-targets --locked`
-- `cargo test -p core-evolve --locked`
+- `cargo test -p iteron-protocol --locked`
+- `cargo test -p iteron-kernel --locked`
+- `cargo test -p iteron-tools process --locked`
+- `cargo test -p iteron-cli tui --locked`
+- `cargo test -p iteron-cli --test tui_pty --locked`
+- `cargo test -p iteron-ctx --locked`
+- `cargo test -p iteron-record --locked`
+- `cargo check -p iteron-eval --all-targets --locked`
+- `cargo test -p iteron-evolve --locked`
 
 ## 8. Recommended PR sequence
 

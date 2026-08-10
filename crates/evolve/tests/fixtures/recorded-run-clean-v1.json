@@ -11,7 +11,7 @@
     "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     "policies": [
       {
-        "slot": "core/router",
+        "slot": "iteron/router",
         "policy_id": "router-v1",
         "version": "1.0.0",
         "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
@@ -24,7 +24,7 @@
       "decision_id": "decision-0",
       "ordinal": 0,
       "policy": {
-        "slot": "core/router",
+        "slot": "iteron/router",
         "policy_id": "router-v1",
         "version": "1.0.0",
         "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"

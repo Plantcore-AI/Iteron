@@ -15,7 +15,7 @@
 //! [`Decomposer::route`] *is* the `core/router` decision the spec names ("把任务或子任务路由到哪条
 //! 处理路径", `docs/spec/evolution.md:72`), and until now it was reachable only as an inherent
 //! function, so the pluggable-classifier upgrade ADR-011 promises had nowhere to plug in.
-//! [`RouterStrategy`] puts that same heuristic behind [`core_protocol::slot::StrategySlot`], and
+//! [`RouterStrategy`] puts that same heuristic behind [`iteron_protocol::slot::StrategySlot`], and
 //! [`RouterStrategy::route_with`] is the narrowing-enforced call every caller uses instead of
 //! `decide` — so a replacement classifier is a slot swap rather than a kernel change.
 //!
@@ -30,9 +30,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 
-use core_protocol::Capability;
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
+use iteron_protocol::Capability;
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
 
 use crate::stage::{AgentTask, Stage, WorkflowPlan};
 
@@ -565,7 +565,7 @@ pub const ROUTER_SLOT_VERSION: u16 = 1;
 
 /// Upper bound on the task text a routing decision may be shown.
 ///
-/// Deliberately the same 64 KiB `core_ctx::context_strategy` bounds its own task query at: the two
+/// Deliberately the same 64 KiB `iteron_ctx::context_strategy` bounds its own task query at: the two
 /// slots are handed the *same* submission text by the runtime, so a different bound here would mean
 /// a task that routes but cannot have context selected for it, or the reverse.
 pub const MAX_ROUTER_TASK_BYTES: usize = 64 * 1024;
@@ -733,7 +733,7 @@ impl std::error::Error for RouterSlotError {}
 
 /// The slot identity this module implements.
 pub fn router_slot() -> SlotId {
-    SlotId("core/router".into())
+    SlotId("iteron/router".into())
 }
 
 /// Hand-written baseline implementation of `core/router`: [`Decomposer::route`] behind the seam.
@@ -770,7 +770,7 @@ impl RouterStrategy {
         input: &RouterSlotObservation,
         ceiling: CapabilitySet,
     ) -> Result<RouterProposal, RouterSlotError> {
-        if slot.slot().as_persisted_str() != "core/router" {
+        if slot.slot().as_persisted_str() != "iteron/router" {
             return Err(RouterSlotError::WrongSlot);
         }
         input.validate()?;
@@ -1143,7 +1143,7 @@ mod router_slot_tests {
 
         assert_eq!(
             RouterStrategy::route_with(
-                &Impostor(SlotId("core/planner".into())),
+                &Impostor(SlotId("iteron/planner".into())),
                 &broad(),
                 read_only(),
             ),
@@ -1155,10 +1155,10 @@ mod router_slot_tests {
     fn the_slot_identity_is_nameable_by_a_policy_bundle() {
         let slot = router_slot();
         assert!(slot.validate().is_ok());
-        assert_eq!(slot.as_persisted_str(), "core/router");
+        assert_eq!(slot.as_persisted_str(), "iteron/router");
         assert_eq!(
             serde_json::to_value(&slot).unwrap(),
-            serde_json::json!("core/router")
+            serde_json::json!("iteron/router")
         );
     }
 

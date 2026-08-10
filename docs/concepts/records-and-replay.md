@@ -68,5 +68,5 @@ output boundaries, but users must still treat run files as private because they
 can contain source excerpts, paths, prompts, model output, diffs, and tool
 evidence.
 
-Do not commit `.core/runs`, paste a real record into a public issue, or mistake a
+Do not commit `.iteron/runs`, paste a real record into a public issue, or mistake a
 same-disk record for a backup.

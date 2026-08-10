@@ -8,7 +8,7 @@
 //! # The determinism ban, and how it is enforced
 //!
 //! `SystemTime::now`, `Instant::now`, `rand`, `std::process`, hash-map iteration order and the
-//! `core_provider` / `core_sandbox` / `core_ctx` crates are all forbidden in this module. Not by
+//! `iteron_provider` / `iteron_sandbox` / `iteron_ctx` crates are all forbidden in this module. Not by
 //! convention — `crate::reducer_tests` scans this file and fails the build if any of them appear.
 //! Every external reading enters as a command field, collected by the driver at a defined point.
 //!
@@ -25,7 +25,7 @@ use crate::turn_protocol::{
     VerifyOutcome,
 };
 use crate::turn_state::TurnState;
-use core_protocol::Outcome;
+use iteron_protocol::Outcome;
 
 /// What the driver must do next, in order.
 pub type Actions = Vec<ActionRequest>;

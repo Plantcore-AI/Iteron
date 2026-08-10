@@ -2,14 +2,14 @@
 
 ## Target boundary
 
-![Core Code target architecture: a fixed microkernel inside a modular harness boundary, with an offline evolution control plane outside](assets/architecture/core-code-self-evolving-harness.png)
+![Iteron target architecture: a fixed microkernel inside a modular harness boundary, with an offline evolution control plane outside](assets/architecture/iteron-self-evolving-harness.png)
 
-The diagram is a target contract, not a shipped-conformance claim. Core Code
+The diagram is a target contract, not a shipped-conformance claim. Iteron
 aims to evolve versioned harness and world-module candidates while keeping
 authority, hard budgets, effect mediation, durable evidence, and promotion
 control outside the learnable surface.
 
-Core Code is intended to have three planes.
+Iteron is intended to have three planes.
 
 ### Fixed runtime TCB
 
@@ -45,7 +45,7 @@ The workspace is divided into protocol, record, observability, provider, tools,
 sandbox, context, verification, MCP, scheduling, agents, kernel, CLI, evaluation,
 and evolution-contract crates. This is useful modularity, but the kernel still
 depends on concrete implementations and the CLI/TUI still participates in runtime
-composition. Core Code therefore does not yet claim microkernel conformance.
+composition. Iteron therefore does not yet claim microkernel conformance.
 
 This current modular monolith is nevertheless divided into machine-checked human
 development boundaries. The boundary registry guarantees unique path

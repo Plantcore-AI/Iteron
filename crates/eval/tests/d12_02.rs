@@ -1,4 +1,4 @@
-//! D12-02 oracle: `core-eval` accounts for failed runs in its exit status.
+//! D12-02 oracle: `iteron-eval` accounts for failed runs in its exit status.
 //!
 //! The gap under closure is "Eval discards subprocess exit status and run outcome — no failed-run
 //! accounting": the evaluation binary returned an unconditional success whenever a manifest was
@@ -15,8 +15,8 @@
 //! Both are absent on the base branch, so this whole test target does not exist there (RED); with
 //! the fix in place every assertion below holds (GREEN).
 
-use core_eval::types::{EVAL_EXIT_RUN_FAILURES, EVAL_EXIT_SUCCESS, EVAL_SCHEMA_VERSION};
-use core_eval::{
+use iteron_eval::types::{EVAL_EXIT_RUN_FAILURES, EVAL_EXIT_SUCCESS, EVAL_SCHEMA_VERSION};
+use iteron_eval::{
     CellResult, CostStatus, EvaluationManifest, EvaluationPurpose, OracleStatus, Partition,
     RunStatus, SamplingControl, aggregate, compare, selection_summaries,
 };
@@ -79,7 +79,7 @@ fn manifest_of(cells: Vec<CellResult>) -> EvaluationManifest {
         aggregate,
         comparison,
         selections,
-        kernel_tax: core_eval::types::KernelTaxObservation::default(),
+        kernel_tax: iteron_eval::types::KernelTaxObservation::default(),
     }
 }
 
@@ -145,10 +145,10 @@ fn one_failure_among_completed_cells_still_flips_the_exit_status() {
 #[cfg(unix)]
 mod pipeline {
     use super::*;
-    use core_eval::corpus::{
+    use iteron_eval::corpus::{
         CORPUS_SCHEMA_VERSION, CorpusManifest, CorpusTask, Provenance, digest_tasks,
     };
-    use core_eval::{EvalOptions, run_evaluation};
+    use iteron_eval::{EvalOptions, run_evaluation};
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -161,8 +161,10 @@ mod pipeline {
                 .duration_since(UNIX_EPOCH)
                 .expect("clock after epoch")
                 .as_nanos();
-            let path = std::env::temp_dir()
-                .join(format!("core-eval-d12-02-{}-{nonce:x}", std::process::id()));
+            let path = std::env::temp_dir().join(format!(
+                "iteron-eval-d12-02-{}-{nonce:x}",
+                std::process::id()
+            ));
             std::fs::create_dir(&path).expect("create isolated D12-02 root");
             Self(path)
         }
@@ -206,9 +208,9 @@ mod pipeline {
             &repo,
             &[
                 "-c",
-                "user.name=core-eval",
+                "user.name=iteron-eval",
                 "-c",
-                "user.email=core-eval@example.invalid",
+                "user.email=iteron-eval@example.invalid",
                 "commit",
                 "--quiet",
                 "-m",

@@ -1,1 +1,1 @@
-{"request_id":11,"slot":"core/context","selectors":[{"kind":"repo_outline","root":"crates/parser","depth":2},{"kind":"instructions","scope":"project"},{"kind":"environment_facts"}],"max_bytes":32768,"trust_ceiling":"workspace"}
+{"request_id":11,"slot":"iteron/context","selectors":[{"kind":"repo_outline","root":"crates/parser","depth":2},{"kind":"instructions","scope":"project"},{"kind":"environment_facts"}],"max_bytes":32768,"trust_ceiling":"workspace"}

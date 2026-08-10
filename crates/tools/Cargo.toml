@@ -1,15 +1,15 @@
 [package]
-name = "core-tools"
+name = "iteron-tools"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
-core-protocol = { path = "../protocol" }
-core-sandbox = { path = "../sandbox" }
-core-ctx = { path = "../ctx" }
-core-lsp = { path = "../lsp" }
+iteron-protocol = { path = "../protocol" }
+iteron-sandbox = { path = "../sandbox" }
+iteron-ctx = { path = "../ctx" }
+iteron-lsp = { path = "../lsp" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

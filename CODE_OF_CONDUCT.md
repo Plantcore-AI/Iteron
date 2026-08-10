@@ -1,8 +1,8 @@
-# Core Code Code of Conduct
+# Iteron Code of Conduct
 
 ## Our commitment
 
-Core Code is built by people with different backgrounds, identities, locations,
+Iteron is built by people with different backgrounds, identities, locations,
 and levels of experience. We are committed to a community where participation is
 safe, respectful, and focused on the work. This applies equally to maintainers,
 contributors, users, and people representing the project in public spaces.
@@ -31,7 +31,7 @@ contributors, users, and people representing the project in public spaces.
 
 This policy applies in the repository, issues, pull requests, Discussions, release
 channels, project events, and private project communication. It also applies when
-someone is publicly representing Core Code or using a project role to influence a
+someone is publicly representing Iteron or using a project role to influence a
 related interaction.
 
 Technical disagreement is expected. Repetition, status, or claimed intent does
@@ -40,7 +40,7 @@ not excuse harmful conduct.
 ## Reporting
 
 For a confidential report, use the repository's private
-[Report a vulnerability](https://github.com/Plantcore-AI/core/security/advisories/new)
+[Report a vulnerability](https://github.com/Plantcore-AI/Iteron/security/advisories/new)
 form and prefix the title with `[Conduct]`. The human Project Owner receives this
 private intake. Do not include a conduct report in a public issue.
 

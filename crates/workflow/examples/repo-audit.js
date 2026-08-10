@@ -1,4 +1,4 @@
-// A complete, runnable Core Code workflow script.
+// A complete, runnable Iteron workflow script.
 //
 //   core workflow run crates/workflow/examples/repo-audit.js --args '{"topic":"the rollout writer"}'
 //

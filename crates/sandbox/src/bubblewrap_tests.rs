@@ -755,21 +755,21 @@ async fn d4_13_d5_14_linux_live_enforces_writes_home_secret_and_exact_env_name()
     };
     confinement
         .sensitive_env_names
-        .push("CORE_SANDBOX_ROUTE".into());
+        .push("ITERON_SANDBOX_ROUTE".into());
     let fake_home = fixture.fake_home.to_str().unwrap();
     let outside_write = fixture.outside_write.to_str().unwrap();
     let output = sandbox
         .run_with_synthetic_parent_env(
             "printf workspace-write-allowed > inside-write || exit 91; \
-             if printf escaped > \"$CORE_TEST_OUTSIDE_WRITE\"; then echo outside-write-open; exit 97; else echo outside-write-blocked; fi; \
+             if printf escaped > \"$ITERON_TEST_OUTSIDE_WRITE\"; then echo outside-write-open; exit 97; else echo outside-write-blocked; fi; \
              if cat \"$HOME/.ssh/id_fixture\" 2>/dev/null; then echo home-secret-open; exit 98; else echo home-secret-blocked; fi; \
              if ! cat \"$HOME/.cargo/registry/cache_fixture\"; then echo toolchain-cache-blocked; exit 96; else echo toolchain-cache-readable; fi; \
-             if [ -n \"${CORE_SANDBOX_ROUTE+x}\" ]; then echo exact-env-open; exit 99; else echo exact-env-cleared; fi",
+             if [ -n \"${ITERON_SANDBOX_ROUTE+x}\" ]; then echo exact-env-open; exit 99; else echo exact-env-cleared; fi",
             &confinement,
             &[
                 ("HOME", fake_home),
-                ("CORE_TEST_OUTSIDE_WRITE", outside_write),
-                ("CORE_SANDBOX_ROUTE", "synthetic-exact-must-not-leak"),
+                ("ITERON_TEST_OUTSIDE_WRITE", outside_write),
+                ("ITERON_SANDBOX_ROUTE", "synthetic-exact-must-not-leak"),
             ],
         )
         .await

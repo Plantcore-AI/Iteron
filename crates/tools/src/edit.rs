@@ -10,7 +10,7 @@ use crate::write_file::{
     GuardedCommitFailure, StagedWrite, file_changed_json, read_existing_snapshot,
 };
 use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
-use core_protocol::{Capability, Purity, ToolSpec};
+use iteron_protocol::{Capability, Purity, ToolSpec};
 use std::ops::Range;
 
 pub(crate) const MAX_NORMALIZED_LINES: usize = 262_144;

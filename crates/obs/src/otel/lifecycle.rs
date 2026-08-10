@@ -5,7 +5,7 @@
 //! labels.
 
 use super::catalog::{self, InstrumentKind};
-use core_protocol::{LifecycleEventEnvelope, LifecyclePhase};
+use iteron_protocol::{LifecycleEventEnvelope, LifecyclePhase};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -258,7 +258,7 @@ impl Projection {
             return;
         };
         let key = span_key(template, event);
-        let phase = core_protocol::lifecycle::event_spec(event.event_id.as_str())
+        let phase = iteron_protocol::lifecycle::event_spec(event.event_id.as_str())
             .map(|spec| spec.phase)
             .unwrap_or(LifecyclePhase::Progress);
         if matches!(phase, LifecyclePhase::Requested | LifecyclePhase::Started) {
@@ -852,8 +852,10 @@ fn lower_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::EffectId;
-    use core_protocol::lifecycle::{LIFECYCLE_CATALOG_VERSION, LifecycleEventId, LifecyclePayload};
+    use iteron_protocol::EffectId;
+    use iteron_protocol::lifecycle::{
+        LIFECYCLE_CATALOG_VERSION, LifecycleEventId, LifecyclePayload,
+    };
     use std::collections::BTreeSet;
 
     fn event(
@@ -921,7 +923,7 @@ mod tests {
                     .to_owned()
             })
             .collect::<BTreeSet<_>>();
-        let mut routed = core_protocol::lifecycle::events()
+        let mut routed = iteron_protocol::lifecycle::events()
             .flat_map(|event| metric_families(event.id, None, false))
             .flatten()
             .map(str::to_owned)
@@ -941,7 +943,7 @@ mod tests {
     fn every_registered_log_and_metric_instrument_is_exercised_by_a_runtime_route() {
         let mut projection = Projection::default();
         let mut ordinal = 0;
-        for spec in core_protocol::lifecycle::events() {
+        for spec in iteron_protocol::lifecycle::events() {
             projection.record(event(spec.id, None, false, ordinal));
             ordinal = ordinal.saturating_add(1);
         }
@@ -979,7 +981,7 @@ mod tests {
             .iter()
             .map(|template| template.name)
             .collect::<BTreeSet<_>>();
-        let routed = core_protocol::lifecycle::events()
+        let routed = iteron_protocol::lifecycle::events()
             .filter_map(|event| span_template(event.id, None))
             .collect::<BTreeSet<_>>();
         let routed = routed
@@ -996,7 +998,7 @@ mod tests {
     fn every_registered_span_template_can_produce_a_runtime_span() {
         let mut projection = Projection::default();
         let mut ordinal = 0;
-        for spec in core_protocol::lifecycle::events() {
+        for spec in iteron_protocol::lifecycle::events() {
             projection.record(event(spec.id, None, false, ordinal));
             ordinal = ordinal.saturating_add(1);
         }

@@ -176,7 +176,7 @@ mod tests {
         DataClass, DataGovernance, EVOLUTION_SCHEMA_VERSION, PolicyRef, RewardVector, StrategySlot,
         TrainingConsent,
     };
-    use core_protocol::{RunId, TenantId};
+    use iteron_protocol::{RunId, TenantId};
     use serde_json::json;
     use std::collections::BTreeMap;
 

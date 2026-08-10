@@ -3,7 +3,7 @@
 //! Names and counts are a checked contract. Instrument handles and exporters are runtime concerns;
 //! keeping this inventory pure lets local recording, OTLP and tests consume exactly the same set.
 
-use core_protocol::lifecycle::{self, HookCapability, LifecycleDomain};
+use iteron_protocol::lifecycle::{self, HookCapability, LifecycleDomain};
 
 pub const METRIC_FAMILY_COUNT: usize = 80;
 pub const METRIC_INSTRUMENT_COUNT: usize = 320;

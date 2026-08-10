@@ -8,7 +8,7 @@
 //! records the exact console input mode before, during, and after Core. The protocol types and
 //! composition root are exactly the ones exercised by the Unix PTY oracle.
 
-use core_protocol::PROTOCOL_VERSION;
+use iteron_protocol::PROTOCOL_VERSION;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
 use serde_json::json;
 use std::io::{Read, Write};
@@ -27,37 +27,37 @@ const MAX_CAPTURE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PROVIDER_REQUEST_BYTES: usize = 1024 * 1024;
 const LINK_PROVIDER_ID: &str = "windows-conpty-fixture";
 const LINK_MODEL_ID: &str = "windows-conpty-model";
-const LINK_TEST_KEY_ENV: &str = "CORE_WINDOWS_CONPTY_TEST_KEY";
+const LINK_TEST_KEY_ENV: &str = "ITERON_WINDOWS_CONPTY_TEST_KEY";
 const LINK_TEST_KEY: &str = "bounded-loopback-placeholder";
 const LINK_TARGET: &str = "https://example.com/windows-conpty";
 const LINK_RESPONSE: &str = "Read [the Windows guide](https://example.com/windows-conpty) now.";
 const LINK_TASK: &str = "Return the bounded Windows ConPTY fixture.";
-const OSC9_RUN_COMPLETE: &[u8] = b"\x1b]9;Core Code: run complete\x07";
-const OSC777_RUN_COMPLETE: &[u8] = b"\x1b]777;notify;Core Code;Run complete\x07";
+const OSC9_RUN_COMPLETE: &[u8] = b"\x1b]9;Iteron: run complete\x07";
+const OSC777_RUN_COMPLETE: &[u8] = b"\x1b]777;notify;Iteron;Run complete\x07";
 const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
 const KEYBOARD_ENHANCEMENT_UNSUPPORTED: &[u8] = b"\x1b[?1;2c";
 const KEYBOARD_ENHANCEMENT_SUPPORTED: &[u8] = b"\x1b[?1u\x1b[?1;2c";
 const KEYBOARD_ENHANCEMENT_PUSH: &[u8] = b"\x1b[>1u";
 const KEYBOARD_ENHANCEMENT_POP: &[u8] = b"\x1b[<1u";
 const UNICODE_DRAFT: &str = "请检查 Windows ConPTY 😀";
-const WRAPPER_ACTIVE_ENV: &str = "CORE_WINDOWS_CONPTY_WRAPPER_ACTIVE";
-const WRAPPER_CORE_BINARY_ENV: &str = "CORE_WINDOWS_CONPTY_WRAPPER_CORE_BINARY";
-const WRAPPER_REPO_ENV: &str = "CORE_WINDOWS_CONPTY_WRAPPER_REPO";
-const WRAPPER_RUNS_ENV: &str = "CORE_WINDOWS_CONPTY_WRAPPER_RUNS";
-const WRAPPER_PROVIDER_ENV: &str = "CORE_WINDOWS_CONPTY_WRAPPER_PROVIDER";
-const WRAPPER_MODEL_ENV: &str = "CORE_WINDOWS_CONPTY_WRAPPER_MODEL";
-const WRAPPER_TASK_ENV: &str = "CORE_WINDOWS_CONPTY_WRAPPER_TASK";
-const WRAPPER_EXPECT_RAW_ENV: &str = "CORE_WINDOWS_CONPTY_WRAPPER_EXPECT_RAW";
-const CONSOLE_MODE_BEFORE: &[u8] = b"CORE_CONSOLE_INPUT_MODE_BEFORE=";
-const CONSOLE_MODE_DURING: &[u8] = b"CORE_CONSOLE_INPUT_MODE_DURING=";
-const CONSOLE_MODE_AFTER: &[u8] = b"CORE_CONSOLE_INPUT_MODE_AFTER=";
+const WRAPPER_ACTIVE_ENV: &str = "ITERON_WINDOWS_CONPTY_WRAPPER_ACTIVE";
+const WRAPPER_ITERON_BINARY_ENV: &str = "ITERON_WINDOWS_CONPTY_WRAPPER_ITERON_BINARY";
+const WRAPPER_REPO_ENV: &str = "ITERON_WINDOWS_CONPTY_WRAPPER_REPO";
+const WRAPPER_RUNS_ENV: &str = "ITERON_WINDOWS_CONPTY_WRAPPER_RUNS";
+const WRAPPER_PROVIDER_ENV: &str = "ITERON_WINDOWS_CONPTY_WRAPPER_PROVIDER";
+const WRAPPER_MODEL_ENV: &str = "ITERON_WINDOWS_CONPTY_WRAPPER_MODEL";
+const WRAPPER_TASK_ENV: &str = "ITERON_WINDOWS_CONPTY_WRAPPER_TASK";
+const WRAPPER_EXPECT_RAW_ENV: &str = "ITERON_WINDOWS_CONPTY_WRAPPER_EXPECT_RAW";
+const CONSOLE_MODE_BEFORE: &[u8] = b"ITERON_CONSOLE_INPUT_MODE_BEFORE=";
+const CONSOLE_MODE_DURING: &[u8] = b"ITERON_CONSOLE_INPUT_MODE_DURING=";
+const CONSOLE_MODE_AFTER: &[u8] = b"ITERON_CONSOLE_INPUT_MODE_AFTER=";
 const COOKED_INPUT_MODE_MASK: u32 = 0x0001 | 0x0002 | 0x0004;
 const RAW_MODE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(10);
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 const WRAPPER_CONTROL_ENV: &[&str] = &[
     WRAPPER_ACTIVE_ENV,
-    WRAPPER_CORE_BINARY_ENV,
+    WRAPPER_ITERON_BINARY_ENV,
     WRAPPER_REPO_ENV,
     WRAPPER_RUNS_ENV,
     WRAPPER_PROVIDER_ENV,
@@ -106,7 +106,7 @@ fn required_wrapper_variable(name: &str) -> std::ffi::OsString {
 }
 
 fn wrapped_core_command() -> Command {
-    let binary = required_wrapper_variable(WRAPPER_CORE_BINARY_ENV);
+    let binary = required_wrapper_variable(WRAPPER_ITERON_BINARY_ENV);
     let repo = required_wrapper_variable(WRAPPER_REPO_ENV);
     let runs = required_wrapper_variable(WRAPPER_RUNS_ENV);
     let provider = required_wrapper_variable(WRAPPER_PROVIDER_ENV);
@@ -242,7 +242,7 @@ impl Scratch {
     }
 
     fn configure_link_provider_with_notifications(&self, api_root: &str) {
-        let config_dir = self.home().join(".core");
+        let config_dir = self.home().join(".iteron");
         std::fs::create_dir_all(&config_dir).expect("create isolated Core config directory");
         let config = json!({
             "schema_version": 2,
@@ -521,12 +521,12 @@ impl ConPty {
         if matches!(terminal, TerminalFixture::WindowsTerminal) {
             command.env("WT_SESSION", "core-native-conpty-oracle");
         }
-        command.env("CORE_THEME", "terminal");
+        command.env("ITERON_THEME", "terminal");
         if let Some(version) = server_version {
-            command.env("CORE_APP_SERVER_PROTOCOL_VERSION", version.to_string());
+            command.env("ITERON_APP_SERVER_PROTOCOL_VERSION", version.to_string());
         }
         command.env(WRAPPER_ACTIVE_ENV, "1");
-        command.env(WRAPPER_CORE_BINARY_ENV, env!("CARGO_BIN_EXE_core"));
+        command.env(WRAPPER_ITERON_BINARY_ENV, env!("CARGO_BIN_EXE_iteron"));
         command.env(WRAPPER_REPO_ENV, scratch.repo().as_os_str());
         command.env(WRAPPER_RUNS_ENV, scratch.runs().as_os_str());
         command.env(WRAPPER_PROVIDER_ENV, provider);
@@ -548,8 +548,8 @@ impl ConPty {
             command.env("NO_PROXY", "127.0.0.1,localhost");
             command.env(LINK_TEST_KEY_ENV, LINK_TEST_KEY);
         } else {
-            command.env("CORE_PROVIDER", "glm");
-            command.env("CORE_MODEL", "glm-5.2");
+            command.env("ITERON_PROVIDER", "glm");
+            command.env("ITERON_MODEL", "glm-5.2");
         }
 
         let child = pair

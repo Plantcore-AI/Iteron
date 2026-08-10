@@ -6,7 +6,7 @@
 
 use crate::{ContextLedger, ContextObservation, ContextObserver, MemoryDecisionTrace};
 use crate::{MemoryObservation, MemoryObserver};
-use core_protocol::TurnId;
+use iteron_protocol::TurnId;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};

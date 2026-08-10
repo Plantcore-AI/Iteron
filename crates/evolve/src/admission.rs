@@ -9,7 +9,7 @@ use crate::{
     ContractError, MAX_REQUIRED_CAPABILITIES, PolicyManifest, PolicyRef, StrategySlot,
     validate_collection,
 };
-use core_protocol::Capability;
+use iteron_protocol::Capability;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 

@@ -12,7 +12,7 @@ use crate::{
     ManifestAdmissionPolicy, PolicyManifest, PolicyRef, ProtocolRange, validate_collection,
     validate_digest, validate_nonempty_string,
 };
-use core_protocol::Capability;
+use iteron_protocol::Capability;
 use serde::Serialize;
 use std::collections::BTreeSet;
 

@@ -1,5 +1,5 @@
 #![cfg(unix)]
-//! D14-01 oracle: `core-eval` performs REAL-repository evaluation, not fabricated synthetic
+//! D14-01 oracle: `iteron-eval` performs REAL-repository evaluation, not fabricated synthetic
 //! 2-file micro-repos.
 //!
 //! The gap under closure is "no real-repository evaluation — eval fabricates synthetic 2-file
@@ -28,8 +28,8 @@
 //! The fixture is network-free (`file://` repositories) and sandbox-free (no cell completes, so the
 //! egress-off oracle is never entered), so it runs deterministically on the Linux merge gate.
 
-use core_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
-use core_eval::{
+use iteron_eval::corpus::{CORPUS_SCHEMA_VERSION, Provenance, digest_tasks};
+use iteron_eval::{
     CellResult, CorpusManifest, CorpusTask, EvalOptions, EvaluationManifest, EvaluationPurpose,
     Partition, RunStatus, run_evaluation,
 };
@@ -48,7 +48,7 @@ impl TempRoot {
             .expect("system clock must be after the Unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "core-eval-d14-01-{label}-{}-{nonce:x}",
+            "iteron-eval-d14-01-{label}-{}-{nonce:x}",
             std::process::id()
         ));
         std::fs::create_dir(&path).expect("create isolated D14-01 root");
@@ -89,9 +89,9 @@ fn commit(repo: &Path, message: &str) -> String {
         repo,
         &[
             "-c",
-            "user.name=core-eval",
+            "user.name=iteron-eval",
             "-c",
-            "user.email=core-eval@example.invalid",
+            "user.email=iteron-eval@example.invalid",
             "commit",
             "--quiet",
             "-m",

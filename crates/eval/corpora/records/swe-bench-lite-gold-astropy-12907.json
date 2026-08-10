@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record_type": "imported_benchmark_outcome",
-  "corpus_version": "core-eval-governed-2026-07-v1",
+  "corpus_version": "iteron-eval-governed-2026-07-v1",
   "dataset_digest": "sha256:4b08f1178b7c363186b0e4e324179b9c1823cbe06d531632611e566d3d4f3aed",
   "source_evaluation": {
     "kind": "swe-bench-lite-gold-validation",

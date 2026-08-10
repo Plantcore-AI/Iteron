@@ -7,8 +7,8 @@ use crate::{
     AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderError, TurnRequest,
     TurnResult,
 };
-use core_protocol::{Block, Message, ProviderState, Role};
 use futures_util::StreamExt;
+use iteron_protocol::{Block, Message, ProviderState, Role};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -285,7 +285,7 @@ fn msg_to_json(
     m: &Message,
     route_scope: &str,
     cache_breakpoint: bool,
-    input_images: &[core_protocol::ImageContent],
+    input_images: &[iteron_protocol::ImageContent],
 ) -> Result<serde_json::Value, ProviderError> {
     let role = match m.role {
         Role::User => "user",
@@ -335,7 +335,7 @@ fn msg_to_json(
 
 fn image_target(
     messages: &[Message],
-    input_images: &[core_protocol::ImageContent],
+    input_images: &[iteron_protocol::ImageContent],
 ) -> Result<Option<usize>, ProviderError> {
     if input_images.is_empty() {
         return Ok(None);
@@ -773,7 +773,7 @@ impl Provider for Anthropic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{ImageContent, ImageMediaType};
+    use iteron_protocol::{ImageContent, ImageMediaType};
 
     fn request(model: &str) -> TurnRequest {
         TurnRequest {
@@ -785,7 +785,7 @@ mod tests {
             max_tokens: 100,
             cache_system: true,
             thinking_budget: 9_000,
-            reasoning_effort: core_protocol::ReasoningEffort::Medium,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Medium,
         }
     }
 
@@ -968,13 +968,13 @@ mod tests {
         assert_eq!(
             provider.effort_application(&request("claude-test-effort-20260720")),
             EffortApplication::Exact {
-                requested: core_protocol::ReasoningEffort::Medium,
+                requested: iteron_protocol::ReasoningEffort::Medium,
             }
         );
         assert_eq!(
             provider.effort_application(&request("claude-opus-4-7")),
             EffortApplication::BudgetBased {
-                requested: core_protocol::ReasoningEffort::Medium,
+                requested: iteron_protocol::ReasoningEffort::Medium,
                 budget_tokens: 9_000,
             }
         );
@@ -1007,13 +1007,13 @@ mod tests {
         assert_eq!(
             provider.effort_application(&request("claude-opus-4-6")),
             EffortApplication::Exact {
-                requested: core_protocol::ReasoningEffort::Medium
+                requested: iteron_protocol::ReasoningEffort::Medium
             }
         );
         assert_eq!(
             provider.effort_application(&request("claude-sonnet-4-5")),
             EffortApplication::BudgetBased {
-                requested: core_protocol::ReasoningEffort::Medium,
+                requested: iteron_protocol::ReasoningEffort::Medium,
                 budget_tokens: 9_000
             }
         );
@@ -1222,7 +1222,7 @@ mod tests {
                 Block::Text {
                     text: "checking".into(),
                 },
-                Block::ToolUse(core_protocol::ToolUse {
+                Block::ToolUse(iteron_protocol::ToolUse {
                     id: "tool-1".into(),
                     name: "read_file".into(),
                     input: serde_json::json!({"path":"Cargo.toml"}),

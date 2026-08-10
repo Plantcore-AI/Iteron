@@ -9,9 +9,9 @@
 
 use crate::runtime::{UiEvent, WorkflowUiEvent};
 use clap::ValueEnum;
-use core_obs::{CostState, KernelTax};
-use core_protocol::{Outcome, Phase};
-use core_provider::EffortApplication;
+use iteron_obs::{CostState, KernelTax};
+use iteron_protocol::{Outcome, Phase};
+use iteron_provider::EffortApplication;
 use serde_json::{Value, json};
 use std::io::{self, Write};
 
@@ -155,7 +155,7 @@ fn effort_application_json(application: EffortApplication) -> Value {
 }
 
 fn scrub(text: &str) -> String {
-    core_record::redact::scrub(text)
+    iteron_record::redact::scrub(text)
 }
 
 /// Defense in depth at the machine-output boundary. Kernel UiEvents are already scrubbed, but the
@@ -456,7 +456,7 @@ pub fn stream_event(event: UiEvent, turn: &mut u32) -> Value {
 /// kernel `UiEvent`.
 fn input_attachment_event(
     ordinal: usize,
-    media_type: core_protocol::ImageMediaType,
+    media_type: iteron_protocol::ImageMediaType,
     encoded_bytes: usize,
 ) -> Value {
     json!({
@@ -471,16 +471,16 @@ fn input_attachment_event(
 fn input_attachment_record(
     format: OutputFormat,
     ordinal: usize,
-    media_type: core_protocol::ImageMediaType,
+    media_type: iteron_protocol::ImageMediaType,
     encoded_bytes: usize,
 ) -> io::Result<Option<Value>> {
     if format != OutputFormat::StreamJson {
         return Ok(None);
     }
     if ordinal == 0
-        || ordinal > core_protocol::input::MAX_INPUT_IMAGES
+        || ordinal > iteron_protocol::input::MAX_INPUT_IMAGES
         || encoded_bytes == 0
-        || encoded_bytes > core_protocol::input::MAX_IMAGE_BASE64_BYTES
+        || encoded_bytes > iteron_protocol::input::MAX_IMAGE_BASE64_BYTES
         || !encoded_bytes.is_multiple_of(4)
     {
         return Err(io::Error::new(
@@ -557,7 +557,7 @@ pub(crate) fn project_schema(mut value: Value, schema_version: u32) -> io::Resul
 }
 
 fn display_notice_on_stderr(message: &str) {
-    let message = core_protocol::text::head(&scrub(message), MAX_STDERR_NOTICE_BYTES);
+    let message = iteron_protocol::text::head(&scrub(message), MAX_STDERR_NOTICE_BYTES);
     // Notices are observational. A closed stderr must not suppress the final JSON result or alter
     // provider dispatch; stdout failures remain separately tracked by the emitter contract.
     let _ = writeln!(std::io::stderr().lock(), "notice: {message}");
@@ -629,7 +629,7 @@ impl Emitter {
     pub fn input_attachment(
         &mut self,
         ordinal: usize,
-        media_type: core_protocol::ImageMediaType,
+        media_type: iteron_protocol::ImageMediaType,
         encoded_bytes: usize,
     ) -> io::Result<()> {
         // v4 predates this record type. Its frozen stream is preserved byte-for-byte; the image
@@ -722,7 +722,7 @@ mod tests {
         WorkflowAgentOutcomeUi, WorkflowExecutionModeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi,
         WorkflowTaskUi,
     };
-    use core_protocol::{Capability, DiffLine, DiffTag, FileDiff, Hunk, SubmissionId};
+    use iteron_protocol::{Capability, DiffLine, DiffTag, FileDiff, Hunk, SubmissionId};
 
     #[test]
     fn outcome_exit_codes_are_stable() {
@@ -840,7 +840,7 @@ mod tests {
             "golden reply",
             "<RUN_ID>",
             &CostState::Unknown {
-                reason: core_obs::CostUnknownReason::NoVerifiedRateCard,
+                reason: iteron_obs::CostUnknownReason::NoVerifiedRateCard,
             },
             1,
             KernelTax::default(),
@@ -860,7 +860,7 @@ mod tests {
     #[test]
     fn unknown_cost_is_null_and_typed_in_result_and_turn_end() {
         let unknown = CostState::Unknown {
-            reason: core_obs::CostUnknownReason::NoVerifiedRateCard,
+            reason: iteron_obs::CostUnknownReason::NoVerifiedRateCard,
         };
         let result = final_result(
             &Outcome::Done,
@@ -880,20 +880,20 @@ mod tests {
         let event = stream_event(
             UiEvent::TurnEnd {
                 cost: unknown,
-                usage: core_protocol::Usage::default(),
-                context: core_ctx::ContextEstimate {
+                usage: iteron_protocol::Usage::default(),
+                context: iteron_ctx::ContextEstimate {
                     system_tokens: 0,
                     tool_tokens: 0,
                     transcript_tokens: 0,
                     framing_tokens: 0,
                     total_tokens: 0,
-                    provenance: core_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+                    provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
                 },
                 model_context_window: None,
                 reserved_output_tokens: 8_192,
                 compaction_trigger_tokens: 120_000,
                 effort: EffortApplication::Unsupported {
-                    requested: core_protocol::ReasoningEffort::Medium,
+                    requested: iteron_protocol::ReasoningEffort::Medium,
                 },
             },
             &mut turn,
@@ -912,7 +912,7 @@ mod tests {
             "",
             "run-2",
             &CostState::Unknown {
-                reason: core_obs::CostUnknownReason::NoVerifiedRateCard,
+                reason: iteron_obs::CostUnknownReason::NoVerifiedRateCard,
             },
             8,
             KernelTax::default(),
@@ -955,24 +955,24 @@ mod tests {
         let turn_end = stream_event(
             UiEvent::TurnEnd {
                 cost: known_cost(10_000),
-                usage: core_protocol::Usage {
+                usage: iteron_protocol::Usage {
                     input: 50,
                     cache_read: 50,
-                    ..core_protocol::Usage::default()
+                    ..iteron_protocol::Usage::default()
                 },
-                context: core_ctx::ContextEstimate {
+                context: iteron_ctx::ContextEstimate {
                     system_tokens: 10,
                     tool_tokens: 20,
                     transcript_tokens: 30,
                     framing_tokens: 4,
                     total_tokens: 64,
-                    provenance: core_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+                    provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
                 },
                 model_context_window: None,
                 reserved_output_tokens: 8_192,
                 compaction_trigger_tokens: 120_000,
                 effort: EffortApplication::Exact {
-                    requested: core_protocol::ReasoningEffort::Medium,
+                    requested: iteron_protocol::ReasoningEffort::Medium,
                 },
             },
             &mut turn,
@@ -1088,16 +1088,16 @@ mod tests {
             stream_event(
                 UiEvent::TurnEnd {
                     cost: CostState::Unknown {
-                        reason: core_obs::CostUnknownReason::NoVerifiedRateCard,
+                        reason: iteron_obs::CostUnknownReason::NoVerifiedRateCard,
                     },
-                    usage: core_protocol::Usage::default(),
-                    context: core_ctx::ContextEstimate {
+                    usage: iteron_protocol::Usage::default(),
+                    context: iteron_ctx::ContextEstimate {
                         system_tokens: 0,
                         tool_tokens: 0,
                         transcript_tokens: 0,
                         framing_tokens: 0,
                         total_tokens: 0,
-                        provenance: core_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+                        provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
                     },
                     model_context_window: None,
                     reserved_output_tokens: 8_192,
@@ -1110,7 +1110,7 @@ mod tests {
 
         let mut turn = 0;
         let records = vec![
-            input_attachment_event(1, core_protocol::ImageMediaType::Png, 12),
+            input_attachment_event(1, iteron_protocol::ImageMediaType::Png, 12),
             stream_event(UiEvent::Text("answer".into()), &mut turn),
             stream_event(UiEvent::Thinking("plan".into()), &mut turn),
             stream_event(
@@ -1155,34 +1155,34 @@ mod tests {
             stream_event(UiEvent::Phase(Phase::Context), &mut turn),
             frozen_turn_end(
                 EffortApplication::Exact {
-                    requested: core_protocol::ReasoningEffort::High,
+                    requested: iteron_protocol::ReasoningEffort::High,
                 },
                 &mut turn,
             ),
             frozen_turn_end(
                 EffortApplication::Mapped {
-                    requested: core_protocol::ReasoningEffort::XHigh,
-                    sent: core_protocol::ReasoningEffort::High,
+                    requested: iteron_protocol::ReasoningEffort::XHigh,
+                    sent: iteron_protocol::ReasoningEffort::High,
                 },
                 &mut turn,
             ),
             frozen_turn_end(
                 EffortApplication::BudgetBased {
-                    requested: core_protocol::ReasoningEffort::Max,
+                    requested: iteron_protocol::ReasoningEffort::Max,
                     budget_tokens: 32_000,
                 },
                 &mut turn,
             ),
             frozen_turn_end(
                 EffortApplication::ToggleOnly {
-                    requested: core_protocol::ReasoningEffort::Low,
+                    requested: iteron_protocol::ReasoningEffort::Low,
                     enabled: true,
                 },
                 &mut turn,
             ),
             frozen_turn_end(
                 EffortApplication::Unsupported {
-                    requested: core_protocol::ReasoningEffort::Medium,
+                    requested: iteron_protocol::ReasoningEffort::Medium,
                 },
                 &mut turn,
             ),
@@ -1448,7 +1448,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             input_attachment_record(
                 OutputFormat::StreamJson,
                 1,
-                core_protocol::ImageMediaType::Png,
+                iteron_protocol::ImageMediaType::Png,
                 12,
             )
             .unwrap(),
@@ -1465,24 +1465,29 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         for format in [OutputFormat::Text, OutputFormat::Json] {
             assert_eq!(
-                input_attachment_record(format, usize::MAX, core_protocol::ImageMediaType::Png, 1)
-                    .unwrap(),
+                input_attachment_record(
+                    format,
+                    usize::MAX,
+                    iteron_protocol::ImageMediaType::Png,
+                    1
+                )
+                .unwrap(),
                 None,
                 "{format:?} must retain its existing bytes"
             );
         }
         for (ordinal, encoded_bytes) in [
             (0, 4),
-            (core_protocol::input::MAX_INPUT_IMAGES + 1, 4),
+            (iteron_protocol::input::MAX_INPUT_IMAGES + 1, 4),
             (1, 0),
             (1, 3),
-            (1, core_protocol::input::MAX_IMAGE_BASE64_BYTES + 4),
+            (1, iteron_protocol::input::MAX_IMAGE_BASE64_BYTES + 4),
         ] {
             assert_eq!(
                 input_attachment_record(
                     OutputFormat::StreamJson,
                     ordinal,
-                    core_protocol::ImageMediaType::Png,
+                    iteron_protocol::ImageMediaType::Png,
                     encoded_bytes,
                 )
                 .unwrap_err()

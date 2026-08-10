@@ -1,6 +1,6 @@
 # Roadmap
 
-Core Code is pre-alpha. This roadmap uses acceptance evidence rather than dates or
+Iteron is pre-alpha. This roadmap uses acceptance evidence rather than dates or
 feature-count marketing. A milestone is not complete because code exists; it is
 accepted only when its stated integration, failure, recovery, security, and
 operational gates pass on real repositories.
@@ -99,7 +99,7 @@ Acceptance gates:
 - human maintainers retain design, review, merge, incident, and release authority.
 
 This product capability does not create an agent-swarm development organization.
-Core Code has one human Project Owner with final override and an open-ended group
+Iteron has one human Project Owner with final override and an open-ended group
 of human maintainers who choose explicit modular boundaries. Agents do not
 negotiate or approve project work.
 
@@ -126,7 +126,7 @@ policy is a non-goal.
 Milestone work should be represented by public epic issues with a single
 acceptance owner, linked evidence, explicit non-goals, and independently claimable
 sub-issues. The initial public bootstrap is tracked in
-[issue #6](https://github.com/Plantcore-AI/core/issues/6).
+[issue #6](https://github.com/Plantcore-AI/Iteron/issues/6).
 
 Good community entry points:
 

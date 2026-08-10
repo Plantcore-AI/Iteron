@@ -333,7 +333,7 @@ pub const COMMANDS: &[Cmd] = &[
         command: SlashCommand::Init,
         name: "init",
         args: "",
-        help: "scaffold .core/config.json + AGENTS.md",
+        help: "scaffold .iteron/config.json + AGENTS.md",
     },
     Cmd {
         command: SlashCommand::Quit,

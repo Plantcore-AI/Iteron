@@ -2,7 +2,7 @@
 
 `governance/schema-compatibility.json` is the source-controlled compatibility contract for SQ/EQ
 envelopes and writable operations/events, durable rollout lines and their reachable tagged and
-named object shapes, typed kernel diagnostics, and CLI JSON/JSONL machine output. `core-xtask
+named object shapes, typed kernel diagnostics, and CLI JSON/JSONL machine output. `iteron-xtask
 boundaries check` validates the current tree. Pull-request and merge-group jobs additionally
 compare the candidate or prospective combined commit with its immediate trusted base and with the
 last immutable published release.

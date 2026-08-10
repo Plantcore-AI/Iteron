@@ -7,7 +7,7 @@
 //! substrate, and `LoopUntilDry`/`AdversarialVerify` have no proven consumer. Keeping the enum to
 //! two variants is the honest surface: it cannot express a topology the engine cannot execute.
 
-use core_protocol::Budget;
+use iteron_protocol::Budget;
 
 use serde::{Deserialize, Serialize};
 

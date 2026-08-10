@@ -53,7 +53,7 @@ pub struct CorpusTask {
     /// Tests that must be green both before and after the candidate patch.
     pub pass_to_pass: Vec<String>,
     /// Per-language command used to execute the named test sets. Commands receive
-    /// `CORE_EVAL_TEST_SET` and `CORE_EVAL_TEST_IDS_JSON` in their confined shell environment.
+    /// `ITERON_EVAL_TEST_SET` and `ITERON_EVAL_TEST_IDS_JSON` in their confined shell environment.
     pub test_cmd: BTreeMap<String, String>,
     pub partition: Partition,
     pub provenance: Provenance,
@@ -577,7 +577,7 @@ mod tests {
     fn temp_file() -> std::path::PathBuf {
         let sequence = NEXT_TEMP_FILE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "core-eval-corpus-{}-{sequence}.json",
+            "iteron-eval-corpus-{}-{sequence}.json",
             std::process::id()
         ))
     }

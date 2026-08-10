@@ -16,7 +16,7 @@ impl TempRoot {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "core-eval-tuner-{label}-{}-{nonce:x}",
+            "iteron-eval-tuner-{label}-{}-{nonce:x}",
             std::process::id()
         ));
         std::fs::create_dir(&path).unwrap();
@@ -35,17 +35,17 @@ impl Drop for TempRoot {
 }
 
 fn tunable_family() -> &'static str {
-    core_tunables::families()
+    iteron_tunables::families()
         .iter()
-        .find(|family| family.optimization.class != core_tunables::OptimizationClass::Pin)
+        .find(|family| family.optimization.class != iteron_tunables::OptimizationClass::Pin)
         .unwrap()
         .id
 }
 
 fn pinned_family() -> &'static str {
-    core_tunables::families()
+    iteron_tunables::families()
         .iter()
-        .find(|family| family.optimization.class == core_tunables::OptimizationClass::Pin)
+        .find(|family| family.optimization.class == iteron_tunables::OptimizationClass::Pin)
         .unwrap()
         .id
 }
@@ -68,7 +68,7 @@ fn spec(candidates: Vec<TunerCandidate>, concurrency: u16, budgets: Vec<u32>) ->
         schema_version: 1,
         experiment_id: "fixture".into(),
         train_dataset_digest: format!("sha256:{}", "a".repeat(64)),
-        tunables_registry_digest: core_tunables::REGISTRY_DIGEST_SHA256.into(),
+        tunables_registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256.into(),
         max_trials: max_trials as u16,
         max_concurrency: concurrency,
         reduction_factor: 2,

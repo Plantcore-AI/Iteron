@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use core_workflow::events::{NullSink, ProgressEvent, ProgressSink};
-use core_workflow::{AgentCall, AgentOutcome, AgentSpawner, RunId, RunSpec, WorkflowEngine};
+use iteron_workflow::events::{NullSink, ProgressEvent, ProgressSink};
+use iteron_workflow::{AgentCall, AgentOutcome, AgentSpawner, RunId, RunSpec, WorkflowEngine};
 
 // ---- (a) schema-forced structured output ---------------------------------------------------------
 
@@ -80,7 +80,7 @@ return {
     // 5 attempts (RETRY_MAX) for the never-valid agent.
     assert_eq!(
         spawner.bad_calls.load(Ordering::SeqCst),
-        core_workflow::RETRY_MAX as usize
+        iteron_workflow::RETRY_MAX as usize
     );
 }
 
@@ -105,7 +105,7 @@ impl ProgressSink for RecordingSink {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn malformed_routing_metadata_is_negative_replay_evidence_without_a_spawn() {
     let dir = std::env::temp_dir().join(format!(
-        "core-workflow-request-metadata-{}-{}",
+        "iteron-workflow-request-metadata-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -118,8 +118,8 @@ async fn malformed_routing_metadata_is_negative_replay_evidence_without_a_spawn(
     });
     let sink = Arc::new(RecordingSink::default());
     let secret = "ghp_AbCdEf1234567890AbCdEf1234567890";
-    let oversized_agent_type = "a".repeat(core_workflow::spawner::MAX_AGENT_TYPE_BYTES + 1);
-    let oversized_model = "m".repeat(core_workflow::spawner::MAX_AGENT_MODEL_BYTES + 1);
+    let oversized_agent_type = "a".repeat(iteron_workflow::spawner::MAX_AGENT_TYPE_BYTES + 1);
+    let oversized_model = "m".repeat(iteron_workflow::spawner::MAX_AGENT_MODEL_BYTES + 1);
     let requests = serde_json::json!([
         {"agentType": "reviewer/child", "label": "invalid type", "phase": secret},
         {"agentType": oversized_agent_type.clone(), "label": "oversized type", "phase": secret},
@@ -271,7 +271,7 @@ impl AgentSpawner for CountingSpawner {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn resume_is_100_percent_cache_hit_including_null_replay() {
     let dir = std::env::temp_dir().join(format!(
-        "core-workflow-resume-{}-{}",
+        "iteron-workflow-resume-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

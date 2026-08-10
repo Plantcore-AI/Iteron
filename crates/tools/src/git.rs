@@ -20,7 +20,7 @@ use crate::git_harness::{
 #[cfg(test)]
 use crate::git_harness::{NULL_DEVICE, ResolvedGit, shell_script_command};
 use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
-use core_protocol::{Capability, Purity, ToolSpec};
+use iteron_protocol::{Capability, Purity, ToolSpec};
 #[cfg(test)]
 use std::ffi::OsStr;
 use std::ffi::OsString;
@@ -191,7 +191,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::ToolUse;
+    use iteron_protocol::ToolUse;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct TestDir(PathBuf);
@@ -558,7 +558,7 @@ mod tests {
         )
         .await;
 
-        let outside_marker = "CORE_OUTSIDE_WORKTREE_SECRET_MARKER";
+        let outside_marker = "ITERON_OUTSIDE_WORKTREE_SECRET_MARKER";
         std::fs::write(outside.join("tracked"), format!("{outside_marker}\n")).unwrap();
         setup_git(
             &git,

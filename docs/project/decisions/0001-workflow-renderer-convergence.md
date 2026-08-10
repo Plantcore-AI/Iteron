@@ -10,7 +10,7 @@
 
 ## Context
 
-Core Code ships two subsystems that share the word *workflow* and nothing else.
+Iteron ships two subsystems that share the word *workflow* and nothing else.
 
 **Native ultracode orchestration.** The kernel decomposes a task, fans out
 read-only investigators, reduces their evidence, and hands one writer the
@@ -25,7 +25,7 @@ golden fixtures under `crates/cli/tests/golden/`.
 
 **The script engine.** `crates/workflow` embeds QuickJS and runs `.js` workflow
 scripts with `agent()` / `parallel()` / `pipeline()` / `phase()` / `log()`. It
-emits `core_workflow::events::ProgressEvent` — an unfrozen, in-process
+emits `iteron_workflow::events::ProgressEvent` — an unfrozen, in-process
 vocabulary carrying free-form phase titles, narrator log lines, and per-agent
 metrics — and the TUI projects those into a `WorkflowRunCard`: bordered phase
 boxes, branch rows, collapsed finished agents.
@@ -41,7 +41,7 @@ code says so out loud:
   interactive TUI. It is reachable only from the one-shot `core workflow run`
   live loop.
 - `runtime.rs::launch_workflow` — the in-turn `Workflow` tool — passes
-  `core_workflow::NullSink` and then blocks on `join`. Every phase, log, and
+  `iteron_workflow::NullSink` and then blocks on `join`. Every phase, log, and
   agent event of an in-turn run is discarded.
 
 The result is one product with two half-built progress surfaces, and no
@@ -115,7 +115,7 @@ Ordered, each step independently shippable:
    bump that step 1 pays for. It is never emitted by the kernel, but it is
    serialized as `"execution_mode":"sequential"` inside the frozen
    `machine_stream_all_v4`/`v5` goldens and mirrors
-   `core_protocol::WorkflowExecutionMode::SequentialFan` in the frozen ABI, so
+   `iteron_protocol::WorkflowExecutionMode::SequentialFan` in the frozen ABI, so
    removing it is a contract change, not a cleanup.
 
 ## Consequences

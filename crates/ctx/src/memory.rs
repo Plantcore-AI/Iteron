@@ -2,7 +2,7 @@
 //!
 //! Two layers live in this file, one additive on top of the other:
 //!
-//! 1. **The seed (`MemoryStore`).** A flat `.core/memory/` directory of one-fact markdown
+//! 1. **The seed (`MemoryStore`).** A flat `.iteron/memory/` directory of one-fact markdown
 //!    files with `add`/`load`/`remove`/`render`. It injects an inject-all-bounded block into the
 //!    stable system prefix and is still wired by the kernel (`effective_system`) and the TUI
 //!    (`/memory`). It is preserved verbatim so those callers keep working; only its fact type was
@@ -17,8 +17,8 @@
 //!    CHOICE MEM-1; this crate produces the segment, the kernel records it).
 //!
 //! Security (ADR-007 + R5 review Risk 5). Trust is keyed on **provenance AND authorship**, never on
-//! store location alone: the operator's global `~/.core/memory` is Trusted because the operator
-//! authored it; a repo's `.core/memory` is tree-discovered content that could have been authored
+//! store location alone: the operator's global `~/.iteron/memory` is Trusted because the operator
+//! authored it; a repo's `.iteron/memory` is tree-discovered content that could have been authored
 //! by anyone (a malicious contributor), so it enters Untrusted and is only promoted to Workspace by
 //! a recorded trust-on-first-use approval; anything under a vendored dependency path is stripped and
 //! never injected. Every index line and every fact body is scanned for bidi/invisible Unicode
@@ -36,10 +36,10 @@
 use std::path::{Path, PathBuf};
 use std::{fmt, fs, io::Write};
 
-use core_protocol::Capability;
-use core_protocol::capability_set::CapabilitySet;
-use core_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
-use core_protocol::trust::Trust;
+use iteron_protocol::Capability;
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
+use iteron_protocol::trust::Trust;
 use serde::{Deserialize, Serialize};
 
 use crate::source::{
@@ -59,7 +59,7 @@ pub struct StoredFact {
     pub text: String,
 }
 
-/// The flat memory store rooted at `<workspace>/.core/memory`.
+/// The flat memory store rooted at `<workspace>/.iteron/memory`.
 pub struct MemoryStore {
     workspace: PathBuf,
     dir: PathBuf,
@@ -81,7 +81,7 @@ impl MemoryStore {
     pub fn at(workspace: &Path) -> Self {
         MemoryStore {
             workspace: workspace.to_path_buf(),
-            dir: core_protocol::home::path(workspace, "memory"),
+            dir: iteron_protocol::home::path(workspace, "memory"),
         }
     }
 
@@ -192,7 +192,7 @@ impl MemoryStore {
 
     fn ensure_store_directory(&self) -> std::io::Result<()> {
         let root = self.workspace.canonicalize()?;
-        let core = core_protocol::home::path(&self.workspace, "");
+        let core = iteron_protocol::home::path(&self.workspace, "");
         ensure_real_directory(&core)?;
         ensure_real_directory(&self.dir)?;
         let resolved = self.dir.canonicalize()?;
@@ -208,7 +208,7 @@ impl MemoryStore {
     fn existing_store_directory(&self) -> std::io::Result<()> {
         let root = self.workspace.canonicalize()?;
         for directory in [
-            core_protocol::home::path(&self.workspace, ""),
+            iteron_protocol::home::path(&self.workspace, ""),
             self.dir.clone(),
         ] {
             let metadata = fs::symlink_metadata(&directory)?;
@@ -305,12 +305,12 @@ const BM25_B: f64 = 0.75;
 /// provenance). Each tier maps to a `Trust` via `trust_for` (§1.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemTier {
-    /// `~/.core/memory` — the operator's own global memory, authored by them.
+    /// `~/.iteron/memory` — the operator's own global memory, authored by them.
     User,
-    /// `<repo>/.core/memory` plus the repo-root instruction files — first-party but
+    /// `<repo>/.iteron/memory` plus the repo-root instruction files — first-party but
     /// tree-discovered, so authorship is not the operator's until approved.
     Project,
-    /// `<repo>/.core/memory.local` — machine-local, uncommitted; still tree content.
+    /// `<repo>/.iteron/memory.local` — machine-local, uncommitted; still tree content.
     Local,
     /// Any store found under a vendored/cloned dependency path — foreign; stripped, never injected.
     Dependency,
@@ -347,7 +347,7 @@ pub struct MemStore {
     tier: MemTier,
     trust: Trust,
     /// The directory under which repo instruction files (`AGENTS.md`/`CLAUDE.md`/
-    /// `.core/instructions.md`) are discovered, when this store carries them.
+    /// `.iteron/instructions.md`) are discovered, when this store carries them.
     instr_root: Option<PathBuf>,
 }
 
@@ -355,7 +355,7 @@ impl MemStore {
     /// Build a store whose trust is derived from its tier and approval (§1.4, Risk 5).
     pub fn new(root: PathBuf, tier: MemTier, approved: bool) -> Self {
         let trust = trust_for(tier, approved);
-        // Existing kernel/tool callers construct project stores from `<repo>/.core/memory`
+        // Existing kernel/tool callers construct project stores from `<repo>/.iteron/memory`
         // directly. Infer that repository boundary so `.core` or `memory` cannot redirect the
         // read through a symlink; unusual explicit roots remain their own caller-selected anchor.
         let source_root = match tier {
@@ -365,7 +365,7 @@ impl MemStore {
                     parent
                         .file_name()
                         .and_then(|name| name.to_str())
-                        .is_some_and(core_protocol::home::is_home_dir)
+                        .is_some_and(iteron_protocol::home::is_home_dir)
                 })
                 .and_then(Path::parent)
                 .map(Path::to_path_buf)
@@ -388,30 +388,30 @@ impl MemStore {
         self
     }
 
-    /// The user store: `<home>/.core/memory`, Trusted (operator-authored).
+    /// The user store: `<home>/.iteron/memory`, Trusted (operator-authored).
     pub fn user(home: &Path) -> Self {
         MemStore::new(
-            core_protocol::home::path(home, "memory"),
+            iteron_protocol::home::path(home, "memory"),
             MemTier::User,
             true,
         )
     }
 
-    /// The project store: `<repo>/.core/memory` plus repo-root instructions. `approved` reflects
+    /// The project store: `<repo>/.iteron/memory` plus repo-root instructions. `approved` reflects
     /// a recorded trust-on-first-use decision; unapproved it is Untrusted (framed, still injected).
     pub fn project(repo_root: &Path, approved: bool) -> Self {
         MemStore::new(
-            core_protocol::home::path(repo_root, "memory"),
+            iteron_protocol::home::path(repo_root, "memory"),
             MemTier::Project,
             approved,
         )
         .with_instructions(repo_root.to_path_buf())
     }
 
-    /// The machine-local store: `<repo>/.core/memory.local`.
+    /// The machine-local store: `<repo>/.iteron/memory.local`.
     pub fn local(repo_root: &Path, approved: bool) -> Self {
         let mut store = MemStore::new(
-            core_protocol::home::path(repo_root, "memory.local"),
+            iteron_protocol::home::path(repo_root, "memory.local"),
             MemTier::Local,
             approved,
         );
@@ -602,7 +602,7 @@ impl MemStore {
         if suspicious_unicode(&raw) {
             return None;
         }
-        Some(core_protocol::text::head(raw.trim(), MAX_FACT_BYTES))
+        Some(iteron_protocol::text::head(raw.trim(), MAX_FACT_BYTES))
     }
 }
 
@@ -868,7 +868,7 @@ pub trait MemoryStrategy: Send + Sync {
 // # Why this is a second trait next to `MemoryStrategy`, and not a replacement for it
 //
 // [`MemoryStrategy`] is a *world-facing* port: `recall` takes `&[MemStore]` and opens files.
-// `core_protocol::slot::StrategySlot` forbids exactly that — "a slot may not perform I/O" is a
+// `iteron_protocol::slot::StrategySlot` forbids exactly that — "a slot may not perform I/O" is a
 // stated constraint of that seam, not a preference. So the two cannot be the same trait, and
 // collapsing them would either smuggle I/O behind the slot seam or strip the store-reading port
 // that the kernel's `read_memory`/`add` paths need.
@@ -1202,7 +1202,7 @@ pub struct MemoryRecallStrategy {
 impl Default for MemoryRecallStrategy {
     fn default() -> Self {
         Self {
-            slot: SlotId("core/memory".into()),
+            slot: SlotId("iteron/memory".into()),
         }
     }
 }
@@ -1223,7 +1223,7 @@ impl MemoryRecallStrategy {
         input: &MemorySlotObservation,
         ceiling: CapabilitySet,
     ) -> Result<MemoryRecallProposal, MemorySlotError> {
-        if slot.slot().as_persisted_str() != "core/memory" {
+        if slot.slot().as_persisted_str() != "iteron/memory" {
             return Err(MemorySlotError::WrongSlot);
         }
         input.validate()?;
@@ -1258,7 +1258,7 @@ impl MemoryRecallStrategy {
         text: &str,
         ceiling: CapabilitySet,
     ) -> Result<MemoryWriteProposal, MemorySlotError> {
-        if slot.slot().as_persisted_str() != "core/memory" {
+        if slot.slot().as_persisted_str() != "iteron/memory" {
             return Err(MemorySlotError::WrongSlot);
         }
         let input = MemorySlotObservation::project_write(text);
@@ -1677,7 +1677,7 @@ impl MemoryStrategy for FileMemory {
             if suspicious_unicode(&raw) {
                 return Err(MemError::Suspicious(format!("fact `{slug}`")));
             }
-            let body = core_protocol::text::head(raw.trim(), MAX_FACT_BYTES);
+            let body = iteron_protocol::text::head(raw.trim(), MAX_FACT_BYTES);
             let (title, _) = derive_title_summary(&body, slug);
             let bytes = body.len();
             return Ok(Fact {
@@ -2113,8 +2113,8 @@ mod tests {
     fn seed_add_refuses_a_symlinked_memory_directory() {
         let ws = tmp("seed-write-symlink");
         let outside = tmp("seed-write-outside");
-        std::fs::create_dir_all(ws.join(".core")).unwrap();
-        std::os::unix::fs::symlink(&outside, ws.join(".core/memory")).unwrap();
+        std::fs::create_dir_all(ws.join(".iteron")).unwrap();
+        std::os::unix::fs::symlink(&outside, ws.join(".iteron/memory")).unwrap();
         let store = MemoryStore::at(&ws);
         assert!(store.add("must stay inside").is_err());
         assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
@@ -2125,7 +2125,7 @@ mod tests {
     #[test]
     fn seed_tampered_memory_is_skipped() {
         let ws = tmp("seed-bad");
-        let dir = ws.join(".core/memory");
+        let dir = ws.join(".iteron/memory");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("evil.md"), "normal \u{202E}reversed injection").unwrap();
         let m = MemoryStore::at(&ws);
@@ -2141,7 +2141,7 @@ mod tests {
     #[test]
     fn seed_oversized_memory_is_skipped() {
         let ws = tmp("seed-large");
-        let dir = ws.join(".core/memory");
+        let dir = ws.join(".iteron/memory");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("large.md"),
@@ -2156,7 +2156,7 @@ mod tests {
     #[test]
     fn seed_memory_does_not_follow_a_repository_symlink() {
         let ws = tmp("seed-link");
-        let dir = ws.join(".core/memory");
+        let dir = ws.join(".iteron/memory");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(ws.join("outside.md"), "must not load").unwrap();
         std::os::unix::fs::symlink(ws.join("outside.md"), dir.join("linked.md")).unwrap();
@@ -2468,7 +2468,7 @@ mod tests {
         std::fs::create_dir_all(&secret_dir).unwrap();
         std::fs::write(secret_dir.join("secret.md"), "TOP SECRET peregrine token").unwrap();
         // the store, with a hostile index pointing up-and-over to the secret
-        let store_root = base.join("repo").join(".core").join("memory");
+        let store_root = base.join("repo").join(".iteron").join("memory");
         std::fs::create_dir_all(&store_root).unwrap();
         std::fs::write(
             store_root.join("MEMORY.md"),
@@ -2507,7 +2507,7 @@ mod tests {
         let base = tmp("symlink");
         let secret = base.join("secret.md");
         std::fs::write(&secret, "TOP SECRET peregrine token").unwrap();
-        let store_root = base.join("repo").join(".core").join("memory");
+        let store_root = base.join("repo").join(".iteron").join("memory");
         std::fs::create_dir_all(&store_root).unwrap();
         // notes.md -> ../../secret.md (a safe slug name, hostile target)
         std::os::unix::fs::symlink(&secret, store_root.join("notes.md")).unwrap();
@@ -2560,11 +2560,11 @@ mod tests {
         let base = tmp("store-root-link");
         let repo = base.join("repo");
         let outside = base.join("outside-memory");
-        std::fs::create_dir_all(repo.join(".core")).unwrap();
+        std::fs::create_dir_all(repo.join(".iteron")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("secret.md"), "outside project fact").unwrap();
-        std::os::unix::fs::symlink(&outside, repo.join(".core/memory")).unwrap();
-        let store = MemStore::new(repo.join(".core/memory"), MemTier::Project, true);
+        std::os::unix::fs::symlink(&outside, repo.join(".iteron/memory")).unwrap();
+        let store = MemStore::new(repo.join(".iteron/memory"), MemTier::Project, true);
         assert!(store.index_entries().is_empty());
         assert!(FileMemory.read_fact(&[store], "secret").is_err());
         std::fs::remove_dir_all(base).ok();
@@ -2658,7 +2658,7 @@ mod tests {
         std::fs::remove_dir_all(base).ok();
     }
 
-    const PROCESS_LOCK_ROOT_ENV: &str = "CORE_CTX_TEST_MEMORY_LOCK_ROOT";
+    const PROCESS_LOCK_ROOT_ENV: &str = "ITERON_CTX_TEST_MEMORY_LOCK_ROOT";
 
     #[test]
     #[ignore = "subprocess helper invoked by process_exit_releases_index_lock_without_drop"]
@@ -2700,8 +2700,8 @@ mod tests {
         std::fs::remove_dir_all(base).ok();
     }
 
-    const PROCESS_WRITER_ROOT_ENV: &str = "CORE_CTX_TEST_MEMORY_WRITER_ROOT";
-    const PROCESS_WRITER_ID_ENV: &str = "CORE_CTX_TEST_MEMORY_WRITER_ID";
+    const PROCESS_WRITER_ROOT_ENV: &str = "ITERON_CTX_TEST_MEMORY_WRITER_ROOT";
+    const PROCESS_WRITER_ID_ENV: &str = "ITERON_CTX_TEST_MEMORY_WRITER_ID";
 
     #[test]
     #[ignore = "subprocess helper invoked by concurrent_process_adds_preserve_every_index_line"]
@@ -2841,7 +2841,7 @@ mod tests {
         ));
     }
 
-    const ATOMIC_MEMORY_ROOT_ENV: &str = "CORE_CTX_TEST_ATOMIC_MEMORY_ROOT";
+    const ATOMIC_MEMORY_ROOT_ENV: &str = "ITERON_CTX_TEST_ATOMIC_MEMORY_ROOT";
 
     #[test]
     #[ignore = "subprocess helper invoked by d6_08_crash_before_rename_preserves_complete_fact"]
@@ -2896,9 +2896,9 @@ mod tests {
         let base = tmp("write-store-symlink");
         let repo = base.join("repo");
         let outside = base.join("outside");
-        std::fs::create_dir_all(repo.join(".core")).unwrap();
+        std::fs::create_dir_all(repo.join(".iteron")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
-        std::os::unix::fs::symlink(&outside, repo.join(".core/memory")).unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join(".iteron/memory")).unwrap();
 
         let store = MemStore::project(&repo, true);
         let error = FileMemory
@@ -3054,7 +3054,7 @@ mod memory_slot_tests {
 
     fn fixed(plan: MemoryRecallPlan) -> Fixed {
         Fixed {
-            slot: SlotId("core/memory".into()),
+            slot: SlotId("iteron/memory".into()),
             plan,
             admitted: read_only(),
         }
@@ -3063,10 +3063,10 @@ mod memory_slot_tests {
     #[test]
     fn the_slot_identity_parses_under_the_frozen_grammar() {
         let strategy = MemoryRecallStrategy::default();
-        assert_eq!(strategy.slot().as_persisted_str(), "core/memory");
+        assert_eq!(strategy.slot().as_persisted_str(), "iteron/memory");
         assert!(
             strategy.slot().validate().is_ok(),
-            "core/memory must be nameable by a policy bundle, or the seat is ungovernable"
+            "iteron/memory must be nameable by a policy bundle, or the seat is ungovernable"
         );
     }
 
@@ -3272,7 +3272,7 @@ mod memory_slot_tests {
     fn replacement_capabilities_are_intersected_with_the_caller_ceiling() {
         let input = observation();
         let greedy = Fixed {
-            slot: SlotId("core/memory".into()),
+            slot: SlotId("iteron/memory".into()),
             plan: plan_of(&["signing-key"], &input),
             admitted: CapabilitySet::from_iter_capabilities([
                 Capability::ReadOnly,
@@ -3326,7 +3326,7 @@ mod memory_slot_tests {
 
         assert_eq!(
             MemoryRecallStrategy::select_with(
-                &Other(SlotId("core/context".into())),
+                &Other(SlotId("iteron/context".into())),
                 &observation(),
                 read_only(),
             ),
@@ -3338,7 +3338,7 @@ mod memory_slot_tests {
     fn the_baseline_refuses_a_payload_addressed_to_another_slot() {
         let strategy = MemoryRecallStrategy::default();
         let outcome = strategy.decide(&SlotObservation {
-            slot: SlotId("core/context".into()),
+            slot: SlotId("iteron/context".into()),
             ceiling: CapabilitySet::from_iter_capabilities([Capability::ReadOnly]),
             payload: serde_json::to_value(observation()).unwrap(),
         });
@@ -3383,7 +3383,7 @@ mod memory_slot_tests {
 
         assert!(matches!(
             MemoryRecallStrategy::authorize_project_write_with(
-                &Mutating(SlotId("core/memory".into())),
+                &Mutating(SlotId("iteron/memory".into())),
                 "prefer deterministic fixtures",
                 CapabilitySet::only(Capability::TrustMutating),
             ),
@@ -3401,7 +3401,7 @@ mod memory_slot_tests {
             std::thread::current().id()
         ));
         let _ = fs::remove_dir_all(&dir);
-        let store_root = dir.join(".core/memory");
+        let store_root = dir.join(".iteron/memory");
         fs::create_dir_all(&store_root).unwrap();
         fs::write(
             store_root.join("signing-key.md"),

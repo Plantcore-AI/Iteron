@@ -1,11 +1,11 @@
 //! Local doctor and support-bundle product surfaces.
 //!
 //! Neither command contacts a provider, starts MCP, or sends diagnostics anywhere. The support
-//! bundle is rendered by `core-support`, whose input grammar is bounded, deterministic, allowlisted,
+//! bundle is rendered by `iteron-support`, whose input grammar is bounded, deterministic, allowlisted,
 //! and scrubbed before storage.
 
 use crate::config::FileConfig;
-use core_support::{Bundle, Section};
+use iteron_support::{Bundle, Section};
 use std::io::Write as _;
 use std::path::Path;
 
@@ -40,13 +40,13 @@ fn checks(repo: &Path, runs_dir: &Path) -> Vec<Check> {
         detail: repo.display().to_string(),
     });
     checks.push(Check {
-        health: if core_record::checkpoint_supported(repo) {
+        health: if iteron_record::checkpoint_supported(repo) {
             Health::Ok
         } else {
             Health::Warn
         },
         name: "checkpoint",
-        detail: if core_record::checkpoint_supported(repo) {
+        detail: if iteron_record::checkpoint_supported(repo) {
             "Git checkpoint + rewind available".into()
         } else {
             "not a Git worktree; conversation recovery remains available".into()
@@ -84,7 +84,7 @@ fn checks(repo: &Path, runs_dir: &Path) -> Vec<Check> {
         name: "runtime state",
         detail: runs_dir.display().to_string(),
     });
-    let terminal = core_statusline::Capabilities::detect(|name| {
+    let terminal = iteron_statusline::Capabilities::detect(|name| {
         std::env::var(name).ok().filter(|value| value.len() <= 128)
     });
     checks.push(Check {
@@ -105,7 +105,7 @@ pub(crate) fn run_doctor(
     build_date: &str,
 ) -> anyhow::Result<u8> {
     println!(
-        "Core Code {} · commit {} · built {}",
+        "Iteron {} · commit {} · built {}",
         env!("CARGO_PKG_VERSION"),
         build_commit,
         build_date
@@ -149,7 +149,7 @@ pub(crate) async fn run_support(
         .set("runs_dir", &runs_dir.display().to_string())?
         .set(
             "checkpoint_supported",
-            if core_record::checkpoint_supported(repo) {
+            if iteron_record::checkpoint_supported(repo) {
                 "true"
             } else {
                 "false"
@@ -172,7 +172,7 @@ pub(crate) async fn run_support(
                 "invalid"
             },
         )?;
-    let git = match core_tools::git_environment_observation(repo).await {
+    let git = match iteron_tools::git_environment_observation(repo).await {
         Ok(observation) => Section::new().set("observation", &observation)?,
         Err(error) => Section::new().set("unavailable", &error)?,
     };
@@ -213,7 +213,7 @@ mod tests {
     #[tokio::test]
     async fn support_output_is_private_and_never_overwrites() {
         let root =
-            std::env::temp_dir().join(format!("core-support-command-{}", std::process::id()));
+            std::env::temp_dir().join(format!("iteron-support-command-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let output = root.join("support.txt");

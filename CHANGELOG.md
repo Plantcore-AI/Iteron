@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Core Code are documented here. The format follows
+All notable changes to Iteron are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). During `0.0.x`, public
 interfaces may change between releases.
@@ -77,5 +77,5 @@ interfaces may change between releases.
   tools, sandboxing, records, observability, verification, evaluation, and future
   evolution strategies.
 
-[Unreleased]: https://github.com/Plantcore-AI/core/compare/v0.0.1...HEAD
-[0.0.1]: https://github.com/Plantcore-AI/core/releases/tag/v0.0.1
+[Unreleased]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/Plantcore-AI/Iteron/releases/tag/v0.0.1

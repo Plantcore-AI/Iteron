@@ -27,7 +27,7 @@
 //! safety valve: a consumer that sees 512 spans and no drop count will believe it saw the run.
 
 use crate::timeline::Timeline;
-use core_protocol::{Event, EventKind};
+use iteron_protocol::{Event, EventKind};
 use serde::{Deserialize, Serialize};
 
 pub mod catalog;
@@ -169,7 +169,7 @@ pub fn project(run_id: &str, events: &[&Event], timeline: &Timeline) -> Export {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_protocol::{EffectId, Seq, TurnId, Usage};
+    use iteron_protocol::{EffectId, Seq, TurnId, Usage};
 
     fn event(seq: u64, kind: EventKind) -> Event {
         Event {

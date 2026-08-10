@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
 use clap::Subcommand;
-use core_marketplace::{PluginStore, RuntimeScope, compose_governed};
-use core_protocol::Capability;
-use core_protocol::capability_set::CapabilitySet;
+use iteron_marketplace::{PluginStore, RuntimeScope, compose_governed};
+use iteron_protocol::Capability;
+use iteron_protocol::capability_set::CapabilitySet;
 
 const MAX_PUBLIC_KEY_FILE_BYTES: usize = 1024;
 
