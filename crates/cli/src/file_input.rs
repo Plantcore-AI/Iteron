@@ -207,6 +207,7 @@ impl Default for FileLoadLimits {
 /// submission will carry.
 #[derive(Clone, PartialEq, Eq)]
 pub struct FileAttachment {
+    id: u32,
     kind: ContextKind,
     display_name: SafeDisplayName,
     content: FileContent,
@@ -214,6 +215,10 @@ pub struct FileAttachment {
 }
 
 impl FileAttachment {
+    pub const fn id(&self) -> u32 {
+        self.id
+    }
+
     pub fn kind(&self) -> ContextKind {
         self.kind
     }
@@ -247,6 +252,7 @@ impl fmt::Debug for FileAttachment {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("FileAttachment")
+            .field("id", &self.id)
             .field("kind", &self.kind)
             .field("display_name", &self.display_name())
             .field("relative_path", &self.relative_path())
@@ -261,6 +267,8 @@ impl fmt::Debug for FileAttachment {
 pub struct FileAttachments {
     limits: FileLoadLimits,
     items: Vec<FileAttachment>,
+    /// Monotonic for the editor lifetime. An id names one attachment moment and is never reused.
+    next_id: u32,
     text_bytes: usize,
 }
 
@@ -269,6 +277,7 @@ impl FileAttachments {
         Self {
             limits,
             items: Vec::new(),
+            next_id: 0,
             text_bytes: 0,
         }
     }
@@ -283,6 +292,10 @@ impl FileAttachments {
 
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
+    }
+
+    pub fn get(&self, id: u32) -> Option<&FileAttachment> {
+        self.items.iter().find(|item| item.id == id)
     }
 
     #[cfg(test)]
@@ -443,7 +456,12 @@ impl FileAttachments {
                 FileInputError::named(FileInputErrorKind::AggregateTooLarge, name.clone())
             })?;
         let digest = digest_text(&content.text);
+        let id = self.next_id.checked_add(1).ok_or_else(|| {
+            FileInputError::named(FileInputErrorKind::TooManyAttachments, name.clone())
+        })?;
+        self.next_id = id;
         self.items.push(FileAttachment {
+            id,
             kind,
             display_name: name,
             content,
@@ -464,6 +482,11 @@ impl FileAttachments {
     pub fn clear(&mut self) {
         self.items.clear();
         self.text_bytes = 0;
+    }
+
+    /// Keep future ids distinct from placeholders restored from an earlier process.
+    pub fn reserve_id(&mut self, id: u32) {
+        self.next_id = self.next_id.max(id);
     }
 
     pub fn to_file_contents(&self) -> Vec<FileContent> {

@@ -5,7 +5,7 @@
   "surfaces": [
     {
       "id": "protocol.sq-envelope",
-      "current_version": 2,
+      "current_version": 3,
       "version_field": "protocol_version",
       "fixtures": [
         {
@@ -17,17 +17,23 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-v2.json",
           "format": "json",
           "schema_version": 2
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-v3.json",
+          "format": "json",
+          "schema_version": 3
         }
       ],
       "fields": [
         { "name": "op", "introduced_release": 1 },
-        { "name": "protocol_version", "introduced_release": 1 }
+        { "name": "protocol_version", "introduced_release": 1 },
+        { "name": "submission_id", "introduced_release": 1 }
       ],
       "compatibility_shims": []
     },
     {
       "id": "protocol.op.user-input",
-      "current_version": 2,
+      "current_version": 3,
       "version_field": null,
       "selector": { "field": "op", "value": "user_input" },
       "fixtures": [
@@ -40,6 +46,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-ops-v2.jsonl",
           "format": "jsonl",
           "schema_version": 2
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v3.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
         }
       ],
       "fields": [
@@ -50,7 +61,7 @@
     },
     {
       "id": "protocol.op.user-input-v2",
-      "current_version": 2,
+      "current_version": 3,
       "version_field": null,
       "selector": { "field": "op", "value": "user_input_v2" },
       "fixtures": [
@@ -63,6 +74,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-user-input-v2-v2.json",
           "format": "json",
           "schema_version": 2
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-user-input-v2-v3.json",
+          "format": "json",
+          "schema_version": 3
         }
       ],
       "fields": [
@@ -73,7 +89,7 @@
     },
     {
       "id": "protocol.op.user-input-v3",
-      "current_version": 2,
+      "current_version": 3,
       "version_field": null,
       "selector": { "field": "op", "value": "user_input_v3" },
       "fixtures": [
@@ -86,6 +102,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-user-input-v3-v2.json",
           "format": "json",
           "schema_version": 2
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-user-input-v3-v3.json",
+          "format": "json",
+          "schema_version": 3
         }
       ],
       "fields": [
@@ -98,7 +119,7 @@
     },
     {
       "id": "protocol.op.approval-response",
-      "current_version": 2,
+      "current_version": 3,
       "version_field": null,
       "selector": { "field": "op", "value": "approval_response" },
       "fixtures": [
@@ -111,6 +132,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-ops-v2.jsonl",
           "format": "jsonl",
           "schema_version": 2
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v3.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
         }
       ],
       "fields": [
@@ -123,7 +149,7 @@
     },
     {
       "id": "protocol.op.steer",
-      "current_version": 2,
+      "current_version": 3,
       "version_field": null,
       "selector": { "field": "op", "value": "steer" },
       "fixtures": [
@@ -136,6 +162,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-ops-v2.jsonl",
           "format": "jsonl",
           "schema_version": 2
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v3.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
         }
       ],
       "fields": [
@@ -146,7 +177,7 @@
     },
     {
       "id": "protocol.op.interrupt",
-      "current_version": 2,
+      "current_version": 3,
       "version_field": null,
       "selector": { "field": "op", "value": "interrupt" },
       "fixtures": [
@@ -159,6 +190,11 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-ops-v2.jsonl",
           "format": "jsonl",
           "schema_version": 2
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v3.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
         }
       ],
       "fields": [
@@ -168,7 +204,7 @@
     },
     {
       "id": "protocol.op.drain",
-      "current_version": 2,
+      "current_version": 3,
       "version_field": null,
       "selector": { "field": "op", "value": "drain" },
       "fixtures": [
@@ -181,6 +217,28 @@
           "path": "governance/schema-compat/fixtures/protocol/sq-ops-v2.jsonl",
           "format": "jsonl",
           "schema_version": 2
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v3.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
+        }
+      ],
+      "fields": [
+        { "name": "op", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "protocol.op.force-cancel",
+      "current_version": 3,
+      "version_field": null,
+      "selector": { "field": "op", "value": "force_cancel" },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/protocol/sq-ops-v3.jsonl",
+          "format": "jsonl",
+          "schema_version": 3
         }
       ],
       "fields": [
@@ -190,7 +248,7 @@
     },
     {
       "id": "protocol.eq-envelope",
-      "current_version": 2,
+      "current_version": 3,
       "version_field": "protocol_version",
       "fixtures": [
         {
@@ -202,6 +260,11 @@
           "path": "governance/schema-compat/fixtures/protocol/eq-v2.json",
           "format": "json",
           "schema_version": 2
+        },
+        {
+          "path": "governance/schema-compat/fixtures/protocol/eq-v3.json",
+          "format": "json",
+          "schema_version": 3
         }
       ],
       "fields": [

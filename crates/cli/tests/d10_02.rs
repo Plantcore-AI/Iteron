@@ -12,7 +12,7 @@
 //!
 //!   * base (bug): the `!` parser spawns `bash` directly, bypassing the gate — `BROKER-42` appears.
 //!   * fixed:      `run_bash_inline` consults the capability broker, gets a `Deny` verdict for Plan
-//!     mode, refuses the spawn, and shows "operator shell blocked by permission mode".
+//!     mode, refuses the spawn, and renders the denial inside the ordinary Bash audit card.
 //!
 //! A brand-new session must never let a read-only posture be punched through by the operator escape
 //! hatch, so this asserts BOTH the leak is absent AND the broker's denial is visible.
@@ -258,7 +258,11 @@ fn operator_bang_shell_is_gated_by_the_capability_broker_in_plan_mode() {
     pty.wait_until(
         "the inline shell to run or be blocked",
         STEP_TIMEOUT,
-        |screen| screen.contains("BROKER-42") || screen.contains("shell blocked"),
+        |screen| {
+            screen.contains("BROKER-42")
+                || (screen.contains("plan mode denies code execution")
+                    && screen.contains("blocked command"))
+        },
     );
 
     let screen = pty.screen_text();
@@ -268,7 +272,7 @@ fn operator_bang_shell_is_gated_by_the_capability_broker_in_plan_mode() {
          `BROKER-42`: the inline shell spawned a process outside the capability broker.\n{screen}"
     );
     assert!(
-        screen.contains("shell blocked"),
+        screen.contains("plan mode denies code execution") && screen.contains("blocked command"),
         "expected the capability broker to refuse the operator shell in Plan mode with a visible \
          denial, but no block notice was shown.\n{screen}"
     );

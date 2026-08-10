@@ -11,8 +11,9 @@
 //! rule forbids one), so this exercises the behavior end to end through the built CLI against a
 //! throwaway fixture repository seeded from the current tree.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 const OWNER_LOGIN: &str = "fr0m-scratch";
 
@@ -45,7 +46,10 @@ impl Fixture {
         let root = dir.join("repo");
         std::fs::create_dir_all(&root).unwrap();
 
-        // Export the tracked tree at HEAD (no `.git`, no build artifacts) into the fixture.
+        // Export HEAD (no `.git`, no build artifacts), then overlay the current repository source.
+        // The test is routinely run before a commit; seeding only HEAD made a changed validator
+        // inspect an old fixture and fail for an unrelated schema-witness mismatch. CI's clean tree
+        // takes the same path with an empty overlay.
         let src = source_repo();
         let piped = format!(
             "git -C {src} archive --format=tar HEAD | tar -x -C {dst}",
@@ -56,6 +60,64 @@ impl Fixture {
             Command::new("sh").arg("-c").arg(&piped),
             "git archive | tar",
         );
+        let overlay = Command::new("git")
+            .args(["-C"])
+            .arg(&src)
+            .args(["diff", "--binary", "HEAD", "--"])
+            .output()
+            .expect("read working-tree diff overlay");
+        assert!(
+            overlay.status.success(),
+            "read working-tree diff overlay: {}",
+            String::from_utf8_lossy(&overlay.stderr)
+        );
+        if !overlay.stdout.is_empty() {
+            let mut apply = Command::new("git")
+                .args(["-C"])
+                .arg(&root)
+                .args(["apply", "--binary", "-"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("start working-tree diff overlay");
+            apply
+                .stdin
+                .take()
+                .expect("working-tree diff overlay stdin")
+                .write_all(&overlay.stdout)
+                .expect("write working-tree diff overlay");
+            let applied = apply
+                .wait_with_output()
+                .expect("apply working-tree diff overlay");
+            assert!(
+                applied.status.success(),
+                "working-tree diff overlay failed: {}",
+                String::from_utf8_lossy(&applied.stderr)
+            );
+        }
+        let untracked = Command::new("git")
+            .args(["-C"])
+            .arg(&src)
+            .args(["ls-files", "--others", "--exclude-standard", "-z"])
+            .output()
+            .expect("list untracked repository source");
+        assert!(
+            untracked.status.success(),
+            "list untracked repository source: {}",
+            String::from_utf8_lossy(&untracked.stderr)
+        );
+        for relative in String::from_utf8(untracked.stdout)
+            .expect("repository paths are UTF-8")
+            .split('\0')
+            .filter(|relative| !relative.is_empty())
+        {
+            let destination = root.join(relative);
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::copy(src.join(relative), destination).unwrap();
+        }
 
         git(&root, &["init", "--quiet", "--initial-branch=main"]);
         git(&root, &["config", "user.name", "D13 Test"]);

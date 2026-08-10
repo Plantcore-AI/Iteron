@@ -17,16 +17,21 @@ const TOOL_INTERRUPT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 pub(super) async fn await_tool_or_interrupt<F>(
     future: F,
     interrupt: Option<&std::sync::atomic::AtomicBool>,
+    drain: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<F::Output, ()>
 where
     F: std::future::Future,
 {
     use std::sync::atomic::Ordering;
 
-    let Some(interrupt) = interrupt else {
+    if interrupt.is_none() && drain.is_none() {
         return Ok(future.await);
+    }
+    let stopped = || {
+        interrupt.is_some_and(|flag| flag.load(Ordering::Relaxed))
+            || drain.is_some_and(|flag| flag.load(Ordering::Relaxed))
     };
-    if interrupt.load(Ordering::Relaxed) {
+    if stopped() {
         return Err(());
     }
     tokio::pin!(future);
@@ -35,7 +40,7 @@ where
             biased;
             result = &mut future => return Ok(result),
             () = tokio::time::sleep(TOOL_INTERRUPT_POLL_INTERVAL) => {
-                if interrupt.load(Ordering::Relaxed) {
+                if stopped() {
                     return Err(());
                 }
             }
@@ -51,4 +56,10 @@ pub(super) fn interrupted_tool_result(tool_use_id: String, latency_ms: u64) -> T
         trust: Trust::Workspace,
         latency_ms,
     }
+}
+
+pub(super) fn is_interrupted_tool_result(result: &ToolResult) -> bool {
+    result
+        .content
+        .starts_with("operator interrupted the admitted tool")
 }

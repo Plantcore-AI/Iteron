@@ -13,6 +13,7 @@ pub(super) async fn handle(app: &mut App, session: &mut Session, arg: &str) {
     let input = arg.trim();
     match input.split_once(' ') {
         None if matches!(input, "" | "list") => inventory(app, session).await,
+        None if input == "clean" => clean(app, session).await,
         None if input == "refresh" => refresh(app, session).await,
         None if input == "detach" => detach(app),
         Some(("attach", job_id)) => attach(app, session, job_id.trim()).await,
@@ -26,6 +27,32 @@ pub(super) async fn handle(app: &mut App, session: &mut Session, arg: &str) {
             write(app, session, job_id, text.to_owned(), false).await;
         }
         _ => usage(app),
+    }
+}
+
+async fn clean(app: &mut App, session: &mut Session) {
+    match session
+        .control(app_server::Control::Job(app_server::JobControl::Clean))
+        .await
+    {
+        Some(app_server::ControlReply::Jobs(value)) => {
+            let count = value.as_array().map_or(0, Vec::len);
+            app.note(
+                block::NoticeLevel::Info,
+                format!(
+                    "cleaned {count} retained background job{}",
+                    if count == 1 { "" } else { "s" }
+                ),
+            );
+            inventory(app, session).await;
+        }
+        Some(app_server::ControlReply::Refused(reason)) => {
+            app.note(block::NoticeLevel::Err, reason)
+        }
+        _ => app.note(
+            block::NoticeLevel::Err,
+            "the background-process supervisor is no longer reachable",
+        ),
     }
 }
 
@@ -220,7 +247,7 @@ fn render_inventory(app: &mut App, value: &serde_json::Value) {
         rows.push(block::PanelRow::Note("no retained background jobs".into()));
     }
     rows.push(block::PanelRow::Note(
-        "`/jobs attach ID` · `refresh` · `detach` · `write ID TEXT` · `eof ID` · `stop ID`".into(),
+        "`/jobs attach ID` · `refresh` · `detach` · `write ID TEXT` · `eof ID` · `stop ID` · `clean`".into(),
     ));
     app.panel("◉", "background jobs", rows);
 }
@@ -280,7 +307,7 @@ fn string<'a>(value: &'a serde_json::Value, field: &str) -> &'a str {
 fn usage(app: &mut App) {
     app.note(
         block::NoticeLevel::Err,
-        "usage: /jobs [list|attach ID|refresh|detach|write ID TEXT|eof ID|stop ID]",
+        "usage: /jobs [list|attach ID|refresh|detach|write ID TEXT|eof ID|stop ID|clean]",
     );
 }
 

@@ -29,7 +29,9 @@ use live::{
 };
 pub use live::{run_live, watch_live};
 use projection::UI_LABEL_MAX;
-pub use projection::{KernelActivityKind, WorkflowRunUiEvent, ui_safe_label, ui_safe_progress};
+pub use projection::{
+    KernelActivityKind, WorkflowRunTerminal, WorkflowRunUiEvent, ui_safe_label, ui_safe_progress,
+};
 
 /// The system prompt every workflow sub-agent runs under. Kept terse: a workflow `agent()` call is a
 /// bounded, single-shot query, not a full coding session.
@@ -812,6 +814,7 @@ pub fn unreported_run(run_id: &str, message: &str) -> RunReport {
 /// makes a run settling while the operator is idle still reach the screen.
 pub struct RunSettled {
     pub run_id: String,
+    pub terminal: WorkflowRunTerminal,
     /// The operator-facing line. Names the run, its terminal state, and how to read the result.
     pub notice: String,
     /// Bounded model-facing task notification. The session owner either steers this into a live
@@ -1185,7 +1188,7 @@ impl WorkflowSupervisor {
         };
 
         // Render first, WITHOUT the lock: both summaries are pure and the report can be large.
-        let (report, state, notice, status, model_summary) = match outcome {
+        let (report, state, notice, status, model_summary, terminal) = match outcome {
             Ok(report) => {
                 // `stopped` is set for exactly the cancellation token this owner trips, so it is
                 // the kill signal. A run that returned on its own a moment before the cancel landed
@@ -1201,7 +1204,7 @@ impl WorkflowSupervisor {
                 } else {
                     run_result_summary(name, run_id, &report, &degraded.reasons())
                 };
-                let terminal = if report.stopped {
+                let terminal_text = if report.stopped {
                     "was killed and kept the results it had already produced"
                 } else {
                     "finished in the background"
@@ -1211,17 +1214,23 @@ impl WorkflowSupervisor {
                 } else {
                     "completed"
                 };
+                let terminal = if report.stopped {
+                    WorkflowRunTerminal::Cancelled
+                } else {
+                    WorkflowRunTerminal::Completed
+                };
                 (
                     report,
                     SupervisedState::Settled {
                         summary: Some(summary.clone()),
                     },
                     format!(
-                        "Dynamic workflow `{name}` (run {run_id}) {terminal}; `/workflows` shows its \
+                        "Dynamic workflow `{name}` (run {run_id}) {terminal_text}; `/workflows` shows its \
                          result and controls"
                     ),
                     status,
                     summary,
+                    terminal,
                 )
             }
             Err(error) => {
@@ -1234,6 +1243,7 @@ impl WorkflowSupervisor {
                     format!("Workflow `{name}` (run {run_id}) failed in the background: {message}"),
                     "failed",
                     message,
+                    WorkflowRunTerminal::Failed,
                 )
             }
         };
@@ -1285,6 +1295,7 @@ impl WorkflowSupervisor {
 
         let _ = self.settled.send(RunSettled {
             run_id: run_id.to_string(),
+            terminal,
             notice,
             notification,
         });

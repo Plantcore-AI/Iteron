@@ -3,11 +3,15 @@ use super::output::OutputRing;
 use super::types::{
     ActionError, JobId, JobShared, JobState, ProcessSnapshot, ProcessSummary, WriteReceipt, lock,
 };
-use super::{CONTROL_RESPONSE_SECS, MAX_ACTIVE_JOBS, MAX_JOB_RECORDS, MAX_JOB_RUNTIME_SECS};
+use super::{
+    CONTROL_RESPONSE_SECS, MAX_ACTIVE_JOBS, MAX_JOB_RECORDS, MAX_JOB_RUNTIME_SECS,
+    ProcessLifecycleObserver,
+};
 use core_sandbox::{
     ConfinedProcess, ConfinedProcessControl, Confinement, PersistentBackend, SandboxError,
     spawn_confined_process,
 };
+use futures_util::future::join_all;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -23,6 +27,7 @@ pub(super) struct Supervisor {
     instance: u64,
     state: Mutex<SupervisorState>,
     start_gate: AsyncMutex<()>,
+    lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
 }
 
 impl Supervisor {
@@ -37,7 +42,12 @@ impl Supervisor {
                 jobs: BTreeMap::new(),
             }),
             start_gate: AsyncMutex::new(()),
+            lifecycle_observer: Arc::new(Mutex::new(None)),
         })
+    }
+
+    pub(super) fn bind_lifecycle_observer(&self, observer: ProcessLifecycleObserver) {
+        *lock(&self.lifecycle_observer) = Some(observer);
     }
 
     pub(super) async fn start(
@@ -54,7 +64,13 @@ impl Supervisor {
         let process = spawn_confined_process(command, &confinement)
             .await
             .map_err(spawn_error)?;
-        let job = Job::spawn(id, command.to_owned(), process).await?;
+        let job = Job::spawn(
+            id,
+            command.to_owned(),
+            process,
+            Arc::clone(&self.lifecycle_observer),
+        )
+        .await?;
         let snapshot = job.snapshot(0, 0)?;
         lock(&self.state).jobs.insert(id, job);
         Ok(snapshot)
@@ -83,6 +99,42 @@ impl Supervisor {
 
     pub(super) async fn stop(&self, raw_id: &str) -> Result<ProcessSnapshot, ActionError> {
         self.lookup(raw_id)?.stop().await
+    }
+
+    /// Stop every retained job without holding the registry lock across an await.
+    ///
+    /// The snapshot is finite (`MAX_JOB_RECORDS`), every job still owns its own terminal, and all
+    /// stops are attempted even when one controller reports an unknown outcome.
+    pub(super) async fn clean(&self) -> Result<Vec<ProcessSnapshot>, ActionError> {
+        let jobs = lock(&self.state).jobs.values().cloned().collect::<Vec<_>>();
+        let results = join_all(jobs.iter().map(|job| job.stop())).await;
+        let mut snapshots = Vec::with_capacity(results.len());
+        let mut failures = Vec::new();
+        let mut unknown = false;
+        for result in results {
+            match result {
+                Ok(snapshot) => snapshots.push(snapshot),
+                Err(ActionError::Definite(error)) => failures.push(error),
+                Err(ActionError::Unknown(error)) => {
+                    unknown = true;
+                    failures.push(error);
+                }
+            }
+        }
+        if failures.is_empty() {
+            Ok(snapshots)
+        } else {
+            let detail = failures.join("; ");
+            Err(if unknown {
+                ActionError::Unknown(format!(
+                    "background cleanup attempted every retained job; {detail}"
+                ))
+            } else {
+                ActionError::Definite(format!(
+                    "background cleanup attempted every retained job; {detail}"
+                ))
+            })
+        }
     }
 
     pub(super) fn list(&self) -> Vec<ProcessSummary> {
@@ -183,6 +235,7 @@ impl Job {
         id: JobId,
         command: String,
         mut process: ConfinedProcess,
+        lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
     ) -> Result<Arc<Self>, ActionError> {
         let backend = process.backend();
         let process_control = process.control();
@@ -203,7 +256,15 @@ impl Job {
             stderr: Arc::new(Mutex::new(OutputRing::default())),
             revision,
         });
-        let channels = spawn_actor(process, stdin, stdout, stderr, Arc::clone(&shared));
+        let channels = spawn_actor(
+            id,
+            process,
+            stdin,
+            stdout,
+            stderr,
+            Arc::clone(&shared),
+            lifecycle_observer,
+        );
         #[cfg(all(test, target_os = "linux"))]
         let actor_abort = channels.task.abort_handle();
         // Dropping a JoinHandle detaches the actor. Its own exit guard owns state truth and group

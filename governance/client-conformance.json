@@ -71,7 +71,7 @@
         },
         {
           "kind": "test",
-          "path": "crates/cli/src/tui.rs",
+          "path": "crates/cli/src/tui/tests.rs",
           "selector": "fn composer_attachment_submits_one_multimodal_sq_envelope()"
         },
         {
@@ -165,7 +165,7 @@
     "transcript": "governance/client-conformance/client-parity-v5.json",
     "test": {
       "kind": "test",
-      "path": "crates/cli/src/tui.rs",
+      "path": "crates/cli/src/tui/tests.rs",
       "selector": "fn three_client_production_paths_are_pairwise_identical_for_every_terminal_outcome()"
     }
   },

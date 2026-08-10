@@ -172,6 +172,17 @@ pub(crate) fn apply_to_buffer(
     regions: &[HyperlinkRegion],
     policy: &Policy,
 ) {
+    apply_to_buffer_with_chunk_width(buffer, area, scroll, regions, policy, 2);
+}
+
+fn apply_to_buffer_with_chunk_width(
+    buffer: &mut Buffer,
+    area: Rect,
+    scroll: u16,
+    regions: &[HyperlinkRegion],
+    policy: &Policy,
+    chunk_width_limit: u16,
+) {
     if !policy.supports_osc8() || area.is_empty() {
         return;
     }
@@ -201,7 +212,7 @@ pub(crate) fn apply_to_buffer(
             let mut chunk = String::new();
             let mut chunk_width = 0u16;
             let mut scan = column;
-            while scan < end && chunk_width < 2 {
+            while scan < end && chunk_width < chunk_width_limit {
                 let scan_x = area.x.saturating_add(scan);
                 let symbol = buffer[(scan_x, y)].symbol();
                 if symbol.is_empty() || symbol.chars().any(char::is_control) {
@@ -212,7 +223,7 @@ pub(crate) fn apply_to_buffer(
                     .map(crate::tui::char_width)
                     .fold(0u16, u16::saturating_add)
                     .max(1);
-                if chunk_width.saturating_add(symbol_width) > 2 {
+                if chunk_width.saturating_add(symbol_width) > chunk_width_limit {
                     break;
                 }
                 chunk.push_str(symbol);

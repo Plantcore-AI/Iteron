@@ -158,7 +158,7 @@ pub struct RunOutput {
 
 const POST_KILL_DRAIN_SECS: u64 = 1;
 #[cfg(unix)]
-const TERMINATION_GRACE_MS: u64 = 250;
+const TERMINATION_GRACE_MS: u64 = 50;
 
 #[derive(Default)]
 struct BoundedCapture {

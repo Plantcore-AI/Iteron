@@ -664,7 +664,7 @@ fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server() {
         }),
     );
     let first_event = receive(&mut first_reader);
-    assert_eq!(first_event["type"], "event");
+    assert_eq!(first_event["type"], "event", "{first_event}");
     let mut last_seq = first_event["seq"].as_u64().unwrap();
     provider
         .request_seen

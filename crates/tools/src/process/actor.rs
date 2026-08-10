@@ -1,7 +1,8 @@
+use super::types::JobId;
 use super::types::{ActionError, JobShared, JobState, lock};
 use super::{
-    CONTROL_QUEUE_CAPACITY, MAX_JOB_RUNTIME_SECS, OUTPUT_DRAIN_SECS, STDIN_WRITE_SECS,
-    STOP_QUEUE_CAPACITY,
+    CONTROL_QUEUE_CAPACITY, MAX_JOB_RUNTIME_SECS, OUTPUT_DRAIN_SECS, ProcessLifecycleKind,
+    ProcessLifecycleNotice, ProcessLifecycleObserver, STDIN_WRITE_SECS, STOP_QUEUE_CAPACITY,
 };
 use core_sandbox::{ConfinedProcess, ConfinedProcessControl};
 use std::sync::{Arc, Mutex};
@@ -27,11 +28,13 @@ pub(super) struct ActorChannels {
 }
 
 pub(super) fn spawn_actor(
+    job_id: JobId,
     process: ConfinedProcess,
     stdin: tokio::process::ChildStdin,
     stdout: tokio::process::ChildStdout,
     stderr: tokio::process::ChildStderr,
     shared: Arc<JobShared>,
+    lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
 ) -> ActorChannels {
     let (writes, write_receiver) = mpsc::channel(CONTROL_QUEUE_CAPACITY);
     let (stop, stop_receiver) = mpsc::channel(STOP_QUEUE_CAPACITY);
@@ -49,12 +52,14 @@ pub(super) fn spawn_actor(
         shared.revision.clone(),
     ));
     let task = tokio::spawn(run_job(
+        job_id,
         process,
         stdin,
         write_receiver,
         stop_receiver,
         events,
         shared,
+        lifecycle_observer,
         stdout_task,
         stderr_task,
     ));
@@ -77,8 +82,10 @@ enum TerminalCause {
 }
 
 struct ControllerExitGuard {
+    job_id: JobId,
     shared: Arc<JobShared>,
     process_control: ConfinedProcessControl,
+    lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
     committed: bool,
 }
 
@@ -88,32 +95,49 @@ impl Drop for ControllerExitGuard {
             return;
         }
         self.process_control.force_kill();
-        {
+        let terminal = {
             let mut state = lock(&self.shared.state);
             if !state.is_terminal() {
                 *state = JobState::CleanupUnknown {
                     trigger: "controller_dropped",
                 };
+                true
+            } else {
+                false
             }
-        }
+        };
         self.shared.notify();
+        if terminal {
+            notify_terminal(
+                self.job_id,
+                &JobState::CleanupUnknown {
+                    trigger: "controller_dropped",
+                },
+                &self.lifecycle_observer,
+            );
+        }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn run_job(
+    job_id: JobId,
     mut process: ConfinedProcess,
     stdin: tokio::process::ChildStdin,
     mut writes: mpsc::Receiver<WriteControl>,
     mut stops: mpsc::Receiver<StopControl>,
     mut events: mpsc::Receiver<DrainEvent>,
     shared: Arc<JobShared>,
+    lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
     stdout_task: tokio::task::JoinHandle<()>,
     stderr_task: tokio::task::JoinHandle<()>,
 ) {
+    notify_kind(job_id, ProcessLifecycleKind::Spawned, &lifecycle_observer);
     let mut exit_guard = ControllerExitGuard {
+        job_id,
         shared: Arc::clone(&shared),
         process_control: process.control(),
+        lifecycle_observer: Arc::clone(&lifecycle_observer),
         committed: false,
     };
     let mut stdin = Some(stdin);
@@ -196,12 +220,45 @@ async fn run_job(
     drop(stdin);
     finish_drains(stdout_task, stderr_task, &shared).await;
     let authoritative = status.is_some();
-    *lock(&shared.state) = terminal_state(cause, status);
+    let terminal = terminal_state(cause, status);
+    *lock(&shared.state) = terminal.clone();
     shared.notify();
+    notify_terminal(job_id, &terminal, &lifecycle_observer);
     for reply in stop_replies {
         let _ = reply.send(authoritative);
     }
     exit_guard.committed = true;
+}
+
+fn notify_terminal(
+    job_id: JobId,
+    state: &JobState,
+    observer: &Arc<Mutex<Option<ProcessLifecycleObserver>>>,
+) {
+    let kind = match state {
+        JobState::Exited { .. } => ProcessLifecycleKind::Exited,
+        JobState::Stopped { .. } => ProcessLifecycleKind::Stopped,
+        JobState::TimedOut { .. } => ProcessLifecycleKind::TimedOut,
+        JobState::OutputLimitExceeded { .. } => ProcessLifecycleKind::OutputLimitExceeded,
+        JobState::IoFailed { .. } => ProcessLifecycleKind::IoFailed,
+        JobState::CleanupUnknown { .. } => ProcessLifecycleKind::CleanupUnknown,
+        JobState::Running | JobState::Stopping => return,
+    };
+    notify_kind(job_id, kind, observer);
+}
+
+fn notify_kind(
+    job_id: JobId,
+    kind: ProcessLifecycleKind,
+    observer: &Arc<Mutex<Option<ProcessLifecycleObserver>>>,
+) {
+    let observer = lock(observer).clone();
+    if let Some(observer) = observer {
+        observer(ProcessLifecycleNotice {
+            job_id: job_id.to_string(),
+            kind,
+        });
+    }
 }
 
 fn reject_pending_writes(writes: &mut mpsc::Receiver<WriteControl>) {

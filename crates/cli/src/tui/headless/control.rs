@@ -5,7 +5,9 @@
 //! the last byte cursors it observed. Server-process restart is deliberately a different boundary:
 //! this transport never turns a stale journal row into a live process capability.
 
-use crate::app_server::{Control, ControlReply, ControlRequest, JobControl, SessionSnapshot};
+use crate::app_server::{
+    Control, ControlReply, ControlRequest, JobControl, MemoryControlReply, SessionSnapshot,
+};
 use anyhow::{Context, Result};
 use core_protocol::{Capability, Effort, PermissionMode, Verdict, task::MAX_TASK_TEXT_BYTES};
 use serde::{Deserialize, Deserializer, de};
@@ -205,6 +207,21 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
         ControlReply::Jobs(value) => json!({
             "type": "jobs",
             "value": value,
+        }),
+        ControlReply::Memory(MemoryControlReply::Added { id }) => json!({
+            "type": "memory",
+            "status": "added",
+            "id": id,
+        }),
+        ControlReply::Memory(MemoryControlReply::Deleted { id }) => json!({
+            "type": "memory",
+            "status": "deleted",
+            "id": id,
+        }),
+        ControlReply::Memory(MemoryControlReply::Missing { id }) => json!({
+            "type": "memory",
+            "status": "missing",
+            "id": id,
         }),
         ControlReply::SideAnswer(_)
         | ControlReply::SideStatus { .. }

@@ -598,10 +598,17 @@ struct EffectPrimitive {
 // physical checkpoint dispatch site.
 const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     EffectPrimitive {
-        needle: "hooks.run(",
+        needle: ".run_cancellable_journaled(",
         allowed_in: &["brokered_hook"],
         guidance: "a lifecycle hook starts an operator-controlled process; route it through \
                    Agent::brokered_hook so it crosses the effect boundary",
+    },
+    EffectPrimitive {
+        needle: ".run_lifecycle_cancellable_journaled(",
+        allowed_in: &["brokered_lifecycle_gate_correlated", "dispatch_one"],
+        guidance: "a lifecycle hook starts operator-controlled processes; synchronous gates use \
+                   the universal effect boundary, while bounded asynchronous observe/augment \
+                   dispatch must hold the fsynced HookEffectJournal before starting a command",
     },
     EffectPrimitive {
         needle: "registry.run_admitted_intent(",
@@ -633,7 +640,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
                    the copy and settled after it",
     },
     EffectPrimitive {
-        needle: "self.run_bounded_verify(",
+        needle: ".run_bounded_verify(",
         allowed_in: &["dispatch_verify"],
         guidance: "a verifier oracle runs repository-controlled code; reach it through \
                    Agent::run_verify, which owns the intent/terminal pair",
@@ -645,7 +652,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
                    the boundary under EffectClass::Workflow",
     },
     EffectPrimitive {
-        needle: "self.run_child_with_control(",
+        needle: ".run_child_with_control(",
         allowed_in: &["spawn_subagent"],
         guidance: "spawning a subagent is an effect of the parent; open the boundary before the \
                    child runs",
@@ -659,7 +666,9 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     },
 ];
 
-/// Kernel source files that may contain production effect dispatch.
+/// Fixed kernel sources. The CLI runtime is discovered recursively below because the composition
+/// root is intentionally split into small modules; a static module allowlist would silently stop
+/// auditing every newly extracted dispatcher.
 const KERNEL_SOURCES: &[&str] = &[
     "crates/kernel/src/lib.rs",
     "crates/kernel/src/driver.rs",
@@ -673,11 +682,38 @@ const KERNEL_SOURCES: &[&str] = &[
     "crates/kernel/src/effect_class.rs",
     "crates/kernel/src/effect_journal.rs",
     "crates/kernel/src/diagnostics.rs",
-    "crates/cli/src/runtime.rs",
-    "crates/cli/src/runtime/hooks.rs",
-    "crates/cli/src/runtime/workflow_spawner.rs",
-    "crates/cli/src/runtime/pricing.rs",
 ];
+
+fn collect_runtime_sources(directory: &std::path::Path, sources: &mut Vec<PathBuf>) {
+    let entries = std::fs::read_dir(directory)
+        .unwrap_or_else(|error| panic!("runtime source directory must be readable: {error}"));
+    for entry in entries {
+        let path = entry.expect("runtime source entry must be readable").path();
+        if path.is_dir() {
+            collect_runtime_sources(&path, sources);
+        } else if path.extension().is_some_and(|extension| extension == "rs")
+            && path.file_name().is_none_or(|name| name != "tests.rs")
+        {
+            sources.push(path);
+        }
+    }
+}
+
+fn runtime_source_paths(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut sources = vec![root.join("crates/cli/src/runtime.rs")];
+    collect_runtime_sources(&root.join("crates/cli/src/runtime"), &mut sources);
+    sources.sort();
+    sources
+}
+
+fn effect_source_paths(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut sources: Vec<PathBuf> = KERNEL_SOURCES
+        .iter()
+        .map(|relative| root.join(relative))
+        .collect();
+    sources.extend(runtime_source_paths(root));
+    sources
+}
 
 /// Production lines only: every `#[cfg(test)]` item is removed, tracking brace depth from the
 /// attribute so nested test modules disappear whole.
@@ -731,6 +767,7 @@ fn function_name(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
     let rest = trimmed
         .strip_prefix("pub(crate) ")
+        .or_else(|| trimmed.strip_prefix("pub(super) "))
         .or_else(|| trimmed.strip_prefix("pub "))
         .unwrap_or(trimmed);
     let rest = rest.strip_prefix("async ").unwrap_or(rest);
@@ -751,8 +788,8 @@ fn no_effect_producing_call_site_bypasses_the_boundary() {
     let mut violations = Vec::new();
     let mut found: BTreeMap<&str, usize> = BTreeMap::new();
 
-    for relative in KERNEL_SOURCES {
-        let path = root.join(relative);
+    for path in effect_source_paths(root) {
+        let relative = path.strip_prefix(root).unwrap_or(&path).display();
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("kernel source {relative} must be readable: {error}"));
         let lines = production_lines(&source);
@@ -810,11 +847,16 @@ fn every_effect_class_is_reachable_from_a_dispatch_site() {
         .parent()
         .and_then(std::path::Path::parent)
         .expect("kernel is two directories below the repository root");
-    let source =
-        std::fs::read_to_string(root.join("crates/cli/src/runtime.rs")).expect("runtime source");
-    let production: String = production_lines(&source)
+    let production = runtime_source_paths(root)
         .into_iter()
-        .map(|(_, line)| line)
+        .map(|path| std::fs::read_to_string(path).expect("runtime source"))
+        .map(|source| {
+            production_lines(&source)
+                .into_iter()
+                .map(|(_, line)| line)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let missing: BTreeSet<String> = EffectClass::ALL

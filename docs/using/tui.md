@@ -43,11 +43,13 @@ required. A pipeline should use [one-shot mode](one-shot.md) instead.
   the most recent chip, and an image's anchors go with it. The chip carries the
   `#N`, the file name and the byte count; image bytes, file text and pasted
   blocks are never rendered in the preview.
-- Scroll the transcript with the wheel or trackpad. A captured left click folds a
-  card or places the composer cursor at the selected terminal cell, including
-  wide CJK cells.
-- Press ++ctrl+t++ to release mouse capture for terminal-native selection and
-  copy; press it again to return scrolling and clicks to Core Code.
+- Core starts as a complete alternate-screen TUI with application mouse mode enabled.
+  The wheel or trackpad scrolls only the current session's transcript; it cannot fall
+  through into shell output from before Core started and never navigates the composer's
+  prompt history. Press ++ctrl+t++ to release mouse capture for native drag selection and
+  copy without leaving the full-screen TUI; press it again to restore application
+  scrolling. The status line reports `mouse:on · wheel:transcript` or `selection:on`
+  truthfully. Page Up/Down and `/transcript` remain keyboard-accessible inspection paths.
 - Use ++shift+tab++ to cycle `default`, `acceptEdits`, `plan`, and `yolo`.
 - Use `/model`, `/effort`, `/mode`, `/permissions`, and `/theme` for explicit
   pickers or session changes.

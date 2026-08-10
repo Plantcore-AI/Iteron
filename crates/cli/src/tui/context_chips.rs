@@ -79,17 +79,19 @@ async fn add(app: &mut App, session: &Session, input: &str) {
                     .attach_context(ContextKind::Diff, &label, document)
                     .map(|chip| {
                         (
+                            chip.id(),
                             chip.display_name().to_owned(),
                             chip.text_bytes(),
                             short_digest(chip.digest()).to_owned(),
                         )
                     });
                 match attached {
-                    Ok((name, bytes, digest)) => app.note(
+                    Ok((id, name, bytes, digest)) => app.note(
                         block::NoticeLevel::Ok,
                         format!(
-                            "attached {} context · {} bytes · sha256:{}",
-                            name, bytes, digest
+                            "attached {} context as [File #{}] · {} bytes · sha256:{} · deleting \
+                             the tag removes its chip",
+                            name, id, bytes, digest
                         ),
                     ),
                     Err(error) => app.note(
@@ -120,18 +122,21 @@ fn add_path(app: &mut App, session: &Session, kind: ContextKind, raw_path: &str)
     }
     .map(|chip| {
         (
+            chip.id(),
             chip.display_name().to_owned(),
             chip.text_bytes(),
             short_digest(chip.digest()).to_owned(),
         )
     });
     match result {
-        Ok((name, bytes, digest)) => app.note(
+        Ok((id, name, bytes, digest)) => app.note(
             block::NoticeLevel::Ok,
             format!(
-                "attached {} {} · {} bytes · sha256:{}",
+                "attached {} {} as [File #{}] · {} bytes · sha256:{} · deleting the tag removes \
+                 its chip",
                 kind.label(),
                 name,
+                id,
                 bytes,
                 digest
             ),

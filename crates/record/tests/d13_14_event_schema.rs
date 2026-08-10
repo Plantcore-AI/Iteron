@@ -968,6 +968,7 @@ fn record_op_named_values(op: &Op, named: &mut NamedWires) {
         }
         | Op::Steer { text: _ }
         | Op::Interrupt
+        | Op::ForceCancel
         | Op::Drain
         | Op::Unknown => {}
     }

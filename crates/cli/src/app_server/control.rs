@@ -42,6 +42,7 @@ pub(super) fn apply_immediate_workflow_control(
 
 async fn apply_job_control(
     processes: Option<&core_tools::ProcessControl>,
+    events: &EventPublisher,
     control: JobControl,
 ) -> ControlReply {
     let Some(processes) = processes else {
@@ -49,16 +50,39 @@ async fn apply_job_control(
     };
     let result = match control {
         JobControl::Inventory => processes.list(),
+        JobControl::Clean => processes.clean().await,
         JobControl::Attach {
             job_id,
             stdout_cursor,
             stderr_cursor,
         } => {
-            processes
+            let result = processes
                 .poll(&job_id, stdout_cursor, stderr_cursor, 0)
-                .await
+                .await;
+            if result.is_ok() {
+                events.record_job_lifecycle(
+                    "background.attached",
+                    &job_id,
+                    LifecyclePayload::default(),
+                );
+            }
+            result
         }
-        JobControl::Write { job_id, input, eof } => processes.write(&job_id, input, eof).await,
+        JobControl::Write { job_id, input, eof } => {
+            let bytes = u64::try_from(input.len()).unwrap_or(u64::MAX);
+            let result = processes.write(&job_id, input, eof).await;
+            if result.is_ok() {
+                events.record_job_lifecycle(
+                    "background.input_written",
+                    &job_id,
+                    LifecyclePayload {
+                        magnitude: Some(bytes),
+                        ..LifecyclePayload::default()
+                    },
+                );
+            }
+            result
+        }
         JobControl::Stop { job_id } => processes.stop(&job_id).await,
     };
     match result {
@@ -71,16 +95,126 @@ async fn apply_job_control(
     }
 }
 
+async fn apply_memory_control(agent: &mut Agent, control: MemoryControl) -> ControlReply {
+    let Some((workspace, memory_strategy, turn)) = agent.memory_control_context() else {
+        return ControlReply::Refused("memory is not available in this session".into());
+    };
+    match control {
+        MemoryControl::Add(text) => {
+            let report = match agent
+                .brokered_lifecycle_gate(
+                    turn,
+                    "memory.fact.add_requested",
+                    LifecyclePayload {
+                        magnitude: Some(u64::try_from(text.len()).unwrap_or(u64::MAX)),
+                        ..LifecyclePayload::default()
+                    },
+                )
+                .await
+            {
+                Ok(report) => report,
+                Err(error) => return ControlReply::Refused(error.public_summary()),
+            };
+            if let crate::runtime::hooks::HookDecision::Deny(reason) = report.decision {
+                return ControlReply::Refused(reason);
+            }
+            let proposal = match core_ctx::MemoryRecallStrategy::authorize_project_write_with(
+                memory_strategy.as_ref(),
+                &text,
+                core_protocol::capability_set::CapabilitySet::only(Capability::TrustMutating),
+            ) {
+                Ok(proposal) => proposal,
+                Err(error) => {
+                    agent.lifecycle_event(
+                        "memory.fact.add_failed",
+                        Some(turn),
+                        LifecyclePayload {
+                            reason_code: Some("policy_refused".into()),
+                            ..LifecyclePayload::default()
+                        },
+                    );
+                    return ControlReply::Refused(format!("memory policy refused: {error}"));
+                }
+            };
+            match core_ctx::MemoryStore::at(&workspace).add(&proposal.text) {
+                Ok(id) => {
+                    agent.lifecycle_event(
+                        "memory.fact.added",
+                        Some(turn),
+                        LifecyclePayload::default(),
+                    );
+                    agent.lifecycle_event(
+                        "memory.visibility.scheduled",
+                        Some(turn),
+                        LifecyclePayload::default(),
+                    );
+                    match agent.activate_session_memory(&id, &proposal.text) {
+                        Ok(()) => ControlReply::Memory(MemoryControlReply::Added { id }),
+                        Err(reason) => {
+                            agent.lifecycle_event(
+                                "memory.recall.unused",
+                                Some(turn),
+                                LifecyclePayload {
+                                    reason_code: Some("session_refresh_queue_full".into()),
+                                    ..LifecyclePayload::default()
+                                },
+                            );
+                            ControlReply::Refused(format!(
+                                "memory was stored, but same-session activation failed: {reason}"
+                            ))
+                        }
+                    }
+                }
+                Err(error) => {
+                    agent.lifecycle_event(
+                        "memory.fact.add_failed",
+                        Some(turn),
+                        LifecyclePayload::default(),
+                    );
+                    ControlReply::Refused(format!("memory add failed: {error}"))
+                }
+            }
+        }
+        MemoryControl::Delete(id) => {
+            let report = match agent
+                .brokered_lifecycle_gate(
+                    turn,
+                    "memory.fact.delete_requested",
+                    LifecyclePayload::default(),
+                )
+                .await
+            {
+                Ok(report) => report,
+                Err(error) => return ControlReply::Refused(error.public_summary()),
+            };
+            if let crate::runtime::hooks::HookDecision::Deny(reason) = report.decision {
+                return ControlReply::Refused(reason);
+            }
+            if core_ctx::MemoryStore::at(&workspace).remove(&id) {
+                agent.lifecycle_event(
+                    "memory.fact.deleted",
+                    Some(turn),
+                    LifecyclePayload::default(),
+                );
+                ControlReply::Memory(MemoryControlReply::Deleted { id })
+            } else {
+                ControlReply::Memory(MemoryControlReply::Missing { id })
+            }
+        }
+    }
+}
+
 pub(super) async fn apply_immediate_control(
     workflows: &crate::workflow::WorkflowSupervisor,
     processes: Option<&core_tools::ProcessControl>,
+    events: &EventPublisher,
     request: ControlRequest,
 ) {
     match request.control {
         Control::Job(control) => {
             let _ = request
                 .reply
-                .send(apply_job_control(processes, control).await);
+                .send(apply_job_control(processes, events, control).await);
         }
         control @ Control::Workflow(_) => {
             apply_immediate_workflow_control(
@@ -156,7 +290,10 @@ async fn apply_workflow_control(
                     });
                     let _ = events
                         .publish(ServerEvent::WorkflowRun(
-                            crate::workflow::WorkflowRunUiEvent::Finished { run_id: failed_id },
+                            crate::workflow::WorkflowRunUiEvent::Finished {
+                                run_id: failed_id,
+                                terminal: crate::workflow::WorkflowRunTerminal::Failed,
+                            },
                         ))
                         .await;
                     workflow_inventory_reply(
@@ -267,13 +404,17 @@ pub(super) async fn apply_control(
                 )),
             }
         }
-        Control::Compact { focus } => match agent.compact_now(focus).await {
-            Ok(report) => ControlReply::Compacted {
-                report: Box::new(report),
-                snapshot: Box::new(snapshot_of(agent)),
-            },
-            Err(error) => ControlReply::Refused(error.public_summary()),
-        },
+        Control::Compact { focus } => {
+            let reply = match agent.compact_now(focus).await {
+                Ok(report) => ControlReply::Compacted {
+                    report: Box::new(report),
+                    snapshot: Box::new(snapshot_of(agent)),
+                },
+                Err(error) => ControlReply::Refused(error.public_summary()),
+            };
+            agent.settle_standalone_control_interrupt();
+            reply
+        }
         Control::TurnBudget { set } => match set {
             None => ControlReply::TurnBudget(agent.turn_budget()),
             Some(max_turns) => match agent.set_turn_ceiling(max_turns) {
@@ -281,7 +422,11 @@ pub(super) async fn apply_control(
                 Err(error) => ControlReply::Refused(error.public_summary()),
             },
         },
-        Control::Side(request) => apply_side(agent, side, request).await,
+        Control::Side(request) => {
+            let reply = apply_side(agent, side, request).await;
+            agent.settle_standalone_control_interrupt();
+            reply
+        }
         Control::AdoptRun(request) => {
             let AdoptRun {
                 rollout,
@@ -290,6 +435,16 @@ pub(super) async fn apply_control(
             } = *request;
             match agent.adopt_run(rollout) {
                 Ok(adopted) => {
+                    events.run_id = Some(core_protocol::RunId(adopted.run_id.clone()));
+                    events.record_lifecycle(
+                        "session.resumed",
+                        None,
+                        None,
+                        LifecyclePayload {
+                            outcome_code: Some(if fresh { "forked" } else { "resumed" }.into()),
+                            ..LifecyclePayload::default()
+                        },
+                    );
                     // The adopted transcript IS this session's transcript now, so the next
                     // submission must continue it. Leaving `started` false would send it down
                     // `Agent::run`, which starts from nothing and would silently discard the
@@ -382,7 +537,8 @@ pub(super) async fn apply_control(
         Control::Workflow(control) => {
             apply_workflow_control(agent, workflows, events, control).await
         }
-        Control::Job(control) => apply_job_control(processes, control).await,
+        Control::Job(control) => apply_job_control(processes, events, control).await,
+        Control::Memory(control) => apply_memory_control(agent, control).await,
     };
     // A frontend that dropped the receiver has moved on; that is not the server's problem.
     let _ = request.reply.send(reply);

@@ -17,6 +17,7 @@ pub enum SlashCommand {
     Clear,
     Compact,
     Context,
+    Telemetry,
     Cost,
     Status,
     Budget,
@@ -78,6 +79,7 @@ impl SlashCommand {
             Self::Help
             | Self::Clear
             | Self::Context
+            | Self::Telemetry
             | Self::Cost
             | Self::Status
             | Self::Budget
@@ -146,6 +148,12 @@ pub const COMMANDS: &[Cmd] = &[
         name: "context",
         args: "[stats|list|add|preview|delete]",
         help: "token usage and typed file/diff/IDE/LSP context chips",
+    },
+    Cmd {
+        command: SlashCommand::Telemetry,
+        name: "telemetry",
+        args: "",
+        help: "local lifecycle, Hook and exporter health (content-free)",
     },
     Cmd {
         command: SlashCommand::Cost,

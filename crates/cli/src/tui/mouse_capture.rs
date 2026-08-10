@@ -1,12 +1,18 @@
+//! Explicit ownership of mouse input inside the full-screen TUI.
+//!
+//! Core captures the mouse by default so wheel/trackpad events scroll the current session's
+//! transcript instead of the terminal emulator's older scrollback. Ctrl-T releases capture for
+//! native drag selection and toggles it back without leaving the alternate screen.
+
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use std::io::{self, Write};
 
-/// Whether terminal mouse events belong to Core or to the terminal's native selection UI.
+/// Whether mouse events belong to Core or to the terminal's native selection UI.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) enum State {
-    Captured,
     #[default]
+    Captured,
     Released,
 }
 
@@ -17,7 +23,7 @@ impl State {
 
     pub(super) fn status_label(self) -> &'static str {
         match self {
-            Self::Captured => "mouse:on",
+            Self::Captured => "mouse:on · wheel:transcript",
             Self::Released => "selection:on",
         }
     }
@@ -48,19 +54,17 @@ pub(super) fn release(writer: &mut impl Write) -> io::Result<()> {
     State::Released.write_to(writer)
 }
 
-/// Owns the live terminal mouse mode. State changes commit only after their escape sequence was
-/// written successfully, and unwind always attempts to release capture.
 pub(super) struct Controller<W: Write> {
     writer: W,
     state: State,
 }
 
 impl<W: Write> Controller<W> {
-    pub(super) fn release_to_terminal(mut writer: W) -> io::Result<Self> {
-        State::Released.write_to(&mut writer)?;
+    pub(super) fn capture_to_terminal(mut writer: W) -> io::Result<Self> {
+        State::Captured.write_to(&mut writer)?;
         Ok(Self {
             writer,
-            state: State::Released,
+            state: State::Captured,
         })
     }
 
@@ -81,8 +85,8 @@ impl<W: Write> Controller<W> {
         Ok(state)
     }
 
-    /// Emit disable even when the tracked state is already released. Teardown must repair a
-    /// terminal whose mode drifted independently of our in-memory projection.
+    /// Emit disable even when no in-memory transition occurred. Teardown must repair a terminal
+    /// whose mode drifted independently of Core.
     pub(super) fn release(&mut self) -> io::Result<()> {
         release(&mut self.writer)?;
         self.state = State::Released;
@@ -116,58 +120,38 @@ mod tests {
     }
 
     #[test]
-    fn toggle_commits_protocol_mode_and_exposes_truthful_labels() {
+    fn controller_captures_by_default_toggles_and_releases_on_drop() {
         let sink = SharedWriter::default();
         let bytes = sink.0.clone();
-        let mut controller = Controller::release_to_terminal(sink).unwrap();
-
-        assert_eq!(controller.state(), State::Released);
-        assert_eq!(controller.state().status_label(), "selection:on");
-        let mut disable = Vec::new();
-        State::Released.write_to(&mut disable).unwrap();
-        assert!(bytes.lock().unwrap().ends_with(&disable));
-
-        assert_eq!(controller.toggle().unwrap(), State::Captured);
-        assert_eq!(controller.state().status_label(), "mouse:on");
+        let mut controller = Controller::capture_to_terminal(sink).unwrap();
+        assert_eq!(controller.state(), State::Captured);
         let mut enable = Vec::new();
         State::Captured.write_to(&mut enable).unwrap();
         assert!(bytes.lock().unwrap().ends_with(&enable));
 
+        let mut disable = Vec::new();
+        release(&mut disable).unwrap();
         assert_eq!(controller.toggle().unwrap(), State::Released);
-        assert_eq!(State::Released.status_label(), "selection:on");
         assert!(bytes.lock().unwrap().ends_with(&disable));
+        assert_eq!(controller.toggle().unwrap(), State::Captured);
         assert_eq!(State::Captured.hint(), "ctrl+t selection");
 
         drop(controller);
-        let output = bytes.lock().unwrap().clone();
-        assert!(
-            output.ends_with(&disable),
-            "drop must release mouse capture"
-        );
+        assert!(bytes.lock().unwrap().ends_with(&disable));
     }
 
     #[test]
-    fn panic_unwind_releases_mouse_capture() {
-        for release_before_panic in [false, true] {
-            let sink = SharedWriter::default();
-            let bytes = sink.0.clone();
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut controller = Controller::release_to_terminal(sink).unwrap();
-                if !release_before_panic {
-                    assert_eq!(controller.toggle().unwrap(), State::Captured);
-                }
-                let _controller = controller;
-                panic!("exercise mouse-capture unwind");
-            }));
+    fn panic_unwind_leaves_native_selection_enabled() {
+        let sink = SharedWriter::default();
+        let bytes = sink.0.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _controller = Controller::capture_to_terminal(sink).unwrap();
+            panic!("exercise mouse-capture unwind");
+        }));
 
-            assert!(result.is_err());
-            let output = bytes.lock().unwrap().clone();
-            let mut disable = Vec::new();
-            State::Released.write_to(&mut disable).unwrap();
-            assert!(
-                output.ends_with(&disable),
-                "panic unwind must leave native selection enabled"
-            );
-        }
+        assert!(result.is_err());
+        let mut disable = Vec::new();
+        release(&mut disable).unwrap();
+        assert!(bytes.lock().unwrap().ends_with(&disable));
     }
 }

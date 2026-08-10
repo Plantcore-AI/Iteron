@@ -14,6 +14,10 @@ use std::path::Path;
 pub(crate) struct LiveContext {
     pub text: String,
     pub governing_trust: Trust,
+    /// Exact bounded source projection used to assemble `text`. The runtime consumes this only for
+    /// content-free decision evidence; durable provider bytes remain the authoritative record.
+    pub segments: Vec<core_protocol::context::ContextSegment>,
+    pub memory_audit: Option<core_ctx::MemoryRecallAudit>,
 }
 
 pub(crate) struct LiveContextRequest<'a> {
@@ -42,8 +46,8 @@ pub(crate) fn resolve_live_context(
         CapabilitySet::only(Capability::ReadOnly),
     )
     .map_err(str::to_owned)?;
-    let grant = port
-        .resolve_with_memory_strategy(
+    let (grant, memory_audit) = port
+        .resolve_with_memory_audit(
             &plan,
             &ContextPortInput {
                 workspace: request.workspace.to_path_buf(),
@@ -57,13 +61,16 @@ pub(crate) fn resolve_live_context(
         )
         .map_err(|error| error.to_string())?;
     let governing_trust = grant.governing_trust().unwrap_or(Trust::Trusted);
+    let segments = grant.segments;
     let mut text = String::with_capacity(grant.bytes as usize);
-    for segment in grant.segments {
+    for segment in &segments {
         text.push_str(&segment.text);
     }
     Ok(LiveContext {
         text,
         governing_trust,
+        segments,
+        memory_audit,
     })
 }
 

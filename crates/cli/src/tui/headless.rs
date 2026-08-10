@@ -80,7 +80,23 @@ struct Shared {
 }
 
 impl Shared {
-    async fn publish(&self, event: ServerEvent, turn: u32, seq: u64) -> Result<u32> {
+    async fn publish(&self, event: ServerEvent, turn: u32) -> Result<u32> {
+        // `resume_from` names this transport's presentation stream, not the in-process EQ. Some EQ
+        // variants intentionally have no frozen stream-json representation, so carrying their EQ
+        // sequence numbers across the projection would manufacture holes that every correct client
+        // must reject. The single event pump assigns a dense cursor only to frames it publishes;
+        // it still validates the source EQ independently before calling this method.
+        if matches!(
+            event,
+            ServerEvent::Submission { .. } | ServerEvent::WorkflowRun(_)
+        ) {
+            return Ok(turn);
+        }
+        let seq = self
+            .cursor
+            .load(Ordering::Acquire)
+            .checked_add(1)
+            .context("headless presentation cursor exhausted")?;
         // Projection can redact or serialize the full bounded provider result. Keep that work, and
         // the following two-pass frame preparation, off Tokio's runtime workers.
         let (frame, next_turn) = tokio::task::spawn_blocking(move || {
@@ -107,18 +123,9 @@ impl Shared {
                     ),
                 },
                 ServerEvent::RunEnded { summary, .. } => terminal_result_frame(seq, &summary),
-                // ADR-0001 step 1: the script engine's live phase→agent tree has no form in the
-                // frozen `stream-json` vocabulary this surface speaks, and inventing one here would
-                // publish a record type that `governance/schema-compatibility.json` never
-                // registered and `crates/eval`'s reader would refuse. A remote client is therefore
-                // told nothing new rather than told something made up; the record that DOES survive
-                // the turn is the launch notice plus `core workflow list`. Carrying the tree onto
-                // this surface is the schema-version bump ADR-0001 keeps as its own PR.
-                //
-                // The frame is skipped, not renumbered: `seq` is the EQ's cursor, the ring holds
-                // whatever frames exist, and a reconnect resumes from the last cursor it saw. A gap
-                // is a frame this surface never had, which is the truth.
-                ServerEvent::WorkflowRun(_) => return Ok::<_, anyhow::Error>((None, next_turn)),
+                ServerEvent::Submission { .. } | ServerEvent::WorkflowRun(_) => {
+                    unreachable!("unpublished EQ variants were filtered before projection")
+                }
             };
             Ok::<_, anyhow::Error>((Some(frame), next_turn))
         })
@@ -234,7 +241,7 @@ pub(crate) async fn serve(attached: Attached, listen: SocketAddr) -> Result<()> 
                     break;
                 }
             };
-            match pump_shared.publish(event, turn, seq).await {
+            match pump_shared.publish(event, turn).await {
                 Ok(next_turn) => turn = next_turn,
                 Err(error) => {
                     log(json!({

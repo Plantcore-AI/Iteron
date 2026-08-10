@@ -24,7 +24,20 @@ fn validate_file(file: &syn::File) -> Result<()> {
         "SqEnvelope",
         "current",
         r#"pub fn current(op: Op) -> Self {
-            Self { protocol_version: PROTOCOL_VERSION, op, }
+            Self {
+                protocol_version: PROTOCOL_VERSION,
+                submission_id: SubmissionId::default(),
+                op,
+            }
+        }"#,
+    )?;
+    require_method(
+        file,
+        "SqEnvelope",
+        "into_current_identified",
+        r#"pub fn into_current_identified(self) -> Result<(SubmissionId, Op), ProtocolVersionError> {
+            require_current(self.protocol_version)?;
+            Ok((self.submission_id, self.op))
         }"#,
     )?;
     require_method(

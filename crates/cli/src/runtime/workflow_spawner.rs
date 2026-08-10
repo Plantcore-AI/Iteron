@@ -37,6 +37,7 @@ use sha2::{Digest, Sha256};
 
 use super::Agent;
 use super::hooks::Hooks;
+use super::hooks::journal::HookEffectJournal;
 use super::pricing::SharedUsdBudget;
 use core_obs::Ledger;
 
@@ -192,6 +193,16 @@ pub struct KernelSpawnerContext {
     /// operator's own authority behave like the session that launched it. What bounds the child is
     /// the read-only ceiling intersected below, not this flag.
     pub bypass_permissions: bool,
+    /// Parent-owned, bounded lifecycle projections. These carry correlation and operator-owned
+    /// observation policy into children without widening the child's tool registry or authority.
+    pub(super) lifecycle_emitter: Option<core_obs::lifecycle::LifecycleEmitter>,
+    pub(super) lifecycle_telemetry: Option<core_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
+    pub(super) lifecycle_hooks: Option<super::lifecycle_hooks::LifecycleHookDispatcher>,
+    /// Trusted operator Hook policy and its session-owned external-effect journal. A read-only
+    /// child cannot run model-requested code, but operator Hooks remain host policy and therefore
+    /// apply uniformly to every model/tool/context boundary in the lineage.
+    pub(super) hooks: Hooks,
+    pub(super) hook_effect_journal: Option<HookEffectJournal>,
 }
 
 impl KernelSpawnerContext {
@@ -261,6 +272,11 @@ impl KernelSpawnerContext {
             authority_ceiling: all_capabilities,
             policy_capabilities: all_capabilities,
             bypass_permissions: false,
+            lifecycle_emitter: None,
+            lifecycle_telemetry: None,
+            lifecycle_hooks: None,
+            hooks: Hooks::default(),
+            hook_effect_journal: None,
         }
     }
 }
@@ -403,6 +419,9 @@ impl KernelSpawner {
             sub_run: sub_run.0.clone(),
         });
         sub.runtime_state_dir = cx.runtime_state_dir.clone();
+        sub.lifecycle_emitter = cx.lifecycle_emitter.clone();
+        sub.lifecycle_telemetry = cx.lifecycle_telemetry.clone();
+        sub.lifecycle_hooks = cx.lifecycle_hooks.clone();
         if cx.usd_budget.is_some() {
             sub.usd_budget = cx.usd_budget.clone();
         }
@@ -434,9 +453,10 @@ impl KernelSpawner {
         sub.workspace = cx.workspace.clone();
         sub.model_context_window = cx.model_context_window;
         sub.model_max_output_tokens = cx.model_max_output_tokens;
-        // Hooks are executable processes, so a read-only child cannot inherit them. Credential
-        // names still propagate as deny metadata, never values.
-        sub.hooks = Hooks::default();
+        // Hooks are trusted operator-owned host policy, not capabilities offered to the model.
+        // Dropping them here silently bypassed canonical Gate hooks for WorkflowEngine children.
+        sub.hooks = cx.hooks.clone();
+        sub.hook_effect_journal = cx.hook_effect_journal.clone();
         sub.bypass_permissions = cx.bypass_permissions;
         sub.agent_catalog = cx.agent_catalog.clone();
         sub.agent_catalog_pinned = true;
@@ -678,6 +698,31 @@ mod tests {
             !child.authority_ceiling.contains(Capability::CodeExecuting),
             "inheriting the posture must not widen the ceiling"
         );
+    }
+
+    #[test]
+    fn a_child_inherits_operator_hooks_and_the_same_durable_journal() {
+        let root = scratch("hooks");
+        let catalog = discovered_catalog(&root);
+        let mut cx = context(&root, catalog);
+        cx.hooks
+            .append_verified_plugin("session.created", ":".into())
+            .unwrap();
+        let journal_path = root.join("hooks.jsonl");
+        cx.hook_effect_journal = Some(HookEffectJournal::open(&journal_path).unwrap());
+        let spawner = KernelSpawner::new(cx);
+
+        let child = spawner.build_child(&call(None, None), 0).unwrap();
+        assert!(
+            !child.hooks.is_empty(),
+            "workflow children must not bypass trusted operator Hook policy"
+        );
+        assert!(
+            child.hook_effect_journal.is_some(),
+            "every child Hook command must use the session's durable effect journal"
+        );
+        drop(child);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

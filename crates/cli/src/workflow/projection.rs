@@ -33,7 +33,19 @@ pub enum WorkflowRunUiEvent {
     },
     /// The engine future for this run resolved. `ingest` alone never marks a card finished, so
     /// without this the tree would spin forever.
-    Finished { run_id: String },
+    Finished {
+        run_id: String,
+        terminal: WorkflowRunTerminal,
+    },
+}
+
+/// Authoritative terminal selected by the workflow owner. Frontends may fold the card, while
+/// lifecycle projections use this value instead of guessing success from "the future resolved".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowRunTerminal {
+    Completed,
+    Cancelled,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

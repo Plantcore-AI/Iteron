@@ -21,6 +21,7 @@ pub mod effect;
 pub mod event;
 pub mod ids;
 pub mod intent;
+pub mod lifecycle;
 pub mod message;
 pub mod permission;
 pub mod pricing;
@@ -42,7 +43,20 @@ pub use event::{
     WorkflowChildOutcome, WorkflowCostEvidence, WorkflowEvent, WorkflowEventVersion,
     WorkflowExecutionMode, WorkflowMetrics, WorkflowOutcome, WorkflowPhase, WorkflowTaskEvidence,
 };
-pub use ids::{EffectId, RunId, Seq, SubmissionId, TenantId, TurnId};
+pub use ids::{
+    EffectId, JobId, RunId, Seq, SessionId, SubagentId, SubmissionId, TenantId, TurnId, WorkflowId,
+};
+pub use lifecycle::state::{
+    AgentLoopState, ControlIntent, EffectLifecycleState, JobLifecycleState, LifecycleState,
+    ProcessLifecycleState, RunLifecycleState, SessionLifecycleState, SubagentLifecycleState,
+    SubmissionLifecycleState, TransitionError, TurnLifecycleState, WorkflowLifecycleState,
+};
+pub use lifecycle::{
+    CardinalityClass, DurabilityClass, ExportPolicy, HookCapability, LifecycleAvailability,
+    LifecycleCatalogVersion, LifecycleDomain, LifecycleEventEnvelope, LifecycleEventId,
+    LifecycleEventRef, LifecycleEventSpec, LifecyclePayload, LifecyclePhase, LifecycleReservation,
+    PrivacyClass,
+};
 pub use message::{
     Block, MAX_STOP_REASON_CODE_BYTES, Message, ProviderState, ProviderStateFormat, Role,
     StopReason, StopReasonCode, Usage,
@@ -246,7 +260,11 @@ pub enum Op {
     Steer { text: String },
     /// Cooperative interrupt. Bounded (invariant #1): the loop checks it at safe points.
     Interrupt,
-    /// Stop admitting turns, quiesce, sync-checkpoint, exit (the `drain` verb; ADR-008 safe-point).
+    /// Escalated turn cancellation. The resident session drops the in-flight turn future after a
+    /// cooperative interrupt grace without draining the session or cleaning background jobs.
+    ForceCancel,
+    /// Stop admitting work, quiesce, commit a durable workspace checkpoint, then exit (the
+    /// `drain` verb; ADR-008 safe-point).
     Drain,
     /// Forward-compatible rejection sentinel. Deserialization deliberately discards the unknown
     /// tag and every accompanying field, so a newer client's opaque payload cannot enter logs,

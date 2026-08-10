@@ -57,10 +57,12 @@ use self::control::{apply_control, apply_immediate_control, is_immediate_control
 use self::control::{apply_immediate_workflow_control, apply_side};
 use crate::runtime::{Agent, UiEvent};
 use core_protocol::{
-    ContentSegments, Op, Outcome, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope,
+    Capability, ContentSegments, LifecyclePayload, LifecycleState, Op, Outcome, PROTOCOL_VERSION,
+    ProtocolVersionError, RunId, RunLifecycleState, SessionId, SessionLifecycleState, SqEnvelope,
+    SubmissionId, SubmissionLifecycleState, TurnId, TurnLifecycleState,
 };
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
 /// Submission-queue depth.
@@ -68,6 +70,12 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 /// Sized for the burst a human can produce with a held key or a paste, not for a backlog: past this
 /// the honest answer is "busy", not a longer queue.
 pub(crate) const SQ_CAPACITY: usize = 256;
+
+/// Entries reserved for in-turn control. A paste or a burst of future turns may consume every
+/// data slot, but can never prevent an interrupt, force-cancel, drain, steer, or approval receipt
+/// from reaching the resident actor.
+const SQ_PRIORITY_CAPACITY: usize = 16;
+const SQ_DATA_CAPACITY: usize = SQ_CAPACITY - SQ_PRIORITY_CAPACITY;
 
 /// Conservative heap charge for the envelope, enum/segment storage, channel node and allocator
 /// bookkeeping of one submission, before counting its variable-length strings.
@@ -175,6 +183,12 @@ pub(crate) enum ServerEvent {
     /// This is where an unknown `Op` surfaces. A submission the server does not understand is
     /// never replayed and never guessed at: it becomes a visible notice and stops.
     Notice(String),
+    /// Ordered receipt/admission/application evidence for one client-minted submission.
+    Submission {
+        id: SubmissionId,
+        state: SubmissionLifecycleState,
+        reason_code: Option<&'static str>,
+    },
     /// Cosmetic deltas were dropped to keep the queue bounded.
     ///
     /// Reported rather than hidden: a transcript with a silent hole in it is worse than one that
@@ -257,10 +271,26 @@ pub(crate) enum Control {
     Workflow(WorkflowControl),
     /// `/jobs` controls the exact supervisor backing the model-facing `process_*` tools.
     Job(JobControl),
+    /// Operator memory mutations run in the resident runtime so canonical Gate Hooks and durable
+    /// effect evidence execute before the filesystem mutation.
+    Memory(MemoryControl),
+}
+
+pub(crate) enum MemoryControl {
+    Add(String),
+    Delete(String),
+}
+
+#[derive(Debug)]
+pub(crate) enum MemoryControlReply {
+    Added { id: String },
+    Deleted { id: String },
+    Missing { id: String },
 }
 
 pub(crate) enum JobControl {
     Inventory,
+    Clean,
     Attach {
         job_id: String,
         stdout_cursor: u64,
@@ -379,6 +409,8 @@ pub(crate) enum ControlReply {
     Workflows(Box<WorkflowControlReply>),
     /// `/jobs` inventory, attached output page, write receipt, or terminal stop snapshot.
     Jobs(serde_json::Value),
+    /// `/memory add|forget` mutation result from the resident authority owner.
+    Memory(MemoryControlReply),
 }
 
 /// One control request and the channel its answer comes back on.
@@ -453,6 +485,8 @@ impl std::error::Error for SubmitError {}
 pub(crate) struct AppServerClient {
     submissions: SubmissionSender,
     negotiated_version: u32,
+    next_submission_id: Arc<AtomicU64>,
+    lifecycle: core_obs::lifecycle::LifecycleEmitter,
 }
 
 #[derive(Debug, Clone)]
@@ -463,15 +497,94 @@ enum SubmissionSender {
     /// Production wires charge every queued submission against the shared heap budget.
     Weighted {
         sender: mpsc::Sender<QueuedSubmission>,
+        priority_sender: mpsc::Sender<QueuedSubmission>,
         budget: Arc<Semaphore>,
+        data_slots: Arc<Semaphore>,
+        priority_slots: Arc<Semaphore>,
     },
 }
 
-/// One weighted SQ entry. The permit is released when the server dequeues or drops the item.
+/// One weighted SQ entry. Permits are released only when the server consumes or drops the item;
+/// moving it into the safe-point queue retains both bounds.
 #[derive(Debug)]
 pub(crate) struct QueuedSubmission {
     envelope: SqEnvelope,
     _memory: OwnedSemaphorePermit,
+    /// Retained across server-side requeue. Channel capacity alone is not a bound once an item has
+    /// been dequeued, so this permit keeps data and priority populations independently bounded.
+    _slot: OwnedSemaphorePermit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KernelSubmissionKind {
+    Steer,
+    Interrupt,
+    Drain,
+    Approval,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingKernelSubmission {
+    id: SubmissionId,
+    kind: KernelSubmissionKind,
+}
+
+const SUBMISSION_DEDUP_WINDOW: usize = 4096;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubmissionIdentityAdmission {
+    Fresh,
+    Duplicate,
+    Stale,
+}
+
+/// Bounded replay protection for the SQ. Client clones may allocate IDs concurrently and enqueue
+/// them out of numeric order, so a simple high-water mark would reject valid work. The live window
+/// accepts that reordering; once its smallest IDs retire, replay at or below that floor is stale.
+#[derive(Debug, Default)]
+struct SubmissionDeduplicator {
+    live: std::collections::BTreeSet<u64>,
+    retired_through: u64,
+}
+
+impl SubmissionDeduplicator {
+    fn admit(&mut self, id: SubmissionId) -> SubmissionIdentityAdmission {
+        if id.0 == 0 || id.0 <= self.retired_through {
+            return SubmissionIdentityAdmission::Stale;
+        }
+        if !self.live.insert(id.0) {
+            return SubmissionIdentityAdmission::Duplicate;
+        }
+        if self.live.len() > SUBMISSION_DEDUP_WINDOW
+            && let Some(oldest) = self.live.pop_first()
+        {
+            self.retired_through = self.retired_through.max(oldest);
+        }
+        SubmissionIdentityAdmission::Fresh
+    }
+}
+
+fn kernel_submission_kind(op: &Op) -> Option<KernelSubmissionKind> {
+    match op {
+        Op::Steer { .. } => Some(KernelSubmissionKind::Steer),
+        Op::Interrupt | Op::ForceCancel => Some(KernelSubmissionKind::Interrupt),
+        Op::Drain => Some(KernelSubmissionKind::Drain),
+        Op::ApprovalResponse { .. } => Some(KernelSubmissionKind::Approval),
+        Op::UserInput { .. } | Op::UserInputV2 { .. } | Op::UserInputV3 { .. } | Op::Unknown => {
+            None
+        }
+    }
+}
+
+fn is_priority_submission(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Steer { .. }
+            | Op::Interrupt
+            | Op::ForceCancel
+            | Op::Drain
+            | Op::ApprovalResponse { .. }
+    )
 }
 
 impl QueuedSubmission {
@@ -481,6 +594,37 @@ impl QueuedSubmission {
 }
 
 impl AppServerClient {
+    /// Record a frontend-owned local boundary (for example an explicit memory mutation). The
+    /// event is content-free and shares the same bounded stream as runtime events.
+    pub(crate) fn record_lifecycle(&self, event_name: &str, payload: LifecyclePayload) {
+        let _ = self.lifecycle.emit(
+            event_name,
+            core_obs::lifecycle::LifecycleCorrelation::default(),
+            payload,
+        );
+    }
+
+    fn queue_depth(&self) -> usize {
+        match &self.submissions {
+            #[cfg(test)]
+            SubmissionSender::Bare(sender) => {
+                sender.max_capacity().saturating_sub(sender.capacity())
+            }
+            SubmissionSender::Weighted {
+                sender,
+                priority_sender,
+                ..
+            } => sender
+                .max_capacity()
+                .saturating_sub(sender.capacity())
+                .saturating_add(
+                    priority_sender
+                        .max_capacity()
+                        .saturating_sub(priority_sender.capacity()),
+                ),
+        }
+    }
+
     /// Complete a versioned handshake with a server advertising `server_version`.
     ///
     /// This is the ONLY constructor. An earlier version also offered `current()`, which stamped
@@ -493,26 +637,37 @@ impl AppServerClient {
         server_version: u32,
         submissions: mpsc::Sender<SqEnvelope>,
     ) -> Result<Self, ProtocolVersionError> {
-        Self::connect_to(server_version, SubmissionSender::Bare(submissions))
+        Self::connect_to(
+            server_version,
+            SubmissionSender::Bare(submissions),
+            core_obs::lifecycle::LifecycleEmitter::new(core_obs::lifecycle::LifecycleBus::default()),
+        )
     }
 
     fn connect_weighted(
         server_version: u32,
         submissions: mpsc::Sender<QueuedSubmission>,
+        priority_submissions: mpsc::Sender<QueuedSubmission>,
         budget: Arc<Semaphore>,
+        lifecycle: core_obs::lifecycle::LifecycleEmitter,
     ) -> Result<Self, ProtocolVersionError> {
         Self::connect_to(
             server_version,
             SubmissionSender::Weighted {
                 sender: submissions,
+                priority_sender: priority_submissions,
                 budget,
+                data_slots: Arc::new(Semaphore::new(SQ_DATA_CAPACITY)),
+                priority_slots: Arc::new(Semaphore::new(SQ_PRIORITY_CAPACITY)),
             },
+            lifecycle,
         )
     }
 
     fn connect_to(
         server_version: u32,
         submissions: SubmissionSender,
+        lifecycle: core_obs::lifecycle::LifecycleEmitter,
     ) -> Result<Self, ProtocolVersionError> {
         if server_version != PROTOCOL_VERSION {
             return Err(ProtocolVersionError {
@@ -523,6 +678,8 @@ impl AppServerClient {
         Ok(Self {
             submissions,
             negotiated_version: server_version,
+            next_submission_id: Arc::new(AtomicU64::new(1)),
+            lifecycle,
         })
     }
 
@@ -536,9 +693,41 @@ impl AppServerClient {
     /// Never blocks: a full queue is reported as [`SubmitError::Busy`] so the render loop keeps
     /// running and the operator learns their input did not land.
     pub(crate) fn submit(&self, op: Op) -> Result<(), SubmitError> {
+        self.submit_identified(op).map(|_| ())
+    }
+
+    /// Submit and return the identity that every receipt/application event will carry.
+    pub(crate) fn submit_identified(&self, op: Op) -> Result<SubmissionId, SubmitError> {
         use mpsc::error::TrySendError;
-        let envelope = SqEnvelope::with_version(self.negotiated_version, op);
-        match &self.submissions {
+        let id = SubmissionId(
+            self.next_submission_id
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    current.checked_add(1)
+                })
+                .map_err(|_| SubmitError::Busy)?,
+        );
+        let requested_event = match &op {
+            Op::Steer { .. } => Some("steer.requested"),
+            Op::Interrupt | Op::ForceCancel => Some("cancel.requested"),
+            Op::Drain => Some("drain.requested"),
+            _ => None,
+        };
+        let envelope = SqEnvelope::with_version_and_id(self.negotiated_version, id, op);
+        let correlation = core_obs::lifecycle::LifecycleCorrelation {
+            submission_id: Some(id),
+            ..core_obs::lifecycle::LifecycleCorrelation::default()
+        };
+        let _ = self.lifecycle.emit(
+            "submission.created",
+            correlation.clone(),
+            LifecyclePayload::default(),
+        );
+        if let Some(event_id) = requested_event {
+            let _ = self
+                .lifecycle
+                .emit(event_id, correlation.clone(), LifecyclePayload::default());
+        }
+        let result = match &self.submissions {
             #[cfg(test)]
             SubmissionSender::Bare(submissions) => {
                 submissions.try_send(envelope).map_err(|error| match error {
@@ -546,25 +735,85 @@ impl AppServerClient {
                     TrySendError::Closed(_) => SubmitError::Disconnected,
                 })
             }
-            SubmissionSender::Weighted { sender, budget } => {
-                if sender.is_closed() {
+            SubmissionSender::Weighted {
+                sender,
+                priority_sender,
+                budget,
+                data_slots,
+                priority_slots,
+            } => (|| {
+                let priority = is_priority_submission(&envelope.op);
+                let selected = if priority { priority_sender } else { sender };
+                let slots = if priority { priority_slots } else { data_slots };
+                if selected.is_closed() {
                     return Err(SubmitError::Disconnected);
                 }
                 let weight = u32::try_from(submission_weight(&envelope.op))
+                    .map_err(|_| SubmitError::Busy)?;
+                let slot = slots
+                    .clone()
+                    .try_acquire_owned()
                     .map_err(|_| SubmitError::Busy)?;
                 let permit = budget
                     .clone()
                     .try_acquire_many_owned(weight)
                     .map_err(|_| SubmitError::Busy)?;
-                sender
+                selected
                     .try_send(QueuedSubmission {
                         envelope,
                         _memory: permit,
+                        _slot: slot,
                     })
                     .map_err(|error| match error {
                         TrySendError::Full(_) => SubmitError::Busy,
                         TrySendError::Closed(_) => SubmitError::Disconnected,
                     })
+            })(),
+        };
+        match result {
+            Ok(()) => {
+                let _ = self.lifecycle.emit(
+                    "submission.enqueued",
+                    correlation.clone(),
+                    LifecyclePayload::default(),
+                );
+                let _ = self.lifecycle.emit(
+                    "queue.depth_changed",
+                    correlation,
+                    LifecyclePayload {
+                        count: Some(u64::try_from(self.queue_depth()).unwrap_or(u64::MAX)),
+                        ..LifecyclePayload::default()
+                    },
+                );
+                Ok(id)
+            }
+            Err(error) => {
+                let reason = match &error {
+                    SubmitError::Busy => "queue_full",
+                    SubmitError::Disconnected => "runtime_disconnected",
+                };
+                let _ = self.lifecycle.emit(
+                    "submission.rejected",
+                    correlation,
+                    LifecyclePayload {
+                        reason_code: Some(reason.into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
+                if matches!(&error, SubmitError::Busy) {
+                    let _ = self.lifecycle.emit(
+                        "queue.overflow",
+                        core_obs::lifecycle::LifecycleCorrelation {
+                            submission_id: Some(id),
+                            ..core_obs::lifecycle::LifecycleCorrelation::default()
+                        },
+                        LifecyclePayload {
+                            count: Some(u64::try_from(self.queue_depth()).unwrap_or(u64::MAX)),
+                            ..LifecyclePayload::default()
+                        },
+                    );
+                }
+                Err(error)
             }
         }
     }
@@ -608,7 +857,9 @@ fn submission_weight(op: &Op) -> usize {
                     .saturating_add(file.path.len())
                     .saturating_add(file.text.len())
             })),
-        Op::ApprovalResponse { .. } | Op::Interrupt | Op::Drain | Op::Unknown => 0,
+        Op::ApprovalResponse { .. } | Op::Interrupt | Op::ForceCancel | Op::Drain | Op::Unknown => {
+            0
+        }
     };
     SQ_ENTRY_OVERHEAD_BYTES.saturating_add(variable_bytes)
 }
@@ -628,9 +879,13 @@ pub(crate) struct ToolFact {
 /// invariants — nothing here changes while the session runs — which is exactly why they can be
 /// copied across the boundary instead of being asked for on every keystroke.
 pub(crate) struct SessionFacts {
+    pub(crate) session_id: SessionId,
+    pub(crate) context_ledgers: core_ctx::ContextLedgerStore,
+    pub(crate) memory_traces: core_ctx::MemoryTraceStore,
+    pub(crate) hook_health: crate::runtime::lifecycle_hooks::LifecycleHookHealth,
+    pub(crate) telemetry_health: Option<crate::runtime::telemetry::TelemetryHealth>,
     pub(crate) workspace: std::path::PathBuf,
     pub(crate) memory_workspace: Option<std::path::PathBuf>,
-    pub(crate) memory_strategy: Arc<dyn core_protocol::slot::StrategySlot>,
     pub(crate) rollout_path: std::path::PathBuf,
     pub(crate) compaction_trigger_tokens: usize,
     /// The window of the model selected at startup. Only an initial value: `/model` replaces it,
@@ -663,7 +918,7 @@ pub(crate) struct Attached {
     pub(crate) initial_state: SessionSnapshot,
     /// Ctrl-C: cancel the in-flight provider turn at the next safe point.
     pub(crate) interrupt: Arc<AtomicBool>,
-    /// Ctrl-D: stop after checkpointing the workspace.
+    /// Ctrl-D: quiesce active work and settle the session record.
     pub(crate) drain: Arc<AtomicBool>,
 }
 
@@ -693,9 +948,13 @@ pub(crate) fn attach(
     agent.set_drain(drain.clone());
 
     let facts = SessionFacts {
+        session_id: SessionId(format!("session-{}", agent.rollout.run_id().0)),
+        context_ledgers: agent.context_ledgers.clone(),
+        memory_traces: agent.memory_traces.clone(),
+        hook_health: handle.hook_health.clone(),
+        telemetry_health: agent.telemetry.as_ref().map(|sink| sink.health()),
         workspace: agent.workspace.clone(),
         memory_workspace: agent.memory_workspace.clone(),
-        memory_strategy: agent.memory_strategy(),
         rollout_path: agent.rollout.path().to_path_buf(),
         compaction_trigger_tokens: agent.compaction.trigger_tokens,
         initial_model_context_window: agent.model_context_window,
@@ -714,6 +973,9 @@ pub(crate) fn attach(
         agent_catalog: agent.agent_catalog_snapshot(),
     };
     let initial_state = snapshot_of(&mut agent);
+    if let Some(telemetry) = handle.lifecycle_otel.clone() {
+        agent.set_lifecycle_telemetry(telemetry);
+    }
 
     // The `Agent` moves in here and never comes back. "A run is in flight" becomes the server's
     // fact to report, not a slot a client can inspect.
@@ -732,6 +994,11 @@ pub(crate) fn attach(
 pub(crate) struct AppServerHandle {
     pub(crate) client: AppServerClient,
     pub(crate) events: mpsc::Receiver<EventEnvelope>,
+    /// Content-free, bounded local lifecycle evidence. Reading it never asks the runtime actor or
+    /// an exporter to stop what it is doing.
+    pub(crate) lifecycle: core_obs::lifecycle::LifecycleBus,
+    pub(crate) lifecycle_otel: Option<core_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
+    pub(crate) hook_health: crate::runtime::lifecycle_hooks::LifecycleHookHealth,
     /// The control plane. See [`Control`] for why it is not the SQ.
     pub(crate) control: mpsc::Sender<ControlRequest>,
 }
@@ -744,16 +1011,209 @@ pub(crate) struct EventPublisher {
     dropped: usize,
     next_seq: u64,
     lossless: bool,
+    lifecycle: core_obs::lifecycle::LifecycleEmitter,
+    lifecycle_hooks: Option<crate::runtime::lifecycle_hooks::LifecycleHookDispatcher>,
+    session_id: Option<SessionId>,
+    run_id: Option<RunId>,
+    workflow_phases: std::collections::BTreeMap<String, String>,
 }
 
+const MAX_TRACKED_WORKFLOW_PHASES: usize = 256;
+
 impl EventPublisher {
-    fn new(events: mpsc::Sender<EventEnvelope>, lossless: bool) -> Self {
+    fn new(
+        events: mpsc::Sender<EventEnvelope>,
+        lossless: bool,
+        lifecycle: core_obs::lifecycle::LifecycleEmitter,
+    ) -> Self {
         Self {
             events,
             dropped: 0,
             next_seq: 1,
             lossless,
+            lifecycle,
+            lifecycle_hooks: None,
+            session_id: None,
+            run_id: None,
+            workflow_phases: std::collections::BTreeMap::new(),
         }
+    }
+
+    fn bind_lifecycle_identity(&mut self, session_id: SessionId, run_id: RunId) {
+        self.session_id = Some(session_id);
+        self.run_id = Some(run_id);
+    }
+
+    fn bind_lifecycle_hooks(
+        &mut self,
+        dispatcher: crate::runtime::lifecycle_hooks::LifecycleHookDispatcher,
+    ) {
+        self.lifecycle_hooks = Some(dispatcher);
+    }
+
+    fn lifecycle_emitter(&self) -> core_obs::lifecycle::LifecycleEmitter {
+        self.lifecycle.clone()
+    }
+
+    fn lifecycle_correlation(
+        &self,
+        turn_id: Option<TurnId>,
+        submission_id: Option<SubmissionId>,
+    ) -> core_obs::lifecycle::LifecycleCorrelation {
+        core_obs::lifecycle::LifecycleCorrelation {
+            session_id: self.session_id.clone(),
+            run_id: self.run_id.clone(),
+            turn_id,
+            submission_id,
+            ..core_obs::lifecycle::LifecycleCorrelation::default()
+        }
+    }
+
+    fn record_lifecycle(
+        &self,
+        event_name: &str,
+        turn_id: Option<TurnId>,
+        submission_id: Option<SubmissionId>,
+        payload: LifecyclePayload,
+    ) {
+        if let Ok(event) = self.lifecycle.emit(
+            event_name,
+            self.lifecycle_correlation(turn_id, submission_id),
+            payload,
+        ) && let Some(dispatcher) = &self.lifecycle_hooks
+        {
+            dispatcher.dispatch(event);
+        }
+    }
+
+    fn record_workflow_lifecycle(
+        &self,
+        event_name: &str,
+        workflow_id: Option<&str>,
+        payload: LifecyclePayload,
+    ) {
+        let mut correlation = self.lifecycle_correlation(None, None);
+        correlation.workflow_id = workflow_id.map(|id| core_protocol::WorkflowId(id.to_owned()));
+        if let Ok(event) = self.lifecycle.emit(event_name, correlation, payload)
+            && let Some(dispatcher) = &self.lifecycle_hooks
+        {
+            dispatcher.dispatch(event);
+        }
+    }
+
+    fn record_job_lifecycle(&self, event_name: &str, job_id: &str, payload: LifecyclePayload) {
+        let mut correlation = self.lifecycle_correlation(None, None);
+        correlation.job_id = Some(core_protocol::JobId(job_id.to_owned()));
+        if let Ok(event) = self.lifecycle.emit(event_name, correlation, payload)
+            && let Some(dispatcher) = &self.lifecycle_hooks
+        {
+            dispatcher.dispatch(event);
+        }
+    }
+
+    fn record_workflow_child_lifecycle(
+        &self,
+        event_name: &str,
+        workflow_id: &str,
+        index: usize,
+        payload: LifecyclePayload,
+    ) {
+        let mut correlation = self.lifecycle_correlation(None, None);
+        correlation.workflow_id = Some(core_protocol::WorkflowId(workflow_id.to_owned()));
+        correlation.subagent_id = Some(core_protocol::SubagentId(format!(
+            "{workflow_id}:agent-{index}"
+        )));
+        if let Ok(event) = self.lifecycle.emit(event_name, correlation, payload)
+            && let Some(dispatcher) = &self.lifecycle_hooks
+        {
+            dispatcher.dispatch(event);
+        }
+    }
+
+    fn transition_workflow_phase(&mut self, workflow_id: &str, next: &str) {
+        let previous = self.workflow_phases.get(workflow_id).cloned();
+        if previous.as_deref() == Some(next) {
+            return;
+        }
+        if let Some(previous) = previous {
+            self.record_workflow_lifecycle(
+                if previous == "planning" {
+                    "workflow.planning_completed"
+                } else if previous == "reducing" {
+                    "workflow.reduction_completed"
+                } else {
+                    "workflow.phase_completed"
+                },
+                Some(workflow_id),
+                LifecyclePayload::default(),
+            );
+        }
+        if self.workflow_phases.len() < MAX_TRACKED_WORKFLOW_PHASES
+            || self.workflow_phases.contains_key(workflow_id)
+        {
+            self.workflow_phases
+                .insert(workflow_id.to_owned(), next.to_owned());
+        }
+        self.record_workflow_lifecycle(
+            if next == "planning" {
+                "workflow.planning_started"
+            } else if next == "reducing" {
+                "workflow.reduction_started"
+            } else {
+                "workflow.phase_started"
+            },
+            Some(workflow_id),
+            LifecyclePayload::default(),
+        );
+    }
+
+    fn finish_workflow_phase(
+        &mut self,
+        workflow_id: &str,
+        terminal: crate::workflow::WorkflowRunTerminal,
+    ) {
+        let Some(previous) = self.workflow_phases.remove(workflow_id) else {
+            return;
+        };
+        let event_id = if previous == "planning"
+            && matches!(terminal, crate::workflow::WorkflowRunTerminal::Failed)
+        {
+            "workflow.planning_failed"
+        } else if previous == "planning" {
+            "workflow.planning_completed"
+        } else if previous == "reducing" {
+            "workflow.reduction_completed"
+        } else {
+            "workflow.phase_completed"
+        };
+        self.record_workflow_lifecycle(event_id, Some(workflow_id), LifecyclePayload::default());
+    }
+
+    fn record_submission_lifecycle(
+        &self,
+        id: SubmissionId,
+        state: SubmissionLifecycleState,
+        reason_code: Option<&'static str>,
+    ) {
+        let event_name = match state {
+            SubmissionLifecycleState::Created => "submission.created",
+            SubmissionLifecycleState::Enqueued => "submission.enqueued",
+            SubmissionLifecycleState::Received => "submission.received",
+            SubmissionLifecycleState::Admitted => "submission.admitted",
+            SubmissionLifecycleState::Applied => "submission.applied",
+            SubmissionLifecycleState::Requeued => "submission.requeued",
+            SubmissionLifecycleState::Rejected => "submission.rejected",
+            SubmissionLifecycleState::Expired => "submission.expired",
+        };
+        self.record_lifecycle(
+            event_name,
+            None,
+            Some(id),
+            LifecyclePayload {
+                reason_code: reason_code.map(str::to_owned),
+                ..LifecyclePayload::default()
+            },
+        );
     }
 
     async fn send(&mut self, event: ServerEvent) -> Result<(), ()> {
@@ -801,8 +1261,10 @@ impl EventPublisher {
 /// single source.
 pub(crate) struct ServerEnds {
     pub(crate) submissions: mpsc::Receiver<QueuedSubmission>,
+    pub(crate) priority_submissions: mpsc::Receiver<QueuedSubmission>,
     pub(crate) control: mpsc::Receiver<ControlRequest>,
     pub(crate) events: EventPublisher,
+    pub(crate) hook_health: crate::runtime::lifecycle_hooks::LifecycleHookHealth,
 }
 
 /// The protocol version the in-process runtime advertises to a connecting frontend.
@@ -827,23 +1289,49 @@ pub(crate) fn wire() -> Result<(AppServerHandle, ServerEnds), ProtocolVersionErr
 fn wire_with_policy(
     lossless_events: bool,
 ) -> Result<(AppServerHandle, ServerEnds), ProtocolVersionError> {
-    let (sq_tx, sq_rx) = mpsc::channel::<QueuedSubmission>(SQ_CAPACITY);
+    let (sq_tx, sq_rx) = mpsc::channel::<QueuedSubmission>(SQ_DATA_CAPACITY);
+    let (priority_sq_tx, priority_sq_rx) = mpsc::channel::<QueuedSubmission>(SQ_PRIORITY_CAPACITY);
     let sq_budget = Arc::new(Semaphore::new(SQ_BYTE_CAPACITY));
     let (eq_tx, eq_rx) = mpsc::channel::<EventEnvelope>(EQ_CAPACITY);
     // The control plane is deliberately shallow: these are operator commands, one at a time, and a
     // backlog of them would mean the frontend is issuing config changes faster than a human can.
     let (control_tx, control_rx) = mpsc::channel::<ControlRequest>(8);
-    let client = AppServerClient::connect_weighted(advertised_version(), sq_tx, sq_budget)?;
+    let lifecycle = core_obs::lifecycle::LifecycleBus::default();
+    let lifecycle_emitter = core_obs::lifecycle::LifecycleEmitter::new(lifecycle.clone());
+    let _ = lifecycle_emitter.emit(
+        "queue.capacity_resolved",
+        core_obs::lifecycle::LifecycleCorrelation::default(),
+        LifecyclePayload {
+            count: Some(u64::try_from(SQ_CAPACITY).unwrap_or(u64::MAX)),
+            magnitude: Some(u64::try_from(SQ_BYTE_CAPACITY).unwrap_or(u64::MAX)),
+            ..LifecyclePayload::default()
+        },
+    );
+    let lifecycle_otel =
+        core_obs::otel::lifecycle::LifecycleTelemetryRuntime::attach(&lifecycle).ok();
+    let hook_health = crate::runtime::lifecycle_hooks::LifecycleHookHealth::default();
+    let client = AppServerClient::connect_weighted(
+        advertised_version(),
+        sq_tx,
+        priority_sq_tx,
+        sq_budget,
+        lifecycle_emitter.clone(),
+    )?;
     Ok((
         AppServerHandle {
             client,
             events: eq_rx,
+            lifecycle,
+            lifecycle_otel,
+            hook_health: hook_health.clone(),
             control: control_tx,
         },
         ServerEnds {
             submissions: sq_rx,
+            priority_submissions: priority_sq_rx,
             control: control_rx,
-            events: EventPublisher::new(eq_tx, lossless_events),
+            events: EventPublisher::new(eq_tx, lossless_events, lifecycle_emitter),
+            hook_health,
         },
     ))
 }
@@ -893,9 +1381,11 @@ pub(crate) fn route(op: &Op) -> Routed {
             images: images.clone(),
             files: files.clone(),
         }),
-        Op::Steer { .. } | Op::Interrupt | Op::Drain | Op::ApprovalResponse { .. } => {
-            Routed::ToKernel
-        }
+        Op::Steer { .. }
+        | Op::Interrupt
+        | Op::ForceCancel
+        | Op::Drain
+        | Op::ApprovalResponse { .. } => Routed::ToKernel,
         Op::Unknown => Routed::Refuse(
             "the runtime received a submission this build does not understand; it was discarded \
              rather than guessed at. Check that the client and server are the same version.",
@@ -907,8 +1397,10 @@ pub(crate) fn route(op: &Op) -> Routed {
 pub(crate) struct AppServer {
     agent: Agent,
     submissions: mpsc::Receiver<QueuedSubmission>,
+    priority_submissions: mpsc::Receiver<QueuedSubmission>,
     control: mpsc::Receiver<ControlRequest>,
     events: EventPublisher,
+    hook_health: crate::runtime::lifecycle_hooks::LifecycleHookHealth,
     /// Forwarded to the kernel's inbound queue. The kernel drains it at its own safe points; the
     /// server never reaches into a running turn.
     to_kernel: mpsc::UnboundedSender<SqEnvelope>,
@@ -922,6 +1414,10 @@ impl AppServer {
     /// path existed only because the receiver used to travel with the `Agent` in and out of a task
     /// the frontend owned.
     pub(crate) fn new(mut agent: Agent, ends: ServerEnds, interactive_approvals: bool) -> Self {
+        let mut ends = ends;
+        let run_id = agent.rollout.run_id().clone();
+        ends.events
+            .bind_lifecycle_identity(SessionId(format!("session-{}", run_id.0)), run_id);
         let (to_kernel, kernel_rx) = mpsc::unbounded_channel::<SqEnvelope>();
         if interactive_approvals {
             agent.set_approvals(kernel_rx);
@@ -929,8 +1425,10 @@ impl AppServer {
         Self {
             agent,
             submissions: ends.submissions,
+            priority_submissions: ends.priority_submissions,
             control: ends.control,
             events: ends.events,
+            hook_health: ends.hook_health,
             to_kernel,
         }
     }
@@ -966,8 +1464,10 @@ impl AppServer {
         let Self {
             mut agent,
             mut submissions,
+            mut priority_submissions,
             mut control,
             mut events,
+            hook_health,
             to_kernel,
         } = self;
 
@@ -984,6 +1484,10 @@ impl AppServer {
         let (workflow_tx, mut workflow_rx) =
             mpsc::unbounded_channel::<crate::workflow::WorkflowRunUiEvent>();
         agent.set_workflow_progress(workflow_tx);
+        // Runtime and frontend project the same canonical lifecycle stream. Installing this before
+        // any session-owned worker starts prevents model/tool/context events from becoming an
+        // uncorrelated second telemetry island.
+        agent.set_lifecycle_emitter(events.lifecycle_emitter());
 
         // The session-scoped owner for `Workflow({background: true})` runs. Installed OUTSIDE the
         // turn's borrow — that placement is the whole point, not an implementation detail: it is
@@ -995,6 +1499,159 @@ impl AppServer {
         // Clone the job control port before a turn borrows `&mut agent`. It owns no second job
         // table: every operation reaches the supervisor captured by this registry's process tools.
         let processes = agent.registry.process_control();
+        let hook_cancel = agent.interrupt_handle();
+        let drain_signal = agent.drain_handle();
+
+        // Canonical Hook observation is bounded and off the turn path. Gate hooks remain at their
+        // owning admission sites below; the dispatcher deliberately skips the fixed Gate set.
+        let lifecycle_gate_hooks = agent.hooks.clone();
+        let hook_journal = if lifecycle_gate_hooks.is_empty() {
+            None
+        } else {
+            match crate::runtime::hooks::journal::HookEffectJournal::open(
+                &agent.rollout.path().with_extension("hooks.jsonl"),
+            ) {
+                Ok(journal) => {
+                    let recovered_unknown = journal.recovered_unknown();
+                    if recovered_unknown > 0 {
+                        events.record_lifecycle(
+                            "hook.failed",
+                            None,
+                            None,
+                            LifecyclePayload {
+                                count: Some(recovered_unknown),
+                                reason_code: Some("recovered_unknown_effect".into()),
+                                ..LifecyclePayload::default()
+                            },
+                        );
+                    }
+                    Some(journal)
+                }
+                Err(_) => {
+                    events.record_lifecycle(
+                        "hook.failed",
+                        None,
+                        None,
+                        LifecyclePayload {
+                            reason_code: Some("durable_journal_unavailable".into()),
+                            ..LifecyclePayload::default()
+                        },
+                    );
+                    None
+                }
+            }
+        };
+        agent.set_hook_effect_journal(hook_journal.clone());
+        let (lifecycle_hooks, mut lifecycle_hook_task) =
+            crate::runtime::lifecycle_hooks::LifecycleHookDispatcher::start(
+                agent.hooks.clone(),
+                events.lifecycle_emitter(),
+                events.lifecycle_correlation(None, None),
+                hook_journal.clone(),
+                drain_signal.clone(),
+                hook_health,
+            );
+        events.bind_lifecycle_hooks(lifecycle_hooks.clone());
+        agent.set_lifecycle_hooks(lifecycle_hooks);
+        if let Some(processes) = &processes {
+            let emitter = events.lifecycle_emitter();
+            let base_correlation = events.lifecycle_correlation(None, None);
+            let dispatcher = events.lifecycle_hooks.clone();
+            processes.bind_lifecycle_observer(std::sync::Arc::new(move |notice| {
+                let outcome = match notice.kind {
+                    core_tools::ProcessLifecycleKind::Spawned => "spawned",
+                    core_tools::ProcessLifecycleKind::Exited => "exited",
+                    core_tools::ProcessLifecycleKind::Stopped => "stopped",
+                    core_tools::ProcessLifecycleKind::TimedOut => "timed_out",
+                    core_tools::ProcessLifecycleKind::OutputLimitExceeded => "output_limit",
+                    core_tools::ProcessLifecycleKind::IoFailed => "io_failed",
+                    core_tools::ProcessLifecycleKind::CleanupUnknown => "cleanup_unknown",
+                };
+                let event_ids: &[&str] = match notice.kind {
+                    core_tools::ProcessLifecycleKind::Spawned => {
+                        &["process.spawned", "background.detached"]
+                    }
+                    core_tools::ProcessLifecycleKind::Exited => {
+                        &["process.kill_sent", "process.reaped", "background.stopped"]
+                    }
+                    core_tools::ProcessLifecycleKind::CleanupUnknown => &[
+                        "process.kill_sent",
+                        "process.reap_failed",
+                        "background.orphan_detected",
+                    ],
+                    core_tools::ProcessLifecycleKind::Stopped
+                    | core_tools::ProcessLifecycleKind::TimedOut
+                    | core_tools::ProcessLifecycleKind::OutputLimitExceeded
+                    | core_tools::ProcessLifecycleKind::IoFailed => &[
+                        "process.term_sent",
+                        "process.kill_sent",
+                        "process.reaped",
+                        "background.stopped",
+                    ],
+                };
+                for event_id in event_ids {
+                    let mut correlation = base_correlation.clone();
+                    correlation.job_id = Some(core_protocol::JobId(notice.job_id.clone()));
+                    if let Ok(event) = emitter.emit(
+                        event_id,
+                        correlation,
+                        LifecyclePayload {
+                            outcome_code: Some(outcome.to_owned()),
+                            ..LifecyclePayload::default()
+                        },
+                    ) && let Some(dispatcher) = &dispatcher
+                    {
+                        dispatcher.dispatch(event);
+                    }
+                }
+            }));
+        }
+        let mut session_lifecycle = SessionLifecycleState::Created;
+        events.record_lifecycle("session.created", None, None, LifecyclePayload::default());
+        events.record_lifecycle(
+            "session.record_opened",
+            None,
+            None,
+            LifecyclePayload::default(),
+        );
+        events.record_lifecycle(
+            "session.profile_bound",
+            None,
+            None,
+            LifecyclePayload::default(),
+        );
+        session_lifecycle = session_lifecycle
+            .transition(SessionLifecycleState::Configured)
+            .expect("new sessions configure before serving");
+        events.record_lifecycle(
+            "session.configured",
+            None,
+            None,
+            LifecyclePayload::default(),
+        );
+        session_lifecycle = session_lifecycle
+            .transition(SessionLifecycleState::Idle)
+            .expect("configured sessions become idle");
+        run_legacy_hook(
+            HookExecution {
+                hooks: &lifecycle_gate_hooks,
+                journal: hook_journal.as_ref(),
+                events: &events,
+                cancel: hook_cancel.as_deref(),
+                drain: Some(drain_signal.as_ref()),
+            },
+            crate::runtime::hooks::HookEvent::SessionStart,
+            None,
+            None,
+            serde_json::json!({
+                "event": "SessionStart",
+                "session_id": format!("session-{}", agent.rollout.run_id().0),
+            })
+            .to_string(),
+        )
+        .await;
+        events.record_lifecycle("session.started", None, None, LifecyclePayload::default());
+        events.record_lifecycle("session.idle", None, None, LifecyclePayload::default());
 
         // `run` versus `follow_up` was a caller-side boolean the frontend chose. With a resident
         // runtime it is session state and belongs here: the first admitted turn starts the session,
@@ -1005,17 +1662,64 @@ impl AppServer {
         // same reason the `Agent` is: it owns a live runtime with an open journal.
         let mut side: Option<crate::runtime::SideConversation> = None;
         let mut pending_runtime = std::collections::VecDeque::<String>::new();
+        let mut pending_turns = std::collections::VecDeque::<QueuedSubmission>::new();
+        let mut pending_kernel_submissions =
+            std::collections::VecDeque::<PendingKernelSubmission>::new();
+        let mut submission_identities = SubmissionDeduplicator::default();
 
         enum TurnTrigger {
-            Submission(QueuedSubmission),
+            Submission {
+                queued: QueuedSubmission,
+                preprocessed: bool,
+            },
             Runtime(String),
         }
 
         loop {
-            let trigger = if let Some(notification) = pending_runtime.pop_front() {
+            let trigger = if let Ok(queued) = priority_submissions.try_recv() {
+                events.record_lifecycle(
+                    "queue.depth_changed",
+                    None,
+                    None,
+                    LifecyclePayload {
+                        count: Some(queue_population(
+                            &submissions,
+                            &priority_submissions,
+                            pending_turns.len(),
+                        )),
+                        ..LifecyclePayload::default()
+                    },
+                );
+                TurnTrigger::Submission {
+                    queued,
+                    preprocessed: false,
+                }
+            } else if let Some(queued) = pending_turns.pop_front() {
+                TurnTrigger::Submission {
+                    queued,
+                    preprocessed: true,
+                }
+            } else if let Some(notification) = pending_runtime.pop_front() {
                 TurnTrigger::Runtime(notification)
             } else {
                 tokio::select! {
+                    biased;
+                    Some(queued) = priority_submissions.recv() => {
+                        events.record_lifecycle(
+                            "queue.depth_changed",
+                            None,
+                            None,
+                            LifecyclePayload {
+                                count: Some(queue_population(
+                                    &submissions,
+                                    &priority_submissions,
+                                    pending_turns.len(),
+                                )),
+                                ..LifecyclePayload::default()
+                            },
+                        );
+                        TurnTrigger::Submission { queued, preprocessed: false }
+                    }
                     request = control.recv() => {
                         match request {
                             Some(request) => { apply_control(&mut agent, &workflows, processes.as_ref(), &mut side, &mut started, &mut events, request).await; continue }
@@ -1027,46 +1731,221 @@ impl AppServer {
                     // "the run is invisible while it is the only thing happening", which is precisely
                     // the state detaching would otherwise create.
                     Some(progress) = workflow_rx.recv() => {
-                        let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
+                        publish_workflow_progress(&mut events, progress).await;
                         continue
                     }
                     Some(settled) = settled_rx.recv() => {
                         TurnTrigger::Runtime(publish_settled(&mut events, settled).await)
                     }
                     queued = submissions.recv() => {
-                        match queued { Some(queued) => TurnTrigger::Submission(queued), None => break }
+                        match queued {
+                            Some(queued) => {
+                                events.record_lifecycle(
+                                    "queue.depth_changed",
+                                    None,
+                                    None,
+                                    LifecyclePayload {
+                                        count: Some(queue_population(
+                                            &submissions,
+                                            &priority_submissions,
+                                            pending_turns.len(),
+                                        )),
+                                        ..LifecyclePayload::default()
+                                    },
+                                );
+                                TurnTrigger::Submission { queued, preprocessed: false }
+                            }
+                            None => break,
+                        }
                     }
                 }
             };
-            let (input, runtime_follow_up) = match trigger {
-                TurnTrigger::Runtime(notification) => (RunInput::Text(notification), true),
-                TurnTrigger::Submission(queued) => {
+            let (input, runtime_follow_up, turn_submission_id) = match trigger {
+                TurnTrigger::Runtime(notification) => (RunInput::Text(notification), true, None),
+                TurnTrigger::Submission {
+                    queued,
+                    preprocessed,
+                } => {
                     let envelope = queued.into_envelope();
                     let version = envelope.protocol_version;
-                    let Ok(op) = envelope.into_current() else {
+                    let submission_id = envelope.submission_id;
+                    let Ok((_, op)) = envelope.into_current_identified() else {
+                        publish_submission(
+                            &mut events,
+                            submission_id,
+                            SubmissionLifecycleState::Rejected,
+                            Some("protocol_version_mismatch"),
+                        )
+                        .await;
                         let _ = events.publish(ServerEvent::Notice(format!(
                             "a submission arrived stamped protocol v{version}; this runtime speaks v{PROTOCOL_VERSION} and discarded it"
                         ))).await;
                         continue;
                     };
+                    if !preprocessed
+                        && reject_replayed_submission(
+                            &mut events,
+                            &mut submission_identities,
+                            submission_id,
+                            None,
+                        )
+                        .await
+                    {
+                        continue;
+                    }
+                    publish_submission(
+                        &mut events,
+                        submission_id,
+                        SubmissionLifecycleState::Received,
+                        None,
+                    )
+                    .await;
+                    if !preprocessed
+                        && let Some(context) = legacy_user_prompt_context(&op, submission_id)
+                    {
+                        run_legacy_hook(
+                            HookExecution {
+                                hooks: &lifecycle_gate_hooks,
+                                journal: hook_journal.as_ref(),
+                                events: &events,
+                                cancel: hook_cancel.as_deref(),
+                                drain: Some(drain_signal.as_ref()),
+                            },
+                            crate::runtime::hooks::HookEvent::UserPromptSubmit,
+                            Some(submission_id),
+                            None,
+                            context,
+                        )
+                        .await;
+                    }
+                    let gate_event = match &op {
+                        Op::Steer { .. } => Some("steer.requested"),
+                        Op::UserInput { .. } | Op::UserInputV2 { .. } | Op::UserInputV3 { .. } => {
+                            Some("submission.created")
+                        }
+                        Op::ApprovalResponse { .. }
+                        | Op::Interrupt
+                        | Op::ForceCancel
+                        | Op::Drain
+                        | Op::Unknown => None,
+                    };
+                    if !preprocessed
+                        && let Some(gate_event) = gate_event
+                        && let Err(reason) = run_lifecycle_gate(
+                            HookExecution {
+                                hooks: &lifecycle_gate_hooks,
+                                journal: hook_journal.as_ref(),
+                                events: &events,
+                                cancel: hook_cancel.as_deref(),
+                                drain: Some(drain_signal.as_ref()),
+                            },
+                            gate_event,
+                            submission_id,
+                            None,
+                        )
+                        .await
+                    {
+                        publish_submission(
+                            &mut events,
+                            submission_id,
+                            SubmissionLifecycleState::Rejected,
+                            Some("hook_blocked"),
+                        )
+                        .await;
+                        let _ = events.publish(ServerEvent::Notice(reason)).await;
+                        continue;
+                    }
+                    if matches!(op, Op::Interrupt | Op::ForceCancel) {
+                        publish_submission(
+                            &mut events,
+                            submission_id,
+                            SubmissionLifecycleState::Rejected,
+                            Some("no_active_turn"),
+                        )
+                        .await;
+                        continue;
+                    }
                     match route(&op) {
                         Routed::Refuse(why) => {
+                            publish_submission(
+                                &mut events,
+                                submission_id,
+                                SubmissionLifecycleState::Rejected,
+                                Some("unsupported_operation"),
+                            )
+                            .await;
                             let _ = events.publish(ServerEvent::Notice(why.to_owned())).await;
                             continue;
                         }
                         Routed::ToKernel => {
-                            if to_kernel
-                                .send(SqEnvelope::with_version(version, op))
-                                .is_err()
-                            {
-                                break;
-                            }
+                            publish_submission(
+                                &mut events,
+                                submission_id,
+                                SubmissionLifecycleState::Rejected,
+                                Some("no_active_turn"),
+                            )
+                            .await;
                             continue;
                         }
-                        Routed::StartTurn(input) => (input, false),
+                        Routed::StartTurn(input) => {
+                            publish_submission(
+                                &mut events,
+                                submission_id,
+                                SubmissionLifecycleState::Admitted,
+                                None,
+                            )
+                            .await;
+                            (input, false, Some(submission_id))
+                        }
                     }
                 }
             };
+            if let Some(submission_id) = turn_submission_id {
+                publish_submission(
+                    &mut events,
+                    submission_id,
+                    SubmissionLifecycleState::Applied,
+                    None,
+                )
+                .await;
+            }
+            if !started && !runtime_follow_up {
+                let title = first_prompt_title(&input);
+                if !title.is_empty() {
+                    events.record_lifecycle(
+                        "session.title_selected",
+                        None,
+                        turn_submission_id,
+                        LifecyclePayload {
+                            count: Some(u64::try_from(title.chars().count()).unwrap_or(u64::MAX)),
+                            magnitude: Some(u64::try_from(title.len()).unwrap_or(u64::MAX)),
+                            ..LifecyclePayload::default()
+                        },
+                    );
+                }
+            }
+            session_lifecycle = session_lifecycle
+                .transition(SessionLifecycleState::Running)
+                .expect("only an idle session admits a turn");
+            let live_turn_id = agent.current_turn_id();
+            let mut run_lifecycle = RunLifecycleState::Created;
+            run_lifecycle = run_lifecycle
+                .transition(RunLifecycleState::Admitted)
+                .expect("a created run is admitted before activation");
+            run_lifecycle = run_lifecycle
+                .transition(RunLifecycleState::Active)
+                .expect("an admitted run starts exactly once");
+            let mut turn_lifecycle = TurnLifecycleState::Received;
+            turn_lifecycle = turn_lifecycle
+                .transition(TurnLifecycleState::Admitted)
+                .expect("a received turn is admitted before it runs");
+            turn_lifecycle = turn_lifecycle
+                .transition(TurnLifecycleState::Running)
+                .expect("an admitted turn starts exactly once");
+            let mut cancel_forwarded = false;
+            let mut cancel_submission_id = None;
+            let mut drain_submission_id = None;
+            let mut drain_admission_closed = false;
             // Control requests that arrive mid-turn wait here; see the `select!` arm below.
             let mut deferred: Vec<ControlRequest> = Vec::new();
             let completion = {
@@ -1115,6 +1994,11 @@ impl AppServer {
                         // is still producing, not in one lump at the end.
                         biased;
                         Some(ui) = ui_rx.recv() => {
+                            settle_kernel_submission_events(
+                                &mut events,
+                                &mut pending_kernel_submissions,
+                                &ui,
+                            ).await;
                             if events.publish(ServerEvent::Ui(ui)).await.is_err() {
                                 // The frontend is gone. Keep the turn running to its own
                                 // safe point rather than dropping the future mid-effect.
@@ -1123,7 +2007,7 @@ impl AppServer {
                         Some(progress) = workflow_rx.recv() => {
                             // Same policy as the UI stream: a frontend that hung up never
                             // aborts a run that is already executing.
-                            let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
+                            publish_workflow_progress(&mut events, progress).await;
                         }
                         Some(settled) = settled_rx.recv() => {
                             // A run detached by an EARLIER turn can settle during this one.
@@ -1134,7 +2018,12 @@ impl AppServer {
                         }
                         Some(request) = control.recv() => {
                             if is_immediate_control(&request.control) {
-                                apply_immediate_control(&workflows, processes.as_ref(), request).await;
+                                apply_immediate_control(
+                                    &workflows,
+                                    processes.as_ref(),
+                                    &events,
+                                    request,
+                                ).await;
                                 continue;
                             }
                             // Configuration DURING a turn is DEFERRED, not applied.
@@ -1153,27 +2042,254 @@ impl AppServer {
                             // than when it was asked.
                             deferred.push(request);
                         }
-                        Some(queued) = submissions.recv() => {
-                            let envelope = queued.into_envelope();
-                            let version = envelope.protocol_version;
-                            if let Ok(op) = envelope.into_current() {
-                                match route(&op) {
-                                    // A second turn cannot start while one is running; the
-                                    // frontend queues it. Saying so is better than
-                                    // silently dropping it.
+                        Some(queued) = receive_next_submission(
+                            &mut priority_submissions,
+                            &mut submissions,
+                        ) => {
+                            events.record_lifecycle(
+                                "queue.depth_changed",
+                                Some(live_turn_id),
+                                None,
+                                LifecyclePayload {
+                                    count: Some(queue_population(
+                                        &submissions,
+                                        &priority_submissions,
+                                        pending_turns.len(),
+                                    )),
+                                    ..LifecyclePayload::default()
+                                },
+                            );
+                            let version = queued.envelope.protocol_version;
+                            let submission_id = queued.envelope.submission_id;
+                            if version != PROTOCOL_VERSION {
+                                publish_submission(
+                                    &mut events,
+                                    submission_id,
+                                    SubmissionLifecycleState::Rejected,
+                                    Some("protocol_version_mismatch"),
+                                ).await;
+                                continue;
+                            }
+                                if reject_replayed_submission(
+                                    &mut events,
+                                    &mut submission_identities,
+                                    submission_id,
+                                    Some(live_turn_id),
+                                ).await {
+                                    continue;
+                                }
+                                publish_submission(
+                                    &mut events,
+                                    submission_id,
+                                    SubmissionLifecycleState::Received,
+                                    None,
+                                ).await;
+                                let op = &queued.envelope.op;
+                                if drain_admission_closed
+                                    && matches!(
+                                        op,
+                                        Op::UserInput { .. }
+                                            | Op::UserInputV2 { .. }
+                                            | Op::UserInputV3 { .. }
+                                    )
+                                {
+                                    publish_submission(
+                                        &mut events,
+                                        submission_id,
+                                        SubmissionLifecycleState::Expired,
+                                        Some("drain_requested"),
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                                if let Some(context) = legacy_user_prompt_context(op, submission_id) {
+                                    run_legacy_hook(
+                                        HookExecution {
+                                            hooks: &lifecycle_gate_hooks,
+                                            journal: hook_journal.as_ref(),
+                                            events: &events,
+                                            cancel: hook_cancel.as_deref(),
+                                            drain: Some(drain_signal.as_ref()),
+                                        },
+                                        crate::runtime::hooks::HookEvent::UserPromptSubmit,
+                                        Some(submission_id),
+                                        Some(live_turn_id),
+                                        context,
+                                    ).await;
+                                }
+                                let gate_event = match &op {
+                                    Op::Steer { .. } => Some("steer.requested"),
+                                    Op::UserInput { .. }
+                                    | Op::UserInputV2 { .. }
+                                    | Op::UserInputV3 { .. } => Some("submission.created"),
+                                    Op::ApprovalResponse { .. }
+                                    | Op::Interrupt
+                                    | Op::ForceCancel
+                                    | Op::Drain
+                                    | Op::Unknown => None,
+                                };
+                                if let Some(gate_event) = gate_event
+                                    && let Err(reason) = run_lifecycle_gate(
+                                        HookExecution {
+                                            hooks: &lifecycle_gate_hooks,
+                                            journal: hook_journal.as_ref(),
+                                            events: &events,
+                                            cancel: hook_cancel.as_deref(),
+                                            drain: Some(drain_signal.as_ref()),
+                                        },
+                                        gate_event,
+                                        submission_id,
+                                        Some(live_turn_id),
+                                    ).await
+                                {
+                                        publish_submission(
+                                            &mut events,
+                                            submission_id,
+                                            SubmissionLifecycleState::Rejected,
+                                            Some("hook_blocked"),
+                                        ).await;
+                                        if matches!(op, Op::Steer { .. }) {
+                                            events.record_lifecycle(
+                                                "steer.rejected",
+                                                Some(live_turn_id),
+                                                Some(submission_id),
+                                                LifecyclePayload {
+                                                    reason_code: Some("hook_blocked".into()),
+                                                    ..LifecyclePayload::default()
+                                                },
+                                            );
+                                        }
+                                        let _ = events.publish(ServerEvent::Notice(reason)).await;
+                                        continue;
+                                }
+                                match &op {
+                                    Op::Interrupt => events.record_lifecycle(
+                                        "cancel.received",
+                                        Some(live_turn_id),
+                                        Some(submission_id),
+                                        LifecyclePayload::default(),
+                                    ),
+                                    Op::ForceCancel => events.record_lifecycle(
+                                        "cancel.forced",
+                                        Some(live_turn_id),
+                                        Some(submission_id),
+                                        LifecyclePayload::default(),
+                                    ),
+                                    Op::Drain => {
+                                        drain_admission_closed = true;
+                                        drain_signal.store(true, Ordering::SeqCst);
+                                        events.record_lifecycle(
+                                            "drain.requested",
+                                            Some(live_turn_id),
+                                            Some(submission_id),
+                                            LifecyclePayload::default(),
+                                        );
+                                    }
+                                    _ => {}
+                                }
+                                match route(op) {
                                     Routed::StartTurn(_) => {
-                                        let _ = events.publish(ServerEvent::Notice(
-                                            "a turn is already running; this submission was not admitted".into(),
-                                        )).await;
+                                        publish_submission(
+                                            &mut events,
+                                            submission_id,
+                                            SubmissionLifecycleState::Requeued,
+                                            Some("turn_safe_point"),
+                                        ).await;
+                                        publish_submission(
+                                            &mut events,
+                                            submission_id,
+                                            SubmissionLifecycleState::Enqueued,
+                                            None,
+                                        ).await;
+                                        pending_turns.push_back(queued);
                                     }
                                     Routed::ToKernel => {
-                                        let _ = to_kernel.send(SqEnvelope::with_version(version, op));
+                                        let envelope = queued.into_envelope();
+                                        let (_, op) = envelope
+                                            .into_current_identified()
+                                            .expect("the protocol version was checked above");
+                                        publish_submission(
+                                            &mut events,
+                                            submission_id,
+                                            SubmissionLifecycleState::Admitted,
+                                            None,
+                                        ).await;
+                                        let kind = kernel_submission_kind(&op);
+                                        let forced = matches!(op, Op::ForceCancel);
+                                        if to_kernel.send(SqEnvelope::with_version_and_id(version, submission_id, op)).is_err() {
+                                            publish_submission(
+                                                &mut events,
+                                                submission_id,
+                                                SubmissionLifecycleState::Rejected,
+                                                Some("runtime_disconnected"),
+                                            ).await;
+                                            match kind {
+                                                Some(KernelSubmissionKind::Steer) => events.record_lifecycle(
+                                                    "steer.rejected",
+                                                    Some(live_turn_id),
+                                                    Some(submission_id),
+                                                    LifecyclePayload {
+                                                        reason_code: Some("runtime_disconnected".into()),
+                                                        ..LifecyclePayload::default()
+                                                    },
+                                                ),
+                                                Some(KernelSubmissionKind::Interrupt) => events.record_lifecycle(
+                                                    "cancel.failed",
+                                                    Some(live_turn_id),
+                                                    Some(submission_id),
+                                                    LifecyclePayload {
+                                                        reason_code: Some("runtime_disconnected".into()),
+                                                        ..LifecyclePayload::default()
+                                                    },
+                                                ),
+                                                _ => {}
+                                            }
+                                        } else if let Some(kind) = kind {
+                                            match kind {
+                                                KernelSubmissionKind::Steer => events.record_lifecycle(
+                                                    "steer.admitted",
+                                                    Some(live_turn_id),
+                                                    Some(submission_id),
+                                                    LifecyclePayload::default(),
+                                                ),
+                                                KernelSubmissionKind::Interrupt => {
+                                                    cancel_forwarded = true;
+                                                    cancel_submission_id = Some(submission_id);
+                                                    if !forced {
+                                                        events.record_lifecycle(
+                                                            "cancel.cooperative",
+                                                            Some(live_turn_id),
+                                                            Some(submission_id),
+                                                            LifecyclePayload::default(),
+                                                        );
+                                                    }
+                                                }
+                                                KernelSubmissionKind::Drain => {
+                                                    drain_submission_id = Some(submission_id);
+                                                }
+                                                KernelSubmissionKind::Approval => {}
+                                            }
+                                            pending_kernel_submissions.push_back(PendingKernelSubmission { id: submission_id, kind });
+                                            if matches!(kind, KernelSubmissionKind::Drain) {
+                                                expire_pending_turns(
+                                                    &mut events,
+                                                    &mut pending_turns,
+                                                    "drain_requested",
+                                                )
+                                                .await;
+                                            }
+                                        }
                                     }
                                     Routed::Refuse(why) => {
+                                        publish_submission(
+                                            &mut events,
+                                            submission_id,
+                                            SubmissionLifecycleState::Rejected,
+                                            Some("unsupported_operation"),
+                                        ).await;
                                         let _ = events.publish(ServerEvent::Notice(why.to_owned())).await;
                                     }
                                 }
-                            }
                         }
                         outcome = &mut running => break outcome,
                     }
@@ -1186,13 +2302,15 @@ impl AppServer {
             // still queued here. Draining before the terminal event is what keeps the
             // transcript ordered.
             while let Ok(ui) = ui_rx.try_recv() {
+                settle_kernel_submission_events(&mut events, &mut pending_kernel_submissions, &ui)
+                    .await;
                 let _ = events.publish(ServerEvent::Ui(ui)).await;
             }
             // The workflow seam drains with it: an in-turn run settles inside the turn, so
             // its terminal rows and its `Finished` are queued here exactly like the last
             // text deltas, and a tail that skipped them would leave the tree spinning.
             while let Ok(progress) = workflow_rx.try_recv() {
-                let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
+                publish_workflow_progress(&mut events, progress).await;
             }
             while let Ok(settled) = settled_rx.try_recv() {
                 pending_runtime.push_back(publish_settled(&mut events, settled).await);
@@ -1215,6 +2333,12 @@ impl AppServer {
             }
 
             let mut snapshot = snapshot_of(&mut agent);
+            settle_kernel_submissions_at_turn_end(
+                &mut events,
+                &mut pending_kernel_submissions,
+                snapshot.unadmitted_steers.len(),
+            )
+            .await;
             snapshot.unadmitted_steers.retain(|text| {
                 if text.starts_with(crate::runtime::RUNTIME_NOTIFICATION_PREFIX) {
                     pending_runtime.push_back(text.clone());
@@ -1230,6 +2354,111 @@ impl AppServer {
                     (Outcome::HarnessError, Some(error))
                 }
             };
+            if matches!(outcome, Outcome::Drained) {
+                expire_pending_turns(&mut events, &mut pending_turns, "drain_settled").await;
+                expire_queued_after_drain(&mut events, &mut submissions, &mut priority_submissions)
+                    .await;
+            }
+            turn_lifecycle = match &outcome {
+                Outcome::Done => {
+                    if cancel_forwarded {
+                        events.record_lifecycle(
+                            "cancel.failed",
+                            Some(live_turn_id),
+                            cancel_submission_id,
+                            LifecyclePayload {
+                                reason_code: Some("turn_completed_first".into()),
+                                ..LifecyclePayload::default()
+                            },
+                        );
+                    }
+                    turn_lifecycle
+                        .transition(TurnLifecycleState::Completed)
+                        .expect("running turn completes once")
+                }
+                Outcome::Interrupted => {
+                    session_lifecycle = session_lifecycle
+                        .transition(SessionLifecycleState::Cancelling)
+                        .expect("an interrupted running session enters cancelling");
+                    events.record_lifecycle(
+                        "cancel.completed",
+                        Some(live_turn_id),
+                        cancel_submission_id,
+                        LifecyclePayload::default(),
+                    );
+                    turn_lifecycle
+                        .transition(TurnLifecycleState::Cancelling)
+                        .and_then(|state| state.transition(TurnLifecycleState::Interrupted))
+                        .expect("a running turn cancels exactly once")
+                }
+                Outcome::Drained => {
+                    session_lifecycle = session_lifecycle
+                        .transition(SessionLifecycleState::Draining)
+                        .expect("a drained running session enters draining");
+                    events.record_lifecycle(
+                        "drain.settled",
+                        Some(live_turn_id),
+                        drain_submission_id,
+                        LifecyclePayload::default(),
+                    );
+                    turn_lifecycle
+                        .transition(TurnLifecycleState::Cancelling)
+                        .and_then(|state| state.transition(TurnLifecycleState::Interrupted))
+                        .expect("a drained turn interrupts exactly once")
+                }
+                Outcome::Stuck | Outcome::BudgetExhausted(_) | Outcome::HarnessError => {
+                    if cancel_forwarded {
+                        events.record_lifecycle(
+                            "cancel.failed",
+                            Some(live_turn_id),
+                            cancel_submission_id,
+                            LifecyclePayload {
+                                reason_code: Some("turn_failed".into()),
+                                ..LifecyclePayload::default()
+                            },
+                        );
+                        turn_lifecycle = turn_lifecycle
+                            .transition(TurnLifecycleState::Cancelling)
+                            .expect("a cancellation was forwarded before failure");
+                    }
+                    turn_lifecycle
+                        .transition(TurnLifecycleState::Failed)
+                        .expect("running turn fails once")
+                }
+            };
+            run_lifecycle = match &outcome {
+                Outcome::Done => run_lifecycle
+                    .transition(RunLifecycleState::Completed)
+                    .expect("active run completes once"),
+                Outcome::Interrupted | Outcome::Drained => run_lifecycle
+                    .transition(RunLifecycleState::Cancelling)
+                    .and_then(|state| state.transition(RunLifecycleState::Interrupted))
+                    .expect("active run interrupts once"),
+                Outcome::Stuck | Outcome::BudgetExhausted(_) | Outcome::HarnessError => {
+                    if cancel_forwarded {
+                        run_lifecycle = run_lifecycle
+                            .transition(RunLifecycleState::Cancelling)
+                            .expect("a cancellation was forwarded before run failure");
+                    }
+                    run_lifecycle
+                        .transition(RunLifecycleState::Failed)
+                        .expect("active run fails once")
+                }
+            };
+            debug_assert!(turn_lifecycle.is_terminal());
+            debug_assert!(run_lifecycle.is_terminal());
+            session_lifecycle = session_lifecycle
+                .transition(SessionLifecycleState::Idle)
+                .expect("a terminal turn returns its session to idle");
+            events.record_lifecycle(
+                "session.idle",
+                Some(live_turn_id),
+                turn_submission_id,
+                LifecyclePayload {
+                    outcome_code: Some(outcome_name(&outcome).into()),
+                    ..LifecyclePayload::default()
+                },
+            );
             let (memo_hits, memo_misses) = agent.registry.memo_stats();
             let kernel_tax = agent
                 .ledger
@@ -1271,10 +2500,552 @@ impl AppServer {
         //
         // This runs on EVERY exit from the loop above, which is what makes "the session cannot end
         // with a run it does not account for" a property of the type rather than of a call site.
-        workflows
+        session_lifecycle = session_lifecycle
+            .transition(SessionLifecycleState::Stopping)
+            .unwrap_or(SessionLifecycleState::Stopping);
+        events.record_lifecycle("session.stopping", None, None, LifecyclePayload::default());
+        let report = workflows
             .shutdown(&mut settled_rx, crate::workflow::SHUTDOWN_GRACE)
+            .await;
+        session_lifecycle = session_lifecycle
+            .transition(SessionLifecycleState::Stopped)
+            .expect("a stopping session publishes one terminal");
+        debug_assert!(session_lifecycle.is_terminal());
+        events.record_lifecycle("session.stopped", None, None, LifecyclePayload::default());
+        drop(events.lifecycle_hooks.take());
+        if tokio::time::timeout(std::time::Duration::from_secs(2), &mut lifecycle_hook_task)
             .await
+            .is_err()
+        {
+            lifecycle_hook_task.abort();
+            let _ = lifecycle_hook_task.await;
+        }
+        report
     }
+}
+
+fn outcome_name(outcome: &Outcome) -> &'static str {
+    match outcome {
+        Outcome::Done => "done",
+        Outcome::Drained => "drained",
+        Outcome::Interrupted => "interrupted",
+        Outcome::Stuck => "stuck",
+        Outcome::BudgetExhausted(_) => "budget_exhausted",
+        Outcome::HarnessError => "harness_error",
+    }
+}
+
+fn first_prompt_title(input: &RunInput) -> String {
+    let text = match input {
+        RunInput::Text(text) | RunInput::Files { text, .. } => text.as_str(),
+        RunInput::Content(segments) => segments.text(),
+    };
+    core_record::session::title_from_text(text)
+}
+
+async fn settle_kernel_submission_events(
+    events: &mut EventPublisher,
+    pending: &mut std::collections::VecDeque<PendingKernelSubmission>,
+    event: &UiEvent,
+) {
+    let UiEvent::SteerApplied { count } = event else {
+        return;
+    };
+    for _ in 0..*count {
+        let Some(index) = pending
+            .iter()
+            .position(|entry| entry.kind == KernelSubmissionKind::Steer)
+        else {
+            break;
+        };
+        let entry = pending
+            .remove(index)
+            .expect("position came from this queue");
+        publish_submission(events, entry.id, SubmissionLifecycleState::Applied, None).await;
+    }
+}
+
+async fn settle_kernel_submissions_at_turn_end(
+    events: &mut EventPublisher,
+    pending: &mut std::collections::VecDeque<PendingKernelSubmission>,
+    mut unadmitted_steers: usize,
+) {
+    while let Some(entry) = pending.pop_front() {
+        let (state, reason) = match entry.kind {
+            KernelSubmissionKind::Steer if unadmitted_steers > 0 => {
+                unadmitted_steers -= 1;
+                (
+                    SubmissionLifecycleState::Requeued,
+                    Some("safe_point_missed"),
+                )
+            }
+            KernelSubmissionKind::Steer => (
+                SubmissionLifecycleState::Rejected,
+                Some("application_unconfirmed"),
+            ),
+            KernelSubmissionKind::Interrupt
+            | KernelSubmissionKind::Drain
+            | KernelSubmissionKind::Approval => (SubmissionLifecycleState::Applied, None),
+        };
+        publish_submission(events, entry.id, state, reason).await;
+    }
+}
+
+async fn publish_submission(
+    events: &mut EventPublisher,
+    id: SubmissionId,
+    state: SubmissionLifecycleState,
+    reason_code: Option<&'static str>,
+) {
+    events.record_submission_lifecycle(id, state, reason_code);
+    let _ = events
+        .publish(ServerEvent::Submission {
+            id,
+            state,
+            reason_code,
+        })
+        .await;
+}
+
+async fn receive_next_submission(
+    priority: &mut mpsc::Receiver<QueuedSubmission>,
+    data: &mut mpsc::Receiver<QueuedSubmission>,
+) -> Option<QueuedSubmission> {
+    loop {
+        let priority_done = priority.is_closed() && priority.is_empty();
+        let data_done = data.is_closed() && data.is_empty();
+        if priority_done && data_done {
+            return None;
+        }
+        tokio::select! {
+            biased;
+            queued = priority.recv(), if !priority_done => {
+                if queued.is_some() {
+                    return queued;
+                }
+            }
+            queued = data.recv(), if !data_done => {
+                if queued.is_some() {
+                    return queued;
+                }
+            }
+        }
+    }
+}
+
+fn queue_population(
+    data: &mpsc::Receiver<QueuedSubmission>,
+    priority: &mpsc::Receiver<QueuedSubmission>,
+    pending_turns: usize,
+) -> u64 {
+    u64::try_from(
+        data.len()
+            .saturating_add(priority.len())
+            .saturating_add(pending_turns),
+    )
+    .unwrap_or(u64::MAX)
+}
+
+async fn expire_pending_turns(
+    events: &mut EventPublisher,
+    pending: &mut std::collections::VecDeque<QueuedSubmission>,
+    reason: &'static str,
+) {
+    while let Some(queued) = pending.pop_front() {
+        publish_submission(
+            events,
+            queued.envelope.submission_id,
+            SubmissionLifecycleState::Expired,
+            Some(reason),
+        )
+        .await;
+    }
+}
+
+async fn expire_queued_after_drain(
+    events: &mut EventPublisher,
+    data: &mut mpsc::Receiver<QueuedSubmission>,
+    priority: &mut mpsc::Receiver<QueuedSubmission>,
+) {
+    while let Ok(queued) = priority.try_recv() {
+        publish_submission(
+            events,
+            queued.envelope.submission_id,
+            SubmissionLifecycleState::Expired,
+            Some("drain_settled"),
+        )
+        .await;
+    }
+    while let Ok(queued) = data.try_recv() {
+        publish_submission(
+            events,
+            queued.envelope.submission_id,
+            SubmissionLifecycleState::Expired,
+            Some("drain_settled"),
+        )
+        .await;
+    }
+}
+
+async fn reject_replayed_submission(
+    events: &mut EventPublisher,
+    identities: &mut SubmissionDeduplicator,
+    id: SubmissionId,
+    turn_id: Option<TurnId>,
+) -> bool {
+    let admission = identities.admit(id);
+    let (event_id, reason) = match admission {
+        SubmissionIdentityAdmission::Fresh => return false,
+        SubmissionIdentityAdmission::Duplicate => ("submission.deduplicated", "duplicate_id"),
+        SubmissionIdentityAdmission::Stale => ("control.stale_rejected", "stale_id"),
+    };
+    events.record_lifecycle(
+        event_id,
+        turn_id,
+        Some(id),
+        LifecyclePayload {
+            reason_code: Some(reason.into()),
+            ..LifecyclePayload::default()
+        },
+    );
+    publish_submission(events, id, SubmissionLifecycleState::Rejected, Some(reason)).await;
+    true
+}
+
+#[derive(Clone, Copy)]
+struct HookExecution<'a> {
+    hooks: &'a crate::runtime::hooks::Hooks,
+    journal: Option<&'a crate::runtime::hooks::journal::HookEffectJournal>,
+    events: &'a EventPublisher,
+    cancel: Option<&'a AtomicBool>,
+    drain: Option<&'a AtomicBool>,
+}
+
+async fn run_lifecycle_gate(
+    execution: HookExecution<'_>,
+    event_id: &'static str,
+    submission_id: SubmissionId,
+    turn_id: Option<TurnId>,
+) -> Result<(), String> {
+    let HookExecution {
+        hooks,
+        journal,
+        events,
+        cancel,
+        drain,
+    } = execution;
+    if hooks.is_empty_for_lifecycle(event_id) {
+        return Ok(());
+    }
+    let journal = journal.ok_or_else(|| {
+        "hook gate failed closed because its durable journal is unavailable".to_string()
+    })?;
+    let context = serde_json::json!({
+        "catalog_version": core_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION.0,
+        "event_id": event_id,
+        "submission_id": submission_id.0,
+        "turn_id": turn_id.map(|turn| turn.0),
+    })
+    .to_string();
+    let report = hooks
+        .run_lifecycle_cancellable_journaled(event_id, &context, cancel, drain, journal)
+        .await
+        .map_err(str::to_owned)?;
+    events.record_lifecycle(
+        "hook.matched",
+        turn_id,
+        Some(submission_id),
+        LifecyclePayload {
+            count: Some(u64::from(report.matched)),
+            ..LifecyclePayload::default()
+        },
+    );
+    events.record_lifecycle(
+        "hook.started",
+        turn_id,
+        Some(submission_id),
+        LifecyclePayload::default(),
+    );
+    if report.timed_out > 0 {
+        events.record_lifecycle(
+            "hook.timed_out",
+            turn_id,
+            Some(submission_id),
+            LifecyclePayload {
+                count: Some(u64::from(report.timed_out)),
+                ..LifecyclePayload::default()
+            },
+        );
+    }
+    if report.failed > 0 {
+        events.record_lifecycle(
+            "hook.failed",
+            turn_id,
+            Some(submission_id),
+            LifecyclePayload {
+                count: Some(u64::from(report.failed)),
+                ..LifecyclePayload::default()
+            },
+        );
+    }
+    match report.decision {
+        crate::runtime::hooks::HookDecision::Allow => {
+            events.record_lifecycle(
+                "hook.completed",
+                turn_id,
+                Some(submission_id),
+                LifecyclePayload {
+                    count: Some(u64::from(report.completed)),
+                    ..LifecyclePayload::default()
+                },
+            );
+            Ok(())
+        }
+        crate::runtime::hooks::HookDecision::Deny(reason) => {
+            events.record_lifecycle(
+                "hook.blocked",
+                turn_id,
+                Some(submission_id),
+                LifecyclePayload::default(),
+            );
+            Err(reason)
+        }
+    }
+}
+
+/// Run a compatibility hook once, outside the canonical lifecycle dispatcher. These names remain
+/// supported for existing operator configuration, but never alias into canonical subscriptions:
+/// doing both here is what previously double-ran `session.idle` and `tool.call_completed` hooks.
+async fn run_legacy_hook(
+    execution: HookExecution<'_>,
+    event: crate::runtime::hooks::HookEvent,
+    submission_id: Option<SubmissionId>,
+    turn_id: Option<TurnId>,
+    context: String,
+) {
+    let HookExecution {
+        hooks,
+        journal,
+        events,
+        cancel,
+        drain,
+    } = execution;
+    if hooks.is_empty_for(event) {
+        return;
+    }
+    let Some(journal) = journal else {
+        events.record_lifecycle(
+            "hook.failed",
+            turn_id,
+            submission_id,
+            LifecyclePayload {
+                reason_code: Some("durable_journal_unavailable".into()),
+                ..LifecyclePayload::default()
+            },
+        );
+        return;
+    };
+    events.record_lifecycle(
+        "hook.matched",
+        turn_id,
+        submission_id,
+        LifecyclePayload::default(),
+    );
+    events.record_lifecycle(
+        "hook.started",
+        turn_id,
+        submission_id,
+        LifecyclePayload::default(),
+    );
+    let decision = hooks
+        .run_cancellable_journaled(event, &context, cancel, drain, journal)
+        .await;
+    let outcome = if matches!(decision, crate::runtime::hooks::HookDecision::Deny(_)) {
+        "blocked"
+    } else {
+        "completed"
+    };
+    events.record_lifecycle(
+        if outcome == "blocked" {
+            "hook.blocked"
+        } else {
+            "hook.completed"
+        },
+        turn_id,
+        submission_id,
+        LifecyclePayload::default(),
+    );
+}
+
+/// Preserve the text compatibility hooks historically received without copying encoded image
+/// payloads or file contents into a command's stdin. Attachment counts are sufficient context for
+/// the old hook surface; canonical hooks use the structured lifecycle envelope.
+fn legacy_user_prompt_context(op: &Op, submission_id: SubmissionId) -> Option<String> {
+    let (prompt, image_count, file_count) = match op {
+        Op::UserInput { text } => (text.as_str(), 0usize, 0usize),
+        Op::UserInputV2 { segments } => {
+            let prompt = segments
+                .as_slice()
+                .iter()
+                .find_map(|segment| match segment {
+                    core_protocol::ContentSegment::Text { text } => Some(text.as_str()),
+                    core_protocol::ContentSegment::Image { .. }
+                    | core_protocol::ContentSegment::Unknown => None,
+                })?;
+            let images = segments
+                .as_slice()
+                .iter()
+                .filter(|segment| matches!(segment, core_protocol::ContentSegment::Image { .. }))
+                .count();
+            (prompt, images, 0)
+        }
+        Op::UserInputV3 {
+            text,
+            images,
+            files,
+        } => (text.as_str(), images.len(), files.len()),
+        Op::ApprovalResponse { .. }
+        | Op::Steer { .. }
+        | Op::Interrupt
+        | Op::ForceCancel
+        | Op::Drain
+        | Op::Unknown => return None,
+    };
+    Some(
+        serde_json::json!({
+            "event": "UserPromptSubmit",
+            "submission_id": submission_id.0,
+            "prompt": prompt,
+            "image_count": image_count,
+            "file_count": file_count,
+        })
+        .to_string(),
+    )
+}
+
+/// Project workflow-engine milestones into the same canonical lifecycle stream before they reach
+/// the frontend. The engine event is authoritative; this observer is bounded and cannot delay it.
+async fn publish_workflow_progress(
+    events: &mut EventPublisher,
+    progress: crate::workflow::WorkflowRunUiEvent,
+) {
+    use core_workflow::events::{ProgressEvent, WorkflowState};
+
+    match &progress {
+        crate::workflow::WorkflowRunUiEvent::KernelActivity { kind, .. } => match kind {
+            crate::workflow::KernelActivityKind::Planning => events.record_workflow_lifecycle(
+                "workflow.planning_delta",
+                None,
+                LifecyclePayload::default(),
+            ),
+            crate::workflow::KernelActivityKind::Compaction => events.record_lifecycle(
+                "context.compaction.started",
+                None,
+                None,
+                LifecyclePayload::default(),
+            ),
+        },
+        crate::workflow::WorkflowRunUiEvent::Started { run_id, .. } => {
+            events.record_workflow_lifecycle(
+                "workflow.run_started",
+                Some(run_id),
+                LifecyclePayload::default(),
+            );
+        }
+        crate::workflow::WorkflowRunUiEvent::Progress { run_id, event } => match event {
+            ProgressEvent::Phase { title, .. } => events.transition_workflow_phase(run_id, title),
+            ProgressEvent::Log { .. } => events.record_workflow_lifecycle(
+                "workflow.planning_delta",
+                Some(run_id),
+                LifecyclePayload::default(),
+            ),
+            ProgressEvent::AgentQueued { index, .. } => events.record_workflow_child_lifecycle(
+                "workflow.child_proposed",
+                run_id,
+                *index,
+                LifecyclePayload::default(),
+            ),
+            ProgressEvent::AgentStarted { index, .. } => events.record_workflow_child_lifecycle(
+                "workflow.child_started",
+                run_id,
+                *index,
+                LifecyclePayload::default(),
+            ),
+            ProgressEvent::AgentActivity {
+                index,
+                tokens,
+                tool_calls,
+                ..
+            } => events.record_workflow_child_lifecycle(
+                "workflow.child_progress",
+                run_id,
+                *index,
+                LifecyclePayload {
+                    count: Some(*tool_calls),
+                    magnitude: Some(*tokens),
+                    ..LifecyclePayload::default()
+                },
+            ),
+            ProgressEvent::AgentFinished {
+                index,
+                state,
+                tokens,
+                tool_calls,
+                duration_ms,
+                ..
+            } => events.record_workflow_child_lifecycle(
+                if matches!(state, WorkflowState::Done | WorkflowState::Skipped) {
+                    "workflow.child_completed"
+                } else {
+                    "workflow.child_failed"
+                },
+                run_id,
+                *index,
+                LifecyclePayload {
+                    outcome_code: Some(
+                        match state {
+                            WorkflowState::Queued => "queued",
+                            WorkflowState::Running => "running",
+                            WorkflowState::Done => "done",
+                            WorkflowState::Error => "error",
+                            WorkflowState::Skipped => "skipped",
+                        }
+                        .into(),
+                    ),
+                    count: Some(*tool_calls),
+                    duration_us: Some(duration_ms.saturating_mul(1_000)),
+                    magnitude: Some(*tokens),
+                    ..LifecyclePayload::default()
+                },
+            ),
+        },
+        crate::workflow::WorkflowRunUiEvent::Finished { run_id, terminal } => {
+            events.finish_workflow_phase(run_id, *terminal);
+            events.record_workflow_lifecycle(
+                match terminal {
+                    crate::workflow::WorkflowRunTerminal::Completed => "workflow.run_completed",
+                    crate::workflow::WorkflowRunTerminal::Cancelled => "workflow.run_cancelled",
+                    // The frozen catalog's resolved terminal is `run_completed`; the outcome code
+                    // preserves failure without inventing a 193rd event or misclassifying it as an
+                    // operator cancellation.
+                    crate::workflow::WorkflowRunTerminal::Failed => "workflow.run_completed",
+                },
+                Some(run_id),
+                LifecyclePayload {
+                    outcome_code: Some(
+                        match terminal {
+                            crate::workflow::WorkflowRunTerminal::Completed => "completed",
+                            crate::workflow::WorkflowRunTerminal::Cancelled => "cancelled",
+                            crate::workflow::WorkflowRunTerminal::Failed => "failed",
+                        }
+                        .into(),
+                    ),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
+    }
+    let _ = events.publish(ServerEvent::WorkflowRun(progress)).await;
 }
 
 /// Publish one settled background run: settle its card, then say what happened.
@@ -1292,11 +3063,14 @@ async fn publish_settled(
         crate::runtime::RUNTIME_NOTIFICATION_PREFIX,
         settled.notification,
     );
-    let _ = events
-        .publish(ServerEvent::WorkflowRun(
-            crate::workflow::WorkflowRunUiEvent::Finished { run_id },
-        ))
-        .await;
+    publish_workflow_progress(
+        events,
+        crate::workflow::WorkflowRunUiEvent::Finished {
+            run_id,
+            terminal: settled.terminal,
+        },
+    )
+    .await;
     let _ = events.publish(ServerEvent::Notice(settled.notice)).await;
     notification
 }
@@ -1324,11 +3098,16 @@ mod tests {
     #[tokio::test]
     async fn a_settled_background_run_returns_one_task_notification_without_polling() {
         let (eq_tx, mut eq_rx) = mpsc::channel(4);
-        let mut events = EventPublisher::new(eq_tx, true);
+        let mut events = EventPublisher::new(
+            eq_tx,
+            true,
+            core_obs::lifecycle::LifecycleEmitter::new(core_obs::lifecycle::LifecycleBus::default()),
+        );
         let notification = publish_settled(
             &mut events,
             crate::workflow::RunSettled {
                 run_id: "wf_done".into(),
+                terminal: crate::workflow::WorkflowRunTerminal::Completed,
                 notice: "workflow `wf_done` finished".into(),
                 notification: "<task-notification>done</task-notification>".into(),
             },
@@ -1340,7 +3119,7 @@ mod tests {
 
         assert!(matches!(
             eq_rx.recv().await.unwrap().into_current().unwrap(),
-            ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Finished { run_id })
+            ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Finished { run_id, .. })
                 if run_id == "wf_done"
         ));
         assert!(matches!(
@@ -1410,6 +3189,7 @@ mod tests {
             }),
             ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Finished {
                 run_id: "wf_1".into(),
+                terminal: crate::workflow::WorkflowRunTerminal::Completed,
             }),
         ] {
             assert!(
@@ -1522,23 +3302,37 @@ mod tests {
     fn a_saturated_sq_applies_backpressure_within_a_fixed_bound() {
         // The bound is the point: an unbounded queue answers every submission and grows until the
         // process dies. This one refuses, and the refusal is what the operator sees.
-        let (tx, _rx) = mpsc::channel::<QueuedSubmission>(SQ_CAPACITY);
-        let client = AppServerClient::connect_weighted(
-            PROTOCOL_VERSION,
-            tx,
-            Arc::new(Semaphore::new(SQ_BYTE_CAPACITY)),
-        )
-        .expect("handshake");
+        let (tx, _rx) = mpsc::channel::<QueuedSubmission>(SQ_DATA_CAPACITY);
+        let (priority_tx, _priority_rx) = mpsc::channel::<QueuedSubmission>(SQ_PRIORITY_CAPACITY);
+        let client =
+            AppServerClient::connect_weighted(
+                PROTOCOL_VERSION,
+                tx,
+                priority_tx,
+                Arc::new(Semaphore::new(SQ_BYTE_CAPACITY)),
+                core_obs::lifecycle::LifecycleEmitter::new(
+                    core_obs::lifecycle::LifecycleBus::default(),
+                ),
+            )
+            .expect("handshake");
         let mut accepted = 0usize;
         for _ in 0..(SQ_CAPACITY * 4) {
-            match client.submit(Op::Interrupt) {
+            match client.submit(Op::UserInput {
+                text: "next".into(),
+            }) {
                 Ok(()) => accepted += 1,
                 Err(SubmitError::Busy) => break,
                 Err(other) => panic!("unexpected {other:?}"),
             }
         }
-        assert_eq!(accepted, SQ_CAPACITY, "the queue accepted past its bound");
-        assert_eq!(client.submit(Op::Interrupt), Err(SubmitError::Busy));
+        assert_eq!(
+            accepted, SQ_DATA_CAPACITY,
+            "the data lane accepted past its bound"
+        );
+        assert!(
+            client.submit(Op::Interrupt).is_ok(),
+            "control retains reserved capacity"
+        );
     }
 
     #[test]
@@ -1605,8 +3399,18 @@ mod tests {
         let weight = submission_weight(&op);
         let budget = Arc::new(Semaphore::new(weight));
         let (tx, mut rx) = mpsc::channel::<QueuedSubmission>(4);
+        let (priority_tx, _priority_rx) = mpsc::channel::<QueuedSubmission>(1);
         let client =
-            AppServerClient::connect_weighted(PROTOCOL_VERSION, tx, budget.clone()).unwrap();
+            AppServerClient::connect_weighted(
+                PROTOCOL_VERSION,
+                tx,
+                priority_tx,
+                budget.clone(),
+                core_obs::lifecycle::LifecycleEmitter::new(
+                    core_obs::lifecycle::LifecycleBus::default(),
+                ),
+            )
+            .unwrap();
 
         client
             .submit(op.clone())
@@ -1637,7 +3441,11 @@ mod tests {
         // The acceptance criterion: 0 authoritative drops. A reader that never reads must still be
         // able to learn how the run ended once it starts reading.
         let (tx, mut rx) = mpsc::channel::<EventEnvelope>(8);
-        let mut publisher = EventPublisher::new(tx, false);
+        let mut publisher = EventPublisher::new(
+            tx,
+            false,
+            core_obs::lifecycle::LifecycleEmitter::new(core_obs::lifecycle::LifecycleBus::default()),
+        );
         for i in 0..64 {
             publisher
                 .publish(ServerEvent::Ui(UiEvent::Text(format!("chunk {i}"))))
@@ -1666,7 +3474,10 @@ mod tests {
                     assert!(dropped > 0);
                     saw_lag_notice = true;
                 }
-                ServerEvent::Ui(_) | ServerEvent::Notice(_) | ServerEvent::WorkflowRun(_) => {}
+                ServerEvent::Ui(_)
+                | ServerEvent::Notice(_)
+                | ServerEvent::Submission { .. }
+                | ServerEvent::WorkflowRun(_) => {}
             }
         }
         publish.await.expect("publisher task").expect("delivered");
@@ -1683,7 +3494,11 @@ mod tests {
         const ROUNDS: usize = 256;
         const AUTHORITATIVE_EVERY: usize = 4;
         let (tx, mut rx) = mpsc::channel::<EventEnvelope>(CAPACITY);
-        let mut publisher = EventPublisher::new(tx, false);
+        let mut publisher = EventPublisher::new(
+            tx,
+            false,
+            core_obs::lifecycle::LifecycleEmitter::new(core_obs::lifecycle::LifecycleBus::default()),
+        );
 
         let flood = tokio::spawn(async move {
             for i in 0..ROUNDS {
@@ -1728,7 +3543,9 @@ mod tests {
             last_seq = envelope.seq;
             match envelope.event {
                 ServerEvent::Notice(text) => seen.push(text),
-                ServerEvent::Ui(_) | ServerEvent::WorkflowRun(_) => deltas += 1,
+                ServerEvent::Ui(_)
+                | ServerEvent::Submission { .. }
+                | ServerEvent::WorkflowRun(_) => deltas += 1,
                 ServerEvent::Lagged { dropped: count } => dropped += count,
                 ServerEvent::RunEnded { .. } => {
                     saw_terminal = true;
@@ -1754,7 +3571,11 @@ mod tests {
     #[tokio::test]
     async fn a_lossless_client_backpressures_instead_of_dropping_cosmetic_events() {
         let (tx, mut rx) = mpsc::channel::<EventEnvelope>(1);
-        let mut publisher = EventPublisher::new(tx, true);
+        let mut publisher = EventPublisher::new(
+            tx,
+            true,
+            core_obs::lifecycle::LifecycleEmitter::new(core_obs::lifecycle::LifecycleBus::default()),
+        );
         let publish = tokio::spawn(async move {
             publisher
                 .publish(ServerEvent::Ui(UiEvent::Text("first".into())))
@@ -1882,7 +3703,12 @@ mod tests {
     fn the_wire_hands_back_both_ends_at_one_capacity() {
         let (handle, ends) = wire().expect("the in-process handshake succeeds");
         assert_eq!(handle.client.negotiated_version(), PROTOCOL_VERSION);
-        assert_eq!(ends.submissions.capacity(), SQ_CAPACITY);
+        assert_eq!(ends.submissions.capacity(), SQ_DATA_CAPACITY);
+        assert_eq!(ends.priority_submissions.capacity(), SQ_PRIORITY_CAPACITY);
+        assert_eq!(
+            ends.submissions.capacity() + ends.priority_submissions.capacity(),
+            SQ_CAPACITY
+        );
         // The control plane exists and is separate from the SQ. It is separate because `Op` cannot
         // express `/model`, `/effort`, `/mode` or `/compact` and this lane may not widen it.
         assert!(!handle.control.is_closed());
@@ -2149,6 +3975,9 @@ mod tests {
         let AppServerHandle {
             client,
             mut events,
+            lifecycle: _,
+            lifecycle_otel: _,
+            hook_health: _,
             control,
         } = handle;
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -2184,6 +4013,7 @@ mod tests {
                 }) if id == run_id => lifecycle.push("started"),
                 ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Finished {
                     run_id: id,
+                    ..
                 }) if id == run_id => lifecycle.push("finished"),
                 _ => {}
             }
@@ -2258,6 +4088,9 @@ mod tests {
         let AppServerHandle {
             client,
             mut events,
+            lifecycle: _,
+            lifecycle_otel: _,
+            hook_health: _,
             control,
         } = handle;
         client

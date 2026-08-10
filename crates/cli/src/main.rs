@@ -2071,6 +2071,9 @@ async fn run_cli() -> anyhow::Result<u8> {
     let app_server::AppServerHandle {
         client,
         mut events,
+        lifecycle: _,
+        lifecycle_otel: _,
+        hook_health: _,
         control,
     } = handle;
 
@@ -2129,6 +2132,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             app_server::ServerEvent::Lagged { dropped } => runtime::UiEvent::Notice(format!(
                 "{dropped} streamed update(s) were dropped by the bounded App Server event queue"
             )),
+            app_server::ServerEvent::Submission { .. } => continue,
             app_server::ServerEvent::RunEnded {
                 snapshot, summary, ..
             } => break (*summary, snapshot.ledger_summary),
@@ -2161,6 +2165,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             app_server::ServerEvent::Lagged { dropped } => runtime::UiEvent::Notice(format!(
                 "{dropped} streamed update(s) were dropped by the bounded App Server event queue"
             )),
+            app_server::ServerEvent::Submission { .. } => continue,
             app_server::ServerEvent::RunEnded { .. } => continue,
             // Same as the drain above: no `stream-json` record type exists for it yet.
             app_server::ServerEvent::WorkflowRun(_) => continue,

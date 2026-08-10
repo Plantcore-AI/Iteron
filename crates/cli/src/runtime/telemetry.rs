@@ -22,8 +22,12 @@
 //! stalled collector is bounded and reaped like any other effect, and a crash mid-POST leaves an
 //! `EffectUnknown` that recovery refuses to replay rather than a silently duplicated payload.
 
+mod otlp;
+
 use serde::Deserialize;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Wall-clock ceiling for one export. Bounded like every other effect (invariant #1): a collector
@@ -48,9 +52,88 @@ struct TelemetryBlock {
 }
 
 /// A resolved, operator-authorised export target.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct TelemetrySink {
     endpoint: String,
+    health: TelemetryHealth,
+}
+
+impl PartialEq for TelemetrySink {
+    fn eq(&self, other: &Self) -> bool {
+        self.endpoint == other.endpoint
+    }
+}
+
+impl Eq for TelemetrySink {}
+
+#[derive(Debug, Clone, Default)]
+pub struct TelemetryHealth {
+    inner: Arc<TelemetryHealthInner>,
+}
+
+#[derive(Debug, Default)]
+struct TelemetryHealthInner {
+    attempts: AtomicU64,
+    accepted: AtomicU64,
+    rejected: AtomicU64,
+    unknown: AtomicU64,
+    last_outcome: Mutex<Option<String>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TelemetryHealthSnapshot {
+    pub attempts: u64,
+    pub accepted: u64,
+    pub rejected: u64,
+    pub unknown: u64,
+    pub last_outcome: Option<String>,
+}
+
+impl TelemetryHealth {
+    pub fn snapshot(&self) -> TelemetryHealthSnapshot {
+        TelemetryHealthSnapshot {
+            attempts: self.inner.attempts.load(Ordering::Relaxed),
+            accepted: self.inner.accepted.load(Ordering::Relaxed),
+            rejected: self.inner.rejected.load(Ordering::Relaxed),
+            unknown: self.inner.unknown.load(Ordering::Relaxed),
+            last_outcome: self
+                .inner
+                .last_outcome
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+        }
+    }
+
+    fn record(&self, outcome: &TelemetrySendOutcome) {
+        self.inner.attempts.fetch_add(1, Ordering::Relaxed);
+        let code = match outcome {
+            TelemetrySendOutcome::Accepted => {
+                self.inner.accepted.fetch_add(1, Ordering::Relaxed);
+                "accepted".to_owned()
+            }
+            TelemetrySendOutcome::Rejected(reason) => {
+                self.inner.rejected.fetch_add(1, Ordering::Relaxed);
+                reason.clone()
+            }
+            TelemetrySendOutcome::Unknown => {
+                self.inner.unknown.fetch_add(1, Ordering::Relaxed);
+                "unknown".to_owned()
+            }
+        };
+        *self
+            .inner
+            .last_outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(code);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TelemetrySendOutcome {
+    Accepted,
+    Rejected(String),
+    Unknown,
 }
 
 impl TelemetrySink {
@@ -65,8 +148,18 @@ impl TelemetrySink {
         if !block.enabled || block.endpoint.trim().is_empty() {
             return None;
         }
+        let endpoint = url::Url::parse(block.endpoint.trim()).ok()?;
+        if !matches!(endpoint.scheme(), "http" | "https")
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            return None;
+        }
         Some(TelemetrySink {
-            endpoint: block.endpoint,
+            endpoint: endpoint.to_string(),
+            health: TelemetryHealth::default(),
         })
     }
 
@@ -74,27 +167,56 @@ impl TelemetrySink {
         &self.endpoint
     }
 
+    pub fn health(&self) -> TelemetryHealth {
+        self.health.clone()
+    }
+
     /// POST one payload. Returns the collector's status line on a proven outcome, or `None` when
     /// no terminal could be observed — which the caller journals as `EffectUnknown` rather than
     /// retrying, because a retried export duplicates spans and a duplicated span is a wrong
     /// dashboard.
-    pub async fn send(&self, payload: &core_obs::otel::Export) -> Option<String> {
+    pub async fn send(&self, payload: &core_obs::otel::Export) -> TelemetrySendOutcome {
+        let outcome = self.send_inner(payload).await;
+        self.health.record(&outcome);
+        outcome
+    }
+
+    async fn send_inner(&self, payload: &core_obs::otel::Export) -> TelemetrySendOutcome {
         // The mandated secure client construction, shared with the provider adapters: connect
         // timeout applied and redirects refused, because an endpoint-chosen redirect must not be
         // able to replay the payload at a host the operator never authorised.
-        let client = core_provider::catalog::HttpTransport::client(
+        let Ok(client) = core_provider::catalog::HttpTransport::client(
             &core_provider::catalog::DefaultHttpTransport,
-        )
-        .ok()?;
-        let request = client.post(&self.endpoint).json(payload).send();
-        // Bounded (invariant #1). A collector that accepts the connection and then stops reading
-        // must not be able to hold a run open; the timeout yields "no terminal observed", which the
-        // caller journals rather than retries.
-        let response = tokio::time::timeout(EXPORT_TIMEOUT, request)
+        ) else {
+            return TelemetrySendOutcome::Rejected("client_initialization_failed".into());
+        };
+        let Ok(batches) = otlp::encode(&self.endpoint, payload) else {
+            return TelemetrySendOutcome::Rejected("payload_encoding_failed".into());
+        };
+        let dispatch = async {
+            for batch in batches {
+                let response = match client
+                    .post(batch.endpoint)
+                    .header("content-type", "application/json")
+                    .body(batch.body)
+                    .send()
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(_) => return TelemetrySendOutcome::Unknown,
+                };
+                if !response.status().is_success() {
+                    return TelemetrySendOutcome::Rejected(format!(
+                        "collector_http_{}",
+                        response.status().as_u16()
+                    ));
+                }
+            }
+            TelemetrySendOutcome::Accepted
+        };
+        tokio::time::timeout(EXPORT_TIMEOUT, dispatch)
             .await
-            .ok()?
-            .ok()?;
-        Some(response.status().as_u16().to_string())
+            .unwrap_or(TelemetrySendOutcome::Unknown)
     }
 }
 

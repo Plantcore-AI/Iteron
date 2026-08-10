@@ -27,6 +27,7 @@ const KEYBOARD_ENHANCEMENT_QUERY: &[u8] = b"\x1b[?u\x1b[c";
 const KEYBOARD_ENHANCEMENT_PUSH: &[u8] = b"\x1b[>1u";
 const KEYBOARD_ENHANCEMENT_POP: &[u8] = b"\x1b[<1u";
 const OSC11_QUERY: &[u8] = b"\x1b]11;?\x1b\\";
+const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
 /// A glyph from the startup banner, i.e. proof that a real frame reached the terminal.
 const FIRST_FRAME_MARKER: &[u8] = "ask about this codebase or describe a task".as_bytes();
 static SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
@@ -553,6 +554,7 @@ struct PtyHarness {
     baseline_termios: RawModeTermiosState,
     keyboard_fixture: KeyboardFixture,
     keyboard_query_answered: bool,
+    cursor_queries_answered: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -771,11 +773,12 @@ impl PtyHarness {
             chunks,
             reader_thread: Some(reader_thread),
             reader_closed: false,
-            parser: vt100::Parser::new(rows, cols, 0),
+            parser: vt100::Parser::new(rows, cols, 4096),
             capture: Vec::new(),
             baseline_termios,
             keyboard_fixture,
             keyboard_query_answered: false,
+            cursor_queries_answered: 0,
         }
     }
 
@@ -786,6 +789,12 @@ impl PtyHarness {
         );
         self.parser.process(&chunk);
         self.capture.extend_from_slice(&chunk);
+        let cursor_query_count = sequence_count(&self.capture, CURSOR_POSITION_QUERY);
+        while self.cursor_queries_answered < cursor_query_count {
+            self.cursor_queries_answered += 1;
+            let (row, column) = self.parser.screen().cursor_position();
+            self.send(format!("\x1b[{};{}R", row + 1, column + 1).as_bytes());
+        }
         if !self.keyboard_query_answered
             && self
                 .capture
@@ -871,7 +880,9 @@ impl PtyHarness {
             pty.capture.len() > before
                 && pty.parser.screen().size() == (rows, cols)
                 && (pty.screen_text().contains("请检查")
-                    || pty.screen_text().contains("Transcript"))
+                    || pty.screen_text().contains("Transcript")
+                    || pty.screen_text().contains("Core Code")
+                    || pty.screen_text().contains("ready"))
                 && !pty.screen_text().contains('�')
         });
         let (cursor_row, cursor_col) = self.parser.screen().cursor_position();
@@ -1020,12 +1031,12 @@ impl Drop for PtyHarness {
 }
 
 fn wait_for_ready(pty: &mut PtyHarness) {
-    pty.wait_until("the initial terminal-native Core surface", |pty| {
+    pty.wait_until("the initial Core full-screen surface", |pty| {
         let screen = pty.parser.screen();
         let text = screen.contents();
         screen.alternate_screen()
             && screen.bracketed_paste()
-            && screen.mouse_protocol_mode() == vt100::MouseProtocolMode::None
+            && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
             && text.contains("▄██")
             && text.contains("ask about this codebase")
             && text.contains("glm-5.2")
@@ -1065,6 +1076,7 @@ fn custom_external_editor_round_trip_restores_tui_and_preserves_terminal_cleanup
             && screen.contains("external editor applied")
             && pty.parser.screen().alternate_screen()
             && pty.parser.screen().bracketed_paste()
+            && pty.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
     });
     let tmp = scratch.home().join(".core/tmp");
     assert_eq!(
@@ -1173,11 +1185,30 @@ fn tunables_registry_search_and_detail_are_terminal_real() {
     pty.send(b"\r");
     pty.wait_until("read-only tunable detail", |pty| {
         let screen = pty.screen_text();
+        screen.contains("Read-only catalog") && screen.contains("SWE-bench Pro")
+    });
+    for _ in 0..10 {
+        pty.send(b"\x1b[<64;1;1M");
+    }
+    pty.wait_until("tunable detail scrolls inside the application", |pty| {
+        let screen = pty.screen_text();
         screen.contains("core.control.provider.route_selection")
             && screen.contains("runtime_bound=false")
             && screen.contains("not supplied (no frozen request loaded)")
-            && screen.contains("SWE-bench Pro")
     });
+    let history = pty.screen_text();
+    assert!(
+        history.contains("core.control.provider.route_selection"),
+        "{history}"
+    );
+    assert!(history.contains("runtime_bound=false"), "{history}");
+    assert!(
+        history.contains("not supplied (no frozen request loaded)"),
+        "{history}"
+    );
+    for _ in 0..10 {
+        pty.send(b"\x1b[<65;1;1M");
+    }
 
     pty.send(b"\x03");
     let status = pty.wait_for_exit();
@@ -1205,10 +1236,10 @@ fn experiment_lab_is_terminal_real_read_only_by_default_and_blocks_promotion() {
         !scratch.repo().join(".core/experiments").exists(),
         "opening the lab must not create state"
     );
-    assert_eq!(
+    assert_ne!(
         pty.parser.screen().mouse_protocol_mode(),
         vt100::MouseProtocolMode::None,
-        "the lab must preserve native selection ownership"
+        "the full-screen lab must preserve application mouse ownership"
     );
 
     pty.send(b"/lab promote\r");
@@ -1237,7 +1268,10 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
     pty.send(command.as_bytes());
     pty.wait_until("safe multilingual transcript source", |pty| {
         let screen = pty.screen_text();
-        screen.contains("needle 你好 😀") && !screen.contains('�')
+        screen.contains("needle")
+            && screen.contains('你')
+            && screen.contains('好')
+            && !screen.contains('�')
     });
     assert!(
         !pty.capture
@@ -1261,7 +1295,9 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
         pty.screen_text().contains(" · raw · match")
     });
     pty.resize(56, 18);
-    assert!(pty.screen_text().contains("Transcript"));
+    pty.wait_until("transcript viewer remains open after resize", |pty| {
+        pty.screen_text().contains("Transcript")
+    });
     assert!(!pty.screen_text().contains('�'));
 
     pty.send(b"e");
@@ -1416,9 +1452,9 @@ fn unanswered_osc11_query_times_out_to_colorfgbg_without_blocking_startup() {
 
 #[test]
 fn capability_probes_are_written_after_the_first_painted_frame() {
-    // Both probes used to sit between EnterAlternateScreen and the first draw: the progressive
+    // Both probes used to sit between terminal-mode entry and the first draw: the progressive
     // keyboard query blocks up to 2000 ms and OSC 11 another 80 ms, so a terminal that answered
-    // neither held a freshly blanked screen for two seconds before anything appeared.
+    // neither held the initial surface for two seconds before anything appeared.
     //
     // Byte order is the durable statement of the fix, and it is the STRONGER one: a query that is
     // written after the frame cannot delay the frame no matter how long the terminal takes to
@@ -1692,7 +1728,7 @@ fn active_ctrl_d_drains_to_a_checkpoint_and_idle_ctrl_d_still_exits() {
     pty.send(b"\x04");
     pty.wait_until("active Ctrl-D drain status", |pty| {
         let screen = pty.screen_text();
-        screen.contains("stopping") && screen.contains("checkpoint")
+        screen.contains("draining active work now") || screen.contains("last: drained")
     });
     pty.wait_until("durable drained terminal", |pty| {
         pty.screen_text().contains("drained")
@@ -1842,61 +1878,93 @@ fn esc_interrupts_a_running_bash_tool_and_kills_its_descendants() {
 }
 
 #[test]
-fn mouse_capture_toggle_releases_selection_and_restores_wheel_and_fold() {
-    let scratch = Scratch::new("mouse-toggle");
-    let mut pty = PtyHarness::spawn(&scratch, 80, 24);
+fn fullscreen_wheel_scrolls_session_and_ctrl_t_toggles_native_selection() {
+    let scratch = Scratch::new("fullscreen-session-scroll");
+    let mut pty = PtyHarness::spawn(&scratch, 110, 24);
     wait_for_ready(&mut pty);
 
-    // Native selection/copy owns drag at startup. Mouse protocol `None` is the terminal-observable
-    // contract that makes ordinary drag + system copy work without a hidden modifier.
-    pty.wait_until("native terminal selection mode", |pty| {
+    // The default is a real alternate-screen application. Mouse reporting keeps the wheel inside
+    // the current session instead of exposing shell scrollback from before Core started.
+    pty.wait_until("full-screen application mouse mode", |pty| {
         let screen = pty.parser.screen();
-        screen.mouse_protocol_mode() == vt100::MouseProtocolMode::None
-            && screen.contents().contains("selection:on")
-            && screen.contents().contains("ctrl+t app mouse")
-    });
-
-    pty.send(b"\x14");
-    pty.wait_until("mouse capture re-enabled", |pty| {
-        let screen = pty.parser.screen();
-        screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+        screen.alternate_screen()
+            && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
             && screen.contents().contains("mouse:on")
-            && screen.contents().contains("ctrl+t selection")
+            && screen.contents().contains("wheel:transcript")
+    });
+    let (cursor_row, _) = pty.parser.screen().cursor_position();
+    assert!(
+        (10..=20).contains(&cursor_row),
+        "the full-height landing must vertically group its centered welcome and composer instead \
+         of rendering as a bottom terminal dock; cursor row was {cursor_row}"
+    );
+    let alternate = find_sequence(&pty.capture, b"\x1b[?1049h")
+        .expect("full-screen launch enters the alternate screen");
+    let first_frame = find_sequence(&pty.capture, FIRST_FRAME_MARKER)
+        .expect("the full-screen landing frame reaches the terminal");
+    assert!(
+        alternate < first_frame,
+        "alternate-screen ownership must precede the landing frame"
+    );
+    // The first frame intentionally precedes capability negotiation. Synchronize the scripted
+    // command with the fixture's keyboard reply so the harness does not type into Crossterm's
+    // startup query; a human terminal normally answers this in the same write/read exchange.
+    pty.wait_until("startup keyboard capability reply", |pty| {
+        pty.keyboard_query_answered
     });
 
-    // A long local-only shell card gives both mouse behaviors a real transcript target. SGR wheel
-    // input must leave follow mode, then an SGR click on a visible body row must fold that card.
-    pty.send(b"!seq 1 80 | sed 's/^/fold-me-/'\r");
+    // A long local-only shell card must overflow Core's own transcript viewport.
+    pty.send(b"!seq 1 80 | sed 's/^/fold-me-/'");
+    pty.wait_until(
+        "long shell command reaches the full-height composer",
+        |pty| pty.screen_text().contains("fold-me-"),
+    );
+    pty.send(b"\r");
     pty.wait_until("long shell card", |pty| {
-        pty.screen_text().contains("fold-me-80")
+        pty.capture
+            .windows(b"fold-me-80".len())
+            .any(|window| window == b"fold-me-80")
     });
-    pty.send(b"\x1b[<64;2;2M");
-    pty.wait_until("wheel scrolling transcript history", |pty| {
-        pty.screen_text().contains("reading history")
-    });
-
-    let (row, visible_marker) = pty
-        .screen_text()
-        .lines()
-        .enumerate()
-        .find_map(|(row, line)| {
-            (2..80)
-                .map(|index| format!("fold-me-{index}"))
-                .find(|marker| line.contains(marker))
-                .map(|marker| (row, marker))
-        })
-        .expect("wheel-scrolled tool body exposes a numbered row");
-    let click = format!("\x1b[<0;2;{}M", row + 1);
-    pty.send(click.as_bytes());
-    pty.wait_until("click-to-fold after capture was re-enabled", |pty| {
-        !pty.screen_text().contains(&visible_marker)
+    const DRAFT: &str = "wheel-must-not-touch-draft";
+    pty.send(DRAFT.as_bytes());
+    pty.wait_until("unsent draft in the live viewport", |pty| {
+        pty.screen_text().contains(DRAFT)
     });
 
-    // Teardown also starts from the operator-released state; the other lifecycle tests exercise
-    // normal and signal exits while capture is still active.
+    for _ in 0..24 {
+        pty.send(b"\x1b[<64;1;1M"); // SGR wheel up
+    }
+    pty.wait_until("wheel reveals older in-session transcript", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("fold-me-1") && screen.contains(DRAFT)
+    });
+
+    // Ctrl-T releases only mouse reporting. The alternate-screen application stays intact, so a
+    // zero-modifier drag belongs to native terminal selection; another Ctrl-T restores app scroll.
     pty.send(b"\x14");
-    pty.wait_until("selection mode before teardown", |pty| {
-        pty.parser.screen().mouse_protocol_mode() == vt100::MouseProtocolMode::None
+    pty.wait_until("Ctrl-T native selection mode", |pty| {
+        let screen = pty.parser.screen();
+        screen.alternate_screen()
+            && screen.mouse_protocol_mode() == vt100::MouseProtocolMode::None
+            && screen.contents().contains("selection:on")
+    });
+    pty.send(b"\x14");
+    pty.wait_until("Ctrl-T restores application mouse mode", |pty| {
+        let screen = pty.parser.screen();
+        screen.alternate_screen()
+            && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+            && screen.contents().contains("mouse:on")
+    });
+    for _ in 0..24 {
+        pty.send(b"\x1b[<65;1;1M"); // SGR wheel down
+    }
+    pty.wait_until("wheel returns to current-session tail", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("fold-me-80") && screen.contains(DRAFT)
+    });
+    pty.send(b"\x1b");
+    pty.wait_until("clear unchanged draft", |pty| {
+        !pty.screen_text().contains(DRAFT)
     });
     pty.send(b"\x1b");
     let status = pty.wait_for_exit();

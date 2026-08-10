@@ -16,7 +16,7 @@ pub(super) async fn handle_registered_command(
                 .iter()
                 .map(|c| item("/", &format!("{} {}", c.name, c.args), c.help))
                 .collect();
-            rows.push(block::PanelRow::Note("keys: ↑↓ history · Ctrl-R prompt search · Ctrl-F transcript · Ctrl-G external editor · ←→/Ctrl-A/E/U/K/W edit · @file · !shell · Shift+Tab permission mode · Ctrl-T mouse/native selection · Ctrl-C interrupt".into()));
+            rows.push(block::PanelRow::Note("keys: drag selects · wheel/trackpad scrolls transcript · ↑↓ prompt history · Ctrl-R prompt search · Ctrl-F transcript · Ctrl-G external editor · ←→/Ctrl-A/E/U/K/W edit · @file · !shell · Shift+Tab permission mode · Ctrl-C interrupt".into()));
             rows.push(block::PanelRow::Note(
                 "operator config: tui_keymap supports standard/vim and five conflict-checked actions; lifecycle keys remain reserved".into(),
             ));
@@ -113,6 +113,7 @@ pub(super) async fn handle_registered_command(
             rows.extend([
                 kv("mode", &permission_mode_row_value(session)),
                 kv("cwd", &session.workspace().display().to_string()),
+                kv("session", &session.session_id().to_string()),
                 kv("run", &run),
             ]);
             // Before a rejection, not after it: this is the only place the operator can see the
@@ -193,7 +194,236 @@ pub(super) async fn handle_registered_command(
             }
         }
         SlashCommand::Context => {
-            context_chips::handle(app, session, arg).await;
+            if matches!(arg.trim(), "stats" | "ledger" | "decisions") {
+                let snapshot = session.context_ledger_snapshot();
+                let mut rows = vec![
+                    kv("retained turns", &snapshot.ledgers.len().to_string()),
+                    kv(
+                        "store drops",
+                        &format!(
+                            "{} oldest · {} contention · {} unmatched",
+                            snapshot.dropped_oldest,
+                            snapshot.dropped_contention,
+                            snapshot.dropped_unmatched
+                        ),
+                    ),
+                ];
+                if let Some(ledger) = snapshot.ledgers.last() {
+                    rows.extend([
+                        kv("turn", &ledger.turn_id.0.to_string()),
+                        kv(
+                            "tokenizer",
+                            &format!(
+                                "{} v{} · {}",
+                                ledger.estimator.catalog_id,
+                                ledger.estimator.version,
+                                if ledger.estimator.exact {
+                                    "exact"
+                                } else {
+                                    "estimated"
+                                }
+                            ),
+                        ),
+                        kv(
+                            "window",
+                            &format!(
+                                "{} model · {} usable · {} output reserve",
+                                ledger
+                                    .model_context_window
+                                    .map(|value| format!("{value} tok"))
+                                    .unwrap_or_else(|| "unknown".into()),
+                                ledger
+                                    .usable_window
+                                    .map(|value| format!("{value} tok"))
+                                    .unwrap_or_else(|| "unknown".into()),
+                                ledger.output_reserved_tokens
+                            ),
+                        ),
+                        kv(
+                            "segments",
+                            &format!(
+                                "{} selected · {} rejected · {} dropped",
+                                ledger.totals.selected_segments,
+                                ledger.totals.rejected_segments,
+                                ledger.dropped
+                            ),
+                        ),
+                        kv(
+                            "tokens",
+                            &match ledger.totals.actual_input_tokens {
+                                Some(actual) => format!(
+                                    "{} estimated · {actual} provider",
+                                    ledger.totals.estimated_tokens
+                                ),
+                                None => format!("{} estimated", ledger.totals.estimated_tokens),
+                            },
+                        ),
+                        kv(
+                            "cache",
+                            &format!(
+                                "{} stable · {} read · {} write · {} uncached",
+                                ledger.cache.stable_prefix_tokens,
+                                ledger.cache.cache_read_tokens,
+                                ledger.cache.cache_write_tokens,
+                                ledger.cache.uncached_tokens
+                            ),
+                        ),
+                        kv(
+                            "token classes",
+                            &format!(
+                                "{} schema · {} attachment · {} duplicate · {} reclaimable",
+                                ledger.totals.tool_schema_tokens,
+                                ledger.totals.attachment_tokens,
+                                ledger.totals.duplicate_tokens,
+                                ledger.totals.reclaimable_tokens
+                            ),
+                        ),
+                        kv("transforms", &ledger.transforms.len().to_string()),
+                        kv(
+                            "headroom",
+                            &ledger
+                                .headroom_tokens()
+                                .map(|tokens| format!("{tokens} tok"))
+                                .unwrap_or_else(|| "unknown".into()),
+                        ),
+                    ]);
+                    if let Some(compaction) = &ledger.compaction {
+                        rows.push(kv(
+                            "compaction",
+                            &format!(
+                                "{} -> {} tok @ {} · obligations {} kept / {} lost · {}",
+                                compaction.before_tokens,
+                                compaction.after_tokens,
+                                compaction.trigger_tokens,
+                                compaction.obligations_preserved,
+                                compaction.obligations_lost,
+                                compaction.reason_code
+                            ),
+                        ));
+                    }
+                    for segment in ledger.segments.iter().take(24) {
+                        rows.push(block::PanelRow::Note(format!(
+                            "#{:02} {:?} · {:?} · {} tok · {} bytes · {:?}",
+                            segment.ordinal,
+                            segment.source_class,
+                            segment.decision,
+                            segment.estimated_tokens,
+                            segment.bytes_after,
+                            segment.cache_class
+                        )));
+                    }
+                    if ledger.segments.len() > 24 {
+                        rows.push(block::PanelRow::Note(format!(
+                            "… {} more segments",
+                            ledger.segments.len() - 24
+                        )));
+                    }
+                }
+                app.panel("◇", "context decision ledger", rows);
+            } else {
+                context_chips::handle(app, session, arg).await;
+            }
+        }
+        SlashCommand::Telemetry => {
+            let snapshot = session.lifecycle_snapshot();
+            let otel = session.lifecycle_otel_snapshot();
+            let hooks = session.hook_health_snapshot();
+            let exporter = session.telemetry_export_health_snapshot();
+            let mut by_domain = std::collections::BTreeMap::<&str, u64>::new();
+            for event in &snapshot.events {
+                let domain = event
+                    .event_id
+                    .as_str()
+                    .split('.')
+                    .next()
+                    .unwrap_or("unknown");
+                *by_domain.entry(domain).or_default() += 1;
+            }
+            let mut rows = vec![
+                kv(
+                    "catalog",
+                    &format!("{} lifecycle events", core_protocol::lifecycle::EVENT_COUNT),
+                ),
+                kv("recorded", &snapshot.events.len().to_string()),
+                kv("next ordinal", &snapshot.next_ordinal.to_string()),
+                kv(
+                    "recorder drops",
+                    &format!(
+                        "{} oldest · {} contention · {} subscriber · {} invalid",
+                        snapshot.dropped_oldest,
+                        snapshot.dropped_contention,
+                        snapshot.dropped_subscriber,
+                        snapshot.invalid
+                    ),
+                ),
+                kv(
+                    "OTel catalog",
+                    &format!(
+                        "{} metrics · {} logs · {} spans",
+                        core_obs::otel::catalog::METRIC_INSTRUMENT_COUNT,
+                        core_obs::otel::catalog::LOG_SCHEMA_COUNT,
+                        core_obs::otel::catalog::SPAN_TEMPLATE_COUNT
+                    ),
+                ),
+                kv(
+                    "Hook queue",
+                    &format!(
+                        "{} queued · {} live · {} dropped",
+                        hooks.queued, hooks.queue_depth, hooks.dropped
+                    ),
+                ),
+                kv(
+                    "Hook outcomes",
+                    &format!(
+                        "{} completed · {} failed · {} timed out · {} blocked",
+                        hooks.completed, hooks.failed, hooks.timed_out, hooks.blocked
+                    ),
+                ),
+                kv("Hook circuits", &format!("{} open", hooks.open_circuits)),
+            ];
+            for (domain, count) in by_domain {
+                rows.push(kv(domain, &count.to_string()));
+            }
+            if let Some(last) = snapshot.events.last() {
+                rows.push(block::PanelRow::Note(format!(
+                    "latest: #{} {}",
+                    last.ordinal, last.event_id
+                )));
+            }
+            if let Some(otel) = otel {
+                rows.push(kv(
+                    "live OTel",
+                    &format!(
+                        "{} logs · {} metrics · {} spans · {} open",
+                        otel.logs.len(),
+                        otel.metrics.len(),
+                        otel.spans.len(),
+                        otel.open_spans
+                    ),
+                ));
+                rows.push(kv(
+                    "OTel drops",
+                    &format!(
+                        "{} logs · {} spans · {} open-span",
+                        otel.dropped_logs, otel.dropped_spans, otel.dropped_open_spans
+                    ),
+                ));
+            }
+            if let Some(exporter) = exporter {
+                rows.push(kv(
+                    "exporter",
+                    &format!(
+                        "enabled · {} attempts · {} accepted · {} rejected · {} unknown",
+                        exporter.attempts, exporter.accepted, exporter.rejected, exporter.unknown
+                    ),
+                ));
+                if let Some(last) = exporter.last_outcome {
+                    rows.push(kv("exporter last", &last));
+                }
+            } else {
+                rows.push(kv("exporter", "off (trusted user config only)"));
+            }
+            app.panel("◉", "telemetry", rows);
         }
         SlashCommand::Mode => {
             if arg.is_empty() {
@@ -288,6 +518,150 @@ pub(super) async fn handle_registered_command(
             _ => app.push(fg(Color::Red), "usage: /allow-code on|off"),
         },
         SlashCommand::Memory => {
+            if matches!(arg.trim(), "trace" | "stats" | "decisions") {
+                let snapshot = session.memory_trace_snapshot();
+                let mut rows = vec![
+                    kv("retained turns", &snapshot.traces.len().to_string()),
+                    kv(
+                        "store drops",
+                        &format!(
+                            "{} oldest · {} contention · {} unmatched",
+                            snapshot.dropped_oldest,
+                            snapshot.dropped_contention,
+                            snapshot.dropped_unmatched
+                        ),
+                    ),
+                ];
+                if let Some(trace) = snapshot.traces.last() {
+                    let mut decisions = std::collections::BTreeMap::<String, u64>::new();
+                    for candidate in &trace.candidates {
+                        *decisions
+                            .entry(format!("{:?}", candidate.decision).to_ascii_lowercase())
+                            .or_default() += 1;
+                    }
+                    let mut visibility = std::collections::BTreeMap::<String, u64>::new();
+                    for evidence in &trace.visibility {
+                        *visibility
+                            .entry(format!("{:?}", evidence.state).to_ascii_lowercase())
+                            .or_default() += 1;
+                    }
+                    rows.extend([
+                        kv("turn", &trace.turn_id.0.to_string()),
+                        kv(
+                            "query",
+                            &format!(
+                                "{} bytes · {} tok · {} rewrites",
+                                trace.query.bytes,
+                                trace.query.estimated_tokens,
+                                trace.query.rewrite_count
+                            ),
+                        ),
+                        kv(
+                            "scope",
+                            &format!(
+                                "{:?} · isolation {} · {} parent rejects",
+                                trace.scope.class,
+                                if trace.scope.isolation_enabled {
+                                    "on"
+                                } else {
+                                    "off"
+                                },
+                                trace.scope.parent_access_rejections
+                            ),
+                        ),
+                        kv("stores", &trace.stores.len().to_string()),
+                        kv(
+                            "candidates",
+                            &format!(
+                                "{} observed · {} selected · {} dropped",
+                                trace.candidates.len(),
+                                trace.budget.selected_count,
+                                trace.dropped_candidates
+                            ),
+                        ),
+                        kv(
+                            "budget",
+                            &format!(
+                                "{} / {} tok · {} / {} bytes",
+                                trace.budget.granted_tokens,
+                                trace.budget.requested_tokens,
+                                trace.budget.granted_bytes,
+                                trace.budget.requested_bytes
+                            ),
+                        ),
+                        kv(
+                            "injection",
+                            &trace
+                                .injection
+                                .as_ref()
+                                .map(|value| {
+                                    format!(
+                                        "{} facts · {} tok · {} bytes",
+                                        value.fact_count, value.estimated_tokens, value.bytes
+                                    )
+                                })
+                                .unwrap_or_else(|| "none".into()),
+                        ),
+                        kv(
+                            "visibility",
+                            &if visibility.is_empty() {
+                                "none".into()
+                            } else {
+                                visibility
+                                    .into_iter()
+                                    .map(|(state, count)| format!("{count} {state}"))
+                                    .collect::<Vec<_>>()
+                                    .join(" · ")
+                            },
+                        ),
+                        kv(
+                            "provider exposure",
+                            &format!(
+                                "{} attributed · causal influence not inferred",
+                                trace.attribution.len()
+                            ),
+                        ),
+                    ]);
+                    if !decisions.is_empty() {
+                        rows.push(kv(
+                            "candidate decisions",
+                            &decisions
+                                .into_iter()
+                                .map(|(decision, count)| format!("{count} {decision}"))
+                                .collect::<Vec<_>>()
+                                .join(" · "),
+                        ));
+                    }
+                    if let Some(contamination) = &trace.contamination {
+                        rows.push(kv(
+                            "contamination",
+                            &format!(
+                                "{} · {} checked · {} rejected · {} canary",
+                                if contamination.passed {
+                                    "passed"
+                                } else {
+                                    "failed"
+                                },
+                                contamination.checked_candidates,
+                                contamination.rejected_candidates,
+                                contamination.canary_matches
+                            ),
+                        ));
+                    }
+                    rows.push(kv(
+                        "trace drops",
+                        &format!(
+                            "{} stores · {} candidates · {} selected · {} visibility",
+                            trace.dropped_stores,
+                            trace.dropped_candidates,
+                            trace.dropped_selections,
+                            trace.dropped_visibility
+                        ),
+                    ));
+                }
+                app.panel("◆", "memory decision trace", rows);
+                return;
+            }
             let ws = session.memory_workspace();
             let Some(ws) = ws else {
                 app.push(fg(Color::Red), "memory not available");
@@ -301,44 +675,25 @@ pub(super) async fn handle_registered_command(
                     if text.is_empty() {
                         app.push(fg(Color::Red), "usage: /memory add <fact>");
                     } else {
-                        let admitted = core_ctx::MemoryRecallStrategy::authorize_project_write_with(
-                            session.memory_strategy(),
-                            &text,
-                            core_protocol::capability_set::CapabilitySet::only(
-                                Capability::TrustMutating,
+                        match session
+                            .control(app_server::Control::Memory(app_server::MemoryControl::Add(
+                                text.clone(),
+                            )))
+                            .await
+                        {
+                            Some(app_server::ControlReply::Memory(
+                                app_server::MemoryControlReply::Added { id },
+                            )) => app.push(
+                                fg(Color::Green),
+                                format!("remembered ({id}) — available in this session"),
                             ),
-                        );
-                        match admitted {
-                            Ok(proposal) => match store.add(&proposal.text) {
-                                Ok(id) => {
-                                    let fact = core_protocol::text::head(&proposal.text, 16 * 1024);
-                                    let notification = format!(
-                                        "{}\nMemory `{id}` was added explicitly by the operator \
-                                         and is available in this session. Exact fact:\n{fact}\n\n\
-                                         Use this fact when relevant. `read_memory` can retrieve it \
-                                         by id; the stable REC-INJECT prefix remains unchanged.",
-                                        crate::runtime::MEMORY_ADDED_NOTIFICATION_PREFIX,
-                                    );
-                                    match session.submit(Op::Steer { text: notification }) {
-                                        Ok(()) => app.push(
-                                            fg(Color::Green),
-                                            format!("remembered ({id}) — available in this session"),
-                                        ),
-                                        Err(error) => app.push(
-                                            fg(Color::Yellow),
-                                            format!(
-                                                "remembered ({id}), but current-session refresh failed: {error}"
-                                            ),
-                                        ),
-                                    }
-                                }
-                                Err(error) => {
-                                    app.push(fg(Color::Red), format!("memory add failed: {error}"))
-                                }
-                            },
-                            Err(error) => {
-                                app.push(fg(Color::Red), format!("memory policy refused: {error}"))
+                            Some(app_server::ControlReply::Refused(reason)) => {
+                                app.push(fg(Color::Red), reason)
                             }
+                            _ => app.push(
+                                fg(Color::Red),
+                                "the memory authority is no longer reachable",
+                            ),
                         }
                     }
                 }
@@ -364,11 +719,26 @@ pub(super) async fn handle_registered_command(
                     }
                 }
                 Some("forget") | Some("rm") => {
-                    let id = sub.next().unwrap_or("");
-                    if store.remove(id) {
-                        app.push(fg(Color::Green), format!("forgot {id}"));
-                    } else {
-                        app.push(fg(Color::Red), format!("no memory {id}"));
+                    let id = sub.next().unwrap_or("").to_owned();
+                    match session
+                        .control(app_server::Control::Memory(
+                            app_server::MemoryControl::Delete(id.clone()),
+                        ))
+                        .await
+                    {
+                        Some(app_server::ControlReply::Memory(
+                            app_server::MemoryControlReply::Deleted { id },
+                        )) => app.push(fg(Color::Green), format!("forgot {id}")),
+                        Some(app_server::ControlReply::Memory(
+                            app_server::MemoryControlReply::Missing { id },
+                        )) => app.push(fg(Color::Red), format!("no memory {id}")),
+                        Some(app_server::ControlReply::Refused(reason)) => {
+                            app.push(fg(Color::Red), reason)
+                        }
+                        _ => app.push(
+                            fg(Color::Red),
+                            "the memory authority is no longer reachable",
+                        ),
                     }
                 }
                 Some(x) => app.push(
@@ -479,9 +849,9 @@ pub(super) async fn handle_registered_command(
             show_agent_catalog(app, session);
         }
         SlashCommand::Skills => {
-            let user = core_ctx::skills::user_skills_dir();
-            let cat = core_ctx::skills::SkillCatalog::discover_with_dependencies(
-                user.as_deref(),
+            let home = crate::config::config_home();
+            let cat = core_ctx::skills::SkillCatalog::discover_for_operator_with_dependencies(
+                home.as_deref(),
                 session.workspace(),
                 session.dependency_skill_dirs(),
             );
@@ -492,7 +862,7 @@ pub(super) async fn handle_registered_command(
                 .collect();
             if rows.is_empty() {
                 rows.push(block::PanelRow::Note(
-                    "no skills (add <repo>/.core/skills/<name>/SKILL.md)".into(),
+                    "no skills (add <repo>/.core/skills or <repo>/.agents/skills)".into(),
                 ));
             }
             for e in cat.errors() {
