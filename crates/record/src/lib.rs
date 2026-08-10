@@ -55,6 +55,11 @@ pub use session::{
     replay_run_timed,
 };
 
+/// A registry-driven resolved tunable set for other crates' tests. Feature-gated, never in a
+/// release build; it resolves the compiled registry rather than inventing a snapshot.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use session::tunables::resolved_fixture;
+
 /// Explicit policy for admitting records created before immutable tunables snapshots.
 pub type LegacyTunablesPolicy = session::tunables::LegacyTunablesPolicy;
 /// Result of comparing a record's immutable genesis identity with the current resolved set.

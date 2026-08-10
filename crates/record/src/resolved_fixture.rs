@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 const DIGEST_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const DIGEST_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-pub(super) fn resolved() -> ResolvedTunableSet {
+pub fn resolved() -> ResolvedTunableSet {
     resolve(complete_input()).expect("registry-driven public resolver fixture must remain accepted")
 }
 
@@ -70,6 +70,14 @@ fn complete_input() -> ResolutionInput {
                 },
                 "model" => ResolutionValue::Enum {
                     value: route.model_id.clone(),
+                },
+                // `ProcessRuntimePolicy` rejects a disabled backend that still admits background
+                // jobs. That pairing spans two families, which a per-family value schema cannot
+                // express, so the registry accepts a combination the runtime owner refuses. Pick
+                // the backend that admits the sampled capacity rather than emit a set that is
+                // valid on paper and unusable in practice.
+                "persistent_pty_backend" => ResolutionValue::Enum {
+                    value: "persistent".to_owned(),
                 },
                 _ => sample_schema(family.value_schema, family.ordinal),
             };

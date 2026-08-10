@@ -314,9 +314,13 @@ pub(crate) fn fixture_snapshot_variant(marker: char) -> RunGenesisTunablesSnapsh
     snapshot
 }
 
-#[cfg(test)]
+/// A registry-driven `ResolvedTunableSet`, exposed under a feature so other crates' tests can pin
+/// real tunables instead of inventing a snapshot. It resolves the compiled registry, so it fails
+/// the moment the registry and its golden digest drift apart, which is exactly what a fake would
+/// hide. Never compiled into a release build.
+#[cfg(any(test, feature = "test-fixtures"))]
 #[path = "resolved_fixture.rs"]
-mod resolved_fixture;
+pub mod resolved_fixture;
 
 #[cfg(test)]
 #[path = "tunables_tests.rs"]

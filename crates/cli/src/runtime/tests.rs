@@ -458,6 +458,26 @@ mod gate_integration_tests {
     /// can tell the parent's own turn apart from a child it must never see admitted.
     const PARENT_SYSTEM: &str = "sys";
 
+    /// Pin the registry-driven resolved tunable set onto a test agent.
+    ///
+    /// Production resolves tunables at the composition root and hands them to
+    /// `Agent::new_with_resolved_tunables`. A test that builds an agent through the bare
+    /// `Agent::new` has none, and every path that needs the checkpoint fails closed with
+    /// `TunablesNotResolved` — correctly, since an unpinned run has no audit identity. The
+    /// fixture resolves the compiled registry rather than inventing a snapshot, so it fails the
+    /// moment the registry and its golden digest drift apart.
+    fn pin_test_tunables(agent: &mut Agent) {
+        agent
+            .pin_resolved_tunables(std::sync::Arc::new(
+                core_record::resolved_fixture::resolved(),
+            ))
+            .expect(
+                "the registry-driven fixture must resolve into an installable runtime policy; a \
+                 failure here is a real gap between what the registry accepts and what the runtime \
+                 owner will install, not a broken test",
+            );
+    }
+
     /// Awaiting a `Notify` that never fires hangs the whole suite instead of failing it, and a
     /// hung test is indistinguishable from a slow one. Every wait here is therefore bounded: a
     /// signal that never arrives becomes a named failure with the run still terminating.
@@ -13404,6 +13424,7 @@ ant-api03-SuperSecretModelToken12345"
                 },
             );
             agent.workspace = workspace.to_path_buf();
+            pin_test_tunables(&mut agent);
             agent
         }
 

@@ -1,22 +1,31 @@
 use super::*;
 
-#[allow(
-    dead_code,
-    reason = "used by public pre-run tunables pinning seams outside the CLI binary path"
-)]
-fn create_tool_output_spill_store(
+/// Decode the pinned tunables into tooling policy, install it into the registry, and open the
+/// private spill store.
+///
+/// Both ways of pinning must leave the agent in the same state. They did not: the constructor
+/// installed the tooling policy while the post-construction pin only opened the spill store, so an
+/// agent pinned that way failed later with `ToolingPolicy` at its first tool call. One function is
+/// now the only place that answers "what does a pinned agent owe its registry".
+fn apply_pinned_tooling(
     pin: &tunables_pin::TunablesPin,
+    registry: &Registry,
 ) -> Result<std::sync::Arc<tool_output_spill::ToolOutputSpillStore>, KernelError> {
     let view = crate::runtime_tunables::effective_view::EffectiveTunablesView::from_checkpoint(
         pin.checkpoint(),
     )
     .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
-    let policy = crate::runtime_tunables::effective_tooling::decode_tool_output_spill_policy(&view)
-        .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
-    Ok(std::sync::Arc::new(
-        tool_output_spill::ToolOutputSpillStore::create(policy)
+    let tooling =
+        crate::runtime_tunables::effective_tooling::EffectiveToolingSettings::decode(&view)
+            .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
+    let store = std::sync::Arc::new(
+        tool_output_spill::ToolOutputSpillStore::create(tooling.tool_output_spill)
             .map_err(|_| KernelError::ToolOutputSpill("private store creation failed"))?,
-    ))
+    );
+    tooling
+        .install(registry)
+        .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
+    Ok(store)
 }
 
 impl Agent {
@@ -214,20 +223,7 @@ impl Agent {
         budget: Budget,
         pin: tunables_pin::TunablesPin,
     ) -> Result<Self, KernelError> {
-        let view = crate::runtime_tunables::effective_view::EffectiveTunablesView::from_checkpoint(
-            pin.checkpoint(),
-        )
-        .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
-        let tooling =
-            crate::runtime_tunables::effective_tooling::EffectiveToolingSettings::decode(&view)
-                .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
-        let tool_output_spill = std::sync::Arc::new(
-            tool_output_spill::ToolOutputSpillStore::create(tooling.tool_output_spill)
-                .map_err(|_| KernelError::ToolOutputSpill("private store creation failed"))?,
-        );
-        tooling
-            .install(&registry)
-            .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
+        let tool_output_spill = apply_pinned_tooling(&pin, &registry)?;
         let mut agent = Self::new(provider, registry, rollout, model, system, budget);
         agent.tool_output_spill = Some(tool_output_spill);
         agent.tunables_pin = Some(pin);
@@ -312,7 +308,7 @@ impl Agent {
             return Err(KernelError::TunablesAlreadyResolved);
         }
         let pin = tunables_pin::TunablesPin::from_resolved(&resolved)?;
-        let tool_output_spill = create_tool_output_spill_store(&pin)?;
+        let tool_output_spill = apply_pinned_tooling(&pin, &self.registry)?;
         self.tool_output_spill = Some(tool_output_spill);
         self.tunables_pin = Some(pin);
         Ok(())
@@ -327,7 +323,7 @@ impl Agent {
             return Err(KernelError::TunablesAlreadyResolved);
         }
         let pin = tunables_pin::TunablesPin::from_checkpoint(checkpoint)?;
-        let tool_output_spill = create_tool_output_spill_store(&pin)?;
+        let tool_output_spill = apply_pinned_tooling(&pin, &self.registry)?;
         self.tool_output_spill = Some(tool_output_spill);
         self.tunables_pin = Some(pin);
         Ok(())
