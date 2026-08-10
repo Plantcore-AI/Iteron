@@ -453,6 +453,23 @@ mod gate_integration_tests {
     //! Integration tests for the permission-gate wiring: drive one turn with a scripted provider
     //! that requests an effecting `edit`, and assert the gate refuses it under the right posture.
     use super::*;
+
+    /// The system prompt every agent in this module is constructed with. Named so a fake provider
+    /// can tell the parent's own turn apart from a child it must never see admitted.
+    const PARENT_SYSTEM: &str = "sys";
+
+    /// Awaiting a `Notify` that never fires hangs the whole suite instead of failing it, and a
+    /// hung test is indistinguishable from a slow one. Every wait here is therefore bounded: a
+    /// signal that never arrives becomes a named failure with the run still terminating.
+    async fn await_signal(signal: &tokio::sync::Notify, what: &str) {
+        if tokio::time::timeout(Duration::from_secs(20), signal.notified())
+            .await
+            .is_err()
+        {
+            panic!("timed out waiting for {what}");
+        }
+    }
+
     use core_protocol::{
         Block, ContentSegment, ImageMediaType, Purity, StopReason, ToolSpec, ToolUse, Usage,
     };
@@ -946,6 +963,12 @@ mod gate_integration_tests {
         started: tokio::sync::Notify,
         release: tokio::sync::Notify,
         calls: AtomicUsize,
+        /// The system prompt of the first turn, recorded for the test to assert after joining.
+        ///
+        /// It used to be asserted here. An assertion inside the provider panics in the spawned
+        /// turn, so `started` was never notified and the test's `notified().await` deadlocked
+        /// instead of failing: one stale expectation hung the whole suite.
+        first_system: std::sync::Mutex<Option<String>>,
     }
 
     #[async_trait::async_trait]
@@ -956,7 +979,10 @@ mod gate_integration_tests {
             _on_item: &mut (dyn FnMut(StreamItem) + Send),
         ) -> Result<TurnResult, ProviderError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            assert!(req.system.starts_with("You plan a READ-ONLY"));
+            self.first_system
+                .lock()
+                .unwrap()
+                .get_or_insert_with(|| req.system.clone());
             self.started.notify_one();
             self.release.notified().await;
             Ok(TurnResult {
@@ -978,6 +1004,10 @@ mod gate_integration_tests {
         released: std::sync::atomic::AtomicBool,
         total_calls: AtomicUsize,
         child_calls: AtomicUsize,
+        /// A turn that is neither the parent's own nor a planner/investigator one: that is a writer
+        /// child, which drain must never admit. Recorded, not panicked — a panic here fires inside
+        /// the provider task and deadlocks the test awaiting `child_started`.
+        writer_admitted: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -1001,8 +1031,14 @@ mod gate_integration_tests {
                     tokio::time::sleep(Duration::from_millis(2)).await;
                 }
                 "child quiesced".to_string()
+            } else if req.system == PARENT_SYSTEM {
+                // Ultracode planning now runs inside the workflow engine, so the parent issues an
+                // ordinary turn before any planning happens and it reaches this fake provider,
+                // which the previous ordering made impossible.
+                "parent turn".to_string()
             } else {
-                panic!("drain must prevent writer admission")
+                self.writer_admitted.store(true, Ordering::SeqCst);
+                String::new()
             };
             Ok(TurnResult {
                 blocks: vec![Block::Text { text }],
@@ -3226,7 +3262,7 @@ mod gate_integration_tests {
         agent.set_interrupt(interrupt.clone());
 
         let request_interrupt = async {
-            started.notified().await;
+            await_signal(&started, "the provider's first turn").await;
             interrupt.store(true, Ordering::SeqCst);
         };
         let (outcome, ()) = tokio::time::timeout(Duration::from_secs(1), async {
@@ -3289,7 +3325,7 @@ mod gate_integration_tests {
         agent.set_interrupt(interrupt.clone());
 
         let request_interrupt = async {
-            started.notified().await;
+            await_signal(&started, "the provider's first turn").await;
             interrupt.store(true, Ordering::SeqCst);
         };
         let (outcome, ()) = tokio::time::timeout(Duration::from_secs(1), async {
@@ -5922,7 +5958,7 @@ ant-api03-SuperSecretModelToken12345"
         let interrupt = std::sync::Arc::new(AtomicBool::new(false));
         interrupt_parent.set_interrupt(interrupt.clone());
         let raise_interrupt = async {
-            interrupt_provider.started.notified().await;
+            await_signal(&interrupt_provider.started, "the provider's first turn").await;
             interrupt.store(true, Ordering::SeqCst);
         };
         let (result, ()) = tokio::join!(
@@ -6032,7 +6068,7 @@ ant-api03-SuperSecretModelToken12345"
         parent.workspace = ws.clone();
         let drain = parent.drain.clone();
         let request_drain = async {
-            provider.started.notified().await;
+            await_signal(&provider.started, "the provider's first turn").await;
             drain.store(true, Ordering::SeqCst);
         };
         let (result, ()) = tokio::join!(
@@ -6511,7 +6547,7 @@ ant-api03-SuperSecretModelToken12345"
 
         let outcome = tokio::time::timeout(Duration::from_secs(1), async {
             let interrupt_after_start = async {
-                started.notified().await;
+                await_signal(&started, "the provider's first turn").await;
                 interrupted.store(true, Ordering::SeqCst);
             };
             let (outcome, ()) =
@@ -8368,9 +8404,15 @@ ant-api03-SuperSecretModelToken12345"
             .and_then(|(_, tail)| tail.lines().next())
             .map(str::to_string)
             .expect("the receipt names the detached run");
-        while provider.background_started.load(Ordering::SeqCst) == 0 {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        // Bounded like the fan/writer wait below. An unbounded spin turns a background agent that
+        // never starts into a hung suite, which is indistinguishable from a slow one.
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while provider.background_started.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the background agent starts");
 
         // Now launch Ultracode. The engine-owned planner/fan detaches; the ordinary parent writer
         // remains the only work this turn owns. Mirror the interactive frontend exactly: it flips
@@ -11851,7 +11893,7 @@ ant-api03-SuperSecretModelToken12345"
         agent.set_approvals(op_rx);
 
         let running = tokio::spawn(async move { agent.run("first task").await });
-        provider.started.notified().await;
+        await_signal(&provider.started, "the provider's first turn").await;
         op_tx
             .send(
                 Op::Steer {
@@ -12065,7 +12107,7 @@ ant-api03-SuperSecretModelToken12345"
             let outcome = agent.run("finish the admitted turn").await;
             (agent, outcome)
         });
-        provider.started.notified().await;
+        await_signal(&provider.started, "the provider's first turn").await;
         tx.send(Op::Drain.into()).unwrap();
         tx.send(
             Op::UserInput {
@@ -12187,7 +12229,7 @@ ant-api03-SuperSecretModelToken12345"
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         interrupted.set_approvals(rx);
         let running = tokio::spawn(async move { interrupted.run("interrupt me").await });
-        provider.started.notified().await;
+        await_signal(&provider.started, "the provider's first turn").await;
         tx.send(Op::Interrupt.into()).unwrap();
         provider.release.notify_one();
         assert_eq!(running.await.unwrap().unwrap(), Outcome::Interrupted);
@@ -12252,7 +12294,7 @@ ant-api03-SuperSecretModelToken12345"
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         agent.set_approvals(rx);
         let running = tokio::spawn(async move { agent.run("").await });
-        provider.started.notified().await;
+        await_signal(&provider.started, "the provider's first turn").await;
         tx.send(Op::Drain.into()).unwrap();
         provider.release.notify_one();
         assert_eq!(running.await.unwrap().unwrap(), Outcome::Drained);
@@ -12284,7 +12326,7 @@ ant-api03-SuperSecretModelToken12345"
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         agent.set_approvals(rx);
         let running = tokio::spawn(async move { agent.run("provider may fail").await });
-        provider.started.notified().await;
+        await_signal(&provider.started, "the provider's first turn").await;
         tx.send(Op::Drain.into()).unwrap();
         provider.release.notify_one();
         assert_eq!(running.await.unwrap().unwrap(), Outcome::Drained);
@@ -12394,7 +12436,7 @@ ant-api03-SuperSecretModelToken12345"
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         agent.set_approvals(rx);
         let running = tokio::spawn(async move { agent.run("verify me").await });
-        started.notified().await;
+        await_signal(&started, "the provider's first turn").await;
         tx.send(Op::Drain.into()).unwrap();
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(1), running)
@@ -12452,11 +12494,18 @@ ant-api03-SuperSecretModelToken12345"
                 .run("improve error handling across the whole project")
                 .await
         });
-        provider.started.notified().await;
+        await_signal(&provider.started, "the provider's first turn").await;
         tx.send(Op::Drain.into()).unwrap();
         provider.release.notify_one();
         assert_eq!(running.await.unwrap().unwrap(), Outcome::Drained);
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        // Ultracode planning moved into the workflow engine, so the turn a drain lands on is the
+        // parent's own, not a planning turn. What the drain must still guarantee is unchanged: it
+        // quiesces after exactly this one turn and never starts another.
+        assert_eq!(
+            provider.first_system.lock().unwrap().as_deref(),
+            Some(PARENT_SYSTEM)
+        );
         let _ = std::fs::remove_dir_all(&ws);
 
         let ws = temp_ws("drain-ultra-child");
@@ -12485,6 +12534,13 @@ ant-api03-SuperSecretModelToken12345"
         agent.workspace = ws.clone();
         agent.effort = Effort::Ultracode;
         bind_unrecorded_test_route(&mut agent);
+        // The ultracode fan runs through the workflow engine, which reports through the UI and
+        // workflow-progress channels. Without them the parent answers its own turn and stops, so
+        // no investigator ever enters one and this test could never observe a drain during a child.
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        agent.set_ui(ui_tx);
+        let (wf_tx, _wf_rx) = tokio::sync::mpsc::unbounded_channel();
+        agent.set_workflow_progress(wf_tx);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         agent.set_approvals(rx);
         let running = tokio::spawn(async move {
@@ -12496,7 +12552,7 @@ ant-api03-SuperSecretModelToken12345"
         // observed only AFTER admission — the concurrent analogue of "drain during a child". How
         // many children run a turn depends on the machine's concurrency permit count, so the test
         // asserts the drain INVARIANT (writer never admitted), not an exact call count.
-        provider.child_started.notified().await;
+        await_signal(&provider.child_started, "an admitted investigator's first turn").await;
         tx.send(Op::Drain.into()).unwrap();
         tokio::time::sleep(Duration::from_millis(40)).await;
         provider.released.store(true, Ordering::SeqCst);
@@ -12506,9 +12562,14 @@ ant-api03-SuperSecretModelToken12345"
             child_calls >= 1,
             "at least one admitted investigator runs its turn before drain"
         );
-        // Provider calls are planning (1) + every child that actually entered a turn; the writer
-        // is never admitted after drain.
-        assert_eq!(provider.total_calls.load(Ordering::SeqCst), 1 + child_calls);
+        // The writer is never admitted after drain. This is now recorded by the fake rather than
+        // panicked inside it, so a violation fails the test instead of hanging it.
+        assert!(
+            !provider.writer_admitted.load(Ordering::SeqCst),
+            "drain must prevent writer admission"
+        );
+        // Calls are the parent's own turn, the planning turn, and every child that entered one.
+        assert_eq!(provider.total_calls.load(Ordering::SeqCst), 2 + child_calls);
         let workflows_dir = ws.join(".core/runs/subagents/workflows");
         let runs = crate::workflow::list_runs(&workflows_dir);
         assert_eq!(
@@ -12895,7 +12956,7 @@ ant-api03-SuperSecretModelToken12345"
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         agent.set_approvals(rx);
         let running = tokio::spawn(async move { agent.run("drain without post hook").await });
-        provider.started.notified().await;
+        await_signal(&provider.started, "the provider's first turn").await;
         tx.send(Op::Drain.into()).unwrap();
         provider.release.notify_one();
         assert_eq!(running.await.unwrap().unwrap(), Outcome::Drained);
