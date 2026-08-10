@@ -61,7 +61,7 @@ pub(crate) trait Ask {
 }
 
 /// Run the three questions. Answers already supplied on the command line are not asked again, so
-/// `core setup --byok glm` asks exactly one question and `core setup` asks three.
+/// `iteron setup --byok glm` asks exactly one question and `iteron setup` asks three.
 pub(crate) fn collect_answers(
     ask: &mut dyn Ask,
     kind: Option<SetupKind>,
@@ -177,7 +177,7 @@ pub(crate) fn persist(answers: &SetupAnswers) -> anyhow::Result<std::path::PathB
     Ok(path)
 }
 
-/// `core setup`, `core setup --plan`, `core setup --byok <provider>`.
+/// `iteron setup`, `iteron setup --plan`, `iteron setup --byok <provider>`.
 pub(crate) async fn run_setup(
     kind: Option<SetupKind>,
     provider_id: Option<String>,
@@ -235,12 +235,12 @@ pub(crate) async fn run_setup(
     Ok(crate::output::EXIT_SUCCESS)
 }
 
-/// `core auth status [provider]` — where the current credential came from, and whether it works.
+/// `iteron auth status [provider]` — where the current credential came from, and whether it works.
 pub(crate) async fn run_auth_status(provider_id: Option<String>) -> anyhow::Result<u8> {
     let user_file = FileConfig::load_user()?;
     let configured = user_file.providers.clone().unwrap_or_default();
     // Status reports value-free local credential provenance. It does not synchronously probe every
-    // endpoint the machine has ever configured: a black-holed provider must not hang `core auth`,
+    // endpoint the machine has ever configured: a black-holed provider must not hang `iteron auth`,
     // and absent live evidence is rendered honestly as an unknown account state.
     let directory = providers::ProviderDirectory::inspect_local(&configured)?;
     // Which provider a run would route to, and which providers this report covers, are two
@@ -289,7 +289,7 @@ pub(crate) async fn run_auth_status(provider_id: Option<String>) -> anyhow::Resu
     Ok(crate::output::EXIT_SUCCESS)
 }
 
-/// `core auth logout [provider]` — drop the credential, keep everything else.
+/// `iteron auth logout [provider]` — drop the credential, keep everything else.
 ///
 /// The provider entry, its api_root, its declared models and its capabilities all survive: logging
 /// out of an account is not the same as deleting the route to it. Only the credential file is
@@ -384,7 +384,7 @@ impl TerminalAsk {
         use std::io::IsTerminal as _;
         if !std::io::stdin().is_terminal() {
             anyhow::bail!(
-                "core setup asks questions and needs a terminal; run it directly, or set the credential with `iteron config set` and an environment variable"
+                "iteron setup asks questions and needs a terminal; run it directly, or set the credential with `iteron config set` and an environment variable"
             );
         }
         Ok(Self {

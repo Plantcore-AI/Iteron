@@ -192,8 +192,8 @@ impl MemoryStore {
 
     fn ensure_store_directory(&self) -> std::io::Result<()> {
         let root = self.workspace.canonicalize()?;
-        let core = iteron_protocol::home::path(&self.workspace, "");
-        ensure_real_directory(&core)?;
+        let iteron = iteron_protocol::home::path(&self.workspace, "");
+        ensure_real_directory(&iteron)?;
         ensure_real_directory(&self.dir)?;
         let resolved = self.dir.canonicalize()?;
         if !resolved.starts_with(root) {

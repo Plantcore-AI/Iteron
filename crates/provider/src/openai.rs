@@ -367,7 +367,7 @@ fn preserves_reasoning_content(error_profile: ErrorProfile) -> bool {
     )
 }
 
-/// One core message -> one or more OpenAI messages. Tool results become `role:"tool"` messages;
+/// One iteron message -> one or more OpenAI messages. Tool results become `role:"tool"` messages;
 /// an assistant message with tool_use becomes an assistant message with `tool_calls`.
 fn msg_to_openai(
     m: &iteron_protocol::Message,

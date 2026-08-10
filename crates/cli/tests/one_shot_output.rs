@@ -268,7 +268,7 @@ impl FailingHttpsProxy {
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         if requests.is_empty() && Instant::now() >= deadline {
-                            break Err("core never connected to the loopback HTTPS proxy".into());
+                            break Err("iteron never connected to the loopback HTTPS proxy".into());
                         }
                         thread::sleep(Duration::from_millis(10));
                     }
@@ -477,7 +477,7 @@ fn accept_connection(listener: &TcpListener) -> TcpStream {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(
                     Instant::now() < deadline,
-                    "core never connected to the loopback provider stub"
+                    "iteron never connected to the loopback provider stub"
                 );
                 thread::sleep(Duration::from_millis(10));
             }
@@ -500,7 +500,7 @@ fn assert_request(stream: &mut TcpStream) -> Value {
     assert_eq!(
         lines.next(),
         Some("POST /v1/chat/completions HTTP/1.1"),
-        "core must exercise the real chat-completions adapter"
+        "iteron must exercise the real chat-completions adapter"
     );
     let lowercase_headers = headers.to_ascii_lowercase();
     assert!(
@@ -784,14 +784,14 @@ fn glm_core_command(scratch: &Scratch, format: &str, proxy_url: &str) -> Command
 fn spawn_core(scratch: &Scratch, format: &str, max_turns: u32, extra_args: &[&str]) -> Child {
     core_command(scratch, format, max_turns, extra_args)
         .spawn()
-        .expect("spawn the real core binary")
+        .expect("spawn the real iteron binary")
 }
 
 #[cfg(unix)]
 fn spawn_glm_core(scratch: &Scratch, format: &str, proxy_url: &str) -> Child {
     glm_core_command(scratch, format, proxy_url)
         .spawn()
-        .expect("spawn the real core binary for built-in GLM")
+        .expect("spawn the real iteron binary for built-in GLM")
 }
 
 #[cfg(unix)]
@@ -850,9 +850,9 @@ fn only_rollout_path(scratch: &Scratch) -> PathBuf {
 fn collect_core(mut child: Child) -> Output {
     let deadline = Instant::now() + PROCESS_TIMEOUT;
     loop {
-        match child.try_wait().expect("poll core child") {
+        match child.try_wait().expect("poll iteron child") {
             Some(_) => {
-                let output = child.wait_with_output().expect("collect core output");
+                let output = child.wait_with_output().expect("collect iteron output");
                 assert_bounded_capture(&output);
                 return output;
             }
@@ -861,9 +861,9 @@ fn collect_core(mut child: Child) -> Output {
                 kill_child_group(&mut child);
                 let output = child
                     .wait_with_output()
-                    .expect("collect timed-out core output");
+                    .expect("collect timed-out iteron output");
                 panic!(
-                    "core exceeded the {PROCESS_TIMEOUT:?} process bound; stderr:\n{}",
+                    "iteron exceeded the {PROCESS_TIMEOUT:?} process bound; stderr:\n{}",
                     String::from_utf8_lossy(&output.stderr)
                 );
             }
@@ -985,10 +985,10 @@ fn golden_lines(path: &str, contents: &str) -> Vec<Value> {
 fn assert_diagnostics_on_stderr(output: &Output, outcome: &str) {
     let stdout = std::str::from_utf8(&output.stdout).expect("stdout is UTF-8");
     let stderr = std::str::from_utf8(&output.stderr).expect("stderr is UTF-8");
-    assert!(stderr.contains("core · repo="));
+    assert!(stderr.contains("iteron · repo="));
     assert!(stderr.contains("record: "));
     assert!(stderr.contains(&format!("outcome: {outcome}")));
-    assert!(!stdout.contains("core · repo="));
+    assert!(!stdout.contains("iteron · repo="));
     assert!(!stdout.contains("record: "));
     assert!(
         !stderr.contains("\"schema_version\":5"),
@@ -1120,7 +1120,7 @@ fn startup_timing_is_opt_in_and_reports_every_pre_first_frame_phase() {
     let scratch = Scratch::new("startup-timing-on", &server.api_root);
     let mut command = core_command(&scratch, "text", 1, &[]);
     command.env("ITERON_STARTUP_TIMING", "1");
-    let output = collect_core(command.spawn().expect("spawn the real core binary"));
+    let output = collect_core(command.spawn().expect("spawn the real iteron binary"));
     server.finish();
 
     assert_eq!(output.status.code(), Some(0));

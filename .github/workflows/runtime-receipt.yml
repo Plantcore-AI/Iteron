@@ -39,22 +39,22 @@ jobs:
           - runner: macos-15
             host: darwin-arm64
             target: aarch64-apple-darwin
-            binary: core
+            binary: iteron
             python: python3
           - runner: macos-15-intel
             host: darwin-x86_64
             target: x86_64-apple-darwin
-            binary: core
+            binary: iteron
             python: python3
           - runner: ubuntu-24.04-arm
             host: linux-arm64
             target: aarch64-unknown-linux-musl
-            binary: core
+            binary: iteron
             python: python3
           - runner: ubuntu-24.04
             host: linux-x86_64
             target: x86_64-unknown-linux-musl
-            binary: core
+            binary: iteron
             python: python3
           - runner: windows-2022
             host: windows-x86_64
@@ -252,7 +252,7 @@ jobs:
           if (
               version.returncode != 0
               or version.stderr
-              or version.stdout != f"core {expected_version}\n".encode()
+              or version.stdout != f"iteron {expected_version}\n".encode()
           ):
               raise SystemExit("native release binary reported an unexpected version")
           help_result = run_bounded(
@@ -349,7 +349,7 @@ jobs:
           }
 
           run_exact tui \
-            cargo +"$RUST_VERSION" test --locked -p iteron-cli --bin core \
+            cargo +"$RUST_VERSION" test --locked -p iteron-cli --bin iteron \
               --target "$target" \
               tui::app_server::tests::version_skew_is_refused_up_front -- --exact
           run_exact one-shot \

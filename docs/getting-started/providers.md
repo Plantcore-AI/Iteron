@@ -31,7 +31,7 @@ for the offline refresh path; no network response silently rewrites these claims
 For one run:
 
 ```sh
-core --provider anthropic --model PROVIDER_MODEL_ID
+iteron --provider anthropic --model PROVIDER_MODEL_ID
 ```
 
 Or set trusted user defaults in `~/.iteron/config.json`:

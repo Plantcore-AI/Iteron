@@ -9,7 +9,7 @@ reclaims or inspects the agent directly.
 ## Start the TUI
 
 ```sh
-core -C /path/to/repository
+iteron -C /path/to/repository
 ```
 
 Passing `--tui` forces the interactive intent, but a real terminal is still

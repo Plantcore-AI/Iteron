@@ -5,7 +5,7 @@ provider-facing reasoning intent with a bounded internal investigation-and-write
 workflow.
 
 ```sh
-core --effort ultracode
+iteron --effort ultracode
 ```
 
 ## Current workflow

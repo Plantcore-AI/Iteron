@@ -255,7 +255,7 @@ pub enum ProviderCredential {
 }
 
 impl ProviderCredential {
-    /// Value-free display used by `/config`, `/status`, and `core auth status`.
+    /// Value-free display used by `/config`, `/status`, and `iteron auth status`.
     pub fn display(&self) -> String {
         match self {
             Self::Env { name } => format!("env {name}"),
@@ -742,12 +742,12 @@ pub(crate) fn user_config_path() -> Option<std::path::PathBuf> {
     config_home().map(|home| iteron_protocol::home::path(&home, "config.json"))
 }
 
-/// The directory credential files written by `core setup` live in: `<config root>/.iteron/credentials`.
+/// The directory credential files written by `iteron setup` live in: `<config root>/.iteron/credentials`.
 pub(crate) fn credentials_dir() -> Option<std::path::PathBuf> {
     config_home().map(|home| iteron_protocol::home::path(&home, "credentials"))
 }
 
-/// The credential file `core setup` writes for one provider id.
+/// The credential file `iteron setup` writes for one provider id.
 ///
 /// The id is already constrained to the provider-instance alphabet, but this is the function that
 /// turns operator text into a filesystem path, so it refuses anything that is not that alphabet
@@ -1031,7 +1031,7 @@ pub(crate) fn write_private_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<
 }
 
 /// THE single writer for operator configuration. Every product path that persists an operator
-/// choice — `iteron config set`, `core setup`, `/model`, `core auth logout` — mutates the document
+/// choice — `iteron config set`, `iteron setup`, `/model`, `iteron auth logout` — mutates the document
 /// through this function, so there is exactly one place that locks, validates, and installs.
 pub(crate) fn update_user_config(
     mutate: impl FnOnce(&mut FileConfig) -> Result<(), String>,

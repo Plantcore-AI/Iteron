@@ -745,7 +745,7 @@ impl PtyHarness {
         let child = pair
             .slave
             .spawn_command(command)
-            .expect("spawn core directly in PTY");
+            .expect("spawn iteron directly in PTY");
         let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
         let writer = pair.master.take_writer().expect("take PTY writer");
         let (tx, chunks) = mpsc::channel();
@@ -917,7 +917,7 @@ impl PtyHarness {
             let _ = self.pump_once(Duration::from_millis(25));
         }
         panic!(
-            "core did not exit before the PTY deadline; current terminal:\n{}",
+            "iteron did not exit before the PTY deadline; current terminal:\n{}",
             self.screen_text()
         );
     }

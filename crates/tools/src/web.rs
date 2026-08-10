@@ -1,4 +1,4 @@
-//! Web egress tools: `web_fetch` and `web_search`. The core's one gap vs. the leading agents was
+//! Web egress tools: `web_fetch` and `web_search`. The iteron's one gap vs. the leading agents was
 //! *no web access*; these close it while staying inside the ADR-007 trust lattice.
 //!
 //! Both are **Effecting / IrreversibleExternal** (ADR-007 §3): egress is the highest capability

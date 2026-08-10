@@ -732,10 +732,10 @@ mod tests {
         // The restart handoff is now the FALLBACK, taken when a run cannot be adopted here — most
         // often because another process holds its writer lock. It must still be exact.
         app.prepare_resume_handoff(&run_id);
-        assert_eq!(app.editor.text(), "core --resume run-42");
+        assert_eq!(app.editor.text(), "iteron --resume run-42");
         assert!(app.is_resume_handoff_draft());
         let screen = render_text(&mut app, 100, 18);
-        assert!(screen.contains("core --resume run-42"));
+        assert!(screen.contains("iteron --resume run-42"));
         assert!(
             app.transcript
                 .iter()
@@ -743,7 +743,7 @@ mod tests {
         );
         assert_eq!(
             format_resume_command("run with space"),
-            "core --resume 'run with space'"
+            "iteron --resume 'run with space'"
         );
     }
 
@@ -3299,7 +3299,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.to_string())
             .collect();
-        assert!(narrow.contains("core"), "narrow Core marker: {narrow:?}");
+        assert!(narrow.contains("iteron"), "narrow Core marker: {narrow:?}");
     }
 
     #[test]
@@ -6324,6 +6324,6 @@ fn window_title_is_capability_gated_and_restored_exactly_once() {
     });
     let active = AtomicBool::new(false);
     let mut bytes = Vec::new();
-    assert!(!set_terminal_title_to(&mut bytes, multiplexed, "core", &active).unwrap());
+    assert!(!set_terminal_title_to(&mut bytes, multiplexed, "iteron", &active).unwrap());
     assert!(bytes.is_empty());
 }

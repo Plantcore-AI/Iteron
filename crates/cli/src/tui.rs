@@ -9,7 +9,7 @@
 //!
 //! The agent runs in a background task and streams `UiEvent`s over a channel; the render loop
 //! drains them and redraws. The kernel does the work; this is a thin, replaceable front-end
-//! on the same core (ADR-010: frontends are adapters).
+//! on the same iteron (ADR-010: frontends are adapters).
 
 mod app_init;
 mod app_input_state;

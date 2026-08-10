@@ -121,7 +121,7 @@ impl McpRemoteClient {
                     } else {
                         json!({})
                     },
-                    "clientInfo": {"name": "core", "version": env!("CARGO_PKG_VERSION")}
+                    "clientInfo": {"name": "iteron", "version": env!("CARGO_PKG_VERSION")}
                 }),
             ),
         )

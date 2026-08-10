@@ -213,9 +213,9 @@ fn hardened_git_command() -> Command {
             "-c",
             "core.untrackedCache=false",
             "-c",
-            "user.name=core",
+            "user.name=iteron",
             "-c",
-            "user.email=core@localhost",
+            "user.email=iteron@localhost",
             "-c",
             "commit.gpgsign=false",
             "-c",
@@ -663,7 +663,7 @@ fn checkpoint_inner(
         )
         .into());
     }
-    let msg = format!("core checkpoint {}@{}", sanitize(&run.0), at.0);
+    let msg = format!("iteron checkpoint {}@{}", sanitize(&run.0), at.0);
     let commit = isolated.run(&["commit-tree", tree, "-m", &msg])?;
     let commit = commit.trim();
     if !valid_object_id(commit) {

@@ -299,7 +299,7 @@ async fn relative_work_root_is_resolved_once_and_core_receives_canonical_paths()
     let outside_cwd = root.join("relative-root-cwd");
     std::fs::create_dir(&outside_cwd).expect("create child cwd");
     let corpus = write_success_corpus(&root);
-    let core = write_boundary_checking_core(&root);
+    let iteron = write_boundary_checking_core(&root);
     let artifact = root.join("relative-result.json");
     let output = run_process(&ProcessSpec {
         program: PathBuf::from(env!("CARGO_BIN_EXE_iteron-eval")),
@@ -311,7 +311,7 @@ async fn relative_work_root_is_resolved_once_and_core_receives_canonical_paths()
             "--work-root".into(),
             "relative-work".into(),
             "--core-bin".into(),
-            core.into_os_string(),
+            iteron.into_os_string(),
             "--model".into(),
             "relative-root-model".into(),
             "--purpose".into(),

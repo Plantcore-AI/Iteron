@@ -33,7 +33,7 @@ fn cell(config: &str, seed: u64, status: RunStatus) -> CellResult {
         benchmark: None,
         resolved: (status == RunStatus::Completed).then_some(true),
         run_status: status,
-        failure_phase: (status != RunStatus::Completed).then(|| "core".into()),
+        failure_phase: (status != RunStatus::Completed).then(|| "iteron".into()),
         exit_code: Some(1),
         terminal_outcome: None,
         cost_status: CostStatus::Zero,
@@ -231,12 +231,12 @@ mod pipeline {
     fn fake_core(root: &TempRoot) -> PathBuf {
         let path = root.join("fake-core");
         std::fs::write(&path, "#!/bin/sh\nprintf '%s' '{\"schema_version\":4'\n")
-            .expect("write fake core");
+            .expect("write fake iteron");
         let mut permissions = std::fs::metadata(&path)
-            .expect("stat fake core")
+            .expect("stat fake iteron")
             .permissions();
         permissions.set_mode(0o700);
-        std::fs::set_permissions(&path, permissions).expect("make fake core executable");
+        std::fs::set_permissions(&path, permissions).expect("make fake iteron executable");
         path
     }
 

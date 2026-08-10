@@ -23,7 +23,7 @@ before opening a pull request.
 
 ```sh
 git clone https://github.com/YOUR-ACCOUNT/core.git
-cd core
+cd iteron
 cargo build --locked -p iteron-cli
 cargo test --workspace --all-targets --locked
 ```

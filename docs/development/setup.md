@@ -40,7 +40,7 @@ Create a GitHub fork, then:
 
 ```sh
 git clone https://github.com/YOUR-ACCOUNT/core.git
-cd core
+cd iteron
 git remote add upstream https://github.com/Plantcore-AI/Iteron.git
 git fetch upstream
 ```

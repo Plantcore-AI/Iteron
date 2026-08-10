@@ -503,7 +503,7 @@ pub(super) async fn apply_control(
                                 agent.bind_selected_rate_card().err().map(|error| {
                                 format!(
                                     "session {} was adopted but its rate card could not be bound, \
-                                     so this process cannot continue it: {}. Restart with `core \
+                                     so this process cannot continue it: {}. Restart with `iteron \
                                      --resume {}`.",
                                     adopted.run_id,
                                     error.public_summary(),
@@ -517,7 +517,7 @@ pub(super) async fn apply_control(
                             // pretending the session is usable.
                             Err(error) => Some(format!(
                                 "session {} was adopted but its route could not be recorded, so this \
-                             process cannot continue it: {error}. Restart with `core --resume {}`.",
+                             process cannot continue it: {error}. Restart with `iteron --resume {}`.",
                                 adopted.run_id, adopted.run_id
                             )),
                         }

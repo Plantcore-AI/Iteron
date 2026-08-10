@@ -41,7 +41,7 @@ set -euo pipefail
 # shows up as
 #
 #     error: could not lock config file .../core/.git/config: File exists
-#     fatal: could not set 'core.repositoryformatversion' to '0'
+#     fatal: could not set 'iteron.repositoryformatversion' to '0'
 #
 # and a batch of unrelated-looking test failures. The lock is the only reason those writes did not
 # land in the live repository, so scrub the whole namespace rather than the variables seen so far.

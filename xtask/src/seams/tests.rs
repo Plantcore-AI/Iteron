@@ -439,7 +439,7 @@ fn a_macro_and_an_include_are_found_at_any_nesting_too() {
         vec!["b.inc".to_owned()]
     );
     assert_eq!(
-        include_targets("core::include!(\"c.inc\");"),
+        include_targets("iteron::include!(\"c.inc\");"),
         vec!["c.inc".to_owned()]
     );
     // The name is not what is matched any more: a review renamed the macro on import and the

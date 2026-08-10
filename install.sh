@@ -160,7 +160,7 @@ iteron_validate_archive() {
     # payloads, and unexpected files before extraction.
     {
         printf '%s/\n' "$iteron_root"
-        printf '%s/%s\n' "$iteron_root" core
+        printf '%s/%s\n' "$iteron_root" iteron
         printf '%s/%s\n' "$iteron_root" LICENSE
         printf '%s/%s\n' "$iteron_root" README.md
         printf '%s/%s\n' "$iteron_root" THIRD_PARTY_LICENSES.html
@@ -341,7 +341,7 @@ iteron_main() {
         || iteron_die 'release archive extraction failed'
     iteron_binary="$iteron_work_dir/extract/$iteron_archive_root/core"
     if [ ! -f "$iteron_binary" ] || [ -L "$iteron_binary" ]; then
-        iteron_die 'archive core entry is not a regular file'
+        iteron_die 'archive iteron entry is not a regular file'
     fi
     chmod 0755 "$iteron_binary"
 
@@ -370,7 +370,7 @@ iteron_main() {
     [ "$iteron_staged_version" = "iteron $iteron_version_number" ] \
         || iteron_die 'staged binary reported an unexpected version'
     mv -f -- "$iteron_install_tmp" "$iteron_bin_dir/core" \
-        || iteron_die 'could not atomically install core'
+        || iteron_die 'could not atomically install iteron'
     if [ ! -f "$iteron_bin_dir/core" ] || [ -L "$iteron_bin_dir/core" ]; then
         iteron_die 'atomic install did not produce a regular destination file'
     fi
@@ -383,7 +383,7 @@ iteron_main() {
     printf 'Iteron %s installed at %s/core\n' "$iteron_version_number" "$iteron_bin_dir"
     case ":${PATH:-}:" in
         *:"$iteron_bin_dir":*) ;;
-        *) printf 'Add %s to PATH to run the core command.\n' "$iteron_bin_dir" ;;
+        *) printf 'Add %s to PATH to run the iteron command.\n' "$iteron_bin_dir" ;;
     esac
     iteron_linux_preflight "$iteron_os"
 }

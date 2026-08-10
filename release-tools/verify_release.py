@@ -108,7 +108,7 @@ def load_manifest(path: Path) -> dict[str, object]:
     if set(document) != required or document["schema_version"] != 3:
         raise ReleaseToolError("release manifest does not match schema v3")
     if (
-        document["command"] != "core"
+        document["command"] != "iteron"
         or document["product"] != "Iteron"
         or document["repository"] != "https://github.com/Plantcore-AI/Iteron"
     ):

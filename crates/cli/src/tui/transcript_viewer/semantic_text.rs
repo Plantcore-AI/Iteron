@@ -31,7 +31,7 @@ pub(super) fn block_text(
             out.push("\n");
         }
         block::BlockKind::Assistant(document) => {
-            out.push("### core\n");
+            out.push("### iteron\n");
             if out.active()
                 && let Some((text, truncated)) =
                     markdown::project(document, out.remaining(), cancelled)

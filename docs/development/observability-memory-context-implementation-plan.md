@@ -567,10 +567,10 @@ artifacts rather than editing them manually.
 Use 80 metric families with exactly four instruments per family:
 
 ```text
-core.<domain>.<family>.calls
-core.<domain>.<family>.failures
-core.<domain>.<family>.duration_ms
-core.<domain>.<family>.<magnitude>
+iteron.<domain>.<family>.calls
+iteron.<domain>.<family>.failures
+iteron.<domain>.<family>.duration_ms
+iteron.<domain>.<family>.<magnitude>
 ```
 
 The magnitude is declared per family: `bytes`, `tokens`, `items`, `depth`, `ratio_ppm`,
@@ -1018,12 +1018,12 @@ ground truth remains separate and cannot be modified by hooks.
 
 Add read-only commands after the underlying evidence is stable:
 
-- `core telemetry status`: exporter, queue, catalog, drops, last flush;
-- `core telemetry schema [event|metric|span]`: generated catalog inspection;
-- `core context inspect [turn]`: segment/window/cache ledger without content;
-- `core context explain <segment-id>`: source, budgets, transforms and decision;
-- `core memory trace [turn]`: query/store/candidate/selection summary;
-- `core memory explain <fact-id>`: provenance, scores, visibility and injection ranges;
+- `iteron telemetry status`: exporter, queue, catalog, drops, last flush;
+- `iteron telemetry schema [event|metric|span]`: generated catalog inspection;
+- `iteron context inspect [turn]`: segment/window/cache ledger without content;
+- `iteron context explain <segment-id>`: source, budgets, transforms and decision;
+- `iteron memory trace [turn]`: query/store/candidate/selection summary;
+- `iteron memory explain <fact-id>`: provenance, scores, visibility and injection ranges;
 - `/context`, `/memory`, `/telemetry` TUI panels using the same projections;
 - machine JSON output for evaluation and paper tooling.
 

@@ -1,6 +1,6 @@
 {
   "cli_stream_versions": [4, 5],
-  "command": "core",
+  "command": "iteron",
   "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "default_cli_stream_version": 5,
   "installer": {

@@ -170,7 +170,7 @@ mod pipeline {
     fn fake_core(root: &TempRoot) -> PathBuf {
         let path = root.join("fake-core");
         let script = "#!/bin/sh\n\
-printf 'core run LEDGER turns=999999 | cost=$9.99 | tokens in=123 out=456 | D12_03_STDERR_MARKER\\n' 1>&2\n\
+printf 'iteron run LEDGER turns=999999 | cost=$9.99 | tokens in=123 out=456 | D12_03_STDERR_MARKER\\n' 1>&2\n\
 case \"$*\" in\n\
   *malformed*)\n\
     printf '%s' '{\"schema_version\":4,'\n\
@@ -181,12 +181,12 @@ case \"$*\" in\n\
     exit 3\n\
     ;;\n\
 esac\n";
-        std::fs::write(&path, script).expect("write fake core");
+        std::fs::write(&path, script).expect("write fake iteron");
         let mut permissions = std::fs::metadata(&path)
-            .expect("stat fake core")
+            .expect("stat fake iteron")
             .permissions();
         permissions.set_mode(0o700);
-        std::fs::set_permissions(&path, permissions).expect("make fake core executable");
+        std::fs::set_permissions(&path, permissions).expect("make fake iteron executable");
         path
     }
 

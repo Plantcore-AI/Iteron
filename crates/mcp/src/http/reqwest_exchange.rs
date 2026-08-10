@@ -1,4 +1,4 @@
-//! Production HTTP effect adapter for the transport decision core.
+//! Production HTTP effect adapter for the transport decision iteron.
 
 use super::{
     McpHttpExchange, McpHttpRequest, McpHttpResponse, McpHttpResponseHead, McpSessionId,

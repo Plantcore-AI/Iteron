@@ -721,7 +721,7 @@ mod tests {
         let git = resolve_git_executable(std::env::var_os("PATH").as_deref(), &workspace).unwrap();
 
         setup_git(&git, &source, &[OsStr::new("init"), OsStr::new("--quiet")]).await;
-        for (key, value) in [("user.name", "core-test"), ("user.email", "core@test")] {
+        for (key, value) in [("user.name", "core-test"), ("user.email", "iteron@test")] {
             setup_git(
                 &git,
                 &source,
@@ -755,7 +755,7 @@ mod tests {
             &[OsStr::new("init"), OsStr::new("--quiet")],
         )
         .await;
-        for (key, value) in [("user.name", "core-test"), ("user.email", "core@test")] {
+        for (key, value) in [("user.name", "core-test"), ("user.email", "iteron@test")] {
             setup_git(
                 &git,
                 &workspace,

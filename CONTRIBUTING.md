@@ -61,7 +61,7 @@ Fork the repository in GitHub, then clone your fork:
 
 ```sh
 git clone https://github.com/YOUR-ACCOUNT/core.git
-cd core
+cd iteron
 git remote add upstream https://github.com/Plantcore-AI/Iteron.git
 cargo build --locked -p iteron-cli
 cargo test --workspace --all-targets --locked

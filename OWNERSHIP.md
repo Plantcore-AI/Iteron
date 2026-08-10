@@ -28,11 +28,11 @@ Iteron has one human Owner/Project Lead and a non-fixed number of human maintain
 | `kernel-effects` — Kernel effects | open | critical | Open | Open | `crates/kernel/src/effect_admission.rs`<br>`crates/kernel/src/effect_boundary_tests.rs`<br>`crates/kernel/src/effect_class.rs`<br>`crates/kernel/src/effect_journal.rs`<br>`crates/kernel/src/effects.rs` |
 | `telemetry-export` — Telemetry export sink | open | critical | Open | Open | `crates/cli/src/runtime/telemetry.rs`<br>`crates/cli/src/runtime/telemetry/**` |
 | `kernel-hooks` — Runtime lifecycle hooks | open | critical | Open | Open | `crates/cli/src/runtime/hooks.rs`<br>`crates/cli/src/runtime/hooks/**` |
-| `record-core` — Record core | open | critical | Open | Open | `crates/record/Cargo.toml`<br>`crates/record/src/checkpoint.rs`<br>`crates/record/src/lib.rs`<br>`crates/record/src/redact.rs`<br>`crates/record/src/resolved_fixture.rs`<br>`crates/record/src/tunables.rs`<br>`crates/record/src/tunables_tests.rs`<br>`crates/record/tests/**` |
+| `record-core` — Record iteron | open | critical | Open | Open | `crates/record/Cargo.toml`<br>`crates/record/src/checkpoint.rs`<br>`crates/record/src/lib.rs`<br>`crates/record/src/redact.rs`<br>`crates/record/src/resolved_fixture.rs`<br>`crates/record/src/tunables.rs`<br>`crates/record/src/tunables_tests.rs`<br>`crates/record/tests/**` |
 | `record-sessions` — Record sessions | open | elevated | Open | Open | `crates/record/src/cache_io.rs`<br>`crates/record/src/session.rs` |
 | `observability` — Observability | active | elevated | Jamal Cao (`@fr0m-scratch`) | Open | `crates/obs/**` |
 | `scheduler` — Scheduler | open | elevated | Open | Open | `crates/sched/**` |
-| `provider-core` — Provider core | open | elevated | Open | Open | `crates/provider/Cargo.toml`<br>`crates/provider/static-provider-metadata-v1.json`<br>`crates/provider/src/catalog.rs`<br>`crates/provider/src/lib.rs`<br>`crates/provider/src/sse.rs`<br>`crates/provider/src/static_metadata.rs`<br>`crates/provider/src/static_metadata/support.rs`<br>`crates/provider/src/usage.rs` |
+| `provider-core` — Provider iteron | open | elevated | Open | Open | `crates/provider/Cargo.toml`<br>`crates/provider/static-provider-metadata-v1.json`<br>`crates/provider/src/catalog.rs`<br>`crates/provider/src/lib.rs`<br>`crates/provider/src/sse.rs`<br>`crates/provider/src/static_metadata.rs`<br>`crates/provider/src/static_metadata/support.rs`<br>`crates/provider/src/usage.rs` |
 | `provider-adapters` — Provider adapters | open | elevated | Open | Open | `crates/provider/src/anthropic.rs`<br>`crates/provider/src/openai.rs`<br>`crates/provider/src/responses.rs` |
 | `mcp-interop` — MCP interoperability | open | critical | Open | Open | `crates/mcp/**` |
 | `language-server-lifecycle` — Language server lifecycle | open | elevated | Open | Open | `crates/lsp/**` |
@@ -40,13 +40,13 @@ Iteron has one human Owner/Project Lead and a non-fixed number of human maintain
 | `status-surface` — Status surface | open | elevated | Open | Open | `crates/statusline/**` |
 | `support-bundle` — Support bundle | open | critical | Open | Open | `crates/support/**` |
 | `plugin-marketplace` — Plugin marketplace | open | critical | Open | Open | `crates/marketplace/**` |
-| `context-core` — Context core | open | elevated | Open | Open | `crates/ctx/Cargo.toml`<br>`crates/ctx/src/compact.rs`<br>`crates/ctx/src/context_assembly.rs`<br>`crates/ctx/src/context_ledger.rs`<br>`crates/ctx/src/context_port.rs`<br>`crates/ctx/src/context_strategy.rs`<br>`crates/ctx/src/decision_store.rs`<br>`crates/ctx/src/instructions.rs`<br>`crates/ctx/src/lib.rs`<br>`crates/ctx/src/outline.rs`<br>`crates/ctx/src/source.rs` |
+| `context-core` — Context iteron | open | elevated | Open | Open | `crates/ctx/Cargo.toml`<br>`crates/ctx/src/compact.rs`<br>`crates/ctx/src/context_assembly.rs`<br>`crates/ctx/src/context_ledger.rs`<br>`crates/ctx/src/context_port.rs`<br>`crates/ctx/src/context_strategy.rs`<br>`crates/ctx/src/decision_store.rs`<br>`crates/ctx/src/instructions.rs`<br>`crates/ctx/src/lib.rs`<br>`crates/ctx/src/outline.rs`<br>`crates/ctx/src/source.rs` |
 | `context-knowledge` — Context knowledge | open | elevated | Open | Open | `crates/ctx/src/memory.rs`<br>`crates/ctx/src/memory_trace.rs`<br>`crates/ctx/src/skills.rs`<br>`crates/ctx/src/skills_metadata.rs`<br>`crates/ctx/tests/skill_frontmatter.rs` |
 | `agent-catalog` — Agent catalog | open | elevated | Open | Open | `crates/agents/Cargo.toml`<br>`crates/agents/src/catalog.rs`<br>`crates/agents/src/def.rs`<br>`crates/agents/src/lib.rs` |
 | `agent-orchestration` — Agent orchestration | open | elevated | Open | Open | `crates/agents/src/decompose.rs`<br>`crates/agents/src/planner.rs`<br>`crates/agents/src/policy.rs`<br>`crates/agents/src/policy_tests.rs`<br>`crates/agents/src/reduce.rs`<br>`crates/agents/src/stage.rs`<br>`crates/agents/tests/**` |
 | `evolution-control` — Evolution control | open | critical | Open | Open | `crates/evolve/**` |
 | `sandbox` — Sandbox | open | critical | Open | Open | `crates/sandbox/**` |
-| `tools-core` — Tools core | open | critical | Open | Open | `crates/tools/Cargo.toml`<br>`crates/tools/src/edit.rs`<br>`crates/tools/src/fs_tools.rs`<br>`crates/tools/src/fs_tools_tests.rs`<br>`crates/tools/src/git.rs`<br>`crates/tools/src/git_changes.rs`<br>`crates/tools/src/git_filters.rs`<br>`crates/tools/src/git_harness.rs`<br>`crates/tools/src/git_observe.rs`<br>`crates/tools/src/git_observe_tests.rs`<br>`crates/tools/src/grep_tool.rs`<br>`crates/tools/src/grep_tool_tests.rs`<br>`crates/tools/src/lib.rs`<br>`crates/tools/src/mcp_timing.rs`<br>`crates/tools/src/memo.rs`<br>`crates/tools/src/memo_tests.rs`<br>`crates/tools/src/multi_file_patch.rs`<br>`crates/tools/src/multi_file_patch_error.rs`<br>`crates/tools/src/multi_file_patch_input.rs`<br>`crates/tools/src/multi_file_patch_tests.rs`<br>`crates/tools/src/schema.rs`<br>`crates/tools/src/schema_error.rs`<br>`crates/tools/src/schema_tests.rs`<br>`crates/tools/src/tool_policy.rs`<br>`crates/tools/src/write_file.rs`<br>`crates/tools/src/write_file_tests.rs` |
+| `tools-core` — Tools iteron | open | critical | Open | Open | `crates/tools/Cargo.toml`<br>`crates/tools/src/edit.rs`<br>`crates/tools/src/fs_tools.rs`<br>`crates/tools/src/fs_tools_tests.rs`<br>`crates/tools/src/git.rs`<br>`crates/tools/src/git_changes.rs`<br>`crates/tools/src/git_filters.rs`<br>`crates/tools/src/git_harness.rs`<br>`crates/tools/src/git_observe.rs`<br>`crates/tools/src/git_observe_tests.rs`<br>`crates/tools/src/grep_tool.rs`<br>`crates/tools/src/grep_tool_tests.rs`<br>`crates/tools/src/lib.rs`<br>`crates/tools/src/mcp_timing.rs`<br>`crates/tools/src/memo.rs`<br>`crates/tools/src/memo_tests.rs`<br>`crates/tools/src/multi_file_patch.rs`<br>`crates/tools/src/multi_file_patch_error.rs`<br>`crates/tools/src/multi_file_patch_input.rs`<br>`crates/tools/src/multi_file_patch_tests.rs`<br>`crates/tools/src/schema.rs`<br>`crates/tools/src/schema_error.rs`<br>`crates/tools/src/schema_tests.rs`<br>`crates/tools/src/tool_policy.rs`<br>`crates/tools/src/write_file.rs`<br>`crates/tools/src/write_file_tests.rs` |
 | `tools-execution` — Tools execution | open | critical | Open | Open | `crates/tools/src/shell.rs`<br>`crates/tools/src/lsp/**`<br>`crates/tools/src/process/**`<br>`crates/tools/src/web.rs`<br>`crates/tools/src/workflow_tool.rs` |
 | `tools-context` — Tools context | open | elevated | Open | Open | `crates/tools/src/mem.rs`<br>`crates/tools/src/skill.rs` |
 | `verification` — Verification | open | elevated | Open | Open | `crates/verify/**` |
@@ -144,7 +144,7 @@ CLI-hosted lifecycle hook admission, bounded child processes, environment policy
 - Contracts: `trusted-hook-origin`, `bounded-hook-process`
 - Required checks: `cargo test -p iteron-cli hooks --locked`
 
-### `record-core` — Record core
+### `record-core` — Record iteron
 
 Append-only journal, hash chain, replay, checkpoint, recovery, and redaction.
 
@@ -172,7 +172,7 @@ Retry, backoff, and bounded concurrency governor policy.
 - Contracts: `bounded-retry`, `bounded-concurrency`, `pre-stream-retry-only`
 - Required checks: `cargo test -p iteron-sched --locked`
 
-### `provider-core` — Provider core
+### `provider-core` — Provider iteron
 
 Provider trait, route identity, errors, catalog, health, capabilities, and shared stream parsing.
 
@@ -228,7 +228,7 @@ Fail-closed signature gating, monotonic versions, retained-artifact rollback and
 - Contracts: `fail-closed-signature-gate`, `no-silent-downgrade`
 - Required checks: `cargo test -p iteron-marketplace --locked`
 
-### `context-core` — Context core
+### `context-core` — Context iteron
 
 Compaction, instruction trust, source access, outline, and stable context estimation.
 
@@ -270,7 +270,7 @@ Platform confinement, child environment, process groups, output bounds, and egre
 - Contracts: `selectable-workspace-confinement`, `operator-selected-egress`, `bounded-child-process`
 - Required checks: `cargo test -p iteron-sandbox --locked`
 
-### `tools-core` — Tools core
+### `tools-core` — Tools iteron
 
 Tool registry, capability and purity coupling, filesystem, edit, and Git tools.
 

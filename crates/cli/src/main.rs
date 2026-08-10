@@ -203,7 +203,7 @@ enum ConfigAction {
     },
 }
 
-/// `core pricing …` — the shipped path from "I know what this model costs" to a run that reports a
+/// `iteron pricing …` — the shipped path from "I know what this model costs" to a run that reports a
 /// dollar figure.
 ///
 /// Rate cards default to empty, so the pricing port is never installed and any positive `--max-usd`
@@ -345,7 +345,7 @@ fn assemble_system_prompt(
 }
 
 /// Build identity, stamped by the release build (`.github/workflows/release.yml` exports both
-/// before `cargo build`). Two artifacts cut from different commits both reported `core 0.0.1`,
+/// before `cargo build`). Two artifacts cut from different commits both reported `iteron 0.0.1`,
 /// and there is no self-update or staleness hint, so a user had no way to learn which binary
 /// they were running. An unstamped local build says `unknown` rather than claiming an identity.
 const BUILD_COMMIT: &str = match option_env!("ITERON_BUILD_COMMIT") {
@@ -401,7 +401,7 @@ fn staleness_note(date: &str, now_unix_secs: i64) -> Option<String> {
     let age = now_unix_secs.div_euclid(86_400) - build_date_days(date)?;
     (age > BUILD_STALE_AFTER_DAYS).then(|| {
         format!(
-            "warning: this core build is {age} days old (built {date}, commit {BUILD_COMMIT}); its compiled-in provider catalog may name retired models — reinstall with the installer in the latest release"
+            "warning: this iteron build is {age} days old (built {date}, commit {BUILD_COMMIT}); its compiled-in provider catalog may name retired models — reinstall with the installer in the latest release"
         )
     })
 }
@@ -435,7 +435,7 @@ struct Cli {
     tui: bool,
 
     /// One-shot / non-interactive: run the task, stream text, exit (like `claude -p`). Requires a
-    /// task. Without -p, core opens the interactive TUI (the default).
+    /// task. Without -p, iteron opens the interactive TUI (the default).
     #[arg(short = 'p', long)]
     print: bool,
 
@@ -658,7 +658,7 @@ fn initial_permission_rules(allow_code: bool) -> iteron_protocol::PermissionRule
 
 /// `--runs-dir` as an absolute location. An absolute value is honoured verbatim; a relative one
 /// (including the `.iteron/runs` default) resolves under the CANONICALIZED repo, never against the
-/// process working directory — `core -C /elsewhere` must write its audit record under
+/// process working directory — `iteron -C /elsewhere` must write its audit record under
 /// `/elsewhere/.iteron/runs`, not beside wherever the shell happened to be.
 fn resolve_runs_dir(cli: &Cli, repo: &std::path::Path) -> PathBuf {
     if cli.runs_dir.is_absolute() {
@@ -668,7 +668,7 @@ fn resolve_runs_dir(cli: &Cli, repo: &std::path::Path) -> PathBuf {
     }
 }
 
-/// `core prune` — the only path that ever deletes a run journal. The policy must be stated: run
+/// `iteron prune` — the only path that ever deletes a run journal. The policy must be stated: run
 /// journals are append-only and are the sole durable evidence a run happened, so "prune" with no
 /// rule is a question, not a command.
 fn run_prune_command(
@@ -827,7 +827,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
 
     // Setup, auth, and config configure the machine itself. They must run BEFORE the repository is
-    // resolved and before any provider is constructed: the whole point of `core setup` is that it
+    // resolved and before any provider is constructed: the whole point of `iteron setup` is that it
     // works on a machine where no provider resolves yet, and none of the three needs a workspace.
     match &cli.command {
         Some(LocalCommand::Setup { plan, byok }) => {
@@ -865,7 +865,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         .map_err(|e| anyhow::anyhow!("repo {:?}: {e}", cli.repo))?;
     // Resolved ONCE, against `-C`, not against the process working directory. Every reader and
     // writer below shares this value; the workflow branch resolved it correctly while nine other
-    // call sites used the raw default, so `core -C /elsewhere` wrote its audit record next to
+    // call sites used the raw default, so `iteron -C /elsewhere` wrote its audit record next to
     // whatever directory the process happened to start in.
     let runs_dir = resolve_runs_dir(&cli, &repo);
 
@@ -895,7 +895,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         return run_workflow_command(&cli, &repo, &user_file, action).await;
     }
 
-    // `core pricing …` — operator tooling. It opens no rollout and admits no provider effect, so
+    // `iteron pricing …` — operator tooling. It opens no rollout and admits no provider effect, so
     // it branches out before the agent machinery exactly like `workflow` does.
     if let Some(LocalCommand::Pricing { action }) = &cli.command {
         let user_file = FileConfig::load_user()?;
@@ -927,7 +927,7 @@ async fn run_cli() -> anyhow::Result<u8> {
 
     // Purely-local, read-only rollout subcommands exit BEFORE we construct a provider or connect any
     // MCP server — listing or forking the append-only record needs no API key and must not spawn MCP
-    // subprocesses or print connection noise (review: `core --sessions` failed with "no api key"
+    // subprocesses or print connection noise (review: `iteron --sessions` failed with "no api key"
     // and eagerly started MCP servers, though it never touches the model).
     if let Some(run) = cli.otel_export.clone() {
         let run = iteron_protocol::RunId(run);
@@ -1041,7 +1041,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             }
             if metas.len() > limit {
                 eprintln!(
-                    "showing the {limit} most recent of {} sessions; raise --limit or run `core prune`",
+                    "showing the {limit} most recent of {} sessions; raise --limit or run `iteron prune`",
                     metas.len()
                 );
             }
@@ -1264,7 +1264,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     {
         // The credential MUST be named explicitly. Deriving it from the provider NAME — which is
         // resolved before the override is applied, with a silent fallback to `OPENAI_API_KEY` —
-        // meant `core --base-url https://gateway/v1` shipped whatever key the default provider
+        // meant `iteron --base-url https://gateway/v1` shipped whatever key the default provider
         // happened to use to an arbitrary host. A credential leaves this machine only for an
         // endpoint the operator paired it with in the same breath.
         let key_env = config::pick_optional_trusted_string(
@@ -1451,7 +1451,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             "no interactive terminal detected; pass -p \"<task>\" for non-interactive use, or run in a terminal for the TUI"
         );
     }
-    // `-p/--print` requires a task. Validate it HERE, before `Rollout::open` — else `core -p`
+    // `-p/--print` requires a task. Validate it HERE, before `Rollout::open` — else `iteron -p`
     // (no task) writes a genesis-bearing orphan before bailing, which (unlike the empty-cwd orphans)
     // matches `most_recent`'s cwd filter and silently poisons a later `--continue` (convergence
     // review: Fix 2 was incomplete — this was the one local validation still left after open).
@@ -1677,7 +1677,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         // without a route to the tooling it reads as "this feature is not for you" (I-40).
         anyhow::bail!(
             "cannot enforce the requested USD ceiling: the exact selected route has no active verified rate card.\n\
-             Produce one with `core pricing print-digests` (the route to pin) then `core pricing sign <card.json>`,\n\
+             Produce one with `iteron pricing print-digests` (the route to pin) then `iteron pricing sign <card.json>`,\n\
              and install the printed object under `rate_cards` in ~/.iteron/config.json."
         );
     }
@@ -1685,7 +1685,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         // The operator configured cards and none of them matched this route — almost always a
         // digest that moved. Naming the cause beats leaving the run silently unpriced (I-40).
         eprintln!(
-            "note: rate cards are configured but none is active for this exact route, so this run reports token usage and no cost. `core pricing print-digests` prints the route to sign."
+            "note: rate cards are configured but none is active for this exact route, so this run reports token usage and no cost. `iteron pricing print-digests` prints the route to sign."
         );
     }
 
@@ -1752,7 +1752,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     );
 
     eprintln!(
-        "core · repo={} · model={} · run={}",
+        "iteron · repo={} · model={} · run={}",
         repo.display(),
         model,
         run
@@ -2185,7 +2185,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     // stderr, beside the interrupt notice above: stdout is the machine contract and takes no
     // additions from a runtime concern.
     for line in server_task.await?.lines {
-        eprintln!("core: {line}");
+        eprintln!("iteron: {line}");
     }
     diagnostic_drain.flush();
 
@@ -2415,7 +2415,7 @@ fn build_workflow_spawner(
     std::sync::Arc::new(runtime::KernelSpawner::new(cx))
 }
 
-/// `core pricing <print-digests|sign>` — the shipped path to a priced run (I-40).
+/// `iteron pricing <print-digests|sign>` — the shipped path to a priced run (I-40).
 ///
 /// Neither action opens a rollout, admits a provider effect, or spends a token. `print-digests`
 /// resolves the same route the agent would record and prints it; `sign` turns an operator-authored
@@ -2879,7 +2879,7 @@ mod tests {
 
     #[test]
     fn long_version_identifies_the_exact_build_and_short_version_stays_bare() {
-        // Two artifacts cut from different commits both reported `core 0.0.1`. `--version` now
+        // Two artifacts cut from different commits both reported `iteron 0.0.1`. `--version` now
         // carries the commit and build date; `-V` keeps the bare semver the release smoke tests
         // and the installer compare exactly.
         let long = long_version();

@@ -72,7 +72,7 @@ def normalize(document: dict, version: str, target: str, epoch: int, binary_dige
     roots = [
         package
         for package in packages
-        if package.get("name") == "core"
+        if package.get("name") == "iteron"
         and package.get("versionInfo") == f"sha256:{binary_digest}"
         and package_has_sha256(package, binary_digest)
     ]

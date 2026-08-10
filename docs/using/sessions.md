@@ -6,8 +6,8 @@ runs directory. The default is `.iteron/runs` in the target repository.
 ## List and continue
 
 ```sh
-core --sessions -C /path/to/repository
-core --continue -C /path/to/repository
+iteron --sessions -C /path/to/repository
+iteron --continue -C /path/to/repository
 ```
 
 `--sessions` lists local run metadata. `--continue` selects the most recent valid
@@ -31,7 +31,7 @@ bytes; only an honest unknown-cost projection may take the no-replay read path.
 ## Resume a known run
 
 ```sh
-core --resume RUN_ID -C /path/to/repository \
+iteron --resume RUN_ID -C /path/to/repository \
   "Continue with this follow-up instruction"
 ```
 
@@ -50,7 +50,7 @@ other is expected.
 ## Fork a session
 
 ```sh
-core --fork RUN_ID -C /path/to/repository
+iteron --fork RUN_ID -C /path/to/repository
 ```
 
 A fork creates a new run with a shared past and divergent future. Its genesis pins

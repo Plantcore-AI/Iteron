@@ -2,7 +2,7 @@
 //!
 //! # Why this exists as code and not as a document
 //!
-//! The socket adapter is deliberately smaller than the decision core. The hard parts are:
+//! The socket adapter is deliberately smaller than the decision iteron. The hard parts are:
 //!
 //! - deciding what an endpoint URL is allowed to be, before a credential is ever attached to one,
 //! - deciding how a bearer credential reaches a request without becoming printable,

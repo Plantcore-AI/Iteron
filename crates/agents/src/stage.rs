@@ -77,7 +77,7 @@ pub enum Stage {
     /// isolation and synthesis topology, and Reduce waits for every admitted worker — never the
     /// first finisher, so completion order never leaks into the writer decision.
     Fan { tasks: Vec<AgentTask> },
-    /// The single writer consumes the ordered fan bundle. In core this IS the parent writer, not
+    /// The single writer consumes the ordered fan bundle. In iteron this IS the parent writer, not
     /// a separate agent — one synthesizer, and it is the one writer (ADR-001).
     Reduce,
 }

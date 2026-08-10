@@ -108,12 +108,12 @@ fn create_real_repository(root: &TempRoot) -> (String, String) {
 fn create_fake_core(root: &TempRoot) -> PathBuf {
     let path = root.join("fake-core");
     std::fs::write(&path, "#!/bin/sh\nprintf '%s' '{\"schema_version\":4'\n")
-        .expect("write executable fake core");
+        .expect("write executable fake iteron");
     let mut permissions = std::fs::metadata(&path)
-        .expect("stat fake core")
+        .expect("stat fake iteron")
         .permissions();
     permissions.set_mode(0o700);
-    std::fs::set_permissions(&path, permissions).expect("make fake core executable");
+    std::fs::set_permissions(&path, permissions).expect("make fake iteron executable");
     path
 }
 
@@ -234,7 +234,7 @@ async fn evaluates_a_real_pinned_repository_not_a_synthetic_micro_repo() {
             .expect("a failed cell records its phase");
         assert!(
             phase.starts_with("iteron"),
-            "a real pinned commit must materialize and reach the core phase, got `{phase}`"
+            "a real pinned commit must materialize and reach the iteron phase, got `{phase}`"
         );
         assert_ne!(
             phase, "checkout",
@@ -251,7 +251,7 @@ async fn evaluates_a_real_pinned_repository_not_a_synthetic_micro_repo() {
         assert_eq!(cell.failure_phase.as_deref(), Some("checkout"));
         assert_eq!(
             cell.exit_code, None,
-            "no core process runs when checkout of the pinned commit fails"
+            "no iteron process runs when checkout of the pinned commit fails"
         );
         assert!(
             cell.error

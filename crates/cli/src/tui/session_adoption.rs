@@ -11,7 +11,7 @@ pub(super) fn format_resume_command(run_id: &str) -> String {
         // Display-only POSIX shell quoting. The command is never executed by Core.
         format!("'{}'", run_id.replace('\'', "'\"'\"'"))
     };
-    format!("core --resume {argument}")
+    format!("iteron --resume {argument}")
 }
 
 /// Most transcript blocks an adopted run contributes to the live transcript.
@@ -334,7 +334,7 @@ pub(super) async fn adopt_session(
             app.note(
                 block::NoticeLevel::Err,
                 format!(
-                    "cannot take over session {}: {error}. Another core process may still be \
+                    "cannot take over session {}: {error}. Another iteron process may still be \
                      running it.",
                     ui_safe_text(run_id)
                 ),

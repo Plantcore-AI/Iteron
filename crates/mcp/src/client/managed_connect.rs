@@ -73,7 +73,7 @@ pub(super) async fn connect(
                 json!({
                     "protocolVersion": REQUESTED_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "core", "version": env!("CARGO_PKG_VERSION")}
+                    "clientInfo": {"name": "iteron", "version": env!("CARGO_PKG_VERSION")}
                 }),
             )
             .await?;

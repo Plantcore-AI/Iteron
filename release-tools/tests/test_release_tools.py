@@ -52,7 +52,7 @@ class ReleaseToolsTest(unittest.TestCase):
         self, output: Path, target: str = "aarch64-apple-darwin"
     ) -> argparse.Namespace:
         return argparse.Namespace(
-            binary=self.write("core", "#!/bin/sh\nprintf 'core 0.0.1\\n'\n", 0o755),
+            binary=self.write("iteron", "#!/bin/sh\nprintf 'iteron 0.0.1\\n'\n", 0o755),
             license=self.write("LICENSE", "Apache-2.0\n"),
             readme=self.write("README.md", "# Iteron\n"),
             licenses=self.write("THIRD_PARTY_LICENSES.html", "<html>licenses</html>\n"),
@@ -158,9 +158,9 @@ class ReleaseToolsTest(unittest.TestCase):
         target = "aarch64-apple-darwin"
         archive = package.build_archive(self.package_arguments(self.root / "native", target))
         root = "iteron-v0.0.1-aarch64-apple-darwin"
-        destination = self.root / "native-extract" / root / "core"
+        destination = self.root / "native-extract" / root / "iteron"
         verify_release.extract_tar(archive, root, target, destination)
-        self.assertEqual(destination.read_bytes(), (self.root / "core").read_bytes())
+        self.assertEqual(destination.read_bytes(), (self.root / "iteron").read_bytes())
 
     def test_windows_zip_is_deterministic_exact_and_contains_core_exe(self) -> None:
         target = "x86_64-pc-windows-msvc"
@@ -1124,7 +1124,7 @@ exit 1
             "packages": [
                 {
                     "SPDXID": "SPDXRef-root",
-                    "name": "core",
+                    "name": "iteron",
                     "versionInfo": f"sha256:{digest}",
                     "checksums": [{"algorithm": "SHA256", "checksumValue": digest}],
                 },

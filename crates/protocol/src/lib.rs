@@ -214,7 +214,7 @@ pub enum ContentSegment {
 #[serde(transparent)]
 pub struct ContentSegments(Vec<ContentSegment>);
 
-/// A submission on the SQ. The core consumes these; every frontend (CLI first) produces
+/// A submission on the SQ. The iteron consumes these; every frontend (CLI first) produces
 /// them. Approvals, interrupts, and steering are all submissions on the same queue, which
 /// preserves caller order for free — exactly what the ADR-006 determinism boundary needs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,7 +274,7 @@ pub enum Op {
 }
 
 /// Effort level (session setting). Maps to (a) the model's reasoning/thinking budget and
-/// (b) the orchestration strategy — `Ultracode` enables core's internal workflow/subagent
+/// (b) the orchestration strategy — `Ultracode` enables iteron's internal workflow/subagent
 /// orchestration for substantive tasks (designed in R5). Mirrors the leading agent's effort UX.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

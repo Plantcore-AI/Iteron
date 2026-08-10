@@ -1,7 +1,7 @@
 # Effects and authority
 
 Iteron separates what a tool proposes from what the runtime is allowed to do.
-The core types express both purity and capability so scheduling and permission
+The iteron types express both purity and capability so scheduling and permission
 decisions do not depend only on command text.
 
 ## Purity

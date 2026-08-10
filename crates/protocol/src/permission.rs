@@ -8,7 +8,7 @@
 //! model never influences its own gate ("a constraint the model enforces on itself is not a
 //! constraint", Plan.md). Deny-by-default is a lattice property, not a dismissible dialog: even
 //! `Yolo` cannot auto-approve a `TrustMutating` (`.git/hooks`, CI config) or `IrreversibleExternal`
-//! (push/publish) call. There is no unbounded bypass — core states its carve-outs as capability
+//! (push/publish) call. There is no unbounded bypass — iteron states its carve-outs as capability
 //! *classes*, which is stronger than pattern-matching command text (the leading agent's approach).
 //!
 //! HONEST LIMIT (stated, per the truth gate). The carve-out protects declared trust-mutating TOOL

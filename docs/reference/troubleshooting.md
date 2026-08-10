@@ -5,7 +5,7 @@
 The TUI needs terminal stdin and stdout. In a pipeline, use one-shot mode:
 
 ```sh
-core -p "Describe the failure"
+iteron -p "Describe the failure"
 ```
 
 ## Provider or model is grey
@@ -36,7 +36,7 @@ unconfined shell.
 Verification runs a command and therefore requires `--allow-code`:
 
 ```sh
-core -p --allow-code --verify "cargo test --locked" "Fix the test"
+iteron -p --allow-code --verify "cargo test --locked" "Fix the test"
 ```
 
 ## Resume reports an invalid record

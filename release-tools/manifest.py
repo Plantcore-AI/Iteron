@@ -210,7 +210,7 @@ def create_release(arguments: argparse.Namespace) -> None:
 
     document = {
         "cli_stream_versions": first_capability["cli_stream_versions"],
-        "command": "core",
+        "command": "iteron",
         "commit": commit,
         "default_cli_stream_version": first_capability["default_cli_stream_version"],
         "installer": installer,

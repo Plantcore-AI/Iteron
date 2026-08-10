@@ -111,7 +111,7 @@ fn capture_until(scratch: &Scratch, server_version: Option<u32>, needle: &str) -
     let mut child = pair
         .slave
         .spawn_command(command)
-        .expect("spawn core in PTY");
+        .expect("spawn iteron in PTY");
     let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
     // Dropping the parent's slave lets the reader see EOF once the child exits.
     drop(pair.slave);

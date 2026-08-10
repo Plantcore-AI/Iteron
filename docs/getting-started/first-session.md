@@ -3,7 +3,7 @@
 ## Start in a repository
 
 ```sh
-core -C /path/to/repository
+iteron -C /path/to/repository
 ```
 
 With an interactive terminal, Iteron opens the TUI even when no task argument
@@ -42,9 +42,9 @@ Use `/quit`, ++esc++, or ++ctrl+d++ to leave. The local hash-chained run record
 remains available:
 
 ```sh
-core --sessions -C /path/to/repository
-core --continue -C /path/to/repository
-core --resume RUN_ID -C /path/to/repository
+iteron --sessions -C /path/to/repository
+iteron --continue -C /path/to/repository
+iteron --resume RUN_ID -C /path/to/repository
 ```
 
 Continuation and resume rebuild the transcript from the durable record. They do

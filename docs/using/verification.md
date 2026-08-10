@@ -4,7 +4,7 @@
 model's completion statement.
 
 ```sh
-core -p --allow-code \
+iteron -p --allow-code \
   --verify "cargo test --workspace --all-targets --locked" \
   "Fix the failing test and verify the change"
 ```

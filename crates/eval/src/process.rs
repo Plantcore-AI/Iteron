@@ -187,13 +187,13 @@ async fn collect_capture(
 
 #[derive(Debug, thiserror::Error)]
 pub enum FindCoreError {
-    #[error("explicit core binary `{0}` is not a regular file")]
+    #[error("explicit iteron binary `{0}` is not a regular file")]
     InvalidExplicit(String),
     #[error(
         "cannot locate the Core CLI independent of cwd; pass --core-bin /absolute/path/to/core or run `cargo build -p iteron-cli`"
     )]
     NotFound,
-    #[error("cannot canonicalize core binary `{path}`: {source}")]
+    #[error("cannot canonicalize iteron binary `{path}`: {source}")]
     Canonicalize {
         path: String,
         source: std::io::Error,
@@ -208,7 +208,7 @@ pub fn find_core(explicit: Option<&Path>) -> Result<PathBuf, FindCoreError> {
         return canonicalize_core(path);
     }
 
-    let executable_name = format!("core{}", std::env::consts::EXE_SUFFIX);
+    let executable_name = format!("iteron{}", std::env::consts::EXE_SUFFIX);
     let mut candidates = Vec::new();
     if let Ok(current) = std::env::current_exe()
         && let Some(parent) = current.parent()

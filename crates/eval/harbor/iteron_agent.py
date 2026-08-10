@@ -91,7 +91,7 @@ def _snapshot_binary(
     path: Path, expected_sha256: str, expected_arch: str
 ) -> tuple[tempfile.TemporaryDirectory[str], Path, int]:
     snapshot_root = tempfile.TemporaryDirectory(prefix="core-harbor-binary-")
-    snapshot = Path(snapshot_root.name) / "core"
+    snapshot = Path(snapshot_root.name) / "iteron"
     try:
         descriptor = _open_binary_without_symlinks(path)
         with os.fdopen(descriptor, "rb") as source:
