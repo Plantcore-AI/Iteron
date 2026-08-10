@@ -7,8 +7,8 @@
 
 use crate::sse::StreamItem;
 use crate::{
-    AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderError, TurnRequest,
-    TurnResult, UsageReport,
+    AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderControlCapabilities,
+    ProviderError, ResponseVerbosity, ServiceTier, TurnRequest, TurnResult, UsageReport,
 };
 use core_protocol::{
     Block, Message, ProviderState, ReasoningEffort, Role, StopReason, ToolUse, Usage,
@@ -155,6 +155,19 @@ fn request_body(
         responses_reasoning_effort(error_profile, &request.model, request.reasoning_effort)
     {
         body["reasoning"] = serde_json::json!({"effort": effort.label(), "summary": "auto"});
+    }
+    match request.controls.service_tier {
+        ServiceTier::ProviderDefault => {}
+        ServiceTier::Auto => body["service_tier"] = serde_json::json!("auto"),
+        ServiceTier::Standard => body["service_tier"] = serde_json::json!("default"),
+        ServiceTier::Flex => body["service_tier"] = serde_json::json!("flex"),
+        ServiceTier::Priority => body["service_tier"] = serde_json::json!("priority"),
+    }
+    match request.controls.verbosity {
+        ResponseVerbosity::ModelDefault => {}
+        ResponseVerbosity::Concise => body["text"] = serde_json::json!({"verbosity": "low"}),
+        ResponseVerbosity::Balanced => body["text"] = serde_json::json!({"verbosity": "medium"}),
+        ResponseVerbosity::Detailed => body["text"] = serde_json::json!({"verbosity": "high"}),
     }
     Ok(body)
 }
@@ -1364,6 +1377,25 @@ impl Provider for OpenAiResponses {
         self.error_profile == ErrorProfile::OpenAi && self.root.as_str() == DEFAULT_ROOT
     }
 
+    fn control_capabilities(&self) -> ProviderControlCapabilities {
+        let mut capabilities = ProviderControlCapabilities::default();
+        if self.error_profile == ErrorProfile::OpenAi && self.root.as_str() == DEFAULT_ROOT {
+            capabilities.service_tiers.extend([
+                ServiceTier::Auto,
+                ServiceTier::Standard,
+                ServiceTier::Flex,
+                ServiceTier::Priority,
+            ]);
+            capabilities.verbosity.extend([
+                ResponseVerbosity::Concise,
+                ResponseVerbosity::Balanced,
+                ResponseVerbosity::Detailed,
+            ]);
+            capabilities.idempotent_requests = true;
+        }
+        capabilities
+    }
+
     fn effort_application(&self, request: &TurnRequest) -> EffortApplication {
         responses_effort_application(self.error_profile, &request.model, request.reasoning_effort)
     }
@@ -1551,6 +1583,7 @@ mod tests {
             cache_system: true,
             thinking_budget: 9_000,
             reasoning_effort: ReasoningEffort::Medium,
+            controls: Default::default(),
         }
     }
 

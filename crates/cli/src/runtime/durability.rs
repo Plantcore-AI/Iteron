@@ -94,6 +94,8 @@ impl Agent {
                 std::io::Error::other("injected durable append failure"),
             )));
         }
+        let turn_started_at_us =
+            matches!(&kind, EventKind::TurnStart).then(|| self.rollout.segment_elapsed_us());
         let event = Event {
             seq: Seq::ZERO,
             turn,
@@ -104,7 +106,12 @@ impl Agent {
         self.ledger
             .record_fsync_latency_us(elapsed_us(fsync_started));
         match appended {
-            Ok(seq) => Ok(seq),
+            Ok(seq) => {
+                if let Some(started_at_us) = turn_started_at_us {
+                    self.observe_policy_turn_start(turn, started_at_us);
+                }
+                Ok(seq)
+            }
             Err(error) => {
                 self.record_failed = true;
                 self.diagnostic_record_append_failed();

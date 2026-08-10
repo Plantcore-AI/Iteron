@@ -213,6 +213,12 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
             "status": "added",
             "id": id,
         }),
+        ControlReply::Memory(MemoryControlReply::Updated { old_id, id }) => json!({
+            "type": "memory",
+            "status": "updated",
+            "old_id": old_id,
+            "id": id,
+        }),
         ControlReply::Memory(MemoryControlReply::Deleted { id }) => json!({
             "type": "memory",
             "status": "deleted",
@@ -223,10 +229,16 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
             "status": "missing",
             "id": id,
         }),
+        ControlReply::Mcp(reply) => json!({
+            "type": "mcp",
+            "servers": reply.servers,
+            "notice": reply.notice,
+        }),
         ControlReply::SideAnswer(_)
         | ControlReply::SideStatus { .. }
         | ControlReply::Adopted { .. }
-        | ControlReply::Workflows(_) => json!({
+        | ControlReply::Workflows(_)
+        | ControlReply::OperatorStatus(_) => json!({
             "type": "refused",
             "message": "this reply type is not available on the public control transport",
         }),
@@ -244,6 +256,7 @@ fn snapshot_value(snapshot: &SessionSnapshot) -> Value {
         "permission_rules": snapshot.permission_rules,
         "ledger_summary": snapshot.ledger_summary,
         "rate_limit": snapshot.rate_limit,
+        "mcp_health": snapshot.mcp_health,
     })
 }
 

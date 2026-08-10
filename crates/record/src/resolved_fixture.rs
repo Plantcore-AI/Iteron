@@ -85,14 +85,13 @@ fn complete_input() -> ResolutionInput {
     let activation_evidence = families()
         .iter()
         .filter_map(|family| match family.activation.predicate {
-            ActivationPredicate::RuntimeDerived { seam } => Some(seam),
+            ActivationPredicate::RuntimeDerived { seam } => Some((family.id, seam)),
             ActivationPredicate::Always
             | ActivationPredicate::Configured { .. }
             | ActivationPredicate::Unavailable => None,
         })
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(|seam| ActivationEvidence {
+        .map(|(family, seam)| ActivationEvidence {
+            family: family.to_owned(),
             seam: seam.to_owned(),
             subject_digest_sha256: DIGEST_A.to_owned(),
             evidence_digest_sha256: DIGEST_B.to_owned(),

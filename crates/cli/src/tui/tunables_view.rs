@@ -38,6 +38,105 @@ pub(super) fn registry_catalog() -> Catalog {
     )
 }
 
+/// Project the exact immutable checkpoint that drives this live runtime. Unlike `registry_catalog`
+/// and loaded request files, this surface is runtime-bound and never invokes the current resolver.
+pub(super) fn checkpoint_catalog(
+    checkpoint: &core_record::TunablesCheckpoint,
+) -> Result<Catalog, LoadError> {
+    let core_record::TunablesCheckpoint::V2(snapshot) = checkpoint else {
+        return Err(LoadError(
+            "this historical session has an identity-only V1 tunables checkpoint",
+        ));
+    };
+    core_record::validate_tunables_snapshot_v2(snapshot)
+        .map_err(|_| LoadError("the immutable runtime tunables checkpoint is invalid"))?;
+    let entries = snapshot
+        .entries
+        .iter()
+        .map(checkpoint_detail)
+        .collect::<Result<Vec<_>, _>>()?;
+    let profile = core_tunables::RuntimeProfile::ALL
+        .into_iter()
+        .find(|profile| {
+            core_tunables::runtime_profile_digest(*profile)
+                .ok()
+                .as_deref()
+                == snapshot.profile_digest_sha256.as_deref()
+        })
+        .map(core_tunables::RuntimeProfile::id)
+        .unwrap_or("unrecognized");
+    Ok(Catalog::new(
+        format_args!(
+            "tunables · live runtime · {} families · profile={} · digest {}",
+            entries.len(),
+            profile,
+            short_digest(&snapshot.effective_digest_sha256),
+        ),
+        entries,
+    ))
+}
+
+fn checkpoint_detail(entry: &core_protocol::RunGenesisTunableEntryV2) -> Result<Detail, LoadError> {
+    let family = core_tunables::families()
+        .iter()
+        .find(|family| family.id == entry.family_id)
+        .ok_or(LoadError(
+            "runtime checkpoint names a family absent from this binary",
+        ))?;
+    if family.ordinal != entry.ordinal || family.semantic_key != entry.semantic_key {
+        return Err(LoadError(
+            "runtime checkpoint family identity differs from this binary",
+        ));
+    }
+    let state = match entry.state {
+        core_protocol::RunGenesisTunableState::Effective => "effective",
+        core_protocol::RunGenesisTunableState::Inactive => "inactive",
+        core_protocol::RunGenesisTunableState::Unavailable => "unavailable",
+    };
+    let mut detail = metadata_detail(family, state);
+    detail.prepend_rows([
+        row(
+            "surface",
+            "live immutable runtime · simulation=false · runtime_bound=true",
+        ),
+        row("state", state),
+        row(
+            "effective",
+            entry
+                .effective_value
+                .as_ref()
+                .map(compact_json)
+                .unwrap_or_else(|| bounded_field("none")),
+        ),
+        row(
+            "provenance",
+            entry
+                .provenance
+                .as_ref()
+                .map(compact_json)
+                .unwrap_or_else(|| bounded_field("none")),
+        ),
+        row("profile applied", entry.profile_applied),
+        row("ceilings", compact_json(&entry.ceiling_adjustments)),
+        row(
+            "inactive reason",
+            entry
+                .inactive_reason
+                .as_ref()
+                .map(compact_json)
+                .unwrap_or_else(|| bounded_field("none")),
+        ),
+    ]);
+    detail.push_note(
+        "This is the exact V2 checkpoint used by the runtime and inherited by its children; it is not re-resolved from current defaults.",
+    );
+    Ok(detail)
+}
+
+fn short_digest(value: &str) -> &str {
+    value.get(..12).unwrap_or(value)
+}
+
 /// Load one explicit request from inside the selected workspace. Linux retains directory and leaf
 /// capabilities, rejects symlinks and non-regular leaves, and rebinds the complete pathname before
 /// delivering exactly 1 MiB + 1 byte at most to R2. Other platforms fail closed.

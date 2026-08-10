@@ -13,6 +13,7 @@ path = "src/main.rs"
 # trajectories and emits versioned policy artifacts; it cannot execute tools or grant capability.
 [dependencies]
 core-protocol = { path = "../protocol" }
+core-record = { path = "../record" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

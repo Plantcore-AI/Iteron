@@ -2,17 +2,17 @@
 
 use super::*;
 use core_ctx::{
-    CacheClass, ContextDecision, ContextDecisionReason, ContextLedger, ContextSegmentEvidence,
-    ContextSegmentId, ContextSourceClass, ContextTransformEvidence, ContextTransformKind,
-    MemoryBudgetEvidence, MemoryCandidateDecision, MemoryCandidateEvidence, MemoryDecisionTrace,
-    MemoryFactId, MemoryInjectionEvidence, MemoryQueryEvidence, MemoryQueryId, MemoryRecallAudit,
-    MemoryScopeClass, MemoryScopeEvidence, MemorySelectionEvidence, MemoryStoreEvidence,
-    MemoryTierClass, MemoryVisibilityEvidence, MemoryVisibilityState, TokenRange,
-    TokenizerIdentity,
+    CacheClass, ContaminationEvidence, ContextDecision, ContextDecisionReason, ContextLedger,
+    ContextSegmentEvidence, ContextSegmentId, ContextSourceClass, ContextTransformEvidence,
+    ContextTransformKind, MemoryBudgetEvidence, MemoryCandidateDecision, MemoryCandidateEvidence,
+    MemoryDecisionTrace, MemoryFactId, MemoryInjectionEvidence, MemoryQueryEvidence, MemoryQueryId,
+    MemoryRecallAudit, MemoryRecallExclusionKind, MemoryScopeClass, MemoryScopeEvidence,
+    MemorySelectionEvidence, MemoryStoreEvidence, MemoryTierClass, MemoryVisibilityEvidence,
+    MemoryVisibilityState, TokenRange,
 };
 use core_obs::lifecycle::LifecycleCorrelation;
 use core_protocol::context::{ContextSegment, ContextSource};
-use core_protocol::{LifecyclePayload, Message, Role, ToolSpec, TurnId, Usage};
+use core_protocol::{Block, LifecyclePayload, Message, Role, ToolSpec, TurnId, Usage};
 use sha2::{Digest, Sha256};
 
 pub(super) struct ContextRequestObservation<'a> {
@@ -25,11 +25,41 @@ pub(super) struct ContextRequestObservation<'a> {
     pub(super) elapsed_us: u64,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct ResolvedContextObservation<'a> {
+    pub(super) turn: TurnId,
+    pub(super) task: &'a str,
+    pub(super) segments: &'a [ContextSegment],
+    pub(super) materialization: &'a core_ctx::ContextMaterializationAudit,
+    pub(super) memory_audit: Option<&'a MemoryRecallAudit>,
+    pub(super) memory_benchmark_scope: Option<&'a [u8; 32]>,
+    pub(super) benchmark_memory_rejections: u32,
+    pub(super) elapsed_us: u64,
+}
+
 impl Agent {
     pub(crate) fn activate_session_memory(
         &mut self,
         id: &str,
         text: &str,
+    ) -> Result<(), &'static str> {
+        self.activate_session_memory_change(id, text, None)
+    }
+
+    pub(crate) fn activate_updated_session_memory(
+        &mut self,
+        old_id: &str,
+        new_id: &str,
+        text: &str,
+    ) -> Result<(), &'static str> {
+        self.activate_session_memory_change(new_id, text, Some(old_id))
+    }
+
+    fn activate_session_memory_change(
+        &mut self,
+        id: &str,
+        text: &str,
+        superseded_id: Option<&str>,
     ) -> Result<(), &'static str> {
         if self.pending_steers.len() >= MAX_INBOUND_OPS_PER_POLL {
             return Err("the bounded session refresh queue is full");
@@ -58,11 +88,20 @@ impl Agent {
             });
         self.registry.invalidate_pure_cache();
         let fact = strict_utf8_head(text, MAX_STEER_BYTES.saturating_sub(1024));
-        self.pending_steers.push_back(format!(
-            "{MEMORY_ADDED_NOTIFICATION_PREFIX}\nMemory `{id}` was added explicitly by the operator \
-             and is available in this session. Exact fact:\n{fact}\n\nUse this fact when relevant. \
-             `read_memory` can retrieve it by id; the stable REC-INJECT prefix remains unchanged."
-        ));
+        let notification = match superseded_id {
+            Some(old_id) => format!(
+                "{MEMORY_ADDED_NOTIFICATION_PREFIX}\nMemory `{id}` was updated explicitly by the \
+                 operator and supersedes `{old_id}` in this session. Exact replacement fact:\n{fact}\n\n\
+                 Use the replacement when relevant and disregard the superseded wording. \
+                 `read_memory` can retrieve it by id; the stable REC-INJECT prefix remains unchanged."
+            ),
+            None => format!(
+                "{MEMORY_ADDED_NOTIFICATION_PREFIX}\nMemory `{id}` was added explicitly by the operator \
+                 and is available in this session. Exact fact:\n{fact}\n\nUse this fact when relevant. \
+                 `read_memory` can retrieve it by id; the stable REC-INJECT prefix remains unchanged."
+            ),
+        };
+        self.pending_steers.push_back(notification);
         Ok(())
     }
 
@@ -98,7 +137,7 @@ impl Agent {
                     query_id: MemoryQueryId(u64::from(turn.0)),
                     query_digest_sha256: digest(task.as_bytes()),
                     bytes: u64::try_from(task.len()).unwrap_or(u64::MAX),
-                    estimated_tokens: u64::try_from(core_ctx::estimate_tokens(task))
+                    estimated_tokens: u64::try_from(self.context_estimator.estimate_text(task))
                         .unwrap_or(u64::MAX),
                     rewrite_count: 0,
                 },
@@ -504,48 +543,63 @@ impl Agent {
 
     /// Capture live context source decisions as digests and magnitudes before their bytes are
     /// folded into the stable prefix.
-    pub(super) fn observe_resolved_context(
-        &mut self,
-        turn: TurnId,
-        task: &str,
-        segments: &[ContextSegment],
-        memory_audit: Option<&MemoryRecallAudit>,
-        elapsed_us: u64,
-    ) {
+    pub(super) fn observe_resolved_context(&mut self, observation: ResolvedContextObservation<'_>) {
+        self.observe_memory_resolution(&observation);
+        let ResolvedContextObservation {
+            turn,
+            task: _,
+            segments,
+            materialization,
+            memory_audit: _,
+            memory_benchmark_scope: _,
+            benchmark_memory_rejections: _,
+            elapsed_us,
+        } = observation;
         self.context_source_evidence.clear();
         let mut token_cursor = 0u64;
-        for (ordinal, segment) in segments.iter().enumerate() {
-            let estimated_tokens =
-                u64::try_from(core_ctx::estimate_tokens(&segment.text)).unwrap_or(u64::MAX);
-            let end = token_cursor.saturating_add(estimated_tokens);
-            self.context_source_evidence.push(ContextSegmentEvidence {
-                segment_id: ContextSegmentId(u64::try_from(ordinal).unwrap_or(u64::MAX)),
-                parent_segment_id: None,
-                source_class: context_source_class(segment.source),
-                source_digest_sha256: digest(segment.text.as_bytes()),
-                trust: segment.trust,
-                ordinal: u32::try_from(ordinal).unwrap_or(u32::MAX),
-                bytes_before: u64::try_from(segment.text.len()).unwrap_or(u64::MAX),
-                bytes_after: u64::try_from(segment.text.len()).unwrap_or(u64::MAX),
-                estimated_tokens,
-                actual_tokens: None,
-                token_range: Some(TokenRange {
+        for evidence in &materialization.segments {
+            let mut evidence = evidence.clone();
+            evidence.elapsed_us = elapsed_us;
+            if matches!(
+                evidence.decision,
+                ContextDecision::Selected | ContextDecision::Truncated | ContextDecision::Compacted
+            ) {
+                let end = token_cursor.saturating_add(evidence.estimated_tokens);
+                evidence.token_range = Some(TokenRange {
                     start: token_cursor,
                     end,
-                }),
-                cache_class: CacheClass::StablePrefix,
-                decision: ContextDecision::Selected,
-                reason: ContextDecisionReason::WithinBudget,
-                elapsed_us,
-            });
-            token_cursor = end;
+                });
+                token_cursor = end;
+            }
+            self.context_source_evidence.push(evidence);
         }
-        self.observe_memory_resolution(turn, task, segments, memory_audit, elapsed_us);
+        let selected = materialization
+            .segments
+            .iter()
+            .filter(|evidence| {
+                matches!(
+                    evidence.decision,
+                    ContextDecision::Selected
+                        | ContextDecision::Truncated
+                        | ContextDecision::Compacted
+                )
+            })
+            .count();
+        let rejected = materialization
+            .segments
+            .iter()
+            .filter(|evidence| evidence.decision == ContextDecision::Rejected)
+            .count();
+        let truncated = materialization
+            .segments
+            .iter()
+            .filter(|evidence| evidence.decision == ContextDecision::Truncated)
+            .collect::<Vec<_>>();
         self.lifecycle_event(
             "context.source.classified",
             Some(turn),
             LifecyclePayload {
-                count: Some(u64::try_from(segments.len()).unwrap_or(u64::MAX)),
+                count: Some(u64::try_from(materialization.segments.len()).unwrap_or(u64::MAX)),
                 ..LifecyclePayload::default()
             },
         );
@@ -553,7 +607,7 @@ impl Agent {
             "context.source.selected",
             Some(turn),
             LifecyclePayload {
-                count: Some(u64::try_from(segments.len()).unwrap_or(u64::MAX)),
+                count: Some(u64::try_from(selected).unwrap_or(u64::MAX)),
                 duration_us: Some(elapsed_us),
                 magnitude: Some(
                     segments
@@ -564,6 +618,33 @@ impl Agent {
                 ..LifecyclePayload::default()
             },
         );
+        if rejected > 0 {
+            self.lifecycle_event(
+                "context.source.rejected",
+                Some(turn),
+                LifecyclePayload {
+                    count: Some(u64::try_from(rejected).unwrap_or(u64::MAX)),
+                    reason_code: Some("context_materialization_budget".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
+        if !truncated.is_empty() {
+            self.lifecycle_event(
+                "context.source.truncated",
+                Some(turn),
+                LifecyclePayload {
+                    count: Some(u64::try_from(truncated.len()).unwrap_or(u64::MAX)),
+                    magnitude: Some(truncated.iter().fold(0u64, |total, evidence| {
+                        total.saturating_add(
+                            evidence.bytes_before.saturating_sub(evidence.bytes_after),
+                        )
+                    })),
+                    reason_code: Some("context_materialization_budget".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
         self.lifecycle_event(
             "context.source.serialized",
             Some(turn),
@@ -576,7 +657,7 @@ impl Agent {
     }
 
     pub(super) fn observe_recorded_context(&mut self, turn: TurnId, text: &str, trust: Trust) {
-        let tokens = u64::try_from(core_ctx::estimate_tokens(text)).unwrap_or(u64::MAX);
+        let tokens = u64::try_from(self.context_estimator.estimate_text(text)).unwrap_or(u64::MAX);
         self.context_source_evidence = vec![ContextSegmentEvidence {
             segment_id: ContextSegmentId(0),
             parent_segment_id: None,
@@ -631,7 +712,7 @@ impl Agent {
         observation: ContextRequestObservation<'_>,
     ) {
         let ContextRequestObservation {
-            system,
+            system: _system,
             messages,
             tools,
             images,
@@ -639,14 +720,7 @@ impl Agent {
             output_reserved_tokens,
             elapsed_us,
         } = observation;
-        let mut ledger = ContextLedger::new(
-            turn,
-            TokenizerIdentity {
-                catalog_id: "core.byte-heuristic".into(),
-                version: 1,
-                exact: false,
-            },
-        );
+        let mut ledger = ContextLedger::new(turn, self.context_estimator.tokenizer_identity());
         ledger.model_context_window = self.model_context_window;
         ledger.output_reserved_tokens = u64::from(output_reserved_tokens);
         ledger.usable_window = self
@@ -660,9 +734,9 @@ impl Agent {
             &mut ledger,
             ordinal,
             ContextSourceClass::KernelSystem,
-            system.as_bytes(),
+            self.system.as_bytes(),
             self.system_trust,
-            u64::try_from(estimate.system_tokens).unwrap_or(u64::MAX),
+            u64::try_from(self.context_estimator.estimate_text(&self.system)).unwrap_or(u64::MAX),
             CacheClass::StablePrefix,
         );
         ordinal = ordinal.saturating_add(1);
@@ -700,11 +774,28 @@ impl Agent {
                 u64::try_from(estimate.tool_tokens).unwrap_or(u64::MAX);
             ordinal = ordinal.saturating_add(1);
         }
-        for message in messages {
+        let active_task_index = messages.iter().rposition(|message| {
+            message.role == Role::User
+                && message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, Block::Text { .. }))
+        });
+        for (index, message) in messages.iter().enumerate() {
             let bytes = serde_json::to_vec(message).unwrap_or_default();
-            let source = match message.role {
-                Role::User => ContextSourceClass::TranscriptUser,
-                Role::Assistant => ContextSourceClass::TranscriptAssistant,
+            let source = if Some(index) == active_task_index {
+                ContextSourceClass::TaskPrompt
+            } else if message
+                .content
+                .iter()
+                .any(|block| matches!(block, Block::ToolResult(_)))
+            {
+                ContextSourceClass::TranscriptTool
+            } else {
+                match message.role {
+                    Role::User => ContextSourceClass::TranscriptUser,
+                    Role::Assistant => ContextSourceClass::TranscriptAssistant,
+                }
             };
             record_segment(
                 &mut ledger,
@@ -712,8 +803,11 @@ impl Agent {
                 source,
                 &bytes,
                 Trust::Trusted,
-                u64::try_from(core_ctx::estimate_tokens(&String::from_utf8_lossy(&bytes)))
-                    .unwrap_or(u64::MAX),
+                u64::try_from(
+                    self.context_estimator
+                        .estimate_text(&String::from_utf8_lossy(&bytes)),
+                )
+                .unwrap_or(u64::MAX),
                 CacheClass::Uncached,
             );
             ordinal = ordinal.saturating_add(1);
@@ -756,6 +850,15 @@ impl Agent {
             let image_bytes = images.iter().fold(0u64, |total, image| {
                 total.saturating_add(u64::try_from(image.data.encoded_len()).unwrap_or(u64::MAX))
             });
+            let image_tokens = images.iter().fold(0u64, |total, image| {
+                total.saturating_add(
+                    u64::try_from(
+                        self.context_estimator
+                            .estimate_image(image.data.encoded_len()),
+                    )
+                    .unwrap_or(u64::MAX),
+                )
+            });
             ledger.record_segment(ContextSegmentEvidence {
                 segment_id: ContextSegmentId(u64::from(ordinal)),
                 parent_segment_id: None,
@@ -765,7 +868,7 @@ impl Agent {
                 ordinal,
                 bytes_before: image_bytes,
                 bytes_after: image_bytes,
-                estimated_tokens: 0,
+                estimated_tokens: image_tokens,
                 actual_tokens: None,
                 token_range: None,
                 cache_class: CacheClass::Unknown,
@@ -773,8 +876,8 @@ impl Agent {
                 reason: ContextDecisionReason::Required,
                 elapsed_us: 0,
             });
-            // Image token cost is provider/model specific. Preserve the measured encoded bytes
-            // and classify the source, but never turn an unknown token cost into a measured zero.
+            ledger.totals.attachment_tokens =
+                ledger.totals.attachment_tokens.saturating_add(image_tokens);
             self.lifecycle_event(
                 "context.source.classified",
                 Some(turn),
@@ -806,7 +909,18 @@ impl Agent {
         // The request estimator is the single accounting pass used for admission. Segment-level
         // classification may overlap (a file is also serialized inside a transcript message), so
         // the aggregate must remain that authoritative request estimate rather than their sum.
-        ledger.totals.estimated_tokens = u64::try_from(estimate.total_tokens).unwrap_or(u64::MAX);
+        let multimodal_tokens = images.iter().fold(0u64, |total, image| {
+            total.saturating_add(
+                u64::try_from(
+                    self.context_estimator
+                        .estimate_image(image.data.encoded_len()),
+                )
+                .unwrap_or(u64::MAX),
+            )
+        });
+        ledger.totals.estimated_tokens = u64::try_from(estimate.total_tokens)
+            .unwrap_or(u64::MAX)
+            .saturating_add(multimodal_tokens);
         let segment_count = u64::try_from(ledger.segments.len()).unwrap_or(u64::MAX);
         let stable_prefix_tokens = ledger.cache.stable_prefix_tokens;
         let headroom = ledger.headroom_tokens();
@@ -980,14 +1094,17 @@ impl Agent {
         }
     }
 
-    fn observe_memory_resolution(
-        &self,
-        turn: TurnId,
-        task: &str,
-        segments: &[ContextSegment],
-        memory_audit: Option<&MemoryRecallAudit>,
-        elapsed_us: u64,
-    ) {
+    fn observe_memory_resolution(&self, observation: &ResolvedContextObservation<'_>) {
+        let ResolvedContextObservation {
+            turn,
+            task,
+            segments,
+            materialization: _,
+            memory_audit,
+            memory_benchmark_scope,
+            benchmark_memory_rejections,
+            elapsed_us,
+        } = *observation;
         let memory_segments = segments
             .iter()
             .filter(|segment| segment.source == ContextSource::Memory)
@@ -997,26 +1114,68 @@ impl Agent {
         });
         let requested_tokens = memory_segments.iter().fold(0u64, |total, segment| {
             total.saturating_add(
-                u64::try_from(core_ctx::estimate_tokens(&segment.text)).unwrap_or(u64::MAX),
+                u64::try_from(self.context_estimator.estimate_text(&segment.text))
+                    .unwrap_or(u64::MAX),
             )
         });
+        let query = memory_audit
+            .map(|audit| audit.rewritten_query.as_str())
+            .unwrap_or(task);
+        let rewrite_count = memory_audit.map(|audit| audit.rewrite_count).unwrap_or(0);
+        let parent_access_rejections = memory_audit
+            .map(|audit| {
+                audit
+                    .excluded_candidates
+                    .iter()
+                    .filter(|candidate| {
+                        matches!(candidate.kind, MemoryRecallExclusionKind::ScopeDenied)
+                    })
+                    .count()
+            })
+            .and_then(|count| u32::try_from(count).ok())
+            .unwrap_or(0)
+            .saturating_add(benchmark_memory_rejections);
         let mut trace = MemoryDecisionTrace::new(
             turn,
             MemoryQueryEvidence {
                 query_id: MemoryQueryId(u64::from(turn.0)),
-                query_digest_sha256: digest(task.as_bytes()),
-                bytes: u64::try_from(task.len()).unwrap_or(u64::MAX),
-                estimated_tokens: u64::try_from(core_ctx::estimate_tokens(task))
+                query_digest_sha256: digest(query.as_bytes()),
+                bytes: u64::try_from(query.len()).unwrap_or(u64::MAX),
+                estimated_tokens: u64::try_from(self.context_estimator.estimate_text(query))
                     .unwrap_or(u64::MAX),
-                rewrite_count: 0,
+                rewrite_count,
             },
             MemoryScopeEvidence {
-                class: MemoryScopeClass::Workspace,
-                scope_digest_sha256: digest(self.workspace.as_os_str().as_encoded_bytes()),
+                class: if memory_benchmark_scope.is_some() {
+                    MemoryScopeClass::BenchmarkAttempt
+                } else {
+                    MemoryScopeClass::Workspace
+                },
+                scope_digest_sha256: memory_benchmark_scope
+                    .copied()
+                    .unwrap_or_else(|| digest(self.workspace.as_os_str().as_encoded_bytes())),
                 isolation_enabled: true,
-                parent_access_rejections: 0,
+                parent_access_rejections,
             },
         );
+        if rewrite_count > 0 {
+            self.lifecycle_event(
+                "memory.query.rewritten",
+                Some(turn),
+                LifecyclePayload {
+                    count: Some(u64::from(rewrite_count)),
+                    reason_code: Some("whitespace_normalized".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
+        if memory_benchmark_scope.is_some() {
+            self.lifecycle_event(
+                "memory.benchmark.scope_created",
+                Some(turn),
+                LifecyclePayload::default(),
+            );
+        }
         self.lifecycle_event(
             "memory.scope.resolved",
             Some(turn),
@@ -1049,8 +1208,18 @@ impl Agent {
             },
         );
         if let Some(audit) = memory_audit {
-            let candidate_count =
-                u64::try_from(audit.observation.candidates.len()).unwrap_or(u64::MAX);
+            let candidate_count = u64::try_from(
+                audit.observation.candidates.len().saturating_add(
+                    audit
+                        .excluded_candidates
+                        .iter()
+                        .filter(|candidate| {
+                            !matches!(candidate.kind, MemoryRecallExclusionKind::ScopeDenied)
+                        })
+                        .count(),
+                ),
+            )
+            .unwrap_or(u64::MAX);
             for event_id in [
                 "memory.store.scanned",
                 "memory.candidate.discovered",
@@ -1066,7 +1235,10 @@ impl Agent {
                     },
                 );
             }
-            if audit.deduplicated_candidates > 0 {
+            let deduplicated_candidates = audit.deduplicated_candidates.saturating_add(
+                u32::try_from(audit.novelty_deduplicated.len()).unwrap_or(u32::MAX),
+            );
+            if deduplicated_candidates > 0 {
                 for event_id in [
                     "memory.candidate.deduplicated",
                     "context.source.deduplicated",
@@ -1075,8 +1247,8 @@ impl Agent {
                         event_id,
                         Some(turn),
                         LifecyclePayload {
-                            count: Some(u64::from(audit.deduplicated_candidates)),
-                            reason_code: Some("stable_memory_slug".into()),
+                            count: Some(u64::from(deduplicated_candidates)),
+                            reason_code: Some("stable_slug_or_novelty_threshold".into()),
                             ..LifecyclePayload::default()
                         },
                     );
@@ -1091,7 +1263,8 @@ impl Agent {
             for (index, candidate) in audit.observation.candidates.iter().enumerate() {
                 let candidate_digest = digest(candidate.text.as_bytes());
                 let candidate_tokens =
-                    u64::try_from(core_ctx::estimate_tokens(&candidate.text)).unwrap_or(u64::MAX);
+                    u64::try_from(self.context_estimator.estimate_text(&candidate.text))
+                        .unwrap_or(u64::MAX);
                 let candidate_bytes = u64::try_from(candidate.framed_bytes).unwrap_or(u64::MAX);
                 requested_candidate_bytes =
                     requested_candidate_bytes.saturating_add(candidate_bytes);
@@ -1101,7 +1274,14 @@ impl Agent {
                     .selected
                     .iter()
                     .position(|slug| slug == &candidate.slug);
-                let decision = if selected_ordinal.is_some() {
+                let scope_denied = audit.excluded_candidates.iter().any(|excluded| {
+                    excluded.slug == candidate.slug
+                        && matches!(excluded.kind, MemoryRecallExclusionKind::ScopeDenied)
+                });
+                let decision = if scope_denied {
+                    filtered_candidates = filtered_candidates.saturating_add(1);
+                    MemoryCandidateDecision::ScopeDenied
+                } else if selected_ordinal.is_some() {
                     granted_candidate_bytes =
                         granted_candidate_bytes.saturating_add(candidate_bytes);
                     granted_candidate_tokens =
@@ -1110,6 +1290,9 @@ impl Agent {
                 } else if candidate.trust < audit.observation.trust_floor {
                     filtered_candidates = filtered_candidates.saturating_add(1);
                     MemoryCandidateDecision::TrustDenied
+                } else if audit.novelty_deduplicated.contains(&candidate.slug) {
+                    filtered_candidates = filtered_candidates.saturating_add(1);
+                    MemoryCandidateDecision::Duplicate
                 } else if audit.scores_ppm.get(index).copied().unwrap_or(0) <= 0 {
                     filtered_candidates = filtered_candidates.saturating_add(1);
                     MemoryCandidateDecision::BelowThreshold
@@ -1125,10 +1308,18 @@ impl Agent {
                     store_id: 0,
                     tier: memory_tier(candidate.trust),
                     trust: candidate.trust,
-                    bm25_term_ppm: audit.scores_ppm.get(index).copied().unwrap_or(0),
-                    bm25_length_ppm: 0,
-                    semantic_ppm: None,
-                    recency_ppm: 0,
+                    bm25_term_ppm: audit.lexical_scores_ppm.get(index).copied().unwrap_or(0),
+                    bm25_length_ppm: audit.structural_scores_ppm.get(index).copied().unwrap_or(0),
+                    semantic_ppm: Some(
+                        audit.structural_scores_ppm.get(index).copied().unwrap_or(0),
+                    ),
+                    recency_ppm: i64::from(
+                        audit
+                            .recency_multipliers_ppm
+                            .get(index)
+                            .copied()
+                            .unwrap_or(core_ctx::SCORE_SCALE),
+                    ),
                     confidence_ppm: 0,
                     combined_ppm: audit.scores_ppm.get(index).copied().unwrap_or(0),
                     threshold_ppm: 1,
@@ -1148,6 +1339,75 @@ impl Agent {
                         token_range: None,
                     });
                 }
+            }
+            for excluded in audit.excluded_candidates.iter().filter(|candidate| {
+                !matches!(candidate.kind, MemoryRecallExclusionKind::ScopeDenied)
+            }) {
+                let candidate_digest = digest(excluded.evidence_text.as_bytes());
+                let related_fact_id = excluded
+                    .related_slug
+                    .as_ref()
+                    .map(|slug| memory_fact_id(digest(slug.as_bytes())));
+                let (decision, event_id, reason_code) = match excluded.kind {
+                    MemoryRecallExclusionKind::Superseded => (
+                        MemoryCandidateDecision::Superseded,
+                        "memory.candidate.superseded",
+                        "higher_precedence_slug",
+                    ),
+                    MemoryRecallExclusionKind::Contradiction => (
+                        MemoryCandidateDecision::Contradiction,
+                        "memory.candidate.contradiction",
+                        "conflicting_title_higher_precedence",
+                    ),
+                    MemoryRecallExclusionKind::Expired => (
+                        MemoryCandidateDecision::Expired,
+                        "memory.candidate.expired",
+                        "indexed_body_unavailable",
+                    ),
+                    MemoryRecallExclusionKind::ScopeDenied => unreachable!(
+                        "scope-denied materialized candidates are recorded in observation order"
+                    ),
+                };
+                let candidate_bytes =
+                    u64::try_from(excluded.evidence_text.len()).unwrap_or(u64::MAX);
+                let candidate_tokens = u64::try_from(
+                    self.context_estimator
+                        .estimate_text(&excluded.evidence_text),
+                )
+                .unwrap_or(u64::MAX);
+                requested_candidate_bytes =
+                    requested_candidate_bytes.saturating_add(candidate_bytes);
+                requested_candidate_tokens =
+                    requested_candidate_tokens.saturating_add(candidate_tokens);
+                filtered_candidates = filtered_candidates.saturating_add(1);
+                trace.record_candidate(MemoryCandidateEvidence {
+                    fact_id: memory_fact_id(candidate_digest),
+                    fact_digest_sha256: candidate_digest,
+                    store_id: 0,
+                    tier: memory_tier(excluded.trust),
+                    trust: excluded.trust,
+                    bm25_term_ppm: 0,
+                    bm25_length_ppm: 0,
+                    semantic_ppm: None,
+                    recency_ppm: 0,
+                    confidence_ppm: 0,
+                    combined_ppm: 0,
+                    threshold_ppm: 1,
+                    rank: 0,
+                    requested_bytes: candidate_bytes,
+                    requested_tokens: candidate_tokens,
+                    decision,
+                    related_fact_id,
+                });
+                self.lifecycle_event(
+                    event_id,
+                    Some(turn),
+                    LifecyclePayload {
+                        count: Some(1),
+                        reason_code: Some(reason_code.into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
             }
             trace.budget = MemoryBudgetEvidence {
                 requested_bytes: requested_candidate_bytes,
@@ -1227,6 +1487,65 @@ impl Agent {
                     ..LifecyclePayload::default()
                 },
             );
+        }
+        if let Some(scope_digest_sha256) = memory_benchmark_scope {
+            let checked_candidates = memory_audit
+                .map(|audit| {
+                    audit.observation.candidates.len().saturating_add(
+                        audit
+                            .excluded_candidates
+                            .iter()
+                            .filter(|candidate| {
+                                !matches!(candidate.kind, MemoryRecallExclusionKind::ScopeDenied)
+                            })
+                            .count(),
+                    )
+                })
+                .and_then(|count| u32::try_from(count).ok())
+                .unwrap_or(0);
+            let rejected_candidates = memory_audit
+                .map(|audit| {
+                    audit
+                        .excluded_candidates
+                        .iter()
+                        .filter(|candidate| {
+                            matches!(candidate.kind, MemoryRecallExclusionKind::ScopeDenied)
+                        })
+                        .count()
+                })
+                .and_then(|count| u32::try_from(count).ok())
+                .unwrap_or(0)
+                .saturating_add(benchmark_memory_rejections);
+            let leaked = !memory_segments.is_empty()
+                || memory_audit.is_some_and(|audit| !audit.selected.is_empty());
+            self.lifecycle_event(
+                "memory.contamination.check_started",
+                Some(turn),
+                LifecyclePayload {
+                    count: Some(u64::from(checked_candidates)),
+                    ..LifecyclePayload::default()
+                },
+            );
+            self.lifecycle_event(
+                if leaked {
+                    "memory.contamination.check_failed"
+                } else {
+                    "memory.contamination.check_passed"
+                },
+                Some(turn),
+                LifecyclePayload {
+                    count: Some(u64::from(rejected_candidates)),
+                    outcome_code: Some(if leaked { "contaminated" } else { "isolated" }.into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            trace.contamination = Some(ContaminationEvidence {
+                scope_digest_sha256: *scope_digest_sha256,
+                checked_candidates,
+                rejected_candidates,
+                canary_matches: 0,
+                passed: !leaked,
+            });
         }
         self.lifecycle_event(
             "memory.policy.decision",
@@ -1318,18 +1637,6 @@ fn record_segment(
         reason: ContextDecisionReason::Required,
         elapsed_us: 0,
     });
-}
-
-fn context_source_class(source: ContextSource) -> ContextSourceClass {
-    match source {
-        ContextSource::RepoOutline => ContextSourceClass::WorkspaceOutline,
-        ContextSource::Instructions => ContextSourceClass::ProjectInstructions,
-        ContextSource::Memory => ContextSourceClass::WorkspaceMemory,
-        ContextSource::Transcript => ContextSourceClass::TranscriptUser,
-        ContextSource::Environment => ContextSourceClass::Environment,
-        ContextSource::Skills => ContextSourceClass::SkillIndex,
-        ContextSource::Unknown => ContextSourceClass::Environment,
-    }
 }
 
 fn memory_fact_id(digest: [u8; 32]) -> MemoryFactId {

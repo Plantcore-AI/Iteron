@@ -7,13 +7,14 @@ use crate::resolution_types::{
     ResolutionSource, ResolutionValue, ResolvedEntry, ResolvedTunableSet, ShadowedValue,
     UnresolvedReason,
 };
-use crate::{
-    ActivationPredicate, DefaultResolver, Family, ImplementationStatus, SourceBinding, families,
-};
+use crate::{ActivationPredicate, DefaultResolver, Family, ImplementationStatus, families};
 use std::collections::BTreeMap;
 
 #[path = "resolution_route.rs"]
 mod route;
+#[path = "resolution/source_merge.rs"]
+mod source_merge;
+use source_merge::{Selected, select_explicit};
 
 #[allow(
     clippy::result_large_err,
@@ -87,23 +88,10 @@ fn resolve_family(family: &Family, prepared: &PreparedInput) -> ResolvedEntry {
         );
     }
 
-    let (explicit, shadowed) = select_explicit(family, prepared);
-    if let Some(selected) = explicit.as_ref()
-        && let Some(outcome) =
-            route::provider_gate(family, prepared, &selected.value, selected.explicit)
-    {
-        return entry(
-            family,
-            Some(selected.value.clone()),
-            None,
-            Some(selected.provenance.clone()),
-            outcome,
-            Vec::new(),
-            shadowed,
-        );
-    }
+    let explicit = select_explicit(family, prepared);
     if let Some(cause) = activation_cause(family, prepared) {
-        let (requested, provenance) = explicit
+        let (selected, shadowed) = explicit.without_default();
+        let (requested, provenance) = selected
             .map(|selected| (Some(selected.value), Some(selected.provenance)))
             .unwrap_or((None, None));
         return entry(
@@ -117,34 +105,38 @@ fn resolve_family(family: &Family, prepared: &PreparedInput) -> ResolvedEntry {
         );
     }
 
-    if explicit.is_none()
+    if !explicit.has_value()
         && let Some(outcome) = route::default_availability(family, prepared)
     {
-        return entry(family, None, None, None, outcome, Vec::new(), shadowed);
+        return entry(
+            family,
+            None,
+            None,
+            None,
+            outcome,
+            Vec::new(),
+            explicit.shadowed,
+        );
     }
 
-    let selected = match explicit {
-        Some(selected) => selected,
-        None => match select_default(family, prepared) {
-            Ok(selected) => selected,
-            Err(reason) => {
-                return entry(
-                    family,
-                    None,
-                    None,
-                    None,
-                    EntryOutcome::Unresolved { reason },
-                    Vec::new(),
-                    shadowed,
-                );
-            }
-        },
+    let (selected, shadowed) = match explicit.with_default(family, prepared) {
+        Ok(selected) => selected,
+        Err((reason, shadowed)) => {
+            return entry(
+                family,
+                None,
+                None,
+                None,
+                EntryOutcome::Unresolved { reason },
+                Vec::new(),
+                shadowed,
+            );
+        }
     };
     let requested = selected.value.clone();
     let provenance = selected.provenance.clone();
-    if !selected.explicit
-        && let Some(outcome) =
-            route::provider_gate(family, prepared, &selected.value, selected.explicit)
+    if let Some(outcome) =
+        route::provider_gate(family, prepared, &selected.value, selected.explicit)
     {
         return entry(
             family,
@@ -185,91 +177,6 @@ fn resolve_family(family: &Family, prepared: &PreparedInput) -> ResolvedEntry {
             Vec::new(),
             shadowed,
         ),
-    }
-}
-
-struct Selected {
-    value: ResolutionValue,
-    provenance: ResolutionProvenance,
-    explicit: bool,
-}
-
-fn select_explicit(
-    family: &Family,
-    prepared: &PreparedInput,
-) -> (Option<Selected>, Vec<ShadowedValue>) {
-    let mut winner = None;
-    let mut shadowed = Vec::new();
-    for binding in family.source.bindings {
-        let direct = prepared
-            .input
-            .declared_values
-            .iter()
-            .find(|value| value.family == family.id && value.source == binding.kind)
-            .map(|value| Selected {
-                value: value.value.clone(),
-                provenance: declared_provenance(binding, value.evidence_digest_sha256.clone()),
-                explicit: true,
-            });
-        let profile = prepared
-            .input
-            .profile
-            .as_ref()
-            .zip(prepared.profile_digest_sha256.as_ref())
-            .and_then(|(profile, profile_digest)| {
-                profile
-                    .values
-                    .iter()
-                    .find(|value| {
-                        value.family == family.id && value.as_declared_source == binding.kind
-                    })
-                    .map(|value| Selected {
-                        value: value.value.clone(),
-                        provenance: ResolutionProvenance {
-                            source: ResolutionSource::Profile {
-                                kind: binding.kind,
-                                trust: binding.trust,
-                                declared_locator: binding.locator,
-                                profile_digest_sha256: profile_digest.clone(),
-                            },
-                        },
-                        explicit: true,
-                    })
-            });
-
-        match (&winner, direct, profile) {
-            (None, Some(direct), Some(profile)) => {
-                shadowed.push(shadow(profile, "same_source_profile_overridden"));
-                winner = Some(direct);
-            }
-            (None, Some(direct), None) => winner = Some(direct),
-            (None, None, Some(profile)) => winner = Some(profile),
-            (Some(_), direct, profile) => {
-                shadowed.extend(direct.map(|value| shadow(value, "lower_precedence")));
-                shadowed.extend(profile.map(|value| shadow(value, "lower_precedence")));
-            }
-            (None, None, None) => {}
-        }
-    }
-    (winner, shadowed)
-}
-
-fn declared_provenance(binding: &SourceBinding, digest: String) -> ResolutionProvenance {
-    ResolutionProvenance {
-        source: ResolutionSource::Declared {
-            kind: binding.kind,
-            trust: binding.trust,
-            declared_locator: binding.locator,
-            evidence_digest_sha256: digest,
-        },
-    }
-}
-
-fn shadow(selected: Selected, reason_code: &'static str) -> ShadowedValue {
-    ShadowedValue {
-        value: selected.value,
-        provenance: selected.provenance,
-        reason_code,
     }
 }
 
@@ -383,7 +290,7 @@ fn activation_cause(family: &Family, prepared: &PreparedInput) -> Option<Inactiv
             .input
             .activation_evidence
             .iter()
-            .find(|evidence| evidence.seam == seam)
+            .find(|evidence| evidence.family == family.id && evidence.seam == seam)
         {
             None => Some(InactiveCause::RuntimeSeamMissing { seam }),
             Some(evidence) if !evidence.active => Some(InactiveCause::RuntimeSeamInactive { seam }),

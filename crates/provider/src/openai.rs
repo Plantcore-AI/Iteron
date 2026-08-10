@@ -13,8 +13,8 @@
 
 use crate::sse::StreamItem;
 use crate::{
-    AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderError, TurnRequest,
-    TurnResult, UsageReport,
+    AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderControlCapabilities,
+    ProviderError, ServiceTier, TurnRequest, TurnResult, UsageReport,
 };
 use core_protocol::{
     Block, ProviderState, ReasoningEffort, Role, StopReason, StopReasonCode, ToolUse, Usage,
@@ -153,6 +153,13 @@ impl OpenAiCompat {
         });
         if !tools.is_empty() {
             b["tools"] = serde_json::json!(tools);
+        }
+        match req.controls.service_tier {
+            ServiceTier::ProviderDefault => {}
+            ServiceTier::Auto => b["service_tier"] = serde_json::json!("auto"),
+            ServiceTier::Standard => b["service_tier"] = serde_json::json!("default"),
+            ServiceTier::Flex => b["service_tier"] = serde_json::json!("flex"),
+            ServiceTier::Priority => b["service_tier"] = serde_json::json!("priority"),
         }
         if let Some(level) = chat_reasoning_effort_with_metadata(
             self.error_profile,
@@ -828,6 +835,25 @@ fn apply_reported_usage(
 
 #[async_trait::async_trait]
 impl Provider for OpenAiCompat {
+    fn control_capabilities(&self) -> ProviderControlCapabilities {
+        let mut capabilities = ProviderControlCapabilities::default();
+        if self.error_profile == ErrorProfile::OpenAi
+            && self
+                .api_root
+                .as_ref()
+                .is_some_and(|root| root.as_str() == "https://api.openai.com/v1")
+        {
+            capabilities.service_tiers.extend([
+                ServiceTier::Auto,
+                ServiceTier::Standard,
+                ServiceTier::Flex,
+                ServiceTier::Priority,
+            ]);
+            capabilities.idempotent_requests = true;
+        }
+        capabilities
+    }
+
     fn effort_application(&self, req: &TurnRequest) -> EffortApplication {
         chat_effort_application_with_metadata(
             self.error_profile,
@@ -1238,6 +1264,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: ReasoningEffort::Medium,
+            controls: Default::default(),
         };
 
         let body = provider.body(&request).unwrap();
@@ -1264,6 +1291,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: ReasoningEffort::Medium,
+            controls: Default::default(),
         };
         request.input_images =
             vec![ImageContent::new(ImageMediaType::Png, "iVBORw0KGgo=").unwrap()];
@@ -1823,6 +1851,7 @@ mod tests {
                 cache_system: false,
                 thinking_budget: 16_384,
                 reasoning_effort: requested,
+                controls: Default::default(),
             };
             let encoded = serde_json::to_vec(&provider.body(&request).unwrap()).unwrap();
             let wire: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
@@ -1860,6 +1889,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 4_096,
             reasoning_effort: ReasoningEffort::Medium,
+            controls: Default::default(),
         };
 
         let body = provider.body(&request).unwrap();
@@ -1909,6 +1939,7 @@ mod tests {
             cache_system: false,
             thinking_budget: 4_096,
             reasoning_effort: ReasoningEffort::Medium,
+            controls: Default::default(),
         };
         assert!(
             provider

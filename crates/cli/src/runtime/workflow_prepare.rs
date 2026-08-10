@@ -17,7 +17,7 @@ impl Agent {
     /// launch banner, the live card, the interrupt bridge and the join. That is what lets the run be
     /// started by something other than this turn — see [`crate::workflow::WorkflowLauncher`].
     pub(super) fn prepare_workflow(
-        &self,
+        &mut self,
         input: &serde_json::Value,
     ) -> Result<crate::workflow::PreparedWorkflow, String> {
         self.prepare_workflow_with_resume(input, None)
@@ -30,7 +30,7 @@ impl Agent {
     /// sidecars. This is the in-process equivalent of `core workflow resume <run-id>` used by the
     /// interactive workflow panel.
     pub(crate) fn prepare_workflow_resume(
-        &self,
+        &mut self,
         run_id: &str,
     ) -> Result<crate::workflow::PreparedWorkflow, String> {
         if !crate::workflow::valid_run_id(run_id) {
@@ -55,7 +55,7 @@ impl Agent {
     }
 
     pub(super) fn prepare_workflow_with_resume(
-        &self,
+        &mut self,
         input: &serde_json::Value,
         resume_run_id: Option<&str>,
     ) -> Result<crate::workflow::PreparedWorkflow, String> {
@@ -193,7 +193,7 @@ impl Agent {
         if remaining_turns == 0 {
             return Err("Workflow: parent turn budget is exhausted".into());
         }
-        let engine_limits = if let Some((class, requested_leaves)) = ultracode_config {
+        let baseline_engine_limits = if let Some((class, requested_leaves)) = ultracode_config {
             let remaining_wall = self
                 .run_time_remaining()
                 .map(|remaining| remaining.as_secs().max(1))
@@ -263,6 +263,57 @@ impl Agent {
             )
             .map_err(|error| format!("Workflow: invalid engine aggregate budget: {error}"))?
         };
+        let collaboration_observation = core_workflow::CollaborationObservation {
+            version: core_workflow::COLLABORATION_SLOT_VERSION,
+            active_workers: baseline_engine_limits.max_agent_calls(),
+            max_concurrency: baseline_engine_limits.max_concurrency(),
+        };
+        let collaboration_opportunity = self
+            .begin_policy_decision(
+                policy_evidence::COLLABORATION_SLOT,
+                Some(TurnId(self.seq_turn)),
+            )
+            .map_err(|error| error.public_summary())?;
+        let selected_concurrency = match core_workflow::CollaborationStrategy::select_with(
+            self.collaboration.as_ref(),
+            &collaboration_observation,
+            CapabilitySet::only(Capability::ReadOnly).intersect(self.authority_ceiling),
+        ) {
+            Ok(proposal) => {
+                self.append_policy_decision(
+                    collaboration_opportunity,
+                    policy_evidence::PolicyDecisionDraft::selected(
+                        &["bounded_width", "serial"],
+                        "bounded_width",
+                        "core:collaboration-features-v1",
+                        &(&collaboration_observation, proposal.concurrency),
+                        &"strategy_may_only_narrow_worker_concurrency",
+                    )
+                    .map_err(|error| error.public_summary())?,
+                )
+                .map_err(|error| error.public_summary())?;
+                proposal.concurrency
+            }
+            Err(_) => {
+                self.append_policy_decision(
+                    collaboration_opportunity,
+                    policy_evidence::PolicyDecisionDraft::baseline_fallback(
+                        &["bounded_width", "serial"],
+                        "core:collaboration-features-v1",
+                        &collaboration_observation,
+                        &"strategy_refusal_falls_back_to_serial",
+                    )
+                    .map_err(|error| error.public_summary())?,
+                )
+                .map_err(|error| error.public_summary())?;
+                1
+            }
+        };
+        let engine_limits = core_workflow::RunLimits::new(
+            selected_concurrency,
+            baseline_engine_limits.max_agent_calls(),
+        )
+        .map_err(|error| format!("Workflow: invalid collaboration budget: {error}"))?;
         let spawner: std::sync::Arc<dyn core_workflow::AgentSpawner> =
             std::sync::Arc::new(KernelSpawner::new(cx));
 

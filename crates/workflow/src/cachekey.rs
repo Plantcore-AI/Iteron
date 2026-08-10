@@ -25,6 +25,25 @@ pub fn agent_key(
     effort: Option<&str>,
     agent_type: Option<&str>,
 ) -> String {
+    agent_key_with_execution(
+        prompt, label, phase, schema, model, effort, agent_type, None,
+    )
+}
+
+/// Compute the same key while binding an explicit speculative-sibling request. `None` preserves
+/// the historical key byte-for-byte; only scripts opting into the new execution mode get a
+/// distinct identity.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn agent_key_with_execution(
+    prompt: &str,
+    label: Option<&str>,
+    phase: Option<&str>,
+    schema: Option<&Value>,
+    model: Option<&str>,
+    effort: Option<&str>,
+    agent_type: Option<&str>,
+    speculative_siblings: Option<usize>,
+) -> String {
     let input = serde_json::json!({
         "prompt": prompt,
         "label": label,
@@ -34,6 +53,12 @@ pub fn agent_key(
         "effort": effort,
         "agentType": agent_type,
     });
+    let mut input = input;
+    if let Some(siblings) = speculative_siblings
+        && let Some(object) = input.as_object_mut()
+    {
+        object.insert("speculativeSiblings".into(), siblings.into());
+    }
     let mut canonical = String::new();
     canonicalize(&input, &mut canonical);
     let digest = Sha256::digest(canonical.as_bytes());

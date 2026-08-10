@@ -1,10 +1,7 @@
-use super::{
-    LSP_TOOL_ACTIVE_TIMEOUT, LSP_TOOL_CLEANUP_RESERVE, LSP_TOOL_TOTAL_TIMEOUT, LspDeadlines,
-    QueryKind, input_schema, normalize, success,
-};
+use super::{LSP_TOOL_CLEANUP_RESERVE, LspDeadlines, QueryKind, input_schema, normalize, success};
 use crate::Registry;
 use core_lsp::intel::Position;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use core_protocol::ToolUse;
 use core_protocol::{Capability, Purity, Trust};
 use serde_json::json;
@@ -32,14 +29,11 @@ async fn forced_process_and_stderr_cleanup_share_the_reserve() {
 #[test]
 fn active_work_and_forced_cleanup_share_one_user_visible_budget() {
     let started = tokio::time::Instant::now();
-    let deadlines = LspDeadlines::from_start(started);
-    assert_eq!(deadlines.active, started + LSP_TOOL_ACTIVE_TIMEOUT);
-    assert_eq!(deadlines.total, started + LSP_TOOL_TOTAL_TIMEOUT);
+    let active = std::time::Duration::from_millis(30_000);
+    let deadlines = LspDeadlines::from_start(started, 30_000);
+    assert_eq!(deadlines.active, started + active);
+    assert_eq!(deadlines.total, started + active + LSP_TOOL_CLEANUP_RESERVE);
     assert_eq!(deadlines.total - deadlines.active, LSP_TOOL_CLEANUP_RESERVE);
-    assert_eq!(
-        LSP_TOOL_ACTIVE_TIMEOUT + LSP_TOOL_CLEANUP_RESERVE,
-        LSP_TOOL_TOTAL_TIMEOUT
-    );
 }
 
 #[test]
@@ -66,7 +60,7 @@ fn one_tool_schema_exposes_the_three_typed_queries() {
 #[test]
 fn live_lsp_tools_are_effecting_code_execution_not_pure_reads() {
     let registry = Registry::coding_agent("/tmp/lsp-registration-only").unwrap();
-    if cfg!(target_os = "linux") {
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
         assert_eq!(registry.purity_of("lsp_query"), Some(Purity::Effecting));
         assert_eq!(
             registry.capability_of("lsp_query"),
@@ -143,7 +137,7 @@ fn language_server_content_is_untrusted_even_when_confinement_succeeds() {
 }
 
 #[tokio::test]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn unsupported_live_surface_refuses_without_promoting_peer_output() {
     let registry = Registry::coding_agent("/tmp/lsp-registration-only").unwrap();
     let result = registry
@@ -158,9 +152,9 @@ async fn unsupported_live_surface_refuses_without_promoting_peer_output() {
     assert!(!result.content.contains("/tmp/"));
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[tokio::test]
-async fn non_linux_does_not_advertise_a_guaranteed_to_fail_tool() {
+async fn unsupported_platform_does_not_advertise_a_guaranteed_to_fail_tool() {
     let registry = Registry::coding_agent(env!("CARGO_MANIFEST_DIR")).unwrap();
     assert!(registry.purity_of("lsp_query").is_none());
 }

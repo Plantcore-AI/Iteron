@@ -1252,6 +1252,8 @@ fn core_process_spec(
         "--dangerously-bypass-permissions".into(),
         "--runs-dir".into(),
         runtime.runs.as_os_str().to_owned(),
+        "--benchmark-attempt-scope".into(),
+        task.id.clone().into(),
     ];
     if options.max_turns != 0 {
         args.push("--max-turns".into());
@@ -1934,6 +1936,10 @@ mod tests {
         };
         assert_eq!(arg_after("-C"), ".");
         assert_eq!(arg_after("--max-wall-secs"), "1");
+        assert_eq!(
+            arg_after("--benchmark-attempt-scope"),
+            fixture_task.id.as_str()
+        );
         let runs = PathBuf::from(arg_after("--runs-dir"));
         assert!(runs.is_absolute());
         assert_eq!(runs, runs.canonicalize().unwrap());

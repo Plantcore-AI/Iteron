@@ -100,6 +100,9 @@ fn ui_variants() -> Vec<UiEvent> {
             context: core_ctx::ContextEstimate {
                 system_tokens: 1,
                 tool_tokens: 2,
+                conversation_tokens: 3,
+                tool_result_tokens: 0,
+                lsp_result_tokens: 0,
                 transcript_tokens: 3,
                 framing_tokens: 4,
                 total_tokens: 10,

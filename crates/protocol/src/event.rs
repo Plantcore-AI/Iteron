@@ -6,6 +6,7 @@ use crate::artifact::ArtifactRef;
 use crate::ids::{EffectId, Seq, SubmissionId, TurnId};
 use crate::message::{Message, Usage};
 use crate::permission::Verdict;
+use crate::policy_evidence::{PolicyDecisionEvidence, PolicyOutcomeEvidence};
 use crate::pricing::{CostProjection, SignedRateCard};
 use crate::tool::{Capability, ToolResult, ToolUse};
 use serde::{Deserialize, Serialize};
@@ -209,6 +210,7 @@ pub struct RuntimePolicyState {
     pub effort: crate::Effort,
     pub permission_mode: crate::PermissionMode,
     pub permission_rules: crate::PermissionRules,
+    pub turn_ceiling: Option<u32>,
 }
 
 impl Default for RuntimePolicyState {
@@ -217,6 +219,7 @@ impl Default for RuntimePolicyState {
             effort: crate::Effort::default(),
             permission_mode: crate::PermissionMode::default(),
             permission_rules: crate::PermissionRules::new(),
+            turn_ceiling: None,
         }
     }
 }
@@ -232,6 +235,11 @@ impl RuntimePolicyState {
                 effort,
                 ..
             } => self.effort = *effort,
+            EventKind::TurnCeilingChanged {
+                version: RuntimePolicyEventVersion::V1,
+                max_turns,
+                ..
+            } if *max_turns > 0 => self.turn_ceiling = Some(*max_turns),
             EventKind::PolicyChanged {
                 version: RuntimePolicyEventVersion::V1,
                 mode,
@@ -337,6 +345,10 @@ pub enum EventKind {
     Phase { phase: Phase },
     /// A turn began.
     TurnStart,
+    /// Exactly one bounded, content-free selection for one live harness-policy opportunity.
+    PolicyDecision { evidence: PolicyDecisionEvidence },
+    /// Terminal aggregate joined to the ordered policy opportunities in one turn or run.
+    PolicyOutcome { evidence: PolicyOutcomeEvidence },
     /// A full transcript message was committed (append-only). Recording these makes the rollout
     /// a complete, resumable record of the conversation (ADR-006 (a)+(b): the decisions and the
     /// recorded outputs replay) and completes the audit trail (every message is on the record).
@@ -550,6 +562,23 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         inherited_from: Option<crate::RunGenesisTunablesInheritance>,
     },
+    /// Reconstructable immutable tunables checkpoint. This is a distinct additive top-level tag:
+    /// readers that only know the V1 identity snapshot safely deserialize it as `Unknown`.
+    TunablesSnapshotV2 {
+        version: crate::RunGenesisTunablesVersion,
+        snapshot: crate::RunGenesisTunablesSnapshotV2,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inherited_from: Option<crate::RunGenesisTunablesInheritance>,
+    },
+    /// Immutable successful application receipt for the complete nine-slot policy generation.
+    /// Production writers append it at physical sequence two, after `run_start` and the tunables
+    /// checkpoint, and before any route, provider, tool, or user event.
+    PolicyBundleSnapshot {
+        version: crate::RunGenesisPolicyBundleVersion,
+        snapshot: crate::RunGenesisPolicyBundleSnapshot,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inherited_from: Option<crate::RunGenesisPolicyBundleInheritance>,
+    },
     /// The exact provider/model routing pair selected for subsequent turns. Provider identity is
     /// separate from model identity because the same model id can exist behind several accounts or
     /// gateways. Digests pin the catalog/capability evidence used at selection time; empty means
@@ -574,6 +603,13 @@ pub enum EventKind {
         version: RuntimePolicyEventVersion,
         source: RuntimePolicySource,
         max_microusd: u64,
+    },
+    /// Full snapshot of the aggregate provider-attempt ceiling. Unlike a human Notice this is a
+    /// typed replay input: resume/fork must restore the last operator amendment before admission.
+    TurnCeilingChanged {
+        version: RuntimePolicyEventVersion,
+        source: RuntimePolicySource,
+        max_turns: u32,
     },
     /// Full snapshot of the effective reasoning/orchestration policy. The rollout is write-ahead:
     /// the kernel fsyncs this event before changing the in-memory value. Full snapshots avoid
@@ -694,6 +730,28 @@ impl EventKind {
                 snapshot:
                     crate::RunGenesisTunablesSnapshot {
                         version: crate::RunGenesisTunablesVersion::V1,
+                        ..
+                    },
+                ..
+            } => Ok(()),
+            Self::TunablesSnapshot { .. } => Err("tunables_snapshot V1 tag must carry version v1"),
+            Self::TunablesSnapshotV2 {
+                version: crate::RunGenesisTunablesVersion::V2,
+                snapshot:
+                    crate::RunGenesisTunablesSnapshotV2 {
+                        version: crate::RunGenesisTunablesVersion::V2,
+                        ..
+                    },
+                ..
+            } => Ok(()),
+            Self::TunablesSnapshotV2 { .. } => {
+                Err("tunables_snapshot_v2 tag must carry version v2")
+            }
+            Self::PolicyBundleSnapshot {
+                version: crate::RunGenesisPolicyBundleVersion::V1,
+                snapshot:
+                    crate::RunGenesisPolicyBundleSnapshot {
+                        version: crate::RunGenesisPolicyBundleVersion::V1,
                         ..
                     },
                 ..
@@ -1308,6 +1366,35 @@ mod tests {
             }))
             .unwrap(),
             LegacyEventKind::RunStart
+        ));
+
+        let digest = "b".repeat(64);
+        let current = EventKind::TunablesSnapshotV2 {
+            version: crate::RunGenesisTunablesVersion::V2,
+            snapshot: crate::RunGenesisTunablesSnapshotV2 {
+                version: crate::RunGenesisTunablesVersion::V2,
+                canonicalization: crate::RUN_GENESIS_TUNABLES_V2_CANONICALIZATION.into(),
+                resolution_schema_version: 1,
+                registry_id: "core-tunables".into(),
+                registry_schema_version: 3,
+                family_schema_version: 2,
+                registry_revision: 4,
+                registry_digest_sha256: digest.clone(),
+                input_digest_sha256: digest.clone(),
+                effective_digest_sha256: digest.clone(),
+                resolution_digest_sha256: digest.clone(),
+                profile_digest_sha256: None,
+                entries: Vec::new(),
+                snapshot_digest_sha256: digest,
+            },
+            inherited_from: None,
+        };
+        current.validate_compatibility_tag().unwrap();
+        let encoded = serde_json::to_value(current).unwrap();
+        assert_eq!(encoded["kind"], "tunables_snapshot_v2");
+        assert!(matches!(
+            serde_json::from_value::<LegacyEventKind>(encoded).unwrap(),
+            LegacyEventKind::Unknown
         ));
     }
 

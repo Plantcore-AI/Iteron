@@ -5,8 +5,10 @@ use super::*;
 pub(super) fn is_immediate_control(control: &Control) -> bool {
     matches!(
         control,
-        Control::Workflow(WorkflowControl::Inventory | WorkflowControl::Cancel { .. })
+        Control::OperatorStatus
+            | Control::Workflow(WorkflowControl::Inventory | WorkflowControl::Cancel { .. })
             | Control::Job(_)
+            | Control::Mcp(_)
     )
 }
 
@@ -175,6 +177,67 @@ async fn apply_memory_control(agent: &mut Agent, control: MemoryControl) -> Cont
                 }
             }
         }
+        MemoryControl::Update { id, text } => {
+            let report = match agent
+                .brokered_lifecycle_gate(
+                    turn,
+                    "memory.fact.update_requested",
+                    LifecyclePayload {
+                        magnitude: Some(u64::try_from(text.len()).unwrap_or(u64::MAX)),
+                        ..LifecyclePayload::default()
+                    },
+                )
+                .await
+            {
+                Ok(report) => report,
+                Err(error) => return ControlReply::Refused(error.public_summary()),
+            };
+            if let crate::runtime::hooks::HookDecision::Deny(reason) = report.decision {
+                return ControlReply::Refused(reason);
+            }
+            let proposal = match core_ctx::MemoryRecallStrategy::authorize_project_write_with(
+                memory_strategy.as_ref(),
+                &text,
+                core_protocol::capability_set::CapabilitySet::only(Capability::TrustMutating),
+            ) {
+                Ok(proposal) => proposal,
+                Err(error) => {
+                    return ControlReply::Refused(format!("memory policy refused: {error}"));
+                }
+            };
+            match core_ctx::MemoryStore::at(&workspace).update(&id, &proposal.text) {
+                Ok(Some(new_id)) => {
+                    agent.lifecycle_event(
+                        "memory.fact.updated",
+                        Some(turn),
+                        LifecyclePayload::default(),
+                    );
+                    if new_id != id {
+                        agent.lifecycle_event(
+                            "memory.fact.superseded",
+                            Some(turn),
+                            LifecyclePayload::default(),
+                        );
+                    }
+                    agent.lifecycle_event(
+                        "memory.visibility.scheduled",
+                        Some(turn),
+                        LifecyclePayload::default(),
+                    );
+                    match agent.activate_updated_session_memory(&id, &new_id, &proposal.text) {
+                        Ok(()) => ControlReply::Memory(MemoryControlReply::Updated {
+                            old_id: id,
+                            id: new_id,
+                        }),
+                        Err(reason) => ControlReply::Refused(format!(
+                            "memory was updated, but same-session activation failed: {reason}"
+                        )),
+                    }
+                }
+                Ok(None) => ControlReply::Memory(MemoryControlReply::Missing { id }),
+                Err(error) => ControlReply::Refused(format!("memory update failed: {error}")),
+            }
+        }
         MemoryControl::Delete(id) => {
             let report = match agent
                 .brokered_lifecycle_gate(
@@ -207,10 +270,17 @@ async fn apply_memory_control(agent: &mut Agent, control: MemoryControl) -> Cont
 pub(super) async fn apply_immediate_control(
     workflows: &crate::workflow::WorkflowSupervisor,
     processes: Option<&core_tools::ProcessControl>,
+    mcp_runtime: Option<&crate::mcp::McpRuntimeControl>,
+    operator_status: &OperatorStatusSources,
     events: &EventPublisher,
     request: ControlRequest,
 ) {
     match request.control {
+        Control::OperatorStatus => {
+            let _ = request.reply.send(ControlReply::OperatorStatus(Box::new(
+                operator_status.snapshot().await,
+            )));
+        }
         Control::Job(control) => {
             let _ = request
                 .reply
@@ -224,6 +294,17 @@ pub(super) async fn apply_immediate_control(
                     reply: request.reply,
                 },
             );
+        }
+        Control::Mcp(control) => {
+            // A stop/restart first cancels the MCP operation and then waits for its actor lock.
+            // That operation is part of `running`, so awaiting here would stop polling the very
+            // future that must observe cancellation and release the lock. Keep the bounded App
+            // Server loop live and let this one reply settle when the shared actor reaches it.
+            let runtime = mcp_runtime.cloned();
+            tokio::spawn(async move {
+                let reply = apply_mcp_control(runtime.as_ref(), control).await;
+                let _ = request.reply.send(reply);
+            });
         }
         _ => {
             let _ = request.reply.send(ControlReply::Refused(
@@ -319,12 +400,16 @@ pub(super) async fn apply_control(
     agent: &mut Agent,
     workflows: &crate::workflow::WorkflowSupervisor,
     processes: Option<&core_tools::ProcessControl>,
+    operator_status: &OperatorStatusSources,
     side: &mut Option<crate::runtime::SideConversation>,
     started: &mut bool,
     events: &mut EventPublisher,
     request: ControlRequest,
 ) {
     let reply = match request.control {
+        Control::OperatorStatus => {
+            ControlReply::OperatorStatus(Box::new(operator_status.snapshot().await))
+        }
         Control::SetEffort(next) => {
             match agent.transition_effort(next, core_protocol::RuntimePolicySource::Operator) {
                 Ok(_) => ControlReply::State(Box::new(snapshot_of(agent))),
@@ -363,7 +448,7 @@ pub(super) async fn apply_control(
                 max_output_tokens,
             } = *selection;
             let changed = agent.model != model_id;
-            match agent.record_provider_model_selection(
+            match agent.record_operator_model_selection(
                 provider,
                 provider_id,
                 model_id,
@@ -487,7 +572,7 @@ pub(super) async fn apply_control(
                             error.public_summary()
                         ))
                     } else {
-                        match agent.record_provider_model_selection(
+                        match agent.record_adopted_model_selection(
                             provider,
                             provider_id,
                             model_id,
@@ -539,6 +624,10 @@ pub(super) async fn apply_control(
         }
         Control::Job(control) => apply_job_control(processes, events, control).await,
         Control::Memory(control) => apply_memory_control(agent, control).await,
+        Control::Mcp(control) => {
+            let runtime = agent.mcp_runtime_control();
+            apply_mcp_control(runtime.as_ref(), control).await
+        }
     };
     // A frontend that dropped the receiver has moved on; that is not the server's problem.
     let _ = request.reply.send(reply);
@@ -606,5 +695,6 @@ pub(super) fn snapshot_of(agent: &mut Agent) -> SessionSnapshot {
             .last_rate_limit()
             .as_ref()
             .and_then(core_provider::RateLimitSnapshot::summary),
+        mcp_health: agent.mcp_health(),
     }
 }

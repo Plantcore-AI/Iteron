@@ -28,6 +28,7 @@ mod dataset_registry;
 mod evidence;
 pub mod gate;
 mod held_out;
+mod policy_evidence_projection;
 mod producer;
 mod promotion;
 mod promotion_auth;
@@ -84,6 +85,11 @@ pub use held_out::{
     HeldOutEvidenceRegistration, HeldOutEvidenceStore, HeldOutMetricBounds, HeldOutReportIntervals,
     HeldOutTaskPair, HeldOutTrainingCorpus, MAX_HELD_OUT_EVIDENCE_RECORDS,
     MAX_HELD_OUT_REPORT_JSON_BYTES, MAX_HELD_OUT_REPORT_TASKS,
+};
+pub use policy_evidence_projection::{
+    MAX_POLICY_EVIDENCE_RUN_JSON_BYTES, MAX_POLICY_EVIDENCE_RUNS,
+    POLICY_EVIDENCE_RUN_SCHEMA_VERSION, PolicyEvidenceRunFixture, PolicyEvidenceRunProjector,
+    PolicyEvidenceRunProjectorError, PolicyProjectionRewardContext,
 };
 pub use producer::{
     MAX_INERT_RULE_ARTIFACT_BYTES, MAX_OFFLINE_RULE_CANDIDATES, OfflineProducerError,

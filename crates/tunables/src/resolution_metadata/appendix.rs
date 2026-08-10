@@ -29,13 +29,13 @@ pub(super) const DEFAULTS: [DefaultSpec; 75] = [
     literal_default!(boolean_value!(true)), // 101 auto_compaction_enable
     derived_default!("compaction_cooldown_hysteresis"), // 102
     literal_default!(enum_value!("single_stage")), // 103
-    literal_default!(boolean_value!(false)), // 104
+    literal_default!(boolean_value!(true)), // 104
     literal_default!(map_value!("lexical" => decimal_value!(1, 0))), // 105
     literal_default!(decimal_value!(1, 0)), // 106
-    derived_default!("context_novelty_dedup_threshold"), // 107
-    literal_default!(enum_value!("disabled")), // 108 persistent_pty_backend
-    literal_default!(integer_value!(0)), // 109 concurrent_background_job_cap
-    derived_default!("job_idle_stall_timeout"), // 110
+    literal_default!(decimal_value!(1, 0)), // 107
+    dynamic_observation_default!("process.backend"), // 108 persistent_pty_backend
+    dynamic_observation_default!("process.background_job_cap"), // 109 concurrent_background_job_cap
+    dynamic_observation_default!("process.idle_stall_timeout"), // 110
     dynamic_observation_default!("interactive_process.stdin_wait"), // 111
     literal_default!(enum_value!("term_grace_kill_reap")), // 112
     literal_default!(object_value!(
@@ -58,7 +58,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 75] = [
     derived_default!("tool_output_spill_to_disk_policy"), // 117
     provider_default!("binary_media_inspection"), // 118
     dynamic_observation_default!("workspace.languages_and_servers"), // 119
-    derived_default!("lsp_timeout_restart_policy"), // 120
+    dynamic_observation_default!("lsp.timeout_restart_policy"), // 120
     derived_default!("lsp_result_context_budget"), // 121
     derived_default!("tool_result_cache_ttl"), // 122
     derived_default!("test_selection_strategy"), // 123
@@ -102,33 +102,34 @@ pub(super) const DEFAULTS: [DefaultSpec; 75] = [
         "tie_break" => enum_value!("fifo"),
         "dependency_ready_only" => boolean_value!(true),
     )), // 139 task_priority_scheduling
-    literal_default!(integer_value!(0)), // 140 speculative_sibling_count
+    literal_default!(integer_value!(2)), // 140 speculative_sibling_count
     derived_default!("speculative_sibling_cancellation"), // 141
     literal_default!(object_value!(
         "minimum_evidence" => integer_value!(1),
         "required_roles" => integer_value!(0),
         "strong_veto" => boolean_value!(true),
     )), // 142 early_stop_quorum_policy
-    literal_default!(boolean_value!(false)), // 143 writer_worktree_isolation_mode
+    literal_default!(boolean_value!(true)), // 143 writer_worktree_isolation_mode
     derived_default!("merge_conflict_arbitration"), // 144
     literal_default!(enum_value!("parent_mediated")), // 145
     derived_default!("task_retry_reassignment_policy"), // 146
-    literal_default!(enum_value!("stdio")), // 147 mcp_transport_selection
-    literal_default!(integer_value!(0)), // 148 deferred_discovery_threshold
+    literal_default!(list_value!(enum_value!("stdio"))), // 147 mcp_transport_selection
+    literal_default!(integer_value!(12)), // 148 deferred_discovery_threshold
     derived_default!("mcp_reconnect_backoff"), // 149
     derived_default!("per_server_startup_deadline"), // 150
     derived_default!("per_tool_mcp_deadline"), // 151
     literal_default!(object_value!(
         "visible_max_bytes" => integer_value!(1_048_576),
-        "spill_max_bytes" => integer_value!(1_048_576),
-        "cleanup" => enum_value!("tool_end"),
+        "spill_max_bytes" => integer_value!(4_194_304),
+        "cleanup" => enum_value!("session_end"),
         "private_storage" => boolean_value!(true),
     )), // 152 mcp_result_cap_spill_policy
     transport_default!("oauth_lifecycle"), // 153
     literal_default!(object_value!(
-        "resource_schemes" => list_value!(),
-        "prompt_ids" => list_value!(),
-        "plugin_ids" => list_value!(),
+        "resource_discovery" => enum_value!("disabled"),
+        "prompt_discovery" => enum_value!("disabled"),
+        "resource_tool_ids" => list_value!(),
+        "prompt_tool_ids" => list_value!(),
         "max_visible_bytes" => integer_value!(0),
     )), // 154 resource_prompt_plugin_capability_exposure
     provider_default!("request_compression"), // 155

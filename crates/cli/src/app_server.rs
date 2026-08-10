@@ -51,10 +51,17 @@
 //!   the reader.
 
 mod control;
+mod mcp_control;
+mod operator_status;
 
 use self::control::{apply_control, apply_immediate_control, is_immediate_control, snapshot_of};
 #[cfg(test)]
 use self::control::{apply_immediate_workflow_control, apply_side};
+use self::mcp_control::apply_mcp_control;
+use self::operator_status::OperatorStatusSources;
+pub(crate) use self::operator_status::{
+    LanguageServerStatus, OperatorStatusSnapshot, WorkflowHealth,
+};
 use crate::runtime::{Agent, UiEvent};
 use core_protocol::{
     Capability, ContentSegments, LifecyclePayload, LifecycleState, Op, Outcome, PROTOCOL_VERSION,
@@ -163,6 +170,9 @@ pub(crate) struct SessionSnapshot {
     /// One line of provider quota, read from the response headers of the last request. `None`
     /// when the route publishes none — a row of dashes reads like an exhausted budget (I-53).
     pub(crate) rate_limit: Option<String>,
+    /// Non-blocking projections from the exact session-owned MCP supervisors. A busy server is
+    /// reported as busy rather than blocking the App Server snapshot path behind external I/O.
+    pub(crate) mcp_health: Vec<crate::mcp::McpServerHealth>,
 }
 
 /// The EQ payload.
@@ -246,6 +256,8 @@ impl ServerEvent {
 /// **Folding these into the SQ is a WS1 protocol change, not a WS6 one.** When `Op` grows the
 /// variants, each arm here becomes a `route()` case and this enum shrinks to nothing.
 pub(crate) enum Control {
+    /// `/status` — one content-free snapshot from the exact runtime-owned authorities.
+    OperatorStatus,
     /// `/effort`
     SetEffort(core_protocol::Effort),
     /// `/mode`
@@ -274,16 +286,34 @@ pub(crate) enum Control {
     /// Operator memory mutations run in the resident runtime so canonical Gate Hooks and durable
     /// effect evidence execute before the filesystem mutation.
     Memory(MemoryControl),
+    /// `/mcp` addresses the exact lazy supervisors captured by this session. These controls are
+    /// immediate even mid-turn: cancellation and stop must be able to release a blocked MCP call.
+    Mcp(McpControl),
+}
+
+pub(crate) enum McpControl {
+    Status,
+    Cancel { server: String },
+    Restart { server: String },
+    Stop { server: String },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct McpControlReply {
+    pub(crate) servers: Vec<crate::mcp::McpServerHealth>,
+    pub(crate) notice: Option<String>,
 }
 
 pub(crate) enum MemoryControl {
     Add(String),
+    Update { id: String, text: String },
     Delete(String),
 }
 
 #[derive(Debug)]
 pub(crate) enum MemoryControlReply {
     Added { id: String },
+    Updated { old_id: String, id: String },
     Deleted { id: String },
     Missing { id: String },
 }
@@ -373,6 +403,8 @@ pub(crate) struct ModelSelection {
 pub(crate) enum ControlReply {
     /// The current runtime state. Answers `Snapshot` and every successful mutation.
     State(Box<SessionSnapshot>),
+    /// `/status` — runtime policy identity plus live bounded owner health.
+    OperatorStatus(Box<OperatorStatusSnapshot>),
     /// The runtime refused, with the operator-facing reason.
     Refused(String),
     /// `/compact` finished.
@@ -411,6 +443,8 @@ pub(crate) enum ControlReply {
     Jobs(serde_json::Value),
     /// `/memory add|forget` mutation result from the resident authority owner.
     Memory(MemoryControlReply),
+    /// `/mcp` inventory or lifecycle action result.
+    Mcp(Box<McpControlReply>),
 }
 
 /// One control request and the channel its answer comes back on.
@@ -903,6 +937,9 @@ pub(crate) struct SessionFacts {
     /// identity across the attach boundary prevents `/agents` from presenting filesystem drift as
     /// executable state while the resident runtime continues using its pinned catalog.
     pub(crate) agent_catalog: Arc<core_agents::AgentCatalog>,
+    /// Exact immutable runtime checkpoint. Production composition always supplies V2; Option is
+    /// retained only for narrow wire tests that construct an unbound Agent.
+    pub(crate) tunables_checkpoint: Option<core_record::TunablesCheckpoint>,
 }
 
 /// Everything a client needs to talk to a running App Server, and nothing more.
@@ -971,6 +1008,7 @@ pub(crate) fn attach(
             .collect(),
         dependency_skill_dirs: agent.dependency_skill_dirs().to_vec(),
         agent_catalog: agent.agent_catalog_snapshot(),
+        tunables_checkpoint: agent.tunables_checkpoint().ok().cloned(),
     };
     let initial_state = snapshot_of(&mut agent);
     if let Some(telemetry) = handle.lifecycle_otel.clone() {
@@ -1499,6 +1537,19 @@ impl AppServer {
         // Clone the job control port before a turn borrows `&mut agent`. It owns no second job
         // table: every operation reaches the supervisor captured by this registry's process tools.
         let processes = agent.registry.process_control();
+        // MCP cancellation/restart/stop must remain reachable while the turn is blocked in an MCP
+        // request. This clone addresses the same session-owned actors as the registry proxies.
+        let mcp_runtime = agent.mcp_runtime_control();
+        // The same ownership rule applies to language servers: drain/exit must address the exact
+        // bounded pool that served this session, never reconstruct a best-effort client list.
+        let language_servers = agent.registry.lsp_control();
+        let mut operator_status = OperatorStatusSources::capture(
+            &agent,
+            processes.clone(),
+            language_servers.clone(),
+            mcp_runtime.clone(),
+            workflows.clone(),
+        );
         let hook_cancel = agent.interrupt_handle();
         let drain_signal = agent.drain_handle();
 
@@ -1563,6 +1614,7 @@ impl AppServer {
                     core_tools::ProcessLifecycleKind::Exited => "exited",
                     core_tools::ProcessLifecycleKind::Stopped => "stopped",
                     core_tools::ProcessLifecycleKind::TimedOut => "timed_out",
+                    core_tools::ProcessLifecycleKind::IdleStalled => "idle_stalled",
                     core_tools::ProcessLifecycleKind::OutputLimitExceeded => "output_limit",
                     core_tools::ProcessLifecycleKind::IoFailed => "io_failed",
                     core_tools::ProcessLifecycleKind::CleanupUnknown => "cleanup_unknown",
@@ -1581,6 +1633,7 @@ impl AppServer {
                     ],
                     core_tools::ProcessLifecycleKind::Stopped
                     | core_tools::ProcessLifecycleKind::TimedOut
+                    | core_tools::ProcessLifecycleKind::IdleStalled
                     | core_tools::ProcessLifecycleKind::OutputLimitExceeded
                     | core_tools::ProcessLifecycleKind::IoFailed => &[
                         "process.term_sent",
@@ -1722,7 +1775,20 @@ impl AppServer {
                     }
                     request = control.recv() => {
                         match request {
-                            Some(request) => { apply_control(&mut agent, &workflows, processes.as_ref(), &mut side, &mut started, &mut events, request).await; continue }
+                            Some(request) => {
+                                apply_control(
+                                    &mut agent,
+                                    &workflows,
+                                    processes.as_ref(),
+                                    &operator_status,
+                                    &mut side,
+                                    &mut started,
+                                    &mut events,
+                                    request,
+                                ).await;
+                                operator_status.refresh_runtime(&agent);
+                                continue
+                            }
                             None => break,
                         }
                     }
@@ -2021,6 +2087,8 @@ impl AppServer {
                                 apply_immediate_control(
                                     &workflows,
                                     processes.as_ref(),
+                                    mcp_runtime.as_ref(),
+                                    &operator_status,
                                     &events,
                                     request,
                                 ).await;
@@ -2324,6 +2392,7 @@ impl AppServer {
                     &mut agent,
                     &workflows,
                     processes.as_ref(),
+                    &operator_status,
                     &mut side,
                     &mut started,
                     &mut events,
@@ -2331,6 +2400,7 @@ impl AppServer {
                 )
                 .await;
             }
+            operator_status.refresh_runtime(&agent);
 
             let mut snapshot = snapshot_of(&mut agent);
             settle_kernel_submissions_at_turn_end(
@@ -2347,13 +2417,25 @@ impl AppServer {
                     true
                 }
             });
-            let (outcome, error) = match completion {
+            let (outcome, mut error) = match completion {
                 Ok(outcome) => (outcome, None),
                 Err(error) => {
                     let error = error.public_summary();
                     (Outcome::HarnessError, Some(error))
                 }
             };
+            let drain_cleanup_failures = if matches!(outcome, Outcome::Drained) {
+                clean_session_owned_tools(processes.as_ref(), language_servers.as_ref()).await
+            } else {
+                Vec::new()
+            };
+            if !drain_cleanup_failures.is_empty() {
+                let detail = drain_cleanup_failures.join("; ");
+                error = Some(match error {
+                    Some(existing) => format!("{existing}; {detail}"),
+                    None => detail,
+                });
+            }
             if matches!(outcome, Outcome::Drained) {
                 expire_pending_turns(&mut events, &mut pending_turns, "drain_settled").await;
                 expire_queued_after_drain(&mut events, &mut submissions, &mut priority_submissions)
@@ -2399,7 +2481,13 @@ impl AppServer {
                         "drain.settled",
                         Some(live_turn_id),
                         drain_submission_id,
-                        LifecyclePayload::default(),
+                        LifecyclePayload {
+                            count: (!drain_cleanup_failures.is_empty())
+                                .then_some(drain_cleanup_failures.len() as u64),
+                            reason_code: (!drain_cleanup_failures.is_empty())
+                                .then(|| "owned_tool_cleanup_unknown".into()),
+                            ..LifecyclePayload::default()
+                        },
                     );
                     turn_lifecycle
                         .transition(TurnLifecycleState::Cancelling)
@@ -2483,6 +2571,15 @@ impl AppServer {
                 .await
                 .is_err()
             {
+                events.record_lifecycle(
+                    "session.failed",
+                    Some(live_turn_id),
+                    turn_submission_id,
+                    LifecyclePayload {
+                        reason_code: Some("terminal_event_delivery_closed".into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
                 break;
             }
         }
@@ -2504,9 +2601,64 @@ impl AppServer {
             .transition(SessionLifecycleState::Stopping)
             .unwrap_or(SessionLifecycleState::Stopping);
         events.record_lifecycle("session.stopping", None, None, LifecyclePayload::default());
-        let report = workflows
+        let mut report = workflows
             .shutdown(&mut settled_rx, crate::workflow::SHUTDOWN_GRACE)
             .await;
+        report
+            .lines
+            .extend(clean_session_owned_tools(processes.as_ref(), language_servers.as_ref()).await);
+        if let Some(mut side) = side.take()
+            && let Err(error) = side.finalize_policy_run()
+        {
+            events.record_lifecycle(
+                "session.failed",
+                None,
+                None,
+                LifecyclePayload {
+                    reason_code: Some("side_policy_run_terminal_failed".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            report.lines.push(error.public_summary());
+        }
+        if let Err(error) = agent.finalize_policy_run() {
+            events.record_lifecycle(
+                "session.failed",
+                None,
+                None,
+                LifecyclePayload {
+                    reason_code: Some("policy_run_terminal_failed".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            report.lines.push(error.public_summary());
+        }
+        if agent.has_memory_benchmark_scope() {
+            events.record_lifecycle(
+                "memory.benchmark.scope_destroyed",
+                None,
+                None,
+                LifecyclePayload::default(),
+            );
+        }
+        if agent
+            .cleanup_mcp_spills(core_mcp::McpSpillCleanup::SessionEnd)
+            .await
+            .is_err()
+        {
+            events.record_lifecycle(
+                "session.failed",
+                None,
+                None,
+                LifecyclePayload {
+                    reason_code: Some("mcp_private_spill_cleanup_failed".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            report
+                .lines
+                .push("private MCP spill cleanup failed at session end".into());
+        }
         session_lifecycle = session_lifecycle
             .transition(SessionLifecycleState::Stopped)
             .expect("a stopping session publishes one terminal");
@@ -2522,6 +2674,41 @@ impl AppServer {
         }
         report
     }
+}
+
+/// Settle every persistent tool owner captured from this session's registry.
+///
+/// Success is intentionally silent. Returned lines are bounded, content-free failure summaries
+/// suitable for the terminal shutdown report; process commands and LSP workspace paths never
+/// cross this seam.
+async fn clean_session_owned_tools(
+    processes: Option<&core_tools::ProcessControl>,
+    language_servers: Option<&core_tools::LspControl>,
+) -> Vec<String> {
+    let mut failures = Vec::with_capacity(2);
+    if let Some(processes) = processes
+        && let Err(error) = processes.clean().await
+    {
+        failures.push(if error.unknown {
+            "persistent process cleanup outcome is unknown".to_owned()
+        } else {
+            "persistent process cleanup failed before full reconciliation".to_owned()
+        });
+    }
+    if let Some(language_servers) = language_servers {
+        let unconfirmed = language_servers
+            .clean()
+            .await
+            .into_iter()
+            .filter(|(_, confirmed)| !confirmed)
+            .count();
+        if unconfirmed > 0 {
+            failures.push(format!(
+                "{unconfirmed} language-server cleanup outcome(s) are unknown"
+            ));
+        }
+    }
+    failures
 }
 
 fn outcome_name(outcome: &Outcome) -> &'static str {
@@ -3210,6 +3397,7 @@ mod tests {
             permission_rules: core_protocol::PermissionRules::new(),
             ledger_summary: String::new(),
             rate_limit: None,
+            mcp_health: Vec::new(),
         })
     }
 
@@ -3916,6 +4104,11 @@ mod tests {
             }
         )));
         assert!(is_immediate_control(&Control::Job(JobControl::Inventory)));
+        assert!(is_immediate_control(&Control::OperatorStatus));
+        assert!(is_immediate_control(&Control::Mcp(McpControl::Status)));
+        assert!(is_immediate_control(&Control::Mcp(McpControl::Cancel {
+            server: "docs".into(),
+        })));
 
         let (settled_tx, _settled_rx) = tokio::sync::mpsc::unbounded_channel();
         let owner = crate::workflow::WorkflowSupervisor::new(settled_tx);

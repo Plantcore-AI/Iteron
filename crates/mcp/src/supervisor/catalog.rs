@@ -77,12 +77,12 @@ struct CatalogEntry {
 }
 
 #[derive(Default)]
-pub(super) struct ManagedCatalog {
+pub struct ManagedCatalog {
     entries: BTreeMap<String, CatalogEntry>,
 }
 
 impl ManagedCatalog {
-    pub(super) fn admit(
+    pub fn admit(
         server_name: &str,
         server_binding: Arc<[u8]>,
         protocol_version: &str,
@@ -152,11 +152,11 @@ impl ManagedCatalog {
         Ok(Self { entries })
     }
 
-    pub(super) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    pub(super) fn spec(&self, identity: &McpToolIdentity) -> Option<&ToolSpec> {
+    pub fn spec(&self, identity: &McpToolIdentity) -> Option<&ToolSpec> {
         self.entry(identity).map(|entry| &entry.spec)
     }
 
@@ -167,7 +167,7 @@ impl ManagedCatalog {
             .filter(|entry| entry.identity == *identity)
     }
 
-    pub(super) fn search(
+    pub fn search(
         &self,
         generation: ServerGeneration,
         query: &str,

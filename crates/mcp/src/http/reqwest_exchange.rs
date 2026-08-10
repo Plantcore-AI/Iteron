@@ -7,12 +7,8 @@ use super::{
 use crate::{McpError, McpFuture};
 use futures_util::TryStreamExt;
 use std::io;
-use std::time::Duration;
 use tokio::io::BufReader;
 use tokio_util::io::StreamReader;
-
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The one admitted network edge for MCP streamable HTTP.
 ///
@@ -26,10 +22,14 @@ pub struct ReqwestMcpExchange {
 
 impl ReqwestMcpExchange {
     pub fn new() -> Result<Self, McpError> {
+        Self::with_deadlines(crate::McpDeadlinePolicy::default().http())
+    }
+
+    pub fn with_deadlines(deadlines: crate::McpTransportDeadlines) -> Result<Self, McpError> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(EXCHANGE_TIMEOUT)
+            .connect_timeout(deadlines.startup())
+            .timeout(deadlines.tool_call())
             .pool_max_idle_per_host(2)
             .user_agent(concat!("plantcore-core/", env!("CARGO_PKG_VERSION")))
             .build()

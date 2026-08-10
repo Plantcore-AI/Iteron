@@ -9,12 +9,13 @@
 mod budget;
 mod catalog;
 mod config;
+mod extensions;
 mod identity;
 mod ready;
 
 pub use catalog::{
     MAX_MCP_SEARCH_DESCRIPTION_BYTES, MAX_MCP_SEARCH_OUTPUT_BYTES, MAX_MCP_SEARCH_QUERY_BYTES,
-    MAX_MCP_SEARCH_RESULTS, McpToolIdentity, McpToolMatch, McpToolSearchResult,
+    MAX_MCP_SEARCH_RESULTS, ManagedCatalog, McpToolIdentity, McpToolMatch, McpToolSearchResult,
 };
 pub use config::{
     DEFAULT_MCP_OPERATION_DEADLINE_MS, MAX_MCP_COMMAND_BYTES, MAX_MCP_DEADLINE_MS,
@@ -25,7 +26,7 @@ pub use config::{
 pub use identity::McpServerIdentity;
 
 use crate::{
-    McpClient, McpError, McpToolOutcome,
+    McpClient, McpError, McpResultPolicy, McpServerPolicy, McpToolOutcome,
     reconnect::{
         LifecycleCore, LifecycleFailure, LifecyclePhase, LifecycleStatus, ReconnectPolicy,
         ServerGeneration,
@@ -33,7 +34,7 @@ use crate::{
     tool_filter::McpToolFilter,
 };
 use budget::{OperationBudget, operation_deadline};
-use catalog::ManagedCatalog;
+use core_protocol::capability_set::CapabilitySet;
 use serde_json::Value;
 use std::{num::NonZeroU64, time::Duration};
 use tokio::time::Instant;
@@ -47,6 +48,9 @@ pub struct McpSupervisor {
     launch: McpLaunchConfig,
     timeouts: McpTimeouts,
     filter: McpToolFilter,
+    policy: McpServerPolicy,
+    host_ceiling: CapabilitySet,
+    result_policy: McpResultPolicy,
     identity: McpServerIdentity,
     lifecycle: LifecycleCore,
     client: Option<McpClient>,
@@ -64,13 +68,42 @@ impl McpSupervisor {
         reconnect: ReconnectPolicy,
         timeouts: McpTimeouts,
     ) -> Result<Self, McpError> {
+        Self::deferred_governed(
+            launch,
+            filter,
+            McpServerPolicy::default(),
+            crate::default_host_ceiling(),
+            reconnect,
+            timeouts,
+            McpResultPolicy::default(),
+        )
+    }
+
+    /// Configure one lazy server under the exact authority and output policies compiled by the
+    /// session composition root. These values are immutable for the supervisor lineage: a
+    /// reconnect can replace transport state, but cannot silently widen the tool catalog or
+    /// rediscover a result cap from a process-global default.
+    #[allow(clippy::too_many_arguments)]
+    pub fn deferred_governed(
+        launch: McpLaunchConfig,
+        filter: McpToolFilter,
+        policy: McpServerPolicy,
+        host_ceiling: CapabilitySet,
+        reconnect: ReconnectPolicy,
+        timeouts: McpTimeouts,
+        result_policy: McpResultPolicy,
+    ) -> Result<Self, McpError> {
         filter.validate()?;
+        policy.validate()?;
         let identity =
             McpServerIdentity::new(launch.server_name().to_owned(), launch.binding(), &filter)?;
         Ok(Self {
             launch,
             timeouts,
             filter,
+            policy,
+            host_ceiling,
+            result_policy,
             identity,
             lifecycle: LifecycleCore::deferred(reconnect),
             client: None,
@@ -87,6 +120,15 @@ impl McpSupervisor {
 
     pub fn server_identity(&self) -> &McpServerIdentity {
         &self.identity
+    }
+
+    /// Protocol revision selected by the live generation's completed initialize handshake.
+    /// Absence means no usable connected generation; callers must not substitute the requested
+    /// client revision because that would turn negotiation into a guess.
+    pub fn negotiated_protocol_version(&self) -> Option<&str> {
+        self.client
+            .as_ref()
+            .map(McpClient::negotiated_protocol_version)
     }
 
     /// Reconcile direct-child liveness before reporting operator-visible status. This method may
@@ -119,7 +161,7 @@ impl McpSupervisor {
                 operation: "tool search",
             });
         }
-        let budget = OperationBudget::start(self.timeouts.operation())?;
+        let budget = OperationBudget::start(self.timeouts.startup_operation())?;
         let generation = self.ensure_ready(cancellation, budget).await?;
         let result = self.catalog.search(generation, query, limit)?;
         budget.remaining()?;
@@ -135,6 +177,23 @@ impl McpSupervisor {
         arguments: Value,
         cancellation: &McpCancellation,
     ) -> McpToolOutcome {
+        self.call_tool_observed(identity, arguments, cancellation, || {})
+            .await
+    }
+
+    /// Call a searched tool and expose the exact conservative pipe-dispatch boundary to the
+    /// composition root. The observer runs at most once and never for a local validation,
+    /// cancellation, stale-identity, or pre-dispatch deadline failure.
+    pub async fn call_tool_observed<F>(
+        &mut self,
+        identity: &McpToolIdentity,
+        arguments: Value,
+        cancellation: &McpCancellation,
+        on_dispatch: F,
+    ) -> McpToolOutcome
+    where
+        F: FnOnce() + Send + 'static,
+    {
         if cancellation.is_cancelled() {
             return McpToolOutcome::FailedDefinite {
                 error: McpError::Cancelled {
@@ -149,7 +208,7 @@ impl McpSupervisor {
                 evidence: None,
             };
         }
-        let budget = match OperationBudget::start(self.timeouts.operation()) {
+        let budget = match OperationBudget::start(self.timeouts.tool_operation()) {
             Ok(budget) => budget,
             Err(error) => {
                 return McpToolOutcome::FailedDefinite {
@@ -158,7 +217,16 @@ impl McpSupervisor {
                 };
             }
         };
-        let generation = match self.ensure_ready(cancellation, budget).await {
+        let startup_budget = match budget.nested(self.timeouts.startup_operation()) {
+            Ok(startup_budget) => startup_budget,
+            Err(error) => {
+                return McpToolOutcome::FailedDefinite {
+                    error,
+                    evidence: None,
+                };
+            }
+        };
+        let generation = match self.ensure_ready(cancellation, startup_budget).await {
             Ok(generation) => generation,
             Err(error) => {
                 return McpToolOutcome::FailedDefinite {
@@ -199,6 +267,7 @@ impl McpSupervisor {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) =
                     Some(std::time::Instant::now());
+                on_dispatch();
             });
             tokio::pin!(call);
             tokio::select! {
@@ -302,6 +371,14 @@ impl McpSupervisor {
         self.retry_not_before = None;
         self.ready_since = None;
         self.healthy_calls = 0;
+    }
+
+    /// Apply a turn/run/session cleanup boundary to the exact connection owned by this actor.
+    /// A disconnected generation has already dropped its store, so there is nothing to retain.
+    pub fn cleanup_spills(&self, boundary: crate::McpSpillCleanup) -> Result<(), McpError> {
+        self.client
+            .as_ref()
+            .map_or(Ok(()), |client| client.cleanup_spills(boundary))
     }
 
     fn note_healthy_call(&mut self, generation: ServerGeneration) {

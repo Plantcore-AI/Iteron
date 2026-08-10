@@ -37,6 +37,26 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "use_skill",
 ];
 
+/// Exact tool vocabulary of the harness-authored isolated writer. Execution and arbitrary
+/// external effects are deliberately absent: the worker edits only through registry-mediated
+/// file transactions, while the host runs verification and merges its patch after the child
+/// terminal. A discovered definition can never widen itself into this set.
+pub const ISOLATED_WRITER_TOOLS: &[&str] = &[
+    "read_file",
+    "list_dir",
+    "glob",
+    "grep",
+    "repo_map",
+    "git_diff",
+    "git_status",
+    "git_log",
+    "read_memory",
+    "use_skill",
+    "edit",
+    "apply_patch",
+    "write_file",
+];
+
 /// Tool names that write, execute, or dispatch — refused if an `Allow` list names one, because a
 /// fan-out worker is read-only (ADR-001). Core's writer vocabulary is listed explicitly before
 /// the common aliases from other harnesses (Claude Code / Codex / Cline), so importing a foreign
@@ -70,11 +90,22 @@ pub(crate) const SUBAGENT_SYSTEM: &str = "You are a read-only investigation suba
 /// harness still normalizes, narrows, and caps those leaves before the workflow may fan out.
 pub const ULTRACODE_PLANNER_NAME: &str = "ultracode-planner";
 
+/// Harness-reserved writer identity. The catalog installs this definition before reading any
+/// filesystem source, so repository/user definitions cannot shadow its authority contract.
+pub const ISOLATED_WRITER_NAME: &str = "isolated-writer";
+
 const ULTRACODE_PLANNER_SYSTEM: &str = "You plan a READ-ONLY repository investigation. Return \
     mutually distinct, non-overlapping, self-contained assignments. Every line must name a \
     concrete search scope and the evidence expected from that worker. Cover different causal \
     surfaces rather than paraphrasing the task. Do not inspect the repository, propose edits, ask \
     questions, add a preamble, or add a conclusion. Output exactly one assignment per line.";
+
+const ISOLATED_WRITER_SYSTEM: &str = "You are the single isolated writer for one bounded task. \
+    Work only inside the worktree supplied as your workspace. Read the current files, make the \
+    smallest complete change with edit, apply_patch, or write_file, and finish with a concise \
+    report of what changed. You cannot execute commands, access the parent workspace, dispatch \
+    agents, or merge your own work. The host independently verifies your worktree and is the only \
+    authority that may merge its patch.";
 
 /// How an agent's `tools` frontmatter narrows the read-only registry. Tools can only **narrow**
 /// (ADR-001): `All` is the whole read-only set, `Allow` intersects it, `Deny` subtracts from it.
@@ -228,6 +259,34 @@ impl AgentDef {
             },
             trust: Trust::Trusted,
         }
+    }
+
+    /// The only write-capable catalog definition. Its authority is not encoded in frontmatter:
+    /// the production spawner recognizes the exact execution digest of this built-in and rejects
+    /// every merely name-compatible definition.
+    pub fn isolated_writer() -> AgentDef {
+        AgentDef {
+            name: ISOLATED_WRITER_NAME.into(),
+            description: "Single isolated writer: edits a disposable Git worktree; the host \
+                verifies and serially merges the resulting patch. Cannot execute commands, reach \
+                the parent workspace, dispatch agents, or merge itself."
+                .into(),
+            // `ToolFilter` remains the discovered-agent read-only language. The spawner admits the
+            // exact fixed writer vocabulary only after this built-in digest matches.
+            tools: ToolFilter::All,
+            system: ISOLATED_WRITER_SYSTEM.into(),
+            model: None,
+            budget: subagent_budget_ceiling(),
+            trust: Trust::Trusted,
+        }
+    }
+
+    /// True only for the complete harness-authored writer semantics, never for a caller-controlled
+    /// name. Keeping the comparison here makes authority admission independent of catalog origin
+    /// bookkeeping and catches accidental edits to any execution-relevant field.
+    pub fn is_isolated_writer(&self) -> bool {
+        self.name == ISOLATED_WRITER_NAME
+            && self.execution_digest() == Self::isolated_writer().execution_digest()
     }
 
     /// Content identity for every execution-relevant field of this immutable definition.

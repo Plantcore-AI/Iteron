@@ -1,6 +1,100 @@
 use super::*;
 
 impl Agent {
+    /// Project the aggregate provider-wire estimate back onto the non-overlapping source classes
+    /// owned by this admitted request. The source evidence was captured when the immutable
+    /// injection was materialized; the active task and attachment evidence belong to this one
+    /// submission. No class may borrow unused capacity from another class.
+    pub(super) fn context_component_usage(
+        &self,
+        messages: &[core_protocol::Message],
+        estimate: &core_ctx::ContextEstimate,
+    ) -> core_ctx::ContextComponentUsage {
+        let mut instruction_tokens = 0usize;
+        let mut memory_tokens = 0usize;
+        let mut injected_task_tokens = 0usize;
+        for segment in &self.context_source_evidence {
+            if !matches!(
+                segment.decision,
+                core_ctx::ContextDecision::Selected
+                    | core_ctx::ContextDecision::Truncated
+                    | core_ctx::ContextDecision::Compacted
+            ) {
+                continue;
+            }
+            let tokens = usize::try_from(segment.estimated_tokens).unwrap_or(usize::MAX);
+            match segment.source_class {
+                core_ctx::ContextSourceClass::OperatorInstructions
+                | core_ctx::ContextSourceClass::ProjectInstructions
+                | core_ctx::ContextSourceClass::DirectoryInstructions => {
+                    instruction_tokens = instruction_tokens.saturating_add(tokens);
+                }
+                core_ctx::ContextSourceClass::UserMemory
+                | core_ctx::ContextSourceClass::WorkspaceMemory
+                | core_ctx::ContextSourceClass::SessionMemory => {
+                    memory_tokens = memory_tokens.saturating_add(tokens);
+                }
+                core_ctx::ContextSourceClass::Environment
+                | core_ctx::ContextSourceClass::WorkspaceOutline
+                | core_ctx::ContextSourceClass::SkillIndex
+                | core_ctx::ContextSourceClass::SkillReference
+                | core_ctx::ContextSourceClass::WorkflowEvidence
+                | core_ctx::ContextSourceClass::SubagentEvidence
+                | core_ctx::ContextSourceClass::Steering
+                | core_ctx::ContextSourceClass::QueuedSubmission => {
+                    injected_task_tokens = injected_task_tokens.saturating_add(tokens);
+                }
+                _ => {}
+            }
+        }
+
+        let active_task_with_attachments = messages
+            .iter()
+            .rfind(|message| {
+                message.role == core_protocol::Role::User
+                    && message
+                        .content
+                        .iter()
+                        .any(|block| matches!(block, core_protocol::Block::Text { .. }))
+            })
+            .map(|message| {
+                message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        core_protocol::Block::Text { text } => {
+                            Some(self.context_estimator.estimate_text(text))
+                        }
+                        _ => None,
+                    })
+                    .fold(0usize, usize::saturating_add)
+            })
+            .unwrap_or(0);
+        let attachment_tokens = self
+            .input_file_evidence
+            .map(|evidence| usize::try_from(evidence.estimated_tokens).unwrap_or(usize::MAX))
+            .unwrap_or(0)
+            .min(active_task_with_attachments);
+        let active_task_tokens = active_task_with_attachments.saturating_sub(attachment_tokens);
+        let classified_system = instruction_tokens
+            .saturating_add(memory_tokens)
+            .saturating_add(injected_task_tokens);
+
+        core_ctx::ContextComponentUsage {
+            stable_prefix_tokens: estimate.system_tokens.saturating_sub(classified_system),
+            instruction_tokens,
+            task_context_tokens: injected_task_tokens.saturating_add(active_task_tokens),
+            memory_tokens,
+            transcript_tokens: estimate
+                .conversation_tokens
+                .saturating_sub(active_task_with_attachments),
+            attachment_tokens,
+            tool_schema_tokens: estimate.tool_tokens,
+            tool_result_tokens: estimate.tool_result_tokens,
+            lsp_result_tokens: estimate.lsp_result_tokens,
+        }
+    }
+
     /// Bind attachments to one admitted top-level submission. A route without verified image
     /// support refuses the whole submission before its text is recorded; silently stripping the
     /// binary payload would make the model answer placeholders as if it saw the image.
@@ -8,6 +102,15 @@ impl Agent {
         &self,
         input_images: &'a [core_protocol::ImageContent],
     ) -> Result<&'a [core_protocol::ImageContent], KernelError> {
+        let estimated_tokens = input_images.iter().fold(0usize, |total, image| {
+            total.saturating_add(
+                self.context_estimator
+                    .estimate_image(image.data.encoded_len()),
+            )
+        });
+        self.context_budget_policy
+            .admit_multimodal(estimated_tokens)
+            .map_err(|error| KernelError::ContextBudget(error.to_string()))?;
         if input_images.is_empty() || self.provider.supports_image_input() {
             return Ok(input_images);
         }
@@ -57,6 +160,13 @@ impl Agent {
     /// rare operator action; carrying an unusable schema block on every turn of a read-only session
     /// is not.
     pub(super) fn advertised_tool_specs(&self) -> Vec<core_protocol::ToolSpec> {
+        self.advertised_tool_specs_for_task("")
+    }
+
+    pub(super) fn advertised_tool_specs_for_task(
+        &self,
+        task: &str,
+    ) -> Vec<core_protocol::ToolSpec> {
         let admitted = self.authority_ceiling.intersect(self.policy_capabilities);
         let all = self.registry.specs();
         let total = all.len();
@@ -68,7 +178,7 @@ impl Agent {
                 ..LifecyclePayload::default()
             },
         );
-        let visible = all
+        let authority_visible = all
             .into_iter()
             .filter(|spec| {
                 let reachable = admitted.contains(spec.capability)
@@ -79,7 +189,16 @@ impl Agent {
                         || self.permission_mode != PermissionMode::Plan)
             })
             .collect::<Vec<_>>();
-        let filtered = total.saturating_sub(visible.len());
+        let admitted_names = authority_visible
+            .iter()
+            .map(|spec| spec.name.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let visible =
+            self.registry
+                .specs_for_task(&admitted_names, task, self.deferred_tool_eager_limit);
+        let authority_filtered = total.saturating_sub(authority_visible.len());
+        let relevance_deferred = authority_visible.len().saturating_sub(visible.len());
+        let filtered = authority_filtered;
         if filtered > 0 {
             let payload = LifecyclePayload {
                 count: Some(u64::try_from(filtered).unwrap_or(u64::MAX)),
@@ -97,7 +216,62 @@ impl Agent {
                 payload,
             );
         }
+        if relevance_deferred > 0 {
+            self.lifecycle_event(
+                "context.tool_schema.rejected",
+                Some(TurnId(self.seq_turn)),
+                LifecyclePayload {
+                    count: Some(u64::try_from(relevance_deferred).unwrap_or(u64::MAX)),
+                    reason_code: Some("task_relevance_lazy_discovery".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
+        // MCP resource/prompt extension tools are the catalog's real lazy-discovery routes: the
+        // provider sees one bounded schema now and asks the configured server for concrete
+        // resources or prompts only if it needs them. Count only those entry points; ordinary MCP
+        // tools are already eager schemas and must not be mislabeled as lazy.
+        let lazy_routes = visible
+            .iter()
+            .filter(|spec| {
+                [
+                    "__resources_list",
+                    "__resources_read",
+                    "__prompts_list",
+                    "__prompts_get",
+                ]
+                .iter()
+                .any(|suffix| spec.name.ends_with(suffix))
+            })
+            .count();
+        if lazy_routes > 0 {
+            self.lifecycle_event(
+                "context.tool_catalog.lazy_route",
+                Some(TurnId(self.seq_turn)),
+                LifecyclePayload {
+                    count: Some(u64::try_from(lazy_routes).unwrap_or(u64::MAX)),
+                    reason_code: Some("mcp_resource_or_prompt_discovery".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
         visible
+    }
+
+    pub fn set_deferred_tool_eager_limit(&mut self, limit: Option<usize>) {
+        self.deferred_tool_eager_limit = limit.filter(|limit| *limit > 0);
+    }
+
+    pub fn set_context_runtime_policy(
+        &mut self,
+        budget: core_ctx::ContextBudgetPolicy,
+        materialization: core_ctx::ContextMaterializationPolicy,
+    ) -> Result<(), KernelError> {
+        self.context_materialization_policy = materialization
+            .validate()
+            .map_err(|reason| KernelError::ContextBudget(reason.into()))?;
+        self.context_budget_policy = budget;
+        Ok(())
     }
 
     pub(super) fn proposed_durable_frontend_context(
@@ -193,7 +367,9 @@ impl Agent {
             // The frontend already owns instruction/environment gathering. Preserve that durable
             // split while routing the remaining lexical-memory + skill-index selection through
             // the pure frozen slot and the injected world adapter.
-            let resolved = strategy_runtime::resolve_live_context(
+            let context_opportunity =
+                self.begin_policy_decision(policy_evidence::CONTEXT_SLOT, Some(turn))?;
+            let resolved = match strategy_runtime::resolve_live_context(
                 self.context_strategy.as_ref(),
                 self.memory_strategy.as_ref(),
                 self.context_port.as_ref(),
@@ -203,16 +379,66 @@ impl Agent {
                     dependency_skill_dirs: &self.dependency_skill_dirs,
                     turn,
                     task,
+                    memory_benchmark_scope: self.memory_benchmark_scope,
+                    materialization: self.context_materialization_policy,
                 },
-            )
-            .map_err(KernelError::ContextResolution)?;
-            self.observe_resolved_context(
+            ) {
+                Ok(resolved) => {
+                    self.append_policy_decision(
+                        context_opportunity,
+                        policy_evidence::PolicyDecisionDraft::selected(
+                            &["materialize"],
+                            "materialize",
+                            "core:context-features-v1",
+                            &(&resolved.policy_observation, &resolved.policy_plan),
+                            &"world_reads_remain_in_context_port",
+                        )?,
+                    )?;
+                    resolved
+                }
+                Err(error) => {
+                    self.append_policy_decision(
+                        context_opportunity,
+                        policy_evidence::PolicyDecisionDraft::abstained(
+                            &["materialize"],
+                            "core:context-features-v1",
+                            &(turn.0, task.len()),
+                            &"context_failure_is_fail_closed",
+                        )?,
+                    )?;
+                    return Err(KernelError::ContextResolution(error));
+                }
+            };
+            if let Some(audit) = &resolved.memory_audit {
+                let memory_opportunity =
+                    self.begin_policy_decision(policy_evidence::MEMORY_SLOT, Some(turn))?;
+                let action = if audit.selected.is_empty() {
+                    "no_recall"
+                } else {
+                    "recall"
+                };
+                self.append_policy_decision(
+                    memory_opportunity,
+                    policy_evidence::PolicyDecisionDraft::selected(
+                        &["no_recall", "recall"],
+                        action,
+                        "core:memory-features-v1",
+                        &(&audit.observation, &audit.selected, &audit.scores_ppm),
+                        &"selection_is_bounded_to_gathered_candidates",
+                    )?,
+                )?;
+            }
+            let memory_benchmark_scope = self.memory_benchmark_scope;
+            self.observe_resolved_context(decision_observability::ResolvedContextObservation {
                 turn,
                 task,
-                &resolved.segments,
-                resolved.memory_audit.as_ref(),
-                elapsed_us(resolution_started),
-            );
+                segments: &resolved.segments,
+                materialization: &resolved.materialization_audit,
+                memory_audit: resolved.memory_audit.as_ref(),
+                memory_benchmark_scope: memory_benchmark_scope.as_ref(),
+                benchmark_memory_rejections: resolved.benchmark_memory_rejections,
+                elapsed_us: elapsed_us(resolution_started),
+            });
             if !resolved.text.is_empty() {
                 context_sources.push(resolved.governing_trust);
                 context_text.push_str(&resolved.text);

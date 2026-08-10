@@ -38,12 +38,22 @@ mod persistent;
 /// lifetime rules rather than a port of this one.
 #[cfg(unix)]
 pub mod pty;
+#[cfg(unix)]
+mod pty_async;
 pub mod seatbelt;
 
 pub use persistent::{
     ConfinedProcess, ConfinedProcessControl, PersistentBackend, spawn_confined_process,
     spawn_confined_process_from_workspace,
 };
+#[cfg(unix)]
+pub use persistent_pty::{
+    ConfinedPtyInput, ConfinedPtyOutput, ConfinedPtyProcess, ConfinedPtyResize,
+    spawn_confined_pty_process,
+};
+
+#[cfg(unix)]
+mod persistent_pty;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxError {

@@ -58,6 +58,7 @@ fn request() -> TurnRequest {
         cache_system: false,
         thinking_budget: 0,
         reasoning_effort: ReasoningEffort::Low,
+        controls: Default::default(),
     }
 }
 

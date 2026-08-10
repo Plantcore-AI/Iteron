@@ -33,12 +33,14 @@ pub(crate) mod hyperlink;
 mod inline_shell;
 mod jobs;
 mod keyboard_enhancement;
+mod mcp_command;
 mod mouse_capture;
 mod notification;
 mod picker_catalog;
 mod session_adoption;
 mod session_management;
 mod session_picker;
+mod status_command;
 mod status_line;
 mod submission;
 mod terminal_input;
@@ -240,6 +242,41 @@ impl Session {
         &self.facts.rollout_path
     }
 
+    pub(crate) fn tunables_checkpoint(&self) -> Option<&core_record::TunablesCheckpoint> {
+        self.facts.tunables_checkpoint.as_ref()
+    }
+
+    pub(crate) fn tunables_effective_digest(&self) -> Option<&str> {
+        match self.tunables_checkpoint()? {
+            core_record::TunablesCheckpoint::V1(snapshot) => {
+                Some(&snapshot.effective_digest_sha256)
+            }
+            core_record::TunablesCheckpoint::V2(snapshot) => {
+                Some(&snapshot.effective_digest_sha256)
+            }
+        }
+    }
+
+    pub(crate) fn runtime_profile_id(&self) -> Option<&'static str> {
+        let digest = match self.tunables_checkpoint()? {
+            core_record::TunablesCheckpoint::V1(snapshot) => {
+                snapshot.profile_digest_sha256.as_deref()
+            }
+            core_record::TunablesCheckpoint::V2(snapshot) => {
+                snapshot.profile_digest_sha256.as_deref()
+            }
+        }?;
+        core_tunables::RuntimeProfile::ALL
+            .into_iter()
+            .find(|profile| {
+                core_tunables::runtime_profile_digest(*profile)
+                    .ok()
+                    .as_deref()
+                    == Some(digest)
+            })
+            .map(core_tunables::RuntimeProfile::id)
+    }
+
     pub(crate) fn model(&self) -> &str {
         &self.state.model
     }
@@ -299,6 +336,7 @@ impl Session {
                 permission_rules: PermissionRules::new(),
                 ledger_summary: String::new(),
                 rate_limit: None,
+                mcp_health: Vec::new(),
             },
             facts: app_server::SessionFacts {
                 session_id: core_protocol::SessionId("session-test".into()),
@@ -315,6 +353,7 @@ impl Session {
                 registry_tools: Vec::new(),
                 dependency_skill_dirs: Vec::new(),
                 agent_catalog: Arc::new(core_agents::AgentCatalog::builtin_only()),
+                tunables_checkpoint: None,
             },
         }
     }
@@ -887,6 +926,8 @@ enum InputDestination {
     StartTurn,
     SteerCurrentRun,
     AfterTurn,
+    /// A control whose owner is intentionally reachable while the resident Agent is borrowed.
+    ImmediateCommand,
 }
 
 /// The filesystem half of the drop discriminator. `symlink_metadata` answers for a dangling
@@ -904,9 +945,23 @@ fn slash_command_body(text: &str) -> Option<&str> {
     commands::slash_command_body(text, &path_exists_on_disk)
 }
 
+fn is_immediate_running_command(text: &str) -> bool {
+    let Some(command) = slash_command_body(text) else {
+        return false;
+    };
+    commands::dispatch(command).is_ok_and(|routed| {
+        matches!(
+            routed.route,
+            commands::DispatchRoute::InProcess(SlashCommand::Mcp | SlashCommand::Status)
+        )
+    })
+}
+
 fn input_destination(running: bool, interrupting: bool, text: &str) -> InputDestination {
     if !running {
         InputDestination::StartTurn
+    } else if is_immediate_running_command(text) {
+        InputDestination::ImmediateCommand
     } else if interrupting
         || slash_command_body(text).is_some()
         || text.trim_start().starts_with('!')
@@ -1261,11 +1316,22 @@ pub async fn run(
     // fail-soft: an unavailable or malformed history file cannot prevent an interactive session,
     // but its diagnostic is retained for the first rendered transcript.
     let mut history_warning = None;
-    let history_store = match prompt_history::Store::resolve(
-        history_mode,
+    let history_store_result = match (
         crate::config::config_home(),
-        &facts.workspace,
+        facts
+            .rollout_path
+            .parent()
+            .map(std::path::Path::to_path_buf),
     ) {
+        (Some(config_home), Some(runs_dir)) => prompt_history::Store::resolve_with_runs_dir(
+            history_mode,
+            config_home,
+            &facts.workspace,
+            runs_dir,
+        ),
+        _ => Ok(None),
+    };
+    let history_store = match history_store_result {
         Ok(store) => store,
         Err(error) => {
             history_warning = Some(format!("prompt history disabled for this session: {error}"));
@@ -2352,6 +2418,20 @@ pub async fn run(
                             } else {
                             let text = app.editor.take_submit();
                             match input_destination(app.running, app.interrupting, &text) {
+                                InputDestination::ImmediateCommand => {
+                                    let command = slash_command_body(&text)
+                                        .expect("the destination admitted a slash command");
+                                    dispatch_slash_command(
+                                        &mut term,
+                                        &mut app,
+                                        &mut session,
+                                        &providers,
+                                        &mut transcript_effects,
+                                        &interrupt,
+                                        command,
+                                    )
+                                    .await?;
+                                }
                                 InputDestination::AfterTurn => {
                                     if let Err(text) = app.queue_after_turn(text) {
                                         app.editor.insert_str(&text);
@@ -3968,16 +4048,26 @@ fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, app: &App) 
     } else if app.is_resume_handoff_draft() {
         "copy to a new terminal · enter keeps draft · esc clear"
     } else if app.running && !text.is_empty() {
-        let queues_after_turn =
-            input_destination(true, app.interrupting, &text) == InputDestination::AfterTurn;
-        if density == surface::Density::Compact && queues_after_turn {
-            "enter queue · ctrl+j newline · esc stop"
-        } else if queues_after_turn {
-            "enter queues after this turn · ctrl+j newline · esc interrupt"
-        } else if density == surface::Density::Compact {
-            "enter steer · tab queue · esc stop"
-        } else {
-            "enter steer · tab queue · ctrl+j newline · esc interrupt"
+        match input_destination(true, app.interrupting, &text) {
+            InputDestination::ImmediateCommand if density == surface::Density::Compact => {
+                "enter control · ctrl+j newline · esc stop"
+            }
+            InputDestination::ImmediateCommand => {
+                "enter runs this control now · ctrl+j newline · esc interrupt"
+            }
+            InputDestination::AfterTurn if density == surface::Density::Compact => {
+                "enter queue · ctrl+j newline · esc stop"
+            }
+            InputDestination::AfterTurn => {
+                "enter queues after this turn · ctrl+j newline · esc interrupt"
+            }
+            InputDestination::SteerCurrentRun if density == surface::Density::Compact => {
+                "enter steer · tab queue · esc stop"
+            }
+            InputDestination::SteerCurrentRun => {
+                "enter steer · tab queue · ctrl+j newline · esc interrupt"
+            }
+            InputDestination::StartTurn => unreachable!("the app is running"),
         }
     } else if app.running && !app.queued.is_empty() {
         if density == surface::Density::Compact {

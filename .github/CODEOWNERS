@@ -154,8 +154,10 @@
 /crates/cli/src/workflow.rs @fr0m-scratch
 /crates/cli/src/workspace_review.rs @fr0m-scratch
 /crates/ctx/src/compact.rs @fr0m-scratch
+/crates/ctx/src/compact_obligations.rs @fr0m-scratch
 /crates/ctx/src/context_assembly.rs @fr0m-scratch
 /crates/ctx/src/context_ledger.rs @fr0m-scratch
+/crates/ctx/src/context_materialization.rs @fr0m-scratch
 /crates/ctx/src/context_port.rs @fr0m-scratch
 /crates/ctx/src/context_strategy.rs @fr0m-scratch
 /crates/ctx/src/decision_store.rs @fr0m-scratch

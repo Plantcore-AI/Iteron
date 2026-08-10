@@ -18,7 +18,7 @@ pub struct McpToolCallEvidence {
 }
 
 impl McpToolCallEvidence {
-    pub(crate) fn new(server_name: &str, tool_name: &str, latency_ms: NonZeroU64) -> Self {
+    pub fn new(server_name: &str, tool_name: &str, latency_ms: NonZeroU64) -> Self {
         Self {
             server_name: server_name.to_string(),
             tool_name: tool_name.to_string(),

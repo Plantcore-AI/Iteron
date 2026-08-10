@@ -57,6 +57,7 @@ impl SideConversation {
         if self.asks > 0 {
             self.agent
                 .stage_follow_up_transcript()
+                .await
                 .map_err(|error| error.public_summary())?;
             self.agent.verify_attempts = 0;
         }
@@ -71,6 +72,10 @@ impl SideConversation {
             outcome,
             status: self.status(),
         })
+    }
+
+    pub(crate) fn finalize_policy_run(&mut self) -> Result<(), KernelError> {
+        self.agent.finalize_policy_run()
     }
 }
 
@@ -92,10 +97,14 @@ impl Agent {
             .map_err(|error| format!("side conversation setup failed: {error}"))?;
         let directory = self.side_conversation_directory();
         let run_id = self.subagent_run_id("side", 0, self.side_conversations_opened as usize);
+        let tunables_pin = self
+            .tunables_pin_snapshot()
+            .map_err(|error| error.public_summary())?;
+        let tunables_resolution_digest = tunables_pin.resolution_digest_sha256().to_owned();
         let rollout = Rollout::open(&directory, &run_id, self.rollout.tenant().clone())
             .map_err(|error| format!("side conversation record failed: {error}"))?;
         let record_path = rollout.path().to_path_buf();
-        let mut side = Agent::new(
+        let mut side = Agent::new_with_tunables_pin(
             self.provider.clone(),
             registry,
             rollout,
@@ -108,15 +117,21 @@ impl Agent {
                 max_wall_secs: MAX_WALL_SECS,
                 max_consecutive_tool_errors: MAX_CONSECUTIVE_TOOL_ERRORS,
             },
-        );
+            tunables_pin,
+        )
+        .map_err(|error| error.public_summary())?;
         side.runtime_state_dir = self.runtime_state_dir.clone();
         side.lifecycle_emitter = self.lifecycle_emitter.clone();
         side.lifecycle_telemetry = self.lifecycle_telemetry.clone();
         side.lifecycle_hooks = self.lifecycle_hooks.clone();
         side.workspace = self.workspace.clone();
-        side.context_strategy = self.context_strategy.clone();
-        side.tool_policy = self.tool_policy.clone();
+        side.install_compiled_policy_bundle(self.compiled_policy_bundle.clone())
+            .map_err(|error| error.public_summary())?;
         side.context_port = self.context_port.clone();
+        side.deferred_tool_eager_limit = self.deferred_tool_eager_limit;
+        side.context_budget_policy = self.context_budget_policy;
+        side.context_materialization_policy = self.context_materialization_policy;
+        side.compaction = self.compaction;
         side.context_home_dir = self.context_home_dir.clone();
         side.dependency_skill_dirs = self.dependency_skill_dirs.clone();
         side.model_context_window = self.model_context_window;
@@ -125,16 +140,36 @@ impl Agent {
         side.hooks = self.hooks.clone();
         side.hook_effect_journal = self.hook_effect_journal.clone();
         side.delegation_depth = self.delegation_depth.saturating_add(1);
-        side.effort = if self.effort == core_protocol::Effort::Ultracode {
+        let child_effort = if self.effort == core_protocol::Effort::Ultracode {
             core_protocol::Effort::Max
         } else {
             self.effort
         };
+        side.bypass_permissions = self.bypass_permissions;
+        side.configure_initial_runtime_policy(
+            child_effort,
+            self.permission_mode,
+            self.permission_rules.clone(),
+        )
+        .map_err(|error| error.public_summary())?;
         if let Some(interrupt) = &self.interrupt {
             side.set_interrupt(interrupt.clone());
         }
         side.drain = self.drain.clone();
         side.owns_drain = false;
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let parent_run = self.rollout.run_id().clone();
+        side.record_child_genesis_with_tunables(
+            &parent_run,
+            self.workspace.display().to_string(),
+            created_at,
+            tunables_resolution_digest,
+            None,
+        )
+        .map_err(|error| error.public_summary())?;
         self.inherit_route_and_pricing(&mut side)
             .map_err(|error| error.public_summary())?;
         self.side_conversations_opened = self.side_conversations_opened.saturating_add(1);

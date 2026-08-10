@@ -3162,6 +3162,7 @@ pub(crate) async fn validate_credential(
         cache_system: false,
         thinking_budget: 0,
         reasoning_effort: core_protocol::ReasoningEffort::Low,
+        controls: Default::default(),
     };
     match provider.turn(&request, &mut |_item: StreamItem| {}).await {
         Ok(_) => Ok(CredentialProof { model_id }),
@@ -4843,6 +4844,7 @@ mod tests {
             cache_system: true,
             thinking_budget: 4_096,
             reasoning_effort: core_protocol::ReasoningEffort::Medium,
+            controls: Default::default(),
         };
         assert!(matches!(
             provider.effort_application(&request),

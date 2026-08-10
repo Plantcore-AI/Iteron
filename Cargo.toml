@@ -65,6 +65,7 @@ regex = "1"
 ratatui = "0.29"
 crossterm = "0.29"
 getrandom = "0.4"
+ring = "0.17"
 base64 = "0.22"
 ed25519-dalek = { version = "2.2", default-features = false, features = ["std"] }
 # Raster decoders are admitted only for bounded frontend validation. Keep encoder,

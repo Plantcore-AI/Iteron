@@ -1970,7 +1970,7 @@ mod gate_integration_tests {
     #[tokio::test]
     async fn preparing_a_workflow_admits_and_records_it_before_anything_starts_it() {
         let ws = temp_ws("workflow-prepare");
-        let agent = workflow_seam_agent(&ws);
+        let mut agent = workflow_seam_agent(&ws);
 
         let prepared = agent
             .prepare_workflow(&serde_json::json!({ "script": SEAM_SCRIPT }))
@@ -2061,7 +2061,7 @@ mod gate_integration_tests {
     #[test]
     fn preparing_a_panel_resume_reuses_the_persisted_identity_and_cache_source() {
         let ws = temp_ws("workflow-panel-resume");
-        let agent = workflow_seam_agent(&ws);
+        let mut agent = workflow_seam_agent(&ws);
         let prepared = agent
             .prepare_workflow(&serde_json::json!({
                 "script": SEAM_SCRIPT,
@@ -2100,7 +2100,7 @@ mod gate_integration_tests {
     #[tokio::test]
     async fn with_no_launcher_installed_a_prepared_run_is_the_engine_run_it_always_was() {
         let ws = temp_ws("workflow-default-launcher");
-        let agent = workflow_seam_agent(&ws);
+        let mut agent = workflow_seam_agent(&ws);
         assert!(
             agent.workflow_launcher.is_none(),
             "a kernel starts with no workflow owner installed"
@@ -2333,7 +2333,7 @@ mod gate_integration_tests {
     #[test]
     fn preparing_a_workflow_refuses_before_it_records_anything() {
         let unbound_ws = temp_ws("workflow-prepare-unbound");
-        let unbound = agent_for(&unbound_ws);
+        let mut unbound = agent_for(&unbound_ws);
         // No route selected yet: children re-record the parent's exact durable route, so there is
         // nothing to bind.
         assert!(
@@ -2345,7 +2345,7 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(unbound_ws).unwrap();
 
         let ws = temp_ws("workflow-prepare-refusals");
-        let agent = workflow_seam_agent(&ws);
+        let mut agent = workflow_seam_agent(&ws);
         assert!(
             agent.prepare_workflow(&serde_json::json!({})).is_err(),
             "neither `script` nor `scriptPath` is not a run"
@@ -2894,6 +2894,116 @@ mod gate_integration_tests {
         assert_eq!(agent.ledger.tool_inline_overflow_events, 2);
         assert!(agent.ledger.summary().contains("inline_overflow=2"));
         std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
+    async fn tool_policy_evidence_is_exactly_once_and_durable_before_pure_dispatch() {
+        fn configured(
+            ws: &std::path::Path,
+            run: &str,
+            calls: std::sync::Arc<AtomicUsize>,
+        ) -> Agent {
+            let mut registry = Registry::coding_agent(ws).unwrap();
+            registry
+                .register_external(
+                    ToolSpec {
+                        name: "slow_read".into(),
+                        description: "test-only counted pure read".into(),
+                        input_schema: serde_json::json!({"type":"object"}),
+                        purity: Purity::Pure,
+                        capability: Capability::ReadOnly,
+                    },
+                    move |call, _root| {
+                        let calls = calls.clone();
+                        core_tools::boxfut::box_it(async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            ToolResult {
+                                tool_use_id: call.id,
+                                content: "observed".into(),
+                                is_error: false,
+                                trust: Trust::Workspace,
+                                latency_ms: 0,
+                            }
+                        })
+                    },
+                )
+                .unwrap();
+            let rollout = Rollout::open(
+                &ws.join(".core/runs"),
+                &core_protocol::RunId(run.into()),
+                core_protocol::TenantId::default(),
+            )
+            .unwrap();
+            let mut agent = Agent::new(
+                std::sync::Arc::new(ScriptedPureBurst::default()),
+                registry,
+                rollout,
+                "model-a".into(),
+                "sys".into(),
+                Budget {
+                    max_turns: 3,
+                    max_usd: None,
+                    max_tokens: None,
+                    max_wall_secs: 30,
+                    max_consecutive_tool_errors: 2,
+                },
+            );
+            agent.workspace = ws.to_path_buf();
+            agent.policy_evidence = Some(
+                policy_evidence_recorder::PolicyEvidenceRecorder::new(
+                    core_protocol::RunId(run.into()),
+                    "d".repeat(64),
+                    agent.policy_runtime_bindings().to_vec(),
+                )
+                .unwrap(),
+            );
+            agent
+        }
+
+        let failed_ws = temp_ws("tool-policy-pre-dispatch-fsync");
+        let failed_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut failed = configured(
+            &failed_ws,
+            "tool-policy-pre-dispatch-fsync",
+            failed_calls.clone(),
+        );
+        failed.fail_next_durable_append = Some(DurableAppendFault::ToolPolicyDecision);
+        assert!(matches!(
+            failed.run("read three sources").await,
+            Err(KernelError::Record(_))
+        ));
+        assert_eq!(
+            failed_calls.load(Ordering::SeqCst),
+            0,
+            "a pure tool executor must not be constructed or polled after its evidence fsync fails"
+        );
+
+        let success_ws = temp_ws("tool-policy-exactly-once");
+        let success_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut success = configured(
+            &success_ws,
+            "tool-policy-exactly-once",
+            success_calls.clone(),
+        );
+        assert_eq!(
+            success.run("read three sources").await.unwrap(),
+            Outcome::Done
+        );
+        let events = core_record::replay(success.rollout.path()).unwrap();
+        let tool_policy_decisions = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.kind,
+                    EventKind::PolicyDecision { evidence }
+                        if evidence.slot.as_persisted_str() == policy_evidence::TOOL_POLICY_SLOT
+                )
+            })
+            .count();
+        assert_eq!(tool_policy_decisions, 3);
+        assert_eq!(success_calls.load(Ordering::SeqCst), 3);
+        std::fs::remove_dir_all(failed_ws).ok();
+        std::fs::remove_dir_all(success_ws).ok();
     }
 
     // ---- concurrent tool dispatch (#I-01, #I-18, #I-61) ----
@@ -3769,9 +3879,7 @@ mod gate_integration_tests {
         let file_evidence = ledger
             .segments
             .iter()
-            .find(|segment| {
-                segment.source_class == core_ctx::ContextSourceClass::FileAttachment
-            })
+            .find(|segment| segment.source_class == core_ctx::ContextSourceClass::FileAttachment)
             .expect("file bytes must retain their own source classification");
         assert!(file_evidence.bytes_after > 0);
         assert!(file_evidence.estimated_tokens > 0);
@@ -4308,8 +4416,8 @@ mod gate_integration_tests {
         agent
     }
 
-    #[test]
-    fn adopting_a_run_moves_the_session_onto_that_journal_identity_and_policy() {
+    #[tokio::test]
+    async fn adopting_a_run_moves_the_session_onto_that_journal_identity_and_policy() {
         let ws = temp_ws("adopt-run");
         let runs = ws.join(".core/runs");
         // The run to adopt: its own genesis, its own policy transition, its own transcript.
@@ -4395,7 +4503,7 @@ mod gate_integration_tests {
         // adoption real rather than cosmetic: the transcript the next turn continues is read back
         // from the record this session now writes to.
         live.working_set = None;
-        live.stage_follow_up_transcript().unwrap();
+        live.stage_follow_up_transcript().await.unwrap();
         let staged = live.resumed.clone().unwrap();
         assert!(
             staged
@@ -4596,7 +4704,7 @@ mod gate_integration_tests {
         let error = agent.run("must not reach the provider").await.unwrap_err();
         assert!(matches!(error, KernelError::IdentityExhausted("turn")));
         assert!(matches!(
-            agent.advance_turn(),
+            agent.advance_turn().await,
             Err(KernelError::IdentityExhausted("turn"))
         ));
 
@@ -9357,6 +9465,7 @@ ant-api03-SuperSecretModelToken12345"
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: core_protocol::ReasoningEffort::Medium,
+            controls: Default::default(),
         };
 
         drop(
@@ -9548,6 +9657,165 @@ ant-api03-SuperSecretModelToken12345"
         ));
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(agent.ledger.provider_attempts, 0);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn typed_pre_stream_retry_has_one_durable_effect_per_physical_attempt() {
+        struct TransientThenDone(std::sync::Arc<std::sync::atomic::AtomicU32>);
+
+        #[async_trait::async_trait]
+        impl Provider for TransientThenDone {
+            async fn turn(
+                &self,
+                _request: &TurnRequest,
+                _on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<core_provider::TurnResult, core_provider::ProviderError> {
+                if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    return Err(core_provider::ProviderError::Api {
+                        status: 429,
+                        body: "typed fixture".into(),
+                    });
+                }
+                Ok(core_provider::TurnResult {
+                    blocks: vec![Block::Text {
+                        text: "done".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage::default()),
+                })
+            }
+        }
+
+        let ws = temp_ws("durable-provider-retry");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let run = core_protocol::RunId("durable-provider-retry".into());
+        let runs = ws.join(".core/runs");
+        let rollout = Rollout::open(&runs, &run, core_protocol::TenantId::default()).unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(TransientThenDone(calls.clone())),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+        agent.set_retry_policy(core_sched::BackoffPolicy {
+            base_ms: 1,
+            cap_ms: 1,
+            max_attempts: 2,
+        });
+        let lifecycle = core_obs::lifecycle::LifecycleBus::default();
+        agent.set_lifecycle_emitter(core_obs::lifecycle::LifecycleEmitter::new(
+            lifecycle.clone(),
+        ));
+
+        assert_eq!(
+            agent.run("finish after one retry").await.unwrap(),
+            Outcome::Done
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(agent.ledger.provider_retries, 1);
+        let events = core_record::replay(&runs.join(format!("{run}.jsonl"))).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    &event.kind,
+                    EventKind::EffectIntent { tool, .. } if tool == "provider"
+                ))
+                .count(),
+            2,
+            "each paid dispatch owns a separate durable intent"
+        );
+        let lifecycle = lifecycle.snapshot();
+        assert_eq!(
+            lifecycle
+                .events
+                .iter()
+                .filter(|event| event.event_id.as_str() == "model.retry_scheduled")
+                .count(),
+            1
+        );
+        assert!(
+            lifecycle
+                .events
+                .iter()
+                .all(|event| event.event_id.as_str() != "model.retry_cancelled")
+        );
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn interrupt_during_retry_backoff_cancels_before_another_dispatch() {
+        struct InterruptingTransient {
+            calls: std::sync::Arc<std::sync::atomic::AtomicU32>,
+            interrupt: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl Provider for InterruptingTransient {
+            async fn turn(
+                &self,
+                _request: &TurnRequest,
+                _on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<core_provider::TurnResult, core_provider::ProviderError> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.interrupt
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                Err(core_provider::ProviderError::Api {
+                    status: 429,
+                    body: "typed fixture".into(),
+                })
+            }
+        }
+
+        let ws = temp_ws("cancel-provider-retry");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let interrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let rollout = Rollout::open(
+            &ws.join(".core/runs"),
+            &core_protocol::RunId("cancel-provider-retry".into()),
+            core_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(InterruptingTransient {
+                calls: calls.clone(),
+                interrupt: interrupt.clone(),
+            }),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+        agent.set_interrupt(interrupt);
+        agent.set_retry_policy(core_sched::BackoffPolicy {
+            base_ms: 100,
+            cap_ms: 100,
+            max_attempts: 3,
+        });
+        let lifecycle = core_obs::lifecycle::LifecycleBus::default();
+        agent.set_lifecycle_emitter(core_obs::lifecycle::LifecycleEmitter::new(
+            lifecycle.clone(),
+        ));
+
+        assert_eq!(
+            agent.run("interrupt retry").await.unwrap(),
+            Outcome::Interrupted
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let ids = lifecycle
+            .snapshot()
+            .events
+            .into_iter()
+            .map(|event| event.event_id.as_str().to_owned())
+            .collect::<Vec<_>>();
+        assert!(ids.iter().any(|id| id == "model.retry_scheduled"));
+        assert!(ids.iter().any(|id| id == "model.retry_cancelled"));
         let _ = std::fs::remove_dir_all(ws);
     }
 
@@ -10653,6 +10921,7 @@ ant-api03-SuperSecretModelToken12345"
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: core_protocol::ReasoningEffort::Low,
+            controls: Default::default(),
         };
         let attempt = in_flight
             .admit_provider_effect(TurnId(0), &request)
@@ -12944,8 +13213,8 @@ ant-api03-SuperSecretModelToken12345"
         let _ = std::fs::remove_dir_all(&ws);
     }
 
-    #[test]
-    fn i17_the_per_turn_session_cache_refresh_is_charged_to_the_kernel_tax() {
+    #[tokio::test]
+    async fn i17_the_per_turn_session_cache_refresh_is_charged_to_the_kernel_tax() {
         // `refresh_session_cache` rewrites two sidecars and fsyncs their directory on every turn
         // advance. Outside the meter it was invisible durability cost, so `kernel_tax` understated
         // what a turn actually pays for the record.
@@ -12955,7 +13224,7 @@ ant-api03-SuperSecretModelToken12345"
             .emit_durable(TurnId(0), EventKind::TurnStart)
             .expect("seed a turn so the projection has something to persist");
         let before = agent.ledger.kernel_tax().record_fsync_latency_us;
-        agent.advance_turn().unwrap();
+        agent.advance_turn().await.unwrap();
         assert!(
             agent.ledger.kernel_tax().record_fsync_latency_us > before,
             "the turn-advance cache refresh must appear in the ledger, not beside it"

@@ -46,6 +46,7 @@ const USER_AGENT: &str = concat!(
 );
 
 pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
+    let fetch_egress = r.egress_allow_policy_handle();
     r.push_tool(
         ToolSpec {
             name: "web_fetch".into(),
@@ -67,7 +68,8 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
             purity: Purity::Effecting,             // egresses: never early-dispatched
             capability: Capability::IrreversibleExternal, // gated; never auto-approved (ADR-007 §3)
         },
-        |call, _root| {
+        move |call, _root| {
+            let egress = fetch_egress.clone();
             boxfut::box_it(async move {
                 let id = call.id.clone();
                 let url = call.input.get("url").and_then(|x| x.as_str()).unwrap_or("").trim();
@@ -82,6 +84,15 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     // Input validation error: harness-generated, no egress happened -> Workspace.
                     Err(e) => return err_result(id, format!("web_fetch: {e}")),
                 };
+                if !egress_permits_url(&egress, &parsed) {
+                    return err_result(
+                        id,
+                        format!(
+                            "web_fetch: destination `{}` is not admitted by the pinned egress_allow policy",
+                            parsed.host_str().unwrap_or("<missing-host>")
+                        ),
+                    );
+                }
                 match fetch_and_render(parsed, max_bytes).await {
                     // ALL web-derived output is Untrusted (ADR-007), even the redirect notice
                     // (its target URL is attacker-controlled data).
@@ -104,6 +115,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
         },
     )?;
 
+    let search_egress = r.egress_allow_policy_handle();
     r.push_tool(
         ToolSpec {
             name: "web_search".into(),
@@ -128,7 +140,8 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
             purity: Purity::Effecting,
             capability: Capability::IrreversibleExternal,
         },
-        |call, _root| {
+        move |call, _root| {
+            let egress = search_egress.clone();
             boxfut::box_it(async move {
                 let id = call.id.clone();
                 let query = call.input.get("query").and_then(|x| x.as_str()).unwrap_or("").trim();
@@ -151,6 +164,15 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                         trust: Trust::Workspace, // harness-generated notice, no web contact
                         latency_ms: 0,
                     },
+                    Some(backend) if !egress_permits_destination(&egress, backend.host(), 443) => {
+                        err_result(
+                            id,
+                            format!(
+                                "web_search: backend destination `{}` is not admitted by the pinned egress_allow policy",
+                                backend.host()
+                            ),
+                        )
+                    }
                     Some(backend) => match backend.run(query, count).await {
                         Ok(content) => ToolResult {
                             tool_use_id: id,
@@ -173,6 +195,24 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     )?;
 
     Ok(())
+}
+
+type SharedEgressPolicy = std::sync::Arc<std::sync::OnceLock<Option<crate::EgressAllowPolicy>>>;
+
+fn egress_permits_url(policy: &SharedEgressPolicy, url: &reqwest::Url) -> bool {
+    url.host_str().is_some_and(|host| {
+        egress_permits_destination(policy, host, url.port_or_known_default().unwrap_or(443))
+    })
+}
+
+fn egress_permits_destination(policy: &SharedEgressPolicy, host: &str, port: u16) -> bool {
+    match policy.get() {
+        Some(Some(policy)) => policy.permits(host, Some(port)),
+        // `None` is an explicitly installed legacy/unconfined posture. An uninstalled registry is
+        // not runnable: production installs from the immutable checkpoint before activation.
+        Some(None) => true,
+        None => false,
+    }
 }
 
 const NO_SEARCH_BACKEND: &str = "web_search: no search backend is configured. Set one of \
@@ -489,6 +529,15 @@ enum SearchBackend {
 }
 
 impl SearchBackend {
+    fn host(&self) -> &'static str {
+        match self {
+            SearchBackend::Exa(_) => "api.exa.ai",
+            SearchBackend::Tavily(_) => "api.tavily.com",
+            SearchBackend::Brave(_) => "api.search.brave.com",
+            SearchBackend::Zhipu(_) => "open.bigmodel.cn",
+        }
+    }
+
     async fn run(&self, query: &str, count: usize) -> Result<String, String> {
         match self {
             SearchBackend::Exa(key) => exa_search(key, query, count).await,

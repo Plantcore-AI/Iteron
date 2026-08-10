@@ -92,7 +92,7 @@ impl Agent {
             has_test_command: self.verify_command.is_some(),
             file_count: self.workspace_file_count().await,
         };
-        let route = self.route_submission(task, signals);
+        let route = self.route_submission(task, signals)?;
         if !route.fans_out() {
             self.emit(
                 TurnId(self.seq_turn),
@@ -208,12 +208,40 @@ impl Agent {
         &mut self,
         task: &str,
         signals: core_agents::RepoSignals,
-    ) -> core_agents::RouterRoute {
+    ) -> Result<core_agents::RouterRoute, KernelError> {
         let observation = core_agents::RouterSlotObservation::baseline(task, signals);
         let ceiling = CapabilitySet::only(Capability::ReadOnly).intersect(self.authority_ceiling);
+        let opportunity =
+            self.begin_policy_decision(policy_evidence::ROUTER_SLOT, Some(TurnId(self.seq_turn)))?;
         match core_agents::RouterStrategy::route_with(self.router.as_ref(), &observation, ceiling) {
-            Ok(proposal) => proposal.route,
+            Ok(proposal) => {
+                let action = if proposal.route.fans_out() {
+                    "fan_out"
+                } else {
+                    "direct"
+                };
+                self.append_policy_decision(
+                    opportunity,
+                    policy_evidence::PolicyDecisionDraft::selected(
+                        &["direct", "fan_out"],
+                        action,
+                        "core:router-features-v1",
+                        &(&observation, proposal.route),
+                        &"fan_out_may_only_narrow_caller_ceiling",
+                    )?,
+                )?;
+                Ok(proposal.route)
+            }
             Err(error) => {
+                self.append_policy_decision(
+                    opportunity,
+                    policy_evidence::PolicyDecisionDraft::baseline_fallback(
+                        &["direct", "fan_out"],
+                        "core:router-features-v1",
+                        &observation,
+                        &"refusal_falls_back_to_direct",
+                    )?,
+                )?;
                 self.emit(
                     TurnId(self.seq_turn),
                     EventKind::Notice {
@@ -222,7 +250,9 @@ impl Agent {
                         ),
                     },
                 );
-                core_agents::RouterRoute::direct(core_agents::TaskClass::Localized)
+                Ok(core_agents::RouterRoute::direct(
+                    core_agents::TaskClass::Localized,
+                ))
             }
         }
     }
@@ -230,22 +260,60 @@ impl Agent {
     /// Resolve the effective pure-tool permit count through the pinned `core/scheduler` seat.
     /// Malformed/refusing replacements fail closed to one permit; no slot can exceed the runtime's
     /// existing product ceiling.
-    pub(super) fn scheduled_tool_concurrency(&self) -> usize {
+    pub(super) fn scheduled_tool_concurrency(&mut self) -> Result<usize, KernelError> {
         let max_concurrency = u32::try_from(self.max_tool_concurrency)
             .unwrap_or(u32::MAX)
             .max(1);
-        let Ok(observation) = core_sched::SchedulerSlotObservation::baseline(
+        let opportunity = self
+            .begin_policy_decision(policy_evidence::SCHEDULER_SLOT, Some(TurnId(self.seq_turn)))?;
+        let observation = match core_sched::SchedulerSlotObservation::baseline(
             core_sched::BackoffPolicy::default(),
             max_concurrency,
-        ) else {
-            return 1;
+        ) {
+            Ok(observation) => observation,
+            Err(_) => {
+                self.append_policy_decision(
+                    opportunity,
+                    policy_evidence::PolicyDecisionDraft::baseline_fallback(
+                        &["bounded_plan", "single_permit"],
+                        "core:scheduler-features-v1",
+                        &max_concurrency,
+                        &"invalid_observation_falls_back_to_one_permit",
+                    )?,
+                )?;
+                return Ok(1);
+            }
         };
-        core_sched::SchedulerStrategy::plan_with(
+        match core_sched::SchedulerStrategy::plan_with(
             self.scheduler.as_ref(),
             &observation,
             CapabilitySet::only(Capability::ReadOnly).intersect(self.authority_ceiling),
-        )
-        .map(|proposal| proposal.plan.concurrency_permits())
-        .unwrap_or(1)
+        ) {
+            Ok(proposal) => {
+                self.append_policy_decision(
+                    opportunity,
+                    policy_evidence::PolicyDecisionDraft::selected(
+                        &["bounded_plan", "single_permit"],
+                        "bounded_plan",
+                        "core:scheduler-features-v1",
+                        &(&observation, proposal.plan),
+                        &"strategy_may_only_narrow_retry_and_concurrency",
+                    )?,
+                )?;
+                Ok(proposal.plan.concurrency_permits())
+            }
+            Err(_) => {
+                self.append_policy_decision(
+                    opportunity,
+                    policy_evidence::PolicyDecisionDraft::baseline_fallback(
+                        &["bounded_plan", "single_permit"],
+                        "core:scheduler-features-v1",
+                        &observation,
+                        &"strategy_refusal_falls_back_to_one_permit",
+                    )?,
+                )?;
+                Ok(1)
+            }
+        }
     }
 }

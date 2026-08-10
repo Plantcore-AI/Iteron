@@ -1,10 +1,15 @@
 //! Bounded, repository-scoped prompt history for the interactive frontend.
 //!
-//! Prompt text is operator data. It is therefore written only below the operator-owned Core home,
-//! never below a repository; every persisted string crosses the record scrubber first; attachments
-//! are never serialized; and `PromptHistoryMode::Disabled` constructs no path and starts no writer.
+//! Prompt text is operator data. The history manifest lives below the operator-owned Core home and
+//! contains handles only; scrubbed bytes are encrypted in the active run store so content
+//! revocation has one graph. Attachments are never serialized, and `Disabled` creates no store.
 
 use crate::config::PromptHistoryMode;
+use core_protocol::{RunId, TenantId};
+use core_record::{
+    ContentReferenceSurface, PrivateContentClass, PrivateContentDerivativeStore,
+    PrivateContentHandle, PrivateContentRetention,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
@@ -15,8 +20,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(crate) const MAX_ENTRIES: usize = 200;
 const MAX_ENTRY_BYTES: usize = 64 * 1024;
 const MAX_STATE_BYTES: usize = 1024 * 1024;
-const STATE_VERSION: u32 = 1;
+const LEGACY_STATE_VERSION: u32 = 1;
+const STATE_VERSION: u32 = 2;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+mod private_storage;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -37,9 +45,24 @@ impl State {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedState {
+    schema_version: u32,
+    history: Vec<PrivateContentHandle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    draft: Option<PrivateContentHandle>,
+}
+
+#[derive(Deserialize)]
+struct VersionProbe {
+    schema_version: u32,
+}
+
+#[derive(Clone)]
 pub(crate) struct Store {
     path: PathBuf,
+    private: PrivateContentDerivativeStore,
 }
 
 impl Store {
@@ -54,6 +77,19 @@ impl Store {
         let Some(config_home) = config_home else {
             return Ok(None);
         };
+        let runs_dir = core_protocol::home::path(&config_home, "runs");
+        Self::resolve_with_runs_dir(mode, config_home, workspace, runs_dir)
+    }
+
+    pub(crate) fn resolve_with_runs_dir(
+        mode: PromptHistoryMode,
+        config_home: PathBuf,
+        workspace: &Path,
+        runs_dir: PathBuf,
+    ) -> anyhow::Result<Option<Self>> {
+        if mode == PromptHistoryMode::Disabled {
+            return Ok(None);
+        }
         let directory = core_protocol::home::path(&config_home, "history");
         let filename = match mode {
             PromptHistoryMode::Project => {
@@ -70,9 +106,23 @@ impl Store {
             PromptHistoryMode::Global => "global.json".to_owned(),
             PromptHistoryMode::Disabled => unreachable!("returned above"),
         };
-        Ok(Some(Self {
-            path: directory.join(filename),
-        }))
+        let path = directory.join(filename);
+        let owner_digest = Sha256::digest(path.to_string_lossy().as_bytes());
+        let owner = RunId(format!(
+            "prompt-history-{}",
+            hex::encode(&owner_digest[..16])
+        ));
+        let tenant = TenantId::default();
+        let private = PrivateContentDerivativeStore::open(
+            runs_dir,
+            tenant,
+            owner,
+            ContentReferenceSurface::PromptHistory,
+            PrivateContentClass::Transcript,
+            PrivateContentRetention::ExplicitRevocation,
+            MAX_ENTRY_BYTES,
+        )?;
+        Ok(Some(Self { path, private }))
     }
 
     pub(crate) fn load(&self) -> anyhow::Result<State> {
@@ -96,19 +146,39 @@ impl Store {
         if bytes.len() > MAX_STATE_BYTES {
             anyhow::bail!("prompt history exceeds its {MAX_STATE_BYTES}-byte bound");
         }
-        let state: State = serde_json::from_slice(&bytes)?;
-        if state.schema_version != STATE_VERSION {
-            anyhow::bail!(
-                "unsupported prompt history schema version {}",
-                state.schema_version
-            );
+        let version: VersionProbe = serde_json::from_slice(&bytes)?;
+        match version.schema_version {
+            STATE_VERSION => self.hydrate(serde_json::from_slice(&bytes)?),
+            LEGACY_STATE_VERSION => {
+                let state = bound_and_scrub(serde_json::from_slice(&bytes)?);
+                // Migrate before exposing legacy plaintext. A failed CAS write leaves this
+                // history unavailable instead of serving an unrevocable derivative.
+                self.save(state.clone())?;
+                Ok(state)
+            }
+            version => anyhow::bail!("unsupported prompt history schema version {version}"),
         }
-        Ok(bound_and_scrub(state))
     }
 
     fn save(&self, state: State) -> anyhow::Result<()> {
         let state = bound_and_scrub(state);
-        let bytes = serde_json::to_vec(&state)?;
+        let history = state
+            .history
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| self.store_text(index, entry))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let draft = state
+            .draft
+            .as_deref()
+            .map(|draft| self.store_text(MAX_ENTRIES, draft))
+            .transpose()?;
+        let persisted = PersistedState {
+            schema_version: STATE_VERSION,
+            history,
+            draft,
+        };
+        let bytes = serde_json::to_vec(&persisted)?;
         if bytes.len() > MAX_STATE_BYTES {
             anyhow::bail!("prompt history encoding exceeds its fixed bound");
         }
@@ -158,7 +228,9 @@ impl Store {
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
         }
-        result
+        result?;
+        self.reconcile(&persisted)?;
+        Ok(())
     }
 
     #[cfg(test)]

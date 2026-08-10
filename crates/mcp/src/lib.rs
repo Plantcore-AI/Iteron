@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use std::io::Write;
 
 pub mod client;
+mod deadlines;
 mod elicitation;
 mod evidence;
 pub mod http;
@@ -28,6 +29,7 @@ mod policy;
 mod protocol_version;
 pub mod reconnect;
 mod remote;
+mod result_policy;
 pub mod supervisor;
 pub mod token;
 mod tool_catalog;
@@ -35,6 +37,7 @@ mod tool_filter;
 pub mod wire;
 
 pub use client::{McpClient, McpToolOutcome};
+pub use deadlines::{MAX_MCP_DEADLINE_MILLISECONDS, McpDeadlinePolicy, McpTransportDeadlines};
 pub use elicitation::{
     ElicitationAction, ElicitationRequest, ElicitationResponse, MAX_ELICITATION_CONTENT_BYTES,
     MAX_ELICITATION_FIELD_NAME_BYTES, MAX_ELICITATION_FIELDS, MAX_ELICITATION_MESSAGE_BYTES,
@@ -43,6 +46,10 @@ pub use elicitation::{
 pub use evidence::McpToolCallEvidence;
 pub use policy::{MAX_MCP_TOOL_POLICY_ENTRIES, McpServerPolicy, default_host_ceiling};
 pub use remote::{McpRemoteClient, McpServerCapabilities};
+pub use result_policy::{
+    DEFAULT_MCP_SPILL_RESULT_BYTES, DEFAULT_MCP_VISIBLE_RESULT_BYTES, MAX_MCP_SPILL_RESULT_BYTES,
+    McpResultPolicy, McpSpillCleanup,
+};
 pub use tool_filter::{
     CombinedToolCatalog, MAX_COMBINED_MCP_CATALOG_BYTES, MAX_COMBINED_MCP_TOOLS,
     MAX_MCP_BARE_TOOL_NAME_BYTES, MAX_MCP_SERVER_NAME_BYTES, MAX_MCP_TOOL_FILTER_ENTRIES,
@@ -116,6 +123,10 @@ pub enum McpError {
     TooManyFrames { limit: usize },
     #[error("MCP tool output exceeds {limit} byte limit")]
     OutputTooLarge { limit: usize },
+    #[error("invalid MCP result cap/spill policy")]
+    InvalidResultPolicy,
+    #[error("private MCP result spill storage is unavailable")]
+    SpillStorageUnavailable,
     #[error("MCP tools/list exceeds {limit} page limit")]
     ToolListPageLimit { limit: usize },
     #[error("MCP tools/list exceeds {limit} tool limit")]
@@ -257,6 +268,10 @@ impl McpError {
             }
             Self::OutputTooLarge { limit } => {
                 format!("MCP tool output exceeds {limit} byte limit")
+            }
+            Self::InvalidResultPolicy => "invalid MCP result cap/spill policy".into(),
+            Self::SpillStorageUnavailable => {
+                "private MCP result spill storage is unavailable".into()
             }
             Self::ToolListPageLimit { limit } => {
                 format!("MCP tools/list exceeds {limit} page limit")

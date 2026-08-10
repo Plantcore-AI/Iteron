@@ -16,7 +16,7 @@
 //! Concurrency is bounded by the engine's Governor (one global permit pool), so this spawner bounds
 //! nothing itself, per the trait contract.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
@@ -56,6 +56,8 @@ pub(super) struct UltracodePlanning {
 }
 
 mod activity;
+mod tunables;
+mod worktree;
 
 /// One terminal/journal-safe refusal line. This is the final choke point for child setup and
 /// runtime failures: redact credential shapes, render terminal controls visibly, and retain at
@@ -111,12 +113,24 @@ pub struct KernelSpawnerContext {
     pub provider_id: String,
     pub catalog_digest: String,
     pub capability_digest: String,
+    /// The exact provider controls/governor/fallback chain inherited by every physical child
+    /// attempt. These are resolved once by the composition root; children never consult config.
+    pub(crate) provider_controls: core_provider::ProviderRequestControls,
+    pub(crate) provider_governor_policy: core_provider::GovernorPolicy,
+    pub(crate) fallback_provider_routes: Vec<super::GovernedProviderRoute>,
+    /// Exact immutable V1/V2 checkpoint inherited from the trusted composition root. `None` is
+    /// kept only so construction can finish before a caller supplies the held pin; spawning fails
+    /// closed rather than consulting the resolver or ambient defaults when it remains absent.
+    pub(crate) tunables_pin: Option<super::tunables_pin::TunablesPin>,
     /// Pure, injected pricing strategy. REQUIRED only if `budget.max_usd` is a positive ceiling; a
     /// child that cannot bind a verified rate card for a positive ceiling resolves to `Null`.
     pub pricing_port: Option<Arc<dyn PricingPort>>,
     /// One aggregate monetary ceiling shared by the parent and every workflow child. A child may
     /// tighten it; no child receives an independent refill.
     pub(super) usd_budget: Option<Arc<SharedUsdBudget>>,
+    /// Session owner shared across direct dispatches and every workflow run. The engine's
+    /// `RunLimits` is intentionally separate and may only narrow one run.
+    pub(super) session_spawn_ledger: Arc<super::SessionSpawnLedger>,
     /// The repo the children read (their sandbox root + read-only registry root).
     pub workspace: PathBuf,
     /// The session runtime-state root: the directory that CONTAINS the parent session rollout
@@ -168,11 +182,24 @@ pub struct KernelSpawnerContext {
     pub planner: Arc<dyn StrategySlot>,
     pub collaboration: Arc<dyn StrategySlot>,
     pub scheduler: Arc<dyn StrategySlot>,
+    pub retry_policy: core_sched::BackoffPolicy,
+    /// Fail-closed single-writer/worktree/merge admission policy shared with tunable facts.
+    pub writer_merge_policy: core_workflow::WriterMergePolicy,
+    /// Exact operator-admitted command used to validate a sealed writer patch. `None` refuses a
+    /// non-empty writer merge; the writer may never nominate its own oracle.
+    pub(crate) verify_command: Option<String>,
+    /// One merge/writer lane for the complete session lineage. The guard is held from worktree
+    /// provisioning through child terminal, verification, merge, and cleanup.
+    pub(super) writer_merge_lock: Arc<tokio::sync::Mutex<()>>,
     pub verifier: Arc<dyn StrategySlot>,
     /// `core/model_router`. The spawner supplies the parent's already-resolved route as evidence;
     /// the slot may select it or refuse, but cannot invent an unbound provider route.
     pub model_router: Arc<dyn StrategySlot>,
     pub context_port: Arc<dyn core_ctx::ContextPort>,
+    pub deferred_tool_eager_limit: Option<usize>,
+    pub context_budget_policy: core_ctx::ContextBudgetPolicy,
+    pub context_materialization_policy: core_ctx::ContextMaterializationPolicy,
+    pub compaction_policy: core_ctx::CompactionPolicy,
     pub context_home_dir: Option<PathBuf>,
     pub dependency_skill_dirs: Vec<(PathBuf, PathBuf)>,
     /// Exact accepted definitions resolved once by the composition root. Every spawned worker
@@ -180,6 +207,9 @@ pub struct KernelSpawnerContext {
     pub agent_catalog: Arc<AgentCatalog>,
     /// Policy projection pinned for the entire workflow lineage.
     pub boot_bundle: Arc<core_agents::BootBundle>,
+    /// Complete typed policy generation behind the projection. The spawner and every child retain
+    /// the same Arc so policy identities and implementations cannot drift independently.
+    pub(crate) compiled_policy_bundle: Arc<crate::bundle_adapter::CompiledPolicyBundle>,
     /// Permission posture for the read-only child. Registry and capability ceilings independently
     /// prevent this from widening authority.
     pub permission_mode: PermissionMode,
@@ -206,6 +236,27 @@ pub struct KernelSpawnerContext {
 }
 
 impl KernelSpawnerContext {
+    /// Install one compiler-owned checkpoint before this context is shared with a spawner. The
+    /// method cannot fail after mutation: `CompiledPolicyBundle` construction validated all nine
+    /// slot identities, so callers cannot observe a partially replaced generation.
+    pub(crate) fn install_compiled_policy_bundle(
+        &mut self,
+        compiled: Arc<crate::bundle_adapter::CompiledPolicyBundle>,
+    ) {
+        let slots = compiled.slots();
+        self.context_strategy = slots.context.clone();
+        self.tool_policy = slots.tool_policy.clone();
+        self.memory_strategy = slots.memory.clone();
+        self.router = slots.router.clone();
+        self.planner = slots.planner.clone();
+        self.collaboration = slots.collaboration.clone();
+        self.scheduler = slots.scheduler.clone();
+        self.verifier = slots.verifier.clone();
+        self.model_router = slots.model_router.clone();
+        self.boot_bundle = compiled.boot_bundle();
+        self.compiled_policy_bundle = compiled;
+    }
+
     /// The minimal context: the identity/route/paths that have no sensible default, with everything
     /// else defaulted (built-in immutable catalog, `subagent_budget_ceiling()` budget, `Default`
     /// effort/mode, empty env, no pricing, no shared stop flags). Set the remaining `pub` fields
@@ -230,14 +281,20 @@ impl KernelSpawnerContext {
             core_protocol::Capability::TrustMutating,
             core_protocol::Capability::IrreversibleExternal,
         ]);
+        let compiled_policy_bundle = crate::bundle_adapter::baseline_compiled_bundle();
         KernelSpawnerContext {
             provider,
             model,
             provider_id,
             catalog_digest,
             capability_digest,
+            provider_controls: core_provider::ProviderRequestControls::default(),
+            provider_governor_policy: core_provider::GovernorPolicy::default(),
+            fallback_provider_routes: Vec::new(),
+            tunables_pin: None,
             pricing_port: None,
             usd_budget: None,
+            session_spawn_ledger: Arc::new(super::SessionSpawnLedger::default()),
             workspace,
             runtime_state_dir,
             tenant,
@@ -253,20 +310,29 @@ impl KernelSpawnerContext {
             model_context_window: None,
             model_max_output_tokens: None,
             sensitive_env_names: Vec::new(),
-            context_strategy: Arc::new(core_ctx::ContextStrategy::default()),
-            tool_policy: Arc::new(core_tools::ToolPolicy::default()),
-            memory_strategy: Arc::new(core_ctx::MemoryRecallStrategy::default()),
-            router: Arc::new(core_agents::RouterStrategy::default()),
-            planner: Arc::new(core_agents::PlannerStrategy::default()),
-            collaboration: Arc::new(core_workflow::CollaborationStrategy::default()),
-            scheduler: Arc::new(core_sched::SchedulerStrategy::default()),
-            verifier: Arc::new(core_verify::VerifierStrategy::default()),
-            model_router: Arc::new(core_provider::catalog::ModelRouterStrategy::default()),
+            context_strategy: compiled_policy_bundle.slots().context.clone(),
+            tool_policy: compiled_policy_bundle.slots().tool_policy.clone(),
+            memory_strategy: compiled_policy_bundle.slots().memory.clone(),
+            router: compiled_policy_bundle.slots().router.clone(),
+            planner: compiled_policy_bundle.slots().planner.clone(),
+            collaboration: compiled_policy_bundle.slots().collaboration.clone(),
+            scheduler: compiled_policy_bundle.slots().scheduler.clone(),
+            retry_policy: core_sched::BackoffPolicy::default(),
+            writer_merge_policy: core_workflow::WriterMergePolicy::default(),
+            verify_command: None,
+            writer_merge_lock: Arc::new(tokio::sync::Mutex::new(())),
+            verifier: compiled_policy_bundle.slots().verifier.clone(),
+            model_router: compiled_policy_bundle.slots().model_router.clone(),
             context_port: Arc::new(core_ctx::DefaultContextPort),
+            deferred_tool_eager_limit: None,
+            context_budget_policy: core_ctx::ContextBudgetPolicy::default(),
+            context_materialization_policy: core_ctx::ContextMaterializationPolicy::default(),
+            compaction_policy: core_ctx::CompactionPolicy::default(),
             context_home_dir: None,
             dependency_skill_dirs: Vec::new(),
             agent_catalog: Arc::new(AgentCatalog::builtin_only()),
-            boot_bundle: crate::bundle_adapter::resolve_boot_bundle(),
+            boot_bundle: compiled_policy_bundle.boot_bundle(),
+            compiled_policy_bundle,
             permission_mode: PermissionMode::default(),
             permission_rules: PermissionRules::new(),
             authority_ceiling: all_capabilities,
@@ -340,6 +406,15 @@ impl KernelSpawner {
     ///     cost attribution, bounded delegation depth),
     ///     minus the parent's durable `SubagentSpawned` + UI emission (no parent transcript exists).
     fn build_child(&self, call: &AgentCall, ordinal: u64) -> Result<Agent, String> {
+        self.build_child_in(call, ordinal, None)
+    }
+
+    fn build_child_in(
+        &self,
+        call: &AgentCall,
+        ordinal: u64,
+        writer_workspace: Option<&Path>,
+    ) -> Result<Agent, String> {
         let cx = &self.cx;
 
         call.validate_request_metadata()
@@ -357,28 +432,46 @@ impl KernelSpawner {
         agent_def.validate().map_err(|reason| {
             safe_agent_refusal(&format!("pinned agent definition is invalid: {reason}"))
         })?;
+        let is_writer = agent_def.is_isolated_writer();
+        if is_writer != writer_workspace.is_some() {
+            return Err(safe_agent_refusal(
+                "isolated writer admission requires its host-owned worktree",
+            ));
+        }
+        let child_workspace = writer_workspace.unwrap_or(&cx.workspace).to_path_buf();
 
-        // Which model the child uses is a strategy decision, but its evidence is structural: this
-        // spawner owns only the parent's exact route. `route_with` rejects every answer outside
-        // that set even when a replacement strategy misbehaves.
-        let routed = core_provider::catalog::ModelRouterStrategy::route_with(
-            cx.model_router.as_ref(),
-            &core_provider::catalog::ModelRouterObservation::single_route(
-                cx.model.clone(),
-                agent_def.model.clone(),
-                call.model.clone(),
-            ),
-            cx.authority_ceiling,
-        )
-        .map_err(|error| error.to_string())?;
-
-        let mut registry = Registry::read_only(cx.workspace.clone())
-            .map_err(|_| "child read-only registry setup failed".to_string())?;
-        let _effective_tools = crate::bundle_adapter::narrow_child_registry(
-            &mut registry,
-            &agent_def.tools,
-            &cx.boot_bundle,
+        // Gather the complete bounded observation now, but evaluate it only after the child owns
+        // a durable rollout. A refusal is still a real trainable-policy decision and must not
+        // disappear merely because no provider turn will follow it.
+        let model_router_observation = core_provider::catalog::ModelRouterObservation::single_route(
+            cx.model.clone(),
+            agent_def.model.clone(),
+            call.model.clone(),
         );
+
+        let mut registry = if is_writer {
+            let mut registry = Registry::isolated_writer(child_workspace.clone())
+                .map_err(|_| "child isolated-writer registry setup failed".to_string())?;
+            registry.narrow_to(
+                &core_agents::ISOLATED_WRITER_TOOLS
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect::<Vec<_>>(),
+            );
+            registry
+        } else {
+            let mut registry = Registry::read_only(child_workspace.clone())
+                .map_err(|_| "child read-only registry setup failed".to_string())?;
+            let _effective_tools = crate::bundle_adapter::narrow_child_registry(
+                &mut registry,
+                &agent_def.tools,
+                &cx.boot_bundle,
+            );
+            registry
+        };
+        cx.writer_merge_policy
+            .admit_child(is_writer, is_writer)
+            .map_err(safe_agent_refusal)?;
         registry.set_sensitive_env_names(cx.sensitive_env_names.clone());
 
         let parent_budget = match &cx.budget_slices {
@@ -395,19 +488,27 @@ impl KernelSpawner {
             );
         }
 
+        let tunables_pin = cx
+            .tunables_pin
+            .clone()
+            .ok_or_else(|| "child refused: runtime tunables were not pinned".to_string())?;
+        let tunables_resolution_digest = tunables_pin.resolution_digest_sha256().to_owned();
+
         let sub_run = self.mint_run_id(ordinal);
         let subagents_dir = cx.runtime_state_dir.join("subagents");
         let rollout = Rollout::open(&subagents_dir, &sub_run, cx.tenant.clone())
             .map_err(|_| "child session record could not be opened".to_string())?;
 
-        let mut sub = Agent::new(
+        let mut sub = Agent::new_with_tunables_pin(
             cx.provider.clone(),
             registry,
             rollout,
-            routed.model,
+            cx.model.clone(),
             agent_def.system.clone(),
             budget.clone(),
-        );
+            tunables_pin,
+        )
+        .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
 
         // --- Non-durable inherited context. These private fields are set exactly as the in-crate
         //     parent paths set them (this module is a descendant of the crate root, so it shares
@@ -425,20 +526,30 @@ impl KernelSpawner {
         if cx.usd_budget.is_some() {
             sub.usd_budget = cx.usd_budget.clone();
         }
-        let read_only =
-            CapabilitySet::from_iter_capabilities([core_protocol::Capability::ReadOnly]);
-        sub.authority_ceiling = cx.authority_ceiling.intersect(read_only);
-        sub.policy_capabilities = cx.policy_capabilities.intersect(read_only);
-        sub.context_strategy = cx.context_strategy.clone();
-        sub.tool_policy = cx.tool_policy.clone();
-        sub.memory_strategy = cx.memory_strategy.clone();
-        sub.router = cx.router.clone();
-        sub.planner = cx.planner.clone();
-        sub.collaboration = cx.collaboration.clone();
-        sub.scheduler = cx.scheduler.clone();
-        sub.verifier = cx.verifier.clone();
-        sub.model_router = cx.model_router.clone();
+        sub.session_spawn_ledger = cx.session_spawn_ledger.clone();
+        let child_capabilities = if is_writer {
+            CapabilitySet::from_iter_capabilities([
+                core_protocol::Capability::ReadOnly,
+                core_protocol::Capability::ReversibleLocal,
+                core_protocol::Capability::TrustMutating,
+            ])
+        } else {
+            CapabilitySet::from_iter_capabilities([core_protocol::Capability::ReadOnly])
+        };
+        sub.authority_ceiling = cx.authority_ceiling.intersect(child_capabilities);
+        sub.policy_capabilities = cx.policy_capabilities.intersect(child_capabilities);
+        if let Err(error) = sub.install_compiled_policy_bundle(cx.compiled_policy_bundle.clone()) {
+            return Err(safe_agent_refusal(&format!(
+                "child policy checkpoint rejected: {}",
+                error.public_summary()
+            )));
+        }
+        sub.retry_policy = cx.retry_policy;
         sub.context_port = cx.context_port.clone();
+        sub.deferred_tool_eager_limit = cx.deferred_tool_eager_limit;
+        sub.context_budget_policy = cx.context_budget_policy;
+        sub.context_materialization_policy = cx.context_materialization_policy;
+        sub.compaction = cx.compaction_policy;
         sub.context_home_dir = cx.context_home_dir.clone();
         sub.dependency_skill_dirs = cx.dependency_skill_dirs.clone();
         // A workflow child is exactly one level below the operator. The read-only registry has no
@@ -450,7 +561,7 @@ impl KernelSpawner {
         }
 
         // --- Public-surface inherited context ---
-        sub.workspace = cx.workspace.clone();
+        sub.workspace = child_workspace.clone();
         sub.model_context_window = cx.model_context_window;
         sub.model_max_output_tokens = cx.model_max_output_tokens;
         // Hooks are trusted operator-owned host policy, not capabilities offered to the model.
@@ -460,7 +571,6 @@ impl KernelSpawner {
         sub.bypass_permissions = cx.bypass_permissions;
         sub.agent_catalog = cx.agent_catalog.clone();
         sub.agent_catalog_pinned = true;
-        sub.boot_bundle = cx.boot_bundle.clone();
         // Installs the deny-list on the agent, its hooks, and (already, above) its registry.
         sub.set_sensitive_env_names(cx.sensitive_env_names.clone());
 
@@ -487,15 +597,55 @@ impl KernelSpawner {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs())
             .unwrap_or(0);
-        sub.record_genesis(
-            cx.workspace.display().to_string(),
+        let parent_run = core_protocol::RunId(cx.parent_run_id.clone());
+        sub.record_child_genesis_with_tunables(
+            &parent_run,
+            child_workspace.display().to_string(),
             created_at,
-            cx.agent_catalog.execution_digest(),
+            tunables_resolution_digest,
             Some(agent_def.execution_tag()),
         )
         .map_err(|error| {
             safe_agent_refusal(&format!("child genesis failed: {}", error.public_summary()))
         })?;
+
+        let model_router_opportunity = sub
+            .begin_policy_decision(super::policy_evidence::MODEL_ROUTER_SLOT, None)
+            .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+        let routed = match core_provider::catalog::ModelRouterStrategy::route_with(
+            cx.model_router.as_ref(),
+            &model_router_observation,
+            cx.authority_ceiling,
+        ) {
+            Ok(routed) => {
+                let draft = super::policy_evidence::PolicyDecisionDraft::selected(
+                    &["bound_parent_route"],
+                    "bound_parent_route",
+                    "core:model-router-features-v1",
+                    &(&model_router_observation, &routed.model),
+                    &"selected_model_must_have_caller_resolved_route_evidence",
+                )
+                .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+                sub.append_policy_decision(model_router_opportunity, draft)
+                    .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+                routed
+            }
+            Err(error) => {
+                let draft = super::policy_evidence::PolicyDecisionDraft::abstained(
+                    &["bound_parent_route"],
+                    "core:model-router-features-v1",
+                    &model_router_observation,
+                    &"unresolved_or_conflicting_routes_are_refused",
+                )
+                .map_err(|evidence_error| safe_agent_refusal(&evidence_error.public_summary()))?;
+                sub.append_policy_decision(model_router_opportunity, draft)
+                    .map_err(|evidence_error| {
+                        safe_agent_refusal(&evidence_error.public_summary())
+                    })?;
+                return Err(safe_agent_refusal(&error.to_string()));
+            }
+        };
+        sub.model = routed.model;
 
         // --- Route + pricing. Public API; `record_model_selection` appends the first durable event
         //     (RouteSelected) to the child rollout. Pricing is optional and only load-bearing when a
@@ -515,6 +665,19 @@ impl KernelSpawner {
                 error.public_summary()
             ))
         })?;
+        sub.set_provider_controls(cx.provider_controls)
+            .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+        let governed_route_ids = std::iter::once(format!("{}:{}", cx.provider_id, sub.model))
+            .chain(
+                cx.fallback_provider_routes
+                    .iter()
+                    .map(super::GovernedProviderRoute::id),
+            )
+            .collect::<Vec<_>>();
+        sub.install_fallback_provider_routes(cx.fallback_provider_routes.clone())
+            .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+        sub.install_provider_governor(cx.provider_governor_policy.clone(), governed_route_ids)
+            .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
         if cx.pricing_port.is_some() {
             let bound = sub.bind_selected_rate_card().map_err(|error| {
                 safe_agent_refusal(&format!(

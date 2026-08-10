@@ -274,12 +274,26 @@ pub(super) async fn handle_sessions_command(
                 );
                 return;
             }
-            match core_record::delete(
-                &runs,
-                &core_protocol::TenantId::default(),
-                &core_protocol::RunId(run.to_owned()),
-            ) {
-                Ok(()) => {
+            let operation_id = format!(
+                "session.delete.{}.{}",
+                std::process::id(),
+                crate::erasure_now_unix_ms()
+            );
+            let request = core_record::authorize_local_erasure(&runs).and_then(|authority| {
+                Ok(core_protocol::ErasureRequest {
+                    operation_id: core_protocol::ErasureOperationId::new(operation_id.clone())?,
+                    authority_id: authority.id().clone(),
+                    requested_at_unix_ms: crate::erasure_now_unix_ms(),
+                    target: core_protocol::ErasureTarget::ExactSession {
+                        scope_id: core_protocol::ErasureScopeId::new(
+                            core_protocol::TenantId::default().0,
+                        )?,
+                        run_id: core_protocol::ErasureTargetId::new(run.to_owned())?,
+                    },
+                })
+            });
+            match request.and_then(|request| core_record::execute_erasure(&runs, request)) {
+                Ok(receipt) if receipt.state() == core_protocol::ErasureState::Verified => {
                     let hook_journal = runs.join(format!("{run}.hooks.jsonl"));
                     if std::fs::symlink_metadata(&hook_journal).is_ok() {
                         let _ = std::fs::remove_file(hook_journal);
@@ -289,11 +303,21 @@ pub(super) async fn handle_sessions_command(
                         "session.deleted",
                         core_protocol::LifecyclePayload {
                             outcome_code: Some("deleted".into()),
+                            reason_code: Some(operation_id),
                             ..core_protocol::LifecyclePayload::default()
                         },
                     );
                     app.note(block::NoticeLevel::Ok, format!("deleted session {run}"));
                 }
+                Ok(receipt) => app.note(
+                    block::NoticeLevel::Err,
+                    format!(
+                        "session delete refused: operation {} ended {:?} ({:?})",
+                        receipt.request().operation_id,
+                        receipt.state(),
+                        receipt.failure()
+                    ),
+                ),
                 Err(error) => app.note(
                     block::NoticeLevel::Err,
                     format!("session delete refused: {error}"),

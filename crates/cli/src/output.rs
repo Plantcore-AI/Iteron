@@ -884,6 +884,9 @@ mod tests {
                 context: core_ctx::ContextEstimate {
                     system_tokens: 0,
                     tool_tokens: 0,
+                    conversation_tokens: 0,
+                    tool_result_tokens: 0,
+                    lsp_result_tokens: 0,
                     transcript_tokens: 0,
                     framing_tokens: 0,
                     total_tokens: 0,
@@ -963,6 +966,9 @@ mod tests {
                 context: core_ctx::ContextEstimate {
                     system_tokens: 10,
                     tool_tokens: 20,
+                    conversation_tokens: 30,
+                    tool_result_tokens: 0,
+                    lsp_result_tokens: 0,
                     transcript_tokens: 30,
                     framing_tokens: 4,
                     total_tokens: 64,
@@ -1094,6 +1100,9 @@ mod tests {
                     context: core_ctx::ContextEstimate {
                         system_tokens: 0,
                         tool_tokens: 0,
+                        conversation_tokens: 0,
+                        tool_result_tokens: 0,
+                        lsp_result_tokens: 0,
                         transcript_tokens: 0,
                         framing_tokens: 0,
                         total_tokens: 0,

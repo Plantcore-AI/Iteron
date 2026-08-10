@@ -4,8 +4,8 @@
 
 use crate::sse::{ANTHROPIC_CONTENT_BLOCKS_FORMAT, SseFrame, StreamItem, StreamParser};
 use crate::{
-    AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderError, TurnRequest,
-    TurnResult,
+    AdapterKind, ApiRoot, CacheBreakpoint, CacheScope, EffortApplication, ErrorProfile, Provider,
+    ProviderControlCapabilities, ProviderError, TurnRequest, TurnResult,
 };
 use core_protocol::{Block, Message, ProviderState, Role};
 use futures_util::StreamExt;
@@ -114,12 +114,19 @@ impl Anthropic {
         );
         // Stable prefix first (tools -> system), volatile last (messages) — the cache
         // discipline (ADR-002). cache_control on the system block marks the breakpoint.
-        let cache_prompt = req.cache_system && self.prompt_cache && capabilities.prompt_cache;
+        let requested_breakpoint = match req.controls.prompt_cache.breakpoint {
+            CacheBreakpoint::None if req.cache_system => CacheBreakpoint::Rolling,
+            requested => requested,
+        };
+        let cache_prompt = requested_breakpoint != CacheBreakpoint::None
+            && self.prompt_cache
+            && capabilities.prompt_cache;
+        let cache_control = anthropic_cache_control(req.controls.prompt_cache.ttl_seconds)?;
         let system = if cache_prompt {
             serde_json::json!([{
                 "type": "text",
                 "text": req.system,
-                "cache_control": {"type": "ephemeral"}
+                "cache_control": cache_control
             }])
         } else {
             serde_json::json!(req.system)
@@ -141,7 +148,8 @@ impl Anthropic {
         // is over 90% of the request. Roll a second breakpoint along with the conversation: it
         // sits on the last block of the second-to-last message, so turn N reads every prior turn
         // from cache and only the newest turn is uncached. Two of the four allowed breakpoints.
-        let transcript_breakpoint = cache_prompt
+        let transcript_breakpoint = (cache_prompt
+            && requested_breakpoint == CacheBreakpoint::Rolling)
             .then(|| req.messages.len().checked_sub(2))
             .flatten();
         let image_target = image_target(&req.messages, &req.input_images)?;
@@ -185,6 +193,16 @@ impl Anthropic {
             body["output_config"] = serde_json::json!({"effort": req.reasoning_effort.label()});
         }
         Ok(body)
+    }
+}
+
+fn anthropic_cache_control(ttl_seconds: u32) -> Result<serde_json::Value, ProviderError> {
+    match ttl_seconds {
+        0 | 300 => Ok(serde_json::json!({"type": "ephemeral"})),
+        3_600 => Ok(serde_json::json!({"type": "ephemeral", "ttl": "1h"})),
+        _ => Err(ProviderError::Configuration(
+            "Anthropic prompt-cache TTL was not capability-attested".into(),
+        )),
     }
 }
 
@@ -575,6 +593,33 @@ fn frame_boundary(buf: &str) -> Option<(usize, usize)> {
 
 #[async_trait::async_trait]
 impl Provider for Anthropic {
+    fn control_capabilities(&self) -> ProviderControlCapabilities {
+        let mut capabilities = ProviderControlCapabilities::default();
+        if self.prompt_cache {
+            capabilities
+                .cache_breakpoints
+                .extend([CacheBreakpoint::Rolling, CacheBreakpoint::Explicit]);
+            // The 5 minute form is the wire default. The 1 hour form is attested only for the
+            // first-party endpoint; compatible gateways commonly reject the `ttl` member.
+            capabilities.cache_ttl_seconds.insert(300);
+            capabilities
+                .cache_scopes
+                .extend([CacheScope::Request, CacheScope::Session]);
+            capabilities.cache_invalidates_on_tool_change = true;
+            if self.error_profile == ErrorProfile::Anthropic
+                && self.api_root.as_str() == DEFAULT_API_ROOT
+            {
+                capabilities.cache_ttl_seconds.insert(3_600);
+            }
+        }
+        if self.error_profile == ErrorProfile::Anthropic
+            && self.api_root.as_str() == DEFAULT_API_ROOT
+        {
+            capabilities.idempotent_requests = true;
+        }
+        capabilities
+    }
+
     fn effort_application(&self, req: &TurnRequest) -> EffortApplication {
         anthropic_effort_application(
             self.error_profile,
@@ -786,6 +831,7 @@ mod tests {
             cache_system: true,
             thinking_budget: 9_000,
             reasoning_effort: core_protocol::ReasoningEffort::Medium,
+            controls: Default::default(),
         }
     }
 

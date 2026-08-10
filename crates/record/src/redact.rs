@@ -187,6 +187,38 @@ pub fn redact_event(event: &Event) -> Event {
             snapshot: snapshot.clone(),
             inherited_from: inherited_from.clone(),
         },
+        // V2 values are configuration-plane projections, not interaction content. The record
+        // boundary rejects any credential-shaped nested string before this point; mutating a
+        // field here would break both the effective commitment and the checkpoint self-digest.
+        EventKind::TunablesSnapshotV2 {
+            version,
+            snapshot,
+            inherited_from,
+        } => EventKind::TunablesSnapshotV2 {
+            version: *version,
+            snapshot: snapshot.clone(),
+            inherited_from: inherited_from.clone(),
+        },
+        // The compiler receipt is a closed, content-free collection of bounded machine ids and
+        // digests. Mutating it here would break its canonical receipt digest and resume identity.
+        EventKind::PolicyBundleSnapshot {
+            version,
+            snapshot,
+            inherited_from,
+        } => EventKind::PolicyBundleSnapshot {
+            version: *version,
+            snapshot: snapshot.clone(),
+            inherited_from: inherited_from.clone(),
+        },
+        // Policy evidence has a closed content-free schema and passes its bounded machine-id and
+        // digest validator before redaction. Altering an identity here would break the outcome
+        // join, so preserve the validated payload byte-for-byte.
+        EventKind::PolicyDecision { evidence } => EventKind::PolicyDecision {
+            evidence: evidence.clone(),
+        },
+        EventKind::PolicyOutcome { evidence } => EventKind::PolicyOutcome {
+            evidence: evidence.clone(),
+        },
         EventKind::ModelSelected {
             provider_id,
             model_id,
@@ -317,6 +349,7 @@ pub fn redact_event(event: &Event) -> Event {
         | EventKind::TurnEnd { .. }
         | EventKind::SubmissionRejected { .. }
         | EventKind::UsdCeilingChanged { .. }
+        | EventKind::TurnCeilingChanged { .. }
         | EventKind::EffortChanged { .. }
         | EventKind::PolicyChanged { .. }
         | EventKind::Checkpoint { .. }

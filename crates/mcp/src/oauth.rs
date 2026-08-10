@@ -19,6 +19,74 @@ pub struct OAuthRefreshGrant {
     client_secret: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpOAuthCredentialMode {
+    Disabled,
+    Bearer,
+    RefreshToken,
+}
+
+/// Content-free lifecycle facts enforced by one remote MCP binding. This is deliberately separate
+/// from `OAuthRefreshGrant`, whose secrets cannot implement `Debug` or `Serialize`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct McpOAuthLifecyclePolicy {
+    credential_mode: McpOAuthCredentialMode,
+    refresh_before_expiry_when_capable: bool,
+    retry_once_after_unauthorized_when_capable: bool,
+    revoke_access_after_forbidden: bool,
+    expiry_skew_seconds: u64,
+    revocation_endpoint_configured: bool,
+}
+
+impl McpOAuthLifecyclePolicy {
+    pub const fn for_binding(
+        credential_configured: bool,
+        refresh_configured: bool,
+        revocation_endpoint_configured: bool,
+    ) -> Self {
+        let credential_mode = if refresh_configured {
+            McpOAuthCredentialMode::RefreshToken
+        } else if credential_configured {
+            McpOAuthCredentialMode::Bearer
+        } else {
+            McpOAuthCredentialMode::Disabled
+        };
+        Self {
+            credential_mode,
+            refresh_before_expiry_when_capable: refresh_configured,
+            retry_once_after_unauthorized_when_capable: refresh_configured,
+            revoke_access_after_forbidden: credential_configured || refresh_configured,
+            expiry_skew_seconds: crate::token::EXPIRY_SKEW_SECS,
+            revocation_endpoint_configured: refresh_configured && revocation_endpoint_configured,
+        }
+    }
+
+    pub const fn credential_mode(self) -> McpOAuthCredentialMode {
+        self.credential_mode
+    }
+
+    pub const fn refresh_before_expiry_when_capable(self) -> bool {
+        self.refresh_before_expiry_when_capable
+    }
+
+    pub const fn retry_once_after_unauthorized_when_capable(self) -> bool {
+        self.retry_once_after_unauthorized_when_capable
+    }
+
+    pub const fn revoke_access_after_forbidden(self) -> bool {
+        self.revoke_access_after_forbidden
+    }
+
+    pub const fn expiry_skew_seconds(self) -> u64 {
+        self.expiry_skew_seconds
+    }
+
+    pub const fn revocation_endpoint_configured(self) -> bool {
+        self.revocation_endpoint_configured
+    }
+}
+
 impl OAuthRefreshGrant {
     pub fn new(
         endpoint: McpHttpEndpoint,
@@ -48,6 +116,10 @@ impl OAuthRefreshGrant {
             client_id,
             client_secret,
         })
+    }
+
+    pub(crate) fn revocation_endpoint_configured(&self) -> bool {
+        self.revoke_endpoint.is_some()
     }
 }
 

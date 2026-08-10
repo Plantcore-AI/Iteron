@@ -8,6 +8,8 @@ use core_sched::BackoffPolicy;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 
+use super::ConfigOrigin;
+
 const MAX_RETRY_BASE_MS: u64 = 30_000;
 const MAX_RETRY_CAP_MS: u64 = 60_000;
 const MAX_RETRY_ATTEMPTS: u32 = 10;
@@ -53,6 +55,9 @@ impl RetryConfig {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RetryResolution {
     pub(crate) policy: BackoffPolicy,
+    pub(crate) base_origin: ConfigOrigin,
+    pub(crate) cap_origin: ConfigOrigin,
+    pub(crate) max_attempts_origin: ConfigOrigin,
     pub(crate) project_ignored: bool,
     pub(crate) trusted_override_present: bool,
 }
@@ -68,9 +73,22 @@ pub(crate) fn resolve_retry_policy(
     validate_policy(policy)?;
     Ok(RetryResolution {
         policy,
+        base_origin: field_origin(environment.base_ms, user.base_ms),
+        cap_origin: field_origin(environment.cap_ms, user.cap_ms),
+        max_attempts_origin: field_origin(environment.max_attempts, user.max_attempts),
         project_ignored: untrusted_project.is_some_and(|retry| !retry.is_empty()),
         trusted_override_present: !environment.is_empty() || !user.is_empty(),
     })
+}
+
+fn field_origin<T>(environment: Option<T>, user: Option<T>) -> ConfigOrigin {
+    if environment.is_some() {
+        ConfigOrigin::Environment
+    } else if user.is_some() {
+        ConfigOrigin::UserConfig
+    } else {
+        ConfigOrigin::Builtin
+    }
 }
 
 pub(crate) fn load_retry_environment() -> Result<RetryConfig, String> {
@@ -147,6 +165,9 @@ mod tests {
         assert_eq!(defaults.policy.base_ms, 500);
         assert_eq!(defaults.policy.cap_ms, 30_000);
         assert_eq!(defaults.policy.max_attempts, 6);
+        assert_eq!(defaults.base_origin, ConfigOrigin::Builtin);
+        assert_eq!(defaults.cap_origin, ConfigOrigin::Builtin);
+        assert_eq!(defaults.max_attempts_origin, ConfigOrigin::Builtin);
 
         let project = RetryConfig {
             base_ms: Some(1),
@@ -166,6 +187,9 @@ mod tests {
         assert_eq!(resolved.policy.base_ms, 25);
         assert_eq!(resolved.policy.cap_ms, 40);
         assert_eq!(resolved.policy.max_attempts, 4);
+        assert_eq!(resolved.base_origin, ConfigOrigin::UserConfig);
+        assert_eq!(resolved.cap_origin, ConfigOrigin::Environment);
+        assert_eq!(resolved.max_attempts_origin, ConfigOrigin::UserConfig);
         assert!(resolved.project_ignored);
         assert!(resolved.trusted_override_present);
 
@@ -293,6 +317,7 @@ mod tests {
                 cache_system: false,
                 thinking_budget: 0,
                 reasoning_effort: ReasoningEffort::Low,
+                controls: Default::default(),
             };
             provider.turn(&request, &mut |_| {}).await
         });

@@ -1,18 +1,20 @@
 use crate::{
     ActivationPredicate, AuthorityClass, CrossFieldRule, DefaultKind, DefaultResolver,
     DefaultValueRequirement, ExternalCeiling, FAMILY_SCHEMA_VERSION, ImplementationStatus,
-    OptimizationClass, ProviderRequirement, SearchPhase, SourceKind, SourceTrust, families,
+    OptimizationClass, ProviderRequirement, SearchPhase, families,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "validate/default_value.rs"]
 mod default_value;
+#[path = "validate/source.rs"]
+mod source;
 #[path = "validate/value.rs"]
 mod value;
 
 /// Stable identities retired because they duplicate another semantic family.
 const SEMANTIC_DUPLICATE_DENYLIST: &[&str] = &["delegation_depth", "workflow_spawn_cap"];
-const EXPECTED_EXTERNAL_CONSTRAINT_POLICIES: usize = 201;
+const EXPECTED_EXTERNAL_CONSTRAINT_POLICIES: usize = 198;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
@@ -159,7 +161,7 @@ fn validate_families(registry: &[crate::Family]) -> Result<(), RegistryError> {
     }
     for family in registry {
         validate_activation(family)?;
-        validate_source(family)?;
+        source::validate(family)?;
         validate_default(family)?;
         validate_requirements_and_slots(family)?;
         value::validate_family_value(family)?;
@@ -327,47 +329,6 @@ fn validate_activation(family: &crate::Family) -> Result<(), RegistryError> {
     valid
         .then_some(())
         .ok_or(RegistryError::InvalidActivation(family.id))
-}
-
-fn expected_trust(kind: SourceKind) -> SourceTrust {
-    match kind {
-        SourceKind::Cli
-        | SourceKind::OperatorInput
-        | SourceKind::RustBuilder
-        | SourceKind::UserConfig
-        | SourceKind::Environment => SourceTrust::Operator,
-        SourceKind::ProjectConfig | SourceKind::Catalog => SourceTrust::Repository,
-        SourceKind::Builtin | SourceKind::DerivedPolicy => SourceTrust::Builtin,
-        SourceKind::RuntimeObservation => SourceTrust::RuntimeObservation,
-        SourceKind::ExternalProvider => SourceTrust::ProviderAttested,
-        SourceKind::GovernedBundle => SourceTrust::GovernedBundle,
-        SourceKind::Registry => SourceTrust::RegistryDeclaration,
-    }
-}
-
-fn validate_source(family: &crate::Family) -> Result<(), RegistryError> {
-    let mut kinds = BTreeSet::new();
-    let valid = !family.source.bindings.is_empty()
-        && family.source.bindings.iter().all(|binding| {
-            !binding.locator.trim().is_empty()
-                && binding.trust == expected_trust(binding.kind)
-                && kinds.insert(binding.kind)
-                && (binding.kind != SourceKind::Registry
-                    || family.implementation_status == ImplementationStatus::Missing)
-        });
-    if !valid {
-        return Err(RegistryError::InvalidSource(family.id));
-    }
-    if family.implementation_status != ImplementationStatus::Missing
-        && family
-            .source
-            .bindings
-            .iter()
-            .all(|binding| binding.kind == SourceKind::Registry)
-    {
-        return Err(RegistryError::ImplementedRegistryOnly(family.id));
-    }
-    Ok(())
 }
 
 fn validate_default(family: &crate::Family) -> Result<(), RegistryError> {

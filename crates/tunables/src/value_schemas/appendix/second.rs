@@ -136,11 +136,19 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
     ),
     catalog_schema!(
         "lsp_server_language_selection",
-        1024,
+        64,
         [
             scalar_field!("language_id", true, text_domain!(1, 96, Identifier)),
             scalar_field!("server_id", true, text_domain!(1, 96, NamespacedId)),
             scalar_field!("executable", true, text_domain!(1, 4096, Path)),
+            list_field!(
+                "arguments",
+                true,
+                0,
+                128,
+                false,
+                text_domain!(1, 4096, Command)
+            ),
             list_field!(
                 "workspace_markers",
                 true,
@@ -158,9 +166,9 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             scalar_field!(
                 "request_timeout_milliseconds",
                 true,
-                int_domain!(1, 86_400_000, "milliseconds")
+                int_domain!(1, 120_000, "milliseconds")
             ),
-            scalar_field!("max_restarts", true, int_domain!(0, 64, "restarts")),
+            scalar_field!("max_restarts", true, int_domain!(0, 8, "restarts")),
             scalar_field!(
                 "backoff_base_milliseconds",
                 true,
@@ -169,7 +177,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             scalar_field!(
                 "backoff_cap_milliseconds",
                 true,
-                int_domain!(0, 3_600_000, "milliseconds")
+                int_domain!(0, 60_000, "milliseconds")
             )
         ],
         [

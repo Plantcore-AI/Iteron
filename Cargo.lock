@@ -447,6 +447,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "sha2",
  "toml",
  "walkdir",
 ]
@@ -457,6 +458,8 @@ version = "0.0.2"
 dependencies = [
  "clap",
  "core-evolve",
+ "core-protocol",
+ "core-record",
  "core-sandbox",
  "core-tunables",
  "core-verify",
@@ -475,6 +478,7 @@ name = "core-evolve"
 version = "0.0.2"
 dependencies = [
  "core-protocol",
+ "core-record",
  "serde",
  "serde_json",
  "sha2",
@@ -531,6 +535,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -554,6 +559,7 @@ version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -582,12 +588,15 @@ dependencies = [
  "core-obs",
  "core-protocol",
  "core-tunables",
+ "getrandom 0.4.3",
  "hex",
  "libc",
+ "ring",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]

@@ -1,7 +1,6 @@
 use super::{
     MAX_TRAJECTORY_REGISTRY_BYTES, MAX_TRAJECTORY_REGISTRY_ENVELOPE_BYTES,
-    MAX_TRAJECTORY_REGISTRY_RECORD_BYTES, RegistryRecord, TrajectoryEnvelope,
-    TrajectoryRegistryError,
+    MAX_TRAJECTORY_REGISTRY_RECORD_BYTES, TrajectoryEnvelope, TrajectoryRegistryError,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -168,7 +167,7 @@ pub(super) fn encode_envelope(
     }
 }
 
-pub(super) fn encode_record(record: &RegistryRecord) -> Result<Vec<u8>, TrajectoryRegistryError> {
+pub(super) fn encode_record<T: Serialize>(record: &T) -> Result<Vec<u8>, TrajectoryRegistryError> {
     match bounded_json(
         record,
         MAX_TRAJECTORY_REGISTRY_RECORD_BYTES.saturating_sub(1),

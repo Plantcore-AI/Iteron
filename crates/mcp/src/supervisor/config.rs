@@ -14,9 +14,9 @@ pub const MAX_MCP_LAUNCH_ARG_BYTES: usize = 16 * 1024;
 pub const MAX_MCP_LAUNCH_BYTES: usize = 64 * 1024;
 pub const MAX_MCP_SENSITIVE_ENV_NAMES: usize = 256;
 pub const MAX_MCP_ENV_NAME_BYTES: usize = 256;
-pub const MAX_MCP_DEADLINE_MS: u64 = 3_600_000;
+pub const MAX_MCP_DEADLINE_MS: u64 = crate::MAX_MCP_DEADLINE_MILLISECONDS;
 pub const DEFAULT_MCP_OPERATION_DEADLINE_MS: u64 = 120_000;
-pub const MAX_MCP_OPERATION_DEADLINE_MS: u64 = 600_000;
+pub const MAX_MCP_OPERATION_DEADLINE_MS: u64 = crate::MAX_MCP_DEADLINE_MILLISECONDS;
 
 /// Immutable, bounded process binding. It intentionally has no `Debug` implementation because
 /// command arguments are operator configuration and may contain private paths or opaque values.
@@ -156,7 +156,8 @@ pub struct McpTimeouts {
     handshake: Duration,
     discovery: Duration,
     request: Duration,
-    operation: Duration,
+    startup_operation: Duration,
+    tool_operation: Duration,
 }
 
 impl Default for McpTimeouts {
@@ -165,7 +166,8 @@ impl Default for McpTimeouts {
             handshake: Duration::from_secs(15),
             discovery: Duration::from_secs(60),
             request: Duration::from_secs(60),
-            operation: Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS),
+            startup_operation: Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS),
+            tool_operation: Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS),
         }
     }
 }
@@ -183,7 +185,8 @@ impl McpTimeouts {
             handshake,
             discovery,
             request,
-            operation: Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS),
+            startup_operation: Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS),
+            tool_operation: Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS),
         })
     }
 
@@ -195,7 +198,29 @@ impl McpTimeouts {
             operation,
             MAX_MCP_OPERATION_DEADLINE_MS,
         )?;
-        self.operation = operation;
+        self.startup_operation = operation;
+        self.tool_operation = operation;
+        Ok(self)
+    }
+
+    /// Install distinct aggregate budgets for lazy startup/discovery and effecting calls.
+    pub fn with_operation_deadlines(
+        mut self,
+        startup: Duration,
+        tool: Duration,
+    ) -> Result<Self, McpError> {
+        validate_deadline(
+            "startup_operation_deadline",
+            startup,
+            MAX_MCP_OPERATION_DEADLINE_MS,
+        )?;
+        validate_deadline(
+            "tool_operation_deadline",
+            tool,
+            MAX_MCP_OPERATION_DEADLINE_MS,
+        )?;
+        self.startup_operation = startup;
+        self.tool_operation = tool;
         Ok(self)
     }
 
@@ -211,8 +236,12 @@ impl McpTimeouts {
         self.request
     }
 
-    pub fn operation(self) -> Duration {
-        self.operation
+    pub fn startup_operation(self) -> Duration {
+        self.startup_operation
+    }
+
+    pub fn tool_operation(self) -> Duration {
+        self.tool_operation
     }
 }
 
@@ -270,7 +299,7 @@ impl McpCancellation {
         self.cancelled.load(Ordering::Acquire)
     }
 
-    pub(crate) async fn cancelled(&self) {
+    pub async fn cancelled(&self) {
         let mut receiver = self.sender.subscribe();
         if *receiver.borrow_and_update() {
             return;
@@ -316,9 +345,10 @@ mod tests {
         );
         let defaults = McpTimeouts::default();
         assert_eq!(
-            defaults.operation(),
+            defaults.startup_operation(),
             Duration::from_millis(DEFAULT_MCP_OPERATION_DEADLINE_MS)
         );
+        assert_eq!(defaults.startup_operation(), defaults.tool_operation());
         assert!(defaults.with_operation_deadline(Duration::ZERO).is_err());
         assert!(
             defaults

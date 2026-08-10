@@ -1,15 +1,15 @@
 //! Live, lazy LSP query tools over the accepted `core-lsp` protocol/state substrate.
 //!
-//! Each call starts one known language adapter only after the kernel admits CodeExecuting,
-//! confines it with the persistent Linux bubblewrap backend, completes a bounded LSP lifecycle,
-//! and rechecks the target bytes. Natural results join the child before returning; at the absolute
-//! user-visible deadline the result is Unknown while runtime-owned cleanup continues. Long-lived
-//! reuse, automatic restart, dependency-graph freshness and non-Linux process confinement remain
-//! explicit gaps.
+//! Known language adapters are admitted as CodeExecuting, confined by Linux bubblewrap or macOS
+//! Seatbelt, and owned by one bounded session/workspace pool. Requests recheck target bytes and
+//! carry explicit dependency-freshness attribution; timeout, cancellation, restart, and cleanup
+//! stay owner-held.
 
 #[cfg(unix)]
 mod capability;
 mod input;
+mod policy;
+mod pool;
 mod projection;
 mod session;
 mod supervisor;
@@ -19,18 +19,33 @@ use crate::{Registry, ToolError, ToolExecution, effectfut};
 use core_lsp::intel::Position;
 use core_protocol::{Capability, Purity, ToolResult, ToolSpec, ToolUse, Trust};
 use input::SourceDocument;
+use pool::Launcher;
 use serde_json::{Value, json};
-use session::Launcher;
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use supervisor::run_query;
 
 const DEFAULT_LOCATION_LIMIT: usize = 50;
 const MAX_TOOL_OUTPUT_BYTES: usize = 1024 * 1024;
-const LSP_TOOL_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(70);
-const LSP_TOOL_ACTIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(67);
 const LSP_TOOL_CLEANUP_RESERVE: std::time::Duration = std::time::Duration::from_secs(3);
+
+pub use policy::{
+    LspLanguageRoute, LspPolicyError, LspRecoveryPolicy, LspRuntimePolicy,
+    MAX_LSP_BACKOFF_MILLISECONDS, MAX_LSP_POOL_SERVERS, MAX_LSP_REQUEST_TIMEOUT_MILLISECONDS,
+    MAX_LSP_RESTARTS,
+};
+
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct LspHealth {
+    pub schema_version: u8,
+    pub configured_routes: usize,
+    pub pool_slots: usize,
+    pub running_servers: usize,
+    pub restart_count: u64,
+    pub unknown_slots: usize,
+    pub freshness_attested_servers: usize,
+    pub freshness_unattested_servers: usize,
+}
 
 #[derive(Clone, Copy, Debug)]
 struct LspDeadlines {
@@ -39,15 +54,11 @@ struct LspDeadlines {
 }
 
 impl LspDeadlines {
-    fn from_start(started: tokio::time::Instant) -> Self {
-        debug_assert_eq!(
-            LSP_TOOL_ACTIVE_TIMEOUT + LSP_TOOL_CLEANUP_RESERVE,
-            LSP_TOOL_TOTAL_TIMEOUT
-        );
-        let total = started + LSP_TOOL_TOTAL_TIMEOUT;
+    fn from_start(started: tokio::time::Instant, request_timeout_milliseconds: u64) -> Self {
+        let active = started + std::time::Duration::from_millis(request_timeout_milliseconds);
         Self {
-            active: total - LSP_TOOL_CLEANUP_RESERVE,
-            total,
+            active,
+            total: active + LSP_TOOL_CLEANUP_RESERVE,
         }
     }
 }
@@ -68,6 +79,8 @@ enum LspToolError {
     SourceNotUtf8,
     #[error("file type has no built-in language-server adapter")]
     UnsupportedLanguage,
+    #[error("selected language-server route has no matching workspace marker")]
+    RouteWorkspaceMismatch,
     #[error("file path cannot be represented as a file URI")]
     InvalidFileUri,
     #[error("requested UTF-16 position is outside the document")]
@@ -78,6 +91,14 @@ enum LspToolError {
     IdentityUnavailable,
     #[error("language-server process identity space is exhausted")]
     IdentityExhausted,
+    #[error("language-server runtime policy is invalid")]
+    InvalidPolicy,
+    #[error("language-server runtime policy is immutable after first activation")]
+    PolicyLocked,
+    #[error("language-server pool reached its fixed {limit}-server ceiling")]
+    PoolFull { limit: usize },
+    #[error("language-server restart budget exhausted after {attempts} attempts")]
+    RestartBudgetExhausted { attempts: u32 },
     #[error("confined persistent processes are unavailable; refusing an unconfined server")]
     SandboxUnavailable,
     #[error("language-server spawn outcome is unknown")]
@@ -173,42 +194,78 @@ pub struct LanguageServerRoute {
     pub command: Vec<String>,
 }
 
+#[derive(Clone)]
+pub struct LspControl {
+    launcher: Arc<Launcher>,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{message}")]
+pub struct LspControlError {
+    pub message: String,
+}
+
+impl LspControl {
+    pub fn configure_policy(&self, policy: LspRuntimePolicy) -> Result<(), LspControlError> {
+        self.launcher
+            .configure_policy(policy)
+            .map_err(|error| LspControlError {
+                message: error.to_string(),
+            })
+    }
+
+    pub fn policy(&self) -> LspRuntimePolicy {
+        self.launcher.policy()
+    }
+
+    pub async fn clean(&self) -> Vec<(String, bool)> {
+        self.launcher.clean().await
+    }
+
+    pub async fn health(&self) -> LspHealth {
+        self.launcher.health().await
+    }
+}
+
 pub(crate) fn register(
     registry: &mut Registry,
     configured: Vec<LanguageServerRoute>,
-) -> Result<(), ToolError> {
-    // A tool that is guaranteed to refuse is prompt pollution, not a capability. Linux remains
-    // the only platform with the required persistent confinement backend.
-    if !cfg!(target_os = "linux") {
-        return Ok(());
+) -> Result<Option<LspControl>, ToolError> {
+    // A tool that is guaranteed to refuse is prompt pollution, not a capability. Windows needs a
+    // Job Object + pipe owner before this long-lived CodeExecuting surface can be admitted.
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+        return Ok(None);
     }
-    let launcher = Arc::new(Launcher::new().map_err(|error| {
+    let policy = LspRuntimePolicy::with_command_overrides(configured).map_err(|error| {
+        ToolError::Registration(format!("invalid language-server policy: {error}"))
+    })?;
+    let launcher = Arc::new(Launcher::new(policy).map_err(|error| {
         ToolError::Registration(format!("cannot initialize LSP launcher: {error}"))
     })?);
-    let routes = Arc::new(validate_routes(configured)?);
     let sensitive_env_names = registry.sensitive_env_names_handle();
+    let tool_launcher = Arc::clone(&launcher);
     registry.register_external_effect(
         ToolSpec {
             name: "lsp_query".into(),
             description: "Query definition, references, or hover through a lazily started, \
                           confined language server. The third-party server is admitted as \
                           CodeExecuting, target and output bytes are bounded, target freshness is \
-                          rechecked, and the child is joined before a natural completion."
+                          rechecked, and a bounded session/workspace server pool owns reuse, \
+                          cancellation, restart, and cleanup."
                 .into(),
             input_schema: input_schema(),
             purity: Purity::Effecting,
             capability: Capability::CodeExecuting,
         },
         move |call, root| {
-            let launcher = Arc::clone(&launcher);
+            let launcher = Arc::clone(&tool_launcher);
             let sensitive_env_names = Arc::clone(&sensitive_env_names);
-            let routes = Arc::clone(&routes);
             effectfut::box_it(async move {
                 let names = sensitive_env_names
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone();
-                match execute(call.clone(), root, &launcher, names, &routes).await {
+                match execute(call.clone(), root, launcher, names).await {
                     Ok(content) => ToolExecution::Definite(success(call.id, content)),
                     Err((error, unknown)) => {
                         let result = crate::err_result(call.id, error.to_string());
@@ -222,29 +279,31 @@ pub(crate) fn register(
             })
         },
     )?;
-    Ok(())
+    Ok(Some(LspControl { launcher }))
 }
 
 async fn execute(
     call: ToolUse,
     root: PathBuf,
-    launcher: &Launcher,
+    launcher: Arc<Launcher>,
     sensitive_env_names: Vec<String>,
-    routes: &BTreeMap<String, String>,
 ) -> Result<String, (LspToolError, bool)> {
-    if !cfg!(target_os = "linux") {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
         return Err((LspToolError::SandboxUnavailable, false));
     }
-    let deadlines = LspDeadlines::from_start(tokio::time::Instant::now());
-    execute_inner(call, root, launcher, sensitive_env_names, routes, deadlines).await
+    let policy = launcher.policy();
+    let deadlines = LspDeadlines::from_start(
+        tokio::time::Instant::now(),
+        policy.recovery.request_timeout_milliseconds,
+    );
+    execute_inner(call, root, launcher, sensitive_env_names, deadlines).await
 }
 
 async fn execute_inner(
     call: ToolUse,
     root: PathBuf,
-    launcher: &Launcher,
+    launcher: Arc<Launcher>,
     sensitive_env_names: Vec<String>,
-    routes: &BTreeMap<String, String>,
     deadlines: LspDeadlines,
 ) -> Result<String, (LspToolError, bool)> {
     let query_name = call
@@ -260,8 +319,9 @@ async fn execute_inner(
         .ok_or((LspToolError::InvalidArguments, false))?;
     let line = bounded_u32(&call.input, "line")?;
     let character = bounded_u32(&call.input, "character")?;
+    let routes = launcher.routes();
     let document =
-        tokio::time::timeout_at(deadlines.active, SourceDocument::load(&root, path, routes))
+        tokio::time::timeout_at(deadlines.active, SourceDocument::load(&root, path, &routes))
             .await
             .map_err(|_| (LspToolError::OperationTimeout, false))?
             .map_err(|error| (error, false))?;
@@ -290,7 +350,7 @@ async fn execute_inner(
         _ => return Err((LspToolError::InvalidArguments, false)),
     };
     let live = run_query(
-        launcher,
+        Arc::clone(&launcher),
         Arc::clone(&document),
         query,
         sensitive_env_names,
@@ -305,14 +365,23 @@ async fn execute_inner(
     let normalized =
         normalize(query, live.value, document.root()).map_err(|error| (error, false))?;
     let output = json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "query": query.label(),
         "server": document.server_label(),
         "server_epoch": live.server_epoch,
+        "server_id": live.server_id,
+        "server_reused": live.reused_server,
+        "server_restart_count": live.restart_count,
         "backend": live.backend,
         "document_sha256": document.digest(),
         "target_freshness_rechecked": true,
         "dependency_freshness": "server_observed_not_attested",
+        "freshness_attribution": {
+            "target": "sha256_rechecked_after_response",
+            "dependencies": "server_observed_not_attested",
+            "workspace": "canonical_session_root",
+            "server_epoch": live.server_epoch
+        },
         "run_genesis_bound": false,
         "result": normalized
     });
@@ -330,45 +399,6 @@ async fn execute_inner(
         return Err((LspToolError::OperationTimeout, false));
     }
     Ok(rendered)
-}
-
-fn validate_routes(
-    routes: Vec<LanguageServerRoute>,
-) -> Result<BTreeMap<String, String>, ToolError> {
-    let mut validated = BTreeMap::new();
-    for route in routes {
-        if ![
-            "rust",
-            "typescript",
-            "typescriptreact",
-            "javascript",
-            "javascriptreact",
-            "python",
-        ]
-        .contains(&route.language.as_str())
-            || route.command.is_empty()
-            || route.command.len() > 128
-            || route.command.iter().any(|part| {
-                part.is_empty() || part.len() > 4096 || part.chars().any(char::is_control)
-            })
-            || validated.contains_key(&route.language)
-        {
-            return Err(ToolError::Registration(format!(
-                "invalid language-server route for {:?}",
-                route.language
-            )));
-        }
-        // The sandbox's persistent API accepts one shell command. Single-quote every argv part;
-        // the resulting shell sees the exact vector and no metacharacter from a manifest.
-        let command = route
-            .command
-            .iter()
-            .map(|part| format!("'{}'", part.replace('\'', "'\\''")))
-            .collect::<Vec<_>>()
-            .join(" ");
-        validated.insert(route.language, command);
-    }
-    Ok(validated)
 }
 
 fn normalize(

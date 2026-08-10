@@ -118,6 +118,9 @@ pub struct SessionMeta {
     /// legacy caches are replayed so a resume/list cannot silently drop logical history.
     #[serde(default)]
     pub projection_schema_version: u32,
+    /// Revocation generation against which every content-bearing projection was materialized.
+    #[serde(default)]
+    pub content_revocation_generation: u64,
     pub run_id: RunId,
     pub tenant: TenantId,
     pub cwd: PathBuf,
@@ -431,9 +434,23 @@ fn read_chain_with_limits(
                 computed,
             });
         }
+        // Resolve only after the immutable line hash is verified. A revoked/missing handle is a
+        // terminal read failure for projections, resume, and every fork expansion.
+        let mut payload = cl.payload;
+        let runs_dir = path.parent().ok_or_else(|| {
+            RecordError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?;
+        crate::content_store::hydrate_event_payload(
+            runs_dir,
+            &TenantId(cl.tenant.clone()),
+            &mut payload,
+        )?;
         // Unknown event kinds deserialize to `EventKind::Unknown` (R5-review Risk 6), so a newer
         // writer's kinds do not fail the scan.
-        let event: Event = serde_json::from_value(cl.payload)?;
+        let event: Event = serde_json::from_value(payload)?;
         validate_event_bounds(&event)?;
         genesis_tunables.observe(cl.seq, &event.kind)?;
         prev = cl.hash.clone();
@@ -661,7 +678,20 @@ fn read_genesis_projection(path: &Path) -> Option<GenesisProjection> {
     {
         return None;
     }
-    let Ok(event) = serde_json::from_value::<Event>(chain.payload) else {
+    let mut payload = chain.payload;
+    let Some(runs_dir) = path.parent() else {
+        return None;
+    };
+    if crate::content_store::hydrate_event_payload(
+        runs_dir,
+        &TenantId(chain.tenant.clone()),
+        &mut payload,
+    )
+    .is_err()
+    {
+        return None;
+    }
+    let Ok(event) = serde_json::from_value::<Event>(payload) else {
         return None;
     };
     match event.kind {
@@ -788,6 +818,8 @@ fn projection_is_current(runs_dir: &Path, meta: &SessionMeta) -> bool {
         .is_some_and(|mtime| mtime == (meta.updated_at, meta.updated_at_subsec_nanos));
     meta.pricing_schema_version == 2
         && meta.projection_schema_version == 3
+        && crate::content_store::content_revocation_generation(runs_dir, &meta.tenant)
+            .is_ok_and(|generation| generation == meta.content_revocation_generation)
         && meta.record_bytes > 0
         && digest_matches
         && tail_matches
@@ -959,6 +991,9 @@ fn load_session_projection(
         meta: SessionMeta {
             pricing_schema_version: 2,
             projection_schema_version: 3,
+            content_revocation_generation: crate::content_store::content_revocation_generation(
+                runs_dir, &tenant,
+            )?,
             run_id: run.clone(),
             tenant,
             cwd,
@@ -1370,6 +1405,8 @@ pub struct PruneReport {
     pub active: Vec<RunId>,
     /// Named by the policy, kept because a retained fork replays through this run's prefix.
     pub ancestors: Vec<RunId>,
+    /// Named by the policy, kept because a production derivative still owns private handles.
+    pub derivatives: Vec<RunId>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1382,6 +1419,8 @@ pub enum DeleteSessionError {
     Active(String),
     #[error("session {run:?} is retained by descendant sessions: {descendants}")]
     HasDescendants { run: String, descendants: String },
+    #[error("session {run:?} is retained by {owners} external private derivative owner(s)")]
+    HasDerivatives { run: String, owners: u32 },
 }
 
 /// Delete exactly one inactive session and its rebuildable projection.
@@ -1423,14 +1462,59 @@ pub fn delete(runs_dir: &Path, tenant: &TenantId, run: &RunId) -> Result<(), Del
         .map_err(RecordError::from)?;
     file.try_lock()
         .map_err(|_| DeleteSessionError::Active(run.0.clone()))?;
-    std::fs::remove_file(&rollout).map_err(RecordError::from)?;
+    let content_release =
+        match crate::content_store::ExactRunContentRelease::prepare(runs_dir, tenant, run) {
+            Ok(guard) => guard,
+            Err(crate::ContentStoreError::RetainedByDerivative { owners, .. }) => {
+                return Err(DeleteSessionError::HasDerivatives {
+                    run: run.0.clone(),
+                    owners,
+                });
+            }
+            Err(crate::ContentStoreError::ActiveWriter { .. }) => {
+                return Err(DeleteSessionError::Active(run.0.clone()));
+            }
+            Err(error) => return Err(RecordError::from(error).into()),
+        };
+    // A sidecar is rebuildable while the journal still exists. Removing it first makes every
+    // crash boundary either fully recoverable from the journal or resumable from the reverse
+    // content-reference graph.
     let sidecar = per_run_meta_path(runs_dir, run)?;
     if let Err(error) = std::fs::remove_file(sidecar)
         && error.kind() != io::ErrorKind::NotFound
     {
         return Err(RecordError::from(error).into());
     }
+    std::fs::remove_file(&rollout).map_err(RecordError::from)?;
+    content_release.commit().map_err(RecordError::from)?;
+    complete_deleted_session_cleanup(runs_dir, run)?;
     drop(file);
+    Ok(())
+}
+
+/// Finish rebuildable projection cleanup after the authoritative journal has been unlinked.
+///
+/// An erasure operation can crash between the journal unlink and sidecar/index cleanup. This
+/// idempotent boundary lets its durable receipt resume without claiming stale projection bytes are
+/// gone. Cleanup always refuses while the journal still exists.
+pub(crate) fn complete_deleted_session_cleanup(
+    runs_dir: &Path,
+    run: &RunId,
+) -> Result<(), RecordError> {
+    let rollout = rollout_path(runs_dir, run)?;
+    if rollout.try_exists()? {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "session journal still exists; projection cleanup refused",
+        )
+        .into());
+    }
+    let sidecar = per_run_meta_path(runs_dir, run)?;
+    if let Err(error) = std::fs::remove_file(sidecar)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        return Err(RecordError::from(error));
+    }
     merge_rewrite_index(runs_dir, [])?;
     Ok(())
 }
@@ -1453,12 +1537,15 @@ pub fn prune(
     prune_at(runs_dir, tenant, policy, now_secs())
 }
 
-fn prune_at(
+pub(crate) fn prune_at(
     runs_dir: &Path,
     tenant: &TenantId,
     policy: &PrunePolicy,
     now: u64,
 ) -> Result<PruneReport, RecordError> {
+    if !policy.dry_run {
+        crate::content_store::release_private_content_for_absent_runs(runs_dir, tenant)?;
+    }
     let metas = list(runs_dir, tenant);
     let total = metas.len();
     if policy.max_age_secs.is_none() && policy.keep_last.is_none() {
@@ -1518,44 +1605,58 @@ fn prune_at(
         }
         let run = meta.run_id.clone();
         let rollout = rollout_path(runs_dir, &run)?;
-        if !rollout_is_idle(&rollout) {
+        let Some(_journal_lock) = lock_idle_rollout(&rollout) else {
             report.active.push(run);
             continue;
-        }
+        };
+        let content_release =
+            match crate::content_store::ExactRunContentRelease::prepare(runs_dir, tenant, &run) {
+                Ok(guard) => guard,
+                Err(crate::ContentStoreError::RetainedByDerivative { .. }) => {
+                    report.derivatives.push(run);
+                    continue;
+                }
+                Err(crate::ContentStoreError::ActiveWriter { .. }) => {
+                    report.active.push(run);
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
         if !policy.dry_run {
-            std::fs::remove_file(&rollout)?;
-            // The sidecar is a rebuildable projection of a record that no longer exists.
+            // The projection goes first. Once the journal is durably absent, the reverse reference
+            // graph is sufficient to finish key shredding after any crash boundary.
             let sidecar = per_run_meta_path(runs_dir, &run)?;
             if let Err(error) = std::fs::remove_file(&sidecar)
                 && error.kind() != io::ErrorKind::NotFound
             {
                 return Err(error.into());
             }
+            std::fs::remove_file(&rollout)?;
+            content_release.commit()?;
         }
         report.removed.push(run);
     }
     report.retained = total.saturating_sub(report.removed.len());
-    if !policy.dry_run && !report.removed.is_empty() {
+    if !policy.dry_run {
         // Drop the deleted runs from the compact index in one atomic rewrite. `merge_rewrite_index`
-        // re-reads which rollouts exist, so an entry whose journal is gone is not carried over.
+        // re-reads which rollouts exist, so an entry whose journal is gone is not carried over. Do
+        // this even when this pass removed nothing: that is the recovery pass after a crash which
+        // unlinked its last selected journal before reaching the index rewrite.
         merge_rewrite_index(runs_dir, [])?;
     }
     Ok(report)
 }
 
-/// True when no other process holds this rollout's exclusive writer lock. A live run is never
-/// garbage; the probe releases the lock immediately and only gates a delete this process is about
-/// to perform, so it is a guard, not a claim of ownership.
-fn rollout_is_idle(path: &Path) -> bool {
+/// Acquire the rollout's exclusive writer lock for the complete prune mutation. A live run is
+/// never garbage, and retaining the descriptor across sidecar plus journal unlink closes the
+/// probe/delete race where a writer could otherwise start between those two operations.
+fn lock_idle_rollout(path: &Path) -> Option<std::fs::File> {
     let Ok(file) = OpenOptions::new().read(true).append(true).open(path) else {
-        return false;
+        return None;
     };
     match file.try_lock() {
-        Ok(()) => {
-            let _ = file.unlock();
-            true
-        }
-        Err(_) => false,
+        Ok(()) => Some(file),
+        Err(_) => None,
     }
 }
 
@@ -1598,8 +1699,8 @@ pub fn fork_with_tunables_snapshot(
     expected: &core_protocol::RunGenesisTunablesSnapshot,
     legacy: tunables::LegacyTunablesPolicy,
 ) -> Result<(RunId, tunables::TunablesCompatibility), RecordError> {
-    let (child, compatibility) =
-        fork_internal(runs_dir, parent, at, tenant, Some((expected, legacy)))?;
+    let expected = ForkTunablesExpectation::V1(expected, legacy);
+    let (child, compatibility) = fork_internal(runs_dir, parent, at, tenant, Some(expected))?;
     Ok((
         child,
         compatibility.expect("checked fork always computes a compatibility result"),
@@ -1615,8 +1716,24 @@ pub fn fork_with_resolved_tunables(
     resolved: &core_tunables::ResolvedTunableSet,
     legacy: tunables::LegacyTunablesPolicy,
 ) -> Result<(RunId, tunables::TunablesCompatibility), RecordError> {
-    let expected = tunables::snapshot_from_resolved(resolved)?;
-    fork_with_tunables_snapshot(runs_dir, parent, at, tenant, &expected, legacy)
+    let expected = ForkTunablesExpectation::Resolved(resolved, legacy);
+    let (child, compatibility) = fork_internal(runs_dir, parent, at, tenant, Some(expected))?;
+    Ok((
+        child,
+        compatibility.expect("checked fork always computes a compatibility result"),
+    ))
+}
+
+#[derive(Clone, Copy)]
+enum ForkTunablesExpectation<'a> {
+    V1(
+        &'a core_protocol::RunGenesisTunablesSnapshot,
+        tunables::LegacyTunablesPolicy,
+    ),
+    Resolved(
+        &'a core_tunables::ResolvedTunableSet,
+        tunables::LegacyTunablesPolicy,
+    ),
 }
 
 fn fork_internal(
@@ -1624,10 +1741,7 @@ fn fork_internal(
     parent: &RunId,
     at: Seq,
     tenant: &TenantId,
-    expected: Option<(
-        &core_protocol::RunGenesisTunablesSnapshot,
-        tunables::LegacyTunablesPolicy,
-    )>,
+    expected: Option<ForkTunablesExpectation<'_>>,
 ) -> Result<(RunId, Option<tunables::TunablesCompatibility>), RecordError> {
     let parent_path = rollout_path(runs_dir, parent)?;
     // Read + verify the parent chain exactly once under the same cumulative budget later used for
@@ -1637,15 +1751,20 @@ fn fork_internal(
     if let Some(first) = parent_lines.first() {
         ensure_tenant(tenant, &first.tenant.0, first.seq.0)?;
     }
-    let parent_snapshot =
-        genesis_tunables_event(&parent_lines).map(|(snapshot, _)| snapshot.clone());
-    let compatibility = if let Some((expected, legacy)) = expected {
+    let parent_snapshot = genesis_tunables_event(&parent_lines).map(|(snapshot, _)| snapshot);
+    let parent_policy_snapshot =
+        genesis_policy_bundle_event(&parent_lines).map(|(snapshot, _)| snapshot);
+    let compatibility = if let Some(expected) = expected {
         let recorded = checked_genesis_tunables(&parent_lines)?;
-        Some(tunables::check_compatibility(
-            recorded.as_ref(),
-            expected,
-            legacy,
-        )?)
+        Some(match expected {
+            ForkTunablesExpectation::V1(expected, legacy) => {
+                let expected = tunables::TunablesCheckpoint::V1(expected.clone());
+                tunables::check_checkpoint_compatibility(recorded.as_ref(), &expected, legacy)?
+            }
+            ForkTunablesExpectation::Resolved(resolved, legacy) => {
+                tunables::check_resolved_compatibility(recorded.as_ref(), resolved, legacy)?
+            }
+        })
     } else {
         None
     };
@@ -1788,9 +1907,24 @@ fn fork_internal(
     };
     if let Some(snapshot) = parent_snapshot {
         let inherited = tunables::inherited_from(&parent.0, &snapshot);
-        rollout.append_genesis_snapshot(&genesis, snapshot, Some(inherited))?;
+        rollout.append_genesis_checkpoint(&genesis, snapshot, Some(inherited))?;
     } else {
         rollout.append(&genesis)?;
+    }
+    if let Some(snapshot) = parent_policy_snapshot {
+        let inherited_from = Some(core_protocol::RunGenesisPolicyBundleInheritance {
+            parent_run: parent.0.clone(),
+            parent_receipt_digest_sha256: snapshot.receipt_digest_sha256.clone(),
+        });
+        rollout.append(&Event {
+            seq: Seq::ZERO,
+            turn: TurnId(0),
+            kind: EventKind::PolicyBundleSnapshot {
+                version: core_protocol::RunGenesisPolicyBundleVersion::V1,
+                snapshot,
+                inherited_from,
+            },
+        })?;
     }
     if let Some(max_microusd) = max_microusd {
         rollout.append(&Event {
@@ -1800,6 +1934,17 @@ fn fork_internal(
                 version: RuntimePolicyEventVersion::V1,
                 source: RuntimePolicySource::Fork,
                 max_microusd,
+            },
+        })?;
+    }
+    if let Some(max_turns) = inherited_policy.turn_ceiling {
+        rollout.append(&Event {
+            seq: Seq::ZERO,
+            turn: TurnId(0),
+            kind: EventKind::TurnCeilingChanged {
+                version: RuntimePolicyEventVersion::V1,
+                source: RuntimePolicySource::Fork,
+                max_turns,
             },
         })?;
     }
@@ -1986,6 +2131,7 @@ fn expand_scoped_from(
             )?;
         }
         validate_fork_tunables_inheritance(&lines, &parent, &parent_lines)?;
+        validate_fork_policy_bundle_inheritance(&lines, &parent, &parent_lines)?;
         let pinned_line = parent_lines
             .iter()
             .find(|l| l.seq.0 == *fa)
@@ -2046,7 +2192,7 @@ fn expand_scoped_from(
 fn genesis_tunables_event(
     lines: &[ReadLine],
 ) -> Option<(
-    &core_protocol::RunGenesisTunablesSnapshot,
+    tunables::TunablesCheckpoint,
     Option<&core_protocol::RunGenesisTunablesInheritance>,
 )> {
     match lines.get(1).map(|line| &line.event.kind) {
@@ -2054,14 +2200,41 @@ fn genesis_tunables_event(
             snapshot,
             inherited_from,
             ..
-        }) => Some((snapshot, inherited_from.as_ref())),
+        }) => Some((
+            tunables::TunablesCheckpoint::V1(snapshot.clone()),
+            inherited_from.as_ref(),
+        )),
+        Some(EventKind::TunablesSnapshotV2 {
+            snapshot,
+            inherited_from,
+            ..
+        }) => Some((
+            tunables::TunablesCheckpoint::V2(snapshot.clone()),
+            inherited_from.as_ref(),
+        )),
+        _ => None,
+    }
+}
+
+fn genesis_policy_bundle_event(
+    lines: &[ReadLine],
+) -> Option<(
+    core_protocol::RunGenesisPolicyBundleSnapshot,
+    Option<&core_protocol::RunGenesisPolicyBundleInheritance>,
+)> {
+    match lines.get(2).map(|line| &line.event.kind) {
+        Some(EventKind::PolicyBundleSnapshot {
+            snapshot,
+            inherited_from,
+            ..
+        }) => Some((snapshot.clone(), inherited_from.as_ref())),
         _ => None,
     }
 }
 
 fn checked_genesis_tunables(
     lines: &[ReadLine],
-) -> Result<Option<core_protocol::RunGenesisTunablesSnapshot>, RecordError> {
+) -> Result<Option<tunables::TunablesCheckpoint>, RecordError> {
     let mut state = tunables::GenesisTunablesState::default();
     for line in lines {
         state.observe(line.seq.0, &line.event.kind)?;
@@ -2086,7 +2259,7 @@ fn validate_fork_tunables_inheritance(
         (Some((child_snapshot, Some(binding))), Some((parent_snapshot, _)))
             if binding.parent_run == parent.0
                 && binding.parent_snapshot_digest_sha256
-                    == parent_snapshot.snapshot_digest_sha256
+                    == parent_snapshot.snapshot_digest_sha256()
                 && child_snapshot == parent_snapshot =>
         {
             Ok(())
@@ -2095,6 +2268,33 @@ fn validate_fork_tunables_inheritance(
             reason: "fork tunables inheritance does not match the actual parent seq-1 snapshot",
         }
         .into()),
+    }
+}
+
+fn validate_fork_policy_bundle_inheritance(
+    child_lines: &[ReadLine],
+    parent: &RunId,
+    parent_lines: &[ReadLine],
+) -> Result<(), RecordError> {
+    match (
+        genesis_policy_bundle_event(child_lines),
+        genesis_policy_bundle_event(parent_lines),
+    ) {
+        (None, None) => Ok(()),
+        (Some((child_snapshot, Some(binding))), Some((parent_snapshot, _)))
+            if binding.parent_run == parent.0
+                && binding.parent_receipt_digest_sha256
+                    == parent_snapshot.receipt_digest_sha256
+                && child_snapshot == parent_snapshot =>
+        {
+            Ok(())
+        }
+        _ => Err(
+            crate::policy_bundle::PolicyBundleCheckpointError::GenesisOrder(
+                "fork policy checkpoint inheritance does not match the parent genesis receipt",
+            )
+            .into(),
+        ),
     }
 }
 

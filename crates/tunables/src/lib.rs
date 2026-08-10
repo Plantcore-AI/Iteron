@@ -27,6 +27,8 @@ mod resolution_metadata;
 mod resolution_prepare;
 mod resolution_types;
 mod resolution_value;
+mod runtime_binding;
+mod runtime_requirements;
 mod schema_catalog;
 mod semantic_keys;
 mod strategy_slots;
@@ -50,6 +52,15 @@ pub use resolution_types::{
     ResolutionReport, ResolutionSource, ResolutionValue, ResolvedEntry, ResolvedTunableSet,
     RouteCapabilities, RouteIdentity, RuntimeContext, ShadowedValue, UnresolvedReason,
 };
+pub use runtime_binding::{
+    EffectiveValueError, RuntimeAuthoritySet, RuntimeProfile, RuntimeResolutionBuilder,
+    RuntimeResolutionError, runtime_catalog_snapshot, runtime_profile_digest,
+};
+pub use runtime_requirements::{
+    RuntimeActivationRequirement, RuntimeConstraintRequirement, RuntimeDefaultObservation,
+    canonical_embedded_default, canonical_family, runtime_activation_requirements,
+    runtime_constraint_requirements, runtime_default_observations,
+};
 pub use schema_catalog::{SCALAR_CATALOGS, ScalarCatalogDefinition};
 pub use types::{
     ActivationPredicate, ActivationSpec, AuthorityClass, BenchmarkCausalPath, BenchmarkRelevance,
@@ -58,8 +69,9 @@ pub use types::{
     DefaultResolver, DefaultSpec, DefaultValueRequirement, Domain, ExternalCeiling, Family,
     FieldDomain, ImplementationStatus, InactiveReason, OptimizationClass, OptimizationSpec,
     ProviderRequirement, RelevanceLevel, RequirementSpec, RiskClass, RuleValue, ScalarDomain,
-    SchemaField, SearchPhase, SourceBinding, SourceKind, SourceSpec, SourceTrust, StringFormat,
-    StructuredValueDomain, TunableValue, TunableValueField, ValueKind, ValueSchema,
+    SchemaField, SearchPhase, SourceBinding, SourceKind, SourceMergePolicy, SourceSpec,
+    SourceTrust, StringFormat, StructuredValueDomain, TunableValue, TunableValueField, ValueKind,
+    ValueSchema,
 };
 pub use validate::{RegistryError, validate_registry};
 
@@ -70,7 +82,7 @@ pub const FAMILY_SCHEMA_VERSION: u16 = 2;
 /// Stable logical registry identity.
 pub const REGISTRY_ID: &str = "core-tunables";
 /// Revision of the family set under schema v3.
-pub const REGISTRY_REVISION: u16 = 4;
+pub const REGISTRY_REVISION: u16 = 7;
 /// Exact family cardinality required by the R0/R1 contract.
 pub const EXPECTED_FAMILY_COUNT: usize = 160;
 /// Canonical byte encoding used as the digest input.
@@ -79,6 +91,6 @@ pub const CANONICALIZATION: &str = "core-tunables-json-v3";
 pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v2";
 /// Digest algorithm for canonical artifacts.
 pub const DIGEST_ALGORITHM: &str = "sha256";
-/// Golden digest for revision 4; metadata changes require an explicit revision and digest update.
+/// Golden digest for revision 7; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "c36f74c84c198eda6171905dd618035f31439ee704e98583a383eac03064209c";
+    "417da5b751d599a66b449bafd3aff54d2d1d9bf61e68e92f52514aeeced302be";

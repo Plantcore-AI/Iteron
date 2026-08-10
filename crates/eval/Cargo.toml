@@ -12,6 +12,8 @@ path = "src/main.rs"
 [dependencies]
 clap = { workspace = true }
 core-evolve = { path = "../evolve" }
+core-protocol = { path = "../protocol" }
+core-record = { path = "../record" }
 core-sandbox = { path = "../sandbox" }
 core-tunables = { path = "../tunables" }
 core-verify = { path = "../verify" }

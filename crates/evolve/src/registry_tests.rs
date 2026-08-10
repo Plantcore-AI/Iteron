@@ -70,13 +70,19 @@ fn inject_torn_record(registry: &mut TrajectoryRegistry, envelope: &TrajectoryEn
     let envelope_bytes = encode_envelope(envelope).unwrap();
     let content_digest = digest_bytes(&envelope_bytes);
     let summary = registry.scan(|_| Ok(())).unwrap();
-    let record = RegistryRecord {
+    let content_store = trajectory_content_store(&registry.content_runs_dir, envelope).unwrap();
+    let handle = content_store
+        .put(Seq(summary.next_sequence), &envelope_bytes)
+        .unwrap();
+    let record = StoredRegistryRecord {
         registry_schema_version: REGISTRY_SCHEMA_VERSION,
         sequence: summary.next_sequence,
         previous_hash: summary.last_hash.clone(),
         record_hash: hash_record(&summary.last_hash, summary.next_sequence, &content_digest),
         content_digest,
-        envelope: envelope.clone(),
+        run_id: envelope.run_id.clone(),
+        tenant_id: envelope.tenant_id.clone(),
+        envelope: handle,
     };
     let mut line = encode_record(&record).unwrap();
     line.push(b'\n');
@@ -133,10 +139,10 @@ fn d14_11_g1_registry_is_content_addressed_idempotent_and_detects_tampering() {
 
     let mut bytes = std::fs::read(registry.path()).unwrap();
     let offset = bytes
-        .windows(b"completed".len())
-        .position(|window| window == b"completed")
+        .windows(address.as_str().len())
+        .position(|window| window == address.as_str().as_bytes())
         .unwrap();
-    bytes[offset..offset + b"tampered!".len()].copy_from_slice(b"tampered!");
+    bytes[offset] = if bytes[offset] == b'a' { b'b' } else { b'a' };
     let mut attacker = OpenOptions::new()
         .write(true)
         .open(registry.path())

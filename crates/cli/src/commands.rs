@@ -290,8 +290,8 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd {
         command: SlashCommand::Mcp,
         name: "mcp",
-        args: "",
-        help: "list connected MCP tools",
+        args: "[status|restart|stop|cancel] [server]",
+        help: "show and control session-owned MCP servers",
     },
     Cmd {
         command: SlashCommand::Hooks,
@@ -308,8 +308,8 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd {
         command: SlashCommand::Tunables,
         name: "tunables",
-        args: "[query|load <file>]",
-        help: "browse all 160 families or load a frozen-request simulation",
+        args: "[query|registry|load <file>]",
+        help: "browse this run's 160 effective families (or an explicit registry/simulation)",
     },
     Cmd {
         command: SlashCommand::Lab,

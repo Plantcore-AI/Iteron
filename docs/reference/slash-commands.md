@@ -32,7 +32,7 @@ rather than dispatching an incomplete operation.
 | `/agents` | List the current run's immutable agent-definition snapshot |
 | `/skills` | List discovered skills |
 | `/tools` | List registered tools and capabilities |
-| `/mcp` | List connected MCP tools |
+| `/mcp [status\|restart\|stop\|cancel] [server]` | Show and control the session-owned lazy MCP servers |
 | `/hooks` | Show user-configured lifecycle hooks |
 | `/config` | Show resolved session and file configuration |
 | `/tunables [query\|load <file>]` | Search all 160 canonical families, or inspect a workspace-relative frozen-request simulation |

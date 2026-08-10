@@ -46,6 +46,8 @@ const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 const GIT_EXCLUDE_LIMIT: u64 = 1024 * 1024;
 const MAX_TEMP_ATTEMPTS: u64 = 32;
+const MAX_SELECTIVE_RESTORE_PATHS: usize = 1_024;
+const SELECTIVE_RESTORE_CHUNK: usize = 64;
 const INTERNAL_EXCLUDE_PREFIX: &str = ":(top,literal,exclude)";
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -368,13 +370,19 @@ impl IsolatedGit {
     }
 
     fn run(&self, args: &[&str]) -> Result<String, RecordError> {
-        let allowed = matches!(
-            args,
-            ["add", "-A", "--", "."]
-                | ["write-tree"]
-                | ["checkout-index", "-a", "-f"]
-                | ["ls-files", "-z"]
-        ) || matches!(args, ["add", "-A", "--", ".", exclusion]
+        let selective_checkout = args.len() >= 4
+            && args.len() <= 3 + SELECTIVE_RESTORE_CHUNK
+            && args[..3] == ["checkout-index", "-f", "--"]
+            && args[3..].iter().all(|path| valid_restore_relative(path));
+        let allowed = selective_checkout
+            || matches!(
+                args,
+                ["add", "-A", "--", "."]
+                    | ["write-tree"]
+                    | ["checkout-index", "-a", "-f"]
+                    | ["ls-files", "-z"]
+            )
+            || matches!(args, ["add", "-A", "--", ".", exclusion]
             if valid_internal_exclusion(exclusion))
             || matches!(args, ["commit-tree", object, "-m", _] if valid_object_id(object))
             || matches!(args, ["read-tree", object] if valid_object_id(object));
@@ -600,6 +608,14 @@ fn checked_workspace_path(workspace: &Path, relative: &str) -> Result<PathBuf, R
     Ok(workspace.join(relative))
 }
 
+fn valid_restore_relative(relative: &str) -> bool {
+    !relative.is_empty()
+        && relative.len() <= 4_096
+        && Path::new(relative)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
 /// Snapshot the working tree at record `Seq` `at` onto the private shadow ref `refs/core/<run>/
 /// <seq>` (SESS-2). Requires `workspace` to be a git work tree. Uses only plumbing against a
 /// private temp index, so the operator's index/HEAD are untouched and no hook runs (ADR-007 §4).
@@ -746,6 +762,81 @@ pub fn rewind_workspace_with_policy(
     Ok(())
 }
 
+/// Restore only an explicitly operator-authorised bounded set of repository-relative files.
+///
+/// The complete plan is validated before mutation. Paths present in the checkpoint are restored
+/// through the same isolated Git index as a full rewind; selected paths absent from the checkpoint
+/// are removed only when they are files or symlinks. Directories are refused rather than recursively
+/// deleted, keeping the destructive scope equal to the typed path list.
+pub fn rewind_workspace_paths(
+    snap: &Snapshot,
+    workspace: &Path,
+    paths: &[String],
+) -> Result<(), RecordError> {
+    if !valid_object_id(&snap.tree_ref) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "checkpoint tree_ref is not a full Git object id",
+        )
+        .into());
+    }
+    if paths.is_empty() || paths.len() > MAX_SELECTIVE_RESTORE_PATHS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("selective restore requires 1..={MAX_SELECTIVE_RESTORE_PATHS} explicit paths"),
+        )
+        .into());
+    }
+    let mut selected = HashSet::with_capacity(paths.len());
+    let mut validated = Vec::with_capacity(paths.len());
+    for path in paths {
+        if !valid_restore_relative(path) || !selected.insert(path.clone()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsafe or duplicate selective restore path {path:?}"),
+            )
+            .into());
+        }
+        checked_workspace_path(workspace, path)?;
+        validated.push(path.clone());
+    }
+    validated.sort_unstable();
+
+    let isolated = IsolatedGit::create(&snap.run, snap.at, workspace)?;
+    isolated.run(&["read-tree", &snap.tree_ref])?;
+    let snap_files = nul_path_set(&isolated.run(&["ls-files", "-z"])?)?;
+    let (present, absent): (Vec<_>, Vec<_>) = validated
+        .iter()
+        .partition(|path| snap_files.contains(path.as_str()));
+
+    for chunk in present.chunks(SELECTIVE_RESTORE_CHUNK) {
+        let mut args = Vec::with_capacity(3 + chunk.len());
+        args.extend(["checkout-index", "-f", "--"]);
+        args.extend(chunk.iter().map(|path| path.as_str()));
+        isolated.run(&args)?;
+    }
+    for relative in absent {
+        let path = checked_workspace_path(workspace, relative)?;
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {
+                std::fs::remove_file(path)?;
+            }
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "selective restore refuses recursive directory removal for {relative:?}"
+                    ),
+                )
+                .into());
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
 /// Read a bounded, lossless path inventory from the snapshot tree without touching the operator's
 /// index or working files. `limit` is clamped to 100,000 so a caller cannot opt out of a frontend
 /// memory bound; the underlying Git output remains independently bounded as well.
@@ -868,6 +959,32 @@ mod tests {
             "operator work"
         );
         std::fs::remove_dir_all(&ws).ok();
+    }
+
+    #[test]
+    fn selective_rewind_restores_only_the_authorised_files() {
+        if !git_available() {
+            return;
+        }
+        let ws = tmp_repo("selective-rewind");
+        test_git(&ws, &["init", "-q"]);
+        std::fs::write(ws.join("selected.txt"), "before").unwrap();
+        std::fs::write(ws.join("untouched.txt"), "before").unwrap();
+        let snapshot = checkpoint(&RunId("selective".into()), Seq(1), &ws).unwrap();
+        std::fs::write(ws.join("selected.txt"), "after").unwrap();
+        std::fs::write(ws.join("untouched.txt"), "after").unwrap();
+
+        rewind_workspace_paths(&snapshot, &ws, &["selected.txt".into()]).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(ws.join("selected.txt")).unwrap(),
+            "before"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("untouched.txt")).unwrap(),
+            "after"
+        );
+        std::fs::remove_dir_all(ws).unwrap();
     }
 
     #[test]

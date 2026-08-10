@@ -1,4 +1,5 @@
 use super::LspToolError;
+use super::policy::LspLanguageRoute;
 use core_lsp::intel::Position;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -40,26 +41,6 @@ impl Adapter {
         }
     }
 
-    pub(super) const fn command(self) -> &'static str {
-        match self {
-            Self::Rust => "rust-analyzer",
-            Self::TypeScript | Self::TypeScriptReact | Self::JavaScript | Self::JavaScriptReact => {
-                "typescript-language-server --stdio"
-            }
-            Self::Python => "pyright-langserver --stdio",
-        }
-    }
-
-    pub(super) const fn server_label(self) -> &'static str {
-        match self {
-            Self::Rust => "rust-analyzer",
-            Self::TypeScript | Self::TypeScriptReact | Self::JavaScript | Self::JavaScriptReact => {
-                "typescript-language-server"
-            }
-            Self::Python => "pyright-langserver",
-        }
-    }
-
     pub(super) const fn language_id(self) -> &'static str {
         match self {
             Self::Rust => "rust",
@@ -82,6 +63,7 @@ pub(super) struct SourceDocument {
     adapter: Adapter,
     command: String,
     server_label: String,
+    server_id: String,
     #[cfg(unix)]
     root_binding: RootBinding,
     #[cfg(unix)]
@@ -92,7 +74,7 @@ impl SourceDocument {
     pub(super) async fn load(
         root: &Path,
         requested: &str,
-        routes: &BTreeMap<String, String>,
+        routes: &BTreeMap<String, LspLanguageRoute>,
     ) -> Result<Self, LspToolError> {
         #[cfg(not(unix))]
         {
@@ -118,15 +100,21 @@ impl SourceDocument {
             let relative_path = PathBuf::from(requested);
             let canonical_path = canonical_root.join(&relative_path);
             let adapter = Adapter::for_path(&relative_path)?;
-            let command = routes
+            let route = routes
                 .get(adapter.language_id())
                 .cloned()
-                .unwrap_or_else(|| adapter.command().to_owned());
-            let server_label = if routes.contains_key(adapter.language_id()) {
-                format!("plugin:{}", adapter.language_id())
-            } else {
-                adapter.server_label().to_owned()
-            };
+                .ok_or(LspToolError::UnsupportedLanguage)?;
+            if !route.workspace_markers.is_empty()
+                && !route
+                    .workspace_markers
+                    .iter()
+                    .any(|marker| canonical_root.join(marker).exists())
+            {
+                return Err(LspToolError::RouteWorkspaceMismatch);
+            }
+            let command = route.command();
+            let server_label = route.server_id.clone();
+            let server_id = route.server_id;
             let source_binding = root_binding
                 .bind_source(&relative_path)
                 .map_err(|_| LspToolError::SourceUnavailable)?;
@@ -161,6 +149,7 @@ impl SourceDocument {
                 adapter,
                 command,
                 server_label,
+                server_id,
                 root_binding,
                 source_binding,
             })
@@ -209,6 +198,10 @@ impl SourceDocument {
 
     pub(super) fn server_label(&self) -> &str {
         &self.server_label
+    }
+
+    pub(super) fn server_id(&self) -> &str {
+        &self.server_id
     }
 
     pub(super) fn position(&self, line: u32, character: u32) -> Result<Position, LspToolError> {
@@ -342,7 +335,6 @@ mod tests {
         ] {
             let adapter = Adapter::for_path(Path::new(path)).unwrap();
             assert_eq!(adapter.language_id(), expected, "wrong id for {path}");
-            assert_eq!(adapter.server_label(), "typescript-language-server");
         }
     }
 

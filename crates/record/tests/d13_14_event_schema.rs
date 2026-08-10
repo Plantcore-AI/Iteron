@@ -1,10 +1,11 @@
 use core_protocol::{
     Block, Budget, CostAttribution, CostProjection, CostProjectionIdentity,
     DurableEnvironmentContext, DurableInstructionContext, Event, EventKind, FileContent,
-    ImageContent, Message, Op, PermissionRules, PricingRoute, ProviderState, RateCard,
-    RunGenesisTunableEntry, RunGenesisTunablesInheritance, RunGenesisTunablesSnapshot,
-    SignedRateCard, TokenRateCard, ToolResult, ToolUse, Usage, WorkflowCostEvidence, WorkflowEvent,
-    WorkflowMetrics, WorkflowTaskEvidence,
+    ImageContent, Message, Op, PermissionRules, PolicyRuntimeIdentity, PricingRoute, ProviderState,
+    RateCard, RunGenesisPolicyBundleInheritance, RunGenesisPolicyBundleSnapshot,
+    RunGenesisPolicySlotBinding, RunGenesisTunableEntry, RunGenesisTunablesInheritance,
+    RunGenesisTunablesSnapshot, SignedRateCard, TokenRateCard, ToolResult, ToolUse, Usage,
+    WorkflowCostEvidence, WorkflowEvent, WorkflowMetrics, WorkflowTaskEvidence,
 };
 use core_record::replay;
 use serde::de::DeserializeOwned;
@@ -21,7 +22,7 @@ const MAX_CONTRACT_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_OBJECTS: usize = 4096;
 
-const WRITABLE_EVENT_TAGS: [&str; 33] = [
+const WRITABLE_EVENT_TAGS: [&str; 37] = [
     "approval",
     "artifact_produced",
     "checkpoint",
@@ -38,6 +39,9 @@ const WRITABLE_EVENT_TAGS: [&str; 33] = [
     "model_selected",
     "notice",
     "phase",
+    "policy_decision",
+    "policy_bundle_snapshot",
+    "policy_outcome",
     "policy_changed",
     "rate_card_bound",
     "run_start",
@@ -50,6 +54,7 @@ const WRITABLE_EVENT_TAGS: [&str; 33] = [
     "tool_done",
     "tool_ready",
     "tunables_snapshot",
+    "tunables_snapshot_v2",
     "turn_end",
     "turn_start",
     "usd_ceiling_changed",
@@ -79,7 +84,7 @@ const COST_ATTRIBUTION_TAGS: [&str; 2] = ["direct_subagent", "workflow_child"];
 
 // `ArtifactRef` and its `Provenance` became durable with `artifact_produced` (#78):
 // making a type reachable from the record makes its shape a published surface.
-const NAMED_SURFACE_IDS: [&str; 25] = [
+const NAMED_SURFACE_IDS: [&str; 29] = [
     "record.named.artifact-ref",
     "record.named.budget",
     "record.named.cost-projection",
@@ -90,10 +95,14 @@ const NAMED_SURFACE_IDS: [&str; 25] = [
     "record.named.image-content",
     "record.named.message",
     "record.named.permission-rules",
+    "record.named.policy-runtime-identity",
     "record.named.pricing-route",
     "record.named.provenance",
     "record.named.provider-state",
     "record.named.rate-card",
+    "record.named.run-genesis-policy-bundle-inheritance",
+    "record.named.run-genesis-policy-bundle-snapshot",
+    "record.named.run-genesis-policy-slot-binding",
     "record.named.run-genesis-tunable-entry",
     "record.named.run-genesis-tunables-inheritance",
     "record.named.run-genesis-tunables-snapshot",
@@ -576,6 +585,18 @@ fn assert_named_surface_corpus(
                 typed_named_fixture_wires::<TokenRateCard>(root, surface)
             }
             "record.named.rate-card" => typed_named_fixture_wires::<RateCard>(root, surface),
+            "record.named.policy-runtime-identity" => {
+                typed_named_fixture_wires::<PolicyRuntimeIdentity>(root, surface)
+            }
+            "record.named.run-genesis-policy-bundle-inheritance" => {
+                typed_named_fixture_wires::<RunGenesisPolicyBundleInheritance>(root, surface)
+            }
+            "record.named.run-genesis-policy-bundle-snapshot" => {
+                typed_named_fixture_wires::<RunGenesisPolicyBundleSnapshot>(root, surface)
+            }
+            "record.named.run-genesis-policy-slot-binding" => {
+                typed_named_fixture_wires::<RunGenesisPolicySlotBinding>(root, surface)
+            }
             "record.named.run-genesis-tunable-entry" => {
                 typed_named_fixture_wires::<RunGenesisTunableEntry>(root, surface)
             }
@@ -784,6 +805,8 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
     Some(match kind {
         EventKind::Phase { phase: _ } => "phase",
         EventKind::TurnStart => "turn_start",
+        EventKind::PolicyDecision { evidence: _ } => "policy_decision",
+        EventKind::PolicyOutcome { evidence: _ } => "policy_outcome",
         EventKind::Message { message: _ } => "message",
         EventKind::Compaction { messages: _ } => "compaction",
         EventKind::Text { delta: _ } => "text",
@@ -844,6 +867,8 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             max_usd: _,
         } => "run_start",
         EventKind::TunablesSnapshot { .. } => "tunables_snapshot",
+        EventKind::TunablesSnapshotV2 { .. } => "tunables_snapshot_v2",
+        EventKind::PolicyBundleSnapshot { .. } => "policy_bundle_snapshot",
         EventKind::ModelSelected {
             provider_id: _,
             model_id: _,
@@ -1278,6 +1303,36 @@ fn d13_14_event_schema_corpora_are_exact_exhaustive_and_replayable() {
                             record_named(
                                 &mut named_wires,
                                 "record.named.run-genesis-tunables-inheritance",
+                                inherited_from,
+                            );
+                        }
+                    }
+                    EventKind::PolicyBundleSnapshot {
+                        snapshot,
+                        inherited_from,
+                        ..
+                    } => {
+                        record_named(
+                            &mut named_wires,
+                            "record.named.run-genesis-policy-bundle-snapshot",
+                            snapshot,
+                        );
+                        for binding in &snapshot.slots {
+                            record_named(
+                                &mut named_wires,
+                                "record.named.run-genesis-policy-slot-binding",
+                                binding,
+                            );
+                            record_named(
+                                &mut named_wires,
+                                "record.named.policy-runtime-identity",
+                                &binding.policy,
+                            );
+                        }
+                        if let Some(inherited_from) = inherited_from {
+                            record_named(
+                                &mut named_wires,
+                                "record.named.run-genesis-policy-bundle-inheritance",
                                 inherited_from,
                             );
                         }

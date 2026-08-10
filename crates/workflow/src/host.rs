@@ -11,7 +11,9 @@ use crate::bindings::{AgentEnv, RunState};
 use crate::events::ProgressSink;
 use crate::journal::Journal;
 use crate::spawner::AgentSpawner;
+use crate::task_dag::runtime::ExecutionLedger;
 use crate::{AGENT_SPAWNER_PORT_VERSION, PROGRESS_SINK_PORT_VERSION, RunId, RunLimits, RunReport};
+use crate::{EarlyStopQuorumPolicy, SpeculativeSiblingPolicy, TaskRetryPolicy};
 
 const PRELUDE: &str = include_str!("prelude.js");
 
@@ -35,8 +37,12 @@ pub struct RunCoreRequest<'a> {
     pub args: serde_json::Value,
     pub run_id: RunId,
     pub limits: RunLimits,
+    pub early_stop_quorum: EarlyStopQuorumPolicy,
+    pub speculative_siblings: SpeculativeSiblingPolicy,
+    pub task_retry: TaskRetryPolicy,
     pub cancel: CancellationToken,
     pub journal: Arc<Journal>,
+    pub task_dag: Arc<ExecutionLedger>,
     pub spawner: Arc<dyn AgentSpawner>,
     pub sink: Arc<dyn ProgressSink>,
 }
@@ -47,8 +53,12 @@ pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> 
         args,
         run_id,
         limits,
+        early_stop_quorum,
+        speculative_siblings,
+        task_retry,
         cancel,
         journal,
+        task_dag,
         spawner,
         sink,
     } = request;
@@ -79,8 +89,9 @@ pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> 
     // The run clock + the per-run metric accumulator both outlive the JS driver, so the report can
     // carry real totals instead of only cache counters.
     let run_started = std::time::Instant::now();
-    let state = Arc::new(RunState::new(limits.max_agent_calls()));
+    let state = Arc::new(RunState::new(limits.max_agent_calls(), early_stop_quorum));
     let report_state = state.clone();
+    let report_task_dag = task_dag.clone();
     let env = Arc::new(AgentEnv {
         state,
         spawner,
@@ -88,6 +99,9 @@ pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> 
         gov,
         cancel: cancel.clone(),
         journal: journal.clone(),
+        task_dag,
+        speculative_siblings,
+        task_retry,
     });
 
     // A LocalSet lets the `!Send` QuickJS runtime run on the current thread while `tokio::spawn`
@@ -137,6 +151,13 @@ pub async fn run_core(request: RunCoreRequest<'_>) -> anyhow::Result<RunReport> 
             result
         })
         .await;
+
+    // QuickJS may drop an in-flight host future while unwinding a cancellation interrupt. Reconcile
+    // the controller ledger before returning so no physical attempt is silently left running.
+    report_task_dag
+        .reconcile_nonterminal()
+        .await
+        .map_err(|error| anyhow::anyhow!("workflow task-DAG reconciliation failed: {error}"))?;
 
     journal
         .flush()

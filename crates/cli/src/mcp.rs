@@ -1,11 +1,17 @@
 //! Trusted-user MCP composition and registry wiring.
 
+mod session;
+
+pub(crate) use session::{McpRuntimeControl, McpServerHealth};
+
 use crate::config::{McpServerConfig, McpTransportConfig};
 use core_protocol::ToolSpec;
 use core_tools::Registry;
+#[cfg(test)]
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+#[cfg(test)]
 struct DiscoveredServer {
     client: Arc<ConfiguredMcpClient>,
     name: String,
@@ -19,6 +25,13 @@ pub(crate) enum ConfiguredMcpClient {
 }
 
 impl ConfiguredMcpClient {
+    fn negotiated_protocol_version(&self) -> &str {
+        match self {
+            Self::Stdio(client) => client.negotiated_protocol_version(),
+            Self::Http(client) => client.negotiated_protocol_version(),
+        }
+    }
+    #[cfg(test)]
     fn capabilities(&self) -> core_mcp::McpServerCapabilities {
         match self {
             Self::Stdio(client) => client.capabilities(),
@@ -26,14 +39,15 @@ impl ConfiguredMcpClient {
         }
     }
 
+    #[cfg(test)]
     async fn call_extension(
         &self,
         method: &str,
         params: serde_json::Value,
-    ) -> Result<serde_json::Value, core_mcp::McpError> {
+    ) -> Result<String, core_mcp::McpError> {
         match self {
-            Self::Stdio(client) => client.call_extension(method, params).await,
-            Self::Http(client) => client.call_extension(method, params).await,
+            Self::Stdio(client) => client.call_extension_rendered(method, params).await,
+            Self::Http(client) => client.call_extension_rendered(method, params).await,
         }
     }
 
@@ -71,26 +85,55 @@ impl ConfiguredMcpClient {
             }
         }
     }
+
+    async fn call_extension_outcome_observed<F>(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        on_dispatch: F,
+    ) -> core_mcp::McpToolOutcome
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        match self {
+            Self::Stdio(client) => {
+                client
+                    .call_extension_outcome_observed(method, params, on_dispatch)
+                    .await
+            }
+            Self::Http(client) => {
+                client
+                    .call_extension_outcome_observed(method, params, on_dispatch)
+                    .await
+            }
+        }
+    }
+
+    fn cleanup_spills(
+        &self,
+        boundary: core_mcp::McpSpillCleanup,
+    ) -> Result<(), core_mcp::McpError> {
+        match self {
+            Self::Stdio(client) => client.cleanup_spills(boundary),
+            Self::Http(client) => client.cleanup_spills(boundary),
+        }
+    }
 }
 
-/// Connect, filter, globally bound, and then register trusted-user MCP servers.
+/// Register session-owned lazy MCP proxies without starting a configured process.
 ///
-/// Discovery is staged before any registry mutation. A combined-catalog overflow or namespaced
-/// collision therefore fails startup without leaving a partially exposed MCP batch.
-pub(crate) async fn register_configured_servers(
+/// The returned control must be pinned to the decoded run checkpoint before the registry becomes
+/// reachable by the agent. Stdio and HTTP discovery then happen only through a proxy invocation;
+/// both transports share exact searched-contract identity and unknown-effect refusal semantics.
+pub(crate) fn register_configured_servers(
     registry: &mut Registry,
     servers: &[McpServerConfig],
     sensitive_env_names: &[String],
-) -> anyhow::Result<()> {
-    register_configured_servers_with_limit(
-        registry,
-        servers,
-        sensitive_env_names,
-        core_mcp::MAX_COMBINED_MCP_TOOLS,
-    )
-    .await
+) -> anyhow::Result<McpRuntimeControl> {
+    McpRuntimeControl::register(registry, servers, sensitive_env_names)
 }
 
+#[cfg(test)]
 async fn register_configured_servers_with_limit(
     registry: &mut Registry,
     servers: &[McpServerConfig],
@@ -101,33 +144,16 @@ async fn register_configured_servers_with_limit(
     let mut discovered = Vec::with_capacity(servers.len());
 
     for server in servers {
-        match connect_configured_server(server, sensitive_env_names).await {
-            Ok(client) => {
-                let client = Arc::new(client);
-                match client
-                    .list_tools_governed(&server.tools, &server.policy, host_ceiling())
-                    .await
-                {
-                    Ok(specs) => {
-                        combined.admit(&specs)?;
-                        let extensions = extension_specs(&server.name, client.capabilities());
-                        let extension_only = extensions
-                            .iter()
-                            .map(|(spec, _)| spec.clone())
-                            .collect::<Vec<_>>();
-                        combined.admit(&extension_only)?;
-                        discovered.push(DiscoveredServer {
-                            client,
-                            name: server.name.clone(),
-                            specs,
-                            extensions,
-                        });
-                    }
-                    Err(error) => {
-                        let diagnostic = startup_error_line(&server.name, "list_tools", &error);
-                        eprintln!("{diagnostic}");
-                    }
-                }
+        match discover_configured_server(server, sensitive_env_names).await {
+            Ok(server) => {
+                combined.admit(&server.specs)?;
+                let extension_only = server
+                    .extensions
+                    .iter()
+                    .map(|(spec, _)| spec.clone())
+                    .collect::<Vec<_>>();
+                combined.admit(&extension_only)?;
+                discovered.push(server);
             }
             Err(error) => {
                 let diagnostic = startup_error_line(&server.name, "connect", &error);
@@ -170,6 +196,63 @@ async fn register_configured_servers_with_limit(
     Ok(())
 }
 
+/// Connect and perform read-only discovery under the same finite reconnect schedule used by the
+/// managed MCP lifecycle. No effecting tool call is replayed here: registration has not exposed a
+/// callable tool yet, and every failed client is dropped before the next generation starts.
+#[cfg(test)]
+async fn discover_configured_server(
+    server: &McpServerConfig,
+    sensitive_env_names: &[String],
+) -> Result<DiscoveredServer, core_mcp::McpError> {
+    let reconnect = core_mcp::reconnect::ReconnectPolicy::default();
+    let mut attempt = 0;
+    loop {
+        let result = async {
+            let client = Arc::new(connect_configured_server(server, sensitive_env_names).await?);
+            let specs = client
+                .list_tools_governed(&server.tools, &server.policy, host_ceiling())
+                .await?;
+            let extensions = extension_specs(&server.name, client.capabilities());
+            Ok::<_, core_mcp::McpError>(DiscoveredServer {
+                client,
+                name: server.name.clone(),
+                specs,
+                extensions,
+            })
+        }
+        .await;
+        match result {
+            Ok(discovered) => return Ok(discovered),
+            Err(error)
+                if startup_retryable(&error) && attempt < reconnect.max_attempts() as usize =>
+            {
+                attempt += 1;
+                let delay = reconnect.delay_ms(attempt as u32);
+                if delay > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(test)]
+fn startup_retryable(error: &core_mcp::McpError) -> bool {
+    matches!(
+        error,
+        core_mcp::McpError::Spawn(_)
+            | core_mcp::McpError::Io(_)
+            | core_mcp::McpError::TransportClosed
+            | core_mcp::McpError::Deadline { .. }
+            | core_mcp::McpError::Server { .. }
+            | core_mcp::McpError::HttpStatus {
+                status: 408 | 425 | 429 | 500..=599
+            }
+    )
+}
+
+#[cfg(test)]
 fn extension_specs(
     server: &str,
     capabilities: core_mcp::McpServerCapabilities,
@@ -242,6 +325,7 @@ fn extension_specs(
     specs
 }
 
+#[cfg(test)]
 fn register_mcp_extension(
     registry: &mut Registry,
     client: Arc<ConfiguredMcpClient>,
@@ -276,13 +360,7 @@ fn register_mcp_extension(
             }
             let result = client.call_extension(method, params).await;
             let (content, is_error) = match result {
-                Ok(value) => match serde_json::to_string_pretty(&value) {
-                    Ok(content) => (content, false),
-                    Err(_) => (
-                        "MCP extension response could not be serialized".into(),
-                        true,
-                    ),
-                },
+                Ok(content) => (content, false),
                 Err(error) => (format!("mcp error: {}", error.public_summary()), true),
             };
             core_tools::ToolExecution::Definite(core_protocol::ToolResult {
@@ -296,9 +374,25 @@ fn register_mcp_extension(
     })
 }
 
+#[cfg(test)]
 async fn connect_configured_server(
     server: &McpServerConfig,
     sensitive_env_names: &[String],
+) -> Result<ConfiguredMcpClient, core_mcp::McpError> {
+    connect_configured_server_with_policies(
+        server,
+        sensitive_env_names,
+        core_mcp::McpDeadlinePolicy::default(),
+        core_mcp::McpResultPolicy::default(),
+    )
+    .await
+}
+
+async fn connect_configured_server_with_policies(
+    server: &McpServerConfig,
+    sensitive_env_names: &[String],
+    deadlines: core_mcp::McpDeadlinePolicy,
+    result_policy: core_mcp::McpResultPolicy,
 ) -> Result<ConfiguredMcpClient, core_mcp::McpError> {
     match server.transport {
         McpTransportConfig::Stdio => {
@@ -397,13 +491,15 @@ async fn connect_configured_server(
                         })
                 })
                 .transpose()?;
-            core_mcp::McpRemoteClient::connect(
+            core_mcp::McpRemoteClient::connect_with_policies(
                 endpoint,
                 server.name.clone(),
                 credential,
                 policy,
                 headers,
                 oauth_grant,
+                deadlines.http(),
+                result_policy,
             )
             .await
             .map(|client| ConfiguredMcpClient::Http(Arc::new(client)))
@@ -422,6 +518,7 @@ fn host_ceiling() -> core_protocol::capability_set::CapabilitySet {
     core_mcp::default_host_ceiling()
 }
 
+#[cfg(test)]
 fn startup_error_line(server_name: &str, operation: &str, error: &core_mcp::McpError) -> String {
     format!(
         "mcp {server_name}: {operation} failed: {}",
@@ -429,6 +526,7 @@ fn startup_error_line(server_name: &str, operation: &str, error: &core_mcp::McpE
     )
 }
 
+#[cfg(test)]
 pub(crate) fn register_mcp_tool(
     registry: &mut Registry,
     client: Arc<ConfiguredMcpClient>,
@@ -600,9 +698,14 @@ mod tests {
         });
         let trusted = FileConfig::parse(&document.to_string()).unwrap();
         let mut registry = Registry::read_only(std::env::temp_dir()).unwrap();
-        register_configured_servers(&mut registry, trusted.mcp_servers.as_deref().unwrap(), &[])
-            .await
-            .unwrap();
+        register_configured_servers_with_limit(
+            &mut registry,
+            trusted.mcp_servers.as_deref().unwrap(),
+            &[],
+            core_mcp::MAX_COMBINED_MCP_TOOLS,
+        )
+        .await
+        .unwrap();
         let names: Vec<_> = registry.specs().into_iter().map(|spec| spec.name).collect();
         for expected in [
             "docs__resources_list",

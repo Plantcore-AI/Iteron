@@ -1,5 +1,12 @@
 use super::*;
 
+/// Collapse, redact, and bound a workflow label before it crosses the frontend seam.
+pub(super) fn ui_workflow_label(content: &str) -> String {
+    let one_line = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let scrubbed = core_record::redact::scrub(&one_line);
+    strict_utf8_head(&scrubbed, 240)
+}
+
 impl Agent {
     pub(crate) fn current_turn_id(&self) -> core_protocol::TurnId {
         core_protocol::TurnId(self.seq_turn)
@@ -100,7 +107,7 @@ impl Agent {
     /// transcript is the one this process just produced. A follow-up is a new submission, not a
     /// crash-recovery continuation, so Ultracode may orchestrate it.
     pub async fn follow_up(&mut self, text: &str) -> Result<Outcome, KernelError> {
-        self.stage_follow_up_transcript()?;
+        self.stage_follow_up_transcript().await?;
         self.verify_attempts = 0;
         self.run(text).await
     }
@@ -111,7 +118,7 @@ impl Agent {
         &mut self,
         text: &str,
     ) -> Result<Outcome, KernelError> {
-        self.stage_follow_up_transcript()?;
+        self.stage_follow_up_transcript().await?;
         self.verify_attempts = 0;
         self.run_with_images_mode(text, Vec::new(), false, None)
             .await
@@ -127,7 +134,7 @@ impl Agent {
     /// the record (ledger, ceilings, runtime policy, turn/approval ids, taint) is already live and
     /// strictly richer here; the record stays the authority for the paths that cross a process
     /// boundary — `--resume`, fork, crash recovery — and those still call `set_resume`.
-    pub(super) fn stage_follow_up_transcript(&mut self) -> Result<(), KernelError> {
+    pub(super) async fn stage_follow_up_transcript(&mut self) -> Result<(), KernelError> {
         let Some(working) = self.working_set.take() else {
             // Nothing has run in this process yet, so the record is the only transcript there is.
             let path = self.rollout.path().to_path_buf();
@@ -141,7 +148,7 @@ impl Agent {
         // run loop leaves it on the turn it finished — so the successor is one step on, no replay
         // needed. Skipping this reused the finished turn, and at-most-once dispatch then refused the
         // follow-up's first provider effect as an identity it had already admitted.
-        self.advance_turn()?;
+        self.advance_turn().await?;
         // An interrupted or errored run can leave a trailing assistant message whose tool_use was
         // never answered. Repair it exactly as the replay path does, or the provider rejects the
         // next request.

@@ -173,7 +173,7 @@ const SEMANTIC_KEYS: [SemanticKeyEntry; EXPECTED_FAMILY_COUNT] = [
     entry!(145, "inter_agent_messaging_topology", "core.control.orchestration.agent_message_routing"),
     entry!(146, "task_retry_reassignment_policy", "core.control.orchestration.failed_task_reassignment"),
     entry!(147, "mcp_transport_selection", "core.control.extensibility.mcp_transport"),
-    entry!(148, "deferred_discovery_threshold", "core.control.extensibility.mcp_discovery_deferral"),
+    entry!(148, "deferred_discovery_threshold", "core.control.extensibility.tool_schema_discovery_deferral"),
     entry!(149, "mcp_reconnect_backoff", "core.control.extensibility.mcp_reconnect_schedule"),
     entry!(150, "per_server_startup_deadline", "core.control.extensibility.mcp_server_startup_deadline"),
     entry!(151, "per_tool_mcp_deadline", "core.control.extensibility.mcp_tool_deadline"),

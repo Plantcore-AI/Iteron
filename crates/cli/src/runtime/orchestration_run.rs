@@ -182,7 +182,17 @@ impl Agent {
         };
         let reducing_started = Instant::now();
         self.workflow_phase(run_id, core_protocol::WorkflowPhase::Reducing)?;
-        let bundle = core_agents::reduce(summaries);
+        let expected_coverage = tasks
+            .iter()
+            .map(|task| core_agents::CoverageExpectation {
+                idx: task.id,
+                assigned_question: task.objective.clone(),
+            })
+            .collect::<Vec<_>>();
+        let bundle =
+            core_agents::reduce_checked(&expected_coverage, summaries).map_err(|error| {
+                KernelError::WorkflowEngine(format!("fan summary coverage refused: {error}"))
+            })?;
         self.workflow_phase(run_id, core_protocol::WorkflowPhase::Writing)?;
         self.workflow_progress(crate::workflow::WorkflowRunUiEvent::Progress {
             run_id: run_id.to_string(),

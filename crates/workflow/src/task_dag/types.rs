@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-pub const HARD_MAX_TASKS: usize = 512;
+pub const HARD_MAX_TASKS: usize = 1_024;
+pub const HARD_MAX_ATTEMPTS: usize = 4_096;
 pub const HARD_MAX_EDGES: usize = 4_096;
 pub const HARD_MAX_MESSAGES: usize = 8_192;
 pub const HARD_MAX_JOINS: usize = 512;
@@ -38,6 +39,7 @@ macro_rules! numeric_id {
 }
 
 numeric_id!(TaskId);
+numeric_id!(AttemptId);
 numeric_id!(CommandId);
 numeric_id!(MessageId);
 numeric_id!(JoinId);
@@ -261,6 +263,86 @@ pub struct Task {
     pub(crate) child_reservations: BudgetReservation,
 }
 
+/// One physical child dispatch belonging to a logical [`Task`]. Retries and speculative siblings
+/// receive distinct ids so a selected result can never erase the consumed budget or terminal of
+/// another dispatch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptSpec {
+    pub id: AttemptId,
+    pub task: TaskId,
+    pub retry_ordinal: u32,
+    pub sibling_ordinal: u32,
+    pub input_digest: String,
+}
+
+/// Why a physical attempt was (or was not) selected by the controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptDisposition {
+    /// The task had exactly one physical candidate in this attempt group.
+    Sole,
+    /// The first verified positive candidate selected from a speculative group.
+    Winner,
+    /// A sibling that was not selected, including a positively-completed late sibling.
+    Loser,
+    /// A definite negative terminal; no positive result was selected from it.
+    Negative,
+    /// Cleanup ended without evidence that the external child effect reached a terminal.
+    UnknownEffect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptCompletion {
+    Succeeded,
+    Failed,
+    Cancelled,
+    UnknownEffect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AttemptState {
+    Registered,
+    Running,
+    Succeeded {
+        result_digest: String,
+        disposition: AttemptDisposition,
+    },
+    Failed {
+        code: String,
+        detail: String,
+        disposition: AttemptDisposition,
+    },
+    Cancelled {
+        reason: String,
+        disposition: AttemptDisposition,
+    },
+    UnknownEffect {
+        reason: String,
+    },
+}
+
+impl AttemptState {
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded { .. }
+                | Self::Failed { .. }
+                | Self::Cancelled { .. }
+                | Self::UnknownEffect { .. }
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Attempt {
+    pub spec: AttemptSpec,
+    pub state: AttemptState,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
@@ -330,6 +412,23 @@ pub enum Command {
     StartTask {
         actor: Actor,
         task: TaskId,
+    },
+    RegisterAttempt {
+        actor: Actor,
+        attempt: AttemptSpec,
+    },
+    StartAttempt {
+        actor: Actor,
+        attempt: AttemptId,
+    },
+    CompleteAttempt {
+        actor: Actor,
+        attempt: AttemptId,
+        completion: AttemptCompletion,
+        disposition: AttemptDisposition,
+        result_digest: Option<String>,
+        code: Option<String>,
+        detail: Option<String>,
     },
     ChargeBudget {
         actor: Actor,

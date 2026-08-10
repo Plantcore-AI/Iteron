@@ -21,6 +21,29 @@ use core_protocol::bundle::{
 };
 use core_protocol::slot::SlotId;
 
+#[path = "bundle_adapter/checkpoint.rs"]
+mod checkpoint;
+#[path = "bundle_adapter/compiler.rs"]
+mod compiler;
+#[path = "bundle_adapter/registry.rs"]
+mod registry;
+#[path = "bundle_adapter/schema.rs"]
+mod schema;
+#[path = "bundle_adapter/strategies.rs"]
+mod strategies;
+
+pub(crate) use checkpoint::{
+    CompiledPolicyBundle, baseline_compiled_bundle, compile_recorded_bundle,
+    install_compiled_bundle,
+};
+pub(crate) use compiler::compile_configured_bundle;
+#[cfg(test)]
+pub(crate) use compiler::{compile_operator_bundle, registered_implementations};
+#[cfg(test)]
+pub(crate) use schema::{
+    BundleCoverage, CoreSlot, ImplementationIdentity, RejectionCode, SlotReceiptStatus,
+};
+
 /// Project the offline authority's active bundle into the agents-local read-only view.
 pub(crate) fn project(
     bundle: &core_evolve::PolicyBundle,
@@ -69,23 +92,6 @@ impl PolicyBundleResolver for ActiveBundleResolver {
     }
 }
 
-/// Resolve the hand-written baseline when no trusted active snapshot was selected.
-pub(crate) fn resolve_boot_bundle() -> std::sync::Arc<core_agents::BootBundle> {
-    resolve_boot_bundle_from_active(None)
-}
-
-/// Resolve one operator-selected, already-active identity snapshot at process boot.
-pub(crate) fn resolve_boot_bundle_from_active(
-    active: Option<core_evolve::PolicyBundle>,
-) -> std::sync::Arc<core_agents::BootBundle> {
-    let resolver = ActiveBundleResolver::from_active(active);
-    // A malformed projection is not a licence to improvise: fall to the baseline, like absence.
-    std::sync::Arc::new(
-        core_agents::BootBundle::resolve(&resolver)
-            .unwrap_or_else(|_| core_agents::BootBundle::baseline()),
-    )
-}
-
 /// Narrow a freshly built read-only registry into the child tool set the bundle in force governs.
 ///
 /// This is where the promotion machinery stops being a ledger nobody reads. Both child paths (the
@@ -113,3 +119,7 @@ pub(crate) fn narrow_child_registry(
 #[cfg(test)]
 #[path = "bundle_adapter_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bundle_adapter/compiler_tests.rs"]
+mod compiler_tests;

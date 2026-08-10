@@ -6,128 +6,30 @@ use core_lsp::intel::{Query, ensure_fresh};
 use core_lsp::lifecycle::{Event, RestartPolicy, Session, State};
 use core_lsp::pending::{PendingRequests, ReplyDisposition};
 use core_lsp::{ServerEpoch, framing};
-use core_sandbox::{
-    ConfinedProcess, Confinement, PersistentBackend, SandboxError,
-    spawn_confined_process_from_workspace,
-};
+use core_sandbox::{ConfinedProcess, PersistentBackend};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, BufReader};
 
-const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(15);
-const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 const STDERR_OBSERVED_LIMIT: u64 = 64 * 1024 * 1024;
-const REQUEST_TIMEOUT_MS: u64 = 30_000;
-
-pub(super) struct Launcher {
-    instance: u32,
-    next_sequence: AtomicU32,
-}
-
-impl Launcher {
-    pub(super) fn new() -> Result<Self, LspToolError> {
-        let mut bytes = [0_u8; 4];
-        getrandom::fill(&mut bytes).map_err(|_| LspToolError::IdentityUnavailable)?;
-        let instance = u32::from_le_bytes(bytes) | 1;
-        Ok(Self {
-            instance,
-            next_sequence: AtomicU32::new(1),
-        })
-    }
-
-    pub(super) fn mint_epoch(&self) -> Result<u64, LspToolError> {
-        let sequence = self
-            .next_sequence
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current.checked_add(1)
-            })
-            .map_err(|_| LspToolError::IdentityExhausted)?;
-        Ok((u64::from(self.instance) << 32) | u64::from(sequence))
-    }
-}
-
 #[derive(Debug)]
 pub(super) struct LiveResult {
     pub(super) value: Value,
     pub(super) server_epoch: u64,
     pub(super) backend: &'static str,
+    pub(super) reused_server: bool,
+    pub(super) restart_count: u32,
+    pub(super) server_id: String,
 }
 
 #[derive(Debug)]
 pub(super) struct RunFailure {
     pub(super) error: LspToolError,
     pub(super) outcome_unknown: bool,
-}
-
-pub(super) async fn run_query_owned(
-    epoch: u64,
-    document: Arc<SourceDocument>,
-    query: QueryKind,
-    sensitive_env_names: Vec<String>,
-    deadline: tokio::time::Instant,
-    mut cancelled: tokio::sync::oneshot::Receiver<()>,
-) -> Result<LiveResult, RunFailure> {
-    let mut confinement = Confinement::egress_off(document.root());
-    confinement.timeout_secs = 60;
-    confinement.sensitive_env_names = sensitive_env_names;
-    let root_capability = document
-        .root_capability()
-        .map_err(|error| RunFailure::new(error, false))?;
-    let spawn =
-        spawn_confined_process_from_workspace(document.command(), &confinement, root_capability);
-    let process = match tokio::select! {
-        biased;
-        _ = &mut cancelled => return Err(RunFailure::new(LspToolError::OperationCancelled, false)),
-        _ = tokio::time::sleep_until(deadline) => return Err(RunFailure::new(LspToolError::OperationTimeout, false)),
-        result = spawn => result,
-    } {
-        Ok(process) => process,
-        Err(SandboxError::Unsupported | SandboxError::Profile(_)) => {
-            return Err(RunFailure::new(LspToolError::SandboxUnavailable, false));
-        }
-        Err(SandboxError::Spawn(_)) => {
-            return Err(RunFailure::new(LspToolError::SpawnOutcomeUnknown, true));
-        }
-    };
-
-    let mut driver = match Driver::new(process, epoch).await {
-        Ok(driver) => driver,
-        Err(failure) => return Err(failure),
-    };
-    let result = tokio::select! {
-        biased;
-        _ = &mut cancelled => Err(LspToolError::OperationCancelled),
-        _ = tokio::time::sleep_until(deadline) => Err(LspToolError::OperationTimeout),
-        result = driver.execute(&document, query) => result,
-    };
-    match result {
-        Ok(value) => match tokio::select! {
-            biased;
-            _ = &mut cancelled => Err(LspToolError::OperationCancelled),
-            _ = tokio::time::sleep_until(deadline) => Err(LspToolError::OperationTimeout),
-            result = driver.shutdown() => result,
-        } {
-            Ok(backend) => Ok(LiveResult {
-                value,
-                server_epoch: epoch,
-                backend,
-            }),
-            Err(error) => {
-                let _cleanup_confirmed = driver.force_cleanup().await;
-                // Once a CodeExecuting peer has spawned, a forced or abnormal terminal path cannot
-                // prove which workspace effects it performed, even when the exact child was reaped.
-                Err(RunFailure::new(error, true))
-            }
-        },
-        Err(error) => {
-            let _cleanup_confirmed = driver.force_cleanup().await;
-            Err(RunFailure::new(error, true))
-        }
-    }
 }
 
 impl RunFailure {
@@ -139,7 +41,7 @@ impl RunFailure {
     }
 }
 
-struct Driver {
+pub(super) struct Driver {
     process: Option<ConfinedProcess>,
     stdin: Option<tokio::process::ChildStdin>,
     stdout: BufReader<tokio::process::ChildStdout>,
@@ -164,7 +66,7 @@ impl Drop for Driver {
 }
 
 impl Driver {
-    async fn new(mut process: ConfinedProcess, epoch: u64) -> Result<Self, RunFailure> {
+    pub(super) async fn new(mut process: ConfinedProcess, epoch: u64) -> Result<Self, RunFailure> {
         let backend = process.backend();
         let stdin = process.take_stdin();
         let stdout = process.take_stdout();
@@ -191,12 +93,12 @@ impl Driver {
         })
     }
 
-    async fn execute(
+    pub(super) async fn execute(
         &mut self,
         document: &SourceDocument,
         query: QueryKind,
+        request_timeout: Duration,
     ) -> Result<Value, LspToolError> {
-        self.initialize(&document.root_uri()?).await?;
         let snapshot = self.documents.open(document.uri(), 1)?;
         self.write(&json!({
             "jsonrpc": "2.0",
@@ -218,7 +120,7 @@ impl Driver {
             lsp_query.method(),
             snapshot,
             self.now_ms(),
-            REQUEST_TIMEOUT_MS,
+            u64::try_from(request_timeout.as_millis()).unwrap_or(u64::MAX),
         )?;
         self.write(&json!({
             "jsonrpc": "2.0",
@@ -227,7 +129,7 @@ impl Driver {
             "params": lsp_query.params(document.uri(), query.position())?
         }))
         .await?;
-        let value = self.read(correlation.id(), QUERY_TIMEOUT).await?;
+        let value = self.read(correlation.id(), request_timeout).await?;
         let completed = accepted(self.pending.resolve(
             self.epoch.generation(),
             correlation.id(),
@@ -254,13 +156,17 @@ impl Driver {
         Ok(value)
     }
 
-    async fn initialize(&mut self, root_uri: &str) -> Result<(), LspToolError> {
+    pub(super) async fn initialize(
+        &mut self,
+        root_uri: &str,
+        request_timeout: Duration,
+    ) -> Result<(), LspToolError> {
         self.lifecycle
             .apply(Event::InitializeSent(self.epoch), self.now_ms())?;
         let correlation = self.pending.issue(
             "initialize",
             self.now_ms(),
-            INITIALIZE_TIMEOUT.as_millis() as u64,
+            u64::try_from(request_timeout.as_millis()).unwrap_or(u64::MAX),
         )?;
         self.write(&json!({
             "jsonrpc": "2.0",
@@ -275,7 +181,7 @@ impl Driver {
             }
         }))
         .await?;
-        let result = self.read(correlation.id(), INITIALIZE_TIMEOUT).await?;
+        let result = self.read(correlation.id(), request_timeout).await?;
         let completed = accepted(self.pending.resolve(
             self.epoch.generation(),
             correlation.id(),
@@ -306,7 +212,7 @@ impl Driver {
         read_response(&mut self.stdout, writer, id, timeout).await
     }
 
-    async fn shutdown(&mut self) -> Result<&'static str, LspToolError> {
+    pub(super) async fn shutdown(&mut self) -> Result<&'static str, LspToolError> {
         if self.lifecycle.state() != State::Ready {
             return Err(LspToolError::LifecycleIncomplete);
         }
@@ -368,7 +274,7 @@ impl Driver {
         Ok(self.backend.as_str())
     }
 
-    async fn force_cleanup(&mut self) -> bool {
+    pub(super) async fn force_cleanup(&mut self) -> bool {
         drop(self.stdin.take());
         let process = self.process.take();
         let process_cleanup = async move {
@@ -397,6 +303,14 @@ impl Driver {
 
     fn now_ms(&self) -> u64 {
         u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    pub(super) fn backend(&self) -> &'static str {
+        self.backend.as_str()
+    }
+
+    pub(super) fn epoch(&self) -> u64 {
+        self.epoch.generation()
     }
 }
 

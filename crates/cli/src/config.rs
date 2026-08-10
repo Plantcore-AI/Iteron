@@ -8,6 +8,7 @@
 //! JSON, not TOML, to avoid a dependency (serde_json is already in the tree — zero-dependency
 //! first). Every field is optional; a missing file is not an error (defaults apply).
 
+mod provider_governor;
 mod retry;
 mod schema;
 
@@ -24,6 +25,7 @@ const MAX_MCP_SERVER_ARGS: usize = 128;
 /// window-relative compaction arithmetic never saturates. It bounds absurd input; it is not a
 /// claim that any model this large exists.
 pub(crate) const MAX_DECLARED_CONTEXT_WINDOW: u64 = 1_000_000_000;
+pub(crate) use provider_governor::{ProviderGovernorConfig, ResolvedProviderGovernorConfig};
 pub(crate) use retry::{RetryConfig, load_retry_environment, resolve_retry_policy};
 pub(crate) use schema::{FILE_CONFIG_SCHEMA_VERSION, FileConfigSchemaError};
 
@@ -53,6 +55,8 @@ pub struct FileConfig {
     /// Bounded provider retry policy. It is parsed for both origins so typos fail loudly, but the
     /// composition root accepts values only from trusted operator layers.
     pub retry: Option<RetryConfig>,
+    /// Bounded provider routing/admission controls. Consumed only from operator-owned config.
+    pub provider_governor: Option<ProviderGovernorConfig>,
     /// Bounded out-of-band attention notifications for completed runs, approval requests, and
     /// long-idle periods. This preference is consumed only from operator-owned user configuration.
     pub completion_notifications: Option<bool>,
@@ -124,6 +128,7 @@ impl Default for FileConfig {
             egress_allow: None,
             compaction_trigger_tokens: None,
             retry: None,
+            provider_governor: None,
             completion_notifications: None,
             prompt_history: None,
             tui_keymap: None,
@@ -447,6 +452,9 @@ impl FileConfig {
         }
         if let Some(retry) = &self.retry {
             retry.validate()?;
+        }
+        if let Some(governor) = &self.provider_governor {
+            governor.validate()?;
         }
         crate::keymap::Keymap::from_config(self.tui_keymap.as_ref())?;
         if let Some(command) = &self.external_editor {
@@ -1156,11 +1164,57 @@ pub fn pick<T>(flag: Option<T>, env: Option<T>, file: Option<T>, default: T) -> 
     flag.or(env).or(file).unwrap_or(default)
 }
 
+/// Resolve one trusted scalar while retaining the exact winning authority. Runtime tunables
+/// evidence must never reconstruct provenance after the value has been flattened.
+pub(crate) fn pick_with_origin<T>(
+    flag: Option<T>,
+    env: Option<T>,
+    user: Option<T>,
+    default: T,
+) -> (T, ConfigOrigin) {
+    if let Some(value) = flag {
+        (value, ConfigOrigin::Cli)
+    } else if let Some(value) = env {
+        (value, ConfigOrigin::Environment)
+    } else if let Some(value) = user {
+        (value, ConfigOrigin::UserConfig)
+    } else {
+        (default, ConfigOrigin::Builtin)
+    }
+}
+
+/// Optional trusted scalar resolution retaining absence as absence. This is used for ceilings
+/// whose unset state is semantically different from a fabricated built-in value.
+pub(crate) fn pick_optional_with_origin<T>(
+    flag: Option<T>,
+    env: Option<T>,
+    user: Option<T>,
+) -> Option<(T, ConfigOrigin)> {
+    if let Some(value) = flag {
+        Some((value, ConfigOrigin::Cli))
+    } else if let Some(value) = env {
+        Some((value, ConfigOrigin::Environment))
+    } else {
+        user.map(|value| (value, ConfigOrigin::UserConfig))
+    }
+}
+
 /// Apply an untrusted repository ceiling to a value already resolved from trusted operator
 /// sources. A project may request *less* authority/spend/time, never more.
 pub fn tighten<T: PartialOrd>(project: Option<T>, trusted: T) -> T {
     match project {
         Some(project) if project < trusted => project,
+        _ => trusted,
+    }
+}
+
+/// Apply a project ceiling and preserve which layer supplied the effective value.
+pub(crate) fn tighten_with_origin<T: PartialOrd>(
+    project: Option<T>,
+    trusted: (T, ConfigOrigin),
+) -> (T, ConfigOrigin) {
+    match project {
+        Some(project) if project < trusted.0 => (project, ConfigOrigin::ProjectConfig),
         _ => trusted,
     }
 }
@@ -1181,10 +1235,39 @@ pub fn tighten_optional<T: PartialOrd>(project: Option<T>, trusted: Option<T>) -
     }
 }
 
+/// Optional ceiling variant retaining the winning layer. `None` remains an explicit absence, not
+/// a fabricated built-in ceiling.
+pub(crate) fn tighten_optional_with_origin<T: PartialOrd>(
+    project: Option<T>,
+    trusted: Option<(T, ConfigOrigin)>,
+) -> Option<(T, ConfigOrigin)> {
+    match (project, trusted) {
+        (Some(project), Some(trusted)) if project < trusted.0 => {
+            Some((project, ConfigOrigin::ProjectConfig))
+        }
+        (_, Some(trusted)) => Some(trusted),
+        (Some(project), None) => Some((project, ConfigOrigin::ProjectConfig)),
+        (None, None) => None,
+    }
+}
+
 /// Apply an untrusted repository restriction to an operator-owned boolean grant. `true` can never
 /// mint authority; an explicit project `false` may only remove an existing grant.
 pub fn tighten_grant(project: Option<bool>, trusted: bool) -> bool {
     trusted && project.unwrap_or(true)
+}
+
+/// Boolean grant tightening with retained provenance. Project `true` is inert; project `false`
+/// owns the resulting restriction only when it changes a trusted grant.
+pub(crate) fn tighten_grant_with_origin(
+    project: Option<bool>,
+    trusted: (bool, ConfigOrigin),
+) -> (bool, ConfigOrigin) {
+    if trusted.0 && project == Some(false) {
+        (false, ConfigOrigin::ProjectConfig)
+    } else {
+        trusted
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1282,21 +1365,23 @@ pub(crate) fn pick_optional_trusted_string(
     }
 }
 
-/// Model defaults are allowed one repository-scoped exception: a project may name a bare model,
-/// but the caller must constrain it to the already trusted provider. A recognized
-/// `provider:model` value from this origin is rejected by the caller rather than followed.
+/// Select a model only from operator-trusted origins.
+///
+/// A model id changes cost, capability, retention behavior, and request serialization even when
+/// the provider/egress destination stays fixed. A cloned repository therefore cannot select one;
+/// project configuration may tighten resource/permission ceilings but cannot choose execution.
 pub(crate) fn pick_model_string(
     cli: Option<String>,
     env: Option<String>,
     user: Option<String>,
-    project: Option<String>,
+    _project: Option<String>,
 ) -> Option<(String, ConfigOrigin)> {
     pick_optional_trusted_string(cli, env, user)
-        .or_else(|| non_empty(project).map(|value| (value, ConfigOrigin::ProjectConfig)))
 }
 
 /// Treat `left:right` as provider-qualified only when `left` names a configured provider. This
 /// avoids confusing model-native colons with a routing instruction.
+#[cfg(test)]
 pub(crate) fn has_known_provider_qualifier(
     value: &str,
     mut is_known_provider: impl FnMut(&str) -> bool,
@@ -1469,6 +1554,47 @@ mod tests {
     }
 
     #[test]
+    fn scalar_resolution_retains_the_effective_authority() {
+        assert_eq!(
+            pick_with_origin(Some(5), Some(4), Some(3), 2),
+            (5, ConfigOrigin::Cli)
+        );
+        assert_eq!(
+            pick_with_origin(None, Some(4), Some(3), 2),
+            (4, ConfigOrigin::Environment)
+        );
+        assert_eq!(
+            pick_optional_with_origin(Some(5), Some(4), Some(3)),
+            Some((5, ConfigOrigin::Cli))
+        );
+        assert_eq!(pick_optional_with_origin::<u32>(None, None, None), None);
+        assert_eq!(
+            tighten_with_origin(Some(2), (4, ConfigOrigin::UserConfig)),
+            (2, ConfigOrigin::ProjectConfig)
+        );
+        assert_eq!(
+            tighten_with_origin(Some(6), (4, ConfigOrigin::UserConfig)),
+            (4, ConfigOrigin::UserConfig)
+        );
+        assert_eq!(
+            tighten_optional_with_origin(Some(2), None),
+            Some((2, ConfigOrigin::ProjectConfig))
+        );
+        assert_eq!(
+            tighten_optional_with_origin(Some(6), Some((4, ConfigOrigin::Cli))),
+            Some((4, ConfigOrigin::Cli))
+        );
+        assert_eq!(
+            tighten_grant_with_origin(Some(false), (true, ConfigOrigin::Cli)),
+            (false, ConfigOrigin::ProjectConfig)
+        );
+        assert_eq!(
+            tighten_grant_with_origin(Some(true), (false, ConfigOrigin::UserConfig)),
+            (false, ConfigOrigin::UserConfig)
+        );
+    }
+
+    #[test]
     fn routing_defaults_use_only_trusted_precedence() {
         assert_eq!(
             pick_trusted_string(
@@ -1512,7 +1638,7 @@ mod tests {
     }
 
     #[test]
-    fn project_model_is_last_and_carries_untrusted_origin() {
+    fn project_model_is_ignored_as_untrusted_execution_selection() {
         assert_eq!(
             pick_model_string(
                 None,
@@ -1524,7 +1650,7 @@ mod tests {
         );
         assert_eq!(
             pick_model_string(None, None, None, Some("project-model".into())),
-            Some(("project-model".into(), ConfigOrigin::ProjectConfig))
+            None
         );
     }
 

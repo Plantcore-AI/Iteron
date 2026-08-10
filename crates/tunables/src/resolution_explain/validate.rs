@@ -425,7 +425,13 @@ fn external_rule(
 }
 
 pub(super) fn valid_shadowed_reason(value: &str) -> bool {
-    matches!(value, "same_source_profile_overridden" | "lower_precedence")
+    matches!(
+        value,
+        "same_source_profile_overridden"
+            | "lower_precedence"
+            | "project_tightened"
+            | "project_tightening_inert"
+    )
 }
 
 fn safe_code(value: &str) -> bool {

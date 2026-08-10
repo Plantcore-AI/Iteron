@@ -1,14 +1,17 @@
 //! Durable, non-authoritative storage for validated trajectory envelopes.
 //!
-//! The registry is one append-only, hash-chained JSONL file. Every record embeds its envelope,
-//! pins the envelope's SHA-256 content address, and links to the preceding record. It can retain
-//! evidence and answer provenance queries; it has no policy-resolution or activation operation.
+//! The registry is one append-only, hash-chained JSONL manifest. Every record embeds a private
+//! content handle, pins the envelope's SHA-256 address, and links to the preceding record. Envelope
+//! bytes are served only through the record store's durable tombstone gate.
 
 use crate::{
-    EvidenceRecordError, EvidenceRecorder, MAX_POLICIES_PER_BUNDLE, MAX_TRAJECTORY_JSON_BYTES,
-    PolicyRef, TrajectoryEnvelope,
+    EvidenceRecordError, EvidenceRecorder, MAX_POLICIES_PER_BUNDLE, PolicyRef, TrajectoryEnvelope,
 };
-use core_protocol::RunId;
+use core_protocol::{RunId, Seq, TenantId};
+use core_record::{
+    ContentReferenceSurface, PrivateContentClass, PrivateContentDerivativeStore,
+    PrivateContentHandle, PrivateContentRetention,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions, TryLockError};
@@ -19,12 +22,12 @@ use std::path::{Path, PathBuf};
 mod registry_io;
 use registry_io::*;
 
-const REGISTRY_SCHEMA_VERSION: u16 = 1;
+const REGISTRY_SCHEMA_VERSION: u16 = 2;
 const REGISTRY_FILE_NAME: &str = "trajectory-registry.jsonl";
 const ZERO_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// Bound the serialized envelope independently of in-memory construction.
-pub const MAX_TRAJECTORY_REGISTRY_ENVELOPE_BYTES: usize = MAX_TRAJECTORY_JSON_BYTES;
+pub const MAX_TRAJECTORY_REGISTRY_ENVELOPE_BYTES: usize = core_record::MAX_PRIVATE_CONTENT_BYTES;
 /// One physical line includes the bounded envelope plus fixed chain metadata.
 pub const MAX_TRAJECTORY_REGISTRY_RECORD_BYTES: usize =
     MAX_TRAJECTORY_REGISTRY_ENVELOPE_BYTES + 64 * 1024;
@@ -41,6 +44,8 @@ pub enum TrajectoryRegistryError {
     Io(#[from] io::Error),
     #[error("trajectory registry JSON is invalid: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("trajectory private-content storage failed: {0}")]
+    PrivateContent(#[from] core_record::ContentStoreError),
     #[error("trajectory envelope is not verified evidence: {0}")]
     InvalidEnvelope(#[source] EvidenceRecordError),
     #[error("stored trajectory at sequence {sequence} is not verified evidence: {source}")]
@@ -140,11 +145,18 @@ pub enum TrajectoryIngest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct RegistryRecord {
+struct StoredRegistryRecord {
     registry_schema_version: u16,
     sequence: u64,
     previous_hash: String,
     record_hash: String,
+    content_digest: String,
+    run_id: RunId,
+    tenant_id: TenantId,
+    envelope: PrivateContentHandle,
+}
+
+struct RegistryRecord {
     content_digest: String,
     envelope: TrajectoryEnvelope,
 }
@@ -159,6 +171,7 @@ struct ScanSummary {
 /// One exclusively-owned append writer. Every read re-verifies the on-disk chain.
 pub struct TrajectoryRegistry {
     directory: PathBuf,
+    content_runs_dir: PathBuf,
     path: PathBuf,
     file: File,
     #[cfg(unix)]
@@ -167,8 +180,21 @@ pub struct TrajectoryRegistry {
 }
 
 impl TrajectoryRegistry {
+    /// Open a registry with a co-located private-content graph.
+    ///
+    /// Record-backed production projections should use [`Self::open_with_content_store`] and pass
+    /// the originating record store, which is the only way source and derivative handles can
+    /// share one revocation generation.
     pub fn open(directory: &Path) -> Result<Self, TrajectoryRegistryError> {
+        Self::open_with_content_store(directory, &directory.join(".private-content"))
+    }
+
+    pub fn open_with_content_store(
+        directory: &Path,
+        content_runs_dir: &Path,
+    ) -> Result<Self, TrajectoryRegistryError> {
         let directory = prepare_directory(directory)?;
+        let content_runs_dir = content_runs_dir.to_path_buf();
         let path = directory.join(REGISTRY_FILE_NAME);
         reject_existing_symlink(&path)?;
         let was_missing = std::fs::symlink_metadata(&path).is_err();
@@ -192,6 +218,7 @@ impl TrajectoryRegistry {
         let identity = file_identity(&metadata);
         let mut registry = Self {
             directory,
+            content_runs_dir,
             path,
             file,
             #[cfg(unix)]
@@ -238,13 +265,22 @@ impl TrajectoryRegistry {
         }
 
         let record_hash = hash_record(&summary.last_hash, summary.next_sequence, &content_digest);
-        let record = RegistryRecord {
+        let content_store = trajectory_content_store(&self.content_runs_dir, envelope)?;
+        let handle = content_store.put(Seq(summary.next_sequence), &envelope_bytes)?;
+        if handle.digest.as_str() != format!("sha256:{content_digest}") {
+            return Err(TrajectoryRegistryError::ContentDigestMismatch {
+                sequence: summary.next_sequence,
+            });
+        }
+        let record = StoredRegistryRecord {
             registry_schema_version: REGISTRY_SCHEMA_VERSION,
             sequence: summary.next_sequence,
             previous_hash: summary.last_hash,
             record_hash,
             content_digest: content_digest.clone(),
-            envelope: envelope.clone(),
+            run_id: envelope.run_id.clone(),
+            tenant_id: envelope.tenant_id.clone(),
+            envelope: handle.clone(),
         };
         let mut line = encode_record(&record)?;
         line.push(b'\n');
@@ -261,6 +297,7 @@ impl TrajectoryRegistry {
         self.file.write_all(&line)?;
         self.file.sync_data()?;
         self.poisoned = false;
+        content_store.retain(&[(Seq(summary.next_sequence), handle.digest)])?;
         Ok(TrajectoryIngest::Stored(TrajectoryAddress(content_digest)))
     }
 
@@ -340,6 +377,7 @@ impl TrajectoryRegistry {
         let mut last_hash = ZERO_HASH.to_string();
         let mut verified_bytes = 0u64;
         let mut run_digests = BTreeMap::new();
+        let content_runs_dir = self.content_runs_dir.clone();
 
         while let Some((bytes, terminated, consumed)) = read_bounded_line(&mut reader)? {
             if !terminated {
@@ -350,22 +388,20 @@ impl TrajectoryRegistry {
                     limit: MAX_TRAJECTORY_REGISTRY_RECORDS,
                 });
             }
-            let record: RegistryRecord = serde_json::from_slice(&bytes)?;
-            verify_record(&record, sequence, &last_hash)?;
+            let stored: StoredRegistryRecord = serde_json::from_slice(&bytes)?;
+            verify_stored_record(&stored, sequence, &last_hash)?;
             if run_digests
-                .insert(
-                    record.envelope.run_id.0.clone(),
-                    record.content_digest.clone(),
-                )
+                .insert(stored.run_id.0.clone(), stored.content_digest.clone())
                 .is_some()
             {
                 return Err(TrajectoryRegistryError::DuplicateStoredRun {
-                    run_id: record.envelope.run_id.0.clone(),
+                    run_id: stored.run_id.0.clone(),
                 });
             }
+            let record = hydrate_record(&content_runs_dir, &stored)?;
             visitor(&record)?;
             sequence = sequence.saturating_add(1);
-            last_hash = record.record_hash;
+            last_hash = stored.record_hash;
             verified_bytes = verified_bytes.checked_add(consumed as u64).ok_or(
                 TrajectoryRegistryError::RegistryTooLarge {
                     bytes: u64::MAX,
@@ -418,8 +454,8 @@ impl Drop for TrajectoryRegistry {
     }
 }
 
-fn verify_record(
-    record: &RegistryRecord,
+fn verify_stored_record(
+    record: &StoredRegistryRecord,
     expected_sequence: u64,
     expected_previous: &str,
 ) -> Result<(), TrajectoryRegistryError> {
@@ -440,14 +476,9 @@ fn verify_record(
             sequence: record.sequence,
         });
     }
-    EvidenceRecorder::new()
-        .verify_trajectory(&record.envelope)
-        .map_err(|source| TrajectoryRegistryError::InvalidStoredEnvelope {
-            sequence: record.sequence,
-            source,
-        })?;
-    let envelope_bytes = encode_envelope(&record.envelope)?;
-    if digest_bytes(&envelope_bytes) != record.content_digest {
+    if record.envelope.class != PrivateContentClass::Trajectory
+        || record.envelope.digest.as_str() != format!("sha256:{}", record.content_digest)
+    {
         return Err(TrajectoryRegistryError::ContentDigestMismatch {
             sequence: record.sequence,
         });
@@ -463,6 +494,58 @@ fn verify_record(
         });
     }
     Ok(())
+}
+
+fn hydrate_record(
+    content_runs_dir: &Path,
+    stored: &StoredRegistryRecord,
+) -> Result<RegistryRecord, TrajectoryRegistryError> {
+    let content_store = PrivateContentDerivativeStore::open(
+        content_runs_dir,
+        stored.tenant_id.clone(),
+        stored.run_id.clone(),
+        ContentReferenceSurface::Trajectory,
+        PrivateContentClass::Trajectory,
+        PrivateContentRetention::ExplicitRevocation,
+        MAX_TRAJECTORY_REGISTRY_ENVELOPE_BYTES,
+    )?;
+    let bytes = content_store.read_at(Seq(stored.sequence), &stored.envelope)?;
+    if digest_bytes(&bytes) != stored.content_digest {
+        return Err(TrajectoryRegistryError::ContentDigestMismatch {
+            sequence: stored.sequence,
+        });
+    }
+    let envelope: TrajectoryEnvelope = serde_json::from_slice(&bytes)?;
+    if envelope.run_id != stored.run_id || envelope.tenant_id != stored.tenant_id {
+        return Err(TrajectoryRegistryError::ContentDigestMismatch {
+            sequence: stored.sequence,
+        });
+    }
+    EvidenceRecorder::new()
+        .verify_trajectory(&envelope)
+        .map_err(|source| TrajectoryRegistryError::InvalidStoredEnvelope {
+            sequence: stored.sequence,
+            source,
+        })?;
+    Ok(RegistryRecord {
+        content_digest: stored.content_digest.clone(),
+        envelope,
+    })
+}
+
+fn trajectory_content_store(
+    content_runs_dir: &Path,
+    envelope: &TrajectoryEnvelope,
+) -> Result<PrivateContentDerivativeStore, TrajectoryRegistryError> {
+    Ok(PrivateContentDerivativeStore::open(
+        content_runs_dir,
+        envelope.tenant_id.clone(),
+        envelope.run_id.clone(),
+        ContentReferenceSurface::Trajectory,
+        PrivateContentClass::Trajectory,
+        PrivateContentRetention::ExplicitRevocation,
+        MAX_TRAJECTORY_REGISTRY_ENVELOPE_BYTES,
+    )?)
 }
 
 fn registered(record: &RegistryRecord) -> Result<RegisteredTrajectory, TrajectoryRegistryError> {

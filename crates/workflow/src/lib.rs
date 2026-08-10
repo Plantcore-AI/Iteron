@@ -27,7 +27,9 @@
 
 mod bindings;
 mod collaboration;
+mod execution_policy;
 mod host;
+mod quorum;
 
 pub mod cachekey;
 pub mod events;
@@ -47,8 +49,14 @@ pub use events::{
     NullSink, PREVIEW_MAX, PROGRESS_SINK_PORT_VERSION, ProgressEvent, ProgressSink,
     TOOL_SUMMARY_MAX, WorkflowState, fmt_count, fmt_duration, truncate_preview,
 };
+pub use execution_policy::{
+    CleanWriterDisposition, ConflictDisposition, MAX_SPECULATIVE_SIBLINGS, MAX_TASK_ATTEMPTS,
+    SpeculativeSiblingPolicy, SpeculativeWinnerEvidence, TaskFailureAction, TaskRetryPolicy,
+    WriterMergePolicy,
+};
 pub use journal::{JOURNAL_FORMAT_VERSION, Journal, Outcome, Record};
 pub use meta::{Meta, extract_meta, strip_meta};
+pub use quorum::{EarlyStopQuorumPolicy, MAX_EARLY_STOP_QUORUM};
 pub use schema::{RETRY_MAX, SchemaValidator};
 pub use spawner::{
     AGENT_SPAWNER_PORT_VERSION, AgentActivityReporter, AgentCall, AgentOutcome, AgentSpawner,
@@ -80,6 +88,9 @@ impl RunLimits {
         }
         if max_agent_calls == 0 {
             return Err("workflow agent-call ceiling must be non-zero");
+        }
+        if max_agent_calls > LIFETIME_CAP {
+            return Err("workflow agent-call ceiling exceeds the hard 1000-call limit");
         }
         Ok(Self {
             max_concurrency,
@@ -158,6 +169,12 @@ pub struct RunSpec {
     pub resume_from: Option<RunId>,
     /// Kernel/composition-root minted aggregate ceilings. Script input never controls this value.
     pub limits: RunLimits,
+    /// Owner-minted policy used only by the opt-in `parallelQuorum(...)` DSL primitive.
+    pub early_stop_quorum: EarlyStopQuorumPolicy,
+    /// Host-owned ceiling and cleanup contract for explicit read-only speculative siblings.
+    pub speculative_siblings: SpeculativeSiblingPolicy,
+    /// Host-owned retry/reassignment policy for definite negative child terminals.
+    pub task_retry: TaskRetryPolicy,
 }
 
 impl RunSpec {
@@ -169,6 +186,9 @@ impl RunSpec {
             workflows_dir: None,
             resume_from: None,
             limits: RunLimits::default(),
+            early_stop_quorum: EarlyStopQuorumPolicy::default(),
+            speculative_siblings: SpeculativeSiblingPolicy::default(),
+            task_retry: TaskRetryPolicy::default(),
         }
     }
     pub fn with_args(mut self, args: serde_json::Value) -> RunSpec {
@@ -189,6 +209,18 @@ impl RunSpec {
     }
     pub fn with_limits(mut self, limits: RunLimits) -> RunSpec {
         self.limits = limits;
+        self
+    }
+    pub fn with_early_stop_quorum(mut self, policy: EarlyStopQuorumPolicy) -> RunSpec {
+        self.early_stop_quorum = policy;
+        self
+    }
+    pub fn with_speculative_siblings(mut self, policy: SpeculativeSiblingPolicy) -> RunSpec {
+        self.speculative_siblings = policy;
+        self
+    }
+    pub fn with_task_retry(mut self, policy: TaskRetryPolicy) -> RunSpec {
+        self.task_retry = policy;
         self
     }
 }
@@ -305,12 +337,20 @@ impl WorkflowEngine {
         sink: Arc<dyn ProgressSink>,
     ) -> anyhow::Result<RunReport> {
         let journal = build_journal(&spec)?;
+        let task_dag = Arc::new(task_dag::runtime::ExecutionLedger::open(
+            &spec.run_id,
+            spec.workflows_dir.as_deref(),
+            spec.limits,
+        )?);
         let cancel = CancellationToken::new();
         let RunSpec {
             script,
             args,
             run_id,
             limits,
+            early_stop_quorum,
+            speculative_siblings,
+            task_retry,
             ..
         } = spec;
         host::run_core(host::RunCoreRequest {
@@ -318,8 +358,12 @@ impl WorkflowEngine {
             args,
             run_id,
             limits,
+            early_stop_quorum,
+            speculative_siblings,
+            task_retry,
             cancel,
             journal,
+            task_dag,
             spawner,
             sink,
         })
@@ -345,6 +389,11 @@ impl WorkflowEngine {
             .spawn(move || {
                 let result = (|| -> anyhow::Result<RunReport> {
                     let journal = build_journal(&spec)?;
+                    let task_dag = Arc::new(task_dag::runtime::ExecutionLedger::open(
+                        &spec.run_id,
+                        spec.workflows_dir.as_deref(),
+                        spec.limits,
+                    )?);
                     let rt = tokio::runtime::Builder::new_multi_thread()
                         .enable_all()
                         .build()?;
@@ -353,6 +402,9 @@ impl WorkflowEngine {
                         args,
                         run_id,
                         limits,
+                        early_stop_quorum,
+                        speculative_siblings,
+                        task_retry,
                         ..
                     } = spec;
                     rt.block_on(host::run_core(host::RunCoreRequest {
@@ -360,8 +412,12 @@ impl WorkflowEngine {
                         args,
                         run_id,
                         limits,
+                        early_stop_quorum,
+                        speculative_siblings,
+                        task_retry,
                         cancel: cancel_thread,
                         journal,
+                        task_dag,
                         spawner,
                         sink,
                     }))

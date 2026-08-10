@@ -1,8 +1,21 @@
 use super::output::{OutputFrame, OutputRing};
+use super::policy::ProcessRuntimePolicy;
 use serde::Serialize;
 use std::fmt;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct ProcessHealth {
+    pub schema_version: u8,
+    pub policy: ProcessRuntimePolicy,
+    pub retained_jobs: usize,
+    pub active_jobs: usize,
+    pub terminal_jobs: usize,
+    pub cleanup_unknown_jobs: usize,
+    pub awaiting_stdin_jobs: usize,
+}
 
 #[derive(Debug)]
 pub(super) enum ActionError {
@@ -67,6 +80,10 @@ pub(super) enum JobState {
         exit_code: Option<i32>,
         signal: Option<i32>,
     },
+    IdleStalled {
+        exit_code: Option<i32>,
+        signal: Option<i32>,
+    },
     OutputLimitExceeded {
         exit_code: Option<i32>,
         signal: Option<i32>,
@@ -95,6 +112,8 @@ pub(super) struct ProcessSnapshot {
     pub(super) schema_version: u8,
     pub(super) job_id: String,
     pub(super) backend: &'static str,
+    pub(super) runtime_policy: ProcessRuntimePolicy,
+    pub(super) awaiting_stdin: bool,
     pub(super) state: JobState,
     pub(super) stdout: OutputFrame,
     pub(super) stderr: OutputFrame,
@@ -107,6 +126,8 @@ pub(super) struct ProcessSummary {
     pub(super) schema_version: u8,
     pub(super) job_id: String,
     pub(super) backend: &'static str,
+    pub(super) runtime_policy: ProcessRuntimePolicy,
+    pub(super) awaiting_stdin: bool,
     pub(super) command: String,
     pub(super) state: JobState,
     pub(super) stdout_cursor: u64,
@@ -136,6 +157,7 @@ pub(super) struct JobShared {
     pub(super) state: Mutex<JobState>,
     pub(super) stdout: Arc<Mutex<OutputRing>>,
     pub(super) stderr: Arc<Mutex<OutputRing>>,
+    pub(super) awaiting_stdin: AtomicBool,
     pub(super) revision: watch::Sender<u64>,
 }
 

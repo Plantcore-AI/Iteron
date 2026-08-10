@@ -18,17 +18,21 @@ pub mod capability_set;
 pub mod context;
 pub mod diff;
 pub mod effect;
+pub mod erasure;
 pub mod event;
 pub mod ids;
 pub mod intent;
 pub mod lifecycle;
 pub mod message;
 pub mod permission;
+pub mod policy_bundle_checkpoint;
+pub mod policy_evidence;
 pub mod pricing;
 pub mod slot;
 pub mod task;
 pub mod tool;
 pub mod trust;
+pub mod tunables_snapshot;
 pub mod wire;
 
 pub mod home;
@@ -36,6 +40,14 @@ pub mod input;
 pub mod text;
 
 pub use diff::{DiffLine, DiffTag, FileDiff, Hunk};
+pub use erasure::{
+    ERASURE_RECEIPT_SCHEMA_VERSION, ErasureAuthorityId, ErasureContentDigest, ErasureFailureCode,
+    ErasureOperationId, ErasureOperationKind, ErasurePropagationCoverage, ErasureReceipt,
+    ErasureRequest, ErasureScopeId, ErasureState, ErasureTarget, ErasureTargetId,
+    ErasureValidationError, ErasureVerification, MAX_ERASURE_AUTHORITY_ID_BYTES,
+    MAX_ERASURE_OPERATION_ID_BYTES, MAX_ERASURE_RECEIPT_BYTES, MAX_ERASURE_SCOPE_ID_BYTES,
+    MAX_ERASURE_TARGET_ID_BYTES, MAX_RETENTION_AGE_SECS, MAX_RETENTION_KEEP_LAST,
+};
 pub use event::{
     DurableEnvironmentContext, DurableInstructionContext, Event, EventKind,
     MAX_AGENT_DEFINITION_TAG_BYTES, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, Phase,
@@ -62,82 +74,35 @@ pub use message::{
     StopReason, StopReasonCode, Usage,
 };
 pub use permission::{PermissionMode, PermissionRules, Verdict, gate};
+pub use policy_bundle_checkpoint::{
+    MAX_POLICY_IMPLEMENTATION_ID_BYTES, PolicyBundleCoverage, PolicySlotApplicationStatus,
+    RUN_GENESIS_POLICY_BUNDLE_CANONICALIZATION, RUN_GENESIS_POLICY_BUNDLE_SLOT_COUNT,
+    RunGenesisPolicyBundleInheritance, RunGenesisPolicyBundleSnapshot,
+    RunGenesisPolicyBundleVersion, RunGenesisPolicySlotBinding,
+};
+pub use policy_evidence::{
+    MAX_POLICY_ACTIONS, MAX_POLICY_MACHINE_ID_BYTES, POLICY_DECISION_EVIDENCE_SCHEMA_VERSION,
+    POLICY_OUTCOME_EVIDENCE_SCHEMA_VERSION, PolicyActionId, PolicyDecisionDisposition,
+    PolicyDecisionEvidence, PolicyEvidenceError, PolicyOpportunityId, PolicyOpportunityJoinDigest,
+    PolicyOutcomeEvidence, PolicyOutcomeScope, PolicyRuntimeIdentity, PolicyTerminalOutcome,
+    PolicyVerifierOutcome,
+};
 pub use pricing::{
     CostAttribution, CostProjection, CostProjectionIdentity, MAX_WORKFLOW_COST_PROJECTIONS,
     PricingRoute, PricingVersion, RateCard, SignedRateCard, TokenRateCard,
 };
 pub use tool::{Capability, Purity, ToolResult, ToolSpec, ToolUse};
 pub use trust::Trust;
+pub use tunables_snapshot::{
+    MAX_RUN_GENESIS_TUNABLE_CEILINGS, MAX_RUN_GENESIS_TUNABLE_ENTRIES,
+    MAX_RUN_GENESIS_TUNABLE_ID_BYTES, MAX_RUN_GENESIS_TUNABLES_V2_BYTES,
+    MAX_RUN_GENESIS_TUNABLES_V2_DEPTH, MAX_RUN_GENESIS_TUNABLES_V2_NODES,
+    RUN_GENESIS_TUNABLES_CANONICALIZATION, RUN_GENESIS_TUNABLES_V2_CANONICALIZATION,
+    RunGenesisTunableEntry, RunGenesisTunableEntryV2, RunGenesisTunableState,
+    RunGenesisTunablesInheritance, RunGenesisTunablesSnapshot, RunGenesisTunablesSnapshotV2,
+    RunGenesisTunablesVersion,
+};
 pub use wire::{EqEnvelope, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope};
-
-/// Maximum number of semantic families admitted in one v1 genesis snapshot.
-pub const MAX_RUN_GENESIS_TUNABLE_ENTRIES: usize = 160;
-/// Maximum UTF-8 bytes in a snapshot's stable registry/family/semantic identifiers.
-pub const MAX_RUN_GENESIS_TUNABLE_ID_BYTES: usize = 256;
-/// Canonical encoding committed by [`RunGenesisTunablesSnapshot::snapshot_digest_sha256`].
-pub const RUN_GENESIS_TUNABLES_CANONICALIZATION: &str = "core-run-genesis-tunables-json-v1";
-
-/// Schema version for [`EventKind::TunablesSnapshot`].
-/// A future format must use a new top-level event tag so an older reader can skip it safely.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunGenesisTunablesVersion {
-    V1,
-}
-
-/// The only entry states an atomically successful resolver result may persist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunGenesisTunableState {
-    Effective,
-    Inactive,
-    Unavailable,
-}
-
-/// Bounded per-family identity and resolution state. Effective values and per-family value hashes
-/// remain outside the protocol: raw hashes of low-entropy booleans, paths, providers, or model ids
-/// would be dictionary-enumerable. Exact comparison uses the aggregate resolver commitments.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunGenesisTunableEntry {
-    pub ordinal: u16,
-    pub family_id: String,
-    pub semantic_key: String,
-    pub state: RunGenesisTunableState,
-}
-
-/// Immutable identity of the complete, atomically resolved set admitted for a run.
-///
-/// `snapshot_digest_sha256` is recomputed at record read/write boundaries from every preceding
-/// field and all entries. The three resolver digests retain their distinct meanings: frozen input,
-/// effective values, and full resolution/provenance report.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunGenesisTunablesSnapshot {
-    pub version: RunGenesisTunablesVersion,
-    pub canonicalization: String,
-    pub resolution_schema_version: u16,
-    pub registry_id: String,
-    pub registry_schema_version: u16,
-    pub family_schema_version: u16,
-    pub registry_revision: u16,
-    pub registry_digest_sha256: String,
-    pub input_digest_sha256: String,
-    pub effective_digest_sha256: String,
-    pub resolution_digest_sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile_digest_sha256: Option<String>,
-    pub entries: Vec<RunGenesisTunableEntry>,
-    pub snapshot_digest_sha256: String,
-}
-
-/// Child-genesis binding to the exact parent snapshot inherited across a fork or rewind.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunGenesisTunablesInheritance {
-    pub parent_run: String,
-    pub parent_snapshot_digest_sha256: String,
-}
 
 /// The image media types the neutral SQ contract admits.
 ///
