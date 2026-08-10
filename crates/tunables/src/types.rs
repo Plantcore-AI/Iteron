@@ -292,7 +292,7 @@ pub struct RequirementSpec {
     pub capabilities: &'static [CapabilityRequirement],
 }
 
-/// The nine formal core StrategySlot bindings. Every family binds one or more of these exactly.
+/// The nine formal iteron StrategySlot bindings. Every family binds one or more of these exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum CoreStrategySlot {
     #[serde(rename = "core/router")]

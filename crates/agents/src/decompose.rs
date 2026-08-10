@@ -513,8 +513,8 @@ fn token_is_path(tok: &str) -> bool {
 }
 
 fn token_is_file_line(tok: &str) -> bool {
-    let core = tok.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | ';' | '(' | ')'));
-    match core.split_once(':') {
+    let iteron = tok.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | ';' | '(' | ')'));
+    match iteron.split_once(':') {
         Some((head, rest)) => {
             let line_ok = rest
                 .split(':')
@@ -531,8 +531,8 @@ fn token_is_symbol(tok: &str) -> bool {
     if trimmed.chars().count() >= 3 && trimmed.starts_with('`') && trimmed.ends_with('`') {
         return true;
     }
-    let core = trimmed.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | ';' | '.'));
-    if core.contains("::") {
+    let iteron = trimmed.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | ';' | '.'));
+    if iteron.contains("::") {
         return true;
     }
     // Call form: `identifier(` — a named function/method the operator pointed at.

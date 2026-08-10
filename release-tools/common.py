@@ -64,7 +64,7 @@ def archive_filename(version: str, target: str) -> str:
 
 def binary_filename(target: str) -> str:
     """Return the shipped command name for a release target."""
-    return "iteron.exe" if validate_target(target) == WINDOWS_TARGET else "core"
+    return "iteron.exe" if validate_target(target) == WINDOWS_TARGET else "iteron"
 
 
 def require_regular_file(path: Path, *, max_bytes: int | None = None) -> Path:

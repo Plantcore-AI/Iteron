@@ -21,7 +21,7 @@ already trusted provider. It cannot qualify another provider or redirect egress.
 Use `provider:model` where qualification is needed and the provider id is known:
 
 ```sh
-core --model anthropic:PROVIDER_MODEL_ID
+iteron --model anthropic:PROVIDER_MODEL_ID
 ```
 
 ## Inspect availability

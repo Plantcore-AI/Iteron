@@ -88,7 +88,7 @@ fn run_with(
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("core exceeded {PROCESS_TIMEOUT:?}");
+            panic!("iteron exceeded {PROCESS_TIMEOUT:?}");
         }
         std::thread::sleep(Duration::from_millis(10));
     };
@@ -370,7 +370,7 @@ fn i28_auth_logout_removes_the_credential_and_leaves_the_provider_entry() {
 }
 
 /// I-29 — the credential variable was chosen by provider NAME before the override was applied,
-/// with a silent fallback to `OPENAI_API_KEY`, so `core --base-url https://gateway/v1` shipped the
+/// with a silent fallback to `OPENAI_API_KEY`, so `iteron --base-url https://gateway/v1` shipped the
 /// default provider's key to an arbitrary host.
 #[test]
 fn i29_base_url_without_an_explicit_credential_is_refused() {
@@ -421,7 +421,7 @@ fn i05_a_clean_environment_names_the_missing_variable() {
         "the error names the variable to set: {stderr}"
     );
     assert!(
-        stderr.contains("core setup"),
+        stderr.contains("iteron setup"),
         "the error points at the wizard: {stderr}"
     );
     assert!(

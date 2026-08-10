@@ -114,7 +114,7 @@ release slice.
 
 ```sh
 git clone https://github.com/Plantcore-AI/Iteron.git
-cd core
+cd iteron
 cargo install --locked --path crates/cli
 iteron --version
 ```

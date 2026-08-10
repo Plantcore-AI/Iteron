@@ -514,7 +514,7 @@ mod tests {
         std::fs::write(home_core.join("instructions.md"), "home rule").unwrap();
         std::fs::write(repo.join("AGENTS.md"), "root agents rule").unwrap();
         std::fs::write(repo.join("CLAUDE.md"), "root claude rule").unwrap();
-        std::fs::write(repo.join(".iteron/instructions.md"), "root core rule").unwrap();
+        std::fs::write(repo.join(".iteron/instructions.md"), "root iteron rule").unwrap();
         std::fs::write(active.join("AGENTS.md"), "sub agents rule").unwrap();
         std::fs::write(active.join("CLAUDE.md"), "sub claude rule").unwrap();
 
@@ -540,7 +540,7 @@ mod tests {
             "home rule",
             "root agents rule",
             "root claude rule",
-            "root core rule",
+            "root iteron rule",
             "sub agents rule",
             "sub claude rule",
         ] {

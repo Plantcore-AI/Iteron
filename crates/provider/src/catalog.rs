@@ -760,7 +760,7 @@ impl ProviderInstance {
         &self.credential
     }
 
-    /// Value-free credential provenance for `core auth status`, `/status`, and `/config`.
+    /// Value-free credential provenance for `iteron auth status`, `/status`, and `/config`.
     pub fn credential_status(&self) -> CredentialStatus {
         self.credential.status()
     }

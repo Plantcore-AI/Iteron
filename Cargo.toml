@@ -1,5 +1,5 @@
 # Iteron — a coding agent, and the controller architecture underneath it.
-# One crate per module (ADR-010). The core speaks an id-correlated submission/event
+# One crate per module (ADR-010). The iteron speaks an id-correlated submission/event
 # protocol in-process; the CLI is the first thin frontend adapter.
 [workspace]
 resolver = "3"

@@ -3,7 +3,7 @@
 //!
 //! # Why this test exists
 //!
-//! `#26` acceptance criterion 5 runs `grep -rniE 'core[-_]evolve'` over `crates/kernel` and
+//! `#26` acceptance criterion 5 runs `grep -rniE 'iteron[-_]evolve'` over `crates/kernel` and
 //! `crates/agents` and requires no hit, so that the bundle-resolution port cannot have added that
 //! dependency to either. The invariant is real: evolution is deliberately outside the runtime
 //! trusted computing base.

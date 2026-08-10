@@ -256,7 +256,7 @@
     },
     {
       "id": "record-core",
-      "title": "Record core",
+      "title": "Record iteron",
       "summary": "Append-only journal, hash chain, replay, checkpoint, recovery, and redaction.",
       "status": "open",
       "risk": "critical",
@@ -320,7 +320,7 @@
     },
     {
       "id": "provider-core",
-      "title": "Provider core",
+      "title": "Provider iteron",
       "summary": "Provider trait, route identity, errors, catalog, health, capabilities, and shared stream parsing.",
       "status": "open",
       "risk": "elevated",
@@ -441,7 +441,7 @@
     },
     {
       "id": "context-core",
-      "title": "Context core",
+      "title": "Context iteron",
       "summary": "Compaction, instruction trust, source access, outline, and stable context estimation.",
       "status": "open",
       "risk": "elevated",
@@ -548,7 +548,7 @@
     },
     {
       "id": "tools-core",
-      "title": "Tools core",
+      "title": "Tools iteron",
       "summary": "Tool registry, capability and purity coupling, filesystem, edit, and Git tools.",
       "status": "open",
       "risk": "critical",

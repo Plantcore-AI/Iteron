@@ -67,7 +67,7 @@ Concretely:
    runs as a script. Until then it stays live and correct — it is the only thing
    rendering ultracode today.
 4. `WorkflowUiEvent` is **not** deleted. It is a published compatibility
-   surface: `core --output-format stream-json` consumers read
+   surface: `iteron --output-format stream-json` consumers read
    `workflow_start` / `workflow_plan` / `workflow_phase` /
    `workflow_agent_*` / `workflow_end`. It keeps being emitted for as long as
    the deprecation runway in `governance/schema-compatibility.json` requires,

@@ -17,7 +17,7 @@ Effort is a session setting with two distinct effects:
 Set effort for one run:
 
 ```sh
-core --effort high
+iteron --effort high
 ```
 
 Or use `/effort` in the TUI. Trusted user configuration and `ITERON_EFFORT` can set

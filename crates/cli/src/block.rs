@@ -257,7 +257,7 @@ pub enum BlockKind {
         title: String,
         rows: Vec<PanelRow>,
     },
-    /// The one-time terminal-native core pet landing. It is ordinary scrollable transcript content,
+    /// The one-time terminal-native iteron pet landing. It is ordinary scrollable transcript content,
     /// not persistent chrome, a window, or a full-screen splash.
     Welcome {
         tagline: String,
@@ -300,7 +300,7 @@ impl Block {
     pub fn to_text(&self) -> String {
         match &self.kind {
             BlockKind::User(t) => format!("### you\n{t}\n"),
-            BlockKind::Assistant(doc) => format!("### core\n{}", doc.to_text()),
+            BlockKind::Assistant(doc) => format!("### iteron\n{}", doc.to_text()),
             BlockKind::Thinking { text, .. } => format!("<thinking>\n{text}\n</thinking>\n"),
             BlockKind::Tool(c) => {
                 let mut s = format!("$ {} {}\n", c.name, humanize_args(&c.name, &c.args));
@@ -1091,7 +1091,7 @@ fn render_welcome(tagline: &str, width: u16, theme: &Theme) -> Vec<Line<'static>
         let compact = [
             Span::styled("<", Style::default().fg(theme.muted)),
             Span::styled(
-                "core",
+                "iteron",
                 Style::default()
                     .fg(theme.accent)
                     .add_modifier(Modifier::BOLD),
@@ -1124,7 +1124,7 @@ fn render_welcome(tagline: &str, width: u16, theme: &Theme) -> Vec<Line<'static>
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
             &[Span::styled(
-                "core",
+                "iteron",
                 Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
             )],
             width,
@@ -1963,7 +1963,7 @@ mod tests {
 
         let theme = Theme::dark();
         let compact = plain(welcome.render(20, &theme, 0));
-        assert!(compact.contains("core"));
+        assert!(compact.contains("iteron"));
         assert!(!compact.contains("(o)"));
         let wide = welcome.render(80, &theme, 0);
         assert_eq!(wide.len(), 6);

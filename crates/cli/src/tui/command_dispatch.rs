@@ -878,7 +878,7 @@ pub(super) async fn handle_registered_command(
         }
         SlashCommand::Config => {
             // `/config` used to re-read the REPOSITORY config document, so it reported what was on
-            // disk instead of the layered value the kernel enforces: `core --max-turns 5` printed
+            // disk instead of the layered value the kernel enforces: `iteron --max-turns 5` printed
             // `max_turns: default`. It reads the one resolved route and the same effective limits
             // the budget was built from (I-26).
             let mut rows: Vec<block::PanelRow> = app
@@ -906,7 +906,7 @@ pub(super) async fn handle_registered_command(
         SlashCommand::Login => {
             // The credential half of the setup state machine deliberately does NOT run here. A
             // pasted key inside the TUI would land in a rendered, scrollable transcript buffer;
-            // `core setup` owns collection precisely so a secret never reaches this surface.
+            // `iteron setup` owns collection precisely so a secret never reaches this surface.
             // What `/login` runs is the rest of the same machine: name the credential source, then
             // ask the provider whether it actually works, which is the check that used to happen
             // only on the first paid turn.
@@ -930,7 +930,7 @@ pub(super) async fn handle_registered_command(
                 None => rows.push(kv("state", &directory.resolution_error(&provider_id))),
             }
             rows.push(block::PanelRow::Note(format!(
-                "sign in or replace this credential with `core setup --byok {provider_id}` (or `core setup --plan`); inspect it with `core auth status`"
+                "sign in or replace this credential with `iteron setup --byok {provider_id}` (or `iteron setup --plan`); inspect it with `iteron auth status`"
             )));
             app.panel("⚿", "login", rows);
         }

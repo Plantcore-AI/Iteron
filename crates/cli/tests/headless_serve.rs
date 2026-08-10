@@ -250,7 +250,7 @@ fn spawn_core_with_token_input(scratch: &Scratch, token_input: &[u8]) -> CorePro
     let mut child = core_command(scratch)
         .stdin(Stdio::piped())
         .spawn()
-        .expect("spawn real headless core process");
+        .expect("spawn real headless iteron process");
     let stderr = child.stderr.take().expect("headless stderr pipe");
     let (listening_tx, listening) = sync_channel(1);
     let stderr = thread::spawn(move || {

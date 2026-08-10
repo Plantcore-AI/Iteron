@@ -145,19 +145,19 @@ fn run_budget(scratch: &Scratch, format: &str) -> Output {
         }
     }
 
-    let mut child = command.spawn().expect("spawn the real core binary");
+    let mut child = command.spawn().expect("spawn the real iteron binary");
     let deadline = Instant::now() + PROCESS_TIMEOUT;
     loop {
-        match child.try_wait().expect("poll core child") {
-            Some(_) => return child.wait_with_output().expect("collect core output"),
+        match child.try_wait().expect("poll iteron child") {
+            Some(_) => return child.wait_with_output().expect("collect iteron output"),
             None if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
             None => {
                 let _ = child.kill();
                 let output = child
                     .wait_with_output()
-                    .expect("collect timed-out core output");
+                    .expect("collect timed-out iteron output");
                 panic!(
-                    "core exceeded the {PROCESS_TIMEOUT:?} process bound; stderr:\n{}",
+                    "iteron exceeded the {PROCESS_TIMEOUT:?} process bound; stderr:\n{}",
                     String::from_utf8_lossy(&output.stderr)
                 );
             }
@@ -319,7 +319,7 @@ fn d13_15_process_exit_matches_the_machine_result_exit_code() {
         let process_exit = output
             .status
             .code()
-            .expect("core exits with a numeric status");
+            .expect("iteron exits with a numeric status");
 
         let terminal = json_lines(&output.stdout)
             .into_iter()

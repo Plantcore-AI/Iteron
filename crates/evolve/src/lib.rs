@@ -172,7 +172,7 @@ pub const MAX_ACTION_JSON_BYTES: usize = 128 * 1_024;
 
 /// A namespaced, swappable decision point. Slots are strings rather than a closed enum so a
 /// vertical pack can add `db/query_planner` or `support/escalation_router` without changing the
-/// microkernel. The well-known core slots below form the cross-vertical baseline.
+/// microkernel. The well-known iteron slots below form the cross-vertical baseline.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct StrategySlot(String);

@@ -2,7 +2,7 @@
 //!
 //! `/status`, `/config`, `/model`, the statusline and the startup banner each used to derive the
 //! current route independently — from the provider directory, from ad-hoc `App` fields, and (for
-//! `/config`) by re-reading the REPOSITORY config file, which is why `core --max-turns 5` reported
+//! `/config`) by re-reading the REPOSITORY config file, which is why `iteron --max-turns 5` reported
 //! `max_turns: default` while the kernel enforced 5. Four derivations of one fact are four chances
 //! to disagree with the request that actually goes out (I-26).
 //!
@@ -165,7 +165,7 @@ impl RouteView {
         }
     }
 
-    /// The route rows shared by `/status`, `/config` and `core auth status`, in one order.
+    /// The route rows shared by `/status`, `/config` and `iteron auth status`, in one order.
     pub fn rows(&self) -> Vec<(&'static str, String)> {
         let mut rows = vec![
             (
@@ -233,7 +233,7 @@ mod tests {
     }
 
     /// I-26 — `/config` re-read the repository config file instead of the effective layered value,
-    /// so `core --max-turns 5` displayed `max_turns: default`. The view carries the limits the
+    /// so `iteron --max-turns 5` displayed `max_turns: default`. The view carries the limits the
     /// kernel was given, so the displayed ceiling is the enforced ceiling.
     #[test]
     fn i26_the_view_reports_the_effective_limits_not_the_config_file() {

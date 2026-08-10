@@ -7,7 +7,7 @@ pub(super) fn report_stopped_workflows(stopped: &crate::workflow::ShutdownReport
         return;
     }
     for line in &stopped.lines {
-        eprintln!("core: {line}");
+        eprintln!("iteron: {line}");
     }
 }
 

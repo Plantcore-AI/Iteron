@@ -47,7 +47,7 @@ within a minute of expiring — so a hosted subscription token can rotate withou
 restarting Core. The file must be a regular file at mode 0600 holding either one
 token line or `{"token": "...", "expires_at_unix": N}`.
 
-`core setup` writes that file for you; `core auth status` reports which source
+`iteron setup` writes that file for you; `iteron auth status` reports which source
 is in use and when it expires.
 
 A signed `rate_cards` entry also names its HMAC variable through `key_env`. Its

@@ -7,12 +7,12 @@ use crate::types::RunStatus;
 use serde::Deserialize;
 use serde_json::Value;
 
-/// Versions of the frozen `core --output-format json` contract this consumer can read.
+/// Versions of the frozen `iteron --output-format json` contract this consumer can read.
 ///
 /// Keep the current version last. The schema-compatibility corpus test below binds this list to
 /// every retained machine-output fixture, so a producer bump cannot silently strand evaluation.
 pub const SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS: &[u32] = &[3, 4, 5];
-/// Version currently emitted by `core --output-format json`.
+/// Version currently emitted by `iteron --output-format json`.
 pub const ITERON_CLI_SCHEMA_VERSION: u32 = 5;
 const MAX_CLI_INPUT_ATTACHMENTS: u8 = 8;
 const MAX_CLI_IMAGE_BASE64_BYTES: u64 = 8 * 1024 * 1024;
@@ -497,19 +497,19 @@ struct CliWorkflowBudget {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ContractError {
-    #[error("core stdout is not one valid final-result JSON object: {0}")]
+    #[error("iteron stdout is not one valid final-result JSON object: {0}")]
     MalformedJson(String),
     #[error(
-        "unsupported core CLI schema_version {actual}; expected an admitted frozen version through {expected}"
+        "unsupported iteron CLI schema_version {actual}; expected an admitted frozen version through {expected}"
     )]
     SchemaVersion { actual: u32, expected: u32 },
-    #[error("core CLI machine record `{kind}` has no frozen schema_version {actual} contract")]
+    #[error("iteron CLI machine record `{kind}` has no frozen schema_version {actual} contract")]
     TypeVersion { kind: String, actual: u32 },
-    #[error("core JSON object has type `{0}`, expected `result`")]
+    #[error("iteron JSON object has type `{0}`, expected `result`")]
     WrongType(String),
-    #[error("core process exit {process} disagrees with result exit_code {result}")]
+    #[error("iteron process exit {process} disagrees with result exit_code {result}")]
     ExitMismatch { process: i32, result: i32 },
-    #[error("core result success/outcome fields are inconsistent")]
+    #[error("iteron result success/outcome fields are inconsistent")]
     OutcomeMismatch,
     #[error("known cost is missing cost_usd")]
     KnownCostMissing,

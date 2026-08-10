@@ -6,7 +6,7 @@
 //! evidence contract". The Core CLI, under `--output-format json`, prints exactly one versioned
 //! `result` object on stdout (`schema_version` + typed `outcome`/`success`/`exit_code`/`turns`/
 //! `cost_status`, `crates/cli/src/output.rs`) while its human operator chrome — the
-//! `core · repo=… · model=… · run=…` banner, the `outcome: …` line, the ledger `turns=…`/`cost=$…`
+//! `iteron · repo=… · model=… · run=…` banner, the `outcome: …` line, the ledger `turns=…`/`cost=$…`
 //! summary — streams to stderr (`crates/cli/src/main.rs`). Only the stdout object is a contract;
 //! the stderr text is diagnostic prose that a future build may reword freely. A harness that scraped
 //! that prose for the run's outcome, turn count, or cost would silently mismeasure the model.
@@ -116,12 +116,12 @@ fn create_repository(root: &TempRoot) -> (String, String) {
 /// Write an executable stand-in Core CLI from an exact shell body.
 fn write_fake_core(root: &TempRoot, script: &str) -> PathBuf {
     let path = root.join("fake-core");
-    std::fs::write(&path, script).expect("write executable fake core");
+    std::fs::write(&path, script).expect("write executable fake iteron");
     let mut permissions = std::fs::metadata(&path)
-        .expect("stat fake core")
+        .expect("stat fake iteron")
         .permissions();
     permissions.set_mode(0o700);
-    std::fs::set_permissions(&path, permissions).expect("make fake core executable");
+    std::fs::set_permissions(&path, permissions).expect("make fake iteron executable");
     path
 }
 
@@ -211,7 +211,7 @@ fn versioned_stdout_result_overrides_a_contradictory_human_stderr_chrome() {
         concat!(
             "#!/bin/sh\n",
             "{\n",
-            "  echo 'core · repo=/decoy · model=EVIL-DIFFERENT-MODEL · run=run-fake'\n",
+            "  echo 'iteron · repo=/decoy · model=EVIL-DIFFERENT-MODEL · run=run-fake'\n",
             "  echo 'outcome: Done'\n",
             "  echo 'success=true resolved turns=999 cost=$0.000000'\n",
             "  echo 'ledger: turns=999 tool_wall=0ms cost=$0.00'\n",
@@ -292,7 +292,7 @@ fn a_valid_result_on_stderr_is_not_scraped_and_leaves_a_hard_contract_error() {
         concat!(
             "#!/bin/sh\n",
             "printf '%s\\n' '{\"schema_version\":4,\"type\":\"result\",\"outcome\":\"done\",\"reason\":null,\"success\":true,\"assistant_text\":\"stderr-only\",\"run_id\":\"run-stderr\",\"cost_usd\":null,\"cost_status\":\"unknown\",\"cost_reason\":\"no_verified_rate_card\",\"turns\":2,\"exit_code\":0,\"error\":null}' 1>&2\n",
-            "echo 'core · repo=/decoy · model=whatever · run=run-x' \n",
+            "echo 'iteron · repo=/decoy · model=whatever · run=run-x' \n",
             "echo 'outcome: Done'\n",
             "exit 0\n",
         ),

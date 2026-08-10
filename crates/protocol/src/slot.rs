@@ -219,7 +219,7 @@ mod tests {
         }
         for bad in [
             "",
-            "core",
+            "iteron",
             "iteron/",
             "/role",
             "iteron/a/b",

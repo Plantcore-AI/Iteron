@@ -173,7 +173,7 @@ impl ProviderEntry {
         self.instance.display_name()
     }
 
-    /// Value-free credential provenance for `/status`, `/config`, and `core auth status`.
+    /// Value-free credential provenance for `/status`, `/config`, and `iteron auth status`.
     pub fn credential_display(&self) -> String {
         self.instance.credential_status().display()
     }
@@ -1777,7 +1777,7 @@ impl ProviderDirectory {
 
     /// Build the operator-visible directory without starting catalog or account network probes.
     ///
-    /// Credential provenance and presence are local facts. Commands such as `core auth status`
+    /// Credential provenance and presence are local facts. Commands such as `iteron auth status`
     /// must remain bounded even when a configured endpoint black-holes DNS or TCP; health remains
     /// honestly unknown until a launch or explicit setup validation produces evidence.
     pub fn inspect_local(user: &[ProviderConfig]) -> anyhow::Result<Self> {
@@ -2240,7 +2240,7 @@ impl ProviderDirectory {
         let Some(entry) = self.entry(provider_id) else {
             let known: Vec<&str> = self.entries.iter().map(ProviderEntry::id).collect();
             return format!(
-                "provider `{provider_id}` is not configured (known: {}); run `core setup` or declare it in ~/.iteron/config.json",
+                "provider `{provider_id}` is not configured (known: {}); run `iteron setup` or declare it in ~/.iteron/config.json",
                 known.join(", ")
             );
         };
@@ -2248,10 +2248,10 @@ impl ProviderDirectory {
             Some(reason) => {
                 let remedy = match self.health(entry.id()).availability {
                     AccountAvailability::MissingCredential => format!(
-                        "; run `core setup --byok {provider_id}`, or set it in the environment"
+                        "; run `iteron setup --byok {provider_id}`, or set it in the environment"
                     ),
                     AccountAvailability::AuthenticationBlocked => format!(
-                        "; the credential ({}) was rejected — run `core setup --byok {provider_id}` to replace it",
+                        "; the credential ({}) was rejected — run `iteron setup --byok {provider_id}` to replace it",
                         entry.credential.display()
                     ),
                     _ => String::new(),
@@ -3083,7 +3083,7 @@ fn is_openai_fine_tuned_text_model(model_id: &str) -> bool {
         .any(|prefix| base.starts_with(prefix))
 }
 
-/// Every provider id this configuration can route to, built-ins first. `core setup` offers these
+/// Every provider id this configuration can route to, built-ins first. `iteron setup` offers these
 /// and refuses anything else, so a typo is caught before a credential is written for a route that
 /// does not exist.
 pub(crate) fn configured_provider_ids(user: &[ProviderConfig]) -> Vec<String> {
@@ -3100,7 +3100,7 @@ pub(crate) fn configured_provider_ids(user: &[ProviderConfig]) -> Vec<String> {
 }
 
 /// Build the exact route a provider id resolves to, with a candidate credential supplied directly
-/// and nothing persisted. This is what lets `core setup` reject a wrong key BEFORE writing it.
+/// and nothing persisted. This is what lets `iteron setup` reject a wrong key BEFORE writing it.
 fn candidate_instance(
     provider_id: &str,
     user: &[ProviderConfig],
@@ -3247,7 +3247,7 @@ fn credential_source(credential: &ProviderCredential) -> CredentialSource {
 ///
 /// The environment variable still wins: exporting a key is the explicit, per-invocation override
 /// and must behave exactly as before. Only when it is absent does a built-in fall back to the
-/// credential file `core setup` writes, which is what makes the wizard reach a working first turn
+/// credential file `iteron setup` writes, which is what makes the wizard reach a working first turn
 /// without asking an operator to edit `providers` by hand (a built-in id may not be redeclared
 /// there at all).
 fn builtin_credential(provider_id: &str, key_env: &'static str) -> ProviderCredential {
@@ -4872,7 +4872,7 @@ mod tests {
         assert!(directory.default_selection("glm").is_none());
         let missing = directory.resolution_error("glm");
         assert!(missing.contains("GLM_API_KEY"), "{missing}");
-        assert!(missing.contains("core setup --byok glm"), "{missing}");
+        assert!(missing.contains("iteron setup --byok glm"), "{missing}");
         assert!(
             !missing.contains("has no selectable discovered model"),
             "the unactionable line must not survive: {missing}"

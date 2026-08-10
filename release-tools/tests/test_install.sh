@@ -21,8 +21,8 @@ mkdir -p "$fixture" "$temporary/fakebin"
 cat > "$temporary/fake-core" <<'EOF'
 #!/bin/sh
 case "${1:-}" in
-  -V) printf 'core 0.0.1\n' ;;
-  --version) printf 'core 0.0.1 (0123456789abcdef0123456789abcdef01234567 2026-08-03)\n' ;;
+  -V) printf 'iteron 0.0.1\n' ;;
+  --version) printf 'iteron 0.0.1 (0123456789abcdef0123456789abcdef01234567 2026-08-03)\n' ;;
   *) exit 2 ;;
 esac
 EOF
@@ -110,7 +110,7 @@ test ! -e "$install_dir/core"
 PATH="$temporary/fakebin:$PATH" TMPDIR="$temporary/tmp with spaces" ITERON_CODE_TEST_FIXTURE=$fixture \
   sh "$repo_root/install.sh" --version v0.0.1 --bin-dir "$install_dir" >/dev/null
 test -x "$install_dir/core"
-test "$("$install_dir/core" -V)" = 'core 0.0.1'
+test "$("$install_dir/core" -V)" = 'iteron 0.0.1'
 grep -q '0123456789abcdef' <<<"$("$install_dir/core" --version)"
 
 printf 'existing\n' > "$install_dir/core"
@@ -179,7 +179,7 @@ with tarfile.open(archive, "w:gz") as output:
     directory.type = tarfile.DIRTYPE
     output.addfile(directory)
     for name in (
-        "core",
+        "iteron",
         "LICENSE",
         "README.md",
         "THIRD_PARTY_LICENSES.html",
@@ -234,9 +234,9 @@ with tarfile.open(archive, "w:gz", compresslevel=9) as output:
     directory = tarfile.TarInfo(root + "/")
     directory.type = tarfile.DIRTYPE
     output.addfile(directory)
-    core = tarfile.TarInfo(root + "/core")
-    core.size = 134_217_729
-    output.addfile(core, ZeroReader(core.size))
+    iteron = tarfile.TarInfo(root + "/core")
+    iteron.size = 134_217_729
+    output.addfile(iteron, ZeroReader(iteron.size))
     for name in (
         "LICENSE",
         "README.md",

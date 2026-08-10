@@ -80,7 +80,7 @@ pub struct Export {
 /// Project a replayed run into the export payload.
 ///
 /// Pure. `timeline` supplies the already-computed distributions (#104) so this module never
-/// recomputes a statistic and cannot drift from what `core --timeline` reports for the same run.
+/// recomputes a statistic and cannot drift from what `iteron --timeline` reports for the same run.
 pub fn project(run_id: &str, events: &[&Event], timeline: &Timeline) -> Export {
     let mut export = Export {
         run_id: run_id.to_string(),
@@ -145,7 +145,7 @@ pub fn project(run_id: &str, events: &[&Event], timeline: &Timeline) -> Export {
     }
 
     // Metrics are read straight off the timeline, never recomputed, so a dashboard and
-    // `core --timeline` can never disagree about the same run.
+    // `iteron --timeline` can never disagree about the same run.
     for (class, distribution) in &timeline.effects {
         export.metrics.push(Metric {
             name: "iteron.effect.duration_ms".into(),
@@ -279,7 +279,7 @@ mod tests {
     }
 
     /// Metrics are read off the timeline, never recomputed here, so the dashboard and
-    /// `core --timeline` cannot disagree about the same run.
+    /// `iteron --timeline` cannot disagree about the same run.
     #[test]
     fn metrics_are_read_from_the_timeline_rather_than_recomputed() {
         let done = event(

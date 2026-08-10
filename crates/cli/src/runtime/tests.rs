@@ -974,7 +974,7 @@ mod gate_integration_tests {
         child_started: tokio::sync::Notify,
         // A persistent release latch (not a one-shot Notify): concurrent investigators may reach
         // their block at different times and, under a permit cap of 1, sequentially — a latch avoids
-        // both a missed-notification hang and any dependence on the machine's core count.
+        // both a missed-notification hang and any dependence on the machine's iteron count.
         released: std::sync::atomic::AtomicBool,
         total_calls: AtomicUsize,
         child_calls: AtomicUsize,

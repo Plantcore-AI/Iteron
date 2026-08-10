@@ -52,7 +52,7 @@ pub enum RegistryError {
     MissingCapabilityRequirement(&'static str),
     #[error("family `{0}` has an invalid provider requirement")]
     InvalidProviderRequirement(&'static str),
-    #[error("family `{0}` must bind one or more unique core StrategySlots")]
+    #[error("family `{0}` must bind one or more unique iteron StrategySlots")]
     InvalidStrategySlots(&'static str),
     #[error("family `{0}` has an invalid value schema: {1}")]
     InvalidValueDomain(&'static str, &'static str),

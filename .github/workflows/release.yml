@@ -530,28 +530,28 @@ jobs:
             python: python3
             tool-suffix: ""
             archive-suffix: tar.gz
-            binary: core
+            binary: iteron
           - runner: macos-15-intel
             host: darwin-x86_64
             target: x86_64-apple-darwin
             python: python3
             tool-suffix: ""
             archive-suffix: tar.gz
-            binary: core
+            binary: iteron
           - runner: ubuntu-24.04-arm
             host: linux-arm64
             target: aarch64-unknown-linux-musl
             python: python3
             tool-suffix: ""
             archive-suffix: tar.gz
-            binary: core
+            binary: iteron
           - runner: ubuntu-24.04
             host: linux-x86_64
             target: x86_64-unknown-linux-musl
             python: python3
             tool-suffix: ""
             archive-suffix: tar.gz
-            binary: core
+            binary: iteron
           - runner: windows-2025
             host: windows-x86_64
             target: x86_64-pc-windows-msvc
@@ -630,11 +630,11 @@ jobs:
         shell: bash
         run: >-
           cargo +"$RUST_VERSION" test
-          --locked -p iteron-cli --bin core
+          --locked -p iteron-cli --bin iteron
           --target "${{ matrix.target }}"
           output::tests::explicit_v4_projection_preserves_the_frozen_terminal_bytes
       # Stamp the build identity INTO the binary. Two artifacts cut from different commits both
-      # reported `core 0.0.1`, so a user could not tell which one they had and an aged binary had
+      # reported `iteron 0.0.1`, so a user could not tell which one they had and an aged binary had
       # no way to say so. `--version` carries these; `-V` stays the bare semver matched below.
       - name: Build an auditable release binary
         shell: bash
@@ -752,7 +752,7 @@ jobs:
           }
 
           run_exact tui \
-            cargo +"$RUST_VERSION" test --locked -p iteron-cli --bin core \
+            cargo +"$RUST_VERSION" test --locked -p iteron-cli --bin iteron \
               --target "$target" \
               tui::app_server::tests::version_skew_is_refused_up_front -- --exact
           run_exact one-shot \

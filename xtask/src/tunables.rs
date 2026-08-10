@@ -94,7 +94,7 @@ fn render_markdown() -> Result<String> {
     )?;
     writeln!(
         out,
-        "Every entry carries a canonical runtime-control semantic key, aliases, a structured activation predicate and inactive reason, provider/capability requirements, one or more of the nine core StrategySlot bindings, exact source provenance, implementation status, a tagged and bounded value domain, source-controlled external-constraint projection/relation/action, formal SWE-bench Pro then Terminal-Bench 2.1 relevance, optimization/search phase, risk, authority, schema version, and an independent SHA-256 family digest in the machine artifact. Semantic keys—not family digests—enforce single ownership of runtime controls. Invalid, unattested, unresolved, or rejected active entries fail atomically; explanation output is bounded and redacted.\n"
+        "Every entry carries a canonical runtime-control semantic key, aliases, a structured activation predicate and inactive reason, provider/capability requirements, one or more of the nine iteron StrategySlot bindings, exact source provenance, implementation status, a tagged and bounded value domain, source-controlled external-constraint projection/relation/action, formal SWE-bench Pro then Terminal-Bench 2.1 relevance, optimization/search phase, risk, authority, schema version, and an independent SHA-256 family digest in the machine artifact. Semantic keys—not family digests—enforce single ownership of runtime controls. Invalid, unattested, unresolved, or rejected active entries fail atomically; explanation output is bounded and redacted.\n"
     )?;
     writeln!(
         out,

@@ -50,7 +50,7 @@
       "type": "array",
       "uniqueItems": true
     },
-    "command": { "const": "core" },
+    "command": { "const": "iteron" },
     "commit": { "pattern": "^[0-9a-f]{40}$", "type": "string" },
     "default_cli_stream_version": {
       "maximum": 1000000000,

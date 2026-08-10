@@ -473,17 +473,17 @@ async fn one_and_thirty_two_workers_emit_identical_order_and_aggregates() {
     let root = TempRoot::new("parallel");
     let (url, commit) = fixture_repo(&root);
     let corpus = write_corpus(&root, oracle_task(url, commit));
-    let core = fake_core(&root);
+    let iteron = fake_core(&root);
     let serial = run_evaluation_parallel(&eval_options(
         &root,
         corpus.clone(),
-        core.clone(),
+        iteron.clone(),
         1,
         "serial",
     ))
     .await
     .expect("serial");
-    let parallel = run_evaluation_parallel(&eval_options(&root, corpus, core, 32, "parallel"))
+    let parallel = run_evaluation_parallel(&eval_options(&root, corpus, iteron, 32, "parallel"))
         .await
         .expect("parallel");
 
@@ -569,7 +569,7 @@ async fn physical_retry_uses_fresh_workspaces_and_emits_verifiable_sidecars() {
     assert_eq!(attestation.attempt_record_count, ledger.record_count());
     attestation
         .verify_artifacts(
-            options.core_bin.as_deref().expect("core path"),
+            options.core_bin.as_deref().expect("iteron path"),
             &options.corpus_path,
             &options.output_path,
             &attempt_path,
@@ -626,8 +626,8 @@ async fn production_runner_refuses_a_simulated_bundle_binding() {
     let corpus = write_corpus(&root, oracle_task(url, commit));
     let bundle = root.join("policy.bundle");
     std::fs::write(&bundle, "bundle-fixture\n").expect("bundle");
-    let core = fake_core(&root);
-    let mut options = eval_options(&root, corpus, core, 2, "bundle");
+    let iteron = fake_core(&root);
+    let mut options = eval_options(&root, corpus, iteron, 2, "bundle");
     options.seeds = 1;
     options.minimum_seeds = 1;
     options.bundle_path = Some(bundle);
@@ -826,8 +826,8 @@ fn golden_paired_report_uses_the_real_pro_slice_identity() {
         &[false, true, false, true],
         None,
     );
-    let mut core = synthetic_manifest(MODEL, "core_untrained", &[true, true, false, true], None);
-    for manifest in [&mut open, &mut core] {
+    let mut iteron = synthetic_manifest(MODEL, "core_untrained", &[true, true, false, true], None);
+    for manifest in [&mut open, &mut iteron] {
         manifest.corpus_version = CORPUS.into();
         manifest.dataset_digest = DIGEST.into();
         manifest.provider = Some("recorded-fixture".into());
@@ -838,7 +838,7 @@ fn golden_paired_report_uses_the_real_pro_slice_identity() {
     let report = compare_manifests(
         &open,
         "swe_agent_3ea751c",
-        &core,
+        &iteron,
         "core_untrained",
         3,
         "recorded_fixture_untrained_vs_swe_agent",

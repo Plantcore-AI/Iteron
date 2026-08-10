@@ -147,45 +147,45 @@ fn push_token(
 }
 
 fn token_style(token: &str, tone: Tone, theme: &Theme) -> Style {
-    let core = token.trim_matches(|ch: char| {
+    let iteron = token.trim_matches(|ch: char| {
         matches!(
             ch,
             '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':' | '"' | '\''
         )
     });
-    let lower = core.to_ascii_lowercase();
+    let lower = iteron.to_ascii_lowercase();
 
-    if matches!(core, "·" | "│" | "|" | "→" | "←" | "↳" | "⎿") {
+    if matches!(iteron, "·" | "│" | "|" | "→" | "←" | "↳" | "⎿") {
         return Style::default().fg(theme.faint).add_modifier(Modifier::DIM);
     }
-    if matches!(core, "▧" | "▤" | "◆" | "●" | "○" | "◐" | "◉" | "⦿") {
+    if matches!(iteron, "▧" | "▤" | "◆" | "●" | "○" | "◐" | "◉" | "⦿") {
         return Style::default()
             .fg(theme.accent)
             .add_modifier(Modifier::BOLD);
     }
-    if signed_number(core, '+') {
+    if signed_number(iteron, '+') {
         return Style::default()
             .fg(theme.added)
             .add_modifier(Modifier::BOLD);
     }
-    if signed_number(core, '-') {
+    if signed_number(iteron, '-') {
         return Style::default()
             .fg(theme.removed)
             .add_modifier(Modifier::BOLD);
     }
-    if is_command(core) {
+    if is_command(iteron) {
         return Style::default()
-            .fg(if core.starts_with('!') {
+            .fg(if iteron.starts_with('!') {
                 theme.warn
             } else {
                 theme.accent
             })
             .add_modifier(Modifier::BOLD);
     }
-    if is_path(core) {
+    if is_path(iteron) {
         return theme.syn_style(SynClass::Type);
     }
-    if is_number(core) {
+    if is_number(iteron) {
         return theme.syn_style(SynClass::Number);
     }
     if matches!(

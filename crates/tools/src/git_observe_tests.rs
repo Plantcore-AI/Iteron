@@ -64,7 +64,7 @@ fn initialize_repo(root: &Path) {
     git_ok(root, &[OsStr::new("init"), OsStr::new("--quiet")]);
     for (key, value) in [
         ("user.name", "Core Test"),
-        ("user.email", "core@test.invalid"),
+        ("user.email", "iteron@test.invalid"),
     ] {
         git_ok(
             root,

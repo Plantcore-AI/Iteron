@@ -65,7 +65,7 @@ harness checkpoint 是对 `StrategySlot` ABI 上一条 policy 的**已训练状�
 
 可扩展性由开放命名空间保证。`StrategySlot` **MUST** 是一个开放的、namespaced 的**字符串类型**,而**不是**封闭 enum。这是刻意的:一个 vertical pack MUST 能新增自己的 slot(如 `db/query_planner`、`support/escalation_router`)而**完全不触碰 microkernel**。命名规则由 smart constructor 强制:小写、`[a-z0-9/_.-]`、不以 `/` 开头或结尾、不含 `//`、<=128 字节。任一违反触发 `InvalidSlot`,并在构造点即被拒;因此一个非法 slot 名永远无法进入任何 manifest。若命名空间是封闭 enum,新增 vertical 就必须改 kernel 并重新走 ABI 版本演进,这恰是开放字符串类型要避免的耦合。
 
-有 9 个 **well-known core slots** 构成跨 vertical 的基线:
+有 9 个 **well-known iteron slots** 构成跨 vertical 的基线:
 
 | Slot | 决策 | 基本形态(可训练/可调) | 与 kernel 的交互 | 例子 |
 |---|---|---|---|---|

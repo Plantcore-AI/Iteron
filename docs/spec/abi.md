@@ -340,7 +340,7 @@ ABI 的价值全在于它**稳定且可演化**：两者不矛盾，靠的是把
 
 下面用一个**修 bug 的编码 task**，走通"TaskEnvelope 进 -> module 返回 ContextRequest / ToolIntent 提议 -> kernel admit 一个 EffectProposal -> ArtifactRef 出"的全程。每一步标注它落哪个 EQ 事件（Observable 不变式），并显示 trust 与 capability 如何一路收紧。
 
-**场景**：operator 要求"修复 `parser` 对空输入的 panic，并让 `cargo test -p parser` 通过"。垂类 profile = core baseline。`ceiling = {ReadOnly, ReversibleLocal, CodeExecuting}`（本 task 不允许 egress，也不允许改 trust）。集合逐项列全这次 run 真正需要的类：没有序可依，`{ReversibleLocal}` 并不隐含 `ReadOnly`，跑测试也要显式的 `CodeExecuting`。
+**场景**：operator 要求"修复 `parser` 对空输入的 panic，并让 `cargo test -p parser` 通过"。垂类 profile = iteron baseline。`ceiling = {ReadOnly, ReversibleLocal, CodeExecuting}`（本 task 不允许 egress，也不允许改 trust）。集合逐项列全这次 run 真正需要的类：没有序可依，`{ReversibleLocal}` 并不隐含 `ReadOnly`，跑测试也要显式的 `CodeExecuting`。
 
 **步骤 0 ， TaskEnvelope 入口。** frontend 把 operator 输入包成 `SqEnvelope { protocol_version: 1, op: UserInput }`，kernel 据此构造 `TaskEnvelope`：`trust = Trusted`（operator 亲自输入），`acceptance.checks = [{ id: "suite::parser", quantifier: MustFlipToPass }]`，`budget` 见下，`ceiling = {ReadOnly, ReversibleLocal, CodeExecuting}`。
 -> 落事件：`RunStart`（genesis，seq-0，携带 `created_at`、`config_digest`、`max_usd`）。若 composition root 已经准入一个原子成功的 `ResolvedTunableSet`，record API 立即在 physical seq-1 落唯一的 `TunablesSnapshot`，并在任何 provider/tool effect 前 fsync；resume/replay/fork 的 checked API 比对完整快照，legacy 缺失只能显式降级为 `LegacyUnpinned`，不伪造迁移或准入。

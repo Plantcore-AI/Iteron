@@ -116,12 +116,12 @@ fn create_repository(root: &TempRoot) -> (String, String) {
 fn create_fake_core(root: &TempRoot) -> PathBuf {
     let path = root.join("fake-core");
     std::fs::write(&path, "#!/bin/sh\nprintf '%s' '{\"schema_version\":4'\n")
-        .expect("write executable fake core");
+        .expect("write executable fake iteron");
     let mut permissions = std::fs::metadata(&path)
-        .expect("stat fake core")
+        .expect("stat fake iteron")
         .permissions();
     permissions.set_mode(0o700);
-    std::fs::set_permissions(&path, permissions).expect("make fake core executable");
+    std::fs::set_permissions(&path, permissions).expect("make fake iteron executable");
     path
 }
 

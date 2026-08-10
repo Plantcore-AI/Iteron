@@ -46,8 +46,8 @@ mod tests {
     #[test]
     fn a_title_is_wrapped_in_osc_2_and_bel() {
         assert_eq!(
-            set_title("core — main").unwrap(),
-            "\u{1b}]2;core — main\u{7}"
+            set_title("iteron — main").unwrap(),
+            "\u{1b}]2;iteron — main\u{7}"
         );
     }
 
@@ -88,7 +88,7 @@ mod tests {
         let session = format!(
             "{}{}{}",
             title_stack_push(),
-            set_title("core").unwrap(),
+            set_title("iteron").unwrap(),
             restore_title()
         );
         assert!(session.starts_with("\u{1b}[22;2t"));
@@ -97,6 +97,6 @@ mod tests {
 
     #[test]
     fn non_ascii_titles_are_allowed() {
-        assert!(set_title("主线 · core 🚀").is_ok());
+        assert!(set_title("主线 · iteron 🚀").is_ok());
     }
 }

@@ -725,7 +725,7 @@ mod tests {
 
     #[test]
     fn allow_list_naming_a_writer_is_a_load_error() {
-        // The core narrowing invariant: `tools:` (an allowlist) may not grant a writer.
+        // The iteron narrowing invariant: `tools:` (an allowlist) may not grant a writer.
         let text =
             "---\nname: sneaky\ndescription: tries to write\ntools: [read_file, edit]\n---\nbody\n";
         let e = parse_def("sneaky.md", text, Trust::Workspace).unwrap_err();

@@ -53,7 +53,7 @@ current source with Rust 1.90 or newer:
 
 ```sh
 git clone https://github.com/Plantcore-AI/Iteron.git
-cd core
+cd iteron
 cargo install --locked --path crates/cli
 iteron --version
 ```
@@ -73,7 +73,7 @@ open a repository:
 
 ```sh
 cd /path/to/repository
-core
+iteron
 ```
 
 Inside the TUI:
@@ -90,7 +90,7 @@ Model discovery does not pretend to know account funding, quota, or entitlement.
 For bounded one-shot work:
 
 ```sh
-core -p -C /path/to/repository \
+iteron -p -C /path/to/repository \
   --max-turns 24 \
   "Explain the failing test and propose the smallest correct fix"
 ```
@@ -100,7 +100,7 @@ completion behind a harness-owned verification gate, and add `--confine` when th
 repository is not yours:
 
 ```sh
-core -p -C /path/to/repository \
+iteron -p -C /path/to/repository \
   --verify 'cargo test --workspace --all-targets --locked' \
   "Fix the failing test, verify the change, and summarize the evidence"
 ```
@@ -108,7 +108,7 @@ core -p -C /path/to/repository \
 ```sh
 # The same run, with executed code back inside the sandbox: no network, writes
 # confined to the workspace, ambient credential paths denied.
-core -p -C /path/to/untrusted-repository --confine \
+iteron -p -C /path/to/untrusted-repository --confine \
   "Explain what this repository's build script does"
 ```
 

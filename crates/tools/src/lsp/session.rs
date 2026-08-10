@@ -268,7 +268,7 @@ impl Driver {
             "method": "initialize",
             "params": {
                 "processId": null,
-                "clientInfo": {"name": "core", "version": env!("CARGO_PKG_VERSION")},
+                "clientInfo": {"name": "iteron", "version": env!("CARGO_PKG_VERSION")},
                 "rootUri": root_uri,
                 "workspaceFolders": [{"uri": root_uri, "name": "workspace"}],
                 "capabilities": {"general": {"positionEncodings": ["utf-16"]}}

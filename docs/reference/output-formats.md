@@ -8,7 +8,7 @@ task, continue, and resume operations this projects every stdout record onto the
 in particular, the v5-only `kernel_tax` terminal field and `input_attachment` stream record are
 not emitted. Unsupported selectors fail before a rollout is opened.
 
-`core --machine-contract` is a provider-free capability query. Its JSON reports
+`iteron --machine-contract` is a provider-free capability query. Its JSON reports
 `cli_stream_versions`, `default_cli_stream_version`, and `resident_protocol_version` as distinct
 values; a launcher must not infer the CLI stream version from the resident SQ/EQ protocol.
 

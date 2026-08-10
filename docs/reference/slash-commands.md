@@ -54,7 +54,7 @@ all three axes the session line reports:
 - **Record** — its own hash-chained journal under `<runs>/side/`. It is deliberately not
   written into the sessions directory, so it can never win the most-recent lookup that
   `--continue` resolves and never appears in `/sessions`. This also means it is not
-  reachable by `core --resume`; the journal is on disk for audit, not for continuation.
+  reachable by `iteron --resume`; the journal is on disk for audit, not for continuation.
 - **Cost** — its own ledger, reported with the answer and by `/side status`. The session's
   cost line does not move because a side conversation ran.
 

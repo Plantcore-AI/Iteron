@@ -743,7 +743,7 @@ async fn run_cell(
             config,
             seed,
             "iteron_contract",
-            "core stdout exceeded the bounded JSON contract limit",
+            "iteron stdout exceeded the bounded JSON contract limit",
         );
         cell.exit_code = Some(output.exit_code);
         cell.elapsed_ms = millis(started.elapsed());

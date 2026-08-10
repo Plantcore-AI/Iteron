@@ -2669,7 +2669,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
             error: Some("agent call ceiling 1 reached".into()),
         };
 
-        // No frontend attached (`core -p`, `--output-format json`, an embedder): the sink is the
+        // No frontend attached (`iteron -p`, `--output-format json`, an embedder): the sink is the
         // degraded sink itself, so this path is byte-for-byte what it was before the seam existed.
         let headless = Arc::new(DegradedAgentSink::new());
         in_turn_progress_sink(headless.clone(), "wf_headless", None).emit(starved());

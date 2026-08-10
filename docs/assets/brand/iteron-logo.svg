@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 180" role="img" aria-labelledby="title description">
   <title id="title">Iteron</title>
-  <desc id="description">Iteron logo with bounded code brackets and a central core.</desc>
+  <desc id="description">Iteron logo with bounded code brackets and a central iteron.</desc>
   <rect x="1" y="1" width="718" height="178" rx="28" fill="#0b1020" stroke="#27324a" stroke-width="2"/>
   <g transform="translate(25 19) scale(.55)">
     <rect width="256" height="256" rx="52" fill="#10172a"/>

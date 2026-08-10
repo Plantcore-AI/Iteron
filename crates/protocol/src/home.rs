@@ -136,7 +136,7 @@ mod tests {
         );
         assert!(is_home_dir(".iteron"));
         assert!(!is_home_dir(".git"));
-        assert!(!is_home_dir("core"));
+        assert!(!is_home_dir("iteron"));
     }
 
     #[test]

@@ -114,7 +114,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ -z "$workspace" ] || [ -z "$prompt" ]; then
-    printf '%s\n' 'fake core did not receive workspace and prompt' >&2
+    printf '%s\n' 'fake iteron did not receive workspace and prompt' >&2
     exit 64
 fi
 
@@ -174,12 +174,12 @@ case "$prompt" in
         ;;
 esac
 "##;
-    std::fs::write(&path, script).expect("write executable fake core");
+    std::fs::write(&path, script).expect("write executable fake iteron");
     let mut permissions = std::fs::metadata(&path)
-        .expect("stat fake core")
+        .expect("stat fake iteron")
         .permissions();
     permissions.set_mode(0o700);
-    std::fs::set_permissions(&path, permissions).expect("make fake core executable");
+    std::fs::set_permissions(&path, permissions).expect("make fake iteron executable");
     path
 }
 

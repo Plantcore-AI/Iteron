@@ -333,7 +333,7 @@ mod tests {
             .section(
                 "versions",
                 Section::new()
-                    .set("core", "0.0.1")
+                    .set("iteron", "0.0.1")
                     .unwrap()
                     .set("os", "macos")
                     .unwrap(),
@@ -349,7 +349,7 @@ mod tests {
                 Section::new()
                     .set("os", "macos")
                     .unwrap()
-                    .set("core", "0.0.1")
+                    .set("iteron", "0.0.1")
                     .unwrap(),
             )
             .unwrap();
